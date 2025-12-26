@@ -177,7 +177,7 @@ build_compiler() {
         print_status "✅ Silica Bootstrap Compiler built successfully!"
 
         # Show binary location
-        BINARY_PATH="target/release/silica"
+        BINARY_PATH="target/release/silica-boot"
         if [[ -f "$BINARY_PATH" ]]; then
             print_status "Binary location: $(pwd)/$BINARY_PATH"
             print_status "Binary size: $(ls -lh "$BINARY_PATH" | awk '{print $5}')"
@@ -192,7 +192,7 @@ build_compiler() {
 test_compiler() {
     print_header "Testing Silica Bootstrap Compiler..."
 
-    BINARY_PATH="target/release/silica"
+    BINARY_PATH="target/release/silica-boot"
 
     if [[ ! -f "$BINARY_PATH" ]]; then
         print_error "Compiler binary not found at $BINARY_PATH"
@@ -227,9 +227,9 @@ show_usage() {
     print_header "Silica Bootstrap Compiler - LLVM Setup Complete!"
     echo ""
     echo "Usage examples:"
-    echo "  ./silica input.silica output.bc                    # Basic compilation"
-    echo "  ./silica --opt standard input.silica output.bc     # With optimizations"
-    echo "  ./silica --opt aggressive input.silica output.bc   # Maximum optimization"
+    echo "  ./silica-boot input.silica output.bc                    # Basic compilation"
+    echo "  ./silica-boot --opt standard input.silica output.bc     # With optimizations"
+    echo "  ./silica-boot --opt aggressive input.silica output.bc   # Maximum optimization"
     echo ""
     echo "To run compiled LLVM bitcode:"
     echo "  lli output.bc"

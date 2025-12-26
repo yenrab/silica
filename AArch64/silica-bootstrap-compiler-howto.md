@@ -40,24 +40,24 @@ cargo build --release --features llvm_backend
 
 After building, the compiler binary is located at:
 ```
-AArch64/silica-bootstrap-compiler/target/release/silica
+AArch64/silica-bootstrap-compiler/target/release/silica-boot
 ```
 
 ### Testing the Compiler
 
 ```bash
 # Show usage information
-./target/release/silica
-# Output: Usage: ./target/release/silica <input.silica> [output.bc] [--opt <level>]
+./target/release/silica-boot
+# Output: Usage: ./target/release/silica-boot <input.silica> [output.bc] [--opt <level>]
 
 # Test compilation with the provided example
-./target/release/silica ../experiments/hello.silica test.bc
+./target/release/silica-boot ../experiments/hello.silica test.bc
 
 # Test with different optimization levels
-./target/release/silica ../experiments/hello.silica output.bc --opt none
-./target/release/silica ../experiments/hello.silica output.bc --opt basic
-./target/release/silica ../experiments/hello.silica output.bc --opt default
-./target/release/silica ../experiments/hello.silica output.bc --opt aggressive
+./target/release/silica-boot ../experiments/hello.silica output.bc --opt none
+./target/release/silica-boot ../experiments/hello.silica output.bc --opt basic
+./target/release/silica-boot ../experiments/hello.silica output.bc --opt default
+./target/release/silica-boot ../experiments/hello.silica output.bc --opt aggressive
 
 # Run the compiled output
 /opt/homebrew/opt/llvm@15/bin/lli test.bc
@@ -92,7 +92,7 @@ fn main() -> int {
 cd AArch64/silica-bootstrap-compiler
 
 # Compile Silica file to LLVM bitcode
-./target/release/silica ../experiments/hello.silica output.bc
+./target/release/silica-boot ../experiments/hello.silica output.bc
 
 # Run the compiled LLVM bitcode
 /opt/homebrew/opt/llvm@15/bin/lli output.bc
@@ -461,16 +461,16 @@ First, ensure the Silica Bootstrap Compiler is built (see Installation & Setup a
 cd AArch64/silica-bootstrap-compiler
 
 # Basic compilation to LLVM bitcode
-./target/release/silica input.silica output.bc
+./target/release/silica-boot input.silica output.bc
 
 # With optimizations
-./target/release/silica input.silica output.bc --opt none
-./target/release/silica input.silica output.bc --opt basic
-./target/release/silica input.silica output.bc --opt default
-./target/release/silica input.silica output.bc --opt aggressive
+./target/release/silica-boot input.silica output.bc --opt none
+./target/release/silica-boot input.silica output.bc --opt basic
+./target/release/silica-boot input.silica output.bc --opt default
+./target/release/silica-boot input.silica output.bc --opt aggressive
 
 # Specify custom output file
-./target/release/silica ../experiments/hello.silica myprogram.bc
+./target/release/silica-boot ../experiments/hello.silica myprogram.bc
 ```
 
 ### Running Compiled Code
@@ -501,7 +501,7 @@ clang output.o silica_runtime.o -o executable
 
 ```bash
 # Usage
-./target/release/silica <input.silica> [output.bc] [--opt <level>]
+./target/release/silica-boot <input.silica> [output.bc] [--opt <level>]
 
 # Optimization levels
 --opt none        # No optimizations (fast compilation)
@@ -510,9 +510,9 @@ clang output.o silica_runtime.o -o executable
 --opt aggressive  # Aggressive optimizations (may increase compile time)
 
 # Examples
-./target/release/silica program.silica                    # output.bc, no optimization
-./target/release/silica program.silica optimized.bc       # custom output file
-./target/release/silica program.silica --opt default      # with standard optimizations
+./target/release/silica-boot program.silica                    # output.bc, no optimization
+./target/release/silica-boot program.silica optimized.bc       # custom output file
+./target/release/silica-boot program.silica --opt default      # with standard optimizations
 ```
 
 ## Advanced Usage
@@ -524,8 +524,8 @@ clang output.o silica_runtime.o -o executable
 cd AArch64/silica-bootstrap-compiler
 
 # Compile modules separately
-./target/release/silica math.silica math.bc
-./target/release/silica main.silica main.bc
+./target/release/silica-boot math.silica math.bc
+./target/release/silica-boot main.silica main.bc
 
 # Link modules together using LLVM linker
 /opt/homebrew/opt/llvm@15/bin/llvm-link math.bc main.bc -o program.bc
@@ -607,7 +607,7 @@ fn use_before_define() -> int {
 
 ```bash
 # Use appropriate optimization levels
-./target/release/silica input.silica output.bc --opt default
+./target/release/silica-boot input.silica output.bc --opt default
 
 # Analyze generated LLVM IR
 /opt/homebrew/opt/llvm@15/bin/llvm-dis output.bc -o output.ll
