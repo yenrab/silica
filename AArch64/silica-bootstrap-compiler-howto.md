@@ -15,27 +15,52 @@ This guide demonstrates how to use the Silica Bootstrap Compiler with examples r
 
 ### Building the Compiler
 
+The Silica Bootstrap Compiler uses LLVM 15 for optimal performance. Use the provided setup script for automatic LLVM installation and compilation:
+
 ```bash
 # Clone or navigate to the silica-bootstrap-compiler directory
-cd silica-bootstrap-compiler
+cd AArch64/silica-bootstrap-compiler
 
-# Build with basic features
-cargo build --release
+# Run the automated setup script (installs LLVM 15, builds compiler)
+./setup-llvm-build.sh
 
-# Build with LLVM backend for full optimization support
+# Alternative: Manual build process
+# Install LLVM 15 first
+brew install llvm@15
+
+# Set up environment
+export LLVM_SYS_150_PREFIX="/opt/homebrew/opt/llvm@15"
+export PATH="/opt/homebrew/opt/llvm@15/bin:$PATH"
+
+# Build the compiler
 cargo build --release --features llvm_backend
+```
+
+### Compiler Binary Location
+
+After building, the compiler binary is located at:
+```
+AArch64/silica-bootstrap-compiler/target/release/silica
 ```
 
 ### Testing the Compiler
 
 ```bash
-# Run basic test
-cargo run
+# Show usage information
+./target/release/silica
+# Output: Usage: ./target/release/silica <input.silica> [output.bc] [--opt <level>]
 
-# Run with different optimization levels
-cargo run -- --opt basic
-cargo run -- --opt standard
-cargo run -- --opt aggressive
+# Test compilation with the provided example
+./target/release/silica ../experiments/hello.silica test.bc
+
+# Test with different optimization levels
+./target/release/silica ../experiments/hello.silica output.bc --opt none
+./target/release/silica ../experiments/hello.silica output.bc --opt basic
+./target/release/silica ../experiments/hello.silica output.bc --opt default
+./target/release/silica ../experiments/hello.silica output.bc --opt aggressive
+
+# Run the compiled output
+/opt/homebrew/opt/llvm@15/bin/lli test.bc
 ```
 
 ## Basic Examples
@@ -63,11 +88,19 @@ fn main() -> int {
 
 **Compile & Run:**
 ```bash
-# Compile
-cargo run -- hello.silica output.bc
+# Navigate to the compiler directory
+cd AArch64/silica-bootstrap-compiler
 
-# The compiler generates LLVM bitcode
-# To run, you'd need to link and execute with LLVM tools
+# Compile Silica file to LLVM bitcode
+./target/release/silica ../experiments/hello.silica output.bc
+
+# Run the compiled LLVM bitcode
+/opt/homebrew/opt/llvm@15/bin/lli output.bc
+
+# Or compile to native executable
+/opt/homebrew/opt/llvm@15/bin/llc output.bc -filetype=obj -o output.o
+clang output.o -o executable
+./executable
 ```
 
 ### Example 2: Variables and Control Flow
@@ -421,45 +454,65 @@ fn main() -> int {
 
 ### Compiling Silica Code
 
+First, ensure the Silica Bootstrap Compiler is built (see Installation & Setup above).
+
 ```bash
-# Basic compilation (text-based LLVM IR)
-cargo run -- input.silica output.ll
+# Navigate to the compiler directory
+cd AArch64/silica-bootstrap-compiler
+
+# Basic compilation to LLVM bitcode
+./target/release/silica input.silica output.bc
 
 # With optimizations
-cargo run -- --opt standard input.silica output.ll
+./target/release/silica input.silica output.bc --opt none
+./target/release/silica input.silica output.bc --opt basic
+./target/release/silica input.silica output.bc --opt default
+./target/release/silica input.silica output.bc --opt aggressive
 
-# With LLVM backend (generates actual bitcode)
-cargo run -- --features llvm_backend -- input.silica output.bc
+# Specify custom output file
+./target/release/silica ../experiments/hello.silica myprogram.bc
 ```
 
 ### Running Compiled Code
 
-```bash
-# If using LLVM backend, you can run with lli
-lli output.bc
+The compiler generates LLVM bitcode (.bc files) that can be executed directly or compiled to native code:
 
-# Or compile to executable with clang
-clang -o executable output.bc -lc
+```bash
+# Run LLVM bitcode directly with the LLVM interpreter
+/opt/homebrew/opt/llvm@15/bin/lli output.bc
+
+# Convert bitcode to human-readable LLVM IR
+/opt/homebrew/opt/llvm@15/bin/llvm-dis output.bc -o output.ll
+
+# Compile to native object file
+/opt/homebrew/opt/llvm@15/bin/llc output.bc -filetype=obj -o output.o
+
+# Link to create executable
+clang output.o -o executable
 ./executable
 
-# For more complex programs with runtime
-clang -o executable output.bc silica_runtime.c -lc
+# For programs using Silica runtime (when implemented)
+/opt/homebrew/opt/llvm@15/bin/llc output.bc -filetype=obj -o output.o
+clang output.o silica_runtime.o -o executable
 ./executable
 ```
 
 ### Compiler Options
 
 ```bash
-# Optimization levels
---opt none        # No optimizations
---opt basic       # Basic optimizations (folding, DCE)
---opt standard    # Standard optimizations (GVN, CSE)
---opt aggressive  # Aggressive optimizations (unrolling, inlining)
+# Usage
+./target/release/silica <input.silica> [output.bc] [--opt <level>]
 
-# Output options
--o filename       # Specify output file
---emit-llvm       # Emit LLVM IR instead of bitcode
---emit-asm        # Emit assembly (when native backend ready)
+# Optimization levels
+--opt none        # No optimizations (fast compilation)
+--opt basic       # Basic optimizations (constant folding, dead code elimination)
+--opt default     # Standard optimizations (most common passes)
+--opt aggressive  # Aggressive optimizations (may increase compile time)
+
+# Examples
+./target/release/silica program.silica                    # output.bc, no optimization
+./target/release/silica program.silica optimized.bc       # custom output file
+./target/release/silica program.silica --opt default      # with standard optimizations
 ```
 
 ## Advanced Usage
@@ -467,15 +520,18 @@ clang -o executable output.bc silica_runtime.c -lc
 ### Multi-Module Programs
 
 ```bash
-# Compile modules separately
-cargo run -- math.silica math.bc
-cargo run -- main.silica main.bc
+# Navigate to compiler directory
+cd AArch64/silica-bootstrap-compiler
 
-# Link modules together
-llvm-link math.bc main.bc -o program.bc
+# Compile modules separately
+./target/release/silica math.silica math.bc
+./target/release/silica main.silica main.bc
+
+# Link modules together using LLVM linker
+/opt/homebrew/opt/llvm@15/bin/llvm-link math.bc main.bc -o program.bc
 
 # Run the combined program
-lli program.bc
+/opt/homebrew/opt/llvm@15/bin/lli program.bc
 ```
 
 ### Effect-Aware Programming
@@ -551,11 +607,17 @@ fn use_before_define() -> int {
 
 ```bash
 # Use appropriate optimization levels
-cargo run -- --opt standard input.silica output.bc
+./target/release/silica input.silica output.bc --opt default
 
-# Profile your code to identify bottlenecks
-# Use LLVM tools for analysis
-llvm-prof program.bc
+# Analyze generated LLVM IR
+/opt/homebrew/opt/llvm@15/bin/llvm-dis output.bc -o output.ll
+cat output.ll  # Examine the generated code
+
+# Profile execution time (when runtime is implemented)
+time /opt/homebrew/opt/llvm@15/bin/lli output.bc
+
+# Use LLVM optimization analysis
+/opt/homebrew/opt/llvm@15/bin/opt -analyze -dot-callgraph output.bc
 
 # Consider memory layout for performance
 struct CacheLine {

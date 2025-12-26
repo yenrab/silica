@@ -25,74 +25,39 @@ fn parse_optimization_level(args: &[String]) -> OptimizationLevel {
 fn main() {
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
+
+    if args.len() < 2 {
+        eprintln!("Usage: {} <input.silica> [output.bc] [--opt <level>]", args[0]);
+        eprintln!("Optimization levels: none, less/basic, default/standard, aggressive");
+        std::process::exit(1);
+    }
+
+    let input_file = &args[1];
+    let output_file = args.get(2).map(|s| s.as_str()).unwrap_or("output.bc");
     let optimization_level = parse_optimization_level(&args);
 
-    println!("Starting Phase 2D: LLVM Optimization Integration Test...");
+    println!("Compiling Silica file: {}", input_file);
+    println!("Output: {}", output_file);
     println!("Optimization level: {:?}", optimization_level);
 
-    // Test the full compilation pipeline with advanced types
-    let source = r#"
-use module my_module;
-
-import std::io;
-export add;
-
-// Type alias
-type MyInt = int;
-
-// Struct definition
-struct Point {
-    x: int,
-    y: int,
-}
-
-// Enum definition
-enum Result {
-    Ok(int),
-    Err(string),
-}
-
-// Trait definition
-trait Display {
-    fn display(self) -> string;
-}
-
-// Implementation commented out for stability
-// impl Display for int {
-//     fn display(self) -> string {
-//         self
-//     }
-// }
-
-fn add(x: int, y: int) -> int {
-    x + y
-}
-
-fn test_memory() -> int {
-    read_ref(alloc_ref(region(), 42))
-}
-
-fn test_actors() -> int {
-    spawn(100, add) + recv()
-}
-
-fn main() -> int {
-    42
-}
-"#;
-
-    println!("Source code:\n{}", source);
+    // Read source from file
+    let source = match std::fs::read_to_string(input_file) {
+        Ok(content) => content,
+        Err(err) => {
+            eprintln!("❌ Error reading file {}: {}", input_file, err);
+            std::process::exit(1);
+        }
+    };
 
     let mut compiler = Compiler::with_optimization(optimization_level);
-    match compiler.compile(source, "test.silica", "test.bc") {
+    match compiler.compile(&source, input_file, output_file) {
         Ok(()) => {
-            println!("✅ Full compilation pipeline completed successfully!");
-            println!("Generated LLVM bitcode in test.bc");
+            println!("✅ Compilation successful!");
+            println!("Generated LLVM bitcode in {}", output_file);
         }
         Err(err) => {
             eprintln!("❌ Compilation error: {}", err);
+            std::process::exit(1);
         }
     }
-
-    println!("Done!");
 }
