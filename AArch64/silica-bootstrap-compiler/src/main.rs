@@ -7,12 +7,12 @@ fn parse_optimization_level(args: &[String]) -> OptimizationLevel {
             if i + 1 < args.len() {
                 match args[i + 1].as_str() {
                     "none" | "0" => return OptimizationLevel::None,
-                    "basic" | "1" => return OptimizationLevel::Basic,
-                    "standard" | "2" => return OptimizationLevel::Standard,
+                    "basic" | "1" | "less" => return OptimizationLevel::Less,
+                    "standard" | "2" | "default" => return OptimizationLevel::Default,
                     "aggressive" | "3" => return OptimizationLevel::Aggressive,
                     _ => {
                         eprintln!("Invalid optimization level: {}", args[i + 1]);
-                        eprintln!("Valid levels: none/0, basic/1, standard/2, aggressive/3");
+                        eprintln!("Valid levels: none/0, basic/1/less, standard/2/default, aggressive/3");
                         return OptimizationLevel::None;
                     }
                 }

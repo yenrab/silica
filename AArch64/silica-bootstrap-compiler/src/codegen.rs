@@ -21,16 +21,7 @@ use std::collections::HashMap;
 #[cfg(feature = "llvm_backend")]
 use inkwell::passes::PassManager;
 #[cfg(feature = "llvm_backend")]
-use inkwell::OptimizationLevel;
-
-/// Optimization level for code generation
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum OptimizationLevel {
-    None,      // No optimizations
-    Basic,     // Basic optimizations (constant folding, DCE)
-    Standard,  // Standard optimizations (most common passes)
-    Aggressive // Aggressive optimizations (size/speed tradeoffs)
-}
+pub use inkwell::OptimizationLevel;
 
 /// LLVM code generator for Silica - demonstrates real LLVM integration structure
 /// This is now structured to use inkwell crate when the "llvm_backend" feature is enabled
@@ -145,7 +136,14 @@ impl CodeGenerator {
         }
 
         // Apply optimizations based on level
-        self.apply_optimizations();
+        #[cfg(feature = "llvm_backend")]
+        {
+            // Real LLVM optimization will be applied later in write_to_file
+        }
+        #[cfg(not(feature = "llvm_backend"))]
+        {
+            self.apply_optimizations();
+        }
 
         // When LLVM backend is enabled, this would verify the module
         println!("✓ LLVM module structure verified (would use inkwell verification when enabled)");
@@ -159,10 +157,10 @@ impl CodeGenerator {
             OptimizationLevel::None => {
                 self.instructions.push("; No optimizations applied".to_string());
             }
-            OptimizationLevel::Basic => {
+            OptimizationLevel::Less => {
                 self.apply_basic_optimizations();
             }
-            OptimizationLevel::Standard => {
+            OptimizationLevel::Default => {
                 self.apply_standard_optimizations();
             }
             OptimizationLevel::Aggressive => {
@@ -545,101 +543,6 @@ impl TypeMap {
         TypeMap {}
     }
 
-    /// Run optimization passes on the generated code
-    #[cfg(feature = "llvm_backend")]
-    pub fn optimize_module(&self, module: &inkwell::module::Module) -> Result<()> {
-        match self.optimization_level {
-            OptimizationLevel::None => {
-                // No optimizations
-                Ok(())
-            }
-            OptimizationLevel::Basic => {
-                self.run_basic_optimizations(module)
-            }
-            OptimizationLevel::Standard => {
-                self.run_standard_optimizations(module)
-            }
-            OptimizationLevel::Aggressive => {
-                self.run_aggressive_optimizations(module)
-            }
-        }
-    }
-
-    #[cfg(feature = "llvm_backend")]
-    fn run_basic_optimizations(&self, module: &inkwell::module::Module) -> Result<()> {
-        // Create function pass manager for basic optimizations
-        let fpm = PassManager::create_function(module);
-
-        // Add basic optimization passes
-        fpm.add_constant_merge_pass();
-        fpm.add_dead_store_elimination_pass();
-        fpm.add_instruction_combining_pass();
-        fpm.add_reassociate_pass();
-        fpm.add_gvn_pass();
-        fpm.add_cfg_simplification_pass();
-
-        // Run passes on all functions
-        for function in module.get_functions() {
-            fpm.run_on(&function);
-        }
-
-        Ok(())
-    }
-
-    #[cfg(feature = "llvm_backend")]
-    fn run_standard_optimizations(&self, module: &inkwell::module::Module) -> Result<()> {
-        // Create function pass manager for standard optimizations
-        let fpm = PassManager::create_function(module);
-
-        // Add comprehensive optimization passes
-        fpm.add_constant_merge_pass();
-        fpm.add_dead_store_elimination_pass();
-        fpm.add_instruction_combining_pass();
-        fpm.add_reassociate_pass();
-        fpm.add_gvn_pass();
-        fpm.add_cfg_simplification_pass();
-        fpm.add_basic_alias_analysis_pass();
-        fpm.add_promote_memory_to_register_pass();
-        fpm.add_instruction_simplifier_pass();
-        fpm.add_tail_call_elimination_pass();
-
-        // Run passes on all functions
-        for function in module.get_functions() {
-            fpm.run_on(&function);
-        }
-
-        Ok(())
-    }
-
-    #[cfg(feature = "llvm_backend")]
-    fn run_aggressive_optimizations(&self, module: &inkwell::module::Module) -> Result<()> {
-        // Create function pass manager for aggressive optimizations
-        let fpm = PassManager::create_function(module);
-
-        // Add aggressive optimization passes (may increase compile time)
-        fpm.add_constant_merge_pass();
-        fpm.add_dead_store_elimination_pass();
-        fpm.add_instruction_combining_pass();
-        fpm.add_reassociate_pass();
-        fpm.add_gvn_pass();
-        fpm.add_cfg_simplification_pass();
-        fpm.add_basic_alias_analysis_pass();
-        fpm.add_promote_memory_to_register_pass();
-        fpm.add_instruction_simplifier_pass();
-        fpm.add_tail_call_elimination_pass();
-        fpm.add_loop_rotate_pass();
-        fpm.add_loop_unroll_pass();
-        fpm.add_loop_unswitch_pass();
-
-        // Run passes on all functions
-        for function in module.get_functions() {
-            fpm.run_on(&function);
-        }
-
-        Ok(())
-    }
-
-
     /// Convert Silica type to LLVM type string representation
     pub fn silica_to_llvm_str(&self, silica_type: &Type) -> String {
         match silica_type {
@@ -661,6 +564,102 @@ impl TypeMap {
             Type::Named(_) => "i64".to_string(),
             Type::Generic { .. } => "i8*".to_string(), // Generic types as opaque pointers
         }
+    }
+}
+
+impl CodeGenerator {
+    /// Run optimization passes on the generated code
+    #[cfg(feature = "llvm_backend")]
+    pub fn optimize_module(&self, module: &inkwell::module::Module) -> Result<()> {
+        match self.optimization_level {
+            OptimizationLevel::None => {
+                // No optimizations
+                Ok(())
+            }
+            OptimizationLevel::Less => {
+                self.run_basic_optimizations(module)
+            }
+            OptimizationLevel::Default => {
+                self.run_standard_optimizations(module)
+            }
+            OptimizationLevel::Aggressive => {
+                self.run_aggressive_optimizations(module)
+            }
+        }
+    }
+
+    #[cfg(feature = "llvm_backend")]
+    fn run_basic_optimizations(&self, module: &inkwell::module::Module) -> Result<()> {
+        // Create function pass manager for basic optimizations
+        let fpm = PassManager::create(module);
+
+        // Add basic optimization passes
+        fpm.add_constant_merge_pass();
+        fpm.add_dead_store_elimination_pass();
+        fpm.add_instruction_combining_pass();
+        fpm.add_reassociate_pass();
+        fpm.add_gvn_pass();
+        fpm.add_cfg_simplification_pass();
+
+        // Run passes on all functions
+        for function in module.get_functions() {
+            fpm.run_on(&function);
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "llvm_backend")]
+    fn run_standard_optimizations(&self, module: &inkwell::module::Module) -> Result<()> {
+        // Create function pass manager for standard optimizations
+        let fpm = PassManager::create(module);
+
+        // Add comprehensive optimization passes
+        fpm.add_constant_merge_pass();
+        fpm.add_dead_store_elimination_pass();
+        fpm.add_instruction_combining_pass();
+        fpm.add_reassociate_pass();
+        fpm.add_gvn_pass();
+        fpm.add_cfg_simplification_pass();
+        fpm.add_basic_alias_analysis_pass();
+        fpm.add_promote_memory_to_register_pass();
+        fpm.add_instruction_simplify_pass();
+        fpm.add_tail_call_elimination_pass();
+
+        // Run passes on all functions
+        for function in module.get_functions() {
+            fpm.run_on(&function);
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "llvm_backend")]
+    fn run_aggressive_optimizations(&self, module: &inkwell::module::Module) -> Result<()> {
+        // Create function pass manager for aggressive optimizations
+        let fpm = PassManager::create(module);
+
+        // Add aggressive optimization passes (may increase compile time)
+        fpm.add_constant_merge_pass();
+        fpm.add_dead_store_elimination_pass();
+        fpm.add_instruction_combining_pass();
+        fpm.add_reassociate_pass();
+        fpm.add_gvn_pass();
+        fpm.add_cfg_simplification_pass();
+        fpm.add_basic_alias_analysis_pass();
+        fpm.add_promote_memory_to_register_pass();
+        fpm.add_instruction_simplify_pass();
+        fpm.add_tail_call_elimination_pass();
+        fpm.add_loop_rotate_pass();
+        fpm.add_loop_unroll_pass();
+        fpm.add_lower_switch_pass();
+
+        // Run passes on all functions
+        for function in module.get_functions() {
+            fpm.run_on(&function);
+        }
+
+        Ok(())
     }
 }
 
