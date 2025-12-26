@@ -94,13 +94,17 @@ cd AArch64/silica-bootstrap-compiler
 # Compile Silica file to LLVM bitcode
 ./target/release/silica-boot ../experiments/hello.silica output.bc
 
-# Run the compiled LLVM bitcode
+# Run the compiled LLVM bitcode and capture the result
 /opt/homebrew/opt/llvm@15/bin/lli output.bc
+result=$?
+echo "Program returned: $result"
 
 # Or compile to native executable
 /opt/homebrew/opt/llvm@15/bin/llc output.bc -filetype=obj -o output.o
 clang output.o -o executable
 ./executable
+result=$?
+echo "Program returned: $result"
 ```
 
 ### Example 2: Variables and Control Flow
@@ -480,6 +484,8 @@ The compiler generates LLVM bitcode (.bc files) that can be executed directly or
 ```bash
 # Run LLVM bitcode directly with the LLVM interpreter
 /opt/homebrew/opt/llvm@15/bin/lli output.bc
+result=$?
+echo "Program returned: $result"
 
 # Convert bitcode to human-readable LLVM IR
 /opt/homebrew/opt/llvm@15/bin/llvm-dis output.bc -o output.ll
@@ -532,6 +538,8 @@ cd AArch64/silica-bootstrap-compiler
 
 # Run the combined program
 /opt/homebrew/opt/llvm@15/bin/lli program.bc
+result=$?
+echo "Program returned: $result"
 ```
 
 ### Effect-Aware Programming
@@ -615,6 +623,8 @@ cat output.ll  # Examine the generated code
 
 # Profile execution time (when runtime is implemented)
 time /opt/homebrew/opt/llvm@15/bin/lli output.bc
+result=$?
+echo "Program returned: $result"
 
 # Use LLVM optimization analysis
 /opt/homebrew/opt/llvm@15/bin/opt -analyze -dot-callgraph output.bc
