@@ -1,12 +1,13 @@
 use crate::ast::*;
 use crate::errors::{Result, effect_error, SourceLocation};
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 
 /// Effect context tracking active capabilities
 #[derive(Debug, Clone)]
 pub struct EffectContext {
     active_effects: Vec<Effect>,
     capability_stack: Vec<Capability>,
+    effect_variables: HashMap<String, Vec<Effect>>, // For effect polymorphism
 }
 
 /// Capability token for effect checking
@@ -24,9 +25,10 @@ pub struct EffectChecker {
 impl EffectChecker {
     pub fn new() -> Self {
         EffectChecker {
-            context:         EffectContext {
+            context: EffectContext {
                 active_effects: Vec::new(),
                 capability_stack: Vec::new(),
+                effect_variables: HashMap::new(),
             },
         }
     }
@@ -36,32 +38,96 @@ impl EffectChecker {
         // Collect effects required by the expression
         let expr_effects = self.collect_expression_effects(expr)?;
 
-        // Check that all required effects are active
+        // Check that all required effects are active (with subeffecting)
         for required in required_effects {
-            if !self.context.active_effects.contains(required) {
+            let mut found_compatible = false;
+            for active in &self.context.active_effects {
+                if self.is_subeffect(required, active) {
+                    found_compatible = true;
+                    break;
+                }
+            }
+            if !found_compatible {
                 return effect_error(
                     SourceLocation::unknown(),
-                    format!("Effect not active: {:?}", required),
+                    format!("Effect not active: {:?} (available: {:?})", required, self.context.active_effects),
                 );
             }
         }
 
-        // Check that expression doesn't require effects beyond what's declared
-        // TEMPORARY: Allow memory operations for testing
+        // Check that expression effects are covered by active effects
         for expr_effect in &expr_effects {
-            if !required_effects.contains(expr_effect) {
-                // Allow memory operations for now
+            let mut covered = false;
+            for active in &self.context.active_effects {
+                if self.is_subeffect(expr_effect, active) {
+                    covered = true;
+                    break;
+                }
+            }
+            if !covered {
+                // Allow memory operations for testing (temporary)
                 if let Effect::Memory(_) = expr_effect {
                     continue;
                 }
                 return effect_error(
                     SourceLocation::unknown(),
-                    format!("Expression requires undeclared effect: {:?}", expr_effect),
+                    format!("Expression requires effect not covered by active capabilities: {:?} (active: {:?})",
+                           expr_effect, self.context.active_effects),
                 );
             }
         }
 
         Ok(())
+    }
+
+    /// Add a capability to the current context
+    pub fn add_capability(&mut self, effect: Effect, location: SourceLocation) {
+        self.context.capability_stack.push(Capability { effect: effect.clone(), location });
+        self.context.active_effects.push(effect);
+    }
+
+    /// Remove a capability from the current context
+    pub fn remove_capability(&mut self, effect: &Effect) {
+        self.context.active_effects.retain(|e| e != effect);
+        self.context.capability_stack.retain(|c| &c.effect != effect);
+    }
+
+    /// Check if an effect is a subeffect of another (effect subsumption)
+    pub fn is_subeffect(&self, sub: &Effect, sup: &Effect) -> bool {
+        match (sub, sup) {
+            // Memory effects are covariant in space
+            (Effect::Memory(sub_space), Effect::Memory(sup_space)) => {
+                // Normal memory can be used where any memory is expected
+                // Atomic memory requires atomic capability
+                match (sub_space, sup_space) {
+                    (MemorySpace::Normal, MemorySpace::Normal) => true,
+                    (MemorySpace::Normal, MemorySpace::Atomic) => false, // Need atomic for atomic
+                    (MemorySpace::Atomic, MemorySpace::Normal) => true,  // Atomic can be used as normal
+                    (MemorySpace::Atomic, MemorySpace::Atomic) => true,
+                }
+            }
+            // Mailbox effects are invariant in message type
+            (Effect::Mailbox(sub_type), Effect::Mailbox(sup_type)) => {
+                // For now, exact type match (could be made covariant)
+                sub_type == sup_type
+            }
+            // Exact match for other effects
+            (a, b) => a == b,
+        }
+    }
+
+    /// Unify two effects (find their least upper bound)
+    pub fn unify_effects(&self, e1: &Effect, e2: &Effect) -> Option<Effect> {
+        if e1 == e2 {
+            Some(e1.clone())
+        } else if self.is_subeffect(e1, e2) {
+            Some(e2.clone())
+        } else if self.is_subeffect(e2, e1) {
+            Some(e1.clone())
+        } else {
+            // No common supereffect
+            None
+        }
     }
 
     /// Collect effects required by an expression
@@ -72,17 +138,25 @@ impl EffectChecker {
             Expression::Binary(_) => Ok(vec![]),
             Expression::Unary(_) => Ok(vec![]),
             Expression::Call(call) => self.collect_call_effects(call),
+            Expression::FunctionLiteral(func) => self.collect_function_literal_effects(func),
             Expression::If(if_expr) => self.collect_if_effects(if_expr),
             Expression::Case(case) => self.collect_case_effects(case),
             Expression::Do(do_expr) => self.collect_do_effects(do_expr),
+            Expression::Region(_) => Ok(vec![]), // Region creation has no effects
             Expression::AllocRef(alloc) => self.collect_alloc_ref_effects(alloc),
             Expression::ReadRef(_) => Ok(vec![Effect::Memory(MemorySpace::Normal)]),
             Expression::WriteRef(_) => Ok(vec![Effect::Memory(MemorySpace::Normal)]),
             Expression::Spawn(_) => Ok(vec![Effect::Concurrency]),
             Expression::Send(_) => Ok(vec![Effect::Concurrency]),
             Expression::Recv(_) => Ok(vec![Effect::Concurrency]),
+            Expression::StructLiteral(_) => Ok(vec![]), // Struct literals have no effects
+            Expression::FieldAccess(_) => Ok(vec![]),   // Field access has no effects
+            Expression::GenericInstantiation(_) => Ok(vec![]), // Generic instantiation has no effects
+            Expression::ConstructorCall(_) => Ok(vec![]), // Constructor calls have no effects
+            Expression::Tuple(_) => Ok(vec![]), // Tuple literals have no effects
         }
     }
+
 
     /// Collect effects for function call
     fn collect_call_effects(&self, call: &CallExpr) -> Result<Vec<Effect>> {
@@ -138,6 +212,12 @@ impl EffectChecker {
         }
 
         Ok(effects)
+    }
+
+    /// Collect effects for function literals
+    fn collect_function_literal_effects(&self, func: &FunctionLiteralExpr) -> Result<Vec<Effect>> {
+        // Function literals themselves have no effects, but their bodies might
+        self.collect_expression_effects(&func.body)
     }
 
     /// Collect effects for reference allocation

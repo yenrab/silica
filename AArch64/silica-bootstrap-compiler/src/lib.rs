@@ -6,6 +6,7 @@ pub mod types;
 pub mod effects;
 pub mod codegen;
 pub mod runtime;
+pub mod module_resolver;
 
 use errors::{CompilerError, Result};
 use lexer::Lexer;
@@ -13,9 +14,14 @@ use parser::Parser;
 use types::TypeChecker;
 use effects::EffectAnalyzer;
 use codegen::{CodeGenerator, OptimizationLevel};
+use module_resolver::{ModuleResolver, SymbolTable};
 
 pub struct Compiler {
     codegen: CodeGenerator,
+    module_resolver: ModuleResolver,
+    symbol_table: SymbolTable,
+    #[cfg(feature = "llvm_backend")]
+    context: Box<inkwell::context::Context>,
 }
 
 impl Compiler {
@@ -24,8 +30,34 @@ impl Compiler {
     }
 
     pub fn with_optimization(optimization_level: OptimizationLevel) -> Self {
+        Self::with_optimization_and_search_paths(optimization_level, vec![std::path::PathBuf::from(".")])
+    }
+
+    pub fn with_optimization_and_search_paths(optimization_level: OptimizationLevel, search_paths: Vec<std::path::PathBuf>) -> Self {
+        #[cfg(feature = "llvm_backend")]
+        {
+            let context = Box::new(inkwell::context::Context::create());
+            let module_resolver = ModuleResolver::new(search_paths);
+            let symbol_table = SymbolTable::new();
+            let mut codegen = CodeGenerator::new_with_optimization("silica_module", optimization_level);
+            // Symbol table will be set later after it's populated
+            Compiler {
+                codegen,
+                module_resolver,
+                symbol_table,
+                context,
+            }
+        }
+
+        #[cfg(not(feature = "llvm_backend"))]
+        {
+            let module_resolver = ModuleResolver::new(search_paths);
+            let symbol_table = SymbolTable::new();
         Compiler {
             codegen: CodeGenerator::new_with_optimization("silica_module", optimization_level),
+                module_resolver,
+                symbol_table,
+            }
         }
     }
 
@@ -42,9 +74,18 @@ impl Compiler {
         let program = parser.parse()?;
         println!("Successfully parsed program with {} declarations", program.declarations.len());
 
+        // Phase 2.5: Module resolution
+        println!("Phase 2.5: Module resolution...");
+        self.resolve_imports(&program)?;
+        println!("Module resolution completed");
+
+        // Set symbol table in code generator
+        let symbol_table_clone = Box::new(self.symbol_table.clone());
+        self.codegen.set_symbol_table(symbol_table_clone);
+
         // Phase 3: Type checking
         println!("Phase 3: Type checking...");
-        let mut type_checker = TypeChecker::new();
+        let mut type_checker = TypeChecker::with_symbol_table(Some(&self.symbol_table));
         type_checker.check_program(&program)?;
         println!("Type checking passed");
 
@@ -54,25 +95,51 @@ impl Compiler {
         effect_analyzer.analyze_program(&program)?;
         println!("Effect analysis passed");
 
+        // TODO: Pass struct definitions and generic instantiations when supported
+
         // Phase 5: Code generation
         println!("Phase 5: LLVM code generation...");
         self.codegen.generate_program(&program)?;
         println!("Code generation completed");
 
         // Print the LLVM IR for verification
-        println!("\nGenerated LLVM IR:");
-        println!("==================");
+        println!("\nGenerated LLVM IR (Text Representation):");
+        println!("=========================================");
         self.codegen.print_ir();
 
-        // Write the generated LLVM bitcode to file
+        // Write the generated code to file
         self.codegen.write_to_file(output_file)?;
-        println!("\nGenerated LLVM bitcode written to {}", output_file);
+        println!("📄 LLVM text IR written to {}", output_file);
 
         println!("\nFull compilation pipeline completed successfully!");
         println!("Program structure: {} declarations", program.declarations.len());
 
         // Optional: Print LLVM IR for debugging
         // codegen.print_ir();
+
+        Ok(())
+    }
+
+    /// Resolve imports and load modules
+    fn resolve_imports(&mut self, program: &crate::ast::Program) -> Result<()> {
+        // Extract import declarations
+        let mut imports = Vec::new();
+        for decl in &program.declarations {
+            if let crate::ast::Declaration::Import(import_decl) = decl {
+                imports.push(import_decl);
+            }
+        }
+
+        // Load each imported module
+        for import in imports {
+            for module_name in &import.modules {
+                println!("Loading module: {}", module_name);
+                self.module_resolver.load_module(module_name)?;
+                let module = self.module_resolver.get_module(module_name).unwrap();
+                self.symbol_table.add_module_symbols(module)?;
+                println!("Loaded module '{}' with {} exports", module.name, module.exports.len());
+            }
+        }
 
         Ok(())
     }

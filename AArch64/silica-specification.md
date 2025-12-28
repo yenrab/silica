@@ -20,6 +20,40 @@ Silica targets AArch64 (64-bit ARM) architectures with optional support for:
 - Memory Tagging Extensions (MTE)
 - Pointer Authentication (PAC)
 
+### 1.4 Compiler Interface
+
+#### 1.4.1 Command Line Usage
+```
+silica-comp [options] <input.silica> [output.bc]
+```
+
+#### 1.4.2 Optimization Options
+- `--opt <level>`, `-O <level>`: Set optimization level
+  - `none` (default): No optimizations
+  - `less`: Basic optimizations
+  - `default`: Standard optimizations
+  - `aggressive`: Maximum optimizations
+
+#### 1.4.3 Module Search Path Options
+- `--search-path <path>`, `-I <path>`: Add directory to module search paths
+  - Can be specified multiple times
+  - Default: current directory (`.`)
+
+#### 1.4.4 Examples
+```bash
+# Basic compilation
+silica-comp main.silica
+
+# With optimization
+silica-comp --opt default main.silica output.bc
+
+# With custom module paths
+silica-comp -I ./modules -I ./stdlib main.silica
+
+# Full command
+silica-comp --opt default -I modules -I stdlib main.silica app.bc
+```
+
 ## 2. Lexical Structure
 
 ### 2.1 Character Set
@@ -172,7 +206,8 @@ program ::= {declaration}
 declaration ::= function_declaration
               | type_declaration
               | effect_declaration
-              | module_declaration
+              | import_declaration
+              | export_declaration
 ```
 
 ### 3.3 Expressions
@@ -243,11 +278,19 @@ type_parameters ::= "<" identifier {"," identifier} ">"
 effect_declaration ::= "effect" identifier [type_parameters] "=" effect ";"
 ```
 
-#### 3.4.4 Module Declarations
+#### 3.4.4 Import Declarations
 ```
-module_declaration ::= "use" "module" module_path ";"
+import_declaration ::= "use" module_list ";"
 
-module_path ::= identifier {"::" identifier}
+module_list ::= identifier {"," identifier}
+```
+
+#### 3.4.5 Export Declarations
+```
+export_declaration ::= "export" export_list ";"
+
+export_list ::= export_item {"," export_item}
+export_item ::= identifier "/" integer_literal
 ```
 
 ### 3.5 Patterns
@@ -534,7 +577,105 @@ Actor references: `actor_ref(MsgType)`.
 actor_ref(int)                       -- actor accepting int messages
 ```
 
-## 5. Basic Expressions
+## 5. Language Features
+
+### 5.1 Advanced Pattern Matching
+
+#### 5.1.1 Record Patterns
+Record patterns allow destructuring record values:
+
+```silica
+type point = {x: int, y: int}
+
+fn distance_from_origin(p: point) -> int {
+    case p of
+        {x: 0, y: 0} -> 0
+        {x, y} -> sqrt(x*x + y*y)
+    end
+}
+```
+
+#### 5.1.2 Variant Patterns
+Variant patterns match against sum type constructors:
+
+```silica
+type result<T, E> = Ok(T) | Error(E)
+
+fn handle_result(r: result<int, string>) -> string {
+    case r of
+        Ok(value) -> "Success: " + int_to_string(value)
+        Error(msg) -> "Error: " + msg
+    end
+}
+```
+
+### 5.2 Exception Handling
+
+#### 5.2.1 Exception Types
+Silica provides structured exception handling:
+
+```silica
+type exception =
+    DivisionByZero
+  | InvalidArgument(string)
+  | FileNotFound(string)
+```
+
+#### 5.2.2 Throwing Exceptions
+Functions can throw exceptions using the `throw` keyword:
+
+```silica
+fn safe_divide(x: int, y: int) -> int {
+    if y == 0 {
+        throw DivisionByZero
+    }
+    x / y
+}
+```
+
+#### 5.2.3 Exception Handling
+Exception handlers use pattern matching:
+
+```silica
+fn main() -> unit {
+    try {
+        result <- safe_divide(10, 0)
+        print("Result: " + int_to_string(result))
+    } catch DivisionByZero {
+        print("Division by zero!")
+    } catch InvalidArgument(msg) {
+        print("Invalid argument: " + msg)
+    }
+}
+```
+
+### 5.3 Advanced Effects
+
+#### 5.3.1 Effect Polymorphism
+Effects can be parameterized:
+
+```silica
+effect logging<L> = [mem(normal)]  -- logging with different levels
+
+fn with_logging<E, L>(action: proc[E] int, level: L)
+    : proc[E, logging<L>] int {
+    log(level, "Starting operation")
+    result <- action
+    log(level, "Operation complete")
+    return result
+}
+```
+
+#### 5.3.2 Effect Inheritance
+Effects can extend other effects:
+
+```silica
+effect basic_io = [device_io]
+effect network_io extends basic_io = [networking]
+effect file_io extends basic_io = [mem(normal)]
+```
+
+## 6. Basic Expressions
 
 ### 5.1 Literals
 Literal expressions evaluate to their corresponding values:
@@ -604,7 +745,7 @@ Parentheses can be used to group expressions and override precedence:
 not (p and q)       -- equivalent to (not p) or (not q)
 ```
 
-## 6. Type System
+## 7. Type System
 
 ### 6.1 Type Variables and Polymorphism
 
@@ -707,7 +848,7 @@ fn identity<T>(x: T) -> T { x }                -- polymorphic with annotation
 let x: int = 42                               -- explicit variable type
 ```
 
-## 7. Effect System
+## 8. Effect System
 
 ### 7.1 Effect Types
 
@@ -748,8 +889,20 @@ proc[concurrency] actor_ref<msg>        -- actor spawning
 proc[] unit                             -- pure computation
 ```
 
-#### 7.2.2 Effect Union
-When composing processes, effects are combined:
+#### 7.2.2 Built-in Memory Operations
+Silica provides built-in memory operations as primitive language constructs that return processes:
+
+```
+alloc_region(Space) : proc[mem(Space)] region(R, Space)
+alloc_ref(Region, Value) : proc[mem(Space)] ref(R, Space, T)
+read_ref(Ref) : proc[mem(Space)] T
+write_ref(Ref, Value) : proc[mem(Space)] unit
+```
+
+These operations are not function calls but fundamental language primitives for memory management.
+
+#### 7.2.3 Process Composition
+Processes compose through monadic binding:
 
 ```
 do
@@ -776,7 +929,7 @@ Functions track effects of their body:
 ```
 fn allocate_int(region)
     : proc[mem(normal)] ref(region, normal, int) {
-    alloc_ref(region, 0)
+    alloc_ref(region, 0)  // built-in memory allocation primitive
 }
 ```
 
@@ -786,7 +939,7 @@ Effects can be polymorphic over type parameters:
 ```
 fn generic_alloc<R, T>(region: region<R, normal>, value: T)
     : proc[mem(normal)] ref(R, normal, T) {
-    alloc_ref(region, value)
+    alloc_ref(region, value)  // built-in memory allocation primitive
 }
 ```
 
@@ -816,7 +969,7 @@ At runtime, effect violations are caught:
 - Accessing mailbox without `mailbox` capability
 - Atomic operations without `atomic` capability
 
-## 8. Type Checking
+## 9. Type Checking
 
 ### 8.1 Type Checking Rules
 
@@ -933,7 +1086,7 @@ fn bad_alloc(r: region(R, normal)) : proc[] ref(R, normal, int) {
 }
 ```
 
-## 9. Process Semantics and Execution
+## 10. Process Semantics and Execution
 
 ### 9.1 Process Monad Structure
 
@@ -1045,7 +1198,7 @@ fn allocate_quad(r: region(R, normal))
 }
 ```
 
-## 10. Memory Model
+## 11. Memory Model
 
 ### 10.1 Region-Based Memory Management
 
@@ -1166,7 +1319,7 @@ x <- read_ref(ref_int)    -- x : int
 y <- read_ref(ref_str)    -- y : string
 ```
 
-## 11. Operational Semantics
+## 12. Operational Semantics
 
 ### 11.1 Evaluation Judgment
 
@@ -1317,7 +1470,7 @@ y <- e2;
 result
 ```
 
-## 12. Safety Properties
+## 13. Safety Properties
 
 ### 12.1 Memory Safety
 
@@ -1433,7 +1586,7 @@ Missing capabilities cause runtime errors:
 alloc_ref(r, 42)    -- Runtime error: capability violation
 ```
 
-## 13. Actor Model Semantics
+## 14. Actor Model Semantics
 
 ### 13.1 Actor Lifecycle
 
@@ -1520,7 +1673,7 @@ send(actor1, "quit")    -- actor1 terminates
 send(actor2, "ping")    -- actor2 continues normally
 ```
 
-## 14. Message Passing
+## 15. Message Passing
 
 ### 14.1 Message Send Semantics
 
@@ -1600,7 +1753,7 @@ send(actor_ref, "hello")   -- ✗ type error
 - **Immutability**: Message data cannot be mutated after sending
 - **Isolation**: Message contents are copied between actors
 
-## 15. Atomic Operations
+## 16. Atomic Operations
 
 ### 15.1 Atomic Types and Memory Spaces
 
@@ -1720,7 +1873,7 @@ fn spsc_recv(queue) : proc[mem(normal), atomic] option<T> {
 }
 ```
 
-## 16. Synchronization Guarantees
+## 17. Synchronization Guarantees
 
 ### 16.1 Happens-Before Relationships
 
@@ -1840,132 +1993,225 @@ store release → STLR (store-release)
 RMW operations → LDXR/STXR loops with barriers
 ```
 
-## 17. Module System
+## 18. Module System
 
-### 17.1 Module Declaration
+### 17.1 Module Structure
 
-#### 17.1.1 Module Structure
-Modules are declared with the `module` keyword:
+#### 17.1.1 Filename-Based Modules
+Modules are implicitly created from source file names. A file named `math_utils.silica` automatically creates a module named `math_utils`. No explicit module declarations are required in the source code.
+
+#### 17.1.2 Module Naming
+- Module names are derived from the filename (without the `.silica` extension)
+- Files must have the `.silica` extension
+- Module names follow identifier rules: letters, digits, underscores, starting with a letter
+- Examples:
+  - `math_utils.silica` → module `math_utils`
+  - `collections.silica` → module `collections`
+  - `io_network.silica` → module `io_network`
+
+#### 17.1.3 File Organization
+Modules are organized through file system structure and search paths:
 
 ```
-module math.geometry {
+project/
+├── main.silica          -- module 'main'
+├── math_utils.silica    -- module 'math_utils'
+└── utils/
+    ├── string.silica    -- module 'string'
+    └── list.silica      -- module 'list'
+```
 
-    type point = {x: int, y: int}
-    type vector = {dx: int, dy: int}
+### 17.2 Export System
 
-    fn distance(p1: point, p2: point) -> int {
-        dx = p2.x - p1.x
-        dy = p2.y - p1.y
-        sqrt(dx*dx + dy*dy)
-    }
+#### 17.2.1 Export Declarations
+Functions are exported using the `export` keyword with function name and arity:
 
+```
+export add/2, multiply/2, factorial/1;
+```
+
+- Functions must be defined in the same module to be exported
+- Arity specifies the number of parameters (e.g., `add/2` for binary addition)
+- Only exported functions are visible to importing modules
+- All exported symbols are available to importers (no selective imports)
+
+#### 17.2.2 Export Validation
+The compiler validates that:
+- All exported symbols exist in the module
+- Arities match the actual function definitions
+- No duplicate exports in the same module
+
+### 17.3 Import System
+
+#### 17.3.1 Module Imports
+Import modules using the `use` keyword with comma-separated module names:
+
+```
+use math_utils;                    -- import single module
+use collections, io, string;      -- import multiple modules
+```
+
+- All exported functions from imported modules become available in the current scope
+- No selective imports - all exports are imported
+- No module renaming - imported modules are accessed by their original names
+- Imports must appear at the top level of a module (before any function definitions)
+
+#### 17.3.2 Name Resolution
+Imported functions are accessed directly by name:
+
+```
+use math_utils;
+
+fn main() -> int {
+    let result = add(3, 4);        -- 'add' from math_utils module
+    multiply(result, 2)            -- 'multiply' from math_utils module
 }
 ```
 
-#### 17.1.2 Module Paths
-Modules are organized in a hierarchical namespace:
+#### 17.3.3 Name Conflicts
+- If two imported modules export functions with the same name, it's a compiler error
+- Local function definitions can shadow imported functions (with a warning)
+- Explicit qualification is not supported - conflicts must be resolved by renaming or restructuring
+
+#### 17.3.4 Module System Design Principles
+Silica's module system is designed to be:
+- **Simple**: No complex hierarchical namespaces or selective imports
+- **Explicit**: All exports and imports are clearly declared
+- **Safe**: Name conflicts are caught at compile time
+- **Scalable**: Separate compilation with proper dependency tracking
+
+### 17.4 Module Dependencies
+
+#### 17.4.1 Dependency Resolution
+Modules can depend on other modules through imports:
 
 ```
-math.geometry     -- submodule of math
-arch.sve         -- submodule of arch
-my_app.handlers  -- application-specific module
-```
+-- math_utils.silica (module name: math_utils)
+export add/2, multiply/2;
 
-#### 17.1.3 Module Visibility
-By default, module declarations are private to the module. Use `pub` for public exports:
+fn add(x: int, y: int) -> int { x + y }
+fn multiply(x: int, y: int) -> int { x * y }
 
-```
-module math.geometry {
+-- main.silica (module name: main)
+use math_utils;
 
-    pub type point = {x: int, y: int}        -- public type
-    type vector = {dx: int, dy: int}         -- private type
-
-    pub fn distance(...)                     -- public function
-    fn helper_function(...)                  -- private function
-
+fn main() -> int {
+    do
+        sum <- add(3, 4);        -- uses function from math_utils
+        product <- multiply(sum, 2);  -- uses another function from math_utils
+        return product;
+    end
 }
 ```
 
-### 17.2 Import System
+#### 17.4.2 Compilation Process
+The compiler handles multi-module programs as follows:
 
-#### 17.2.1 Module Imports
-Import modules with the `use` keyword:
+1. **Module Discovery**: Scan all source files and extract module names from filenames
+2. **Import Resolution**: For each `use` declaration, locate the corresponding `.silica` file in search paths
+3. **Dependency Analysis**: Build a dependency graph from import relationships
+4. **Type Checking**: Check all modules together to resolve cross-module references
+5. **Code Generation**: Generate LLVM IR for all modules with proper function linkages
 
+#### 17.4.3 Example Project Structure
 ```
-use module math.geometry    -- import entire module
-use module arch.sve        -- import architecture module
-```
-
-#### 17.2.2 Selective Imports
-Import specific items from modules:
-
-```
-use math.geometry.{point, distance}    -- import specific items
-use arch.sve.{Vec, load_vector}        -- import vector operations
-```
-
-#### 17.2.3 Qualified Access
-Access module items with qualified names:
-
-```
-let p = math.geometry.point {x: 10, y: 20}
-let dist = math.geometry.distance(p1, p2)
+my_project/
+├── silica-comp -I modules -I stdlib main.silica
+├── main.silica           -- Entry point module
+├── modules/
+│   ├── math_utils.silica -- Math utilities
+│   └── collections.silica -- Data structures
+└── stdlib/
+    ├── io.silica         -- Input/output
+    └── string.silica     -- String operations
 ```
 
-#### 17.2.4 Import Aliases
-Create shorter aliases for module names:
+#### 17.4.2 Compilation Order
+Modules are compiled in dependency order:
+1. Parse all module files
+2. Build dependency graph from import declarations
+3. Compile modules with no dependencies first
+4. Compile dependent modules after their dependencies
 
-```
-use module math.geometry as geom
-
-let p = geom.point {x: 10, y: 20}
-let dist = geom.distance(p1, p2)
-```
-
-### 17.3 Module Dependencies
-
-#### 17.3.1 Dependency Resolution
-Modules can depend on other modules:
-
-```
-module my_app.renderer {
-
-    use module math.geometry
-    use module graphics.primitives
-
-    -- can use items from both imported modules
-    fn render_shape(shape: graphics.primitives.shape) {
-        center <- math.geometry.centroid(shape.points)
-        -- ...
-    }
-
-}
-```
-
-#### 17.3.2 Cyclic Dependencies
+#### 17.4.3 Cyclic Dependencies
 Cyclic module dependencies are not allowed:
 
 ```
-module A { use module B }  -- ✓ allowed
-module B { use module A }  -- ✗ cyclic dependency error
+-- a.silica
+use b;        -- A depends on B
+
+-- b.silica
+use a;        -- B depends on A (creates cycle)
+```
+This results in a compilation error.
+
+### 17.5 Module Search Paths
+
+#### 17.5.1 Search Path Configuration
+Module files are located using configurable search paths:
+
+```
+silica-comp --search-path ./modules --search-path ./stdlib main.silica
 ```
 
-#### 17.3.3 Module Initialization
-Modules are initialized in dependency order:
+- Search paths are specified with `--search-path` or `-I` flags
+- Multiple paths can be specified
+- Paths are searched in the order given
+- Default search path is the current directory (`.`)
 
+#### 17.5.2 Module Resolution Algorithm
+When resolving a module import:
+1. Extract module name from `use module_name;` declaration
+2. For each search path in order:
+   - Check if `path/module_name.silica` exists
+   - If found, load and parse the module
+3. If not found in any search path, report compilation error
+
+#### 17.5.3 Search Path Examples
 ```
-module config {
-    pub const max_connections = 100
-}
+Project structure:
+project/
+├── main.silica
+├── modules/
+│   ├── math.silica
+│   └── io.silica
+└── stdlib/
+    └── collections.silica
 
-module server {
-    use module config
-
-    let connection_limit = config.max_connections  -- config initialized first
-}
+Compilation:
+cd project
+silica-comp -I modules -I stdlib main.silica
 ```
 
-## 18. Standard Library
+### 17.6 Module Validation and Errors
+
+#### 17.6.1 Module Resolution Errors
+- **Module Not Found**: When a `use module_name;` declaration cannot locate `module_name.silica` in any search path
+- **Invalid Module Name**: Module names must be valid identifiers
+- **Circular Dependencies**: Import cycles between modules
+
+#### 17.6.2 Export Validation Errors
+- **Undefined Export**: Exporting a function that doesn't exist in the module
+- **Wrong Arity**: Export arity doesn't match the actual function definition
+- **Duplicate Exports**: Same function exported multiple times
+
+#### 17.6.3 Import Validation Errors
+- **Name Conflicts**: Multiple imported modules export the same function name
+- **Invalid Module Reference**: Importing a module that fails to parse or type-check
+
+#### 17.6.4 Error Examples
+```
+-- Error: module 'nonexistent' not found in search paths
+use nonexistent;
+
+-- Error: function 'divide' not defined in this module
+export divide/2;
+
+-- Error: both 'math' and 'advanced_math' export 'add'
+use math, advanced_math;  -- if both export add/2
+```
+
+## 19. Standard Library
 
 ### 18.1 Core Types
 
@@ -2290,7 +2536,7 @@ use module arch.mte
 secure_buffer <- net.utils.create_secure_network_buffer(size)
 ```
 
-## 19. Architecture-Specific Modules
+## 20. Architecture-Specific Modules
 
 ### 19.1 SVE (Scalable Vector Extension)
 
@@ -2411,7 +2657,7 @@ module arch.apple.amx {
 }
 ```
 
-## 20. Built-in Functions
+## 21. Built-in Functions
 
 ### 20.1 Memory Management
 ```
@@ -2580,7 +2826,7 @@ assert(condition: bool, message: string) -> proc[] unit
 unreachable() -> proc[] !                   -- mark unreachable code
 ```
 
-## 21. Runtime System
+## 22. Runtime System
 
 ### 21.1 Execution Environment
 
@@ -2679,7 +2925,7 @@ do
 end
 ```
 
-## 22. Implementation Requirements
+## 23. Implementation Requirements
 
 ### 22.1 Compiler Obligations
 
@@ -2751,7 +2997,7 @@ Runtime implementations must:
 - **Scale**: Support reasonable numbers of actors and processes
 - **Stability**: No crashes under normal operation
 
-## 23. Error Handling
+## 24. Error Handling
 
 ### 23.1 Error Types
 
@@ -2843,7 +3089,7 @@ do
 end
 ```
 
-## 24. Platform Integration
+## 25. Platform Integration
 
 ### 24.1 AArch64 Architecture Support
 
@@ -2992,7 +3238,7 @@ Dynamic loading of Silica modules:
 - **Quick Startup**: Minimal runtime initialization
 - **Cross-Compilation**: Support for cross-compiling to AArch64
 
-## 25. Compilation and Linking
+## 26. Compilation and Linking
 
 ### 25.1 Chip-Centric Compilation Strategy
 
@@ -3058,7 +3304,20 @@ Modern chips have advanced interrupt controllers. Silica uses these for:
 
 ### 25.3 Linking and Module Resolution
 
-#### 25.3.1 Hardware-Aware Linking
+#### 25.3.1 Module Linking Process
+
+**Multi-Module Compilation:**
+Silica compiles all modules in a program together:
+1. **Dependency Ordering**: Modules are compiled in dependency order (leaves first)
+2. **Cross-Module Optimization**: All modules are visible during optimization passes
+3. **Unified Binary**: All modules are linked into a single executable
+
+**Symbol Resolution:**
+- **Global Symbol Table**: All exported functions are collected into a global namespace
+- **Import Resolution**: `use` declarations make exported symbols available locally
+- **Link-Time Verification**: Ensures all imports can be satisfied
+
+#### 25.3.2 Hardware-Aware Linking
 
 **Address Space Optimization:**
 Traditional linkers focus on symbol resolution. Silica's linker:
@@ -3108,10 +3367,12 @@ Compiler adapts to thermal conditions:
 
 #### 25.5.1 Frontend: Language-Centric
 
-1. **Parsing**: UTF-8 aware, AI-assisted error recovery
-2. **Type Checking**: Effect-aware type system with hardware capability validation
-3. **Region Analysis**: Lifetime and ownership verification
-4. **Effect Inference**: Automatic effect annotation where possible
+1. **Module Resolution**: Locate and parse module dependencies using search paths
+2. **Parsing**: UTF-8 aware, AI-assisted error recovery for all modules
+3. **Import/Export Validation**: Verify module interfaces and resolve cross-module references
+4. **Type Checking**: Effect-aware type system with hardware capability validation across all modules
+5. **Region Analysis**: Lifetime and ownership verification across module boundaries
+6. **Effect Inference**: Automatic effect annotation where possible
 
 #### 25.5.2 Middle-End: Architecture-Aware
 
@@ -3157,14 +3418,265 @@ Native cross-compilation for different AArch64 targets:
 - **NEW**: Performance profiling and adaptive compilation
 - **NEW**: Debug and assertion facilities
 
-*Specification Complete: All Phases Delivered*
+*Phase 7: Module System Implementation*
 
-The Silica programming language specification is now complete with formal definitions covering:
-- Lexical structure and syntax (Phase 1)
-- Type system and effects (Phase 2)  
-- Core semantics and safety (Phase 3)
-- Concurrency and actors (Phase 4)
-- Modules and standard library (Phase 5)
-- Runtime and implementation (Phase 6)
+*Module system deliverables completed:*
+- Filename-based module naming (no explicit module declarations)
+- Export syntax: `export func/arity, func/arity;`
+- Import syntax: `use module1, module2;`
+- Configurable search paths via `--search-path`/`-I` command line options
+- Cross-module type checking and symbol resolution
+- Multi-module compilation with dependency ordering
+- Module validation with comprehensive error reporting
 
-The specification provides a solid foundation for implementing Silica compilers and runtimes, with strong safety guarantees and AArch64-native performance characteristics.
+## 27. Compiler Infrastructure
+
+### 27.1 Optimization Passes
+
+#### 27.1.1 Constant Folding
+Compile-time evaluation of constant expressions:
+
+```silica
+fn compute() -> int {
+    -- This becomes: return 42
+    return 6 * 7
+}
+```
+
+#### 27.1.2 Dead Code Elimination
+Removal of unreachable code:
+
+```silica
+fn example(flag: bool) -> int {
+    if flag {
+        return 1
+    } else {
+        return 2
+    }
+    print("This is never reached")  -- Eliminated
+}
+```
+
+#### 27.1.3 Function Inlining
+Inlining of small functions for performance:
+
+```silica
+fn small_function(x: int) -> int { x + 1 }
+
+fn caller() -> int {
+    -- May be inlined to: return (42 + 1)
+    return small_function(42)
+}
+```
+
+### 27.2 Incremental Compilation
+
+#### 27.2.1 Dependency Tracking
+Only recompiling changed modules and their dependents:
+
+```
+main.silica ──┐
+              ├── math.silica (changed) ──┐
+              │                           ├── utils.silica (recompile)
+              └── io.silica ────┘
+```
+
+#### 27.2.2 Module Caching
+Persistent caching of compiled modules:
+
+```silica
+-- Module cache structure
+.cache/
+├── math.silica.bc       -- Compiled bytecode
+├── math.silica.deps     -- Dependency information
+└── math.silica.types    -- Type information
+```
+
+## 28. IDE & Developer Experience
+
+### 28.1 Language Server
+
+#### 28.1.1 Syntax Highlighting
+Editor integration for Silica syntax highlighting:
+
+```silica
+keywords: fn, if, case, actor, effect, type
+types: int, bool, string, actor_ref
+effects: [mem(normal)], [concurrency]
+```
+
+#### 28.1.2 Go to Definition
+Navigate to symbol definitions across modules:
+
+```
+fn main() {
+    result <- add(1, 2)  -- Ctrl+click on 'add' jumps to math.silica
+}
+```
+
+#### 28.1.3 Hover Information
+Display type and documentation information:
+
+```silica
+fn add(x: int, y: int) -> int  -- Hover shows signature
+```
+
+#### 28.1.4 Auto-completion
+Context-aware code completion:
+
+```silica
+use math_
+      -- Suggests: math_utils
+```
+
+### 28.2 Debugging Support
+
+#### 28.2.1 Source-Level Debugging
+Step through Silica code with source line mapping:
+
+```silica
+fn factorial(n: int) -> int {
+    if n <= 1 {           -- Breakpoint here
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+```
+
+#### 28.2.2 Actor State Inspection
+Examine actor internal state during debugging:
+
+```silica
+actor counter {
+    state: int = 0
+
+    increment() -> unit {
+        state = state + 1  -- Inspect 'state' variable
+    }
+}
+```
+
+#### 28.2.3 Message Tracing
+Trace message passing between actors:
+
+```
+Actor A sends: increment()
+  ↓
+Actor B receives: increment()
+  ↓
+Actor B state: 0 → 1
+```
+
+## 29. Advanced Type System
+
+### 29.1 Traits
+
+#### 29.1.1 Trait Definitions
+Traits define interfaces that types can implement:
+
+```silica
+trait Eq<T> {
+    fn equals(self: T, other: T) -> bool
+}
+
+trait Ord<T> extends Eq<T> {
+    fn compare(self: T, other: T) -> ordering
+}
+```
+
+#### 29.1.2 Trait Implementations
+Types implement traits with concrete methods:
+
+```silica
+impl Eq<int> for int {
+    fn equals(self, other) = self == other
+}
+
+impl Ord<int> for int {
+    fn equals(self, other) = self == other
+    fn compare(self, other) =
+        if self < other { Less }
+        else if self > other { Greater }
+        else { Equal }
+}
+```
+
+#### 29.1.3 Trait Bounds
+Functions can require trait implementations:
+
+```silica
+fn sort<T where Ord<T>>(list: list<T>) -> list<T> {
+    -- Implementation uses Ord operations
+}
+```
+
+### 29.2 Advanced Generics
+
+#### 29.2.1 Higher-Kinded Types
+Types parameterized by type constructors:
+
+```silica
+type Monad<M<_>> = {
+    pure<A>(value: A) -> M<A>,
+    bind<A, B>(ma: M<A>, f: (A) -> M<B>) -> M<B>
+}
+
+type Maybe<A> = Some(A) | None
+
+impl Monad<Maybe> for Maybe {
+    fn pure(value) = Some(value)
+    fn bind(ma, f) = case ma of
+        Some(a) -> f(a)
+        None -> None
+    end
+}
+```
+
+#### 29.2.2 Associated Types
+Traits with associated types:
+
+```silica
+trait Iterator<T> {
+    type Item
+    fn next(self) -> option<Item>
+}
+
+impl Iterator<list<T>> for list<T> {
+    type Item = T
+    fn next(self) = list_head(self)
+}
+```
+
+#### 29.2.3 Generic Constraints
+Complex type relationships:
+
+```silica
+fn zip_with<A, B, C, F where (A) -> (B) -> C>(
+    fa: F<A>,
+    fb: F<B>,
+    f: (A, B) -> C
+) -> F<C> {
+    -- Generic function over functors
+}
+```
+
+---
+
+*Phase 9: Advanced Language Features*
+
+*Advanced features deliverables completed:*
+- Advanced pattern matching with records and variants
+- Structured exception handling
+- Advanced effect system with polymorphism and inheritance
+- Compiler optimizations and incremental compilation
+- IDE support with language server and debugging
+- Advanced type system with traits and higher-kinded types
+
+*Specification Complete: All Major Features Specified*
+
+The Silica programming language specification now includes comprehensive coverage of:
+- Core language features (Phases 1-7)
+- Advanced language features and type system (Phase 8)
+- Compiler infrastructure and tooling (Phase 9)
+
+This specification serves as the definitive reference for Silica implementation and usage.

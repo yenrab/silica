@@ -40,7 +40,7 @@ pub enum TokenKind {
     Plus, Minus, Star, Slash, Percent,         // Arithmetic
     EqualEqual, BangEqual,                     // Equality
     Less, LessEqual, Greater, GreaterEqual,    // Comparison
-    And, Or, Bang,                             // Logical
+    Ampersand, And, Or, Bang,                  // Reference/Logical
     Equal, LeftArrow, RightArrow,              // Assignment/Arrow
     DoubleColon, Colon,                        // Type operators
 
@@ -64,7 +64,7 @@ impl TokenKind {
             TokenKind::DeviceIO | TokenKind::Do | TokenKind::Effect |
             TokenKind::Else | TokenKind::End | TokenKind::Enum |
             TokenKind::Export | TokenKind::False | TokenKind::Fn |
-            TokenKind::For | TokenKind::From | TokenKind::If | TokenKind::Impl |
+            TokenKind::For | TokenKind::From |             TokenKind::If | TokenKind::Impl |
             TokenKind::Import | TokenKind::Int | TokenKind::Let |
             TokenKind::Mailbox | TokenKind::Mem | TokenKind::Module |
             TokenKind::Normal | TokenKind::Of | TokenKind::Proc |
@@ -167,7 +167,7 @@ impl Lexer {
                 '*' => self.make_token(TokenKind::Star, "*"),
                 '/' => self.make_token(TokenKind::Slash, "/"),
                 '%' => self.make_token(TokenKind::Percent, "%"),
-                '&' => self.read_and(),
+                '&' => self.make_token(TokenKind::Ampersand, "&"),
                 'o' => self.read_or(),
                 '"' => self.read_string(),
                 '\'' => self.read_char(),
@@ -587,57 +587,62 @@ impl Lexer {
     }
 
     fn read_equal_or_double_equal(&mut self) -> Result<Option<Token>> {
+        let start_pos = self.position;
         self.advance(); // skip first =
         if self.peek_char() == Some('=') {
             self.advance();
-            self.make_token(TokenKind::EqualEqual, "==")
+            self.make_token_at_current_pos(TokenKind::EqualEqual, "==")
         } else {
-            self.make_token(TokenKind::Equal, "=")
+            self.make_token_at_current_pos(TokenKind::Equal, "=")
         }
     }
 
     fn read_bang_or_bang_equal(&mut self) -> Result<Option<Token>> {
+        let start_pos = self.position;
         self.advance(); // skip !
         if self.peek_char() == Some('=') {
             self.advance();
-            self.make_token(TokenKind::BangEqual, "!=")
+            self.make_token_at_current_pos(TokenKind::BangEqual, "!=")
         } else {
-            self.make_token(TokenKind::Bang, "!")
+            self.make_token_at_current_pos(TokenKind::Bang, "!")
         }
     }
 
     fn read_less_or_less_equal_or_left_arrow(&mut self) -> Result<Option<Token>> {
+        let start_pos = self.position;
         self.advance(); // skip <
         match self.peek_char() {
             Some('=') => {
                 self.advance();
-                self.make_token(TokenKind::LessEqual, "<=")
+                self.make_token_at_current_pos(TokenKind::LessEqual, "<=")
             }
             Some('-') => {
                 self.advance();
-                self.make_token(TokenKind::LeftArrow, "<-")
+                self.make_token_at_current_pos(TokenKind::LeftArrow, "<-")
             }
-            _ => self.make_token(TokenKind::Less, "<"),
+            _ => self.make_token_at_current_pos(TokenKind::Less, "<"),
         }
     }
 
     fn read_greater_or_greater_equal(&mut self) -> Result<Option<Token>> {
+        let start_pos = self.position;
         self.advance(); // skip >
         if self.peek_char() == Some('=') {
             self.advance();
-            self.make_token(TokenKind::GreaterEqual, ">=")
+            self.make_token_at_current_pos(TokenKind::GreaterEqual, ">=")
         } else {
-            self.make_token(TokenKind::Greater, ">")
+            self.make_token_at_current_pos(TokenKind::Greater, ">")
         }
     }
 
     fn read_minus_or_arrow(&mut self) -> Result<Option<Token>> {
+        let start_pos = self.position;
         self.advance(); // skip -
         if self.peek_char() == Some('>') {
             self.advance();
-            self.make_token(TokenKind::RightArrow, "->")
+            self.make_token_at_current_pos(TokenKind::RightArrow, "->")
         } else {
-            self.make_token(TokenKind::Minus, "-")
+            self.make_token_at_current_pos(TokenKind::Minus, "-")
         }
     }
 
@@ -683,6 +688,17 @@ impl Lexer {
             self.position,
         );
         self.advance();
+        Ok(Some(Token::new(kind, lexeme.to_string(), location)))
+    }
+
+    fn make_token_at_current_pos(&mut self, kind: TokenKind, lexeme: &str) -> Result<Option<Token>> {
+        let location = SourceLocation::new(
+            self.file.clone(),
+            self.line,
+            self.column,
+            self.position - lexeme.len(),
+        );
+        // Don't advance - characters already consumed
         Ok(Some(Token::new(kind, lexeme.to_string(), location)))
     }
 }

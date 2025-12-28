@@ -13,7 +13,6 @@ pub enum Declaration {
     Function(FunctionDecl),
     Type(TypeDecl),
     Effect(EffectDecl),
-    Module(ModuleDecl),
     Import(ImportDecl),
     Export(ExportDecl),
     Struct(StructDecl),
@@ -27,8 +26,10 @@ pub enum Declaration {
 #[derive(Debug, Clone)]
 pub struct FunctionDecl {
     pub name: String,
+    pub type_params: Vec<String>, // Generic type parameters
     pub parameters: Vec<Parameter>,
     pub return_type: Option<Type>,
+    pub where_clause: Option<WhereClause>,
     pub body: Expression,
     pub effects: Vec<Effect>,
     pub location: SourceLocation,
@@ -58,25 +59,25 @@ pub struct EffectDecl {
     pub location: SourceLocation,
 }
 
-/// Module declaration
+/// Export item with name and arity
 #[derive(Debug, Clone)]
-pub struct ModuleDecl {
-    pub path: Vec<String>,
+pub struct ExportItem {
+    pub name: String,
+    pub arity: u32,
     pub location: SourceLocation,
 }
 
 /// Import declaration
 #[derive(Debug, Clone)]
 pub struct ImportDecl {
-    pub path: Vec<String>,
-    pub alias: Option<String>,
+    pub modules: Vec<String>,
     pub location: SourceLocation,
 }
 
 /// Export declaration
 #[derive(Debug, Clone)]
 pub struct ExportDecl {
-    pub name: String,
+    pub items: Vec<ExportItem>,
     pub location: SourceLocation,
 }
 
@@ -114,11 +115,20 @@ pub enum EnumVariant {
     Struct { name: String, fields: Vec<StructField>, location: SourceLocation },
 }
 
+/// Associated type declaration in traits
+#[derive(Debug, Clone)]
+pub struct AssociatedType {
+    pub name: String,
+    pub bounds: Vec<String>, // Trait bounds like ["Eq", "Ord"]
+    pub location: SourceLocation,
+}
+
 /// Trait declaration
 #[derive(Debug, Clone)]
 pub struct TraitDecl {
     pub name: String,
     pub type_params: Vec<String>, // Generic type parameters
+    pub associated_types: Vec<AssociatedType>,
     pub methods: Vec<TraitMethod>,
     pub location: SourceLocation,
 }
@@ -132,12 +142,43 @@ pub struct TraitMethod {
     pub location: SourceLocation,
 }
 
+/// Associated type definition in impl blocks
+#[derive(Debug, Clone)]
+pub struct AssociatedTypeDef {
+    pub name: String,
+    pub type_: Type,
+    pub location: SourceLocation,
+}
+
+/// Trait bound for generic constraints
+#[derive(Debug, Clone)]
+pub struct TraitBound {
+    pub trait_name: String,
+    pub type_args: Vec<Type>, // For generic traits like Iterator<Item = T>
+}
+
+/// Where clause predicate
+#[derive(Debug, Clone)]
+pub enum WherePredicate {
+    TraitBound {
+        type_: Type,
+        bounds: Vec<TraitBound>,
+    },
+}
+
+/// Where clause
+#[derive(Debug, Clone)]
+pub struct WhereClause {
+    pub predicates: Vec<WherePredicate>,
+}
+
 /// Implementation declaration
 #[derive(Debug, Clone)]
 pub struct ImplDecl {
     pub trait_name: Option<String>, // None for inherent impls
     pub type_params: Vec<String>,
     pub for_type: Type,
+    pub associated_types: Vec<AssociatedTypeDef>,
     pub methods: Vec<FunctionDecl>,
     pub location: SourceLocation,
 }
@@ -167,12 +208,14 @@ pub enum Expression {
 
     // Function calls and applications
     Call(CallExpr),
+    FunctionLiteral(FunctionLiteralExpr),
 
     // Operators
     Unary(UnaryExpr),
     Binary(BinaryExpr),
 
     // Memory operations
+    Region(RegionExpr),
     AllocRef(AllocRefExpr),
     ReadRef(ReadRefExpr),
     WriteRef(WriteRefExpr),
@@ -181,6 +224,15 @@ pub enum Expression {
     Spawn(SpawnExpr),
     Send(SendExpr),
     Recv(RecvExpr),
+
+    // Data structures
+    StructLiteral(StructLiteralExpr),
+    FieldAccess(FieldAccessExpr),
+    Tuple(Vec<Expression>), // Tuple literals: (expr1, expr2, ...)
+
+    // Generic types
+    GenericInstantiation(GenericInstantiationExpr),
+    ConstructorCall(ConstructorCallExpr),
 }
 
 /// Literal values
@@ -214,6 +266,7 @@ pub struct CaseExpr {
 #[derive(Debug, Clone)]
 pub struct CaseBranch {
     pub pattern: Pattern,
+    pub guard: Option<Box<Expression>>, // Optional guard expression
     pub body: Box<Expression>,
     pub location: SourceLocation,
 }
@@ -236,7 +289,21 @@ pub enum Statement {
 #[derive(Debug, Clone)]
 pub struct CallExpr {
     pub function: Box<Expression>,
+    pub type_args: Vec<Type>, // Optional type arguments for generic calls
     pub arguments: Vec<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Function literal expression (lambda/anonymous function)
+#[derive(Debug, Clone)]
+pub struct FunctionLiteralExpr {
+    pub type_params: Vec<String>, // Generic type parameters
+    pub parameters: Vec<Parameter>,
+    pub return_type: Option<Type>,
+    pub where_clause: Option<WhereClause>,
+    pub body: Box<Expression>,
+    pub effects: Vec<Effect>,
+    pub captured_vars: Vec<String>, // Variables captured from outer scope
     pub location: SourceLocation,
 }
 
@@ -287,6 +354,13 @@ pub enum BinaryOp {
     Or,
 }
 
+/// Region creation expression
+#[derive(Debug, Clone)]
+pub struct RegionExpr {
+    pub space: MemorySpace,
+    pub location: SourceLocation,
+}
+
 /// Memory allocation expression
 #[derive(Debug, Clone)]
 pub struct AllocRefExpr {
@@ -332,6 +406,44 @@ pub struct RecvExpr {
     pub location: SourceLocation,
 }
 
+/// Struct literal expression: TypeName { field: value, ... }
+#[derive(Debug, Clone)]
+pub struct StructLiteralExpr {
+    pub type_name: String,
+    pub fields: Vec<(String, Expression)>,
+    pub location: SourceLocation,
+}
+
+/// Field access expression: object.field
+#[derive(Debug, Clone)]
+pub struct FieldAccessExpr {
+    pub object: Box<Expression>,
+    pub field: String,
+    pub location: SourceLocation,
+}
+
+/// Generic instantiation expression: TypeName<Arg1, Arg2>(value)
+/// Creates a value of a generic type, e.g., Some(42) for Option<int>
+#[derive(Debug, Clone)]
+pub struct GenericInstantiationExpr {
+    pub type_name: String,
+    pub type_args: Vec<Type>,
+    pub payload: Option<Box<Expression>>,
+    pub location: SourceLocation,
+}
+
+/// Constructor call expression: TypeName::Constructor<Args>(payload)
+/// Creates a value using a constructor, e.g., Option::Some<int>(42)
+#[derive(Debug, Clone)]
+pub struct ConstructorCallExpr {
+    pub type_name: String,
+    pub constructor: String,
+    pub type_args: Vec<Type>,
+    pub payload: Option<Box<Expression>>,
+    pub location: SourceLocation,
+}
+
+
 /// Pattern for pattern matching
 #[derive(Debug, Clone)]
 pub enum Pattern {
@@ -341,6 +453,8 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     Record(Vec<(String, Pattern)>),
     Variant { constructor: String, payload: Option<Box<Pattern>> },
+    GenericVariant { constructor: String, type_args: Vec<Type>, payload: Option<Box<Pattern>> },
+    Alternative(Vec<Pattern>), // Pattern alternatives: pat1 | pat2 | pat3
 }
 
 /// Type system representation
@@ -358,11 +472,24 @@ pub enum Type {
         parameters: Vec<Type>,
         return_type: Box<Type>,
     },
+    // Closure types (functions with captured environment)
+    Closure {
+        parameters: Vec<Type>,
+        return_type: Box<Type>,
+        captured_types: Vec<Type>, // Types of captured variables
+    },
+    // Polymorphic function types (higher-order)
+    PolymorphicFunction {
+        type_params: Vec<String>,  // Type parameter names
+        parameters: Vec<Type>,
+        return_type: Box<Type>,
+    },
 
     // Compound types
     Tuple(Vec<Type>),
     Record(Vec<(String, Type)>),
     Variant(Vec<(String, Option<Type>)>),
+    Sum(Vec<Type>), // Sum types: A | B | C
 
     // Process types (monadic)
     Process {
@@ -402,6 +529,31 @@ pub enum Type {
 
     // User-defined types
     Named(String),
+
+    // Type schemes (polymorphic types with quantifiers)
+    Scheme {
+        vars: Vec<String>,
+        ty: Box<Type>,
+    },
+
+    // Advanced type features
+    // Type operators (type-level functions)
+    TypeOperator {
+        name: String,
+        args: Vec<Type>,
+    },
+
+    // Existential types (exists T. Type)
+    Existential {
+        var: String,
+        body: Box<Type>,
+    },
+
+    // Type application (applying type constructors)
+    TypeApplication {
+        constructor: Box<Type>,
+        args: Vec<Type>,
+    },
 }
 
 /// Memory spaces for region-based memory management
@@ -423,6 +575,9 @@ pub enum Effect {
 
     // User-defined effects
     Named(String),
+
+    // Higher-order effects (effects that take parameters)
+    Parametric(String, Vec<Type>), // Effect name with type parameters
 }
 
 /// Visitor pattern for AST traversal
