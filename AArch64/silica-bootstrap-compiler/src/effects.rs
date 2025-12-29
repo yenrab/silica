@@ -149,6 +149,9 @@ impl EffectChecker {
             Expression::Spawn(_) => Ok(vec![Effect::Concurrency]),
             Expression::Send(_) => Ok(vec![Effect::Concurrency]),
             Expression::Recv(_) => Ok(vec![Effect::Concurrency]),
+            Expression::ReadFile(_) => Ok(vec![Effect::DeviceIO]),
+            Expression::WriteFile(_) => Ok(vec![Effect::DeviceIO]),
+            Expression::ExecCommand(_) => Ok(vec![Effect::DeviceIO]),
             Expression::StructLiteral(_) => Ok(vec![]), // Struct literals have no effects
             Expression::FieldAccess(_) => Ok(vec![]),   // Field access has no effects
             Expression::GenericInstantiation(_) => Ok(vec![]), // Generic instantiation has no effects

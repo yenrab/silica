@@ -8,6 +8,10 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::fs;
+use std::io::{Read, Write};
+use std::process::{Command, Stdio};
+use std::ffi::OsStr;
 
 // Basic region structure for memory management
 #[repr(C)]
@@ -20,14 +24,18 @@ pub struct SilicaRegion {
 // Actor structures for concurrency
 #[repr(C)]
 pub struct SilicaActor {
-    pub state: i64,  // Simple state for now
-    pub mailbox: *mut VecDeque<i64>,
+    pub id: u64,                    // Unique actor ID
+    pub state: i64,                // Actor state
+    pub mailbox: *mut VecDeque<i64>, // Per-actor mailbox
+    pub behavior_fn: *mut u8,       // Function pointer for behavior (placeholder)
 }
 
-// Global actor storage for simplicity
-static mut GLOBAL_ACTOR_MAILBOX: Option<VecDeque<i64>> = None;
+// Global actor registry
+static mut ACTOR_REGISTRY: Option<std::collections::HashMap<u64, *mut SilicaActor>> = None;
+static mut NEXT_ACTOR_ID: u64 = 1;
 
-// Runtime functions that can be called from generated LLVM code
+// Runtime functions that can be called from generated LLVM IR
+// Note: LLVM naturally uses C-like calling conventions for external functions
 #[no_mangle]
 pub extern "C" fn silica_region_create() -> *mut SilicaRegion {
     // Create a new region with initial capacity
@@ -113,45 +121,291 @@ pub extern "C" fn silica_region_destroy(region_ptr: *mut SilicaRegion) {
 }
 
 #[no_mangle]
-pub extern "C" fn silica_actor_spawn(initial_state: i64, _behavior_fn: *mut u8) -> *mut SilicaActor {
-    // For simplicity, create a basic actor structure
-    // In a real implementation, this would be much more complex
+pub extern "C" fn silica_actor_spawn(initial_state: i64, behavior_fn: *mut u8) -> *mut SilicaActor {
+    // Initialize actor registry if needed
+    unsafe {
+        if ACTOR_REGISTRY.is_none() {
+            ACTOR_REGISTRY = Some(std::collections::HashMap::new());
+        }
+    }
+
+    // Generate unique actor ID
+    let actor_id = unsafe {
+        let id = NEXT_ACTOR_ID;
+        NEXT_ACTOR_ID += 1;
+        id
+    };
+
+    // Create actor mailbox
     let mailbox = Box::new(VecDeque::new());
     let mailbox_ptr = Box::into_raw(mailbox);
 
+    // Create actor structure
     let actor = SilicaActor {
+        id: actor_id,
         state: initial_state,
         mailbox: mailbox_ptr,
+        behavior_fn,
     };
 
-    // Store the actor in a global mailbox for testing
+    let actor_ptr = Box::into_raw(Box::new(actor));
+
+    // Register the actor
     unsafe {
-        if GLOBAL_ACTOR_MAILBOX.is_none() {
-            GLOBAL_ACTOR_MAILBOX = Some(VecDeque::new());
+        if let Some(ref mut registry) = ACTOR_REGISTRY {
+            registry.insert(actor_id, actor_ptr);
         }
     }
 
-    Box::into_raw(Box::new(actor))
+    actor_ptr
 }
 
 #[no_mangle]
-pub extern "C" fn silica_actor_send(_actor_ptr: *mut SilicaActor, message: i64) {
-    // For simplicity, just store in global mailbox
+pub extern "C" fn silica_actor_send(actor_ptr: *mut SilicaActor, message: i64) {
+    if actor_ptr.is_null() {
+        // Invalid actor pointer
+        return;
+    }
+
     unsafe {
-        if let Some(ref mut mailbox) = GLOBAL_ACTOR_MAILBOX {
-            mailbox.push_back(message);
-        }
+        // Get the actor and add message to its mailbox
+        let actor = &mut *actor_ptr;
+        let mailbox = &mut *actor.mailbox;
+        mailbox.push_back(message);
     }
 }
 
 #[no_mangle]
-pub extern "C" fn silica_actor_recv() -> i64 {
-    // For simplicity, receive from global mailbox
+pub extern "C" fn silica_actor_recv(actor_ptr: *mut SilicaActor) -> i64 {
+    if actor_ptr.is_null() {
+        return 0; // Error: invalid actor
+    }
+
     unsafe {
-        if let Some(ref mut mailbox) = GLOBAL_ACTOR_MAILBOX {
-            mailbox.pop_front().unwrap_or(42) // Default message if empty
-        } else {
-            42 // Default message
+        let actor = &mut *actor_ptr;
+        let mailbox = &mut *actor.mailbox;
+
+        // Try to receive a message from this actor's mailbox
+        mailbox.pop_front().unwrap_or(0) // Return 0 if no messages
+    }
+}
+
+// File I/O functions - LLVM-compatible data structures
+// Note: Struct layouts follow LLVM/C conventions for IR compatibility
+#[repr(C)]
+pub struct SilicaString {
+    pub data: *mut u8,
+    pub length: usize,
+}
+
+#[repr(C)]
+pub struct SilicaResult {
+    pub success: bool,
+    pub data: *mut u8,  // Points to SilicaString on success, error message on failure
+}
+
+#[repr(C)]
+pub struct ProcessResult {
+    pub success: bool,
+    pub exit_code: i32,
+    pub stdout: *mut SilicaString,  // Captured stdout
+    pub stderr: *mut SilicaString,  // Captured stderr
+}
+
+// LLVM-compatible external function (not C API)
+#[no_mangle]
+pub extern "C" fn silica_read_file(path: *const u8, path_len: usize) -> SilicaResult {
+    // Convert C string to Rust string
+    let path_slice = unsafe { std::slice::from_raw_parts(path, path_len) };
+    let path_str = match std::str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => return SilicaResult {
+            success: false,
+            data: create_error_string("Invalid UTF-8 in path"),
+        },
+    };
+
+    // Read the file
+    match fs::read(path_str) {
+        Ok(content) => {
+            // Create a SilicaString with the file content
+            let silica_string = Box::new(SilicaString {
+                data: content.as_ptr() as *mut u8,
+                length: content.len(),
+            });
+
+            // Leak the content to keep it alive (in a real implementation,
+            // this would be managed by regions or garbage collection)
+            std::mem::forget(content);
+
+            SilicaResult {
+                success: true,
+                data: Box::into_raw(silica_string) as *mut u8,
+            }
+        }
+        Err(e) => SilicaResult {
+            success: false,
+            data: create_error_string(&format!("Failed to read file: {}", e)),
+        },
+    }
+}
+
+// LLVM-compatible external function (not C API)
+#[no_mangle]
+pub extern "C" fn silica_write_file(path: *const u8, path_len: usize, content: *const u8, content_len: usize) -> SilicaResult {
+    // Convert path to Rust string
+    let path_slice = unsafe { std::slice::from_raw_parts(path, path_len) };
+    let path_str = match std::str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => return SilicaResult {
+            success: false,
+            data: create_error_string("Invalid UTF-8 in path"),
+        },
+    };
+
+    // Convert content to Rust slice
+    let content_slice = unsafe { std::slice::from_raw_parts(content, content_len) };
+
+    // Write the file
+    match fs::write(path_str, content_slice) {
+        Ok(()) => SilicaResult {
+            success: true,
+            data: std::ptr::null_mut(), // No data on success
+        },
+        Err(e) => SilicaResult {
+            success: false,
+            data: create_error_string(&format!("Failed to write file: {}", e)),
+        },
+    }
+}
+
+fn create_error_string(message: &str) -> *mut u8 {
+    let error_string = Box::new(SilicaString {
+        data: message.as_ptr() as *mut u8,
+        length: message.len(),
+    });
+
+    // Leak the message to keep it alive
+    std::mem::forget(message.to_owned());
+
+    Box::into_raw(error_string) as *mut u8
+}
+
+// Helper function to free SilicaString (LLVM-compatible)
+#[no_mangle]
+pub extern "C" fn silica_free_string(string_ptr: *mut SilicaString) {
+    if !string_ptr.is_null() {
+        unsafe {
+            let string = Box::from_raw(string_ptr);
+            // In a real implementation, we would need to track how the data was allocated
+            // For now, we'll assume the data was leaked and we can't free it safely
+            drop(string);
+        }
+    }
+}
+
+// Process execution functions
+#[no_mangle]
+pub extern "C" fn silica_exec_command(
+    cmd: *const u8,
+    cmd_len: usize,
+    args_ptr: *const *const u8,  // Array of string pointers
+    args_len: usize,             // Number of arguments
+    arg_lengths: *const usize,   // Array of string lengths
+) -> *mut ProcessResult {
+    // Convert command to Rust string
+    let cmd_slice = unsafe { std::slice::from_raw_parts(cmd, cmd_len) };
+    let command = match std::str::from_utf8(cmd_slice) {
+        Ok(s) => s,
+        Err(_) => return create_error_process_result("Invalid UTF-8 in command"),
+    };
+
+    // Convert arguments to Rust strings
+    let mut rust_args = Vec::new();
+    for i in 0..args_len {
+        let arg_ptr = unsafe { *args_ptr.add(i) };
+        let arg_len = unsafe { *arg_lengths.add(i) };
+        let arg_slice = unsafe { std::slice::from_raw_parts(arg_ptr, arg_len) };
+        let arg_str = match std::str::from_utf8(arg_slice) {
+            Ok(s) => s,
+            Err(_) => return create_error_process_result("Invalid UTF-8 in argument"),
+        };
+        rust_args.push(arg_str.to_string());
+    }
+
+    // Execute the command
+    let mut cmd_builder = Command::new(command);
+    for arg in rust_args {
+        cmd_builder.arg(arg);
+    }
+
+    // Capture stdout and stderr
+    cmd_builder.stdout(Stdio::piped());
+    cmd_builder.stderr(Stdio::piped());
+
+    match cmd_builder.output() {
+        Ok(output) => {
+            // Create SilicaStrings for stdout and stderr
+            let stdout_string = create_silica_string(&output.stdout);
+            let stderr_string = create_silica_string(&output.stderr);
+
+            let result = ProcessResult {
+                success: output.status.success(),
+                exit_code: output.status.code().unwrap_or(-1),
+                stdout: Box::into_raw(Box::new(stdout_string)),
+                stderr: Box::into_raw(Box::new(stderr_string)),
+            };
+
+            Box::into_raw(Box::new(result))
+        }
+        Err(e) => create_error_process_result(&format!("Failed to execute command: {}", e)),
+    }
+}
+
+// Helper functions
+fn create_silica_string(data: &[u8]) -> SilicaString {
+    let silica_string = SilicaString {
+        data: data.as_ptr() as *mut u8,
+        length: data.len(),
+    };
+
+    // Leak the data to keep it alive
+    std::mem::forget(data.to_owned());
+
+    silica_string
+}
+
+fn create_error_process_result(message: &str) -> *mut ProcessResult {
+    let error_string = SilicaString {
+        data: message.as_ptr() as *mut u8,
+        length: message.len(),
+    };
+
+    // Leak the message
+    std::mem::forget(message.to_owned());
+
+    let result = ProcessResult {
+        success: false,
+        exit_code: -1,
+        stdout: std::ptr::null_mut(),
+        stderr: Box::into_raw(Box::new(error_string)),
+    };
+
+    Box::into_raw(Box::new(result))
+}
+
+// Helper function to free ProcessResult
+#[no_mangle]
+pub extern "C" fn silica_free_process_result(result_ptr: *mut ProcessResult) {
+    if !result_ptr.is_null() {
+        unsafe {
+            let result = Box::from_raw(result_ptr);
+            if !result.stdout.is_null() {
+                silica_free_string(result.stdout);
+            }
+            if !result.stderr.is_null() {
+                silica_free_string(result.stderr);
+            }
         }
     }
 }

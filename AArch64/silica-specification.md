@@ -2070,7 +2070,7 @@ fn main() -> int {
 
 #### 17.3.3 Name Conflicts
 - If two imported modules export functions with the same name, it's a compiler error
-- Local function definitions can shadow imported functions (with a warning)
+- Variable shadowing is not allowed; attempting to shadow a variable causes a compilation error
 - Explicit qualification is not supported - conflicts must be resolved by renaming or restructuring
 
 #### 17.3.4 Module System Design Principles

@@ -139,7 +139,13 @@ impl Parser {
     /// Parse a single parameter: name: Type or self
     fn parameter(&mut self) -> Result<Parameter> {
         let location = self.peek().location.clone();
-        let name = self.consume_identifier("Expected parameter name")?;
+
+        // Allow 'self' as a special parameter name
+        let name = if self.match_token(TokenKind::Self_) {
+            "self".to_string()
+        } else {
+            self.consume_identifier("Expected parameter name")?
+        };
 
         // Check if this is a &self parameter (special marker from consume_identifier)
         if name == "&self" {
@@ -1031,10 +1037,10 @@ impl Parser {
             let location = self.previous().location.clone();
             self.consume(TokenKind::LeftParen, "Expected '(' after 'region'")?;
             self.consume(TokenKind::RightParen, "Expected ')' after 'region('")?;
-            // Generate a built-in region allocation operation
-            // For now, return a placeholder pointer - in full implementation this would
-            // allocate a region handle directly
-            Ok(Expression::Literal(Literal::Int(0)))
+            Ok(Expression::Region(RegionExpr {
+                space: MemorySpace::Normal,
+                location,
+            }))
         } else if let TokenKind::Identifier(name) = &self.peek().kind {
             let name = name.clone();
             let start_location = self.peek().location.clone();
@@ -1053,6 +1059,8 @@ impl Parser {
                 self.parse_read_ref()
             } else if name == "write_ref" && self.match_token(TokenKind::LeftParen) {
                 self.parse_write_ref()
+            } else if name == "exec_command" && self.match_token(TokenKind::LeftParen) {
+                self.parse_exec_command()
             } else if self.match_token(TokenKind::LeftBrace) {
                 // Parse struct literal - simplified for now
                 self.consume(TokenKind::RightBrace, "Expected '}' after struct literal")?;
@@ -1074,14 +1082,6 @@ impl Parser {
         } else if self.match_token(TokenKind::Recv) {
             // Handle recv() expression
             self.parse_recv()
-        } else if let TokenKind::Identifier(name) = &self.peek().kind {
-            let name = name.clone();
-            self.advance();
-                Ok(Expression::Identifier(name))
-        } else if let TokenKind::Identifier(name) = &self.peek().kind {
-            let name = name.clone();
-            self.advance();
-            Ok(Expression::Identifier(name))
         } else {
             parse_error(
                 self.peek().location.clone(),
@@ -1139,6 +1139,46 @@ impl Parser {
         Ok(Expression::WriteRef(WriteRefExpr {
             reference,
             value,
+            location,
+        }))
+    }
+
+    /// Parse read_file(path) expression
+    fn parse_read_file(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let path = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after read_file argument")?;
+
+        Ok(Expression::ReadFile(ReadFileExpr {
+            path,
+            location,
+        }))
+    }
+
+    /// Parse write_file(path, content) expression
+    fn parse_write_file(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let path = Box::new(self.expression()?);
+        self.consume(TokenKind::Comma, "Expected ',' after path in write_file")?;
+        let content = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after write_file arguments")?;
+
+        Ok(Expression::WriteFile(WriteFileExpr {
+            path,
+            content,
+            location,
+        }))
+    }
+
+    /// Parse exec_command(command) expression - simplified for now
+    fn parse_exec_command(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let command = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after exec_command argument")?;
+
+        Ok(Expression::ExecCommand(ExecCommandExpr {
+            command,
+            args: Vec::new(), // No args for now
             location,
         }))
     }
@@ -1247,13 +1287,23 @@ impl Parser {
         }))
     }
 
-    /// Parse recv() expression
+    /// Parse recv() or recv(actor) expression
     fn parse_recv(&mut self) -> Result<Expression> {
         let location = self.previous().location.clone();
         self.consume(TokenKind::LeftParen, "Expected '(' after 'recv'")?;
+
+        let actor = if self.check(TokenKind::RightParen) {
+            // recv() - no actor specified
+            None
+        } else {
+            // recv(actor) - parse actor expression
+            Some(Box::new(self.expression()?))
+        };
+
         self.consume(TokenKind::RightParen, "Expected ')' after recv")?;
 
         Ok(Expression::Recv(RecvExpr {
+            actor,
             location,
         }))
     }
@@ -1431,7 +1481,12 @@ impl Parser {
                 let mut params = Vec::new();
                 if !self.check(TokenKind::RightParen) {
                     loop {
-                        let param_name = self.consume_identifier("Expected parameter name")?;
+                        // Allow 'self' as a special parameter name
+                        let param_name = if self.match_token(TokenKind::Self_) {
+                            "self".to_string()
+                        } else {
+                            self.consume_identifier("Expected parameter name")?
+                        };
 
                         // Check if this is a self parameter (no type annotation)
                         let param_type = if self.match_token(TokenKind::Colon) {
@@ -1686,7 +1741,8 @@ impl Parser {
     fn case_expression(&mut self) -> Result<Expression> {
         let location = self.previous().location.clone();
         let scrutinee = Box::new(self.expression()?);
-        self.consume(TokenKind::LeftBrace, "Expected '{' after case scrutinee")?;
+        self.consume(TokenKind::Of, "Expected 'of' after case scrutinee")?;
+        self.consume(TokenKind::LeftBrace, "Expected '{' after 'of'")?;
 
         let mut branches = Vec::new();
         while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
@@ -1730,19 +1786,34 @@ impl Parser {
         while !self.check(TokenKind::End) && !self.is_at_end() {
             // Try to parse assignment first
             let current_pos = self.current;
-            if let Ok(pattern) = self.pattern() {
-                if self.match_token(TokenKind::LeftArrow) {
-                let expr = self.expression()?;
-                    if !self.check(TokenKind::End) {
-                self.consume(TokenKind::Semicolon, "Expected ';' after binding")?;
+            if let TokenKind::Identifier(_) = &self.peek().kind {
+                // Look ahead to see if this is followed by '<-'
+                let saved_pos = self.current;
+                self.advance(); // consume the identifier
+                if self.check(TokenKind::LeftArrow) {
+                    // This is a binding, backtrack and parse it
+                    self.current = current_pos;
+                    if let Ok(pattern) = self.pattern() {
+                        if self.match_token(TokenKind::LeftArrow) {
+                            let expr = self.expression()?;
+                            if !self.check(TokenKind::End) {
+                                self.consume(TokenKind::Semicolon, "Expected ';' after binding")?;
+                            }
+                            statements.push(Statement::Bind {
+                                pattern,
+                                expr: Box::new(expr),
+                            });
+                            continue;
+                        } else {
+                            // Not an assignment, backtrack
+                            self.current = current_pos;
+                        }
+                    } else {
+                        // Not an assignment, backtrack
+                        self.current = current_pos;
                     }
-                statements.push(Statement::Bind {
-                    pattern,
-                    expr: Box::new(expr),
-                });
-                    continue;
-            } else {
-                    // Not an assignment, backtrack
+                } else {
+                    // Not a binding, backtrack
                     self.current = current_pos;
                 }
             }

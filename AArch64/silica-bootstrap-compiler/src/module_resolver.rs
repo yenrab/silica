@@ -145,9 +145,32 @@ pub struct SymbolInfo {
 
 impl SymbolTable {
     pub fn new() -> Self {
-        Self {
+        let mut symbol_table = Self {
             modules: HashMap::new(),
-        }
+        };
+
+        // Add built-in I/O functions
+        let mut builtin_symbols = HashMap::new();
+
+        // read_file(path: string) -> Result<string, string>
+        builtin_symbols.insert("read_file".to_string(), SymbolInfo {
+            name: "read_file".to_string(),
+            arity: 1,
+            module: "builtin".to_string(),
+            ty: Type::Unit, // Will be properly typed during type checking
+        });
+
+        // write_file(path: string, content: string) -> Result<unit, string>
+        builtin_symbols.insert("write_file".to_string(), SymbolInfo {
+            name: "write_file".to_string(),
+            arity: 2,
+            module: "builtin".to_string(),
+            ty: Type::Unit, // Will be properly typed during type checking
+        });
+
+        symbol_table.modules.insert("builtin".to_string(), builtin_symbols);
+
+        symbol_table
     }
 
     /// Add symbols from a loaded module

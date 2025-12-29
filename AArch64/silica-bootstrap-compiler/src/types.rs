@@ -36,6 +36,15 @@ pub type TypeEnv = HashMap<String, TypeScheme>;
 #[derive(Debug, Clone)]
 pub struct Constraint(pub Type, pub Type);
 
+/// Trait implementation mapping
+#[derive(Debug, Clone)]
+pub struct TraitImpl {
+    pub trait_name: String,
+    pub for_type: Type,
+    pub methods: HashMap<String, FunctionDecl>,
+    pub associated_types: HashMap<String, Type>,
+}
+
 /// Type checker implementing Hindley-Milner inference
 pub struct TypeChecker<'a> {
     env: TypeEnv,
@@ -44,9 +53,56 @@ pub struct TypeChecker<'a> {
     struct_defs: HashMap<String, Vec<StructField>>,
     symbol_table: Option<&'a crate::module_resolver::SymbolTable>,
     generic_instantiations: HashMap<String, Vec<Type>>,
+    trait_impls: Vec<TraitImpl>, // All trait implementations
+    trait_defs: HashMap<String, TraitDecl>, // Trait definitions
 }
 
 impl<'a> TypeChecker<'a> {
+    /// Check if a variable name would shadow an existing binding
+    fn check_variable_shadowing(&self, name: &str, location: &SourceLocation) -> Result<()> {
+        if self.env.contains_key(name) {
+            return type_error(
+                location.clone(),
+                format!("Variable '{}' shadows an existing binding. Variable shadowing is not allowed in Silica.", name)
+            );
+        }
+        Ok(())
+    }
+
+    /// Add a variable to the environment with shadowing check
+    fn add_variable_to_env(&mut self, name: String, scheme: TypeScheme, location: &SourceLocation) -> Result<()> {
+        self.check_variable_shadowing(&name, location)?;
+        self.env.insert(name, scheme);
+        Ok(())
+    }
+
+    /// Resolve a method call on a type
+    pub fn resolve_method(&self, receiver_type: &Type, method_name: &str) -> Option<&FunctionDecl> {
+        // Look through all trait implementations
+        for trait_impl in &self.trait_impls {
+            // Check if this implementation applies to the receiver type
+            if self.types_equal(&trait_impl.for_type, receiver_type) {
+                // Check if the trait has this method
+                if let Some(method) = trait_impl.methods.get(method_name) {
+                    return Some(method);
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if two types are equal (simplified version)
+    fn types_equal(&self, t1: &Type, t2: &Type) -> bool {
+        match (t1, t2) {
+            (Type::Named(n1), Type::Named(n2)) => n1 == n2,
+            (Type::Int, Type::Int) => true,
+            (Type::Bool, Type::Bool) => true,
+            (Type::Char, Type::Char) => true,
+            (Type::String, Type::String) => true,
+            (Type::Unit, Type::Unit) => true,
+            _ => false, // Simplified - doesn't handle generics, tuples, etc.
+        }
+    }
     pub fn new() -> Self {
         Self::with_symbol_table(None)
     }
@@ -82,6 +138,8 @@ impl<'a> TypeChecker<'a> {
             substitution: Substitution::new(),
             struct_defs: HashMap::new(),
             generic_instantiations: HashMap::new(),
+            trait_impls: Vec::new(),
+            trait_defs: HashMap::new(),
             symbol_table,
         }
     }
@@ -161,11 +219,17 @@ impl<'a> TypeChecker<'a> {
             vars: type_vars,
             ty: func_type,
         };
-        self.env.insert(func.name.clone(), scheme);
+        self.add_variable_to_env(func.name.clone(), scheme, &func.location)?;
 
         // Create local environment with parameters
         let mut local_env = self.env.clone();
         for (param, param_type) in func.parameters.iter().zip(param_types) {
+            if local_env.contains_key(&param.name) {
+                return type_error(
+                    param.location.clone(),
+                    format!("Parameter '{}' shadows an existing binding. Variable shadowing is not allowed in Silica.", param.name)
+                );
+            }
             local_env.insert(param.name.clone(), TypeScheme {
                 vars: vec![],
                 ty: param_type,
@@ -224,6 +288,9 @@ impl<'a> TypeChecker<'a> {
             Expression::Spawn(spawn) => self.infer_spawn(spawn),
             Expression::Send(send) => self.infer_send(send),
             Expression::Recv(recv) => self.infer_recv(recv),
+            Expression::ReadFile(read_file) => self.infer_read_file(read_file),
+            Expression::WriteFile(write_file) => self.infer_write_file(write_file),
+            Expression::ExecCommand(exec_cmd) => self.infer_exec_command(exec_cmd),
             Expression::Tuple(exprs) => self.infer_tuple(exprs),
             _ => type_error(
                 SourceLocation::unknown(),
@@ -247,24 +314,41 @@ impl<'a> TypeChecker<'a> {
     fn infer_identifier(&mut self, name: &str) -> Result<Type> {
         // First check local environment
         if let Some(scheme) = self.env.get(name) {
-            // TODO: Instantiate type scheme with fresh variables
-            Ok(scheme.ty.clone())
+            // Found in environment - this shouldn't happen for read_file
+            return type_error(
+                SourceLocation::unknown(),
+                format!("Found '{}' in environment (unexpected)", name),
+            );
+        }
+        // Check built-in functions
+        else if name == "read_file" {
+            Ok(Type::Function {
+                parameters: vec![Type::Named("string".to_string())],
+                return_type: Box::new(Type::Named("Result".to_string())),
+            })
+        } else if name == "write_file" {
+            Ok(Type::Function {
+                parameters: vec![Type::Named("string".to_string()), Type::Named("string".to_string())],
+                return_type: Box::new(Type::Named("Result".to_string())),
+            })
+        } else if name == "exec_command" {
+            Ok(Type::Function {
+                parameters: vec![Type::Named("string".to_string())],
+                return_type: Box::new(Type::Named("ProcessResult".to_string())),
+            })
         } else if let Some(symbol_table) = &self.symbol_table {
             // Check imported symbols from all modules
             for (_module_name, module_symbols) in &symbol_table.modules {
                 if let Some(symbol_info) = module_symbols.get(name) {
                     // Found imported symbol - convert to appropriate function type
-                    return match symbol_info.arity {
-                        0 => Ok(Type::Function {
-                            parameters: vec![],
-                            return_type: Box::new(Type::Unit),
-                        }),
-                        2 => Ok(Type::Function {
-                            parameters: vec![Type::Int, Type::Int], // Assume binary functions take two ints
-                            return_type: Box::new(Type::Int), // Assume binary functions return int
-                        }),
-                        _ => Ok(Type::Int), // Default to int for other arities (should be function type)
-                    };
+                    let mut parameters = Vec::new();
+                    for _ in 0..symbol_info.arity {
+                        parameters.push(Type::Int); // Assume all parameters are int for now
+                    }
+                    return Ok(Type::Function {
+                        parameters,
+                        return_type: Box::new(Type::Int), // Assume all functions return int for now
+                    });
                 }
             }
             // If we get here, symbol wasn't found in any module
@@ -276,6 +360,44 @@ impl<'a> TypeChecker<'a> {
             type_error(
                 SourceLocation::unknown(),
                 format!("Undefined variable: {}", name),
+            )
+        }
+        else if name == "write_file" {
+            // read_file(path: string) -> Result<string, string>
+            Ok(Type::Function {
+                parameters: vec![Type::Named("string".to_string())],
+                return_type: Box::new(Type::Named("Result".to_string())),
+            })
+        } else if name == "write_file" {
+            // write_file(path: string, content: string) -> Result<unit, string>
+            Ok(Type::Function {
+                parameters: vec![Type::Named("string".to_string()), Type::Named("string".to_string())],
+                return_type: Box::new(Type::Named("Result".to_string())),
+            })
+        } else if let Some(symbol_table) = &self.symbol_table {
+            // Check imported symbols from all modules
+            for (_module_name, module_symbols) in &symbol_table.modules {
+                if let Some(symbol_info) = module_symbols.get(name) {
+                    // Found imported symbol - convert to appropriate function type
+                    let mut parameters = Vec::new();
+                    for _ in 0..symbol_info.arity {
+                        parameters.push(Type::Int); // Assume all parameters are int for now
+                    }
+                    return Ok(Type::Function {
+                        parameters,
+                        return_type: Box::new(Type::Int), // Assume all functions return int for now
+                    });
+                }
+            }
+            // If we get here, symbol wasn't found in any module
+            type_error(
+                SourceLocation::unknown(),
+                format!("Undefined variable (checked modules): {}", name),
+            )
+        } else {
+            type_error(
+                SourceLocation::unknown(),
+                format!("Undefined variable (no symbol table): {}", name),
             )
         }
     }
@@ -325,6 +447,40 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for function call
     fn infer_call(&mut self, call: &CallExpr) -> Result<Type> {
+        // Check if this is a method call (receiver.method(args))
+        if let Expression::FieldAccess(field_access) = &*call.function {
+            return self.infer_method_call(field_access, call);
+        }
+
+        // Special handling for built-in I/O functions
+        if let Expression::Identifier(func_name) = &*call.function {
+            if func_name == "read_file" {
+                // read_file(path: string) -> Result<string, string>
+                if call.arguments.len() != 1 {
+                    return type_error(
+                        call.location.clone(),
+                        "read_file expects exactly 1 argument".to_string(),
+                    );
+                }
+                let path_type = self.infer_expression(&call.arguments[0])?;
+                self.unify(&path_type, &Type::Named("string".to_string()))?;
+                return Ok(Type::Named("Result".to_string()));
+            } else if func_name == "write_file" {
+                // write_file(path: string, content: string) -> Result<unit, string>
+                if call.arguments.len() != 2 {
+                    return type_error(
+                        call.location.clone(),
+                        "write_file expects exactly 2 arguments".to_string(),
+                    );
+                }
+                let path_type = self.infer_expression(&call.arguments[0])?;
+                self.unify(&path_type, &Type::Named("string".to_string()))?;
+                let content_type = self.infer_expression(&call.arguments[1])?;
+                self.unify(&content_type, &Type::Named("string".to_string()))?;
+                return Ok(Type::Named("Result".to_string()));
+            }
+        }
+
         let func_type = self.infer_expression(&call.function)?;
 
         // Check if we already have a function type
@@ -396,6 +552,52 @@ impl<'a> TypeChecker<'a> {
         }
 
         Ok(return_type)
+    }
+
+    /// Infer type for method calls (receiver.method(args))
+    fn infer_method_call(&mut self, field_access: &FieldAccessExpr, call: &CallExpr) -> Result<Type> {
+        // Infer the receiver type
+        let receiver_type = self.infer_expression(&field_access.object)?;
+
+        // Try to resolve the method
+        if let Some(method) = self.resolve_method(&receiver_type, &field_access.field) {
+            // Extract method info before doing mutable operations
+            let expected_param_count = method.parameters.len();
+            let return_type = method.return_type.clone();
+            let self_param_type = method.parameters[0].type_.clone();
+            let method_params: Vec<Type> = method.parameters.iter().skip(1).map(|p| p.type_.clone()).collect();
+
+            // We found a method - check arguments
+            // Method parameters: first is self, then the call arguments
+            let actual_arg_count = call.arguments.len() + 1; // +1 for receiver
+
+            if expected_param_count != actual_arg_count {
+                return type_error(
+                    call.location.clone(),
+                    format!("Method expects {} arguments (including self), got {}", expected_param_count, actual_arg_count)
+                );
+            }
+
+            // Check receiver type matches method's self parameter
+            self.add_constraint(receiver_type.clone(), self_param_type);
+
+            // Check call arguments against method parameters (skip self)
+            for (arg_expr, expected_type) in call.arguments.iter().zip(method_params) {
+                let actual_type = self.infer_expression(arg_expr)?;
+                self.add_constraint(actual_type, expected_type);
+            }
+
+            // Return the method's return type
+            match return_type {
+                Some(rt) => Ok(rt),
+                None => Ok(Type::Unit),
+            }
+        } else {
+            type_error(
+                field_access.location.clone(),
+                format!("No method '{}' found for type {:?}", field_access.field, receiver_type)
+            )
+        }
     }
 
     /// Infer type for function literal
@@ -646,7 +848,7 @@ impl<'a> TypeChecker<'a> {
                     let expr_type = self.infer_expression(expr)?;
 
                     // Bind pattern variables to the type environment
-                    self.bind_pattern_variables(pattern, &expr_type)?;
+                    self.bind_pattern_variables(pattern, &expr_type, &do_expr.location)?;
 
                     last_type = expr_type;
                 }
@@ -660,9 +862,11 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Bind pattern variables to the type environment
-    fn bind_pattern_variables(&mut self, pattern: &Pattern, ty: &Type) -> Result<()> {
+    fn bind_pattern_variables(&mut self, pattern: &Pattern, ty: &Type, location: &SourceLocation) -> Result<()> {
         match pattern {
             Pattern::Identifier(name) => {
+                // Check for variable shadowing before binding
+                self.check_variable_shadowing(name, location)?;
                 // Bind identifier pattern to type
                 self.env.insert(name.clone(), TypeScheme {
                     vars: vec![], // No type variables for now
@@ -684,7 +888,7 @@ impl<'a> TypeChecker<'a> {
                         );
                     }
                     for (pattern, ty) in patterns.iter().zip(types.iter()) {
-                        self.bind_pattern_variables(pattern, ty)?;
+                        self.bind_pattern_variables(pattern, ty, &SourceLocation::unknown())?;
                     }
                     Ok(())
                 } else {
@@ -956,6 +1160,38 @@ impl<'a> TypeChecker<'a> {
         Ok(Type::Int)
     }
 
+    fn infer_read_file(&mut self, read_file: &ReadFileExpr) -> Result<Type> {
+        // Check that path is a string
+        let path_type = self.infer_expression(&read_file.path)?;
+        self.unify(&path_type, &Type::Named("string".to_string()))?;
+
+        // read_file returns Result<string, string>
+        // For now, we'll represent this as a generic type
+        Ok(Type::Named("Result".to_string()))
+    }
+
+    fn infer_write_file(&mut self, write_file: &WriteFileExpr) -> Result<Type> {
+        // Check that path is a string
+        let path_type = self.infer_expression(&write_file.path)?;
+        self.unify(&path_type, &Type::Named("string".to_string()))?;
+
+        // Check that content is a string
+        let content_type = self.infer_expression(&write_file.content)?;
+        self.unify(&content_type, &Type::Named("string".to_string()))?;
+
+        // write_file returns Result<unit, string>
+        Ok(Type::Named("Result".to_string()))
+    }
+
+    fn infer_exec_command(&mut self, exec_cmd: &ExecCommandExpr) -> Result<Type> {
+        // Check that command is a string
+        let cmd_type = self.infer_expression(&exec_cmd.command)?;
+        self.unify(&cmd_type, &Type::Named("string".to_string()))?;
+
+        // exec_command returns ProcessResult
+        Ok(Type::Named("ProcessResult".to_string()))
+    }
+
     /// Check import declaration
     fn check_import_declaration(&mut self, _import: &ImportDecl) -> Result<()> {
         // For now, imports are accepted without validation
@@ -1023,9 +1259,17 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Check associated types
+        for assoc_type in &trait_decl.associated_types {
+            // Associated types are just declarations, no validation needed beyond name
+        }
+
         // Add the trait type to the environment
         let trait_type = Type::Named(trait_decl.name.clone());
         self.env.insert(trait_decl.name.clone(), TypeScheme { vars: Vec::new(), ty: trait_type });
+
+        // Store the trait definition
+        self.trait_defs.insert(trait_decl.name.clone(), trait_decl.clone());
 
         Ok(())
     }
@@ -1038,6 +1282,43 @@ impl<'a> TypeChecker<'a> {
         // Check all method implementations
         for method in &impl_decl.methods {
             self.check_function_declaration(method)?;
+        }
+
+        // Check associated type definitions
+        for assoc_type_def in &impl_decl.associated_types {
+            self.validate_type(&assoc_type_def.type_)?;
+        }
+
+        // If this is a trait implementation (not inherent impl)
+        if let Some(trait_name) = &impl_decl.trait_name {
+            // Verify the trait exists
+            if !self.trait_defs.contains_key(trait_name) {
+                return type_error(
+                    impl_decl.location.clone(),
+                    format!("Trait '{}' not found", trait_name)
+                );
+            }
+
+            // Create method map
+            let mut methods = HashMap::new();
+            for method in &impl_decl.methods {
+                methods.insert(method.name.clone(), method.clone());
+            }
+
+            // Create associated type map
+            let mut associated_types = HashMap::new();
+            for assoc_type in &impl_decl.associated_types {
+                associated_types.insert(assoc_type.name.clone(), assoc_type.type_.clone());
+            }
+
+            // Store the trait implementation
+            let trait_impl = TraitImpl {
+                trait_name: trait_name.clone(),
+                for_type: impl_decl.for_type.clone(),
+                methods,
+                associated_types,
+            };
+            self.trait_impls.push(trait_impl);
         }
 
         Ok(())

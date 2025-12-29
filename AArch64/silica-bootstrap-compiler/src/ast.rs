@@ -225,6 +225,13 @@ pub enum Expression {
     Send(SendExpr),
     Recv(RecvExpr),
 
+    // File I/O operations
+    ReadFile(ReadFileExpr),
+    WriteFile(WriteFileExpr),
+
+    // Process execution operations
+    ExecCommand(ExecCommandExpr),
+
     // Data structures
     StructLiteral(StructLiteralExpr),
     FieldAccess(FieldAccessExpr),
@@ -403,6 +410,30 @@ pub struct SendExpr {
 /// Message receive expression
 #[derive(Debug, Clone)]
 pub struct RecvExpr {
+    pub actor: Option<Box<Expression>>, // Optional actor to receive from
+    pub location: SourceLocation,
+}
+
+/// File read expression: read_file(path)
+#[derive(Debug, Clone)]
+pub struct ReadFileExpr {
+    pub path: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// File write expression: write_file(path, content)
+#[derive(Debug, Clone)]
+pub struct WriteFileExpr {
+    pub path: Box<Expression>,
+    pub content: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Execute command expression: exec_command(command, args)
+#[derive(Debug, Clone)]
+pub struct ExecCommandExpr {
+    pub command: Box<Expression>,
+    pub args: Vec<Expression>,
     pub location: SourceLocation,
 }
 
