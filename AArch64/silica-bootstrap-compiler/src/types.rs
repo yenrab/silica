@@ -55,6 +55,8 @@ pub struct TypeChecker<'a> {
     generic_instantiations: HashMap<String, Vec<Type>>,
     trait_impls: Vec<TraitImpl>, // All trait implementations
     trait_defs: HashMap<String, TraitDecl>, // Trait definitions
+    type_aliases: HashMap<String, Type>, // Type alias definitions
+    pub expression_types: HashMap<SourceLocation, Type>, // Types of expressions for code generation
 }
 
 impl<'a> TypeChecker<'a> {
@@ -74,6 +76,58 @@ impl<'a> TypeChecker<'a> {
         self.check_variable_shadowing(&name, location)?;
         self.env.insert(name, scheme);
         Ok(())
+    }
+
+    /// Record the type of an expression for code generation
+    fn record_expression_type(&mut self, location: &SourceLocation, ty: Type) {
+        self.expression_types.insert(location.clone(), ty);
+    }
+
+    /// Get the type of an expression (for code generation)
+    pub fn get_expression_type(&self, location: &SourceLocation) -> Option<&Type> {
+        self.expression_types.get(location)
+    }
+
+    /// Instantiate a type scheme by replacing type variables with fresh ones
+    fn instantiate_scheme(&self, scheme: &TypeScheme) -> Result<Type> {
+        // Create substitution map from type variables to fresh types
+        let mut subst = HashMap::new();
+        for var in &scheme.vars {
+            subst.insert(var.0.clone(), Type::Variable(TypeVar::fresh().0));
+        }
+
+        // Apply substitution to the type
+        Ok(self.substitute_type(&scheme.ty, &subst))
+    }
+
+    /// Extract location from an expression
+    fn get_expression_location(expr: &Expression) -> &SourceLocation {
+        match expr {
+            Expression::Literal(_) => panic!("Literals don't have location - use expression location"),
+            Expression::Identifier(name) => panic!("Identifier should have location from context"),
+            Expression::Binary(binary) => &binary.location,
+            Expression::Unary(unary) => &unary.location,
+            Expression::Call(call) => &call.location,
+            Expression::If(if_expr) => &if_expr.location,
+            Expression::Case(case) => &case.location,
+            Expression::Do(do_expr) => &do_expr.location,
+            Expression::Region(region) => &region.location,
+            Expression::AllocRef(alloc) => &alloc.location,
+            Expression::ReadRef(read) => &read.location,
+            Expression::WriteRef(write) => &write.location,
+            Expression::Spawn(spawn) => &spawn.location,
+            Expression::Send(send) => &send.location,
+            Expression::Recv(recv) => &recv.location,
+            Expression::ReadFile(read_file) => &read_file.location,
+            Expression::WriteFile(write_file) => &write_file.location,
+            Expression::ExecCommand(exec_cmd) => &exec_cmd.location,
+            Expression::StructLiteral(struct_lit) => &struct_lit.location,
+            Expression::FieldAccess(field_access) => &field_access.location,
+            Expression::Tuple(_) => panic!("Tuple location should be handled specially"),
+            Expression::GenericInstantiation(generic) => &generic.location,
+            Expression::ConstructorCall(ctor) => &ctor.location,
+            Expression::FunctionLiteral(func) => &func.location,
+        }
     }
 
     /// Resolve a method call on a type
@@ -140,7 +194,9 @@ impl<'a> TypeChecker<'a> {
             generic_instantiations: HashMap::new(),
             trait_impls: Vec::new(),
             trait_defs: HashMap::new(),
+            type_aliases: HashMap::new(),
             symbol_table,
+            expression_types: HashMap::new(),
         }
     }
 
@@ -173,18 +229,33 @@ impl<'a> TypeChecker<'a> {
     fn check_function_declaration(&mut self, func: &FunctionDecl) -> Result<()> {
         // Convert type parameter names to TypeVars
         let type_vars: Vec<TypeVar> = func.type_params.iter()
-            .map(|name| TypeVar(name.clone()))
+            .map(|type_param| TypeVar(type_param.name.clone()))
             .collect();
 
         // Create substitution map for type parameters
-        let mut type_param_subst = HashMap::new();
+        let mut type_param_subst: HashMap<String, Type> = HashMap::new();
         for (i, type_param) in func.type_params.iter().enumerate() {
-            type_param_subst.insert(type_param.clone(), Type::Variable(type_vars[i].0.clone()));
+            type_param_subst.insert(type_param.name.clone(), Type::Variable(type_vars[i].0.clone()));
         }
 
-        // Convert parameter types, substituting type parameters with variables
+        // Check that trait bounds refer to valid traits
+        for type_param in &func.type_params {
+            for bound in &type_param.bounds {
+                if !self.trait_defs.contains_key(&bound.trait_name) {
+                    return type_error(
+                        func.location.clone(),
+                        format!("Trait '{}' not found (required by type parameter '{}')", bound.trait_name, type_param.name)
+                    );
+                }
+            }
+        }
+
+        // Convert parameter types, expanding aliases first, then substituting type parameters with variables
         let mut param_types: Vec<Type> = func.parameters.iter()
-            .map(|param| self.substitute_type(&param.type_, &type_param_subst))
+            .map(|param| {
+                let expanded_type = self.expand_type_aliases(&param.type_);
+                self.substitute_type(&expanded_type, &type_param_subst)
+            })
             .collect();
 
         // Convert polymorphic function types that use the same type parameters
@@ -192,7 +263,7 @@ impl<'a> TypeChecker<'a> {
         for param_type in &mut param_types {
             if let Type::PolymorphicFunction { type_params, parameters, return_type } = param_type {
                 // Check if all type parameters are already bound by the outer function
-                let all_bound = type_params.iter().all(|tp| type_param_subst.contains_key(tp));
+                let all_bound = type_params.iter().all(|tp| type_param_subst.contains_key(&tp.name));
                 if all_bound {
                     // Convert to regular function type
                     *param_type = Type::Function {
@@ -203,9 +274,12 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Convert return type
+        // Convert return type, expanding aliases first
         let return_type = func.return_type.as_ref()
-            .map(|rt| self.substitute_type(rt, &type_param_subst))
+            .map(|rt| {
+                let expanded_type = self.expand_type_aliases(rt);
+                self.substitute_type(&expanded_type, &type_param_subst)
+            })
             .unwrap_or(Type::Unit);
 
         // Create function type
@@ -223,17 +297,23 @@ impl<'a> TypeChecker<'a> {
 
         // Create local environment with parameters
         let mut local_env = self.env.clone();
-        for (param, param_type) in func.parameters.iter().zip(param_types) {
-            if local_env.contains_key(&param.name) {
-                return type_error(
-                    param.location.clone(),
-                    format!("Parameter '{}' shadows an existing binding. Variable shadowing is not allowed in Silica.", param.name)
-                );
+        for param in &func.parameters {
+            if let Some(pattern) = &param.pattern {
+                // If it's a pattern parameter, check the pattern against the parameter's type
+                self.check_pattern(pattern, &param.type_, &param.location, &mut local_env)?;
+            } else {
+                // Existing logic for identifier parameters
+                if local_env.contains_key(&param.name) {
+                    return type_error(
+                        param.location.clone(),
+                        format!("Parameter '{}' shadows an existing binding. Variable shadowing is not allowed in Silica.", param.name)
+                    );
+                }
+                local_env.insert(param.name.clone(), TypeScheme {
+                    vars: vec![],
+                    ty: self.expand_type_aliases(&param.type_),
+                });
             }
-            local_env.insert(param.name.clone(), TypeScheme {
-                vars: vec![],
-                ty: param_type,
-            });
         }
 
         // Check function body with local environment
@@ -271,31 +351,156 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for expression
     fn infer_expression(&mut self, expr: &Expression) -> Result<Type> {
-        match expr {
-            Expression::Literal(lit) => Ok(self.infer_literal(lit)),
-            Expression::Identifier(name) => self.infer_identifier(name),
-            Expression::Binary(binary) => self.infer_binary(binary),
-            Expression::Unary(unary) => self.infer_unary(unary),
-            Expression::Call(call) => self.infer_call(call),
-            Expression::FunctionLiteral(func) => self.infer_function_literal(func),
-            Expression::If(if_expr) => self.infer_if(if_expr),
-            Expression::Case(case) => self.infer_case(case),
-            Expression::Do(do_expr) => self.infer_do(do_expr),
-            Expression::Region(region) => self.infer_region(region),
-            Expression::AllocRef(alloc) => self.infer_alloc_ref(alloc),
-            Expression::ReadRef(read) => self.infer_read_ref(read),
-            Expression::WriteRef(write) => self.infer_write_ref(write),
-            Expression::Spawn(spawn) => self.infer_spawn(spawn),
-            Expression::Send(send) => self.infer_send(send),
-            Expression::Recv(recv) => self.infer_recv(recv),
-            Expression::ReadFile(read_file) => self.infer_read_file(read_file),
-            Expression::WriteFile(write_file) => self.infer_write_file(write_file),
-            Expression::ExecCommand(exec_cmd) => self.infer_exec_command(exec_cmd),
-            Expression::Tuple(exprs) => self.infer_tuple(exprs),
-            _ => type_error(
+        let result_type = match expr {
+            Expression::Literal(lit) => self.infer_literal(lit),
+            Expression::Identifier(name) => self.infer_identifier(name)?,
+            Expression::Binary(binary) => self.infer_binary(binary)?,
+            Expression::Unary(unary) => self.infer_unary(unary)?,
+            Expression::Call(call) => self.infer_call(call)?,
+            Expression::FunctionLiteral(func) => self.infer_function_literal(func)?,
+            Expression::If(if_expr) => self.infer_if(if_expr)?,
+            Expression::Case(case) => self.infer_case(case)?,
+            Expression::Do(do_expr) => self.infer_do(do_expr)?,
+            Expression::Region(region) => self.infer_region(region)?,
+            Expression::AllocRef(alloc) => self.infer_alloc_ref(alloc)?,
+            Expression::ReadRef(read) => self.infer_read_ref(read)?,
+            Expression::WriteRef(write) => self.infer_write_ref(write)?,
+            Expression::Spawn(spawn) => self.infer_spawn(spawn)?,
+            Expression::Send(send) => self.infer_send(send)?,
+            Expression::Recv(recv) => self.infer_recv(recv)?,
+            Expression::ReadFile(read_file) => self.infer_read_file(read_file)?,
+            Expression::WriteFile(write_file) => self.infer_write_file(write_file)?,
+            Expression::ExecCommand(exec_cmd) => self.infer_exec_command(exec_cmd)?,
+            Expression::Tuple(exprs) => self.infer_tuple(exprs)?,
+            Expression::StructLiteral(struct_lit) => self.infer_struct_literal(struct_lit)?,
+            Expression::FieldAccess(field_access) => self.infer_field_access(field_access)?,
+            _ => return type_error(
                 SourceLocation::unknown(),
                 format!("Type inference not implemented for: {:?}", expr),
             ),
+        };
+
+        // Record the type for code generation
+        if let Some(location) = Self::try_get_expression_location(expr) {
+            self.record_expression_type(location, result_type.clone());
+        }
+
+        Ok(result_type)
+    }
+
+    /// Infer type for struct literal
+    fn infer_struct_literal(&mut self, struct_lit: &StructLiteralExpr) -> Result<Type> {
+        // Look up the struct definition
+        if let Some(struct_def) = self.struct_defs.get(&struct_lit.type_name) {
+            let struct_def = struct_def.clone(); // Clone to avoid borrowing issues
+
+            // Check that the number of fields matches
+            if struct_lit.fields.len() != struct_def.len() {
+                return type_error(
+                    struct_lit.location.clone(),
+                    format!(
+                        "Struct {} expects {} fields but got {}",
+                        struct_lit.type_name,
+                        struct_def.len(),
+                        struct_lit.fields.len()
+                    ),
+                );
+            }
+
+            // Check each field
+            for (i, (field_name, field_expr)) in struct_lit.fields.iter().enumerate() {
+                let expected_field = &struct_def[i];
+                if field_name != &expected_field.name {
+                    return type_error(
+                        struct_lit.location.clone(),
+                        format!(
+                            "Expected field '{}' but got '{}' in struct {}",
+                            expected_field.name, field_name, struct_lit.type_name
+                        ),
+                    );
+                }
+
+                // Infer the type of the field expression
+                let field_type = self.infer_expression(field_expr)?;
+
+                // Check that it matches the expected type
+                let expected_type = &expected_field.ty;
+                if !self.types_equal(&field_type, expected_type) {
+                    return type_error(
+                        struct_lit.location.clone(),
+                        format!(
+                            "Field '{}' expects type {:?} but got {:?}",
+                            field_name, expected_type, field_type
+                        ),
+                    );
+                }
+            }
+
+            // Return the struct type
+            Ok(Type::Record(
+                struct_def.iter().map(|f| (f.name.clone(), f.ty.clone())).collect()
+            ))
+        } else {
+            type_error(
+                struct_lit.location.clone(),
+                format!("Undefined struct type: {}", struct_lit.type_name),
+            )
+        }
+    }
+
+    /// Infer type for field access
+    fn infer_field_access(&mut self, field_access: &FieldAccessExpr) -> Result<Type> {
+        // Infer the type of the object being accessed
+        let object_type = self.infer_expression(&field_access.object)?;
+
+        // Check if it's a record/struct type
+        if let Type::Record(fields) = &object_type {
+            // Find the field
+            for (field_name, field_type) in fields {
+                if field_name == &field_access.field {
+                    return Ok(field_type.clone());
+                }
+            }
+            return type_error(
+                field_access.location.clone(),
+                format!("Field '{}' not found in struct", field_access.field),
+            );
+        } else {
+            return type_error(
+                field_access.location.clone(),
+                format!("Cannot access field '{}' on non-struct type {:?}", field_access.field, object_type),
+            );
+        }
+    }
+
+    /// Try to get location from an expression (returns None for tuples)
+    pub fn try_get_expression_location(expr: &Expression) -> Option<&SourceLocation> {
+        match expr {
+            Expression::Literal(_) => None, // Literals don't have location
+            Expression::Binary(binary) => Some(&binary.location),
+            Expression::Unary(unary) => Some(&unary.location),
+            Expression::Call(call) => Some(&call.location),
+            Expression::If(if_expr) => Some(&if_expr.location),
+            Expression::Case(case) => Some(&case.location),
+            Expression::Do(do_expr) => Some(&do_expr.location),
+            Expression::Region(region) => Some(&region.location),
+            Expression::AllocRef(alloc) => Some(&alloc.location),
+            Expression::ReadRef(read) => Some(&read.location),
+            Expression::WriteRef(write) => Some(&write.location),
+            Expression::Spawn(spawn) => Some(&spawn.location),
+            Expression::Send(send) => Some(&send.location),
+            Expression::Recv(recv) => Some(&recv.location),
+            Expression::ReadFile(read_file) => Some(&read_file.location),
+            Expression::WriteFile(write_file) => Some(&write_file.location),
+            Expression::ExecCommand(exec_cmd) => Some(&exec_cmd.location),
+            Expression::StructLiteral(struct_lit) => Some(&struct_lit.location),
+            Expression::FieldAccess(field_access) => Some(&field_access.location),
+            Expression::GenericInstantiation(generic) => Some(&generic.location),
+            Expression::ConstructorCall(ctor) => Some(&ctor.location),
+            Expression::FunctionLiteral(func) => Some(&func.location),
+            // Tuples don't have their own location, only elements do
+            Expression::Tuple(_) => None,
+            Expression::Identifier(_) => None, // Handled separately
         }
     }
 
@@ -312,30 +517,29 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for identifier
     fn infer_identifier(&mut self, name: &str) -> Result<Type> {
-        // First check local environment
+        // First check local environment for user-defined functions/variables
         if let Some(scheme) = self.env.get(name) {
-            // Found in environment - this shouldn't happen for read_file
-            return type_error(
-                SourceLocation::unknown(),
-                format!("Found '{}' in environment (unexpected)", name),
-            );
+            // Instantiate the type scheme (replace type variables with fresh ones)
+            let instantiated = self.instantiate_scheme(scheme)?;
+            // Expand any type aliases in the result
+            return Ok(self.expand_type_aliases(&instantiated));
         }
         // Check built-in functions
         else if name == "read_file" {
-            Ok(Type::Function {
+            return Ok(Type::Function {
                 parameters: vec![Type::Named("string".to_string())],
                 return_type: Box::new(Type::Named("Result".to_string())),
-            })
+            });
         } else if name == "write_file" {
-            Ok(Type::Function {
+            return Ok(Type::Function {
                 parameters: vec![Type::Named("string".to_string()), Type::Named("string".to_string())],
                 return_type: Box::new(Type::Named("Result".to_string())),
-            })
+            });
         } else if name == "exec_command" {
-            Ok(Type::Function {
+            return Ok(Type::Function {
                 parameters: vec![Type::Named("string".to_string())],
                 return_type: Box::new(Type::Named("ProcessResult".to_string())),
-            })
+            });
         } else if let Some(symbol_table) = &self.symbol_table {
             // Check imported symbols from all modules
             for (_module_name, module_symbols) in &symbol_table.modules {
@@ -352,53 +556,15 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             // If we get here, symbol wasn't found in any module
-            type_error(
+            return type_error(
                 SourceLocation::unknown(),
                 format!("Undefined variable: {}", name),
-            )
+            );
         } else {
-            type_error(
+            return type_error(
                 SourceLocation::unknown(),
                 format!("Undefined variable: {}", name),
-            )
-        }
-        else if name == "write_file" {
-            // read_file(path: string) -> Result<string, string>
-            Ok(Type::Function {
-                parameters: vec![Type::Named("string".to_string())],
-                return_type: Box::new(Type::Named("Result".to_string())),
-            })
-        } else if name == "write_file" {
-            // write_file(path: string, content: string) -> Result<unit, string>
-            Ok(Type::Function {
-                parameters: vec![Type::Named("string".to_string()), Type::Named("string".to_string())],
-                return_type: Box::new(Type::Named("Result".to_string())),
-            })
-        } else if let Some(symbol_table) = &self.symbol_table {
-            // Check imported symbols from all modules
-            for (_module_name, module_symbols) in &symbol_table.modules {
-                if let Some(symbol_info) = module_symbols.get(name) {
-                    // Found imported symbol - convert to appropriate function type
-                    let mut parameters = Vec::new();
-                    for _ in 0..symbol_info.arity {
-                        parameters.push(Type::Int); // Assume all parameters are int for now
-                    }
-                    return Ok(Type::Function {
-                        parameters,
-                        return_type: Box::new(Type::Int), // Assume all functions return int for now
-                    });
-                }
-            }
-            // If we get here, symbol wasn't found in any module
-            type_error(
-                SourceLocation::unknown(),
-                format!("Undefined variable (checked modules): {}", name),
-            )
-        } else {
-            type_error(
-                SourceLocation::unknown(),
-                format!("Undefined variable (no symbol table): {}", name),
-            )
+            );
         }
     }
 
@@ -512,9 +678,9 @@ impl<'a> TypeChecker<'a> {
             }
 
             // Create fresh type variables for type parameters
-            let mut type_subst = HashMap::new();
+            let mut type_subst: HashMap<String, Type> = HashMap::new();
             for type_param in type_params {
-                type_subst.insert(type_param.clone(), Type::Variable(TypeVar::fresh().0));
+                type_subst.insert(type_param.name.clone(), Type::Variable(TypeVar::fresh().0));
             }
 
             // Substitute parameters and return type
@@ -604,13 +770,25 @@ impl<'a> TypeChecker<'a> {
     fn infer_function_literal(&mut self, func: &FunctionLiteralExpr) -> Result<Type> {
         // Convert type parameter names to TypeVars
         let type_vars: Vec<TypeVar> = func.type_params.iter()
-            .map(|name| TypeVar(name.clone()))
+            .map(|type_param| TypeVar(type_param.name.clone()))
             .collect();
 
         // Create substitution map for type parameters
-        let mut type_param_subst = HashMap::new();
+        let mut type_param_subst: HashMap<String, Type> = HashMap::new();
         for (i, type_param) in func.type_params.iter().enumerate() {
-            type_param_subst.insert(type_param.clone(), Type::Variable(type_vars[i].0.clone()));
+            type_param_subst.insert(type_param.name.clone(), Type::Variable(type_vars[i].0.clone()));
+        }
+
+        // Check that trait bounds refer to valid traits
+        for type_param in &func.type_params {
+            for bound in &type_param.bounds {
+                if !self.trait_defs.contains_key(&bound.trait_name) {
+                    return type_error(
+                        func.location.clone(),
+                        format!("Trait '{}' not found (required by type parameter '{}')", bound.trait_name, type_param.name)
+                    );
+                }
+            }
         }
 
         // Convert parameter types, substituting type parameters with variables
@@ -846,9 +1024,11 @@ impl<'a> TypeChecker<'a> {
                 Statement::Bind { pattern, expr } => {
                     // Infer the type of the expression
                     let expr_type = self.infer_expression(expr)?;
+                    // Expand any type aliases in the expression type
+                    let expanded_expr_type = self.expand_type_aliases(&expr_type);
 
                     // Bind pattern variables to the type environment
-                    self.bind_pattern_variables(pattern, &expr_type, &do_expr.location)?;
+                    self.bind_pattern_variables(pattern, &expanded_expr_type, &do_expr.location)?;
 
                     last_type = expr_type;
                 }
@@ -863,6 +1043,9 @@ impl<'a> TypeChecker<'a> {
 
     /// Bind pattern variables to the type environment
     fn bind_pattern_variables(&mut self, pattern: &Pattern, ty: &Type, location: &SourceLocation) -> Result<()> {
+        // Expand type aliases in the type
+        let expanded_ty = self.expand_type_aliases(ty);
+
         match pattern {
             Pattern::Identifier(name) => {
                 // Check for variable shadowing before binding
@@ -870,7 +1053,7 @@ impl<'a> TypeChecker<'a> {
                 // Bind identifier pattern to type
                 self.env.insert(name.clone(), TypeScheme {
                     vars: vec![], // No type variables for now
-                    ty: ty.clone(),
+                    ty: expanded_ty.clone(),
                 });
                 Ok(())
             }
@@ -880,7 +1063,7 @@ impl<'a> TypeChecker<'a> {
             }
             Pattern::Tuple(patterns) => {
                 // For tuple patterns, recursively bind each element
-                if let Type::Tuple(types) = ty {
+                if let Type::Tuple(types) = &expanded_ty {
                     if patterns.len() != types.len() {
                         return type_error(
                             SourceLocation::unknown(),
@@ -894,7 +1077,7 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     type_error(
                         SourceLocation::unknown(),
-                        format!("Tuple pattern cannot match non-tuple type {:?}", ty)
+                        format!("Tuple pattern cannot match non-tuple type {:?}", expanded_ty)
                     )
                 }
             }
@@ -1001,11 +1184,11 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Create fresh type variables for unification
-                let mut fresh_vars = HashMap::new();
+                let mut fresh_vars: HashMap<String, Type> = HashMap::new();
                 for i in 0..tp1.len() {
                     let fresh_var = TypeVar::fresh().0;
-                    fresh_vars.insert(tp1[i].clone(), Type::Variable(fresh_var.clone()));
-                    fresh_vars.insert(tp2[i].clone(), Type::Variable(fresh_var));
+                    fresh_vars.insert(tp1[i].name.clone(), Type::Variable(fresh_var.clone()));
+                    fresh_vars.insert(tp2[i].name.clone(), Type::Variable(fresh_var));
                 }
 
                 // Substitute and unify parameters
@@ -1034,9 +1217,9 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Create substitution map from polymorphic params to concrete params
-                let mut substitution = HashMap::new();
+                let mut substitution: HashMap<String, Type> = HashMap::new();
                 for type_param in type_params {
-                    substitution.insert(type_param.clone(), Type::Variable(TypeVar::fresh().0));
+                    substitution.insert(type_param.name.clone(), Type::Variable(TypeVar::fresh().0));
                 }
 
                 // Substitute polymorphic parameters and return type
@@ -1218,6 +1401,9 @@ impl<'a> TypeChecker<'a> {
         let struct_type = Type::Named(struct_decl.name.clone());
         self.env.insert(struct_decl.name.clone(), TypeScheme { vars: Vec::new(), ty: struct_type });
 
+        // Store the struct definition for struct literal checking
+        self.struct_defs.insert(struct_decl.name.clone(), struct_decl.fields.clone());
+
         Ok(())
     }
 
@@ -1329,22 +1515,80 @@ impl<'a> TypeChecker<'a> {
         // Validate the aliased type
         self.validate_type(&alias_decl.aliased_type)?;
 
-        // Add the alias to the environment
+        // Expand the aliased type to resolve all built-in types
+        let expanded_aliased_type = self.expand_type_aliases(&alias_decl.aliased_type);
+
+        // Store the mapping from alias name to expanded actual type
+        self.type_aliases.insert(alias_decl.name.clone(), expanded_aliased_type);
+
+        // Add the alias to the environment as a named type
         let alias_type = Type::Named(alias_decl.name.clone());
         self.env.insert(alias_decl.name.clone(), TypeScheme { vars: Vec::new(), ty: alias_type });
 
         Ok(())
     }
 
+    /// Expand type aliases in a type
+    fn expand_type_aliases(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Named(name) => {
+                if let Some(aliased_type) = self.type_aliases.get(name) {
+                    // Expand the aliased type recursively
+                    self.expand_type_aliases(aliased_type)
+                } else {
+                    // Check if it's a built-in type
+                    match name.as_str() {
+                        "int" => Type::Int,
+                        "bool" => Type::Bool,
+                        "char" => Type::Char,
+                        "string" => Type::String,
+                        "unit" => Type::Unit,
+                        _ => ty.clone(), // Unknown named type, keep as is
+                    }
+                }
+            }
+            Type::Tuple(elements) => {
+                Type::Tuple(elements.iter().map(|elem| self.expand_type_aliases(elem)).collect())
+            }
+            Type::Record(fields) => {
+                Type::Record(fields.iter().map(|(name, ty)| (name.clone(), self.expand_type_aliases(ty))).collect())
+            }
+            Type::Function { parameters, return_type } => {
+                Type::Function {
+                    parameters: parameters.iter().map(|param| self.expand_type_aliases(param)).collect(),
+                    return_type: Box::new(self.expand_type_aliases(return_type)),
+                }
+            }
+            Type::Generic { name, type_args } => {
+                Type::Generic {
+                    name: name.clone(),
+                    type_args: type_args.iter().map(|arg| self.expand_type_aliases(arg)).collect(),
+                }
+            }
+            Type::Process { effects, result_type } => {
+                Type::Process {
+                    effects: effects.clone(),
+                    result_type: Box::new(self.expand_type_aliases(result_type)),
+                }
+            }
+            // For other types, return as-is
+            _ => ty.clone(),
+        }
+    }
+
     /// Validate that a type is well-formed
     fn validate_type(&self, ty: &Type) -> Result<()> {
         match ty {
             Type::Named(name) => {
+                // Allow "Self" as a special type in trait contexts
+                if name == "Self" {
+                    return Ok(());
+                }
                 // Check if the named type exists in the environment
                 if !self.env.contains_key(name) {
                     return type_error(
                         SourceLocation::unknown(),
-                        format!("Unknown type: {}", name),
+                        format!("Unknown type: {} (env contains: {:?})", name, self.env.keys().collect::<Vec<_>>()),
                     );
                 }
                 Ok(())
@@ -1394,7 +1638,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub fn get_struct_defs(&self) -> &HashMap<String, Vec<StructField>> {
+    pub fn get_struct_defs(&self) -> &HashMap<String, Vec<crate::ast::StructField>> {
         &self.struct_defs
     }
 
@@ -1502,8 +1746,58 @@ impl<'a> TypeChecker<'a> {
         // Infer types for all tuple elements
         let mut element_types = Vec::new();
         for expr in exprs {
-            element_types.push(self.infer_expression(expr)?);
+            let element_type = self.infer_expression(expr)?;
+            element_types.push(element_type.clone());
+
+            // Record the type for this element if it has a location
+            if let Some(location) = Self::try_get_expression_location(expr) {
+                self.record_expression_type(location, element_type);
+            }
         }
         Ok(Type::Tuple(element_types))
     }
+
+    /// Check pattern against expected type and add variables to environment
+    fn check_pattern(&mut self, pattern: &Pattern, expected_type: &Type, location: &SourceLocation, env: &mut HashMap<String, TypeScheme>) -> Result<()> {
+        // Expand type aliases in the expected type
+        let expanded_expected_type = self.expand_type_aliases(expected_type);
+
+        match pattern {
+            Pattern::Identifier(name) => {
+                if env.contains_key(name) {
+                    return type_error(location.clone(), format!("Pattern variable '{}' shadows an existing binding", name));
+                }
+                env.insert(name.clone(), TypeScheme {
+                    vars: vec![],
+                    ty: expanded_expected_type.clone(),
+                });
+            }
+            Pattern::Tuple(elements) => {
+                if let Type::Tuple(element_types) = &expanded_expected_type {
+                    if elements.len() != element_types.len() {
+                        return type_error(location.clone(),
+                            format!("Tuple pattern has {} elements but expected type has {}",
+                                elements.len(), element_types.len()));
+                    }
+                    for (elem_pattern, elem_type) in elements.iter().zip(element_types) {
+                        self.check_pattern(elem_pattern, elem_type, location, env)?;
+                    }
+                } else {
+                    return type_error(location.clone(),
+                        format!("Tuple pattern expected tuple type, found {:?}", expanded_expected_type));
+                }
+            }
+            Pattern::Wildcard => {
+                // Wildcard matches anything, no variables to bind
+            }
+            _ => return type_error(location.clone(), format!("Unsupported pattern type: {:?}", pattern)),
+        }
+        Ok(())
+    }
+
+    /// Get the type aliases for code generation
+    pub fn get_type_aliases(&self) -> &HashMap<String, Type> {
+        &self.type_aliases
+    }
+
 }

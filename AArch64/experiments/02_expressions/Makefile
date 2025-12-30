@@ -2,6 +2,10 @@
 # Automatically detects executable files (with main) vs modules (without main)
 
 SILICA_COMPILER := ../../silica-bootstrap-compiler/target/release/silica-boot
+
+# Ensure compiler is built without LLVM backend features for consistent text-based generation
+$(SILICA_COMPILER):
+	cd ../../silica-bootstrap-compiler && cargo build --release --no-default-features
 SEARCH_PATHS := -I ../../stdlib
 
 # Find all .silica files
@@ -15,10 +19,10 @@ MODULES := $(shell for f in $(SILICA_FILES); do if ! grep -q "^fn main" "$$f"; t
 EXECUTABLES_LL := $(addsuffix .ll, $(EXECUTABLES))
 MODULES_LL := $(addsuffix .ll, $(MODULES))
 
-.PHONY: all clean executables modules executables-full help
+.PHONY: all clean executables modules executables-all help
 
 # Default target
-all: executables-full
+all: executables-all
 
 # Compile executable files (those with main functions)
 executables: $(EXECUTABLES_LL)
@@ -51,7 +55,7 @@ $(RUNTIME_LIB): ../../silica-bootstrap-compiler/standalone_runtime.c
 	@$(COMPILER_CLANG) -c $< -o $@ -O2
 
 # Build executables if LLVM tools are available
-executables-full: executables $(RUNTIME_LIB)
+executables-all: executables $(RUNTIME_LIB)
 ifdef HAS_LLVM_AS
 ifdef HAS_LLC
 	@echo "Building full executables with LLVM toolchain..."
@@ -83,10 +87,16 @@ help:
 	@echo "Executables ($(words $(EXECUTABLES))): $(EXECUTABLES)"
 	@echo "Modules ($(words $(MODULES))): $(MODULES)"
 	@echo ""
+	@echo "Build stages:"
+	@echo "  Stage 1: Silica → LLVM IR (.ll files)"
+	@echo "  Stage 2: LLVM IR → Bitcode (.bc files) - requires llvm-as"
+	@echo "  Stage 3: Bitcode → Object (.o files) - requires llc"
+	@echo "  Stage 4: Object → Executable - requires clang + runtime"
+	@echo ""
 	@echo "Targets:"
-	@echo "  all              - Build LLVM IR files (default)"
-	@echo "  executables      - Build only executable LLVM IR files"
+	@echo "  executables-all - Build full executables with runtime (default)"
 	@echo "  all              - Build LLVM IR files"
-	@echo "  modules          - Build only module files"
+	@echo "  executables      - Build only executable LLVM IR files"
+	@echo "  modules          - Build only module LLVM IR files"
 	@echo "  clean            - Remove all generated files"
 	@echo "  help             - Show this help"

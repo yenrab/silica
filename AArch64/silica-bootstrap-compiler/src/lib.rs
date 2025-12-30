@@ -99,6 +99,9 @@ impl Compiler {
 
         // Phase 5: Code generation
         println!("Phase 5: LLVM code generation...");
+        self.codegen.set_expression_types(type_checker.expression_types.clone());
+        self.codegen.set_type_aliases(type_checker.get_type_aliases().clone());
+        self.codegen.set_struct_defs(type_checker.get_struct_defs().clone());
         self.codegen.generate_program(&program)?;
         println!("Code generation completed");
 

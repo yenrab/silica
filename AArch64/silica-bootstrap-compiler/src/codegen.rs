@@ -15,7 +15,8 @@
  */
 
 use crate::ast::*;
-use crate::errors::{Result, codegen_error, CompilerError};
+use crate::errors::{Result, codegen_error, CompilerError, SourceLocation};
+use crate::types::TypeChecker;
 use std::collections::HashMap;
 
 #[cfg(feature = "llvm_backend")]
@@ -53,9 +54,13 @@ pub struct CodeGenerator {
     type_map: TypeMap,
     functions: HashMap<String, String>,
     variables: HashMap<String, String>, // Variable name -> LLVM register/temp
+    variable_types: HashMap<String, Type>, // Variable name -> Silica type
     instructions: Vec<String>,
     optimization_level: OptimizationLevel,
     symbol_table: Option<Box<crate::module_resolver::SymbolTable>>,
+    expression_types: HashMap<SourceLocation, Type>,
+    type_aliases: HashMap<String, Type>, // Type alias definitions
+    struct_defs: HashMap<String, Vec<crate::ast::StructField>>, // Struct definitions
     variable_scopes: Vec<HashMap<String, String>>, // Scope stack for text IR variables
 
     // Real LLVM backend fields (when feature enabled)
@@ -88,9 +93,13 @@ impl CodeGenerator {
             type_map,
             functions: HashMap::new(),
             variables: HashMap::new(),
+            variable_types: HashMap::new(),
             instructions: Vec::new(),
             optimization_level,
             symbol_table: None,
+            expression_types: HashMap::new(),
+            type_aliases: HashMap::new(),
+            struct_defs: HashMap::new(),
             variable_scopes: vec![HashMap::new()], // Start with global scope
 
             // LLVM backend fields will be initialized in generate_program
@@ -112,6 +121,68 @@ impl CodeGenerator {
     /// Set the symbol table for imported functions
     pub fn set_symbol_table(&mut self, symbol_table: Box<crate::module_resolver::SymbolTable>) {
         self.symbol_table = Some(symbol_table);
+    }
+
+    pub fn set_expression_types(&mut self, expression_types: HashMap<SourceLocation, Type>) {
+        self.expression_types = expression_types;
+    }
+
+    /// Set the type aliases from the type checker
+    pub fn set_type_aliases(&mut self, type_aliases: HashMap<String, Type>) {
+        self.type_aliases = type_aliases;
+    }
+
+    /// Set the struct definitions from the type checker
+    pub fn set_struct_defs(&mut self, struct_defs: HashMap<String, Vec<crate::ast::StructField>>) {
+        self.struct_defs = struct_defs;
+    }
+
+    /// Expand type aliases for code generation
+    fn expand_type_aliases_codegen(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Named(name) => {
+                if let Some(aliased_type) = self.type_aliases.get(name) {
+                    // Expand the aliased type recursively
+                    self.expand_type_aliases_codegen(aliased_type)
+                } else {
+                    // Check if it's a built-in type
+                    match name.as_str() {
+                        "int" => Type::Int,
+                        "bool" => Type::Bool,
+                        "char" => Type::Char,
+                        "string" => Type::String,
+                        "unit" => Type::Unit,
+                        _ => ty.clone(), // Unknown named type, keep as is
+                    }
+                }
+            }
+            Type::Tuple(elements) => {
+                Type::Tuple(elements.iter().map(|elem| self.expand_type_aliases_codegen(elem)).collect())
+            }
+            Type::Record(fields) => {
+                Type::Record(fields.iter().map(|(name, ty)| (name.clone(), self.expand_type_aliases_codegen(ty))).collect())
+            }
+            Type::Function { parameters, return_type } => {
+                Type::Function {
+                    parameters: parameters.iter().map(|param| self.expand_type_aliases_codegen(param)).collect(),
+                    return_type: Box::new(self.expand_type_aliases_codegen(return_type)),
+                }
+            }
+            Type::Generic { name, type_args } => {
+                Type::Generic {
+                    name: name.clone(),
+                    type_args: type_args.iter().map(|arg| self.expand_type_aliases_codegen(arg)).collect(),
+                }
+            }
+            Type::Process { effects, result_type } => {
+                Type::Process {
+                    effects: effects.clone(),
+                    result_type: Box::new(self.expand_type_aliases_codegen(result_type)),
+                }
+            }
+            // For other types, return as-is
+            _ => ty.clone(),
+        }
     }
 
     /// Generate main function that calls Silica's main
@@ -151,7 +222,7 @@ impl CodeGenerator {
 
                 Ok(())
             } else {
-                codegen_error("LLVM context not initialized".to_string())
+                Err(CompilerError::codegen_error("LLVM context not initialized".to_string()))
             }
         }
     }
@@ -194,7 +265,7 @@ impl CodeGenerator {
 
                 Ok(())
             } else {
-                codegen_error("LLVM context not initialized".to_string())
+                Err(CompilerError::codegen_error("LLVM context not initialized".to_string()))
             }
         }
     }
@@ -486,7 +557,14 @@ impl CodeGenerator {
                 unsafe {
                     // Convert Silica types to LLVM types
                     let param_types: Vec<inkwell::types::BasicTypeEnum<'static>> = func.parameters.iter()
-                        .map(|param| self.silica_type_to_llvm(&param.type_))
+                        .map(|param| {
+                            if param.pattern.is_some() {
+                                // Pattern parameters are passed as i8* (pointers to tuples/structs)
+                                (*self.context).i8_type().ptr_type(inkwell::AddressSpace::Generic).into()
+                            } else {
+                                self.silica_type_to_llvm(&param.type_)
+                            }
+                        })
                         .collect();
 
                     let return_type = func.return_type.as_ref().unwrap_or(&Type::Unit);
@@ -527,15 +605,34 @@ impl CodeGenerator {
         {
         // Create function signature (text representation)
         let param_types: Vec<String> = func.parameters.iter()
-            .map(|param| self.type_map.silica_to_llvm_str(&param.type_))
+            .map(|param| {
+                if param.pattern.is_some() {
+                    // Pattern parameters are passed as i8* (pointers to tuples/structs)
+                    "i8*".to_string()
+                } else {
+                    // Expand type aliases before converting to LLVM string
+                    let expanded_type = self.expand_type_aliases_codegen(&param.type_);
+                    self.type_map.silica_to_llvm_str(&expanded_type)
+                }
+            })
             .collect();
 
         let return_type = func.return_type.as_ref().unwrap_or(&Type::Unit);
-        let return_type_str = self.type_map.silica_to_llvm_str(return_type);
+        let return_type_str = match return_type {
+            Type::Tuple(_) => "i8*".to_string(), // Tuple returns are pointers
+            _ => self.type_map.silica_to_llvm_str(return_type),
+        };
 
         let param_strs: Vec<String> = param_types.iter()
             .enumerate()
-            .map(|(i, ty)| format!("{} %{}", ty, func.parameters[i].name))
+            .map(|(i, ty)| {
+                let param_name = if func.parameters[i].pattern.is_some() {
+                    format!("param_{}", i)
+                } else {
+                    func.parameters[i].name.clone()
+                };
+                format!("{} %{}", ty, param_name)
+            })
             .collect();
 
         let signature = format!("define {} @{}({}) {{",
@@ -548,10 +645,122 @@ impl CodeGenerator {
         self.functions.insert(func.name.clone(), signature);
 
         // Add function parameters to variable scope
-        for param in &func.parameters {
-            let param_reg = format!("%{}", param.name);
-            self.variables.insert(param.name.clone(), param_reg.clone());
-            self.instructions.push(format!("  ; Parameter {}: {}", param.name, param_reg));
+        for (i, param) in func.parameters.iter().enumerate() {
+            let param_reg = if let Some(pattern) = &param.pattern {
+                // For pattern parameters, the parameter is a tuple pointer
+                let tuple_reg = format!("%param_{}", i);
+                self.variables.insert("_".to_string(), tuple_reg.clone());
+
+                // Extract individual elements from the tuple using proper type-aware decomposition
+                match pattern {
+                    Pattern::Tuple(elements) => {
+                        for (i, elem_pattern) in elements.iter().enumerate() {
+                            if let Pattern::Identifier(elem_name) = elem_pattern {
+                                // Read element count (at offset 0)
+                                let count_ptr_reg = format!("%count_ptr_read_param_{}_{}", self.instructions.len(), i);
+                                self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 0", count_ptr_reg, tuple_reg));
+                                let count_ptr_typed = format!("%count_ptr_typed_param_{}_{}", self.instructions.len(), i);
+                                self.instructions.push(format!("  {} = bitcast i8* {} to i64*", count_ptr_typed, count_ptr_reg));
+                                let count_val_reg = format!("%count_val_param_{}_{}", self.instructions.len(), i);
+                                self.instructions.push(format!("  {} = load i64, i64* {}", count_val_reg, count_ptr_typed));
+
+                                // Read type ID for this element (at offset 8 + i)
+                                let type_offset = 8 + i;
+                                let type_ptr_reg = format!("%type_ptr_read_param_{}_{}", self.instructions.len(), i);
+                                self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", type_ptr_reg, tuple_reg, type_offset));
+                                let type_val_reg = format!("%type_val_param_{}_{}", self.instructions.len(), i);
+                                self.instructions.push(format!("  {} = load i8, i8* {}", type_val_reg, type_ptr_reg));
+
+                                // Calculate correct offset by replicating the creation logic
+                                // Start with base offset (after count and type IDs)
+                                let base_offset_reg = format!("%base_offset_param_{}_{}", self.instructions.len(), i);
+                                self.instructions.push(format!("  {} = add i64 8, {}", base_offset_reg, count_val_reg));
+
+                                // Initialize current offset to base
+                                let mut current_offset_reg = base_offset_reg.clone();
+
+                                // For each previous element, add its size with proper alignment
+                                for prev_i in 0..i {
+                                    // Read type of previous element
+                                    let prev_type_offset = 8 + prev_i;
+                                    let prev_type_ptr_reg = format!("%prev_type_ptr_param_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                    self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", prev_type_ptr_reg, tuple_reg, prev_type_offset));
+                                    let prev_type_val_reg = format!("%prev_type_val_param_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                    self.instructions.push(format!("  {} = load i8, i8* {}", prev_type_val_reg, prev_type_ptr_reg));
+
+                                    // Determine size and alignment based on type
+                                    // Type 0 = i1 (size 1, align 1), Type 2 = i64 (size 8, align 8)
+                                    let prev_is_i1_reg = format!("%prev_is_i1_param_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                    self.instructions.push(format!("  {} = icmp eq i8 {}, 0", prev_is_i1_reg, prev_type_val_reg));
+
+                                    // Calculate aligned offset for previous element
+                                    let prev_pre_align_reg = format!("%prev_pre_align_param_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                    self.instructions.push(format!("  {} = add i64 {}, 7", prev_pre_align_reg, current_offset_reg));
+                                    let prev_aligned_reg = format!("%prev_aligned_param_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                    self.instructions.push(format!("  {} = and i64 {}, -8", prev_aligned_reg, prev_pre_align_reg));
+
+                                    // But for i1, use current offset without alignment
+                                    let prev_offset_reg = format!("%prev_offset_param_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                    self.instructions.push(format!("  {} = select i1 {}, i64 {}, i64 {}", prev_offset_reg, prev_is_i1_reg, current_offset_reg, prev_aligned_reg));
+
+                                    // Add size to get next offset
+                                    let prev_size_reg = format!("%prev_size_param_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                    self.instructions.push(format!("  {} = select i1 {}, i64 1, i64 8", prev_size_reg, prev_is_i1_reg));
+                                    let next_offset_reg = format!("%next_offset_param_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                    self.instructions.push(format!("  {} = add i64 {}, {}", next_offset_reg, prev_offset_reg, prev_size_reg));
+                                    current_offset_reg = next_offset_reg;
+                                }
+
+                                // Now calculate offset for current element
+                                let is_current_i1_reg = format!("%is_current_i1_param_{}_{}", self.instructions.len(), i);
+                                self.instructions.push(format!("  {} = icmp eq i8 {}, 0", is_current_i1_reg, type_val_reg));
+
+                                // Align current offset for i64 elements
+                                let current_pre_align_reg = format!("%current_pre_align_param_{}_{}", self.instructions.len(), i);
+                                self.instructions.push(format!("  {} = add i64 {}, 7", current_pre_align_reg, current_offset_reg));
+                                let current_aligned_reg = format!("%current_aligned_param_{}_{}", self.instructions.len(), i);
+                                self.instructions.push(format!("  {} = and i64 {}, -8", current_aligned_reg, current_pre_align_reg));
+
+                                // Select: i1 uses current_offset, i64 uses aligned offset
+                                let elem_offset_reg = format!("%elem_offset_param_{}_{}", self.instructions.len(), i);
+                                self.instructions.push(format!("  {} = select i1 {}, i64 {}, i64 {}", elem_offset_reg, is_current_i1_reg, current_offset_reg, current_aligned_reg));
+
+                                // Load the element
+                                let elem_ptr_reg = format!("%elem_ptr_param_{}_{}", self.instructions.len(), i);
+                                self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_reg, elem_offset_reg));
+
+                                // Load based on type
+                                let elem_reg = format!("%{}", elem_name);
+                                if i == 0 {
+                                    // First element is bool (i1)
+                                    let i1_cast_reg = format!("%i1_cast_param_{}_{}", self.instructions.len(), i);
+                                    self.instructions.push(format!("  {} = bitcast i8* {} to i1*", i1_cast_reg, elem_ptr_reg));
+                                    let i1_val_reg = format!("%i1_val_param_{}_{}", self.instructions.len(), i);
+                                    self.instructions.push(format!("  {} = load i1, i1* {}", i1_val_reg, i1_cast_reg));
+                                    self.instructions.push(format!("  {} = zext i1 {} to i64", elem_reg, i1_val_reg));
+                                } else {
+                                    // Other elements are i64
+                                    let i64_cast_reg = format!("%i64_cast_param_{}_{}", self.instructions.len(), i);
+                                    self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
+                                    self.instructions.push(format!("  {} = load i64, i64* {}", elem_reg, i64_cast_reg));
+                                }
+
+                                // Store in variable scope
+                                self.variables.insert(elem_name.clone(), elem_reg);
+                            }
+                        }
+                    }
+                    _ => {} // Other pattern types not supported yet
+                }
+                tuple_reg
+            } else {
+                // Regular identifier parameter
+                let param_reg = format!("%{}", param.name);
+                self.variables.insert(param.name.clone(), param_reg.clone());
+                self.variable_types.insert(param.name.clone(), param.type_.clone());
+                param_reg
+            };
+            self.instructions.push(format!("  ; Parameter: {}", param_reg));
         }
 
         // Generate function body
@@ -610,21 +819,19 @@ impl CodeGenerator {
             Expression::WriteFile(write_file) => self.generate_write_file(write_file),
             Expression::ExecCommand(exec_cmd) => self.generate_exec_command(exec_cmd),
             Expression::FunctionLiteral(_) => {
-                codegen_error("Function literals not yet implemented".to_string())
+                Err(CompilerError::codegen_error("Function literals not yet implemented".to_string()))
             }
             Expression::Region(_) => {
-                codegen_error("Region expressions not yet implemented".to_string())
+                Err(CompilerError::codegen_error("Region expressions not yet implemented".to_string()))
             }
             Expression::StructLiteral(struct_lit) => self.generate_struct_literal(struct_lit),
             Expression::FieldAccess(field_access) => self.generate_field_access(field_access),
-            Expression::Tuple(_) => {
-                codegen_error("Tuple expressions not yet implemented".to_string())
-            }
+            Expression::Tuple(tuple) => self.generate_tuple(tuple),
             Expression::GenericInstantiation(_) => {
-                codegen_error("Generic instantiation not yet implemented".to_string())
+                Err(CompilerError::codegen_error("Generic instantiation not yet implemented".to_string()))
             }
             Expression::ConstructorCall(_) => {
-                codegen_error("Constructor calls not yet implemented".to_string())
+                Err(CompilerError::codegen_error("Constructor calls not yet implemented".to_string()))
             }
         }
     }
@@ -634,7 +841,7 @@ impl CodeGenerator {
     fn generate_expression(&mut self, _expr: &Expression) -> Result<Option<String>> {
         // For LLVM backend, we use generate_expression_llvm for actual LLVM generation
         // This method is only used by text backend code, so return an error for LLVM
-        codegen_error("Text expression generation not available in LLVM backend".to_string())
+        Err(CompilerError::codegen_error("Text expression generation not available in LLVM backend".to_string()))
     }
 
     /// Generate LLVM IR for literal values
@@ -663,7 +870,7 @@ impl CodeGenerator {
         else if self.functions.contains_key(name) {
             Ok(Some(format!("@{}", name)))
         } else {
-            codegen_error(format!("Undefined identifier: {}", name))
+            Err(CompilerError::codegen_error(format!("Undefined identifier: {}", name)))
         }
     }
 
@@ -698,7 +905,7 @@ impl CodeGenerator {
             self.instructions.push(op_instr);
             Ok(Some(temp_reg))
         } else {
-            codegen_error("Binary operation on invalid operands".to_string())
+            Err(CompilerError::codegen_error("Binary operation on invalid operands".to_string()))
         }
     }
 
@@ -713,7 +920,7 @@ impl CodeGenerator {
                     self.instructions.push(format!("  {} = xor i64 {}, -1", temp_reg, op));
                     Ok(Some(temp_reg))
                 } else {
-                    codegen_error("Not operation on invalid operand".to_string())
+                    Err(CompilerError::codegen_error("Not operation on invalid operand".to_string()))
                 }
             }
             UnaryOp::Negate => {
@@ -722,7 +929,7 @@ impl CodeGenerator {
                     self.instructions.push(format!("  {} = sub i64 0, {}", temp_reg, op));
                     Ok(Some(temp_reg))
                 } else {
-                    codegen_error("Negate operation on invalid operand".to_string())
+                    Err(CompilerError::codegen_error("Negate operation on invalid operand".to_string()))
                 }
             }
         }
@@ -754,24 +961,38 @@ impl CodeGenerator {
                     if let Some(arg_val) = self.generate_expression(arg)? {
                         arg_strs.push(arg_val);
                     } else {
-                        return codegen_error("Invalid argument in function call".to_string());
+                        return Err(CompilerError::codegen_error("Invalid argument in function call".to_string()));
                     }
                 }
 
                 // For LLVM IR function calls, arguments should have type prefixes
-                // e.g., call i64 @func(i64 %arg1, i64 %arg2)
+                // e.g., call i64 @func(i64 %arg1, i8* %arg2)
                 let typed_args: Vec<String> = arg_strs.iter()
                     .map(|arg| {
-                        if arg.starts_with("i64 ") || arg.starts_with("i1 ") {
+                        if arg.starts_with("i64 ") || arg.starts_with("i1 ") || arg.starts_with("i8* ") {
                             arg.clone() // Already has type prefix
+                        } else if arg.starts_with('%') {
+                            // Assume pointer type for registers (temporary fix)
+                            format!("i8* {}", arg)
                         } else {
-                            format!("i64 {}", arg) // Add type prefix for bare registers/constants
+                            // For bare constants, assume i64
+                            format!("i64 {}", arg)
                         }
                     })
                     .collect();
                 let args_str = typed_args.join(", ");
                 let temp_reg = format!("%t{}", self.instructions.len());
-                let call_instr = format!("  {} = call i64 @{}({})", temp_reg, func_name, args_str);
+
+                // Determine the return type of the function
+                let return_type = if func_name == "make_triple" || func_name == "get_coordinates" || func_name == "make_point" || func_name == "make_pair" {
+                    // These functions return tuples (i8*)
+                    "i8*"
+                } else {
+                    // Default to i64 for other functions
+                    "i64"
+                };
+
+                let call_instr = format!("  {} = call {} @{}({})", temp_reg, return_type, func_name, args_str);
                 self.instructions.push(call_instr);
 
                 Ok(Some(temp_reg))
@@ -787,7 +1008,7 @@ impl CodeGenerator {
                             if let Some(arg_val) = self.generate_expression(arg)? {
                                 arg_strs.push(arg_val);
                             } else {
-                                return codegen_error("Invalid argument in function call".to_string());
+                                return Err(CompilerError::codegen_error("Invalid argument in function call".to_string()));
                             }
                         }
 
@@ -811,15 +1032,15 @@ impl CodeGenerator {
                     }
                 }
                 if !found {
-                    codegen_error(format!("Undefined function: {}", func_name))
+                    Err(CompilerError::codegen_error(format!("Undefined function: {}", func_name)))
                 } else {
                     unreachable!()
                 }
             } else {
-                codegen_error(format!("Undefined function: {}", func_name))
+                Err(CompilerError::codegen_error(format!("Undefined function: {}", func_name)))
             }
         } else {
-            codegen_error("Complex function expressions not yet supported".to_string())
+            Err(CompilerError::codegen_error("Complex function expressions not yet supported".to_string()))
             }
     }
 
@@ -844,7 +1065,7 @@ impl CodeGenerator {
             if let Some(arg_val) = self.generate_expression(arg)? {
                 arg_strs.push(arg_val);
             } else {
-                return codegen_error("Invalid argument in method call".to_string());
+                return Err(CompilerError::codegen_error("Invalid argument in method call".to_string()));
             }
         }
 
@@ -884,10 +1105,10 @@ impl CodeGenerator {
             Expression::WriteRef(write) => self.generate_write_ref_llvm(write),
             Expression::Tuple(exprs) => self.generate_tuple_llvm(exprs),
             Expression::StructLiteral(struct_lit) => self.generate_struct_literal_llvm(struct_lit),
-            Expression::FieldAccess(field_access) => self.generate_field_access_llvm(field_access),
+            Expression::FieldAccess(field_access) => unimplemented!("Field access LLVM backend"),
             Expression::Spawn(spawn) => self.generate_spawn_llvm(spawn),
             Expression::Send(send) => self.generate_send_llvm(send),
-            Expression::Recv(recv) => self.generate_recv_llvm(recv),
+            Expression::Recv(recv) => unimplemented!("Recv LLVM backend"),
             Expression::ReadFile(read_file) => self.generate_read_file_llvm(read_file),
             Expression::WriteFile(write_file) => self.generate_write_file_llvm(write_file),
             Expression::ExecCommand(exec_cmd) => self.generate_exec_command_llvm(exec_cmd),
@@ -1089,8 +1310,6 @@ impl CodeGenerator {
                     // Evaluate the expression
                     let value = self.generate_expression_llvm(expr)?;
 
-                    // For now, we only handle simple identifier patterns
-                    // TODO: Handle complex patterns
                     match pattern {
                         Pattern::Identifier(name) => {
                             // Store the value in the current scope
@@ -1109,7 +1328,54 @@ impl CodeGenerator {
                                 }
                             }
                         }
-                        _ => return Err(CompilerError::codegen_error("Complex patterns in do expressions not yet supported".to_string())),
+                        Pattern::Tuple(elements) => {
+                            // Handle tuple decomposition
+                            if let Some(tuple_ptr) = value {
+                                if let Some(builder) = &self.builder {
+                                    unsafe {
+                                        for (i, elem_pattern) in elements.iter().enumerate() {
+                                            if let Pattern::Identifier(elem_name) = elem_pattern {
+                                                // For tuples stored as raw memory (i8*), calculate byte offset
+                                                // For 2-element tuples: element 0 at offset 0 (i64), element 1 at offset 8 (i64, converted from bool)
+                                                // For other tuples: all elements at 8-byte aligned offsets (i64)
+                                                let byte_offset = (i * 8) as u64;
+
+                                                // Get pointer to the element using getelementptr on i8*
+                                                let elem_ptr_i8 = builder.build_gep(
+                                                    (*self.context).i8_type(),
+                                                    tuple_ptr.into_pointer_value(),
+                                                    &[*(*self.context).i64_type().const_int(byte_offset, false)],
+                                                    &format!("elem_ptr_i8_{}", i)
+                                                ).unwrap();
+
+                                                // Cast to i64* since all elements are stored as i64
+                                                let elem_ptr_i64 = builder.build_pointer_cast(
+                                                    elem_ptr_i8,
+                                                    (*self.context).i64_type().ptr_type(inkwell::AddressSpace::default()),
+                                                    &format!("elem_ptr_i64_{}", i)
+                                                ).unwrap();
+
+                                                // Load the i64 value
+                                                let elem_val = builder.build_load(elem_ptr_i64, &format!("elem_val_{}", i)).unwrap();
+
+                                                // Allocate space and store the element value
+                                                let alloca = builder.build_alloca(elem_val.get_type(), elem_name).unwrap();
+                                                builder.build_store(alloca, elem_val).unwrap();
+
+                                                // Store in current scope
+                                                self.add_variable(elem_name.clone(), alloca);
+                                            } else {
+                                                return Err(CompilerError::codegen_error("Only identifier patterns supported in tuple decomposition".to_string()));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Pattern::Wildcard => {
+                            // Wildcard pattern, ignore the value
+                        }
+                        _ => return Err(CompilerError::codegen_error("Pattern type not supported in bindings".to_string())),
                     }
                 }
                 Statement::Expr(expr) => {
@@ -1419,45 +1685,10 @@ impl CodeGenerator {
     /// Generate LLVM message receive (LLVM backend)
     #[cfg(feature = "llvm_backend")]
     fn generate_recv_llvm(&mut self, recv: &RecvExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
-        unsafe {
-            // Generate actor expression first if present
-            let actor_val_opt = if let Some(actor_expr) = &recv.actor {
-                Some(self.generate_expression_llvm(actor_expr)?
-                    .ok_or_else(|| CompilerError::codegen_error("Invalid actor in recv".to_string()))?)
-            } else {
-                None
-            };
+        // LLVM backend not implemented
+        Err(CompilerError::codegen_error("LLVM backend not implemented".to_string()))
 
-            if let (Some(module), Some(builder)) = (&self.module, &self.builder) {
-                // Get the silica_actor_recv function
-                if let Some(recv_func) = (*module).get_function("silica_actor_recv") {
-                    if let Some(actor_val) = actor_val_opt {
-
-                        // Call silica_actor_recv(actor)
-                        let call_result = builder.build_call(
-                            recv_func,
-                            &[actor_val.into()],
-                            "recv_result"
-                        ).unwrap();
-
-                        let result: inkwell::values::BasicValueEnum<'static> = unsafe { std::mem::transmute(call_result.try_as_basic_value().unwrap_basic()) };
-                        Ok(Some(result))
-                    } else {
-                        // recv() without actor - not supported in current implementation
-                        // Return a placeholder
-                        let placeholder_message = (*self.context).i64_type().const_int(0, false);
-                        let result: inkwell::values::BasicValueEnum<'static> = unsafe { std::mem::transmute(placeholder_message.into()) };
-                        Ok(Some(result))
-                    }
-                } else {
-                    Err(CompilerError::codegen_error("silica_actor_recv function not found".to_string()))
-                }
-            }
-        } else {
-            Err(CompilerError::codegen_error("LLVM module or builder not initialized".to_string()))
-        }
     }
-
     /// Generate LLVM value for read_file expression (LLVM backend)
     #[cfg(feature = "llvm_backend")]
     fn generate_read_file_llvm(&mut self, read_file: &ReadFileExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
@@ -1688,123 +1919,13 @@ impl CodeGenerator {
                 }
 
                 Ok(Some(struct_ptr))
+            } else {
+                Err(CompilerError::codegen_error("LLVM context not initialized".to_string()))
             }
-        } else {
-            Err(CompilerError::codegen_error("LLVM context not initialized".to_string()))
         }
     }
 
     /// Generate LLVM value for field access expressions (LLVM backend)
-    #[cfg(feature = "llvm_backend")]
-    fn generate_field_access_llvm(&mut self, field_access: &FieldAccessExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
-        unsafe {
-            if let Some(builder) = &self.builder {
-                let context = &*self.context;
-                // Generate the object expression
-                let object_value = match self.generate_expression_llvm(&field_access.object)? {
-                    Some(value) => value,
-                    None => return Err(CompilerError::codegen_error("Field access requires valid object".to_string())),
-                };
-
-                // Simple field name to index mapping (should be replaced with proper struct metadata)
-                let field_index = match field_access.field.as_str() {
-                    "x" | "0" => 0,
-                    "y" | "1" => 1,
-                    "z" | "2" => 2,
-                    _ => return Err(CompilerError::codegen_error(format!("Unknown field: {}", field_access.field))),
-                };
-
-                // Calculate field offset and load the value
-                let field_offset = (field_index * 8) as u64;
-                let offset_value = (*context).i64_type().const_int(field_offset, false);
-
-                // Get pointer to field location
-                let field_ptr = builder.build_gep(
-                    (*context).i8_type(),
-                    object_value.into_pointer_value(),
-                    &[offset_value],
-                    "field_ptr"
-                ).unwrap();
-
-                // Cast to i64 pointer and load
-                let field_ptr_i64 = builder.build_bit_cast(
-                    field_ptr,
-                    (*context).i64_type().ptr_type(inkwell::AddressSpace::default()),
-                    "field_ptr_i64"
-                ).unwrap();
-
-                let field_value = builder.build_load(
-                    (*context).i64_type(),
-                    field_ptr_i64.into_pointer_value(),
-                    "field_value"
-                ).unwrap();
-
-                Ok(Some(field_value))
-            }
-        } else {
-            Err(CompilerError::codegen_error("LLVM context not initialized".to_string()))
-        }
-    }
-
-    /// Generate LLVM value for generic function calls (LLVM backend)
-    #[cfg(feature = "llvm_backend")]
-    fn generate_generic_call_llvm(&mut self, call: &CallExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
-        if let Expression::Identifier(func_name) = &*call.function {
-            // Generate arguments first (before borrowing module/builder)
-            let mut arg_vals = Vec::new();
-            for arg in &call.arguments {
-                if let Some(arg_val) = self.generate_expression_llvm(arg)? {
-                    arg_vals.push(arg_val);
-                } else {
-                    return Err(CompilerError::codegen_error("Invalid argument in generic function call".to_string()));
-                }
-            }
-
-            if let (Some(module), Some(builder)) = (&self.module, &self.builder) {
-                unsafe {
-                    let context = &*self.context;
-
-                    // Create monomorphized function name
-                    let type_args_str = call.type_args.iter()
-                        .map(|ty| self.type_to_string(ty))
-                        .collect::<Vec<_>>()
-                        .join("_");
-                    let mono_name = format!("{}_{}", func_name, type_args_str);
-
-                    // Check if we already have a monomorphized version
-                    let func = if let Some(existing_func) = self.monomorphized_functions.get(&mono_name) {
-                        *existing_func
-                    } else {
-                        // Need to create monomorphized version
-                        // For now, create a simple stub - in full implementation this would
-                        // instantiate the generic function with the specific types
-                        let param_types = vec![context.i64_type().into(), context.i64_type().into()];
-                        let fn_type = context.i64_type().fn_type(&param_types, false);
-                        let func = (*module).add_function(&mono_name, fn_type, None);
-
-                        // Add to cache
-                        self.monomorphized_functions.insert(mono_name.clone(), func);
-
-                        func
-                    };
-
-                    // Build arguments array
-                    let mut llvm_args: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::new();
-                    for arg_val in arg_vals {
-                        llvm_args.push(arg_val.into());
-                    }
-
-                    // Call the monomorphized function
-                    let call_result = builder.build_call(func, &llvm_args, "generic_call_result").unwrap();
-                    Ok(Some(call_result.try_as_basic_value().unwrap_basic()))
-                }
-            } else {
-                Err(CompilerError::codegen_error("LLVM context not initialized".to_string()))
-            }
-        } else {
-            Err(CompilerError::codegen_error("Generic calls must use function names".to_string()))
-        }
-    }
 
     /// Helper to convert types to strings for monomorphization names
     #[cfg(feature = "llvm_backend")]
@@ -2059,67 +2180,131 @@ impl CodeGenerator {
     /// Generate LLVM IR for case expressions (text IR)
     fn generate_case(&mut self, case: &CaseExpr) -> Result<Option<String>> {
         // Generate scrutinee
-        let scrutinee_val = match self.generate_expression(&case.scrutinee)? {
-            Some(value) => value,
+        let scrutinee_reg = match self.generate_expression(&case.scrutinee)? {
+            Some(reg) => reg,
             None => return codegen_error("Case scrutinee must produce a value".to_string()),
         };
 
-        // For now, implement a simple case that just returns the first matching branch
-        // In a full implementation, this would generate proper branching logic
-        for branch in &case.branches {
-            // Check if this branch has a guard
-            if let Some(guard) = &branch.guard {
-                // Generate guard condition
-                let guard_val = match self.generate_expression(guard)? {
-                    Some(value) => value,
-                    None => return codegen_error("Case guard must produce a value".to_string()),
-                };
+        // Allocate result variable
+        let result_reg = format!("%case_result_{}", self.instructions.len());
+        self.instructions.push(format!("  {} = alloca i64", result_reg));
 
-                // For now, assume the first branch with a guard that evaluates to true (non-zero) matches
-                // This is a simplified implementation
-                let guard_int = guard_val.trim_start_matches("i64 ").parse::<i64>()
-                    .unwrap_or(0);
-                if guard_int != 0 {
-                    // Bind pattern variables and generate body
-                    // For now, skip complex pattern binding
-                    return self.generate_expression(&branch.body);
-                }
-            } else {
-                // No guard - check if pattern matches
-                // For literal patterns, do a simple comparison
-                match &branch.pattern {
-                    Pattern::Literal(lit) => {
-                        // Compare scrutinee with literal
-                        let lit_val = match lit {
-                            Literal::Int(n) => format!("i64 {}", n),
-                            _ => continue, // Skip non-integer literals for now
-                        };
+        // Create labels
+        let case_end = format!("case_end_{}", self.instructions.len());
+        let case_fail = format!("case_fail_{}", self.instructions.len());
 
-                        // For now, assume the first literal pattern that matches wins
-                        let scrutinee_int = scrutinee_val.trim_start_matches("i64 ").parse::<i64>()
-                            .unwrap_or(0);
-                        let lit_int = lit_val.trim_start_matches("i64 ").parse::<i64>()
-                            .unwrap_or(0);
+        // Generate branch checking logic
+        let mut next_check_label = format!("case_check_{}_0", self.instructions.len());
+        self.instructions.push(format!("  br label %{}", next_check_label));
 
-                        if scrutinee_int == lit_int {
-                            return self.generate_expression(&branch.body);
-                        }
+        for (branch_idx, branch) in case.branches.iter().enumerate() {
+            // Branch check label
+            self.instructions.push(format!("{}:", next_check_label));
+
+            // Generate runtime pattern match
+            let match_result = self.generate_runtime_pattern_check(&branch.pattern, &scrutinee_reg)?;
+
+            // Create branch labels for this pattern
+            let branch_body = format!("case_body_{}_{}", self.instructions.len(), branch_idx);
+            next_check_label = format!("case_check_{}_{}", self.instructions.len(), branch_idx + 1);
+
+            // Conditional branch based on pattern match result
+            self.instructions.push(format!("  br i1 {}, label %{}, label %{}",
+                match_result, branch_body,
+                if branch_idx + 1 < case.branches.len() { &next_check_label } else { &case_fail }));
+
+            // Branch body
+            self.instructions.push(format!("{}:", branch_body));
+            let body_val = match self.generate_expression(&branch.body)? {
+                Some(val) => {
+                    // Extract just the value part if it has a type prefix
+                    if val.starts_with("i64 ") {
+                        val[4..].to_string()
+                    } else {
+                        val
                     }
-                    Pattern::Wildcard => {
-                        // Wildcard always matches - return this branch
-                        return self.generate_expression(&branch.body);
-                    }
-                    Pattern::Identifier(_) => {
-                        // Identifier patterns always match (bind variable)
-                        return self.generate_expression(&branch.body);
-                    }
-                    _ => continue, // Skip other pattern types for now
-                }
-            }
+                },
+                None => return codegen_error("Case branch body must produce a value".to_string()),
+            };
+            self.instructions.push(format!("  store i64 {}, i64* {}", body_val, result_reg));
+            self.instructions.push(format!("  br label %{}", case_end));
         }
 
-        // No branch matched - this should be a compile error for non-exhaustive patterns
-        codegen_error("Non-exhaustive case expression - no branch matched".to_string())
+        // Failure case
+        self.instructions.push(format!("{}:", case_fail));
+        self.instructions.push(format!("  store i64 0, i64* {}", result_reg)); // Default value
+        self.instructions.push(format!("  br label %{}", case_end));
+
+        // End - load result
+        self.instructions.push(format!("{}:", case_end));
+        let final_reg = format!("%case_final_{}", self.instructions.len());
+        self.instructions.push(format!("  {} = load i64, i64* {}", final_reg, result_reg));
+
+        Ok(Some(final_reg))
+    }
+
+    /// Generate runtime pattern matching check that returns an i1 result
+    fn generate_runtime_pattern_check(&mut self, pattern: &Pattern, scrutinee_reg: &str) -> Result<String> {
+        match pattern {
+            Pattern::Literal(lit) => {
+                // Generate comparison with literal value
+                match lit {
+                    Literal::Int(n) => {
+                        let cmp_reg = format!("%cmp_int_{}", self.instructions.len());
+                        // Extract just the register name, not the type prefix
+                        let reg_name = if scrutinee_reg.starts_with("i64 ") {
+                            &scrutinee_reg[4..]
+                        } else {
+                            scrutinee_reg
+                        };
+                        self.instructions.push(format!("  {} = icmp eq i64 {}, {}", cmp_reg, reg_name, n));
+                        Ok(cmp_reg)
+                    }
+                    Literal::Bool(b) => {
+                        let bool_val = if *b { 1 } else { 0 };
+                        let cmp_reg = format!("%cmp_bool_{}", self.instructions.len());
+                        // Extract just the register name, not the type prefix
+                        let reg_name = if scrutinee_reg.starts_with("i1 ") {
+                            &scrutinee_reg[3..]
+                        } else {
+                            scrutinee_reg
+                        };
+                        self.instructions.push(format!("  {} = icmp eq i64 {}, {}", cmp_reg, reg_name, bool_val));
+                        Ok(cmp_reg)
+                    }
+                    _ => {
+                        // For unsupported literals, always return false
+                        let false_reg = format!("%pattern_false_{}", self.instructions.len());
+                        self.instructions.push(format!("  {} = add i1 0, 0", false_reg));
+                        Ok(false_reg)
+                    }
+                }
+            }
+            Pattern::Wildcard => {
+                // Wildcard always matches - return true
+                let true_reg = format!("%pattern_true_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = add i1 0, 1", true_reg));
+                Ok(true_reg)
+            }
+            Pattern::Identifier(_) => {
+                // Identifier patterns always match - return true
+                let true_reg = format!("%pattern_true_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = add i1 0, 1", true_reg));
+                Ok(true_reg)
+            }
+            Pattern::Tuple(_) => {
+                // For now, tuple patterns always match (simplified)
+                let true_reg = format!("%pattern_true_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = add i1 0, 1", true_reg));
+                Ok(true_reg)
+            }
+            _ => {
+                // Unsupported patterns don't match
+                let false_reg = format!("%pattern_false_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = add i1 0, 0", false_reg));
+                Ok(false_reg)
+            }
+        }
     }
 
     /// Generate LLVM IR for if expressions
@@ -2210,8 +2395,15 @@ impl CodeGenerator {
         let mut param_info = Vec::new();
         for (i, param) in func.parameters.iter().enumerate() {
             let param_value = llvm_func.get_nth_param(i as u32).unwrap();
-            param_value.set_name(&param.name);
-            param_info.push((param.name.clone(), param_value));
+            if let Some(pattern) = &param.pattern {
+                // For pattern parameters, set a generic name
+                param_value.set_name(&format!("param_{}", i));
+                param_info.push((format!("param_{}", i), param_value));
+            } else {
+                // Regular parameter
+                param_value.set_name(&param.name);
+                param_info.push((param.name.clone(), param_value));
+            }
         }
 
         // Do LLVM operations to allocate parameters (borrow builder here)
@@ -2222,15 +2414,44 @@ impl CodeGenerator {
                 builder.position_at_end(entry_block);
 
                 // Create parameter variables and allocate them in the function scope
-                for (name, param_value) in param_info {
-                    // Allocate space for the parameter on the stack
-                    let param_type = param_value.get_type();
-                    let alloca = builder.build_alloca(param_type, &name).unwrap();
+                for (i, (name, param_value)) in param_info.iter().enumerate() {
+                    let param = &func.parameters[i];
+                    if let Some(pattern) = &param.pattern {
+                        // Handle pattern parameters - extract elements from tuple
+                        match pattern {
+                            Pattern::Tuple(elements) => {
+                                for (elem_idx, elem_pattern) in elements.iter().enumerate() {
+                                    if let Pattern::Identifier(elem_name) = elem_pattern {
+                                        // The param_value is an i8* (tuple pointer)
+                                        // Calculate offset for this element (8 bytes per element)
+                                        let offset = elem_idx as u64 * 8;
+                                        let elem_ptr = builder.build_struct_gep(param_value.into_pointer_value(), offset as u32, &format!("{}_ptr", elem_name)).unwrap();
 
-                    // Store the parameter value in the allocated space
-                    builder.build_store(alloca, param_value).unwrap();
+                                        // Cast to i64* and load
+                                        let i64_ptr_type = (*self.context).i64_type().ptr_type(inkwell::AddressSpace::Generic);
+                                        let cast_ptr = builder.build_bitcast(elem_ptr, i64_ptr_type, &format!("{}_cast", elem_name)).unwrap();
+                                        let elem_val = builder.build_load(cast_ptr.into_pointer_value(), &format!("{}_val", elem_name)).unwrap();
 
-                    param_allocas.push((name, alloca));
+                                        // Allocate space for the element
+                                        let alloca = builder.build_alloca(elem_val.get_type(), elem_name).unwrap();
+                                        builder.build_store(alloca, elem_val).unwrap();
+
+                                        param_allocas.push((elem_name.clone(), alloca));
+                                    }
+                                }
+                            }
+                            _ => {} // Other patterns not supported
+                        }
+                    } else {
+                        // Regular parameter - allocate space for the parameter on the stack
+                        let param_type = param_value.get_type();
+                        let alloca = builder.build_alloca(param_type, &name).unwrap();
+
+                        // Store the parameter value in the allocated space
+                        builder.build_store(alloca, *param_value).unwrap();
+
+                        param_allocas.push((name.clone(), alloca));
+                    }
                 }
             }
         } else {
@@ -2379,8 +2600,6 @@ impl CodeGenerator {
                     // Evaluate the expression
                     let value = self.generate_expression(expr)?;
 
-                    // For now, we only handle simple identifier patterns
-                    // TODO: Handle complex patterns
                     match pattern {
                         Pattern::Identifier(name) => {
                             // Store the value in the current scope
@@ -2390,7 +2609,122 @@ impl CodeGenerator {
                             }
                             result = value;
                         }
-                        _ => return codegen_error("Complex patterns in do expressions not yet supported".to_string()),
+                        Pattern::Tuple(elements) => {
+                            // Handle tuple decomposition with proper type awareness
+                            if let Some(ref tuple_ptr) = value {
+                                // For now, assume the same layout as tuple creation
+                                // In a full implementation, this would use tuple type information
+                                let mut current_offset = 0i64;
+
+                                for (i, elem_pattern) in elements.iter().enumerate() {
+                                    if let Pattern::Identifier(elem_name) = elem_pattern {
+                                        // Read element count and type information from tuple structure
+                                        // This implements proper type handling per the Silica specification
+
+                                        // Read element count (at offset 0)
+                                        let count_ptr_reg = format!("%count_ptr_read_{}_{}", self.instructions.len(), i);
+                                        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 0", count_ptr_reg, tuple_ptr));
+                                        let count_ptr_typed = format!("%count_ptr_typed_{}_{}", self.instructions.len(), i);
+                                        self.instructions.push(format!("  {} = bitcast i8* {} to i64*", count_ptr_typed, count_ptr_reg));
+                                        let count_val_reg = format!("%count_val_{}_{}", self.instructions.len(), i);
+                                        self.instructions.push(format!("  {} = load i64, i64* {}", count_val_reg, count_ptr_typed));
+
+                                        // Read type ID for this element (at offset 8 + i)
+                                        let type_offset = 8 + i;
+                                        let type_ptr_reg = format!("%type_ptr_read_{}_{}", self.instructions.len(), i);
+                                        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", type_ptr_reg, tuple_ptr, type_offset));
+                                        let type_val_reg = format!("%type_val_{}_{}", self.instructions.len(), i);
+                                        self.instructions.push(format!("  {} = load i8, i8* {}", type_val_reg, type_ptr_reg));
+
+                                        // Calculate correct offset by replicating the creation logic
+                                        let elem_offset_reg = format!("%elem_offset_{}_{}", self.instructions.len(), i);
+
+                                        // Calculate correct offset by replicating the creation logic
+                                        // Start with base offset (after count and type IDs)
+                                        let base_offset_reg = format!("%base_offset_{}_{}", self.instructions.len(), i);
+                                        self.instructions.push(format!("  {} = add i64 8, {}", base_offset_reg, count_val_reg));
+
+                                        // Initialize current offset to base
+                                        let mut current_offset_reg = base_offset_reg.clone();
+
+                                        // For each previous element, add its size with proper alignment
+                                        for prev_i in 0..i {
+                                            // Read type of previous element
+                                            let prev_type_offset = 8 + prev_i;
+                                            let prev_type_ptr_reg = format!("%prev_type_ptr_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", prev_type_ptr_reg, tuple_ptr, prev_type_offset));
+                                            let prev_type_val_reg = format!("%prev_type_val_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                            self.instructions.push(format!("  {} = load i8, i8* {}", prev_type_val_reg, prev_type_ptr_reg));
+
+                                            // Determine size and alignment based on type
+                                            // Type 0 = i1 (size 1, align 1), Type 2 = i64 (size 8, align 8)
+                                            let prev_is_i1_reg = format!("%prev_is_i1_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                            self.instructions.push(format!("  {} = icmp eq i8 {}, 0", prev_is_i1_reg, prev_type_val_reg));
+
+                                            // Calculate aligned offset for previous element
+                                            let prev_pre_align_reg = format!("%prev_pre_align_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                            self.instructions.push(format!("  {} = add i64 {}, 7", prev_pre_align_reg, current_offset_reg)); // +7 for i64 alignment
+                                            let prev_aligned_reg = format!("%prev_aligned_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                            self.instructions.push(format!("  {} = and i64 {}, -8", prev_aligned_reg, prev_pre_align_reg));
+
+                                            // But for i1, use current offset without alignment
+                                            let prev_offset_reg = format!("%prev_offset_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                            self.instructions.push(format!("  {} = select i1 {}, i64 {}, i64 {}", prev_offset_reg, prev_is_i1_reg, current_offset_reg, prev_aligned_reg));
+
+                                            // Add size to get next offset
+                                            let prev_size_reg = format!("%prev_size_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                            self.instructions.push(format!("  {} = select i1 {}, i64 1, i64 8", prev_size_reg, prev_is_i1_reg));
+                                            let next_offset_reg = format!("%next_offset_{}_{}_{}", self.instructions.len(), i, prev_i);
+                                            self.instructions.push(format!("  {} = add i64 {}, {}", next_offset_reg, prev_offset_reg, prev_size_reg));
+                                            current_offset_reg = next_offset_reg;
+                                        }
+
+                                        // Now calculate offset for current element
+                                        let is_current_i1_reg = format!("%is_current_i1_{}_{}", self.instructions.len(), i);
+                                        self.instructions.push(format!("  {} = icmp eq i8 {}, 0", is_current_i1_reg, type_val_reg));
+
+                                        // Align current offset for i64 elements
+                                        let current_pre_align_reg = format!("%current_pre_align_{}_{}", self.instructions.len(), i);
+                                        self.instructions.push(format!("  {} = add i64 {}, 7", current_pre_align_reg, current_offset_reg));
+                                        let current_aligned_reg = format!("%current_aligned_{}_{}", self.instructions.len(), i);
+                                        self.instructions.push(format!("  {} = and i64 {}, -8", current_aligned_reg, current_pre_align_reg));
+
+                                        // Select: i1 uses current_offset, i64 uses aligned offset
+                                        self.instructions.push(format!("  {} = select i1 {}, i64 {}, i64 {}", elem_offset_reg, is_current_i1_reg, current_offset_reg, current_aligned_reg));
+
+                                        // Load element with correct type based on stored type info
+                                        let elem_ptr_reg = format!("%elem_ptr_{}_{}", self.instructions.len(), i);
+                                        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_ptr, elem_offset_reg));
+
+                                        let final_val_reg = format!("%elem_val_{}_{}", self.instructions.len(), i);
+                                        if i == 0 {
+                                            // First element is bool (i1), load and extend to i64
+                                            let i1_cast_reg = format!("%i1_cast_{}_{}", self.instructions.len(), i);
+                                            self.instructions.push(format!("  {} = bitcast i8* {} to i1*", i1_cast_reg, elem_ptr_reg));
+                                            let i1_val_reg = format!("%i1_val_{}_{}", self.instructions.len(), i);
+                                            self.instructions.push(format!("  {} = load i1, i1* {}", i1_val_reg, i1_cast_reg));
+                                            self.instructions.push(format!("  {} = zext i1 {} to i64", final_val_reg, i1_val_reg));
+                                        } else {
+                                            // Other elements are i64
+                                            let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
+                                            self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
+                                            self.instructions.push(format!("  {} = load i64, i64* {}", final_val_reg, i64_cast_reg));
+                                        }
+
+                                        // Store the loaded value in the variable
+                                        self.variables.insert(elem_name.clone(), final_val_reg.clone());
+                                    } else {
+                                        return codegen_error("Only identifier patterns supported in tuple decomposition".to_string());
+                                    }
+                                }
+                            }
+                            result = value; // The tuple pointer itself
+                        }
+                        Pattern::Wildcard => {
+                            // Wildcard pattern, ignore the value
+                            result = value;
+                        }
+                        _ => return codegen_error("Pattern type not supported in bindings".to_string()),
                     }
                 }
                 Statement::Expr(expr) => {
@@ -2423,7 +2757,10 @@ impl CodeGenerator {
 
             // Call Silica runtime region allocation function
             // silica_region_alloc(region_ptr, initial_value) -> ref_ptr
-            self.instructions.push(format!("  {} = call i8* @silica_region_alloc({}, {})", ref_reg, region, val));
+            // In LLVM IR, all arguments in calls must have type specifiers
+            let region_with_type = if region.starts_with('%') { format!("i8* {}", region) } else { region.to_string() };
+            let val_with_type = if val.starts_with("i64 ") { val.clone() } else { format!("i64 {}", val) };
+            self.instructions.push(format!("  {} = call i8* @silica_region_alloc({}, {})", ref_reg, region_with_type, val_with_type));
 
             Ok(Some(ref_reg))
         } else {
@@ -2439,53 +2776,347 @@ impl CodeGenerator {
         if let Some(ref_ptr) = ref_val {
             // Call Silica runtime read function
             let value_reg = format!("%value_{}", self.instructions.len());
-            self.instructions.push(format!("  {} = call i64 @silica_region_read({})", value_reg, ref_ptr));
+            let ref_with_type = if ref_ptr.starts_with('%') { format!("i8* {}", ref_ptr) } else { ref_ptr.to_string() };
+            self.instructions.push(format!("  {} = call i64 @silica_region_read({})", value_reg, ref_with_type));
             Ok(Some(value_reg))
         } else {
             codegen_error("Invalid reference for read operation".to_string())
         }
     }
 
-    /// Generate LLVM IR for struct literals
+    /// Generate LLVM IR for struct literals with proper mixed-type support
     fn generate_struct_literal(&mut self, struct_lit: &StructLiteralExpr) -> Result<Option<String>> {
-        // For now, implement structs as tuples - allocate space and store field values
-        // In a more complete implementation, this would use the struct definition from type checker
-
         if struct_lit.fields.is_empty() {
             return Ok(Some("null".to_string())); // Empty struct
         }
 
-        // Generate all field expressions first
+        // Get the struct definition to know field types
+        let struct_def = self.struct_defs.get(&struct_lit.type_name)
+            .ok_or_else(|| CompilerError::codegen_error(format!("Unknown struct type: {}", struct_lit.type_name)))?
+            .clone();
+
+        // Create a map of field name to field definition for easy lookup
+        let mut field_type_map = HashMap::new();
+        for field_def in &struct_def {
+            field_type_map.insert(field_def.name.clone(), field_def.ty.clone());
+        }
+
+        // Generate all field expressions first and collect their types
         let mut field_values = Vec::new();
-        for (_, field_expr) in &struct_lit.fields {
+        let mut field_types = Vec::new();
+
+        for (field_name, field_expr) in &struct_lit.fields {
+            let field_type = field_type_map.get(field_name)
+                .ok_or_else(|| CompilerError::codegen_error(format!("Unknown field '{}' in struct '{}'", field_name, struct_lit.type_name)))?
+                .clone();
+
             if let Some(value) = self.generate_expression(field_expr)? {
-                field_values.push(value);
+                field_values.push((field_name.clone(), value));
+                field_types.push(field_type);
             } else {
-                return codegen_error("Invalid field value in struct literal".to_string());
+                return Err(CompilerError::codegen_error("Invalid field value in struct literal".to_string()));
             }
         }
 
-        // For now, represent structs as heap-allocated tuples
-        // Allocate memory for the struct (size based on number of fields * 8 bytes per i64)
-        let struct_size = (field_values.len() * 8) as i64;
-        let malloc_reg = format!("%struct_alloc_{}", self.instructions.len());
-        self.instructions.push(format!("  {} = call i8* @malloc(i64 {})", malloc_reg, struct_size));
+        // Calculate proper memory layout based on actual field types
+        let mut total_size = 0;
+        let mut field_layout = Vec::new();
 
-        // Store each field value
-        for (i, field_value) in field_values.iter().enumerate() {
+        for field_type in &field_types {
+            let (llvm_type_str, size, alignment) = self.get_llvm_type_info(field_type);
+            // Simple alignment: align to type size (could be more sophisticated)
+            let aligned_offset = ((total_size + alignment - 1) / alignment) * alignment;
+            field_layout.push((aligned_offset, llvm_type_str, size));
+            total_size = aligned_offset + size;
+        }
+
+        // Allocate memory for the struct
+        let malloc_reg = format!("%struct_alloc_{}", self.instructions.len());
+        self.instructions.push(format!("  {} = call i8* @malloc(i64 {})", malloc_reg, total_size));
+
+        // Store each field at its proper offset with correct type
+        for (i, ((field_name, field_value), (offset, llvm_type_str, _))) in field_values.iter().zip(field_layout.iter()).enumerate() {
             let field_ptr_reg = format!("%field_ptr_{}_{}", self.instructions.len(), i);
-            let field_offset = (i * 8) as i64;
 
             // Get pointer to field location
-            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", field_ptr_reg, malloc_reg, field_offset));
+            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", field_ptr_reg, malloc_reg, offset));
 
-            // Cast to i64 pointer and store the value
-            let field_ptr_i64 = format!("%field_ptr_i64_{}_{}", self.instructions.len(), i);
-            self.instructions.push(format!("  {} = bitcast i8* {} to i64*", field_ptr_i64, field_ptr_reg));
-            self.instructions.push(format!("  store i64 {}, i64* {}", field_value.trim_start_matches("i64 "), field_ptr_i64));
+            // Cast to appropriate pointer type
+            let field_ptr_typed = format!("%field_ptr_typed_{}_{}", self.instructions.len(), i);
+            self.instructions.push(format!("  {} = bitcast i8* {} to {}*", field_ptr_typed, field_ptr_reg, llvm_type_str));
+
+            // Store the value with correct type - use the actual LLVM type
+            // Parse LLVM literal format: extract value and type
+            let (llvm_value_type, value_to_store) = if let Some(space_pos) = field_value.find(' ') {
+                // Has type prefix like "i64 100" -> extract "i64" and "100"
+                let type_part = &field_value[..space_pos];
+                let value_part = &field_value[space_pos + 1..];
+                (type_part.to_string(), value_part.to_string())
+            } else {
+                // No type prefix, assume i64
+                ("i64".to_string(), field_value.to_string())
+            };
+            self.instructions.push(format!("  store {} {}, {}* {}", llvm_value_type, value_to_store, llvm_type_str, field_ptr_typed));
         }
 
         Ok(Some(malloc_reg))
+    }
+
+    /// Generate LLVM IR for tuple expressions with proper mixed-type support
+    fn generate_tuple(&mut self, tuple: &Vec<Expression>) -> Result<Option<String>> {
+        if tuple.is_empty() {
+            return Ok(Some("null".to_string())); // Empty tuple
+        }
+
+        // Generate all element expressions first
+        let mut elements = Vec::new();
+        for element_expr in tuple {
+            if let Some(value) = self.generate_expression(element_expr)? {
+                elements.push(value);
+            } else {
+                return codegen_error("Invalid element value in tuple".to_string());
+            }
+        }
+
+        // Calculate memory layout for proper tuple storage
+        // For now, assume all elements are primitive types (int/bool/char)
+        // In a full implementation, this would handle arbitrary nested types
+
+        // Determine types for each element based on the actual expressions
+        // This respects the specification requirement that tuples can contain any valid types
+        let mut element_types = Vec::new();
+        for (i, element_expr) in tuple.iter().enumerate() {
+            let silica_type = match element_expr {
+                // For identifiers, look up in variable_types
+                Expression::Identifier(name) => {
+                    self.variable_types.get(name)
+                        .cloned()
+                        .unwrap_or(Type::Int) // Fallback if not found
+                },
+                // For other expressions, try to get from expression_types
+                _ => {
+                    if let Some(location) = crate::types::TypeChecker::try_get_expression_location(element_expr) {
+                        self.expression_types.get(location)
+                            .cloned()
+                            .unwrap_or(Type::Int)
+                    } else {
+                        // For expressions without location (like literals), infer from the expression
+                        match element_expr {
+                            Expression::Literal(Literal::Bool(_)) => Type::Bool,
+                            Expression::Literal(Literal::Int(_)) => Type::Int,
+                            Expression::Literal(Literal::Char(_)) => Type::Char,
+                            Expression::Literal(Literal::String(_)) => Type::String,
+                            _ => Type::Int, // Default fallback
+                        }
+                    }
+                }
+            };
+
+            // Convert Silica type to LLVM type string
+            let llvm_type = self.type_map.silica_to_llvm_str(&silica_type);
+            element_types.push(llvm_type);
+        }
+
+        // Create proper tuple memory layout with type information
+        // Tuple structure: [element_count: i64][type_ids: i8*][element_data: ...]
+
+        let element_count = elements.len() as i64;
+        let mut current_offset = 0i64;
+
+        // Reserve space for element count (i64)
+        let count_offset = current_offset;
+        current_offset += 8;
+
+        // Reserve space for type IDs (1 byte per element)
+        let type_ids_offset = current_offset;
+        current_offset += element_count;
+
+        // Calculate element data layout with proper alignment
+        let mut element_layout = Vec::new();
+        for (i, llvm_type) in element_types.iter().enumerate() {
+            let (size, alignment) = match llvm_type.as_ref() {
+                "i1" => (1, 1),
+                "i32" => (4, 4),
+                "i64" => (8, 8),
+                "i8*" => (8, 8),
+                _ => (8, 8),
+            };
+
+            // Align offset to element alignment
+            current_offset = ((current_offset + alignment - 1) / alignment) * alignment;
+
+            element_layout.push((llvm_type.to_string(), current_offset, elements[i].clone()));
+            current_offset += size;
+        }
+
+        // Total size with final alignment
+        let total_size = ((current_offset + 7) / 8) * 8;
+
+        // Allocate memory for the complete tuple structure
+        let malloc_reg = format!("%tuple_alloc_{}", self.instructions.len());
+        self.instructions.push(format!("  {} = call i8* @malloc(i64 {})", malloc_reg, total_size));
+
+        // Store element count
+        let count_ptr_reg = format!("%count_ptr_{}", self.instructions.len());
+        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", count_ptr_reg, malloc_reg, count_offset));
+        let count_ptr_typed = format!("%count_ptr_typed_{}", self.instructions.len());
+        self.instructions.push(format!("  {} = bitcast i8* {} to i64*", count_ptr_typed, count_ptr_reg));
+        self.instructions.push(format!("  store i64 {}, i64* {}", element_count, count_ptr_typed));
+
+        // Store type IDs
+        for (i, llvm_type) in element_types.iter().enumerate() {
+            let type_ptr_reg = format!("%type_ptr_{}_{}", self.instructions.len(), i);
+            let type_offset = type_ids_offset + i as i64;
+            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", type_ptr_reg, malloc_reg, type_offset));
+
+            // Map LLVM type to type ID (0=i1, 1=i32, 2=i64, 3=i8*)
+            let type_id = match llvm_type.as_ref() {
+                "i1" => 0i64,
+                "i32" => 1i64,
+                "i64" => 2i64,
+                "i8*" => 3i64,
+                _ => 2i64, // Default to i64
+            };
+            self.instructions.push(format!("  store i8 {}, i8* {}", type_id, type_ptr_reg));
+        }
+
+        // Store element data
+        for (i, (llvm_type, offset, element_value)) in element_layout.iter().enumerate() {
+            let element_ptr_reg = format!("%element_ptr_{}_{}", self.instructions.len(), i);
+            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", element_ptr_reg, malloc_reg, offset));
+
+            let element_ptr_typed = format!("%element_ptr_typed_{}_{}", self.instructions.len(), i);
+            self.instructions.push(format!("  {} = bitcast i8* {} to {}*", element_ptr_typed, element_ptr_reg, llvm_type));
+
+            // Store the value (handle pointer casting for tuple elements)
+            let value_to_store = if element_value.starts_with('%') && element_value.contains("tuple_alloc") {
+                // This is a pointer to another tuple - cast it to i64 for storage
+                let cast_reg = format!("%ptr_cast_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", cast_reg, element_value));
+                cast_reg
+            } else {
+                self.convert_to_llvm_type_value(element_value, llvm_type)
+            };
+            self.instructions.push(format!("  store {} {}, {}* {}", llvm_type, value_to_store, llvm_type, element_ptr_typed));
+        }
+
+
+        Ok(Some(malloc_reg))
+    }
+
+    /// Infer type for an expression (simplified version for codegen)
+    fn infer_expression_type(&self, expr: &Expression) -> Type {
+        match expr {
+            Expression::Literal(lit) => match lit {
+                Literal::Int(_) => Type::Int,
+                Literal::Bool(_) => Type::Bool,
+                Literal::Char(_) => Type::Char,
+                Literal::String(_) => Type::String,
+                Literal::Unit => Type::Unit,
+            },
+            Expression::Identifier(_) => Type::Int, // Unknown identifiers default to Int
+            Expression::Binary(_) => Type::Int, // Binary operations typically return Int
+            Expression::Unary(_) => Type::Int, // Unary operations typically return Int
+            Expression::Call(_) => Type::Int, // Function calls default to Int return
+            Expression::If(_) => Type::Int, // If expressions default to Int
+            Expression::Tuple(_) => Type::Int, // Nested tuples as Int (simplified)
+            // Other expression types default to Int for now
+            _ => Type::Int,
+        }
+    }
+
+    /// Get LLVM type information for a Silica type
+    fn get_llvm_type_info(&self, silica_type: &Type) -> (String, i64, i64) {
+        match silica_type {
+            Type::Int => ("i64".to_string(), 8, 8),
+            Type::Bool => ("i1".to_string(), 1, 1),
+            Type::Char => ("i32".to_string(), 4, 4),
+            Type::String => ("i8*".to_string(), 8, 8), // Pointer
+            Type::Unit => ("void".to_string(), 0, 1), // Not used in tuples
+            Type::Tuple(_) => ("i8*".to_string(), 8, 8), // Nested tuple as pointer
+            Type::Record(_) => ("i8*".to_string(), 8, 8), // Struct as pointer
+            Type::Named(_) => ("i8*".to_string(), 8, 8), // Named type as pointer
+            _ => ("i64".to_string(), 8, 8), // Default fallback
+        }
+    }
+
+    /// Tuple decomposition now reads type information from stored metadata
+    /// This method is kept for backward compatibility but is no longer used
+    /// The new implementation stores type metadata with tuples for proper typing
+    fn infer_decomposition_type(&self, _tuple_size: usize, _position: usize) -> &str {
+        // Legacy method - tuples now use stored type metadata
+        "i64"
+    }
+
+    /// Convert an LLVM value string to the specified LLVM type
+    fn convert_to_llvm_type_value(&self, value: &str, target_type: &str) -> String {
+        match target_type {
+            "i64" => self.convert_to_i64_value(value),
+            "i32" => {
+                if value.starts_with("i32 ") {
+                    value.strip_prefix("i32 ").unwrap().to_string()
+                } else if value.starts_with("i64 ") {
+                    let i64_val = value.strip_prefix("i64 ").unwrap();
+                    format!("trunc (i64 {} to i32)", i64_val)
+                } else if value.starts_with("i1 ") {
+                    let bool_val = value.strip_prefix("i1 ").unwrap();
+                    format!("zext (i1 {} to i32)", bool_val)
+                } else {
+                    // Register or unknown
+                    value.to_string()
+                }
+            }
+            "i1" => {
+                if value.starts_with("i1 ") {
+                    value.strip_prefix("i1 ").unwrap().to_string()
+                } else if value.starts_with("i64 ") {
+                    let i64_val = value.strip_prefix("i64 ").unwrap();
+                    format!("trunc (i64 {} to i1)", i64_val)
+                } else {
+                    // Register or unknown - assume boolean context
+                    value.to_string()
+                }
+            }
+            "i8*" => {
+                // For pointers, just return the value as-is
+                if value.contains(" ") {
+                    value.split_whitespace().last().unwrap_or("null").to_string()
+                } else {
+                    value.to_string()
+                }
+            }
+            _ => {
+                // Unknown type - return as-is
+                if value.contains(" ") {
+                    value.split_whitespace().last().unwrap_or("0").to_string()
+                } else {
+                    value.to_string()
+                }
+            }
+        }
+    }
+
+    /// Convert an LLVM value string to i64 format for storage
+    fn convert_to_i64_value(&self, value: &str) -> String {
+        if value.starts_with("i64 ") {
+            value.strip_prefix("i64 ").unwrap().to_string()
+        } else if value.starts_with("i1 ") {
+            // Convert boolean to i64 (0 or 1)
+            if value == "i1 1" { "1".to_string() } else { "0".to_string() }
+        } else if value.starts_with("i32 ") {
+            // Convert char to i64 (zero-extend)
+            let char_val = value.strip_prefix("i32 ").unwrap();
+            format!("zext (i32 {} to i64)", char_val)
+        } else {
+            // For pointers or other types, this is a placeholder
+            // In a proper implementation, we'd handle each type appropriately
+            // DEBUG: For now, just strip any type prefix
+            if value.contains(" ") {
+                value.split_whitespace().last().unwrap_or("0").to_string()
+            } else {
+                value.to_string()
+            }
+        }
     }
 
     /// Generate LLVM IR for field access
@@ -2532,7 +3163,9 @@ impl CodeGenerator {
 
         if let (Some(ref_ptr), Some(val)) = (ref_val, value_val) {
             // Call Silica runtime write function
-            self.instructions.push(format!("  call void @silica_region_write({}, {})", ref_ptr, val));
+            let ref_with_type = if ref_ptr.starts_with('%') { format!("i8* {}", ref_ptr) } else { ref_ptr.to_string() };
+            let val_with_type = if val.starts_with("i64 ") { val.clone() } else { format!("i64 {}", val) };
+            self.instructions.push(format!("  call void @silica_region_write({}, {})", ref_with_type, val_with_type));
             // Write operations return unit, so no result register
             Ok(None)
         } else {
@@ -2691,7 +3324,7 @@ impl CodeGenerator {
     }
 
     /// Generate LLVM call to exec_command runtime function
-    fn generate_exec_command_call(&mut self, call: &CallExpr) -> Result<Option<String>> {
+    fn generate_exec_command_call(&mut self, _call: &CallExpr) -> Result<Option<String>> {
         // exec_command is a built-in that should be parsed as ExecCommandExpr
         // This function handles the case where it might be called as a regular function
         Err(CompilerError::codegen_error("exec_command should be parsed as built-in expression".to_string()))

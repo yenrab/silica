@@ -26,7 +26,7 @@ pub enum Declaration {
 #[derive(Debug, Clone)]
 pub struct FunctionDecl {
     pub name: String,
-    pub type_params: Vec<String>, // Generic type parameters
+    pub type_params: Vec<TypeParam>, // Generic type parameters with bounds
     pub parameters: Vec<Parameter>,
     pub return_type: Option<Type>,
     pub where_clause: Option<WhereClause>,
@@ -41,6 +41,7 @@ pub struct Parameter {
     pub name: String,
     pub type_: Type,
     pub location: SourceLocation,
+    pub pattern: Option<Pattern>,
 }
 
 /// Type declaration
@@ -85,7 +86,7 @@ pub struct ExportDecl {
 #[derive(Debug, Clone)]
 pub struct StructDecl {
     pub name: String,
-    pub type_params: Vec<String>, // Generic type parameters
+    pub type_params: Vec<TypeParam>, // Generic type parameters with bounds
     pub fields: Vec<StructField>,
     pub location: SourceLocation,
 }
@@ -102,7 +103,7 @@ pub struct StructField {
 #[derive(Debug, Clone)]
 pub struct EnumDecl {
     pub name: String,
-    pub type_params: Vec<String>, // Generic type parameters
+    pub type_params: Vec<TypeParam>, // Generic type parameters with bounds
     pub variants: Vec<EnumVariant>,
     pub location: SourceLocation,
 }
@@ -127,7 +128,7 @@ pub struct AssociatedType {
 #[derive(Debug, Clone)]
 pub struct TraitDecl {
     pub name: String,
-    pub type_params: Vec<String>, // Generic type parameters
+    pub type_params: Vec<TypeParam>, // Generic type parameters with bounds
     pub associated_types: Vec<AssociatedType>,
     pub methods: Vec<TraitMethod>,
     pub location: SourceLocation,
@@ -148,6 +149,21 @@ pub struct AssociatedTypeDef {
     pub name: String,
     pub type_: Type,
     pub location: SourceLocation,
+}
+
+/// Type parameter with optional trait bounds
+#[derive(Debug, Clone)]
+pub struct TypeParam {
+    pub name: String,
+    pub bounds: Vec<TraitBound>, // Trait bounds like T: Eq + Ord
+}
+
+impl PartialEq for TypeParam {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+        // For now, we only compare names for equality
+        // Bounds comparison would be more complex
+    }
 }
 
 /// Trait bound for generic constraints
@@ -176,7 +192,7 @@ pub struct WhereClause {
 #[derive(Debug, Clone)]
 pub struct ImplDecl {
     pub trait_name: Option<String>, // None for inherent impls
-    pub type_params: Vec<String>,
+    pub type_params: Vec<TypeParam>,
     pub for_type: Type,
     pub associated_types: Vec<AssociatedTypeDef>,
     pub methods: Vec<FunctionDecl>,
@@ -187,7 +203,7 @@ pub struct ImplDecl {
 #[derive(Debug, Clone)]
 pub struct TypeAliasDecl {
     pub name: String,
-    pub type_params: Vec<String>, // Generic type parameters
+    pub type_params: Vec<TypeParam>, // Generic type parameters with bounds
     pub aliased_type: Type,
     pub location: SourceLocation,
 }
@@ -304,7 +320,7 @@ pub struct CallExpr {
 /// Function literal expression (lambda/anonymous function)
 #[derive(Debug, Clone)]
 pub struct FunctionLiteralExpr {
-    pub type_params: Vec<String>, // Generic type parameters
+    pub type_params: Vec<TypeParam>, // Generic type parameters with bounds
     pub parameters: Vec<Parameter>,
     pub return_type: Option<Type>,
     pub where_clause: Option<WhereClause>,
@@ -511,7 +527,7 @@ pub enum Type {
     },
     // Polymorphic function types (higher-order)
     PolymorphicFunction {
-        type_params: Vec<String>,  // Type parameter names
+        type_params: Vec<TypeParam>,  // Type parameters with bounds
         parameters: Vec<Type>,
         return_type: Box<Type>,
     },
