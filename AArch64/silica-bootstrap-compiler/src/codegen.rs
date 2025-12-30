@@ -53,6 +53,7 @@ pub struct CodeGenerator {
     module_name: String,
     type_map: TypeMap,
     functions: HashMap<String, String>,
+    function_return_types: HashMap<String, String>, // Function name -> LLVM return type
     variables: HashMap<String, String>, // Variable name -> LLVM register/temp
     variable_types: HashMap<String, Type>, // Variable name -> Silica type
     instructions: Vec<String>,
@@ -92,6 +93,7 @@ impl CodeGenerator {
             module_name: module_name.to_string(),
             type_map,
             functions: HashMap::new(),
+            function_return_types: HashMap::new(),
             variables: HashMap::new(),
             variable_types: HashMap::new(),
             instructions: Vec::new(),
@@ -643,6 +645,7 @@ impl CodeGenerator {
 
         self.instructions.push(signature.clone());
         self.functions.insert(func.name.clone(), signature);
+        self.function_return_types.insert(func.name.clone(), return_type_str.clone());
 
         // Add function parameters to variable scope
         for (i, param) in func.parameters.iter().enumerate() {
@@ -972,8 +975,8 @@ impl CodeGenerator {
                         if arg.starts_with("i64 ") || arg.starts_with("i1 ") || arg.starts_with("i8* ") {
                             arg.clone() // Already has type prefix
                         } else if arg.starts_with('%') {
-                            // Assume pointer type for registers (temporary fix)
-                            format!("i8* {}", arg)
+                            // Assume i64 type for registers (most common case)
+                            format!("i64 {}", arg)
                         } else {
                             // For bare constants, assume i64
                             format!("i64 {}", arg)
@@ -984,13 +987,11 @@ impl CodeGenerator {
                 let temp_reg = format!("%t{}", self.instructions.len());
 
                 // Determine the return type of the function
-                let return_type = if func_name == "make_triple" || func_name == "get_coordinates" || func_name == "make_point" || func_name == "make_pair" {
-                    // These functions return tuples (i8*)
-                    "i8*"
-                } else {
-                    // Default to i64 for other functions
-                    "i64"
-                };
+                let return_type = self.function_return_types.get(func_name)
+                    .cloned()
+                    .ok_or_else(|| CompilerError::codegen_error(
+                        format!("Unknown function '{}'. Function must be declared before it can be called.", func_name)
+                    ))?;
 
                 let call_instr = format!("  {} = call {} @{}({})", temp_reg, return_type, func_name, args_str);
                 self.instructions.push(call_instr);
@@ -2179,6 +2180,9 @@ impl CodeGenerator {
 
     /// Generate LLVM IR for case expressions (text IR)
     fn generate_case(&mut self, case: &CaseExpr) -> Result<Option<String>> {
+        // Enter a new scope for case pattern variables
+        self.enter_scope_text();
+
         // Generate scrutinee
         let scrutinee_reg = match self.generate_expression(&case.scrutinee)? {
             Some(reg) => reg,
@@ -2201,20 +2205,58 @@ impl CodeGenerator {
             // Branch check label
             self.instructions.push(format!("{}:", next_check_label));
 
-            // Generate runtime pattern match
-            let match_result = self.generate_runtime_pattern_check(&branch.pattern, &scrutinee_reg)?;
-
             // Create branch labels for this pattern
+            let pattern_bind = format!("case_bind_{}_{}", self.instructions.len(), branch_idx);
             let branch_body = format!("case_body_{}_{}", self.instructions.len(), branch_idx);
             next_check_label = format!("case_check_{}_{}", self.instructions.len(), branch_idx + 1);
 
-            // Conditional branch based on pattern match result
+            // Generate runtime pattern match
+            let match_result = self.generate_runtime_pattern_check(&branch.pattern, &scrutinee_reg)?;
+
+            // Branch to binding if pattern matches
             self.instructions.push(format!("  br i1 {}, label %{}, label %{}",
-                match_result, branch_body,
+                match_result, pattern_bind,
                 if branch_idx + 1 < case.branches.len() { &next_check_label } else { &case_fail }));
+
+            // Pattern binding and guard check
+            self.instructions.push(format!("{}:", pattern_bind));
+
+            // Bind pattern variables here
+            let bound_vars = self.generate_pattern_variable_binding(&branch.pattern, &scrutinee_reg, branch_idx)?;
+
+            // If there's a guard, evaluate it with bound variables in scope
+            if let Some(guard_expr) = &branch.guard {
+                // Temporarily add bound variables to scope for guard evaluation
+                for (var_name, var_reg) in &bound_vars {
+                    self.add_variable_text(var_name.clone(), var_reg.clone());
+                }
+
+                let guard_result = self.generate_expression(guard_expr)?
+                    .ok_or_else(|| CompilerError::codegen_error("Guard expression must produce a value".to_string()))?;
+
+                // Guard must evaluate to true (i1 boolean)
+                // Guard expressions should return i1 (boolean) values
+                let guard_bool = format!("%guard_bool_{}_{}", self.instructions.len(), branch_idx);
+                // For now, assume guard_result is i1. In full type system, this would be checked.
+                self.instructions.push(format!("  {} = add i1 {}, 0", guard_bool, guard_result));
+
+                // If guard passes, go to body; else try next branch
+                self.instructions.push(format!("  br i1 {}, label %{}, label %{}",
+                    guard_bool, branch_body,
+                    if branch_idx + 1 < case.branches.len() { &next_check_label } else { &case_fail }));
+            } else {
+                // No guard - go directly to body
+                self.instructions.push(format!("  br label %{}", branch_body));
+            }
 
             // Branch body
             self.instructions.push(format!("{}:", branch_body));
+
+            // Add bound variables to scope for branch body evaluation
+            for (var_name, var_reg) in &bound_vars {
+                self.add_variable_text(var_name.clone(), var_reg.clone());
+            }
+
             let body_val = match self.generate_expression(&branch.body)? {
                 Some(val) => {
                     // Extract just the value part if it has a type prefix
@@ -2240,10 +2282,56 @@ impl CodeGenerator {
         let final_reg = format!("%case_final_{}", self.instructions.len());
         self.instructions.push(format!("  {} = load i64, i64* {}", final_reg, result_reg));
 
+        // Exit the case scope
+        self.exit_scope_text();
+
         Ok(Some(final_reg))
     }
 
     /// Generate runtime pattern matching check that returns an i1 result
+    fn generate_pattern_variable_binding(&mut self, pattern: &Pattern, scrutinee_reg: &str, branch_idx: usize) -> Result<HashMap<String, String>> {
+        let mut bound_vars = HashMap::new();
+
+        match pattern {
+            Pattern::Identifier(name) => {
+                // Bind the scrutinee value to the variable
+                let bind_reg = format!("%bind_{}_{}", name, self.instructions.len());
+                let reg_name = if scrutinee_reg.starts_with("i64 ") {
+                    &scrutinee_reg[4..]
+                } else {
+                    scrutinee_reg
+                };
+                self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, reg_name)); // Copy the value
+                self.variables.insert(name.clone(), bind_reg.clone()); // Add to global map for testing
+                bound_vars.insert(name.clone(), bind_reg);
+            }
+            Pattern::Tuple(elements) => {
+                // For tuple patterns, bind each element
+                // This is a simplified implementation - in a full implementation,
+                // we'd need to decompose the tuple structure
+                for (i, elem_pattern) in elements.iter().enumerate() {
+                    if let Pattern::Identifier(elem_name) = elem_pattern {
+                        // For now, assume tuple elements are at fixed offsets (this won't work for mixed types)
+                        let offset = i * 8;
+                        let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
+                        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, scrutinee_reg, offset));
+
+                        let elem_cast_reg = format!("%{}_cast_{}", elem_name, self.instructions.len());
+                        self.instructions.push(format!("  {} = bitcast i8* {} to i64*", elem_cast_reg, elem_ptr_reg));
+
+                        let elem_reg = format!("%{}", elem_name);
+                        self.instructions.push(format!("  {} = load i64, i64* {}", elem_reg, elem_cast_reg));
+
+                        bound_vars.insert(elem_name.clone(), elem_reg);
+                    }
+                }
+            }
+            _ => {} // Other patterns don't bind variables
+        }
+
+        Ok(bound_vars)
+    }
+
     fn generate_runtime_pattern_check(&mut self, pattern: &Pattern, scrutinee_reg: &str) -> Result<String> {
         match pattern {
             Pattern::Literal(lit) => {
@@ -2317,10 +2405,10 @@ impl CodeGenerator {
             let end_label = format!("end_{}", self.instructions.len());
             let result_reg = format!("%if_result_{}", self.instructions.len());
 
-            // Generate conditional branch
+            // Condition should be i1 (boolean)
+            // For now, assume cond_val is i1. In full type system, this would be checked.
             self.instructions.push(format!("  br i1 {}, label %{}, label %{}",
-                cond_val.trim_start_matches("i64 ").trim_start_matches("i1 "),
-                then_label, else_label));
+                cond_val, then_label, else_label));
 
             // Generate then block
             self.instructions.push(format!("{}:", then_label));

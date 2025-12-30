@@ -1798,7 +1798,7 @@ impl Parser {
                 None
             };
 
-            self.consume(TokenKind::RightArrow, "Expected '=>' after pattern")?;
+            self.consume(TokenKind::RightArrow, "Expected '->' after pattern")?;
             let body = self.expression()?;
 
             branches.push(CaseBranch {
