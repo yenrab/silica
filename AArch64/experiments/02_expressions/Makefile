@@ -15,6 +15,7 @@ MODULES := $(shell for f in $(SILICA_FILES); do if ! grep -q "^fn main" "$$f"; t
 EXECUTABLES_LL := $(addsuffix .ll, $(EXECUTABLES))
 MODULES_LL := $(addsuffix .ll, $(MODULES))
 
+.DEFAULT_GOAL := all
 .PHONY: all clean executables modules executables-all help
 
 # Default target - build full executables

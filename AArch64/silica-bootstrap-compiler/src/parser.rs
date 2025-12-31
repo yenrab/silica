@@ -37,8 +37,10 @@ impl Parser {
 
     /// Parse a top-level declaration
     fn declaration(&mut self) -> Result<Declaration> {
+
         if self.match_token(TokenKind::Fn) {
-            self.function_declaration().map(Declaration::Function)
+            let result = self.function_declaration().map(Declaration::Function);
+            result
         } else if self.match_token(TokenKind::Type) {
             // For now, only support type aliases
             self.type_alias_declaration().map(Declaration::TypeAlias)
@@ -55,7 +57,10 @@ impl Parser {
         } else if self.match_token(TokenKind::Trait) {
             self.trait_declaration().map(Declaration::Trait)
         } else if self.match_token(TokenKind::Impl) {
-            self.impl_declaration().map(Declaration::Impl)
+            eprintln!("DEBUG PARSER: Matched impl token, calling impl_declaration");
+            let result = self.impl_declaration().map(Declaration::Impl);
+            eprintln!("DEBUG PARSER: impl_declaration result: {:?}", result.is_ok());
+            result
         } else {
             parse_error(
                 self.peek().location.clone(),
@@ -676,7 +681,8 @@ impl Parser {
 
     /// Parse expression with precedence
     fn expression(&mut self) -> Result<Expression> {
-        self.assignment()
+        let result = self.assignment();
+        result
     }
 
     /// Parse assignment expression (lowest precedence)
@@ -1059,6 +1065,9 @@ impl Parser {
                 space: MemorySpace::Normal,
                 location,
             }))
+        } else if self.match_token(TokenKind::Self_) {
+            // Handle 'self' as an identifier in expressions
+            Ok(Expression::Identifier("self".to_string()))
         } else if let TokenKind::Identifier(name) = &self.peek().kind {
             let name = name.clone();
             let start_location = self.peek().location.clone();
@@ -1504,14 +1513,9 @@ impl Parser {
                             self.consume_identifier("Expected parameter name")?
                         };
 
-                        // Check if this is a self parameter (no type annotation)
-                        let param_type = if self.match_token(TokenKind::Colon) {
-                            self.parse_type()?
-                        } else {
-                            // For self parameters, use a placeholder type
-                            // In a real implementation, this would be resolved to the implementing type
-                            Type::Named("Self".to_string())
-                        };
+                        // Require explicit type annotation for ALL parameters, including self
+                        self.consume(TokenKind::Colon, "Expected ':' after parameter name")?;
+                        let param_type = self.parse_type()?;
 
                         params.push(Parameter {
                             name: param_name,
@@ -1565,6 +1569,7 @@ impl Parser {
 
     /// Parse impl declaration: impl<T> Trait for Type { ... } or impl Type { ... }
     fn impl_declaration(&mut self) -> Result<ImplDecl> {
+        eprintln!("DEBUG IMPL: impl_declaration called");
         let location = self.previous().location.clone();
 
         // Parse optional type parameters
@@ -1588,41 +1593,42 @@ impl Parser {
             None // Inherent impl
         };
 
-        // Parse the type being implemented for
-        let for_type = self.parse_type()?;
+        // Parse the type being implemented for (simplified)
+        let token = self.peek().clone();
+        self.advance();
+        let for_type = match token.kind {
+            TokenKind::Identifier(name) => Type::Named(name),
+            _ => return parse_error(token.location, "Expected type name".to_string()),
+        };
         self.consume(TokenKind::LeftBrace, "Expected '{' after impl type")?;
 
-        let mut associated_types = Vec::new();
+        let mut associated_types: Vec<crate::ast::AssociatedTypeDef> = Vec::new();
         let mut methods = Vec::new();
-        if !self.check(TokenKind::RightBrace) {
-            loop {
-                if self.match_token(TokenKind::Type) {
-                    // Parse associated type definition
-                    let type_name = self.consume_identifier("Expected associated type name")?;
-                    let type_location = self.previous().location.clone();
 
-                    self.consume(TokenKind::Equal, "Expected '=' in associated type definition")?;
-                    let type_value = self.parse_type()?;
-                    self.consume(TokenKind::Semicolon, "Expected ';' after associated type definition")?;
 
-                    associated_types.push(AssociatedTypeDef {
-                        name: type_name,
-                        type_: type_value,
-                        location: type_location,
-                    });
-                } else {
-                    // Parse method
+        // Parse methods properly in impl blocks
+        eprintln!("DEBUG IMPL: Starting method parsing loop");
+        while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
+            let current_token = self.peek();
+            eprintln!("DEBUG IMPL: Current token: {:?} (kind={:?}) at line {} col {}",
+                     current_token.lexeme, current_token.kind, current_token.location.line, current_token.location.column);
+            if self.match_token(TokenKind::Fn) {
+                eprintln!("DEBUG IMPL: Successfully matched Fn token");
+                // Use the standard function declaration parser for methods
                 let method = self.function_declaration()?;
+                eprintln!("DEBUG IMPL: Successfully parsed method: {}", method.name);
                 methods.push(method);
-                }
-
-                if self.check(TokenKind::RightBrace) {
-                    break;
-                }
+            } else {
+                eprintln!("DEBUG IMPL: Failed to match Fn token, advancing");
+                // Skip unrecognized tokens
+                self.advance();
             }
         }
+        eprintln!("DEBUG IMPL: Finished method parsing loop, found {} methods", methods.len());
+
 
         self.consume(TokenKind::RightBrace, "Expected '}' after impl members")?;
+
 
         Ok(ImplDecl {
             trait_name,

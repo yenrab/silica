@@ -84,9 +84,11 @@ impl Compiler {
         self.codegen.set_symbol_table(symbol_table_clone);
 
         // Phase 3: Type checking
-        println!("Phase 3: Type checking...");
+        println!("Phase 3: Type checking happening...");
         let mut type_checker = TypeChecker::with_symbol_table(Some(&self.symbol_table));
+        eprintln!("DEBUG LIB: About to call check_program");
         type_checker.check_program(&program)?;
+        println!("DEBUG LIB: check_program completed successfully");
         println!("Type checking passed");
 
         // Phase 4: Effect analysis
@@ -102,6 +104,7 @@ impl Compiler {
         self.codegen.set_expression_types(type_checker.expression_types.clone());
         self.codegen.set_type_aliases(type_checker.get_type_aliases().clone());
         self.codegen.set_struct_defs(type_checker.get_struct_defs().clone());
+        self.codegen.set_trait_impls(type_checker.get_trait_impls().clone());
         self.codegen.generate_program(&program)?;
         println!("Code generation completed");
 

@@ -34,6 +34,7 @@ $(RUNTIME_LIB): ../../silica-bootstrap-compiler/standalone_runtime.c
 	@echo "Building Silica runtime library..."
 	@$(COMPILER_CLANG) -c $< -o $@ -O2
 
+.DEFAULT_GOAL := all
 .PHONY: all clean executables modules executables-all help
 
 # Default target - build full executables

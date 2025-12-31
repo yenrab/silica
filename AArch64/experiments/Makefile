@@ -1,8 +1,8 @@
 # Master Makefile for all Silica experiments
-# Builds all test directories in dependency order
+# Automatically discovers and builds all subdirectories containing Makefiles
 
-# Subdirectories in testing order (dependencies must be built first)
-SUBDIRS := 01_basic 02_expressions 03_data_types 04_patterns 05_memory 06_advanced_features 07_concurrency 08_stdlib 09_binding 10_experimental
+# Automatically discover all subdirectories that contain Makefiles
+SUBDIRS := $(shell find . -maxdepth 1 -type d -name "[0-9][0-9]_*" | sort | sed 's|^\./||')
 
 # LLVM tool paths (including Homebrew location on macOS)
 LLVM_AS := $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "")
@@ -23,23 +23,43 @@ all: $(SUBDIRS)
 # Build each subdirectory
 $(SUBDIRS):
 	@echo "🏗️  Building $@ experiments..."
-	$(MAKE) -C $@ all
+	if [ -f "$@/Makefile" ]; then \
+		$(MAKE) -C $@ all; \
+	else \
+		echo "⚠️  No Makefile found in $@ - skipping"; \
+	fi
 	@echo "✅ $@ completed"
 
 # Clean all subdirectories
 clean:
 	@echo "🧹 Cleaning all experiments..."
 	for dir in $(SUBDIRS); do \
-		$(MAKE) -C $$dir clean; \
+		if [ -f "$$dir/Makefile" ]; then \
+			$(MAKE) -C $$dir clean; \
+		fi; \
 	done
 	@echo "✅ All experiments cleaned"
+
+# Force rebuild compiler across all directories
+rebuild-compiler:
+	@echo "🔨 Rebuilding Silica compiler..."
+	cd ../silica-bootstrap-compiler && cargo build --release --no-default-features
+	@echo "✅ Compiler rebuilt"
+
+# Clean everything including compiler
+clean-all: clean rebuild-compiler
+
+# Rebuild everything from scratch
+rebuild-all: clean-all all
 
 # Build only executables across all directories
 executables:
 	@echo "🏗️  Building all executables..."
 	for dir in $(SUBDIRS); do \
-		echo "Building executables in $$dir..."; \
-		$(MAKE) -C $$dir executables; \
+		if [ -f "$$dir/Makefile" ]; then \
+			echo "Building executables in $$dir..."; \
+			$(MAKE) -C $$dir executables; \
+		fi; \
 	done
 	@echo "✅ All executables built"
 
@@ -47,8 +67,10 @@ executables:
 modules:
 	@echo "🏗️  Building all modules..."
 	for dir in $(SUBDIRS); do \
-		echo "Building modules in $$dir..."; \
-		$(MAKE) -C $$dir modules; \
+		if [ -f "$$dir/Makefile" ]; then \
+			echo "Building modules in $$dir..."; \
+			$(MAKE) -C $$dir modules; \
+		fi; \
 	done
 	@echo "✅ All modules built"
 
@@ -60,8 +82,10 @@ executables-full:
 		exit 1; \
 	fi
 	for dir in $(SUBDIRS); do \
-		echo "Building full executables in $$dir..."; \
-		$(MAKE) -C $$dir executables-full; \
+		if [ -f "$$dir/Makefile" ]; then \
+			echo "Building full executables in $$dir..."; \
+			$(MAKE) -C $$dir executables-full; \
+		fi; \
 	done
 	@echo "✅ All full executables built"
 
@@ -86,25 +110,28 @@ help:
 	@echo "Silica Experiments Master Makefile"
 	@echo "=================================="
 	@echo ""
-	@echo "This Makefile builds all Silica test experiments in dependency order."
+	@echo "This Makefile automatically discovers and builds all Silica test experiments."
 	@echo "Each subdirectory contains tests for specific language features."
 	@echo ""
 	@echo "Targets:"
 	@echo "  all              - Build full native executables across all directories (default)"
 	@echo "  clean            - Clean all generated files"
+	@echo "  clean-all        - Clean everything including compiler rebuild"
+	@echo "  rebuild-all      - Clean and rebuild everything from scratch"
 	@echo "  executables      - Build only executable LLVM IR files across all directories"
 	@echo "  modules          - Build only module files across all directories"
+	@echo "  executables-full - Build native executables (requires LLVM tools)"
 	@echo "  test-basic       - Quick test of basic functionality only"
 	@echo "  status           - Show build status and file counts"
 	@echo "  help             - Show this help"
 	@echo ""
-	@echo "Subdirectories (build in this order):"
+	@echo "Subdirectories (automatically discovered):"
 	@echo "  01_basic           - Language fundamentals"
 	@echo "  02_expressions     - Operators & control flow"
 	@echo "  03_data_types      - Tuples, structs, enums"
 	@echo "  04_patterns        - Case expressions & matching"
 	@echo "  05_memory          - Region-based memory management"
-	@echo "  06_advanced_features - Generics & traits"
+	@echo "  06_traits          - Traits & polymorphism"
 	@echo "  07_concurrency     - Actor system & messaging"
 	@echo "  08_stdlib          - Standard library integration"
 	@echo "  09_binding         - Variable binding & sequencing"

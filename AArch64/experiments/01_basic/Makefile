@@ -15,9 +15,10 @@ MODULES := $(shell for f in $(SILICA_FILES); do if ! grep -q "^fn main" "$$f"; t
 EXECUTABLES_LL := $(addsuffix .ll, $(EXECUTABLES))
 MODULES_LL := $(addsuffix .ll, $(MODULES))
 
+.DEFAULT_GOAL := all
 .PHONY: all clean executables modules help
 
-# Default target - build full executables
+# Default target - build full executables and modules
 all: executables-all modules
 
 # Ensure compiler is built without LLVM backend features for consistent text-based generation

@@ -62,7 +62,9 @@ pub struct CodeGenerator {
     expression_types: HashMap<SourceLocation, Type>,
     type_aliases: HashMap<String, Type>, // Type alias definitions
     struct_defs: HashMap<String, Vec<crate::ast::StructField>>, // Struct definitions
+    trait_impls: Vec<crate::types::TraitImpl>, // Trait implementations
     variable_scopes: Vec<HashMap<String, String>>, // Scope stack for text IR variables
+    register_counter: u32, // Counter for generating unique register names
 
     // Real LLVM backend fields (when feature enabled)
     #[cfg(feature = "llvm_backend")]
@@ -102,7 +104,9 @@ impl CodeGenerator {
             expression_types: HashMap::new(),
             type_aliases: HashMap::new(),
             struct_defs: HashMap::new(),
+            trait_impls: Vec::new(),
             variable_scopes: vec![HashMap::new()], // Start with global scope
+            register_counter: 0,
 
             // LLVM backend fields will be initialized in generate_program
             #[cfg(feature = "llvm_backend")]
@@ -137,6 +141,62 @@ impl CodeGenerator {
     /// Set the struct definitions from the type checker
     pub fn set_struct_defs(&mut self, struct_defs: HashMap<String, Vec<crate::ast::StructField>>) {
         self.struct_defs = struct_defs;
+    }
+
+    /// Set the trait implementations from the type checker
+    pub fn set_trait_impls(&mut self, trait_impls: Vec<crate::types::TraitImpl>) {
+        self.trait_impls = trait_impls;
+    }
+
+    /// Generate a unique register name
+    fn next_register(&mut self) -> String {
+        let reg = format!("t{}", self.register_counter);
+        self.register_counter += 1;
+        reg
+    }
+
+    /// Try to get the location of an expression for type lookup
+    fn try_get_expression_location(expr: &Expression) -> Option<&SourceLocation> {
+        match expr {
+            Expression::Literal(_) => None, // Literals don't have location
+            Expression::Binary(binary) => Some(&binary.location),
+            Expression::Unary(unary) => Some(&unary.location),
+            Expression::Call(call) => Some(&call.location),
+            Expression::If(if_expr) => Some(&if_expr.location),
+            Expression::Case(case) => Some(&case.location),
+            Expression::Do(do_expr) => Some(&do_expr.location),
+            Expression::Region(region) => Some(&region.location),
+            Expression::AllocRef(alloc) => Some(&alloc.location),
+            Expression::ReadRef(read) => Some(&read.location),
+            Expression::WriteRef(write) => Some(&write.location),
+            Expression::Spawn(spawn) => Some(&spawn.location),
+            Expression::Send(send) => Some(&send.location),
+            Expression::Recv(recv) => Some(&recv.location),
+            Expression::ReadFile(read_file) => Some(&read_file.location),
+            Expression::WriteFile(write_file) => Some(&write_file.location),
+            Expression::ExecCommand(exec_cmd) => Some(&exec_cmd.location),
+            Expression::StructLiteral(struct_lit) => Some(&struct_lit.location),
+            Expression::FieldAccess(field_access) => Some(&field_access.location),
+            Expression::GenericInstantiation(generic) => Some(&generic.location),
+            Expression::ConstructorCall(ctor) => Some(&ctor.location),
+            Expression::FunctionLiteral(func) => Some(&func.location),
+            // Tuples don't have their own location, only elements do
+            Expression::Tuple(_) => None,
+            Expression::Identifier(_) => None, // Handled separately
+        }
+    }
+
+    /// Check if two types are equal for code generation purposes
+    fn types_equal_codegen(&self, t1: &Type, t2: &Type) -> bool {
+        match (t1, t2) {
+            (Type::Named(n1), Type::Named(n2)) => n1 == n2,
+            (Type::Int, Type::Int) => true,
+            (Type::Bool, Type::Bool) => true,
+            (Type::Char, Type::Char) => true,
+            (Type::String, Type::String) => true,
+            (Type::Unit, Type::Unit) => true,
+            _ => false, // Simplified - doesn't handle generics, tuples, etc.
+        }
     }
 
     /// Expand type aliases for code generation
@@ -389,9 +449,9 @@ impl CodeGenerator {
                     // Trait declarations don't generate code in LLVM
                     self.instructions.push("; Trait declaration (metadata only)".to_string());
                 }
-                Declaration::Impl(_) => {
+                Declaration::Impl(impl_decl) => {
                     // Impl declarations generate method code
-                    self.instructions.push("; Impl declaration (generates method code)".to_string());
+                    self.generate_impl_declaration(impl_decl)?;
                 }
                 Declaration::TypeAlias(_) => {
                     // Type alias declarations don't generate code in LLVM
@@ -1047,18 +1107,48 @@ impl CodeGenerator {
 
     /// Generate code for method calls (receiver.method(args))
     fn generate_method_call(&mut self, field_access: &FieldAccessExpr, call: &CallExpr) -> Result<Option<String>> {
-        // For now, we'll generate a direct call to a method function
-        // In a full implementation, we'd need to resolve the trait method
-
         // Generate the receiver
         let receiver_val = match self.generate_expression(&field_access.object)? {
             Some(val) => val,
             None => return Err(CompilerError::CodegenError { message: "Invalid receiver in method call".to_string() }),
         };
 
-        // Create method name (for now, just concatenate type and method)
-        // This is a simplified approach - in a real implementation we'd use trait resolution
-        let method_name = format!("{}_{}", "unknown_type", field_access.field); // TODO: Use actual type
+        // Get the receiver type to create the method name
+        let receiver_type = match &*field_access.object {
+            Expression::Identifier(var_name) => {
+                self.variable_types.get(var_name)
+                    .ok_or_else(|| CompilerError::codegen_error(format!("Unknown variable '{}' in method call", var_name)))?
+                    .clone()
+            },
+            _ => {
+                // For more complex receivers, try expression types
+                self.expression_types.get(&field_access.location)
+                    .ok_or_else(|| CompilerError::codegen_error("Cannot determine receiver type for method call".to_string()))?
+                    .clone()
+            }
+        };
+
+        // Resolve the method to find the implementing type
+        let method_name = match &receiver_type {
+            Type::Named(type_name) => {
+                // Find the trait implementation for this type and method
+                for trait_impl in &self.trait_impls {
+                    if trait_impl.methods.contains_key(&field_access.field) {
+                        // Check if this trait impl applies to our receiver type
+                        if self.types_equal_codegen(&trait_impl.for_type, &receiver_type) {
+                            eprintln!("DEBUG METHOD: Found trait impl for type {:?} with method {}", trait_impl.for_type, field_access.field);
+                            // Found matching trait impl, proceed with method call
+                            break;
+                        }
+                    }
+                }
+                // Fallback: use the named type directly
+                format!("{}_{}", type_name, field_access.field)
+            },
+            _ => {
+                return Err(CompilerError::codegen_error(format!("Method calls not supported on type {:?}", receiver_type)));
+            }
+        };
 
         // Generate arguments (receiver first, then call arguments)
         let mut arg_strs = vec![receiver_val];
@@ -1071,12 +1161,21 @@ impl CodeGenerator {
         }
 
         // For LLVM IR method calls, arguments should have type prefixes
-        let typed_args: Vec<String> = arg_strs.iter()
-            .map(|arg| {
-                if arg.starts_with("i64 ") || arg.starts_with("i1 ") {
+        // First argument (receiver) is always a struct pointer (i8*)
+        // Other arguments follow normal typing rules
+        let typed_args: Vec<String> = arg_strs.iter().enumerate()
+            .map(|(i, arg)| {
+                if i == 0 {
+                    // Receiver is always a struct pointer
+                    if arg.starts_with("i8* ") {
+                        arg.clone() // Already has correct type
+                    } else {
+                        format!("i8* {}", arg) // Add pointer type for receiver
+                    }
+                } else if arg.starts_with("i64 ") || arg.starts_with("i1 ") {
                     arg.clone() // Already has type prefix
                 } else {
-                    format!("i64 {}", arg) // Add type prefix for bare registers/constants
+                    format!("i64 {}", arg) // Add type prefix for other arguments
                 }
             })
             .collect();
@@ -2694,6 +2793,13 @@ impl CodeGenerator {
                             if let Some(ref val) = value {
                                 // For text IR, we just track the variable name -> register mapping
                                 self.add_variable_text(name.clone(), val.clone());
+
+                                // Also store the variable type for method calls
+                                if let Some(location) = Self::try_get_expression_location(expr) {
+                                    if let Some(expr_type) = self.expression_types.get(location) {
+                                        self.variable_types.insert(name.clone(), expr_type.clone());
+                                    }
+                                }
                             }
                             result = value;
                         }
@@ -2872,21 +2978,223 @@ impl CodeGenerator {
         }
     }
 
+    /// Generate LLVM IR for trait implementations
+    fn generate_impl_declaration(&mut self, impl_decl: &crate::ast::ImplDecl) -> Result<()> {
+        // Only generate code for trait implementations (not inherent impls)
+        if let Some(trait_name) = &impl_decl.trait_name {
+            // Get the type name for method naming
+            let type_name = match &impl_decl.for_type {
+                Type::Named(name) => name.clone(),
+                _ => return Err(CompilerError::codegen_error("Impl for non-named types not supported yet".to_string())),
+            };
+
+            // Generate each method in the implementation
+            for method in &impl_decl.methods {
+                self.generate_trait_method(&type_name, method)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Generate LLVM IR for a single trait method implementation
+    fn generate_trait_method(&mut self, type_name: &str, method: &crate::ast::FunctionDecl) -> Result<()> {
+        let method_name = format!("{}_{}", type_name, method.name);
+
+        // Generate parameter list: self is i8*, others are i64
+        let mut param_strs = vec!["i8* %self".to_string()];
+
+        // Add other parameters (skip self in the method signature)
+        for param in method.parameters.iter().skip(1) {
+            param_strs.push(format!("i64 %{}", param.name));
+        }
+
+        let params_str = param_strs.join(", ");
+
+        // Function header
+        self.instructions.push(format!("define i64 @{}({}) {{", method_name, params_str));
+
+        // Generate method body with type context
+        self.generate_method_body_with_type(type_name, method)?;
+
+        self.instructions.push("}".to_string());
+        self.instructions.push("".to_string());
+
+        Ok(())
+    }
+
+    /// Generate the body of a trait method
+    fn generate_method_body_with_type(&mut self, type_name: &str, method: &crate::ast::FunctionDecl) -> Result<()> {
+        // For now, only handle simple expressions
+        // The method body is a single expression for trait methods
+        match &method.body {
+            Expression::Binary(binary) => {
+                // Handle binary operations like self.x + self.y
+                self.generate_binary_operation_for_method_with_type(type_name, binary)?;
+            }
+            _ => {
+                return Err(CompilerError::codegen_error("Complex method bodies not yet supported".to_string()));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Generate binary operations in method bodies (like self.x + self.y)
+    fn generate_binary_operation_for_method_with_type(&mut self, type_name: &str, binary: &crate::ast::BinaryExpr) -> Result<()> {
+        // Handle different binary operations
+        eprintln!("DEBUG BINARY: operator = {:?}, left = {:?}, right = {:?}", binary.operator, binary.left, binary.right);
+        match binary.operator {
+            crate::ast::BinaryOp::Add | crate::ast::BinaryOp::Multiply => {
+                // Generate the left operand (can be complex expression)
+                let left_val = self.generate_expression_in_method(type_name, &binary.left)?;
+
+                // Generate the right operand (can be complex expression)
+                let right_val = self.generate_expression_in_method(type_name, &binary.right)?;
+
+                // Generate the operation
+                let op = match binary.operator {
+                    crate::ast::BinaryOp::Add => "add",
+                    crate::ast::BinaryOp::Multiply => "mul",
+                    _ => unreachable!(),
+                };
+
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = {} i64 {}, {}", result_reg, op, left_val, right_val));
+
+                // Return the result
+                self.instructions.push(format!("  ret i64 %{}", result_reg));
+            }
+            _ => {
+                return Err(CompilerError::codegen_error("Unsupported binary operator in method".to_string()));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Generate any expression within method bodies
+    fn generate_expression_in_method(&mut self, type_name: &str, expr: &Expression) -> Result<String> {
+        match expr {
+            Expression::FieldAccess(field_access) => {
+                self.generate_field_access_for_method_with_type(type_name, field_access)
+            }
+            Expression::Literal(lit) => {
+                self.generate_literal_value(lit)
+            }
+            Expression::Identifier(name) => {
+                // Handle method parameters like "other"
+                if name == "other" {
+                    // This is a method parameter, return it as a register
+                    Ok("%other".to_string())
+                } else {
+                    Err(CompilerError::codegen_error(format!("Unsupported identifier in method: {}", name)))
+                }
+            }
+            Expression::Binary(binary) => {
+                // Handle nested binary expressions
+                self.generate_nested_binary_in_method(type_name, binary)
+            }
+            _ => {
+                Err(CompilerError::codegen_error("Unsupported expression type in method".to_string()))
+            }
+        }
+    }
+
+    /// Generate nested binary expressions within methods
+    fn generate_nested_binary_in_method(&mut self, type_name: &str, binary: &crate::ast::BinaryExpr) -> Result<String> {
+        match binary.operator {
+            crate::ast::BinaryOp::Add => {
+                let left_val = self.generate_expression_in_method(type_name, &binary.left)?;
+                let right_val = self.generate_expression_in_method(type_name, &binary.right)?;
+
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = add i64 {}, {}", result_reg, left_val, right_val));
+
+                Ok(format!("%{}", result_reg))
+            }
+            _ => {
+                Err(CompilerError::codegen_error("Unsupported nested binary operator in method".to_string()))
+            }
+        }
+    }
+
+    /// Generate field access within method bodies
+    fn generate_field_access_for_method_with_type(&mut self, type_name: &str, field_access: &crate::ast::FieldAccessExpr) -> Result<String> {
+        // For self.field, generate code to load the field from the struct pointer
+        match &*field_access.object {
+            Expression::Identifier(var_name) if var_name == "self" => {
+                // Look up the struct layout from type aliases
+                let offset = if let Some(Type::Record(fields)) = self.type_aliases.get(type_name) {
+                    // Find the field offset
+                    let mut current_offset = 0;
+                    for (field_name, _) in fields {
+                        if field_name == &field_access.field {
+                            break;
+                        }
+                        current_offset += 8; // Assume 8-byte fields for now
+                    }
+                    if current_offset >= fields.len() * 8 {
+                        return Err(CompilerError::codegen_error(format!("Unknown field '{}' in type '{}'", field_access.field, type_name)));
+                    }
+                    current_offset
+                } else {
+                    return Err(CompilerError::codegen_error(format!("Cannot find struct layout for type '{}'", type_name)));
+                };
+
+                let ptr_reg = self.next_register();
+                let typed_reg = self.next_register();
+                let value_reg = self.next_register();
+
+                // Get pointer to field
+                self.instructions.push(format!("  %{} = getelementptr i8, i8* %self, i64 {}", ptr_reg, offset));
+
+                // Cast to i64*
+                self.instructions.push(format!("  %{} = bitcast i8* %{} to i64*", typed_reg, ptr_reg));
+
+                // Load the value
+                self.instructions.push(format!("  %{} = load i64, i64* %{}", value_reg, typed_reg));
+
+                Ok(format!("%{}", value_reg))
+            }
+            _ => {
+                Err(CompilerError::codegen_error("Only self.field access supported in methods".to_string()))
+            }
+        }
+    }
+
+    /// Generate literal values for method bodies
+    fn generate_literal_value(&mut self, literal: &crate::ast::Literal) -> Result<String> {
+        match literal {
+            crate::ast::Literal::Int(value) => Ok(value.to_string()),
+            _ => Err(CompilerError::codegen_error("Unsupported literal type in method".to_string())),
+        }
+    }
+
     /// Generate LLVM IR for struct literals with proper mixed-type support
     fn generate_struct_literal(&mut self, struct_lit: &StructLiteralExpr) -> Result<Option<String>> {
         if struct_lit.fields.is_empty() {
             return Ok(Some("null".to_string())); // Empty struct
         }
 
-        // Get the struct definition to know field types
-        let struct_def = self.struct_defs.get(&struct_lit.type_name)
-            .ok_or_else(|| CompilerError::codegen_error(format!("Unknown struct type: {}", struct_lit.type_name)))?
-            .clone();
-
-        // Create a map of field name to field definition for easy lookup
+        // Get the struct definition to know field types - check both struct_defs and type_aliases
         let mut field_type_map = HashMap::new();
-        for field_def in &struct_def {
-            field_type_map.insert(field_def.name.clone(), field_def.ty.clone());
+
+        if let Some(struct_def) = self.struct_defs.get(&struct_lit.type_name) {
+            // Handle struct definitions: struct Point { x: int, y: int }
+            for field_def in struct_def {
+                field_type_map.insert(field_def.name.clone(), field_def.ty.clone());
+            }
+        } else if let Some(alias_type) = self.type_aliases.get(&struct_lit.type_name) {
+            // Handle type aliases: type Point = {x: int, y: int}
+            if let Type::Record(fields) = alias_type {
+                for (field_name, field_type) in fields {
+                    field_type_map.insert(field_name.clone(), field_type.clone());
+                }
+            } else {
+                return Err(CompilerError::codegen_error(format!("Type alias '{}' is not a record type", struct_lit.type_name)));
+            }
+        } else {
+            return Err(CompilerError::codegen_error(format!("Unknown struct type: {}", struct_lit.type_name)));
         }
 
         // Generate all field expressions first and collect their types
