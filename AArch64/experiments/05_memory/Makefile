@@ -34,17 +34,43 @@ $(RUNTIME_LIB): ../../silica-bootstrap-compiler/standalone_runtime.c
 	@echo "Building Silica runtime library..."
 	@$(COMPILER_CLANG) -c $< -o $@ -O2
 
-.PHONY: all clean executables modules executables-full help
+.DEFAULT_GOAL := all
+all: executables-all modules
 
-all: executables-full
-all: executables modules
+executables-all: executables $(RUNTIME_LIB)
+ifdef HAS_LLVM_AS
+ifdef HAS_LLC
+	@echo "Building full executables with LLVM toolchain..."
+	@for ll_file in $(EXECUTABLES_LL); do \
+		if [ -f "$$ll_file" ]; then \
+			bc_file=$$(basename $$ll_file .ll).bc; \
+			obj_file=$$(basename $$ll_file .ll).o; \
+			exe_file=$$(basename $$ll_file .ll); \
+			echo "  $$ll_file -> $$exe_file"; \
+			if $(HAS_LLVM_AS) $$ll_file -o $$bc_file && \
+			   $(HAS_LLC) -filetype=obj $$bc_file -o $$obj_file && \
+			   $(LINKER_CLANG) $$obj_file $(RUNTIME_LIB) -o $$exe_file; then \
+				echo "    ✅ Successfully built $$exe_file"; \
+			else \
+				echo "    ❌ Failed to build $$exe_file"; \
+			fi; \
+		fi; \
+	done
+else
+	@echo "llc not found - install LLVM tools for full compilation"
+endif
+else
+	@echo "llvm-as not found - install LLVM tools for full compilation"
+endif
+
+.PHONY: all clean executables modules executables-all help
 
 # Compile executable files (those with main functions)
 executables: $(EXECUTABLES_LL)
 
 %.ll: %.silica
 	@echo "Compiling executable: $< -> $@"
-	$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+	-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Compile module files (those without main functions)
 modules: $(MODULES_LL)
@@ -52,7 +78,7 @@ modules: $(MODULES_LL)
 # Modules are compiled the same way, but marked as such
 $(MODULES_LL): %.ll: %.silica
 	@echo "Compiling module: $< -> $@"
-	$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+	-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Build executables if LLVM tools are available
 executables-full: executables $(RUNTIME_LIB)
@@ -87,10 +113,15 @@ help:
 	@echo "Executables ($(words $(EXECUTABLES))): $(EXECUTABLES)"
 	@echo "Modules ($(words $(MODULES))): $(MODULES)"
 	@echo ""
+	@echo "Build stages:"
+	@echo "  Stage 1: Silica → LLVM IR (.ll files)"
+	@echo "  Stage 2: LLVM IR → Bitcode (.bc files) - requires llvm-as"
+	@echo "  Stage 3: Bitcode → Object (.o files) - requires llc"
+	@echo "  Stage 4: Object → Executable - requires clang + runtime"
+	@echo ""
 	@echo "Targets:"
-	@echo "  all              - Build LLVM IR files (default)"
+	@echo "  executables-all  - Build full executables with runtime (default)"
 	@echo "  executables      - Build only executable LLVM IR files"
-	@echo "  all              - Build LLVM IR files"
-	@echo "  modules          - Build only module files"
+	@echo "  modules          - Build only module LLVM IR files"
 	@echo "  clean            - Remove all generated files"
 	@echo "  help             - Show this help"
