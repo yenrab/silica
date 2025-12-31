@@ -6,6 +6,7 @@ pub mod types;
 pub mod effects;
 pub mod codegen;
 pub mod runtime;
+pub mod io;
 pub mod module_resolver;
 
 use errors::{CompilerError, Result};
@@ -86,9 +87,9 @@ impl Compiler {
         // Phase 3: Type checking
         println!("Phase 3: Type checking happening...");
         let mut type_checker = TypeChecker::with_symbol_table(Some(&self.symbol_table));
-        eprintln!("DEBUG LIB: About to call check_program");
+        // eprintln!("DEBUG LIB: About to call check_program");
         type_checker.check_program(&program)?;
-        println!("DEBUG LIB: check_program completed successfully");
+        // println!("DEBUG LIB: check_program completed successfully");
         println!("Type checking passed");
 
         // Phase 4: Effect analysis

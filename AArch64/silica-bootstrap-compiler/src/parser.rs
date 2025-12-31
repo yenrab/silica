@@ -57,9 +57,9 @@ impl Parser {
         } else if self.match_token(TokenKind::Trait) {
             self.trait_declaration().map(Declaration::Trait)
         } else if self.match_token(TokenKind::Impl) {
-            eprintln!("DEBUG PARSER: Matched impl token, calling impl_declaration");
+            // eprintln!("DEBUG PARSER: Matched impl token, calling impl_declaration");
             let result = self.impl_declaration().map(Declaration::Impl);
-            eprintln!("DEBUG PARSER: impl_declaration result: {:?}", result.is_ok());
+            // eprintln!("DEBUG PARSER: impl_declaration result: {:?}", result.is_ok());
             result
         } else {
             parse_error(
@@ -1569,7 +1569,7 @@ impl Parser {
 
     /// Parse impl declaration: impl<T> Trait for Type { ... } or impl Type { ... }
     fn impl_declaration(&mut self) -> Result<ImplDecl> {
-        eprintln!("DEBUG IMPL: impl_declaration called");
+        // eprintln!("DEBUG IMPL: impl_declaration called");
         let location = self.previous().location.clone();
 
         // Parse optional type parameters
@@ -1607,24 +1607,24 @@ impl Parser {
 
 
         // Parse methods properly in impl blocks
-        eprintln!("DEBUG IMPL: Starting method parsing loop");
+        // eprintln!("DEBUG IMPL: Starting method parsing loop");
         while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
             let current_token = self.peek();
-            eprintln!("DEBUG IMPL: Current token: {:?} (kind={:?}) at line {} col {}",
-                     current_token.lexeme, current_token.kind, current_token.location.line, current_token.location.column);
+            // eprintln!("DEBUG IMPL: Current token: {:?} (kind={:?}) at line {} col {}",
+            //          current_token.lexeme, current_token.kind, current_token.location.line, current_token.location.column);
             if self.match_token(TokenKind::Fn) {
-                eprintln!("DEBUG IMPL: Successfully matched Fn token");
+                // eprintln!("DEBUG IMPL: Successfully matched Fn token");
                 // Use the standard function declaration parser for methods
                 let method = self.function_declaration()?;
-                eprintln!("DEBUG IMPL: Successfully parsed method: {}", method.name);
+                // eprintln!("DEBUG IMPL: Successfully parsed method: {}", method.name);
                 methods.push(method);
             } else {
-                eprintln!("DEBUG IMPL: Failed to match Fn token, advancing");
+                // eprintln!("DEBUG IMPL: Failed to match Fn token, advancing");
                 // Skip unrecognized tokens
                 self.advance();
             }
         }
-        eprintln!("DEBUG IMPL: Finished method parsing loop, found {} methods", methods.len());
+        // eprintln!("DEBUG IMPL: Finished method parsing loop, found {} methods", methods.len());
 
 
         self.consume(TokenKind::RightBrace, "Expected '}' after impl members")?;

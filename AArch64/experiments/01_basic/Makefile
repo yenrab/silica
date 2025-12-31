@@ -51,16 +51,16 @@ $(MODULES_LL): %.ll: %.silica
 HAS_LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo ""))
 HAS_LLC := $(or $(LLVM_LLC), $(shell command -v llc 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llc && echo "/opt/homebrew/opt/llvm/bin/llc") || echo ""))
 
-# Build the standalone runtime library
-RUNTIME_LIB := runtime.o
+# Build the Rust runtime library
+RUNTIME_LIB := ../../silica-bootstrap-compiler/target/release/libsilica_compiler.a
 
 # Set clang variables - use Homebrew for compilation, system for linking
 COMPILER_CLANG := /opt/homebrew/opt/llvm/bin/clang
 LINKER_CLANG := /usr/bin/clang
 
-$(RUNTIME_LIB): ../../silica-bootstrap-compiler/standalone_runtime.c
+$(RUNTIME_LIB): ../../silica-bootstrap-compiler/src/runtime.rs
 	@echo "Building Silica runtime library..."
-	@$(COMPILER_CLANG) -c $< -o $@ -O2
+	@cd ../../silica-bootstrap-compiler && cargo build --release
 
 # Build executables if LLVM tools are available
 executables-all: executables $(RUNTIME_LIB)

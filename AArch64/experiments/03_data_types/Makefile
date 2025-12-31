@@ -24,7 +24,7 @@ HAS_LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test
 HAS_LLC := $(or $(LLVM_LLC), $(shell command -v llc 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llc && echo "/opt/homebrew/opt/llvm/bin/llc") || echo ""))
 
 # Build the standalone runtime library
-RUNTIME_LIB := runtime.o
+RUNTIME_LIB := ../../silica-bootstrap-compiler/target/release/libsilica_compiler.a
 
 # Set clang variables - use Homebrew for compilation, system for linking
 COMPILER_CLANG := /opt/homebrew/opt/llvm/bin/clang
@@ -39,9 +39,9 @@ all: executables-all modules
 $(SILICA_COMPILER):
 	cd ../../silica-bootstrap-compiler && cargo build --release --no-default-features
 
-$(RUNTIME_LIB): ../../silica-bootstrap-compiler/standalone_runtime.c
+$(RUNTIME_LIB): ../../silica-bootstrap-compiler/src/runtime.rs
 	@echo "Building Silica runtime library..."
-	@$(COMPILER_CLANG) -c $< -o $@ -O2
+	@cd ../../silica-bootstrap-compiler && cargo build --release
 
 .DEFAULT_GOAL := executables-all
 executables-all: executables $(RUNTIME_LIB)

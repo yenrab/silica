@@ -447,7 +447,7 @@ mod tests {
         silica_actor_send(actor_ptr, 42);
 
         // Receive a message
-        let message = silica_actor_recv();
+        let message = silica_actor_recv(actor_ptr);
         assert_eq!(message, 42);
 
         // Clean up

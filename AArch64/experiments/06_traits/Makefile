@@ -5,6 +5,8 @@ SILICA_COMPILER := ../../silica-bootstrap-compiler/target/release/silica-boot
 
 # Ensure compiler is built without LLVM backend features for consistent text-based generation
 $(SILICA_COMPILER):
+	@echo "Building Silica compiler..."
+	rm -f $(SILICA_COMPILER)
 	cd ../../silica-bootstrap-compiler && cargo build --release --no-default-features
 SEARCH_PATHS := -I ../../stdlib
 
@@ -35,25 +37,25 @@ $(RUNTIME_LIB): ../../silica-bootstrap-compiler/src/runtime.rs
 	@cd ../../silica-bootstrap-compiler && cargo build --release
 
 .DEFAULT_GOAL := all
-.PHONY: all clean executables modules executables-all help
+.PHONY: all clean rebuild-compiler clean-all rebuild-all executables modules executables-all help
 
-# Default target - build full executables
+# Default target - build full executables and modules
 all: executables-all modules
 
 # Compile executable files (those with main functions)
 executables: $(EXECUTABLES_LL)
 
-%.ll: %.silica
+%.ll: %.silica $(SILICA_COMPILER)
 	@echo "Compiling executable: $< -> $@"
-	$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+	-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Compile module files (those without main functions)
 modules: $(MODULES_LL)
 
 # Modules are compiled the same way, but marked as such
-$(MODULES_LL): %.ll: %.silica
+$(MODULES_LL): %.ll: %.silica $(SILICA_COMPILER)
 	@echo "Compiling module: $< -> $@"
-	$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+	-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Build executables if LLVM tools are available
 executables-all: executables $(RUNTIME_LIB)
@@ -81,6 +83,17 @@ endif
 clean:
 	rm -f *.ll *.bc *.o $(EXECUTABLES) runtime.o
 
+# Force rebuild of compiler
+rebuild-compiler:
+	@echo "Forcing rebuild of Silica compiler..."
+	cd ../../silica-bootstrap-compiler && cargo build --release --no-default-features
+
+# Clean everything including compiler
+clean-all: clean rebuild-compiler
+
+# Rebuild everything from scratch
+rebuild-all: clean-all all
+
 # Show what will be built
 help:
 	@echo "Silica Experiments Makefile"
@@ -93,4 +106,7 @@ help:
 	@echo "  executables      - Build only executable LLVM IR files"
 	@echo "  modules          - Build only module LLVM IR files"
 	@echo "  clean            - Remove all generated files"
+	@echo "  rebuild-compiler - Force rebuild of the Silica compiler"
+	@echo "  clean-all        - Clean everything including compiler"
+	@echo "  rebuild-all      - Clean and rebuild everything from scratch"
 	@echo "  help             - Show this help"

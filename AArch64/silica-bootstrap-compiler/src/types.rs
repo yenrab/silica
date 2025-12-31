@@ -235,46 +235,46 @@ impl<'a> TypeChecker<'a> {
 
     /// Resolve a method call on a type
     pub fn resolve_method(&self, receiver_type: &Type, method_name: &str) -> Option<&FunctionDecl> {
-        eprintln!("DEBUG RESOLVE: Called with method {} on type {:?}", method_name, receiver_type);
-        eprintln!("DEBUG RESOLVE: We have {} trait impls", self.trait_impls.len());
+        // eprintln!("DEBUG RESOLVE: Called with method {} on type {:?}", method_name, receiver_type);
+        // eprintln!("DEBUG RESOLVE: We have {} trait impls", self.trait_impls.len());
 
         // Look through all trait implementations
         for trait_impl in &self.trait_impls {
-            eprintln!("DEBUG RESOLVE: Checking trait impl for trait {:?}", trait_impl.trait_name);
+            // eprintln!("DEBUG RESOLVE: Checking trait impl for trait {:?}", trait_impl.trait_name);
             // Check if this implementation applies to the receiver type
             if self.types_equal(&trait_impl.for_type, receiver_type) {
                 // Check if the trait has this method
-                eprintln!("DEBUG RESOLVE: Trait has this method");
+                // eprintln!("DEBUG RESOLVE: Trait has this method");
                 if let Some(method) = trait_impl.methods.get(method_name) {
                     return Some(method);
                 } else {
-                    eprintln!("DEBUG RESOLVE: Trait does not have this method");
+                    // eprintln!("DEBUG RESOLVE: Trait does not have this method");
                 }
             }
         }
 
-        eprintln!("DEBUG RESOLVE: No direct match found");
+        // eprintln!("DEBUG RESOLVE: No direct match found");
         // If no direct match, check if receiver_type is an expanded type that has an alias
         if let Some(alias_name) = self.find_alias_name_for_expanded_type(receiver_type) {
-            eprintln!("DEBUG RESOLVE: Found alias name {:?}", alias_name);
+            // eprintln!("DEBUG RESOLVE: Found alias name {:?}", alias_name);
             let alias_type = Type::Named(alias_name.to_string());
-            eprintln!("DEBUG RESOLVE: Checking trait impl for alias type {:?}", alias_type);
+            // eprintln!("DEBUG RESOLVE: Checking trait impl for alias type {:?}", alias_type);
             for trait_impl in &self.trait_impls {
-                eprintln!("DEBUG RESOLVE: Checking trait impl for trait {:?}", trait_impl.trait_name);
+                // eprintln!("DEBUG RESOLVE: Checking trait impl for trait {:?}", trait_impl.trait_name);
                 if self.types_equal(&trait_impl.for_type, &alias_type) {
-                    eprintln!("DEBUG RESOLVE: Trait has this method");
+                    // eprintln!("DEBUG RESOLVE: Trait has this method");
                     if let Some(method) = trait_impl.methods.get(method_name) {
                         return Some(method);
                     } else {
-                        eprintln!("DEBUG RESOLVE: Trait does not have this method");
+                        // eprintln!("DEBUG RESOLVE: Trait does not have this method");
                     }
                 }
             }
         } else {
-            eprintln!("DEBUG RESOLVE: No alias found for type {:?}", receiver_type);
+            // eprintln!("DEBUG RESOLVE: No alias found for type {:?}", receiver_type);
         }
 
-        eprintln!("DEBUG RESOLVE: Method {} not found on type {:?}", method_name, receiver_type);
+        // eprintln!("DEBUG RESOLVE: Method {} not found on type {:?}", method_name, receiver_type);
         None
     }
 
@@ -296,10 +296,10 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn with_symbol_table(symbol_table: Option<&'a crate::module_resolver::SymbolTable>) -> Self {
-        eprintln!("DEBUG TYPECHECK: with_symbol_table called");
-        eprintln!("DEBUG TYPECHECK: symbol_table = {:?}", symbol_table);
+        // eprintln!("DEBUG TYPECHECK: with_symbol_table called");
+        // eprintln!("DEBUG TYPECHECK: symbol_table = {:?}", symbol_table);
         let mut env = TypeEnv::new();
-        eprintln!("DEBUG TYPECHECK: env created");
+        // eprintln!("DEBUG TYPECHECK: env created");
 
         // Add built-in types
         env.insert("int".to_string(), TypeScheme {
@@ -339,8 +339,8 @@ impl<'a> TypeChecker<'a> {
 
     /// Type check a program
     pub fn check_program(&mut self, program: &Program) -> Result<()> {
-        eprintln!("DEBUG TYPECHECK: check_program called!");
-        eprintln!("DEBUG TYPECHECK: Starting check_program with {} declarations", program.declarations.len());
+        // eprintln!("DEBUG TYPECHECK: check_program called!");
+        // eprintln!("DEBUG TYPECHECK: Starting check_program with {} declarations", program.declarations.len());
         for decl in &program.declarations {
             self.check_declaration(decl)?;
         }
@@ -516,7 +516,7 @@ impl<'a> TypeChecker<'a> {
             Expression::ExecCommand(exec_cmd) => self.infer_exec_command(exec_cmd)?,
             Expression::Tuple(exprs) => self.infer_tuple(exprs)?,
             Expression::StructLiteral(struct_lit) => {
-                eprintln!("DEBUG INFER: StructLiteral case hit for type {}", struct_lit.type_name);
+                // eprintln!("DEBUG INFER: StructLiteral case hit for type {}", struct_lit.type_name);
                 self.infer_struct_literal(struct_lit)?
             },
             Expression::FieldAccess(field_access) => self.infer_field_access(field_access)?,
@@ -536,10 +536,10 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for struct literal
     fn infer_struct_literal(&mut self, struct_lit: &StructLiteralExpr) -> Result<Type> {
-        eprintln!("DEBUG STRUCT: infer_struct_literal called for type {}", struct_lit.type_name);
+        // eprintln!("DEBUG STRUCT: infer_struct_literal called for type {}", struct_lit.type_name);
         // Resolve the type name through aliases to find the actual struct
         let resolved_type = self.resolve_type_name(&struct_lit.type_name)?;
-        eprintln!("DEBUG STRUCT: resolved_type = {:?}", resolved_type);
+        // eprintln!("DEBUG STRUCT: resolved_type = {:?}", resolved_type);
 
         match resolved_type {
             Type::Record(expected_fields) => {
@@ -927,9 +927,9 @@ impl<'a> TypeChecker<'a> {
     /// Infer type for method calls (receiver.method(args))
     fn infer_method_call(&mut self, field_access: &FieldAccessExpr, call: &CallExpr) -> Result<Type> {
         // Infer the receiver type
-        eprintln!("DEBUG METHOD_CALL: infer_method_call called for {}.{}", "receiver", field_access.field);
+        // eprintln!("DEBUG METHOD_CALL: infer_method_call called for {}.{}", "receiver", field_access.field);
         let receiver_type = self.infer_expression(&field_access.object)?;
-        eprintln!("DEBUG METHOD_CALL: receiver_type = {:?}", receiver_type);
+        // eprintln!("DEBUG METHOD_CALL: receiver_type = {:?}", receiver_type);
         // Try to resolve the method
         if let Some(method) = self.resolve_method(&receiver_type, &field_access.field) {
             // Extract method info before doing mutable operations
@@ -1224,7 +1224,7 @@ impl<'a> TypeChecker<'a> {
                 Statement::Bind { pattern, expr } => {
                     // Infer the type of the expression
                     let expr_type = self.infer_expression(expr)?;
-                    eprintln!("DEBUG BIND: expr_type = {:?}", expr_type);
+                    // eprintln!("DEBUG BIND: expr_type = {:?}", expr_type);
 
                     // Bind pattern variables to the type environment (keep named types for method dispatch)
                     self.bind_pattern_variables(pattern, &expr_type, &do_expr.location)?;
@@ -1636,27 +1636,27 @@ impl<'a> TypeChecker<'a> {
     fn check_trait_declaration(&mut self, trait_decl: &TraitDecl) -> Result<()> {
         // Check that all method signatures are valid
 
-        eprintln!("DEBUG TRAIT: check_trait_declaration called for trait {:?}", trait_decl.name);
-        eprintln!("DEBUG TRAIT: methods.len() = {}", trait_decl.methods.len());
+        // eprintln!("DEBUG TRAIT: check_trait_declaration called for trait {:?}", trait_decl.name);
+        // eprintln!("DEBUG TRAIT: methods.len() = {}", trait_decl.methods.len());
         for method in &trait_decl.methods {
-            eprintln!("DEBUG TRAIT: method = {:?}", method.name);
-            eprintln!("DEBUG TRAIT: params.len() = {}", method.params.len());
+            // eprintln!("DEBUG TRAIT: method = {:?}", method.name);
+            // eprintln!("DEBUG TRAIT: params.len() = {}", method.params.len());
             
             
             for param in &method.params {
                 self.validate_type(&param.type_)?;
             }
             if let Some(ref return_type) = method.return_type {
-                eprintln!("DEBUG TRAIT: return_type = {:?}", return_type);
+                // eprintln!("DEBUG TRAIT: return_type = {:?}", return_type);
                 self.validate_type(return_type)?;
             }
         }
-        
+
         // Check associated types
-        eprintln!("DEBUG TRAIT: associated_types.len() = {}", trait_decl.associated_types.len());
+        // eprintln!("DEBUG TRAIT: associated_types.len() = {}", trait_decl.associated_types.len());
         for assoc_type in &trait_decl.associated_types {
-            eprintln!("DEBUG TRAIT: associated_type = {:?}", assoc_type.name);
-            eprintln!("DEBUG TRAIT: bounds.len() = {}", assoc_type.bounds.len());
+            // eprintln!("DEBUG TRAIT: associated_type = {:?}", assoc_type.name);
+            // eprintln!("DEBUG TRAIT: bounds.len() = {}", assoc_type.bounds.len());
             // Associated types are just declarations, no validation needed beyond name
         }
         
@@ -1664,21 +1664,21 @@ impl<'a> TypeChecker<'a> {
         // Add the trait type to the environment
         let trait_type = Type::Named(trait_decl.name.clone());
         self.env.insert(trait_decl.name.clone(), TypeScheme { vars: Vec::new(), ty: trait_type });
-        eprintln!("DEBUG TRAIT: Trait type added to environment");
+        // eprintln!("DEBUG TRAIT: Trait type added to environment");
 
         // Store the trait definition
         self.trait_defs.insert(trait_decl.name.clone(), trait_decl.clone());
-        eprintln!("DEBUG TRAIT: Associated types validated after checking");
+        // eprintln!("DEBUG TRAIT: Associated types validated after checking");
 
         Ok(())
     }
 
     /// Check impl declaration
     fn check_impl_declaration(&mut self, impl_decl: &ImplDecl) -> Result<()> {
-        eprintln!("DEBUG IMPL: check_impl_declaration START");
-        eprintln!("DEBUG IMPL: check_impl_declaration called for type {:?}", impl_decl.for_type);
-        eprintln!("DEBUG IMPL: trait_name = {:?}", impl_decl.trait_name);
-        eprintln!("DEBUG IMPL: methods.len() = {}", impl_decl.methods.len());
+        // eprintln!("DEBUG IMPL: check_impl_declaration START");
+        // eprintln!("DEBUG IMPL: check_impl_declaration called for type {:?}", impl_decl.for_type);
+        // eprintln!("DEBUG IMPL: trait_name = {:?}", impl_decl.trait_name);
+        // eprintln!("DEBUG IMPL: methods.len() = {}", impl_decl.methods.len());
         
         
         
@@ -1706,17 +1706,17 @@ impl<'a> TypeChecker<'a> {
 
         // If this is a trait implementation (not inherent impl)
         if let Some(trait_name) = &impl_decl.trait_name {
-            eprintln!("DEBUG IMPL: Processing trait impl for trait '{}'", trait_name);
+            // eprintln!("DEBUG IMPL: Processing trait impl for trait '{}'", trait_name);
 
             // Verify the trait exists
             if !self.trait_defs.contains_key(trait_name) {
-                eprintln!("DEBUG IMPL: Trait '{}' not found!", trait_name);
+                // eprintln!("DEBUG IMPL: Trait '{}' not found!", trait_name);
                 return type_error(
                     impl_decl.location.clone(),
                     format!("Trait '{}' not found", trait_name)
                 );
             }
-            eprintln!("DEBUG IMPL: Trait '{}' found, proceeding with impl", trait_name);
+            // eprintln!("DEBUG IMPL: Trait '{}' found, proceeding with impl", trait_name);
 
             // Create method map
             let mut methods = HashMap::new();
@@ -1731,8 +1731,8 @@ impl<'a> TypeChecker<'a> {
             }
 
             // Store the trait implementation
-            eprintln!("DEBUG IMPL: Storing TraitImpl for trait '{}' and type {:?}", trait_name, impl_decl.for_type);
-            eprintln!("DEBUG IMPL: TraitImpl has {} methods: {:?}", methods.len(), methods.keys().collect::<Vec<_>>());
+            // eprintln!("DEBUG IMPL: Storing TraitImpl for trait '{}' and type {:?}", trait_name, impl_decl.for_type);
+            // eprintln!("DEBUG IMPL: TraitImpl has {} methods: {:?}", methods.len(), methods.keys().collect::<Vec<_>>());
             let trait_impl = TraitImpl {
                 trait_name: trait_name.clone(),
                 for_type: impl_decl.for_type.clone(),
@@ -1741,7 +1741,7 @@ impl<'a> TypeChecker<'a> {
             };
 
             self.trait_impls.push(trait_impl);
-            eprintln!("DEBUG IMPL: Total trait impls now: {}", self.trait_impls.len());
+            // eprintln!("DEBUG IMPL: Total trait impls now: {}", self.trait_impls.len());
             
         }
 

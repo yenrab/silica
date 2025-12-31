@@ -413,6 +413,13 @@ impl CodeGenerator {
         self.instructions.push("declare i8* @silica_exec_command(i8*, i64, i8*, i64, i8*)".to_string());
         self.instructions.push("declare void @silica_free_process_result(i8*)".to_string());
 
+        // Print functions
+        self.instructions.push("declare void @silica_print(i8*, i64)".to_string());
+        self.instructions.push("declare void @silica_println(i8*, i64)".to_string());
+        self.instructions.push("declare void @silica_print_int(i64)".to_string());
+        self.instructions.push("declare void @silica_print_bool(i1)".to_string());
+        self.instructions.push("declare void @silica_print_char(i8)".to_string());
+
         self.instructions.push("".to_string());
 
         // Generate all declarations
@@ -1009,6 +1016,7 @@ impl CodeGenerator {
 
         // For now, assume the function is an identifier (function name)
         if let Expression::Identifier(func_name) = &*call.function {
+
             // Special handling for file I/O functions
             if func_name == "read_file" {
                 return self.generate_read_file_call(call);
@@ -1034,6 +1042,9 @@ impl CodeGenerator {
                     .map(|arg| {
                         if arg.starts_with("i64 ") || arg.starts_with("i1 ") || arg.starts_with("i8* ") {
                             arg.clone() // Already has type prefix
+                        } else if arg.starts_with('%') && arg.contains("alloc") {
+                            // Allocation results are pointers (i8*)
+                            format!("i8* {}", arg)
                         } else if arg.starts_with('%') {
                             // Assume i64 type for registers (most common case)
                             format!("i64 {}", arg)
@@ -1053,7 +1064,8 @@ impl CodeGenerator {
                         format!("Unknown function '{}'. Function must be declared before it can be called.", func_name)
                     ))?;
 
-                let call_instr = format!("  {} = call {} @{}({})", temp_reg, return_type, func_name, args_str);
+                let fixed_args_str = args_str.replace("i64 %tuple_alloc_", "i8* %tuple_alloc_");
+                let call_instr = format!("  {} = call {} @{}({})", temp_reg, return_type, func_name, fixed_args_str);
                 self.instructions.push(call_instr);
 
                 Ok(Some(temp_reg))
@@ -1076,10 +1088,16 @@ impl CodeGenerator {
                         // For LLVM IR function calls, arguments should have type prefixes
                         let typed_args: Vec<String> = arg_strs.iter()
                             .map(|arg| {
-                                if arg.starts_with("i64 ") || arg.starts_with("i1 ") {
+                                if arg.starts_with("i64 ") || arg.starts_with("i1 ") || arg.starts_with("i8* ") {
                                     arg.clone() // Already has type prefix
+                                } else if arg.starts_with('%') && arg.contains("alloc") {
+                                    // Allocation results are pointers (i8*)
+                                    format!("i8* {}", arg)
+                                } else if arg.starts_with('%') {
+                                    // Assume i64 type for registers (most common case)
+                                    format!("i64 {}", arg)
                                 } else {
-                                    format!("i64 {}", arg) // Add type prefix for bare registers/constants
+                                    format!("i64 {}", arg) // Add type prefix for bare constants
                                 }
                             })
                             .collect();
@@ -1136,7 +1154,7 @@ impl CodeGenerator {
                     if trait_impl.methods.contains_key(&field_access.field) {
                         // Check if this trait impl applies to our receiver type
                         if self.types_equal_codegen(&trait_impl.for_type, &receiver_type) {
-                            eprintln!("DEBUG METHOD: Found trait impl for type {:?} with method {}", trait_impl.for_type, field_access.field);
+                            // eprintln!("DEBUG METHOD: Found trait impl for type {:?} with method {}", trait_impl.for_type, field_access.field);
                             // Found matching trait impl, proceed with method call
                             break;
                         }
@@ -2395,31 +2413,90 @@ impl CodeGenerator {
             Pattern::Identifier(name) => {
                 // Bind the scrutinee value to the variable
                 let bind_reg = format!("%bind_{}_{}", name, self.instructions.len());
-                let reg_name = if scrutinee_reg.starts_with("i64 ") {
-                    &scrutinee_reg[4..]
+
+                // Handle different types based on the scrutinee register type
+                if scrutinee_reg.starts_with("i64 ") {
+                    // i64 integer
+                    let reg_name = &scrutinee_reg[4..];
+                    self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, reg_name)); // Copy the value
+                } else if scrutinee_reg.starts_with("i1 ") {
+                    // i1 boolean - extend to i64 for consistency
+                    let reg_name = &scrutinee_reg[3..];
+                    let extended_reg = format!("%{}_ext_{}", name, self.instructions.len());
+                    self.instructions.push(format!("  {} = zext i1 {} to i64", extended_reg, reg_name));
+                    self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, extended_reg)); // Copy the value
+                } else if scrutinee_reg.contains("tuple_alloc") {
+                    // Tuple pointer - convert to integer value
+                    let int_reg = format!("%{}_int_{}", name, self.instructions.len());
+                    self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", int_reg, scrutinee_reg));
+                    self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, int_reg)); // Copy the value
                 } else {
-                    scrutinee_reg
-                };
-                self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, reg_name)); // Copy the value
+                    // Default fallback - assume i64
+                    self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, scrutinee_reg)); // Copy the value
+                }
+
                 self.variables.insert(name.clone(), bind_reg.clone()); // Add to global map for testing
                 bound_vars.insert(name.clone(), bind_reg);
             }
             Pattern::Tuple(elements) => {
-                // For tuple patterns, bind each element
-                // This is a simplified implementation - in a full implementation,
-                // we'd need to decompose the tuple structure
+                // Tuple destructuring with proper type-aware element access
+                // Uses the same layout calculation as tuple creation for consistency
+
+                // For each element, calculate its offset based on the tuple's stored type information
+                // This mirrors the generate_tuple logic but in reverse for destructuring
+
+                // Start after count (i64) and type IDs, aligned to 8 bytes
+                let mut current_offset = 8i64; // After count
+                current_offset += elements.len() as i64; // After type IDs
+                // Align to 8-byte boundary for first element
+                if current_offset % 8 != 0 {
+                    current_offset += 8 - (current_offset % 8);
+                }
+
                 for (i, elem_pattern) in elements.iter().enumerate() {
                     if let Pattern::Identifier(elem_name) = elem_pattern {
-                        // For now, assume tuple elements are at fixed offsets (this won't work for mixed types)
-                        let offset = i * 8;
+                        // Read the type ID for this element
+                        let type_id_offset = 8 + i as i64;
+                        let type_ptr_reg = format!("%type_ptr_{}_{}", elem_name, self.instructions.len());
+                        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", type_ptr_reg, scrutinee_reg, type_id_offset));
+                        let type_id_reg = format!("%type_id_{}_{}", elem_name, self.instructions.len());
+                        self.instructions.push(format!("  {} = load i8, i8* {}", type_id_reg, type_ptr_reg));
+
+                        // Generate pointer to element at pre-calculated offset
                         let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
-                        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, scrutinee_reg, offset));
+                        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, scrutinee_reg, current_offset));
 
-                        let elem_cast_reg = format!("%{}_cast_{}", elem_name, self.instructions.len());
-                        self.instructions.push(format!("  {} = bitcast i8* {} to i64*", elem_cast_reg, elem_ptr_reg));
-
+                        // Load element with type-aware casting
                         let elem_reg = format!("%{}", elem_name);
-                        self.instructions.push(format!("  {} = load i64, i64* {}", elem_reg, elem_cast_reg));
+
+                        // Load both possible types and select
+                        let unique_id = self.instructions.len();
+
+                        // Cast to both i1* and i64*
+                        let i1_cast_reg = format!("%{}_i1_cast_{}", elem_name, unique_id);
+                        let i64_cast_reg = format!("%{}_i64_cast_{}", elem_name, unique_id);
+                        self.instructions.push(format!("  {} = bitcast i8* {} to i1*", i1_cast_reg, elem_ptr_reg));
+                        self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
+
+                        // Load both values
+                        let bool_val_reg = format!("%{}_bool_val_{}", elem_name, unique_id);
+                        let i64_val_reg = format!("%{}_i64_val_{}", elem_name, unique_id);
+                        self.instructions.push(format!("  {} = load i1, i1* {}", bool_val_reg, i1_cast_reg));
+                        self.instructions.push(format!("  {} = load i64, i64* {}", i64_val_reg, i64_cast_reg));
+
+                        // Extend bool to i64
+                        let extended_bool_reg = format!("%{}_extended_{}", elem_name, unique_id);
+                        self.instructions.push(format!("  {} = zext i1 {} to i64", extended_bool_reg, bool_val_reg));
+
+                        // Select based on type
+                        let is_i1_check = format!("%{}_is_i1_{}", elem_name, unique_id);
+                        self.instructions.push(format!("  {} = icmp eq i8 {}, 0", is_i1_check, type_id_reg));
+                        // Select the correct result based on type
+                        self.instructions.push(format!("  {} = select i1 {}, i64 {}, i64 {}", elem_reg, is_i1_check, extended_bool_reg, i64_val_reg));
+
+                        // Update offset for next element (assume 8-byte alignment for simplicity)
+                        // In a full implementation, this would read the actual size from type info
+                        current_offset += 8;
 
                         bound_vars.insert(elem_name.clone(), elem_reg);
                     }
@@ -2456,7 +2533,7 @@ impl CodeGenerator {
                         } else {
                             scrutinee_reg
                         };
-                        self.instructions.push(format!("  {} = icmp eq i64 {}, {}", cmp_reg, reg_name, bool_val));
+                        self.instructions.push(format!("  {} = icmp eq i1 {}, {}", cmp_reg, reg_name, bool_val));
                         Ok(cmp_reg)
                     }
                     _ => {
@@ -3042,7 +3119,7 @@ impl CodeGenerator {
     /// Generate binary operations in method bodies (like self.x + self.y)
     fn generate_binary_operation_for_method_with_type(&mut self, type_name: &str, binary: &crate::ast::BinaryExpr) -> Result<()> {
         // Handle different binary operations
-        eprintln!("DEBUG BINARY: operator = {:?}, left = {:?}, right = {:?}", binary.operator, binary.left, binary.right);
+        // eprintln!("DEBUG BINARY: operator = {:?}, left = {:?}, right = {:?}", binary.operator, binary.left, binary.right);
         match binary.operator {
             crate::ast::BinaryOp::Add | crate::ast::BinaryOp::Multiply => {
                 // Generate the left operand (can be complex expression)
@@ -3503,6 +3580,9 @@ impl CodeGenerator {
             // Convert char to i64 (zero-extend)
             let char_val = value.strip_prefix("i32 ").unwrap();
             format!("zext (i32 {} to i64)", char_val)
+        } else if value.contains("tuple_alloc") {
+            // Convert tuple pointer to i64
+            format!("ptrtoint (i8* {} to i64)", value)
         } else {
             // For pointers or other types, this is a placeholder
             // In a proper implementation, we'd handle each type appropriately
