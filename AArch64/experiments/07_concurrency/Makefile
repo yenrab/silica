@@ -34,10 +34,10 @@ $(RUNTIME_LIB): ../../silica-bootstrap-compiler/standalone_runtime.c
 	@echo "Building Silica runtime library..."
 	@$(COMPILER_CLANG) -c $< -o $@ -O2
 
-.PHONY: all clean executables modules executables-full help
+.PHONY: all clean executables modules executables-all help
 
-all: executables-full
-all: executables modules
+# Default target - build full executables
+all: executables-all modules
 
 # Compile executable files (those with main functions)
 executables: $(EXECUTABLES_LL)
@@ -55,7 +55,7 @@ $(MODULES_LL): %.ll: %.silica
 	$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Build executables if LLVM tools are available
-executables-full: executables $(RUNTIME_LIB)
+executables-all: executables $(RUNTIME_LIB)
 ifdef HAS_LLVM_AS
 ifdef HAS_LLC
 	@echo "Building full executables with LLVM toolchain..."
@@ -88,9 +88,8 @@ help:
 	@echo "Modules ($(words $(MODULES))): $(MODULES)"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all              - Build LLVM IR files (default)"
+	@echo "  all              - Build full executables with runtime (default)"
 	@echo "  executables      - Build only executable LLVM IR files"
-	@echo "  all              - Build LLVM IR files"
-	@echo "  modules          - Build only module files"
+	@echo "  modules          - Build only module LLVM IR files"
 	@echo "  clean            - Remove all generated files"
 	@echo "  help             - Show this help"

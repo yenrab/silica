@@ -30,6 +30,15 @@ RUNTIME_LIB := runtime.o
 COMPILER_CLANG := /opt/homebrew/opt/llvm/bin/clang
 LINKER_CLANG := /usr/bin/clang
 
+.PHONY: all clean executables modules executables-all help
+
+# Default target - build full executables
+all: executables-all modules
+
+# Ensure compiler is built without LLVM backend features for consistent text-based generation
+$(SILICA_COMPILER):
+	cd ../../silica-bootstrap-compiler && cargo build --release --no-default-features
+
 $(RUNTIME_LIB): ../../silica-bootstrap-compiler/standalone_runtime.c
 	@echo "Building Silica runtime library..."
 	@$(COMPILER_CLANG) -c $< -o $@ -O2
@@ -60,8 +69,6 @@ endif
 else
 	@echo "llvm-as not found - install LLVM tools for full compilation"
 endif
-
-.PHONY: executables-all clean executables modules help
 
 # Compile executable files (those with main functions)
 executables: $(EXECUTABLES_LL)

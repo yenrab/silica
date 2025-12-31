@@ -2,10 +2,6 @@
 # Automatically detects executable files (with main) vs modules (without main)
 
 SILICA_COMPILER := ../../silica-bootstrap-compiler/target/release/silica-boot
-
-# Ensure compiler is built without LLVM backend features for consistent text-based generation
-$(SILICA_COMPILER):
-	cd ../../silica-bootstrap-compiler && cargo build --release --no-default-features
 SEARCH_PATHS := -I ../../stdlib
 
 # Find all .silica files
@@ -22,7 +18,11 @@ MODULES_LL := $(addsuffix .ll, $(MODULES))
 .PHONY: all clean executables modules help
 
 # Default target - build full executables
-all: executables-all
+all: executables-all modules
+
+# Ensure compiler is built without LLVM backend features for consistent text-based generation
+$(SILICA_COMPILER):
+	cd ../../silica-bootstrap-compiler && cargo build --release --no-default-features
 
 # Compile executable files (those with main functions)
 executables: $(EXECUTABLES_LL)
@@ -101,8 +101,8 @@ help:
 	@echo "  Stage 4: Object → Executable - requires clang + runtime"
 	@echo ""
 	@echo "Targets:"
-	@echo "  executables-all - Build full executables with runtime (default)"
-	@echo "  all              - Build LLVM IR files"
+	@echo "  all              - Build full executables with runtime (default)"
+	@echo "  executables      - Build only executable LLVM IR files"
 	@echo "  executables      - Build only executable LLVM IR files"
 	@echo "  modules          - Build only module LLVM IR files"
 	@echo "  clean            - Remove all generated files"
