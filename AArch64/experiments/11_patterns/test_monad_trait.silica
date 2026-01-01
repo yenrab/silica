@@ -1,0 +1,244 @@
+// =================================================
+// MONAD MATHEMATICAL DEFINITION (CATEGORY THEORY)
+// =================================================
+// A monad M is defined by two operations:
+//
+// 1. Unit/Return/Pure: η :: a → M a
+//    Takes a value and wraps it in minimal monadic context
+//
+// 2. Bind: (⋙) :: M a → (a → M b) → M b
+//    Chains monadic computations, CRUCIALLY allowing type changes (a → b)
+//
+// Key insight: Monad types CAN CHANGE (unlike functors)
+// - Functors: F a → (a → b) → F b (structure type F preserved)
+// - Monads: M a → (a → M b) → M b (can change result type b)
+//
+// Laws (same as provided):
+// 1. Left Identity: pure(a) ⋙ f ≡ f(a)
+// 2. Right Identity: m ⋙ pure ≡ m
+// 3. Associativity: (f ⋙ g) ⋙ h ≡ f ⋙ (g ⋙ h)
+// =================================================
+
+// =================================================
+// FUTURE PHASE 2 SILICA COMPILER REQUIREMENTS
+// =================================================
+// To support compile-time monad law enforcement with type-changing bind,
+// the Phase 2 Silica Compiler would need to add:
+//
+// 1. HIGHER-KINDED TYPES: Support for type constructors M<A>
+//    trait Monad<M<>> where M: * -> * { ... }
+//
+// 2. GENERIC TYPE PARAMETERS IN TRAITS: Allow M<A> -> M<B> transformations
+//    fn bind<A, B>(self: M<A>, f: (A) -> M<B>) -> M<B>
+//
+// 3. REFINEMENT TYPES: Encode monad laws with type-changing bind
+//    ∀a,b: Types. left_identity(a,b) ∧ right_identity(a) ∧ associativity(a,b,c)
+//
+// 4. DEPENDENT TYPES: Types depending on proofs of laws for different type combinations
+//
+// 5. POLYMORPHIC FUNCTIONS: Support for generic functions with type variables
+//
+// 6. EXISTENTIAL TYPES: For monad transformers and advanced combinations
+//
+// These features would enable true compile-time guarantees that monad
+// implementations satisfy laws while supporting the crucial type-changing bind.
+// =================================================
+
+// =================================================
+// COMPILE-TIME MONAD LAW ENFORCEMENT (PHASE 2)
+// =================================================
+// This section demonstrates how refinement types could enforce
+// monad laws at compile time with proper type-changing bind support.
+
+/*
+// Theoretical refinement type system for monad law enforcement
+// Emphasizing the key difference: monads allow type changes in bind
+
+// Core monad trait with type-changing bind capability
+trait Monad<M> where M: * -> * {
+    // Unit function: η :: a → M a
+    // Creates minimal monadic context (data + metadata)
+    fn pure<A>(value: A) -> M<A>;
+
+    // Bind function: (⋙) :: M a → (a → M b) → M b
+    // KEY FEATURE: Allows type changes from a → b
+    fn bind<A, B>(
+        self: M<A>,
+        f: (A) -> M<B>
+    ) -> { result: M<B> |
+        // Laws encoded as type constraints
+        left_identity_holds(pure, f) ∧
+        right_identity_holds(self) ∧
+        associativity_holds(self, f, g) forAll g: (B) -> M<C> };
+}
+
+// Law verification functions (would be compiler-built-in)
+fn left_identity_holds<A, B>(
+    pure: (A) -> M<A>,
+    f: (A) -> M<B>,
+    value: A
+) -> bool {
+    // pure(a) ⋙ f ≡ f(a)
+    pure(value).bind(f) == f(value)
+}
+
+fn right_identity_holds<A>(
+    m: M<A>,
+    pure: (A) -> M<A>
+) -> bool {
+    // m ⋙ pure ≡ m
+    m.bind((x) -> pure(x)) == m
+}
+
+fn associativity_holds<A, B, C>(
+    m: M<A>,
+    f: (A) -> M<B>,
+    g: (B) -> M<C>
+) -> bool {
+    // (f ⋙ g) ⋙ h ≡ f ⋙ (g ⋙ h)
+    m.bind(f).bind(g) == m.bind((x) -> f(x).bind(g))
+}
+
+// Example implementations demonstrating type-changing bind
+
+// Option Monad: M a = Maybe a
+// Can change types: Option<int> → (int → Option<string>) → Option<string>
+impl Monad<Option> for Option {
+    fn pure<A>(value: A) -> Option<A> {
+        Some { value: value }
+    }
+
+    fn bind<A, B>(
+        self: Option<A>,
+        f: (A) -> Option<B>
+    ) -> Option<B> {
+        match self {
+            Some(a) => f(a),    // Apply f, allowing type change A → B
+            None => None        // Propagate absence, type becomes Option<B>
+        }
+    }
+}
+
+// List Monad: M a = [a]
+// Can change types and multiply possibilities
+impl Monad<List> for List {
+    fn pure<A>(value: A) -> List<A> {
+        Cons { head: value, tail: Nil }
+    }
+
+    fn bind<A, B>(
+        self: List<A>,
+        f: (A) -> List<B>
+    ) -> List<B> {
+        match self {
+            Cons(head, tail) =>
+                // Apply f to head (A → List<B>), then recurse
+                // This can change types AND multiply possibilities
+                concat(f(head), tail.bind(f)),
+            Nil => Nil
+        }
+    }
+}
+
+// IO Monad: M a = RealWorld → (RealWorld, a)
+// Can perform effects and change result types
+type IO<A> = { unsafe_run_io: () -> A };  // Simplified
+
+impl Monad<IO> for IO {
+    fn pure<A>(value: A) -> IO<A> {
+        IO {
+            unsafe_run_io: () -> value  // No effects, just return value
+        }
+    }
+
+    fn bind<A, B>(
+        self: IO<A>,
+        f: (A) -> IO<B>
+    ) -> IO<B> {
+        IO {
+            unsafe_run_io: () -> {
+                let a = self.unsafe_run_io();
+                let io_b = f(a);        // Type change: A → IO<B>
+                io_b.unsafe_run_io()   // Sequence effects, return B
+            }
+        }
+    }
+}
+
+// Reader Monad: M a = Environment → a
+// Can access read-only environment and change result types
+type Reader<Env, A> = { run_reader: (Env) -> A };
+
+impl<Env> Monad<Reader<Env>> for Reader<Env> {
+    fn pure<A>(value: A) -> Reader<Env, A> {
+        Reader {
+            run_reader: (_) -> value  // Ignore environment
+        }
+    }
+
+    fn bind<A, B>(
+        self: Reader<Env, A>,
+        f: (A) -> Reader<Env, B>
+    ) -> Reader<Env, B> {
+        Reader {
+            run_reader: (env) -> {
+                let a = self.run_reader(env);
+                let reader_b = f(a);        // Type change: A → Reader<B>
+                reader_b.run_reader(env)   // Same environment, different result type
+            }
+        }
+    }
+}
+
+// Example demonstrating type-changing bind capability
+fn monad_type_changing_examples() -> int {
+    // Option: int → string (type change with possible failure)
+    let option_int: Option<int> = Some(42);
+    let option_string: Option<string> = option_int.bind((x) ->
+        if x > 0 { Some("positive") } else { None }  // int → Option<string>
+    );
+
+    // List: int → List<string> (type change with multiplication)
+    let list_int: List<int> = Cons(1, Cons(2, Nil));
+    let list_string: List<string> = list_int.bind((x) ->
+        Cons(int_to_string(x), Cons(int_to_string(x * 10), Nil))
+    );  // int → List<string>, and 2 elements become 4
+
+    // Reader: int → string (type change with environment access)
+    let reader_int: Reader<Config, int> = Reader {
+        run_reader: (config) -> config.default_value
+    };
+    let reader_string: Reader<Config, string> = reader_int.bind((x) ->
+        Reader { run_reader: (config) -> config.format_value(x) }
+    );  // int → Reader<string>
+
+    // All operations are compile-time verified to satisfy monad laws
+    // despite allowing type changes in bind operations
+
+    42
+}
+
+// Helper function (would be in standard library)
+fn concat<A>(l1: List<A>, l2: List<A>) -> List<A> {
+    match l1 {
+        Cons(head, tail) => Cons(head, concat(tail, l2)),
+        Nil => l2
+    }
+}
+
+fn int_to_string(x: int) -> string {
+    // Simplified conversion
+    "42"  // Placeholder
+}
+
+// Key insight: Monads are more powerful than functors because bind
+// can change the result type, enabling complex computational patterns
+// like optional values, multiple possibilities, effects, and environment access.
+
+// Benefits of monad type-changing bind:
+// 1. Enables composition of different types of computations
+// 2. Supports error handling, non-determinism, state, effects
+// 3. Allows sequencing operations with different result types
+// 4. Compile-time verification that laws hold despite type changes
+// 5. Foundation for advanced abstractions like monad transformers
+*/
