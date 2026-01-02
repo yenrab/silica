@@ -10,7 +10,7 @@ pub struct Program {
 /// Declaration represents top-level declarations in Silica
 #[derive(Debug, Clone)]
 pub enum Declaration {
-    Function(FunctionDecl),
+    Function(FunctionDecl), // includes extern functions
     Type(TypeDecl),
     Effect(EffectDecl),
     Import(ImportDecl),
@@ -30,7 +30,7 @@ pub struct FunctionDecl {
     pub parameters: Vec<Parameter>,
     pub return_type: Option<Type>,
     pub where_clause: Option<WhereClause>,
-    pub body: Expression,
+    pub body: Vec<Statement>,
     pub effects: Vec<Effect>,
     pub location: SourceLocation,
 }
@@ -245,6 +245,23 @@ pub enum Expression {
     ReadFile(ReadFileExpr),
     WriteFile(WriteFileExpr),
 
+    // Print operations
+    Print(PrintExpr),
+    PrintLn(PrintLnExpr),
+    PrintInt(PrintIntExpr),
+    PrintBool(PrintBoolExpr),
+    PrintChar(PrintCharExpr),
+
+    // I/O operations
+    ReadLines(ReadLinesExpr),
+    AppendFile(AppendFileExpr),
+    FileExists(FileExistsExpr),
+    DeleteFile(DeleteFileExpr),
+    GetFileSize(GetFileSizeExpr),
+    CreateDirectory(CreateDirectoryExpr),
+    RemoveDirectory(RemoveDirectoryExpr),
+    ListDirectory(ListDirectoryExpr),
+
     // Process execution operations
     ExecCommand(ExecCommandExpr),
 
@@ -324,7 +341,7 @@ pub struct FunctionLiteralExpr {
     pub parameters: Vec<Parameter>,
     pub return_type: Option<Type>,
     pub where_clause: Option<WhereClause>,
-    pub body: Box<Expression>,
+    pub body: Vec<Statement>,
     pub effects: Vec<Effect>,
     pub captured_vars: Vec<String>, // Variables captured from outer scope
     pub location: SourceLocation,
@@ -442,6 +459,98 @@ pub struct ReadFileExpr {
 pub struct WriteFileExpr {
     pub path: Box<Expression>,
     pub content: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Print expression: print(value)
+#[derive(Debug, Clone)]
+pub struct PrintExpr {
+    pub value: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Print line expression: println(value)
+#[derive(Debug, Clone)]
+pub struct PrintLnExpr {
+    pub value: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Print int expression: print_int(value)
+#[derive(Debug, Clone)]
+pub struct PrintIntExpr {
+    pub value: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Print bool expression: print_bool(value)
+#[derive(Debug, Clone)]
+pub struct PrintBoolExpr {
+    pub value: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Print char expression: print_char(value)
+#[derive(Debug, Clone)]
+pub struct PrintCharExpr {
+    pub value: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Read lines expression: read_lines(path)
+#[derive(Debug, Clone)]
+pub struct ReadLinesExpr {
+    pub path: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Append file expression: append_file(path, content)
+#[derive(Debug, Clone)]
+pub struct AppendFileExpr {
+    pub path: Box<Expression>,
+    pub content: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// File exists expression: file_exists(path)
+#[derive(Debug, Clone)]
+pub struct FileExistsExpr {
+    pub path: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Delete file expression: delete_file(path)
+#[derive(Debug, Clone)]
+pub struct DeleteFileExpr {
+    pub path: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Get file size expression: get_file_size(path)
+#[derive(Debug, Clone)]
+pub struct GetFileSizeExpr {
+    pub path: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Create directory expression: create_directory(path)
+#[derive(Debug, Clone)]
+pub struct CreateDirectoryExpr {
+    pub path: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Remove directory expression: remove_directory(path)
+#[derive(Debug, Clone)]
+pub struct RemoveDirectoryExpr {
+    pub path: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// List directory expression: list_directory(path)
+#[derive(Debug, Clone)]
+pub struct ListDirectoryExpr {
+    pub path: Box<Expression>,
     pub location: SourceLocation,
 }
 

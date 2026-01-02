@@ -223,6 +223,11 @@ impl<'a> TypeChecker<'a> {
             Expression::Recv(recv) => &recv.location,
             Expression::ReadFile(read_file) => &read_file.location,
             Expression::WriteFile(write_file) => &write_file.location,
+            Expression::Print(print) => &print.location,
+            Expression::PrintLn(println) => &println.location,
+            Expression::PrintInt(print_int) => &print_int.location,
+            Expression::PrintBool(print_bool) => &print_bool.location,
+            Expression::PrintChar(print_char) => &print_char.location,
             Expression::ExecCommand(exec_cmd) => &exec_cmd.location,
             Expression::StructLiteral(struct_lit) => &struct_lit.location,
             Expression::FieldAccess(field_access) => &field_access.location,
@@ -230,6 +235,14 @@ impl<'a> TypeChecker<'a> {
             Expression::GenericInstantiation(generic) => &generic.location,
             Expression::ConstructorCall(ctor) => &ctor.location,
             Expression::FunctionLiteral(func) => &func.location,
+            Expression::ReadLines(read_lines) => &read_lines.location,
+            Expression::AppendFile(append_file) => &append_file.location,
+            Expression::FileExists(file_exists) => &file_exists.location,
+            Expression::DeleteFile(delete_file) => &delete_file.location,
+            Expression::GetFileSize(get_file_size) => &get_file_size.location,
+            Expression::CreateDirectory(create_dir) => &create_dir.location,
+            Expression::RemoveDirectory(remove_dir) => &remove_dir.location,
+            Expression::ListDirectory(list_dir) => &list_dir.location,
         }
     }
 
@@ -463,7 +476,7 @@ impl<'a> TypeChecker<'a> {
         let saved_env = self.env.clone();
         self.env = local_env;
 
-        let body_type = self.infer_expression(&func.body)?;
+        let body_type = self.infer_statements(&func.body)?;
         let expected_return = func.return_type.as_ref()
             .map(|rt| self.substitute_type(rt, &type_param_subst))
             .unwrap_or(Type::Unit);
@@ -474,6 +487,141 @@ impl<'a> TypeChecker<'a> {
         // Add constraint for return type
         self.add_constraint(body_type, expected_return);
 
+        Ok(())
+    }
+
+    /// Collect captured variables from statements (for type checking)
+    fn collect_captured_variables_from_statements(&self, statements: &[Statement], parameters: &[Parameter], captured: &mut Vec<String>) -> Result<()> {
+        let mut local_vars = std::collections::HashSet::new();
+
+        // Add parameters as local variables
+        for param in parameters {
+            local_vars.insert(param.name.clone());
+        }
+
+        // Collect bound variables from statements
+        for statement in statements {
+            if let Statement::Bind { pattern, .. } = statement {
+                self.collect_bound_vars_from_pattern_typecheck(pattern, &mut local_vars);
+            }
+        }
+
+        // Collect used variables from all expressions in statements
+        for statement in statements {
+            match statement {
+                Statement::Bind { expr, .. } => {
+                    self.collect_used_variables(expr, captured)?;
+                }
+                Statement::Expr(expr) => {
+                    self.collect_used_variables(expr, captured)?;
+                }
+            }
+        }
+
+        // Remove duplicates and filter out local variables
+        let mut unique_captured = std::collections::HashSet::new();
+        for var in captured.iter() {
+            if !local_vars.contains(var) {
+                unique_captured.insert(var.clone());
+            }
+        }
+        captured.clear();
+        captured.extend(unique_captured);
+
+        Ok(())
+    }
+
+    /// Collect bound variables from a pattern (for type checking)
+    fn collect_bound_vars_from_pattern_typecheck(&self, pattern: &Pattern, bound_vars: &mut std::collections::HashSet<String>) {
+        match pattern {
+            Pattern::Identifier(name) => {
+                if name != "_" {
+                    bound_vars.insert(name.clone());
+                }
+            }
+            Pattern::Tuple(patterns) => {
+                for pattern in patterns {
+                    self.collect_bound_vars_from_pattern_typecheck(pattern, bound_vars);
+                }
+            }
+            Pattern::Literal(_) => {
+                // Literals don't bind variables
+            }
+            Pattern::Wildcard => {
+                // Wildcards don't bind variables
+            }
+            Pattern::Record(fields) => {
+                for (_, field_pattern) in fields {
+                    self.collect_bound_vars_from_pattern_typecheck(field_pattern, bound_vars);
+                }
+            }
+            Pattern::Variant { payload, .. } => {
+                if let Some(payload_pattern) = payload {
+                    self.collect_bound_vars_from_pattern_typecheck(payload_pattern, bound_vars);
+                }
+            }
+            Pattern::GenericVariant { payload, .. } => {
+                if let Some(payload_pattern) = payload {
+                    self.collect_bound_vars_from_pattern_typecheck(payload_pattern, bound_vars);
+                }
+            }
+            Pattern::Alternative(patterns) => {
+                for pattern in patterns {
+                    self.collect_bound_vars_from_pattern_typecheck(pattern, bound_vars);
+                }
+            }
+        }
+    }
+
+    /// Recursively collect used variables from an expression
+    fn collect_used_variables(&self, expr: &Expression, used: &mut Vec<String>) -> Result<()> {
+        match expr {
+            Expression::Identifier(name) => {
+                used.push(name.clone());
+            }
+            Expression::Binary(binary) => {
+                self.collect_used_variables(&binary.left, used)?;
+                self.collect_used_variables(&binary.right, used)?;
+            }
+            Expression::Unary(unary) => {
+                self.collect_used_variables(&unary.operand, used)?;
+            }
+            Expression::Call(call) => {
+                self.collect_used_variables(&call.function, used)?;
+                for arg in &call.arguments {
+                    self.collect_used_variables(arg, used)?;
+                }
+            }
+            Expression::If(if_expr) => {
+                self.collect_used_variables(&if_expr.condition, used)?;
+                self.collect_used_variables(&if_expr.then_branch, used)?;
+                self.collect_used_variables(&if_expr.else_branch, used)?;
+            }
+            Expression::Case(case) => {
+                self.collect_used_variables(&case.scrutinee, used)?;
+                for branch in &case.branches {
+                    self.collect_used_variables(&branch.body, used)?;
+                }
+            }
+            Expression::Do(do_expr) => {
+                for statement in &do_expr.statements {
+                    match statement {
+                        Statement::Bind { expr, .. } => {
+                            self.collect_used_variables(expr, used)?;
+                        }
+                        Statement::Expr(expr) => {
+                            self.collect_used_variables(expr, used)?;
+                        }
+                    }
+                }
+            }
+            Expression::FunctionLiteral(func_lit) => {
+                // For nested function literals, recursively collect their used variables
+                self.collect_captured_variables_from_statements(&func_lit.body, &func_lit.parameters, used)?;
+            }
+            // Other expression types don't introduce variable usage
+            _ => {}
+        }
         Ok(())
     }
 
@@ -513,6 +661,19 @@ impl<'a> TypeChecker<'a> {
             Expression::Recv(recv) => self.infer_recv(recv)?,
             Expression::ReadFile(read_file) => self.infer_read_file(read_file)?,
             Expression::WriteFile(write_file) => self.infer_write_file(write_file)?,
+            Expression::Print(print) => self.infer_print(print)?,
+            Expression::PrintLn(println) => self.infer_println(println)?,
+            Expression::PrintInt(print_int) => self.infer_print_int(print_int)?,
+            Expression::PrintBool(print_bool) => self.infer_print_bool(print_bool)?,
+            Expression::PrintChar(print_char) => self.infer_print_char(print_char)?,
+            Expression::ReadLines(read_lines) => self.infer_read_lines(read_lines)?,
+            Expression::AppendFile(append_file) => self.infer_append_file(append_file)?,
+            Expression::FileExists(file_exists) => self.infer_file_exists(file_exists)?,
+            Expression::DeleteFile(delete_file) => self.infer_delete_file(delete_file)?,
+            Expression::GetFileSize(get_file_size) => self.infer_get_file_size(get_file_size)?,
+            Expression::CreateDirectory(create_dir) => self.infer_create_directory(create_dir)?,
+            Expression::RemoveDirectory(remove_dir) => self.infer_remove_directory(remove_dir)?,
+            Expression::ListDirectory(list_dir) => self.infer_list_directory(list_dir)?,
             Expression::ExecCommand(exec_cmd) => self.infer_exec_command(exec_cmd)?,
             Expression::Tuple(exprs) => self.infer_tuple(exprs)?,
             Expression::StructLiteral(struct_lit) => {
@@ -696,6 +857,19 @@ impl<'a> TypeChecker<'a> {
             Expression::Recv(recv) => Some(&recv.location),
             Expression::ReadFile(read_file) => Some(&read_file.location),
             Expression::WriteFile(write_file) => Some(&write_file.location),
+            Expression::Print(print) => Some(&print.location),
+            Expression::PrintLn(println) => Some(&println.location),
+            Expression::PrintInt(print_int) => Some(&print_int.location),
+            Expression::PrintBool(print_bool) => Some(&print_bool.location),
+            Expression::PrintChar(print_char) => Some(&print_char.location),
+            Expression::ReadLines(read_lines) => Some(&read_lines.location),
+            Expression::AppendFile(append_file) => Some(&append_file.location),
+            Expression::FileExists(file_exists) => Some(&file_exists.location),
+            Expression::DeleteFile(delete_file) => Some(&delete_file.location),
+            Expression::GetFileSize(get_file_size) => Some(&get_file_size.location),
+            Expression::CreateDirectory(create_dir) => Some(&create_dir.location),
+            Expression::RemoveDirectory(remove_dir) => Some(&remove_dir.location),
+            Expression::ListDirectory(list_dir) => Some(&list_dir.location),
             Expression::ExecCommand(exec_cmd) => Some(&exec_cmd.location),
             Expression::StructLiteral(struct_lit) => Some(&struct_lit.location),
             Expression::FieldAccess(field_access) => Some(&field_access.location),
@@ -822,7 +996,7 @@ impl<'a> TypeChecker<'a> {
             return self.infer_method_call(field_access, call);
         }
 
-        // Special handling for built-in I/O functions
+        // Special handling for I/O functions
         if let Expression::Identifier(func_name) = &*call.function {
             if func_name == "read_file" {
                 // read_file(path: string) -> Result<string, string>
@@ -1007,13 +1181,22 @@ impl<'a> TypeChecker<'a> {
             return_type: Box::new(return_type.clone()),
         };
 
+        // Analyze captured variables by examining the function body
+        let mut captured_vars = Vec::new();
+        self.collect_captured_variables_from_statements(&func.body, &func.parameters, &mut captured_vars)?;
+
         // Create local environment for function body checking
         let mut local_env = self.env.clone();
 
         // Add captured variables to local environment
-        for captured_var in &func.captured_vars {
+        for captured_var in &captured_vars {
             if let Some(var_scheme) = self.env.get(captured_var) {
                 local_env.insert(captured_var.clone(), var_scheme.clone());
+            } else {
+                return type_error(
+                    func.location.clone(),
+                    format!("Undefined variable '{}' in function literal", captured_var)
+                );
             }
         }
 
@@ -1029,7 +1212,7 @@ impl<'a> TypeChecker<'a> {
         let saved_env = self.env.clone();
         self.env = local_env;
 
-        let body_type = self.infer_expression(&func.body)?;
+        let body_type = self.infer_statements(&func.body)?;
         self.add_constraint(body_type, return_type.clone());
 
         // Restore environment
@@ -1565,10 +1748,116 @@ impl<'a> TypeChecker<'a> {
         Ok(Type::Named("Result".to_string()))
     }
 
+    fn infer_print(&mut self, print: &PrintExpr) -> Result<Type> {
+        // Check that value is a string
+        let value_type = self.infer_expression(&print.value)?;
+        self.unify(&value_type, &Type::String)?;
+        // print returns unit
+        Ok(Type::Unit)
+    }
+
+    fn infer_println(&mut self, println: &PrintLnExpr) -> Result<Type> {
+        // Check that value is a string
+        let value_type = self.infer_expression(&println.value)?;
+        self.unify(&value_type, &Type::String)?;
+        // println returns unit
+        Ok(Type::Unit)
+    }
+
+    fn infer_print_int(&mut self, print_int: &PrintIntExpr) -> Result<Type> {
+        // Check that value is an int
+        let value_type = self.infer_expression(&print_int.value)?;
+        self.unify(&value_type, &Type::Int)?;
+        // print_int returns unit
+        Ok(Type::Unit)
+    }
+
+    fn infer_print_bool(&mut self, print_bool: &PrintBoolExpr) -> Result<Type> {
+        // Check that value is a bool
+        let value_type = self.infer_expression(&print_bool.value)?;
+        self.unify(&value_type, &Type::Bool)?;
+        // print_bool returns unit
+        Ok(Type::Unit)
+    }
+
+    fn infer_print_char(&mut self, print_char: &PrintCharExpr) -> Result<Type> {
+        // Check that value is a char
+        let value_type = self.infer_expression(&print_char.value)?;
+        self.unify(&value_type, &Type::Char)?;
+        // print_char returns unit
+        Ok(Type::Unit)
+    }
+
+    fn infer_read_lines(&mut self, read_lines: &ReadLinesExpr) -> Result<Type> {
+        // Check that path is a string
+        let path_type = self.infer_expression(&read_lines.path)?;
+        self.unify(&path_type, &Type::String)?;
+        // read_lines returns string
+        Ok(Type::String)
+    }
+
+    fn infer_append_file(&mut self, append_file: &AppendFileExpr) -> Result<Type> {
+        // Check that path and content are strings
+        let path_type = self.infer_expression(&append_file.path)?;
+        self.unify(&path_type, &Type::String)?;
+        let content_type = self.infer_expression(&append_file.content)?;
+        self.unify(&content_type, &Type::String)?;
+        // append_file returns bool
+        Ok(Type::Bool)
+    }
+
+    fn infer_file_exists(&mut self, file_exists: &FileExistsExpr) -> Result<Type> {
+        // Check that path is a string
+        let path_type = self.infer_expression(&file_exists.path)?;
+        self.unify(&path_type, &Type::String)?;
+        // file_exists returns bool
+        Ok(Type::Bool)
+    }
+
+    fn infer_delete_file(&mut self, delete_file: &DeleteFileExpr) -> Result<Type> {
+        // Check that path is a string
+        let path_type = self.infer_expression(&delete_file.path)?;
+        self.unify(&path_type, &Type::String)?;
+        // delete_file returns bool
+        Ok(Type::Bool)
+    }
+
+    fn infer_get_file_size(&mut self, get_file_size: &GetFileSizeExpr) -> Result<Type> {
+        // Check that path is a string
+        let path_type = self.infer_expression(&get_file_size.path)?;
+        self.unify(&path_type, &Type::String)?;
+        // get_file_size returns int
+        Ok(Type::Int)
+    }
+
+    fn infer_create_directory(&mut self, create_dir: &CreateDirectoryExpr) -> Result<Type> {
+        // Check that path is a string
+        let path_type = self.infer_expression(&create_dir.path)?;
+        self.unify(&path_type, &Type::String)?;
+        // create_directory returns bool
+        Ok(Type::Bool)
+    }
+
+    fn infer_remove_directory(&mut self, remove_dir: &RemoveDirectoryExpr) -> Result<Type> {
+        // Check that path is a string
+        let path_type = self.infer_expression(&remove_dir.path)?;
+        self.unify(&path_type, &Type::String)?;
+        // remove_directory returns bool
+        Ok(Type::Bool)
+    }
+
+    fn infer_list_directory(&mut self, list_dir: &ListDirectoryExpr) -> Result<Type> {
+        // Check that path is a string
+        let path_type = self.infer_expression(&list_dir.path)?;
+        self.unify(&path_type, &Type::String)?;
+        // list_directory returns string
+        Ok(Type::String)
+    }
+
     fn infer_exec_command(&mut self, exec_cmd: &ExecCommandExpr) -> Result<Type> {
         // Check that command is a string
         let cmd_type = self.infer_expression(&exec_cmd.command)?;
-        self.unify(&cmd_type, &Type::Named("string".to_string()))?;
+        self.unify(&cmd_type, &Type::String)?;
 
         // exec_command returns ProcessResult
         Ok(Type::Named("ProcessResult".to_string()))
@@ -1651,7 +1940,7 @@ impl<'a> TypeChecker<'a> {
                 self.validate_type(return_type)?;
             }
         }
-
+        
         // Check associated types
         // eprintln!("DEBUG TRAIT: associated_types.len() = {}", trait_decl.associated_types.len());
         for assoc_type in &trait_decl.associated_types {
@@ -2039,6 +2328,46 @@ impl<'a> TypeChecker<'a> {
     /// Get the type aliases for code generation
     pub fn get_type_aliases(&self) -> &HashMap<String, Type> {
         &self.type_aliases
+    }
+
+    /// Infer types for a sequence of statements, returning the type of the last expression
+    fn infer_statements(&mut self, statements: &[crate::ast::Statement]) -> Result<Type> {
+        let mut last_type = Type::Unit;
+        let original_env = self.env.clone();
+
+        for statement in statements {
+            match statement {
+                crate::ast::Statement::Bind { pattern, expr } => {
+                    let expr_type = self.infer_expression(expr)?;
+                    // For now, just check that the pattern can bind the expression type
+                    // More sophisticated pattern type checking would go here
+                    match pattern {
+                        crate::ast::Pattern::Identifier(name) => {
+                            if name != "_" {
+                                self.env.insert(name.clone(), TypeScheme {
+                                    vars: vec![],
+                                    ty: expr_type,
+                                });
+                            }
+                        }
+                        _ => {
+                            return Err(CompilerError::type_error(
+                                SourceLocation::new("".to_string(), 0, 0, 0),
+                                format!("Complex patterns not yet supported in type checking: {:?}", pattern)
+                            ));
+                        }
+                    }
+                }
+                crate::ast::Statement::Expr(expr) => {
+                    last_type = self.infer_expression(expr)?;
+                }
+            }
+        }
+
+        // Restore the original environment (bindings are local to this statement block)
+        self.env = original_env;
+
+        Ok(last_type)
     }
 
 }

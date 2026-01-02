@@ -1,12 +1,9 @@
-# Makefile for Silica experiments in this directory
-# Automatically detects executable files (with main) vs modules (without main)
+# Makefile for Silica process execution experiments
+# Tests exec_command functionality
 
-SILICA_COMPILER := ../../silica-bootstrap-compiler/target/release/silica-boot
-
-# Ensure compiler is built without LLVM backend features for consistent text-based generation
-$(SILICA_COMPILER):
-	cd ../../silica-bootstrap-compiler && cargo build --release --no-default-features
-SEARCH_PATHS := -I ../../stdlib
+# Use inherited LLVM tool paths or detect them (including Homebrew)
+HAS_LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo ""))
+HAS_LLC := $(or $(LLVM_LLC), $(shell command -v llc 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llc && echo "/opt/homebrew/opt/llvm/bin/llc") || echo ""))
 
 # Find all .silica files
 SILICA_FILES := $(wildcard *.silica)
@@ -19,10 +16,6 @@ MODULES := $(shell for f in $(SILICA_FILES); do if ! grep -q "^fn main" "$$f"; t
 EXECUTABLES_LL := $(addsuffix .ll, $(EXECUTABLES))
 MODULES_LL := $(addsuffix .ll, $(MODULES))
 
-# Use inherited LLVM tool paths or detect them (including Homebrew)
-HAS_LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo ""))
-HAS_LLC := $(or $(LLVM_LLC), $(shell command -v llc 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llc && echo "/opt/homebrew/opt/llvm/bin/llc") || echo ""))
-
 # Build the standalone runtime library
 RUNTIME_LIB := ../../silica-bootstrap-compiler/target/release/libsilica_compiler.a
 
@@ -34,7 +27,6 @@ $(RUNTIME_LIB): ../../silica-bootstrap-compiler/src/runtime.rs ../../silica-boot
 	@echo "Building Silica runtime library..."
 	@cd ../../silica-bootstrap-compiler && cargo build --release
 
-.DEFAULT_GOAL := all
 .PHONY: all clean executables modules executables-all help
 
 # Default target - build full executables
@@ -45,7 +37,7 @@ executables: $(EXECUTABLES_LL)
 
 %.ll: %.silica
 	@echo "Compiling executable: $< -> $@"
-	$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+	../../silica-bootstrap-compiler/target/release/silica-boot $< $@ -I ../../stdlib
 
 # Compile module files (those without main functions)
 modules: $(MODULES_LL)
@@ -53,7 +45,7 @@ modules: $(MODULES_LL)
 # Modules are compiled the same way, but marked as such
 $(MODULES_LL): %.ll: %.silica
 	@echo "Compiling module: $< -> $@"
-	$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+	../../silica-bootstrap-compiler/target/release/silica-boot $< $@ -I ../../stdlib
 
 # Build executables if LLVM tools are available
 executables-all: executables $(RUNTIME_LIB)
@@ -79,18 +71,18 @@ endif
 
 # Clean all generated files
 clean:
-	rm -f *.ll *.bc *.o $(EXECUTABLES) runtime.o
+	rm -f *.ll *.bc *.o $(EXECUTABLES)
 
 # Show what will be built
 help:
-	@echo "Silica Experiments Makefile"
-	@echo "=========================="
-	@echo "Executables ($(words $(EXECUTABLES))): $(EXECUTABLES)"
-	@echo "Modules ($(words $(MODULES))): $(MODULES)"
+	@echo "Silica Process Execution Tests"
+	@echo "=============================="
+	@echo "Executables: $(EXECUTABLES)"
+	@echo "Modules: $(MODULES)"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all              - Build full executables with runtime (default)"
-	@echo "  executables      - Build only executable LLVM IR files"
-	@echo "  modules          - Build only module LLVM IR files"
+	@echo "  all              - Build full executables (default)"
+	@echo "  executables      - Build only LLVM IR files"
+	@echo "  modules          - Build only module files"
 	@echo "  clean            - Remove all generated files"
 	@echo "  help             - Show this help"

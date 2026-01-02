@@ -25,7 +25,7 @@ pub struct SilicaRegion {
 #[repr(C)]
 pub struct SilicaActor {
     pub id: u64,                    // Unique actor ID
-    pub state: i64,                // Actor state
+    pub state: *mut u8,             // Actor state (generic pointer for any type)
     pub mailbox: *mut VecDeque<i64>, // Per-actor mailbox
     pub behavior_fn: *mut u8,       // Function pointer for behavior (placeholder)
 }
@@ -121,7 +121,7 @@ pub extern "C" fn silica_region_destroy(region_ptr: *mut SilicaRegion) {
 }
 
 #[no_mangle]
-pub extern "C" fn silica_actor_spawn(initial_state: i64, behavior_fn: *mut u8) -> *mut SilicaActor {
+pub extern "C" fn silica_actor_spawn(initial_state: *mut u8, behavior_fn: *mut u8) -> *mut SilicaActor {
     // Initialize actor registry if needed
     unsafe {
         if ACTOR_REGISTRY.is_none() {
@@ -266,15 +266,27 @@ pub extern "C" fn silica_write_file(path: *const u8, path_len: usize, content: *
     // Convert content to Rust slice
     let content_slice = unsafe { std::slice::from_raw_parts(content, content_len) };
 
-    // Write the file
-    match fs::write(path_str, content_slice) {
+    // Write/append to the file (append_file intrinsic uses this)
+    match fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path_str) {
+        Ok(mut file) => {
+            use std::io::Write;
+            match file.write_all(content_slice) {
         Ok(()) => SilicaResult {
             success: true,
             data: std::ptr::null_mut(), // No data on success
         },
         Err(e) => SilicaResult {
             success: false,
-            data: create_error_string(&format!("Failed to write file: {}", e)),
+                    data: create_error_string(&format!("Failed to write to file: {}", e)),
+                },
+            }
+        }
+        Err(e) => SilicaResult {
+            success: false,
+            data: create_error_string(&format!("Failed to open file: {}", e)),
         },
     }
 }

@@ -108,7 +108,7 @@ impl Parser {
         };
 
         self.consume(TokenKind::LeftBrace, "Expected '{' before function body")?;
-        let body = self.expression()?;
+        let body = self.parse_statements()?;
         self.consume(TokenKind::RightBrace, "Expected '}' after function body")?;
 
         Ok(FunctionDecl {
@@ -1088,6 +1088,36 @@ impl Parser {
                 self.parse_write_ref()
             } else if name == "exec_command" && self.match_token(TokenKind::LeftParen) {
                 self.parse_exec_command()
+            } else if name == "read_file" && self.match_token(TokenKind::LeftParen) {
+                self.parse_read_file()
+            } else if name == "write_file" && self.match_token(TokenKind::LeftParen) {
+                self.parse_write_file()
+            } else if name == "print" && self.match_token(TokenKind::LeftParen) {
+                self.parse_print()
+            } else if name == "println" && self.match_token(TokenKind::LeftParen) {
+                self.parse_println()
+            } else if name == "print_int" && self.match_token(TokenKind::LeftParen) {
+                self.parse_print_int()
+            } else if name == "print_bool" && self.match_token(TokenKind::LeftParen) {
+                self.parse_print_bool()
+            } else if name == "print_char" && self.match_token(TokenKind::LeftParen) {
+                self.parse_print_char()
+            } else if name == "read_lines" && self.match_token(TokenKind::LeftParen) {
+                self.parse_read_lines()
+            } else if name == "append_file" && self.match_token(TokenKind::LeftParen) {
+                self.parse_append_file()
+            } else if name == "file_exists" && self.match_token(TokenKind::LeftParen) {
+                self.parse_file_exists()
+            } else if name == "delete_file" && self.match_token(TokenKind::LeftParen) {
+                self.parse_delete_file()
+            } else if name == "get_file_size" && self.match_token(TokenKind::LeftParen) {
+                self.parse_get_file_size()
+            } else if name == "create_directory" && self.match_token(TokenKind::LeftParen) {
+                self.parse_create_directory()
+            } else if name == "remove_directory" && self.match_token(TokenKind::LeftParen) {
+                self.parse_remove_directory()
+            } else if name == "list_directory" && self.match_token(TokenKind::LeftParen) {
+                self.parse_list_directory()
             } else if self.match_token(TokenKind::LeftBrace) {
                 // Parse struct literal: TypeName { field: value, ... }
                 let type_expr = Expression::Identifier(name);
@@ -1189,6 +1219,165 @@ impl Parser {
         Ok(Expression::WriteFile(WriteFileExpr {
             path,
             content,
+            location,
+        }))
+    }
+
+    /// Parse print(value) expression
+    fn parse_print(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let value = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after print argument")?;
+
+        Ok(Expression::Print(PrintExpr {
+            value,
+            location,
+        }))
+    }
+
+    /// Parse println(value) expression
+    fn parse_println(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let value = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after println argument")?;
+
+        Ok(Expression::PrintLn(PrintLnExpr {
+            value,
+            location,
+        }))
+    }
+
+    /// Parse print_int(value) expression
+    fn parse_print_int(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let value = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after print_int argument")?;
+
+        Ok(Expression::PrintInt(PrintIntExpr {
+            value,
+            location,
+        }))
+    }
+
+    /// Parse print_bool(value) expression
+    fn parse_print_bool(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let value = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after print_bool argument")?;
+
+        Ok(Expression::PrintBool(PrintBoolExpr {
+            value,
+            location,
+        }))
+    }
+
+    /// Parse print_char(value) expression
+    fn parse_print_char(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let value = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after print_char argument")?;
+
+        Ok(Expression::PrintChar(PrintCharExpr {
+            value,
+            location,
+        }))
+    }
+
+    /// Parse read_lines(path) expression
+    fn parse_read_lines(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let path = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after read_lines argument")?;
+
+        Ok(Expression::ReadLines(ReadLinesExpr {
+            path,
+            location,
+        }))
+    }
+
+    /// Parse append_file(path, content) expression
+    fn parse_append_file(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let path = Box::new(self.expression()?);
+        self.consume(TokenKind::Comma, "Expected ',' after path in append_file")?;
+        let content = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after append_file arguments")?;
+
+        Ok(Expression::AppendFile(AppendFileExpr {
+            path,
+            content,
+            location,
+        }))
+    }
+
+    /// Parse file_exists(path) expression
+    fn parse_file_exists(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let path = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after file_exists argument")?;
+
+        Ok(Expression::FileExists(FileExistsExpr {
+            path,
+            location,
+        }))
+    }
+
+    /// Parse delete_file(path) expression
+    fn parse_delete_file(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let path = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after delete_file argument")?;
+
+        Ok(Expression::DeleteFile(DeleteFileExpr {
+            path,
+            location,
+        }))
+    }
+
+    /// Parse get_file_size(path) expression
+    fn parse_get_file_size(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let path = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after get_file_size argument")?;
+
+        Ok(Expression::GetFileSize(GetFileSizeExpr {
+            path,
+            location,
+        }))
+    }
+
+    /// Parse create_directory(path) expression
+    fn parse_create_directory(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let path = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after create_directory argument")?;
+
+        Ok(Expression::CreateDirectory(CreateDirectoryExpr {
+            path,
+            location,
+        }))
+    }
+
+    /// Parse remove_directory(path) expression
+    fn parse_remove_directory(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let path = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after remove_directory argument")?;
+
+        Ok(Expression::RemoveDirectory(RemoveDirectoryExpr {
+            path,
+            location,
+        }))
+    }
+
+    /// Parse list_directory(path) expression
+    fn parse_list_directory(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let path = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after list_directory argument")?;
+
+        Ok(Expression::ListDirectory(ListDirectoryExpr {
+            path,
             location,
         }))
     }
@@ -1828,6 +2017,47 @@ impl Parser {
     }
 
     /// Parse do expression
+    fn parse_statements(&mut self) -> Result<Vec<Statement>> {
+        let mut statements = Vec::new();
+
+        while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
+            // Try to parse assignment first
+            let current_pos = self.current;
+            // Check if this could be a pattern (identifier, tuple, or wildcard)
+            if matches!(self.peek().kind, TokenKind::Identifier(_) | TokenKind::LeftParen | TokenKind::Underscore) {
+                // Try to parse a pattern followed by '<-'
+                let saved_pos = self.current;
+                if let Ok(pattern) = self.pattern() {
+                    if self.match_token(TokenKind::LeftArrow) {
+                        let expr = self.expression()?;
+                        self.match_token(TokenKind::Semicolon); // Semicolon is optional
+                        statements.push(Statement::Bind {
+                            pattern,
+                            expr: Box::new(expr),
+                        });
+                        continue;
+                    } else {
+                        // Not a binding, backtrack
+                        self.current = saved_pos;
+                    }
+                } else {
+                    // Not a valid pattern, backtrack
+                    self.current = saved_pos;
+                }
+            }
+
+            // Parse as regular expression statement
+            let expr = self.expression()?;
+            // Semicolon is required for all statements except the last one
+            if !self.check(TokenKind::RightBrace) {
+                self.consume(TokenKind::Semicolon, "Expected ';' after statement")?;
+            }
+            statements.push(Statement::Expr(Box::new(expr)));
+        }
+
+        Ok(statements)
+    }
+
     fn do_expression(&mut self) -> Result<Expression> {
         let location = self.previous().location.clone();
         let mut statements = Vec::new();
@@ -1914,18 +2144,18 @@ impl Parser {
 
         // Parse function body
         self.consume(TokenKind::LeftBrace, "Expected '{' after function signature")?;
-        let body = self.expression()?;
+        let body = self.parse_statements()?;
         self.consume(TokenKind::RightBrace, "Expected '}' after function body")?;
 
-        // Detect captured variables
-        let captured_vars = self.collect_captured_vars(&body, &parameters);
+        // Captured variables will be detected during type checking/code generation
+        let captured_vars = Vec::new();
 
         Ok(Expression::FunctionLiteral(FunctionLiteralExpr {
             type_params,
             parameters,
             return_type,
             where_clause,
-            body: Box::new(body),
+            body,
             effects,
             captured_vars,
             location,
@@ -2052,6 +2282,84 @@ impl Parser {
         used_vars.into_iter()
             .filter(|var| !defined_vars.contains(var))
             .collect()
+    }
+
+    fn collect_captured_vars_from_statements(&self, statements: &[Statement], parameters: &[Parameter]) -> Vec<String> {
+        let mut used_vars = std::collections::HashSet::new();
+        let mut defined_vars = std::collections::HashSet::new();
+
+        // Collect parameter names
+        for param in parameters {
+            defined_vars.insert(param.name.clone());
+        }
+
+        // Collect all identifiers used in the statements
+        for statement in statements {
+            self.collect_identifiers_from_statement(statement, &mut used_vars);
+            // Add bound variables to defined vars
+            if let Statement::Bind { pattern, .. } = statement {
+                self.collect_bound_vars_from_pattern(pattern, &mut defined_vars);
+            }
+        }
+
+        // Return variables that are used but not defined locally
+        used_vars.into_iter()
+            .filter(|var| !defined_vars.contains(var))
+            .collect()
+    }
+
+    /// Recursively collect all identifiers used in a statement
+    fn collect_identifiers_from_statement(&self, statement: &Statement, identifiers: &mut std::collections::HashSet<String>) {
+        match statement {
+            Statement::Bind { expr, .. } => {
+                self.collect_identifiers(expr, identifiers);
+            }
+            Statement::Expr(expr) => {
+                self.collect_identifiers(expr, identifiers);
+            }
+        }
+    }
+
+    /// Collect bound variables from a pattern
+    fn collect_bound_vars_from_pattern(&self, pattern: &Pattern, bound_vars: &mut std::collections::HashSet<String>) {
+        match pattern {
+            Pattern::Identifier(name) => {
+                if name != "_" {
+                    bound_vars.insert(name.clone());
+                }
+            }
+            Pattern::Tuple(patterns) => {
+                for pattern in patterns {
+                    self.collect_bound_vars_from_pattern(pattern, bound_vars);
+                }
+            }
+            Pattern::Literal(_) => {
+                // Literals don't bind variables
+            }
+            Pattern::Wildcard => {
+                // Wildcards don't bind variables
+            }
+            Pattern::Record(fields) => {
+                for (_, field_pattern) in fields {
+                    self.collect_bound_vars_from_pattern(field_pattern, bound_vars);
+                }
+            }
+            Pattern::Variant { payload, .. } => {
+                if let Some(payload_pattern) = payload {
+                    self.collect_bound_vars_from_pattern(payload_pattern, bound_vars);
+                }
+            }
+            Pattern::GenericVariant { payload, .. } => {
+                if let Some(payload_pattern) = payload {
+                    self.collect_bound_vars_from_pattern(payload_pattern, bound_vars);
+                }
+            }
+            Pattern::Alternative(patterns) => {
+                for pattern in patterns {
+                    self.collect_bound_vars_from_pattern(pattern, bound_vars);
+                }
+            }
+        }
     }
 
     /// Recursively collect all identifiers used in an expression

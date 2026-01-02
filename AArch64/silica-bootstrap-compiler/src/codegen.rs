@@ -57,6 +57,7 @@ pub struct CodeGenerator {
     variables: HashMap<String, String>, // Variable name -> LLVM register/temp
     variable_types: HashMap<String, Type>, // Variable name -> Silica type
     instructions: Vec<String>,
+    global_functions: Vec<String>, // Global function definitions (function literals)
     optimization_level: OptimizationLevel,
     symbol_table: Option<Box<crate::module_resolver::SymbolTable>>,
     expression_types: HashMap<SourceLocation, Type>,
@@ -65,6 +66,7 @@ pub struct CodeGenerator {
     trait_impls: Vec<crate::types::TraitImpl>, // Trait implementations
     variable_scopes: Vec<HashMap<String, String>>, // Scope stack for text IR variables
     register_counter: u32, // Counter for generating unique register names
+    string_constants: HashMap<String, (String, usize)>, // String content -> (constant name, length) mapping
 
     // Real LLVM backend fields (when feature enabled)
     #[cfg(feature = "llvm_backend")]
@@ -99,6 +101,7 @@ impl CodeGenerator {
             variables: HashMap::new(),
             variable_types: HashMap::new(),
             instructions: Vec::new(),
+            global_functions: Vec::new(),
             optimization_level,
             symbol_table: None,
             expression_types: HashMap::new(),
@@ -107,6 +110,7 @@ impl CodeGenerator {
             trait_impls: Vec::new(),
             variable_scopes: vec![HashMap::new()], // Start with global scope
             register_counter: 0,
+            string_constants: HashMap::new(),
 
             // LLVM backend fields will be initialized in generate_program
             #[cfg(feature = "llvm_backend")]
@@ -174,6 +178,19 @@ impl CodeGenerator {
             Expression::Recv(recv) => Some(&recv.location),
             Expression::ReadFile(read_file) => Some(&read_file.location),
             Expression::WriteFile(write_file) => Some(&write_file.location),
+            Expression::Print(print) => Some(&print.location),
+            Expression::PrintLn(println) => Some(&println.location),
+            Expression::PrintInt(print_int) => Some(&print_int.location),
+            Expression::PrintBool(print_bool) => Some(&print_bool.location),
+            Expression::PrintChar(print_char) => Some(&print_char.location),
+            Expression::ReadLines(read_lines) => Some(&read_lines.location),
+            Expression::AppendFile(append_file) => Some(&append_file.location),
+            Expression::FileExists(file_exists) => Some(&file_exists.location),
+            Expression::DeleteFile(delete_file) => Some(&delete_file.location),
+            Expression::GetFileSize(get_file_size) => Some(&get_file_size.location),
+            Expression::CreateDirectory(create_dir) => Some(&create_dir.location),
+            Expression::RemoveDirectory(remove_dir) => Some(&remove_dir.location),
+            Expression::ListDirectory(list_dir) => Some(&list_dir.location),
             Expression::ExecCommand(exec_cmd) => Some(&exec_cmd.location),
             Expression::StructLiteral(struct_lit) => Some(&struct_lit.location),
             Expression::FieldAccess(field_access) => Some(&field_access.location),
@@ -420,8 +437,6 @@ impl CodeGenerator {
         self.instructions.push("declare void @silica_print_bool(i1)".to_string());
         self.instructions.push("declare void @silica_print_char(i8)".to_string());
 
-        self.instructions.push("".to_string());
-
         // Generate all declarations
         for decl in &program.declarations {
             match decl {
@@ -475,6 +490,16 @@ impl CodeGenerator {
         }
         #[cfg(not(feature = "llvm_backend"))]
         {
+        // Generate string constant definitions after all functions are processed
+        self.instructions.push("".to_string());
+        self.instructions.push("; String constants".to_string());
+        for (content, (const_name, _)) in &self.string_constants {
+            let len = content.len() + 1; // +1 for null terminator
+            let escaped_content = content.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\t", "\\t");
+            self.instructions.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", const_name, len, escaped_content));
+        }
+        self.instructions.push("".to_string());
+
         self.apply_optimizations();
         }
 
@@ -833,8 +858,8 @@ impl CodeGenerator {
             self.instructions.push(format!("  ; Parameter: {}", param_reg));
         }
 
-        // Generate function body
-        let body_result = self.generate_expression(&func.body)?;
+        // Generate function body statements
+        let body_result = self.generate_statements(&func.body)?;
 
         // Generate return
         match return_type {
@@ -887,10 +912,21 @@ impl CodeGenerator {
             Expression::Recv(recv) => self.generate_recv(recv),
             Expression::ReadFile(read_file) => self.generate_read_file(read_file),
             Expression::WriteFile(write_file) => self.generate_write_file(write_file),
+            Expression::Print(print) => self.generate_print(print),
+            Expression::PrintLn(println) => self.generate_println(println),
+            Expression::PrintInt(print_int) => self.generate_print_int(print_int),
+            Expression::PrintBool(print_bool) => self.generate_print_bool(print_bool),
+            Expression::PrintChar(print_char) => self.generate_print_char(print_char),
+            Expression::ReadLines(read_lines) => self.generate_read_lines(read_lines),
+            Expression::AppendFile(append_file) => self.generate_append_file(append_file),
+            Expression::FileExists(file_exists) => self.generate_file_exists(file_exists),
+            Expression::DeleteFile(delete_file) => self.generate_delete_file(delete_file),
+            Expression::GetFileSize(get_file_size) => self.generate_get_file_size(get_file_size),
+            Expression::CreateDirectory(create_dir) => self.generate_create_directory(create_dir),
+            Expression::RemoveDirectory(remove_dir) => self.generate_remove_directory(remove_dir),
+            Expression::ListDirectory(list_dir) => self.generate_list_directory(list_dir),
             Expression::ExecCommand(exec_cmd) => self.generate_exec_command(exec_cmd),
-            Expression::FunctionLiteral(_) => {
-                Err(CompilerError::codegen_error("Function literals not yet implemented".to_string()))
-            }
+            Expression::FunctionLiteral(func_lit) => self.generate_function_literal(func_lit),
             Expression::Region(_) => {
                 Err(CompilerError::codegen_error("Region expressions not yet implemented".to_string()))
             }
@@ -915,14 +951,23 @@ impl CodeGenerator {
     }
 
     /// Generate LLVM IR for literal values
-    fn generate_literal(&self, lit: &Literal) -> String {
+    fn generate_literal(&mut self, lit: &Literal) -> String {
         match lit {
             Literal::Unit => "void".to_string(),
             Literal::Bool(true) => "i1 1".to_string(),
             Literal::Bool(false) => "i1 0".to_string(),
             Literal::Int(value) => format!("i64 {}", value),
             Literal::Char(c) => format!("i32 {}", *c as i32),
-            Literal::String(s) => format!("@str_const_{}", s.len()), // String constant reference
+            Literal::String(s) => {
+                // Get or create a unique constant name for this string
+                if !self.string_constants.contains_key(s) {
+                    let const_name = format!("@str_const_{}", self.string_constants.len());
+                    let length = s.len();
+                    self.string_constants.insert(s.clone(), (const_name, length));
+                }
+                let (const_name, _) = self.string_constants.get(s).unwrap();
+                const_name.clone()
+            }
         }
     }
 
@@ -996,7 +1041,8 @@ impl CodeGenerator {
             UnaryOp::Negate => {
                 if let Some(op) = operand {
                     let temp_reg = format!("%t{}", self.instructions.len());
-                    self.instructions.push(format!("  {} = sub i64 0, {}", temp_reg, op));
+                    let clean_op = op.trim_start_matches("i64 ").trim_start_matches("i1 ");
+                    self.instructions.push(format!("  {} = sub i64 0, {}", temp_reg, clean_op));
                     Ok(Some(temp_reg))
                 } else {
                     Err(CompilerError::codegen_error("Negate operation on invalid operand".to_string()))
@@ -1230,6 +1276,7 @@ impl CodeGenerator {
             Expression::ReadFile(read_file) => self.generate_read_file_llvm(read_file),
             Expression::WriteFile(write_file) => self.generate_write_file_llvm(write_file),
             Expression::ExecCommand(exec_cmd) => self.generate_exec_command_llvm(exec_cmd),
+            Expression::FunctionLiteral(func_lit) => self.generate_function_literal_llvm(func_lit),
             _ => Err(CompilerError::codegen_error(format!("Expression type not yet supported in LLVM backend: {:?}", expr))),
         }
     }
@@ -1980,6 +2027,65 @@ impl CodeGenerator {
         }
     }
 
+    /// Generate LLVM value for function literal expressions (LLVM backend)
+    #[cfg(feature = "llvm_backend")]
+    fn generate_function_literal_llvm(&mut self, func_lit: &FunctionLiteralExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
+        unsafe {
+            if let (Some(module), Some(builder)) = (&self.module, &self.builder) {
+                let context = &*self.context;
+
+                // Create parameter types (for now, assume all i64)
+                let param_types: Vec<inkwell::types::BasicTypeEnum<'static>> =
+                    func_lit.parameters.iter().map(|_| context.i64_type().into()).collect();
+
+                let param_metadata: Vec<inkwell::types::BasicMetadataTypeEnum<'static>> =
+                    param_types.iter().map(|ty| (*ty).into()).collect();
+
+                // Create function type (returns i64 for now)
+                let fn_type = context.i64_type().fn_type(&param_metadata, false);
+
+                // Generate unique function name
+                let func_name = format!("func_literal_{}", self.instructions.len());
+
+                // Add function to module
+                let llvm_func = module.add_function(&func_name, fn_type, None);
+
+                // Create entry block and set builder position
+                let entry_block = context.append_basic_block(llvm_func, "entry");
+                builder.position_at_end(entry_block);
+
+                // Set up parameters in the symbol table
+                for (i, param) in func_lit.parameters.iter().enumerate() {
+                    let param_value = llvm_func.get_nth_param(i as u32).unwrap();
+                    self.llvm_values.insert(param.name.clone(), param_value);
+                }
+
+                // Generate function body
+                let body_result = self.generate_expression_llvm(&func_lit.body)?;
+
+                // Generate return
+                if let Some(body_val) = body_result {
+                    builder.build_return(Some(&body_val));
+                } else {
+                    // Return 0 if no result
+                    let zero = context.i64_type().const_int(0, false);
+                    builder.build_return(Some(&zero.into()));
+                }
+
+                // Clean up parameter variables from symbol table
+                for param in &func_lit.parameters {
+                    self.llvm_values.remove(&param.name);
+                }
+
+                // Return pointer to the function
+                let func_ptr = llvm_func.as_global_value().as_pointer_value();
+                Ok(Some(func_ptr.into()))
+            } else {
+                Err(CompilerError::codegen_error("LLVM context not initialized".to_string()))
+            }
+        }
+    }
+
     /// Generate LLVM value for struct literal expressions (LLVM backend)
     #[cfg(feature = "llvm_backend")]
     fn generate_struct_literal_llvm(&mut self, struct_lit: &StructLiteralExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
@@ -2418,7 +2524,7 @@ impl CodeGenerator {
                 if scrutinee_reg.starts_with("i64 ") {
                     // i64 integer
                     let reg_name = &scrutinee_reg[4..];
-                    self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, reg_name)); // Copy the value
+                self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, reg_name)); // Copy the value
                 } else if scrutinee_reg.starts_with("i1 ") {
                     // i1 boolean - extend to i64 for consistency
                     let reg_name = &scrutinee_reg[3..];
@@ -2582,9 +2688,10 @@ impl CodeGenerator {
             let result_reg = format!("%if_result_{}", self.instructions.len());
 
             // Condition should be i1 (boolean)
-            // For now, assume cond_val is i1. In full type system, this would be checked.
+            // Strip type prefix from condition value
+            let clean_cond = cond_val.trim_start_matches("i64 ").trim_start_matches("i1 ");
             self.instructions.push(format!("  br i1 {}, label %{}, label %{}",
-                cond_val, then_label, else_label));
+                clean_cond, then_label, else_label));
 
             // Generate then block
             self.instructions.push(format!("{}:", then_label));
@@ -2599,10 +2706,19 @@ impl CodeGenerator {
             self.instructions.push(format!("  br label %{}", end_label));
 
             // Generate merge block with phi
+            // Determine the result type based on the values
+            let result_type = if then_val.starts_with("i64 ") || else_val.starts_with("i64 ") {
+                "i64"
+            } else {
+                "i8*"  // Default to pointer type for function literals
+            };
             self.instructions.push(format!("{}:", end_label));
-            self.instructions.push(format!("  {} = phi i64 [{}, %{}], [{}, %{}]",
-                result_reg, then_val.trim_start_matches("i64 "), then_label,
-                else_val.trim_start_matches("i64 "), else_label));
+            self.instructions.push(format!("  {} = phi {} [{}, %{}], [{}, %{}]",
+                result_reg, result_type,
+                then_val.trim_start_matches("i64 ").trim_start_matches("i8* "),
+                then_label,
+                else_val.trim_start_matches("i64 ").trim_start_matches("i8* "),
+                else_label));
 
             Ok(Some(result_reg))
         } else {
@@ -2619,6 +2735,7 @@ impl CodeGenerator {
             functions: HashMap::new(),
             variables: HashMap::new(),
             instructions: Vec::new(),
+            global_functions: Vec::new(),
             optimization_level,
             symbol_table: None,
             variable_scopes: vec![HashMap::new()], // Start with global scope
@@ -2727,8 +2844,8 @@ impl CodeGenerator {
             self.add_variable(name, alloca);
         }
 
-        // Generate the function body expression (scope is now set up)
-        let result = self.generate_expression_llvm(&func.body)?;
+        // Generate the function body statements (scope is now set up)
+        self.generate_statements_llvm(&func.body)?;
 
         // Generate return instruction (another builder borrow)
         if let Some(builder) = &self.builder {
@@ -2786,7 +2903,18 @@ impl CodeGenerator {
         }
 
         // Otherwise, write text LLVM IR
-        let content = self.instructions.join("\n");
+        let mut content_parts = Vec::new();
+
+        // Add global function definitions first
+        content_parts.extend(self.global_functions.clone());
+        if !self.global_functions.is_empty() {
+            content_parts.push("".to_string());
+        }
+
+        // Add main instructions
+        content_parts.extend(self.instructions.clone());
+
+        let content = content_parts.join("\n");
         std::fs::write(filename, content)
             .map_err(|e| CompilerError::IoError(e))?;
 
@@ -2845,6 +2973,16 @@ impl CodeGenerator {
         // Fallback to text IR
         println!("Generated LLVM IR (Text Representation):");
         println!("========================================");
+
+        // Output global function definitions first
+        for func in &self.global_functions {
+            println!("{}", func);
+        }
+        if !self.global_functions.is_empty() {
+            println!("");
+        }
+
+        // Then output main instructions
         for instruction in &self.instructions {
             println!("{}", instruction);
         }
@@ -3103,14 +3241,23 @@ impl CodeGenerator {
     fn generate_method_body_with_type(&mut self, type_name: &str, method: &crate::ast::FunctionDecl) -> Result<()> {
         // For now, only handle simple expressions
         // The method body is a single expression for trait methods
-        match &method.body {
-            Expression::Binary(binary) => {
-                // Handle binary operations like self.x + self.y
-                self.generate_binary_operation_for_method_with_type(type_name, binary)?;
+        // For trait methods, expect a single expression statement
+        if method.body.len() == 1 {
+            if let crate::ast::Statement::Expr(expr) = &method.body[0] {
+                match expr.as_ref() {
+                    Expression::Binary(binary) => {
+                        // Handle binary operations like self.x + self.y
+                        self.generate_binary_operation_for_method_with_type(type_name, binary)?;
+                    }
+                    _ => {
+                        return Err(CompilerError::codegen_error("Complex method bodies not yet supported".to_string()));
+                    }
+                }
+            } else {
+                return Err(CompilerError::codegen_error("Trait methods must have expression bodies".to_string()));
             }
-            _ => {
-                return Err(CompilerError::codegen_error("Complex method bodies not yet supported".to_string()));
-            }
+        } else {
+            return Err(CompilerError::codegen_error("Trait methods must have single expression bodies".to_string()));
         }
 
         Ok(())
@@ -3658,14 +3805,151 @@ impl CodeGenerator {
         if let (Some(state), Some(behav)) = (initial_state, behavior) {
             let actor_reg = format!("%actor_{}", self.instructions.len());
 
+
+            // Allocate space for the initial state and create a pointer
+            let mut final_ptr = format!("%state_final_{}", self.instructions.len());
+
+            if state.starts_with("i64 ") {
+                let val_str = &state[4..];
+                // Check if this is a literal integer or a register
+                if val_str.chars().all(|c| c.is_ascii_digit() || c == '-') {
+                    // Integer literal - allocate and store
+                    let alloc_reg = format!("%state_alloc_{}", self.instructions.len());
+                    let int_ptr = format!("%state_int_ptr_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg)); // Allocate 8 bytes for i64
+                    self.instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                    self.instructions.push(format!("  store i64 {}, i64* {}", val_str, int_ptr));
+                    self.instructions.push(format!("  {} = bitcast i64* {} to i8*", final_ptr, int_ptr));
+                } else {
+                    // This is a register containing an i64 value - allocate and store the register value
+                    let alloc_reg = format!("%state_alloc_{}", self.instructions.len());
+                    let int_ptr = format!("%state_int_ptr_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg)); // Allocate 8 bytes for i64
+                    self.instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                    self.instructions.push(format!("  store i64 {}, i64* {}", val_str, int_ptr));
+                    self.instructions.push(format!("  {} = bitcast i64* {} to i8*", final_ptr, int_ptr));
+                }
+            } else if state.starts_with("i1 ") {
+                // Boolean literal - allocate and store as i64 (0/1)
+                let bool_val = &state[3..];
+                let int_val = if bool_val == "1" { "1" } else { "0" };
+                let alloc_reg = format!("%state_alloc_{}", self.instructions.len());
+                let int_ptr = format!("%state_int_ptr_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg)); // Allocate 8 bytes for i64
+                self.instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                self.instructions.push(format!("  store i64 {}, i64* {}", int_val, int_ptr));
+                self.instructions.push(format!("  {} = bitcast i64* {} to i8*", final_ptr, int_ptr));
+            } else if state.starts_with("%") {
+                // Check if this is a pointer register (from tuple generation) or an i64 register
+                if state.contains("tuple_alloc") {
+                    // This is a register holding an i8* pointer (e.g., from tuple generation)
+                    // Use the pointer directly
+                    final_ptr.clear();
+                    final_ptr.push_str(&state);
+                } else {
+                    // This is an i64 register - allocate memory and store the value
+                    let alloc_reg = format!("%state_alloc_{}", self.instructions.len());
+                    let int_ptr = format!("%state_int_ptr_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg)); // Allocate 8 bytes for i64
+                    self.instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                    self.instructions.push(format!("  store i64 {}, i64* {}", state, int_ptr));
+                    self.instructions.push(format!("  {} = bitcast i64* {} to i8*", final_ptr, int_ptr));
+                }
+            } else {
+                // For other types or complex expressions, use a placeholder allocation
+                // This is a simplification for the bootstrap compiler
+                let alloc_reg = format!("%state_alloc_{}", self.instructions.len());
+                let int_ptr = format!("%state_int_ptr_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg)); // Allocate 8 bytes
+                // For now, initialize to 0
+                self.instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                self.instructions.push(format!("  store i64 0, i64* {}", int_ptr));
+                self.instructions.push(format!("  {} = bitcast i64* {} to i8*", final_ptr, int_ptr));
+            }
+
             // Call Silica runtime actor spawn function
-            // silica_actor_spawn(initial_state, behavior_fn) -> actor_ref
-            self.instructions.push(format!("  {} = call i8* @silica_actor_spawn({}, {})", actor_reg, state, behav));
+            // silica_actor_spawn(initial_state_ptr, behavior_fn_ptr) -> actor_ref
+            let temp_actor = format!("%temp_actor_{}", self.instructions.len());
+            self.instructions.push(format!("  {} = call i8* @silica_actor_spawn(i8* {}, i8* {})", temp_actor, final_ptr, behav));
+            // Cast actor reference to i64 for return (bootstrap compiler compatibility)
+            self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", actor_reg, temp_actor));
 
             Ok(Some(actor_reg))
         } else {
             codegen_error("Invalid initial state or behavior for spawn".to_string())
         }
+    }
+
+    /// Generate LLVM IR for a sequence of statements (text-based)
+    fn generate_statements(&mut self, statements: &[Statement]) -> Result<Option<String>> {
+        let mut last_result = None;
+
+        for statement in statements {
+            match statement {
+                Statement::Bind { pattern, expr } => {
+                    let value = self.generate_expression(expr)?;
+                    // Handle pattern binding - for now just handle simple identifier patterns
+                    if let Some(value_reg) = value {
+                        match pattern {
+                            Pattern::Identifier(name) => {
+                                self.add_variable_text(name.clone(), value_reg);
+                            }
+                            _ => {
+                                return Err(CompilerError::codegen_error(
+                                    format!("Complex patterns in function bodies not yet supported: {:?}", pattern)
+                                ));
+                            }
+                        }
+                    }
+                }
+                Statement::Expr(expr) => {
+                    // Generate the expression and capture its result (for return value)
+                    last_result = self.generate_expression(expr)?;
+                }
+            }
+        }
+
+        Ok(last_result)
+    }
+
+    /// Generate LLVM IR for a sequence of statements (LLVM backend)
+    #[cfg(feature = "llvm_backend")]
+    fn generate_statements_llvm(&mut self, statements: &[Statement]) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
+        let mut last_result = None;
+
+        for statement in statements {
+            match statement {
+                Statement::Bind { pattern, expr } => {
+                    let value = self.generate_expression_llvm(expr)?;
+                    // Handle pattern binding - for now just handle simple identifier patterns
+                    if let Some(value) = value {
+                        match pattern {
+                            Pattern::Identifier(name) => {
+                                // Allocate space for the variable and store the value
+                                if let Some(builder) = &self.builder {
+                                    unsafe {
+                                        let alloca = builder.build_alloca(value.get_type(), name).unwrap();
+                                        builder.build_store(alloca, value).unwrap();
+                                        self.add_variable(name.clone(), alloca);
+                                    }
+                                }
+                            }
+                            _ => {
+                                return Err(CompilerError::codegen_error(
+                                    format!("Complex patterns in function bodies not yet supported: {:?}", pattern)
+                                ));
+                            }
+                        }
+                    }
+                }
+                Statement::Expr(expr) => {
+                    // Generate the expression and capture its result (for return value)
+                    last_result = self.generate_expression_llvm(expr)?;
+                }
+            }
+        }
+
+        Ok(last_result)
     }
 
     /// Generate LLVM IR for message send (send)
@@ -3709,6 +3993,483 @@ impl CodeGenerator {
         }
 
         Ok(Some(msg_reg))
+    }
+
+    /// Generate the body instructions for a function literal
+    fn generate_function_literal_body_with_captures(&mut self, func_lit: &FunctionLiteralExpr, captured_vars: &[String]) -> Result<Vec<String>> {
+        // Create a temporary instruction buffer for this function literal
+        let original_instructions = std::mem::take(&mut self.instructions);
+        let mut body_instructions = Vec::new();
+
+        // Set up captured variables in the symbol table (they're available from outer scope)
+        for captured_var in captured_vars {
+            if let Some(var_reg) = self.lookup_variable_text(captured_var) {
+                // Keep the existing register assignment
+                self.add_variable_text(captured_var.clone(), var_reg.clone());
+            }
+        }
+
+        // Evaluate the function body statements and collect instructions
+        let result_value = self.generate_function_literal_statements(&func_lit.body, func_lit, &mut body_instructions)?;
+        // Strip type prefix if present
+        let clean_result = result_value.trim_start_matches("i64 ").trim_start_matches("i1 ");
+        body_instructions.push(format!("    ret i64 {}", clean_result));
+
+        // Restore the original instructions
+        self.instructions = original_instructions;
+
+        Ok(body_instructions)
+    }
+
+    /// Generate statements for function literal body
+    fn generate_function_literal_statements(&mut self, statements: &[Statement], func_lit: &FunctionLiteralExpr, body_instructions: &mut Vec<String>) -> Result<String> {
+        let mut last_result = "0".to_string(); // Default return value
+
+        for statement in statements {
+            match statement {
+                Statement::Bind { pattern, expr } => {
+                    // Generate the expression
+                    let expr_result = self.generate_function_literal_expr(expr, func_lit, body_instructions)?;
+
+                    // For now, just handle identifier patterns
+                    if let Pattern::Identifier(var_name) = pattern {
+                        // Add to symbol table for this function literal scope
+                        self.add_variable_text(var_name.clone(), expr_result.clone());
+                    }
+                    // The result of a bind statement doesn't contribute to the return value
+                }
+                Statement::Expr(expr) => {
+                    // Generate the expression and use its result as the potential return value
+                    last_result = self.generate_function_literal_expr(expr, func_lit, body_instructions)?;
+                }
+            }
+        }
+
+        Ok(last_result)
+    }
+
+    /// Analyze function literal for captured variables from outer scope
+    fn analyze_captured_variables(&self, func_lit: &FunctionLiteralExpr) -> Result<Vec<String>> {
+        let mut captured_vars = Vec::new();
+        self.collect_captured_variables_from_statements(&func_lit.body, &func_lit.parameters, &mut captured_vars)?;
+        Ok(captured_vars)
+    }
+
+    /// Recursively collect captured variables from statements
+    fn collect_captured_variables_from_statements(&self, statements: &[Statement], local_params: &[crate::ast::Parameter], captured: &mut Vec<String>) -> Result<()> {
+        let mut local_vars = std::collections::HashSet::new();
+
+        // Add parameters as local variables
+        for param in local_params {
+            local_vars.insert(param.name.clone());
+        }
+
+        // Collect bound variables from statements
+        for statement in statements {
+            if let Statement::Bind { pattern, .. } = statement {
+                self.collect_bound_vars_from_pattern_codegen(pattern, &mut local_vars);
+            }
+        }
+
+        // Now collect used variables from all expressions in statements
+        for statement in statements {
+            match statement {
+                Statement::Bind { expr, .. } => {
+                    self.collect_captured_variables(expr, local_params, captured)?;
+                }
+                Statement::Expr(expr) => {
+                    self.collect_captured_variables(expr, local_params, captured)?;
+                }
+            }
+        }
+
+        // Remove duplicates and filter out local variables
+        let mut unique_captured = std::collections::HashSet::new();
+        for var in captured.iter() {
+            if !local_vars.contains(var) {
+                unique_captured.insert(var.clone());
+            }
+        }
+        captured.clear();
+        captured.extend(unique_captured);
+
+        Ok(())
+    }
+
+    /// Collect bound variables from a pattern (for codegen)
+    fn collect_bound_vars_from_pattern_codegen(&self, pattern: &Pattern, bound_vars: &mut std::collections::HashSet<String>) {
+        match pattern {
+            Pattern::Identifier(name) => {
+                if name != "_" {
+                    bound_vars.insert(name.clone());
+                }
+            }
+            Pattern::Tuple(patterns) => {
+                for pattern in patterns {
+                    self.collect_bound_vars_from_pattern_codegen(pattern, bound_vars);
+                }
+            }
+            Pattern::Literal(_) => {
+                // Literals don't bind variables
+            }
+            Pattern::Wildcard => {
+                // Wildcards don't bind variables
+            }
+            Pattern::Record(fields) => {
+                for (_, field_pattern) in fields {
+                    self.collect_bound_vars_from_pattern_codegen(field_pattern, bound_vars);
+                }
+            }
+            Pattern::Variant { payload, .. } => {
+                if let Some(payload_pattern) = payload {
+                    self.collect_bound_vars_from_pattern_codegen(payload_pattern, bound_vars);
+                }
+            }
+            Pattern::GenericVariant { payload, .. } => {
+                if let Some(payload_pattern) = payload {
+                    self.collect_bound_vars_from_pattern_codegen(payload_pattern, bound_vars);
+                }
+            }
+            Pattern::Alternative(patterns) => {
+                for pattern in patterns {
+                    self.collect_bound_vars_from_pattern_codegen(pattern, bound_vars);
+                }
+            }
+        }
+    }
+
+    /// Recursively collect captured variables from an expression
+    fn collect_captured_variables(&self, expr: &Expression, local_params: &[crate::ast::Parameter], captured: &mut Vec<String>) -> Result<()> {
+        match expr {
+            Expression::Identifier(name) => {
+                // Check if it's a local parameter
+                let is_local = local_params.iter().any(|param| param.name == *name);
+                if !is_local && !captured.contains(name) {
+                    // For bootstrap compiler, assume captured variables are valid
+                    // In a full implementation, this would check scope properly
+                    captured.push(name.clone());
+                }
+            },
+            Expression::Binary(binary) => {
+                self.collect_captured_variables(&binary.left, local_params, captured)?;
+                self.collect_captured_variables(&binary.right, local_params, captured)?;
+            },
+            Expression::Case(case_expr) => {
+                self.collect_captured_variables(&case_expr.scrutinee, local_params, captured)?;
+                for branch in &case_expr.branches {
+                    if let Some(guard) = &branch.guard {
+                        self.collect_captured_variables(guard, local_params, captured)?;
+                    }
+                    self.collect_captured_variables(&branch.body, local_params, captured)?;
+                }
+            },
+            Expression::If(if_expr) => {
+                self.collect_captured_variables(&if_expr.condition, local_params, captured)?;
+                self.collect_captured_variables(&if_expr.then_branch, local_params, captured)?;
+                self.collect_captured_variables(&if_expr.else_branch, local_params, captured)?;
+            },
+            Expression::Call(call) => {
+                for arg in &call.arguments {
+                    self.collect_captured_variables(arg, local_params, captured)?;
+                }
+            },
+            Expression::Do(do_expr) => {
+                for statement in &do_expr.statements {
+                    match statement {
+                        crate::ast::Statement::Expr(expr) => {
+                            self.collect_captured_variables(expr, local_params, captured)?;
+                        },
+                        crate::ast::Statement::Bind { pattern, expr } => {
+                            self.collect_captured_variables(expr, local_params, captured)?;
+                        }
+                    }
+                }
+            },
+            Expression::FunctionLiteral(func_lit) => {
+                // For nested function literals, we don't collect their captured variables
+                // as they have their own scope. Just analyze their body.
+                self.collect_captured_variables_from_statements(&func_lit.body, &func_lit.parameters, &mut Vec::new())?;
+            },
+            Expression::Literal(_) => {
+                // Literals don't capture variables
+            },
+            _ => {
+                // For now, ignore other expression types
+            }
+        }
+        Ok(())
+    }
+
+    /// Generate pattern matching check for function literals (returns i1 result)
+    fn generate_function_literal_pattern_check(&mut self, pattern: &Pattern, scrutinee_val: &str, body_instructions: &mut Vec<String>) -> Result<String> {
+        match pattern {
+            Pattern::Literal(lit) => {
+                let pattern_val = self.generate_literal(lit);
+                let clean_scrutinee = scrutinee_val.trim_start_matches("i64 ").trim_start_matches("i1 ");
+                let clean_pattern = pattern_val.trim_start_matches("i64 ").trim_start_matches("i1 ");
+                let result_reg = format!("%pattern_check_{}", body_instructions.len());
+                body_instructions.push(format!("  {} = icmp eq i64 {}, {}", result_reg, clean_scrutinee, clean_pattern));
+                Ok(result_reg)
+            },
+            Pattern::Identifier(name) => {
+                // Wildcard pattern (_) always matches
+                if name == "_" {
+                    Ok("1".to_string())
+                } else {
+                    // Named pattern - for simplicity, treat as wildcard for now
+                    // TODO: Implement proper pattern variable binding
+                    Ok("1".to_string())
+                }
+            },
+            _ => {
+                // For bootstrap compiler, treat complex patterns as wildcards
+                Ok("1".to_string())
+            }
+        }
+    }
+
+    /// Generate expression value for function literal body (returns register/value)
+    fn generate_function_literal_expr(&mut self, expr: &Expression, func_lit: &FunctionLiteralExpr, body_instructions: &mut Vec<String>) -> Result<String> {
+        match expr {
+            Expression::Literal(lit) => {
+                Ok(self.generate_literal(lit))
+            },
+            Expression::Identifier(name) => {
+                // Check if it's a parameter of the current function literal
+                if let Some(param_index) = func_lit.parameters.iter().position(|p| p.name == *name) {
+                    Ok(format!("%{}", param_index))
+                } else if let Some(var_reg) = self.lookup_variable_text(name) {
+                    // It's a captured variable from outer scope
+                    Ok(var_reg.clone())
+                } else {
+                    // For bootstrap compiler, assume undefined variables are captured
+                    // In a full implementation, this would be an error
+                    Ok(format!("captured_{}", name))
+                }
+            },
+            Expression::Binary(binary) => {
+                // Generate binary operation
+                let left_val = self.generate_function_literal_expr(&binary.left, func_lit, body_instructions)?;
+                let right_val = self.generate_function_literal_expr(&binary.right, func_lit, body_instructions)?;
+
+                // Create a unique register for the result
+                let result_reg = format!("%binop_{}", body_instructions.len());
+
+                // Strip type prefixes from operands
+                let clean_left = left_val.trim_start_matches("i64 ").trim_start_matches("i1 ");
+                let clean_right = right_val.trim_start_matches("i64 ").trim_start_matches("i1 ");
+
+                let (op_instr, result_type) = match binary.operator {
+                    BinaryOp::Add => (format!("    {} = add i64 {}, {}", result_reg, clean_left, clean_right), "i64"),
+                    BinaryOp::Subtract => (format!("    {} = sub i64 {}, {}", result_reg, clean_left, clean_right), "i64"),
+                    BinaryOp::Multiply => (format!("    {} = mul i64 {}, {}", result_reg, clean_left, clean_right), "i64"),
+                    BinaryOp::Divide => (format!("    {} = sdiv i64 {}, {}", result_reg, clean_left, clean_right), "i64"),
+                    BinaryOp::Equal => (format!("    {} = icmp eq i64 {}, {}", result_reg, clean_left, clean_right), "i1"),
+                    BinaryOp::NotEqual => (format!("    {} = icmp ne i64 {}, {}", result_reg, clean_left, clean_right), "i1"),
+                    BinaryOp::Less => (format!("    {} = icmp slt i64 {}, {}", result_reg, clean_left, clean_right), "i1"),
+                    BinaryOp::LessEqual => (format!("    {} = icmp sle i64 {}, {}", result_reg, clean_left, clean_right), "i1"),
+                    BinaryOp::Greater => (format!("    {} = icmp sgt i64 {}, {}", result_reg, clean_left, clean_right), "i1"),
+                    BinaryOp::GreaterEqual => (format!("    {} = icmp sge i64 {}, {}", result_reg, clean_left, clean_right), "i1"),
+                    _ => return Err(CompilerError::codegen_error(format!("Unsupported binary operator in function literal: {:?}", binary.operator))),
+                };
+
+                // Add the instruction to the function body
+                body_instructions.push(op_instr);
+
+                // Return the result with type prefix
+                Ok(format!("{} {}", result_type, result_reg))
+            },
+            Expression::If(if_expr) => {
+                // Handle if expressions within function literals
+                let cond_val = self.generate_function_literal_expr(&if_expr.condition, func_lit, body_instructions)?;
+
+                // Create unique labels
+                let then_label = format!("then_{}", body_instructions.len());
+                let else_label = format!("else_{}", body_instructions.len());
+                let end_label = format!("end_{}", body_instructions.len());
+                let result_reg = format!("%if_result_{}", body_instructions.len());
+
+                // Strip type prefix from condition
+                let clean_cond = cond_val.trim_start_matches("i64 ").trim_start_matches("i1 ");
+                body_instructions.push(format!("  br i1 {}, label %{}, label %{}",
+                    clean_cond, then_label, else_label));
+
+                // Generate then block
+                body_instructions.push(format!("{}:", then_label));
+                let then_val = self.generate_function_literal_expr(&if_expr.then_branch, func_lit, body_instructions)?;
+                body_instructions.push(format!("  br label %{}", end_label));
+
+                // Generate else block
+                body_instructions.push(format!("{}:", else_label));
+                let else_val = self.generate_function_literal_expr(&if_expr.else_branch, func_lit, body_instructions)?;
+                body_instructions.push(format!("  br label %{}", end_label));
+
+                // Generate merge block with phi
+                body_instructions.push(format!("{}:", end_label));
+                body_instructions.push(format!("  {} = phi i64 [{}, %{}], [{}, %{}]",
+                    result_reg,
+                    then_val.trim_start_matches("i64 ").trim_start_matches("i1 "),
+                    then_label,
+                    else_val.trim_start_matches("i64 ").trim_start_matches("i1 "),
+                    else_label));
+
+                Ok(result_reg)
+            },
+            Expression::Do(do_expr) => {
+                // Handle do expressions - evaluate all statements and return the last one's value
+                let mut result = None;
+                for statement in &do_expr.statements {
+                    match statement {
+                        crate::ast::Statement::Expr(expr) => {
+                            result = Some(self.generate_function_literal_expr(expr, func_lit, body_instructions)?);
+                        },
+                        crate::ast::Statement::Bind { pattern, expr } => {
+                            // Evaluate the expression and bind the result to the variable
+                            let value = self.generate_function_literal_expr(expr, func_lit, body_instructions)?;
+                            // For simple patterns, bind to the variable name
+                            if let Pattern::Identifier(name) = pattern {
+                                if name != "_" {
+                                    self.add_variable_text(name.clone(), value.clone());
+                                }
+                            }
+                            // The result of a bind statement is the bound value
+                            result = Some(value);
+                        }
+                    }
+                }
+                match result {
+                    Some(val) => Ok(val),
+                    None => Err(CompilerError::codegen_error("Do expression must have at least one statement".to_string()))
+                }
+            },
+            Expression::Case(case_expr) => {
+                // Handle case expressions within function literals
+                let scrutinee_val = self.generate_function_literal_expr(&case_expr.scrutinee, func_lit, body_instructions)?;
+
+                // Create labels
+                let case_end = format!("case_end_{}", body_instructions.len());
+                let case_fail = format!("case_fail_{}", body_instructions.len());
+
+                // Create result register for phi
+                let result_reg = format!("%case_result_{}", body_instructions.len());
+
+                // Collect phi operands
+                let mut phi_operands = Vec::new();
+
+                // Generate branch checking logic
+                let mut next_check_label = format!("case_check_{}", body_instructions.len());
+                body_instructions.push(format!("  br label %{}", next_check_label));
+
+                for (branch_idx, branch) in case_expr.branches.iter().enumerate() {
+                    // Branch check label
+                    body_instructions.push(format!("{}:", next_check_label));
+
+                    // Create branch labels
+                    let branch_body = format!("case_body_{}_{}", body_instructions.len(), branch_idx);
+                    next_check_label = format!("case_check_{}_{}", body_instructions.len(), branch_idx + 1);
+
+                    // Generate pattern match check
+                    let match_result = self.generate_function_literal_pattern_check(&branch.pattern, &scrutinee_val, body_instructions)?;
+
+                    // Branch to body if pattern matches
+                    body_instructions.push(format!("  br i1 {}, label %{}, label %{}",
+                        match_result,
+                        branch_body,
+                        if branch_idx + 1 < case_expr.branches.len() { &next_check_label } else { &case_fail }));
+
+                    // Branch body
+                    body_instructions.push(format!("{}:", branch_body));
+
+                    // For now, ignore guards in bootstrap compiler
+                    if branch.guard.is_some() {
+                        // TODO: Implement guard support in function literals
+                    }
+
+                    let body_val = self.generate_function_literal_expr(&branch.body, func_lit, body_instructions)?;
+                    phi_operands.push((body_val, branch_body.clone()));
+                    body_instructions.push(format!("  br label %{}", case_end));
+                }
+
+                // Failure case (should not happen with wildcard patterns)
+                body_instructions.push(format!("{}:", case_fail));
+                phi_operands.push(("0".to_string(), case_fail.clone()));
+                body_instructions.push(format!("  br label %{}", case_end));
+
+                // End with phi
+                body_instructions.push(format!("{}:", case_end));
+                let phi_parts: Vec<String> = phi_operands.iter()
+                    .map(|(val, label)| format!("[{}, %{}]", val.trim_start_matches("i64 ").trim_start_matches("i1 "), label))
+                    .collect();
+                body_instructions.push(format!("  {} = phi i64 {}", result_reg, phi_parts.join(", ")));
+
+                Ok(result_reg)
+            },
+            Expression::FunctionLiteral(func_lit_inner) => {
+                // For bootstrap compiler, nested function literals return a placeholder
+                // TODO: Implement proper nested function literal support
+                Ok("i8* null".to_string())
+            },
+            _ => Err(CompilerError::codegen_error(format!("Unsupported expression type in function literal: {:?}", expr))),
+        }
+    }
+
+    /// Generate LLVM IR for function literal expression
+    fn generate_function_literal(&mut self, func_lit: &FunctionLiteralExpr) -> Result<Option<String>> {
+        // Generate a unique function name for this literal
+        let func_name = format!("func_literal_{}", self.instructions.len());
+
+        // Analyze captured variables
+        let captured_vars = self.analyze_captured_variables(func_lit)?;
+
+        // For bootstrap compiler, implement simple closure capture
+        // Make captured variables available during function body generation
+        let mut captured_var_values = Vec::new();
+        for captured_var in &captured_vars {
+            if let Some(var_reg) = self.variables.get(captured_var) {
+                captured_var_values.push((captured_var.clone(), var_reg.clone()));
+            }
+        }
+
+        // Generate function declaration with captured variables as additional parameters
+        let mut param_types: Vec<String> = (0..func_lit.parameters.len()).map(|_| "i64".to_string()).collect();
+        // Add captured variables as i64 parameters
+        param_types.extend((0..captured_vars.len()).map(|_| "i64".to_string()));
+        let param_list_str = param_types.join(", ");
+        let func_sig = format!("define i64 @{}({})", func_name, param_list_str);
+
+        // Add function declaration to global functions
+        self.global_functions.push(func_sig.to_string());
+        self.global_functions.push("  {".to_string());
+
+        // Set up parameters in the symbol table
+        for (i, param) in func_lit.parameters.iter().enumerate() {
+            let param_reg = format!("%{}", i);
+            // For now, assume all parameters are i64
+            // TODO: Handle proper parameter types
+            self.add_variable_text(param.name.clone(), param_reg);
+        }
+        // Set up captured variables as additional parameters
+        for (i, captured_var) in captured_vars.iter().enumerate() {
+            let param_index = func_lit.parameters.len() + i;
+            let param_reg = format!("%{}", param_index);
+            self.add_variable_text(captured_var.clone(), param_reg);
+        }
+
+        // Generate function body from the actual expression
+        // For function literals, we need to generate the body in a separate context
+        let body_instructions = self.generate_function_literal_body_with_captures(func_lit, &captured_vars)?;
+        self.global_functions.extend(body_instructions);
+
+        // Note: Variables are automatically cleaned up when exiting scope
+        // No manual cleanup needed for text IR variable scopes
+
+        self.global_functions.push("  }".to_string());
+
+        // Return pointer to the function
+        let ptr_reg = format!("%func_ptr_{}", self.instructions.len());
+        self.instructions.push(format!("  {} = bitcast i64 ({})* @{} to i8*", ptr_reg, param_types.join(", "), func_name));
+
+        Ok(Some(ptr_reg))
     }
 
     /// Generate LLVM IR for read_file expression
@@ -3777,24 +4538,201 @@ impl CodeGenerator {
         Ok(Some(result_reg))
     }
 
+    /// Generate LLVM IR for print expression
+    fn generate_print(&mut self, print: &PrintExpr) -> Result<Option<String>> {
+        let value_val = self.generate_expression(&print.value)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid value in print".to_string()))?;
+
+        // Determine the string length
+        let length = self.find_string_constant_length(&value_val).unwrap_or(0);
+
+        // Call silica_print with the string value and length
+        self.instructions.push(format!("  call void @silica_print(i8* {}, i64 {})", value_val, length));
+
+        Ok(None) // print returns unit
+    }
+
+    /// Generate LLVM IR for println expression
+    fn generate_println(&mut self, println: &PrintLnExpr) -> Result<Option<String>> {
+        let value_val = self.generate_expression(&println.value)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid value in println".to_string()))?;
+
+        // Determine the string length
+        let length = self.find_string_constant_length(&value_val).unwrap_or(0);
+
+        // Call silica_println with the string value and length
+        self.instructions.push(format!("  call void @silica_println(i8* {}, i64 {})", value_val, length));
+
+        Ok(None) // println returns unit
+    }
+
+    /// Helper method to find the length of a string constant by its reference
+    fn find_string_constant_length(&self, const_ref: &str) -> Option<usize> {
+        for (_content, (name, length)) in &self.string_constants {
+            if name == const_ref {
+                return Some(*length);
+            }
+        }
+        None
+    }
+
+    /// Generate LLVM IR for print_int expression
+    fn generate_print_int(&mut self, print_int: &PrintIntExpr) -> Result<Option<String>> {
+        let value_val = self.generate_expression(&print_int.value)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid value in print_int".to_string()))?;
+
+        // Call silica_print_int with the int value
+        // value_val already includes the type for literals, so don't add i64 prefix
+        self.instructions.push(format!("  call void @silica_print_int({})", value_val));
+
+        Ok(None) // print_int returns unit
+    }
+
+    /// Generate LLVM IR for print_bool expression
+    fn generate_print_bool(&mut self, print_bool: &PrintBoolExpr) -> Result<Option<String>> {
+        let value_val = self.generate_expression(&print_bool.value)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid value in print_bool".to_string()))?;
+
+        // Convert i1 to i64 for the runtime function
+        let bool_reg = format!("%bool_ext_{}", self.instructions.len());
+        // value_val already includes type for literals, extract just the value part for zext
+        let value_part = if value_val.starts_with("i1 ") {
+            &value_val[3..]  // Skip "i1 " prefix
+        } else {
+            &value_val
+        };
+        self.instructions.push(format!("  {} = zext i1 {} to i64", bool_reg, value_part));
+
+        // Call silica_print_bool with the bool value
+        // value_val already includes type for literals, so don't add i1 prefix
+        self.instructions.push(format!("  call void @silica_print_bool({})", value_val));
+
+        Ok(None) // print_bool returns unit
+    }
+
+    /// Generate LLVM IR for print_char expression
+    fn generate_print_char(&mut self, print_char: &PrintCharExpr) -> Result<Option<String>> {
+        let value_val = self.generate_expression(&print_char.value)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid value in print_char".to_string()))?;
+
+        // Call silica_print_char with the char value (chars are i32 in LLVM)
+        // value_val already includes the type for literals, so don't add i32 prefix
+        self.instructions.push(format!("  call void @silica_print_char({})", value_val));
+
+        Ok(None) // print_char returns unit
+    }
+
+    /// Generate LLVM IR for read_lines expression
+    fn generate_read_lines(&mut self, read_lines: &ReadLinesExpr) -> Result<Option<String>> {
+        let path_val = self.generate_expression(&read_lines.path)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid path in read_lines".to_string()))?;
+
+        // Determine the path length
+        let path_length = self.find_string_constant_length(&path_val).unwrap_or(0);
+
+        // Call silica_read_file and extract the string content
+        let result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_read_file(i8* {}, i64 {})", result_reg, path_val, path_length));
+
+        // Extract SilicaString pointer (contains actual file content)
+        let silica_string_ptr_reg = self.next_register();
+        self.instructions.push(format!("  %{} = extractvalue {{ i1, i8* }} %{}, 1", silica_string_ptr_reg, result_reg));
+
+        // For bootstrap compiler: return the SilicaString pointer as our "string"
+        // This allows the file content to be passed around, though limited processing is possible
+        Ok(Some(silica_string_ptr_reg))
+    }
+
+    /// Generate LLVM IR for append_file expression
+    fn generate_append_file(&mut self, append_file: &AppendFileExpr) -> Result<Option<String>> {
+        let path_val = self.generate_expression(&append_file.path)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid path in append_file".to_string()))?;
+        let content_val = self.generate_expression(&append_file.content)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid content in append_file".to_string()))?;
+
+        // Determine the string lengths
+        let path_length = self.find_string_constant_length(&path_val).unwrap_or(0);
+        let content_length = self.find_string_constant_length(&content_val).unwrap_or(0);
+
+        // Call silica_write_file and extract the success flag
+        let result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_write_file(i8* {}, i64 {}, i8* {}, i64 {})", result_reg, path_val, path_length, content_val, content_length));
+
+        // Extract the success flag from the result struct
+        let success_reg = self.next_register();
+        self.instructions.push(format!("  %{} = extractvalue {{ i1, i8* }} %{}, 0", success_reg, result_reg));
+
+        Ok(Some(success_reg))
+    }
+
+    /// Generate LLVM IR for file_exists expression
+    fn generate_file_exists(&mut self, file_exists: &FileExistsExpr) -> Result<Option<String>> {
+        let path_val = self.generate_expression(&file_exists.path)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid path in file_exists".to_string()))?;
+
+        // For now, just call silica_read_file and check if it succeeds
+        let result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_read_file(i8* {}, i64 0)", result_reg, path_val));
+
+        // Extract the success flag
+        let success_reg = self.next_register();
+        self.instructions.push(format!("  %{} = extractvalue {{ i1, i8* }} %{}, 0", success_reg, result_reg));
+
+        Ok(Some(success_reg))
+    }
+
+    /// Generate LLVM IR for delete_file expression
+    fn generate_delete_file(&mut self, delete_file: &DeleteFileExpr) -> Result<Option<String>> {
+        // For now, return true (placeholder implementation)
+        Ok(Some("1".to_string()))
+    }
+
+    /// Generate LLVM IR for get_file_size expression
+    fn generate_get_file_size(&mut self, get_file_size: &GetFileSizeExpr) -> Result<Option<String>> {
+        // For now, return 0 (placeholder implementation)
+        Ok(Some("0".to_string()))
+    }
+
+    /// Generate LLVM IR for create_directory expression
+    fn generate_create_directory(&mut self, create_dir: &CreateDirectoryExpr) -> Result<Option<String>> {
+        // For now, return true (placeholder implementation)
+        Ok(Some("1".to_string()))
+    }
+
+    /// Generate LLVM IR for remove_directory expression
+    fn generate_remove_directory(&mut self, remove_dir: &RemoveDirectoryExpr) -> Result<Option<String>> {
+        // For now, return true (placeholder implementation)
+        Ok(Some("1".to_string()))
+    }
+
+    /// Generate LLVM IR for list_directory expression
+    fn generate_list_directory(&mut self, list_dir: &ListDirectoryExpr) -> Result<Option<String>> {
+        // For now, return empty string (placeholder implementation)
+        Ok(Some("@str_const_0".to_string()))
+    }
+
     /// Generate LLVM IR for exec_command expression
     fn generate_exec_command(&mut self, exec_cmd: &ExecCommandExpr) -> Result<Option<String>> {
         let cmd_val = self.generate_expression(&exec_cmd.command)?
             .ok_or_else(|| CompilerError::codegen_error("Invalid command in exec_command".to_string()))?;
 
+        // Get command string length
+        let cmd_length = self.find_string_constant_length(&cmd_val).unwrap_or(0);
+
         // Generate arguments
         let mut arg_vals = Vec::new();
+        let mut arg_lengths = Vec::new();
         for arg in &exec_cmd.args {
             let arg_val = self.generate_expression(arg)?
                 .ok_or_else(|| CompilerError::codegen_error("Invalid argument in exec_command".to_string()))?;
+            let arg_length = self.find_string_constant_length(&arg_val).unwrap_or(0);
             arg_vals.push(arg_val);
+            arg_lengths.push(arg_length);
         }
 
-        // For now, return a placeholder result
-        let result_reg = format!("%exec_result_{}", self.instructions.len());
-        self.instructions.push(format!("  ; exec_command({}, [...]) - placeholder implementation", cmd_val));
-        self.instructions.push(format!("  ; Arguments: {:?}", arg_vals));
-        self.instructions.push(format!("  {} = call i8* @silica_exec_command(...) ; placeholder", result_reg));
+        // Call silica_exec_command with proper parameters
+        let result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = call i8* @silica_exec_command(i8* {}, i64 {}, i8** null, i64 {}, i64* null)", result_reg, cmd_val, cmd_length, arg_vals.len()));
 
         Ok(Some(result_reg))
     }

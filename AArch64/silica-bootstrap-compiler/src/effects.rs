@@ -149,15 +149,62 @@ impl EffectChecker {
             Expression::Spawn(_) => Ok(vec![Effect::Concurrency]),
             Expression::Send(_) => Ok(vec![Effect::Concurrency]),
             Expression::Recv(_) => Ok(vec![Effect::Concurrency]),
-            Expression::ReadFile(_) => Ok(vec![Effect::DeviceIO]),
-            Expression::WriteFile(_) => Ok(vec![Effect::DeviceIO]),
-            Expression::ExecCommand(_) => Ok(vec![Effect::DeviceIO]),
+            Expression::ReadFile(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::WriteFile(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::Print(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::PrintLn(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::PrintInt(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::PrintBool(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::PrintChar(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::ReadLines(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::AppendFile(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::FileExists(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::DeleteFile(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::GetFileSize(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::CreateDirectory(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::RemoveDirectory(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::ListDirectory(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::ExecCommand(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::StructLiteral(_) => Ok(vec![]), // Struct literals have no effects
             Expression::FieldAccess(_) => Ok(vec![]),   // Field access has no effects
             Expression::GenericInstantiation(_) => Ok(vec![]), // Generic instantiation has no effects
             Expression::ConstructorCall(_) => Ok(vec![]), // Constructor calls have no effects
             Expression::Tuple(_) => Ok(vec![]), // Tuple literals have no effects
         }
+    }
+
+    /// Collect effects required by a sequence of statements
+    fn collect_statement_effects(&self, statements: &[crate::ast::Statement]) -> Result<Vec<Effect>> {
+        let mut effects = Vec::new();
+
+        for statement in statements {
+            match statement {
+                crate::ast::Statement::Bind { expr, .. } => {
+                    effects.extend(self.collect_expression_effects(expr)?);
+                }
+                crate::ast::Statement::Expr(expr) => {
+                    effects.extend(self.collect_expression_effects(expr)?);
+                }
+            }
+        }
+
+        Ok(effects)
+    }
+
+    /// Check effects for a sequence of statements
+    fn check_statements(&mut self, statements: &[crate::ast::Statement], required_effects: &[Effect]) -> Result<()> {
+        for statement in statements {
+            match statement {
+                crate::ast::Statement::Bind { expr, .. } => {
+                    self.check_expression(expr, required_effects)?;
+                }
+                crate::ast::Statement::Expr(expr) => {
+                    self.check_expression(expr, required_effects)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
 
@@ -220,7 +267,7 @@ impl EffectChecker {
     /// Collect effects for function literals
     fn collect_function_literal_effects(&self, func: &FunctionLiteralExpr) -> Result<Vec<Effect>> {
         // Function literals themselves have no effects, but their bodies might
-        self.collect_expression_effects(&func.body)
+        self.collect_statement_effects(&func.body)
     }
 
     /// Collect effects for reference allocation
@@ -344,11 +391,11 @@ impl EffectAnalyzer {
         // Push function's declared effects
         self.checker.push_capabilities(&func.effects, &func.location);
 
-        // Analyze function body
-        let body_effects = self.checker.collect_expression_effects(&func.body)?;
+        // Analyze function body statements
+        let body_effects = self.checker.collect_statement_effects(&func.body)?;
 
         // Check that body effects are covered by declared effects
-        self.checker.check_expression(&func.body, &func.effects)?;
+        self.checker.check_statements(&func.body, &func.effects)?;
 
         // Pop function effects
         self.checker.pop_capabilities(func.effects.len());
