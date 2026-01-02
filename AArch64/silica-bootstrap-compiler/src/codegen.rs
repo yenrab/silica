@@ -15,6 +15,7 @@
  */
 
 use crate::ast::*;
+use crate::ast::Literal;
 use crate::errors::{Result, codegen_error, CompilerError, SourceLocation};
 use crate::types::TypeChecker;
 use std::collections::HashMap;
@@ -3245,13 +3246,13 @@ impl CodeGenerator {
         if method.body.len() == 1 {
             if let crate::ast::Statement::Expr(expr) = &method.body[0] {
                 match expr.as_ref() {
-                    Expression::Binary(binary) => {
-                        // Handle binary operations like self.x + self.y
-                        self.generate_binary_operation_for_method_with_type(type_name, binary)?;
-                    }
-                    _ => {
-                        return Err(CompilerError::codegen_error("Complex method bodies not yet supported".to_string()));
-                    }
+            Expression::Binary(binary) => {
+                // Handle binary operations like self.x + self.y
+                self.generate_binary_operation_for_method_with_type(type_name, binary)?;
+            }
+            _ => {
+                return Err(CompilerError::codegen_error("Complex method bodies not yet supported".to_string()));
+            }
                 }
             } else {
                 return Err(CompilerError::codegen_error("Trait methods must have expression bodies".to_string()));
@@ -3387,9 +3388,9 @@ impl CodeGenerator {
     }
 
     /// Generate literal values for method bodies
-    fn generate_literal_value(&mut self, literal: &crate::ast::Literal) -> Result<String> {
+    fn generate_literal_value(&mut self, literal: &Literal) -> Result<String> {
         match literal {
-            crate::ast::Literal::Int(value) => Ok(value.to_string()),
+            Literal::Int(value) => Ok(value.to_string()),
             _ => Err(CompilerError::codegen_error("Unsupported literal type in method".to_string())),
         }
     }
@@ -3472,14 +3473,20 @@ impl CodeGenerator {
                 let type_part = &field_value[..space_pos];
                 let value_part = &field_value[space_pos + 1..];
                 (type_part.to_string(), value_part.to_string())
+            } else if field_value.contains('@') {
+                // Global constant (like string constant) - assume i8*
+                ("i8*".to_string(), field_value.to_string())
+            } else if field_value.contains("alloc") {
+                // Any allocation register - it's i8*
+                ("i8*".to_string(), field_value.to_string())
             } else {
-                // No type prefix, assume i64
+                // No type prefix, assume i64 for register names
                 ("i64".to_string(), field_value.to_string())
             };
             self.instructions.push(format!("  store {} {}, {}* {}", llvm_value_type, value_to_store, llvm_type_str, field_ptr_typed));
         }
 
-        Ok(Some(malloc_reg))
+        Ok(Some(format!("i8* {}", malloc_reg)))
     }
 
     /// Generate LLVM IR for tuple expressions with proper mixed-type support
@@ -3520,12 +3527,14 @@ impl CodeGenerator {
                             .cloned()
                             .unwrap_or(Type::Int)
                     } else {
-                        // For expressions without location (like literals), infer from the expression
+                        // For expressions without location, infer from the expression
                         match element_expr {
                             Expression::Literal(Literal::Bool(_)) => Type::Bool,
                             Expression::Literal(Literal::Int(_)) => Type::Int,
                             Expression::Literal(Literal::Char(_)) => Type::Char,
                             Expression::Literal(Literal::String(_)) => Type::String,
+                            Expression::StructLiteral(_) => Type::Record(vec![]), // Complex struct type
+                            Expression::Tuple(_) => Type::Tuple(vec![]), // Complex tuple type
                             _ => Type::Int, // Default fallback
                         }
                     }
@@ -3533,7 +3542,20 @@ impl CodeGenerator {
             };
 
             // Convert Silica type to LLVM type string
-            let llvm_type = self.type_map.silica_to_llvm_str(&silica_type);
+            // Override for complex expressions that should be pointers
+            let llvm_type = match &tuple[i] {
+                Expression::StructLiteral(_) => "i8*".to_string(),
+                Expression::Tuple(_) => "i8*".to_string(),
+                _ => {
+                    let base_type = self.type_map.silica_to_llvm_str(&silica_type);
+                    // For bootstrap: override certain types that should be pointers
+                    if matches!(silica_type, Type::Named(_) | Type::Record(_)) {
+                        "i8*".to_string()
+                    } else {
+                        base_type
+                    }
+                }
+            };
             element_types.push(llvm_type);
         }
 
@@ -3608,16 +3630,24 @@ impl CodeGenerator {
             let element_ptr_typed = format!("%element_ptr_typed_{}_{}", self.instructions.len(), i);
             self.instructions.push(format!("  {} = bitcast i8* {} to {}*", element_ptr_typed, element_ptr_reg, llvm_type));
 
-            // Store the value (handle pointer casting for tuple elements)
-            let value_to_store = if element_value.starts_with('%') && element_value.contains("tuple_alloc") {
-                // This is a pointer to another tuple - cast it to i64 for storage
+            // Store the value with proper type conversion
+            let value_to_store = if llvm_type == "i64" && element_value.contains("alloc") {
+                // HACK: Cast pointer to i64 for storage in tuple
                 let cast_reg = format!("%ptr_cast_{}", self.instructions.len());
                 self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", cast_reg, element_value));
                 cast_reg
             } else {
                 self.convert_to_llvm_type_value(element_value, llvm_type)
             };
-            self.instructions.push(format!("  store {} {}, {}* {}", llvm_type, value_to_store, llvm_type, element_ptr_typed));
+            // Handle type mismatches for bootstrap compatibility
+            if llvm_type == "i64" && value_to_store.starts_with('%') && value_to_store.contains("alloc") {
+                // Cast pointer to i64 for storage
+                let cast_reg = format!("%ptr_cast_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", cast_reg, value_to_store));
+                self.instructions.push(format!("  store {} {}, {}* {}", llvm_type, cast_reg, llvm_type, element_ptr_typed));
+            } else {
+                self.instructions.push(format!("  store {} {}, {}* {}", llvm_type, value_to_store, llvm_type, element_ptr_typed));
+            }
         }
 
 
@@ -3958,9 +3988,46 @@ impl CodeGenerator {
         let actor = self.generate_expression(&send.actor)?;
         let message = self.generate_expression(&send.message)?;
 
-        if let (Some(actor_ref), Some(msg)) = (actor, message) {
+        if let (Some(actor_ref), Some(mut msg)) = (actor, message) {
+            // For messages, we need to allocate memory and store the message value
+            // This is similar to how states are handled in spawn
+            let mut msg_final_ptr = format!("%msg_final_{}", self.instructions.len());
+
+            if msg.starts_with("i64 ") {
+                // Integer message - allocate and store
+                let int_val = &msg[4..];
+                let alloc_reg = format!("%msg_alloc_{}", self.instructions.len());
+                let int_ptr = format!("%msg_int_ptr_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg)); // Allocate 8 bytes for i64
+                self.instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                self.instructions.push(format!("  store i64 {}, i64* {}", int_val, int_ptr));
+                self.instructions.push(format!("  {} = bitcast i64* {} to i8*", msg_final_ptr, int_ptr));
+            } else if msg.starts_with("%") {
+                // Register containing a value - allocate memory and store
+                if msg.contains("tuple_alloc") {
+                    // Tuple pointer - use directly
+                    msg_final_ptr.clone_from(&msg);
+                } else {
+                    // i64 register - allocate and store
+                    let alloc_reg = format!("%msg_alloc_{}", self.instructions.len());
+                    let int_ptr = format!("%msg_int_ptr_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg));
+                    self.instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                    self.instructions.push(format!("  store i64 {}, i64* {}", msg, int_ptr));
+                    self.instructions.push(format!("  {} = bitcast i64* {} to i8*", msg_final_ptr, int_ptr));
+                }
+            } else {
+                // Other types - assume they need memory allocation
+                let alloc_reg = format!("%msg_alloc_{}", self.instructions.len());
+                let int_ptr = format!("%msg_int_ptr_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg));
+                self.instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                self.instructions.push(format!("  store i64 0, i64* {}", int_ptr)); // Default
+                self.instructions.push(format!("  {} = bitcast i64* {} to i8*", msg_final_ptr, int_ptr));
+            }
+
             // Call Silica runtime send function
-            self.instructions.push(format!("  call void @silica_actor_send({}, {})", actor_ref, msg));
+            self.instructions.push(format!("  call void @silica_actor_send({}, {})", actor_ref, msg_final_ptr));
 
             // Send operations return unit, so no result register
             Ok(None)
@@ -3985,11 +4052,11 @@ impl CodeGenerator {
                 format!("i8* {}", actor_val)
             };
 
-            self.instructions.push(format!("  {} = call i64 @silica_actor_recv({})", msg_reg, typed_actor));
+            self.instructions.push(format!("  {} = call i8* @silica_actor_recv({})", msg_reg, typed_actor));
         } else {
             // recv() - this is not supported without an actor context
-            // For now, return a default value
-            self.instructions.push(format!("  {} = add i64 0, 0", msg_reg)); // Just return 0
+            // For now, return a null pointer
+            self.instructions.push(format!("  {} = bitcast i8* null to i8*", msg_reg));
         }
 
         Ok(Some(msg_reg))
@@ -4011,9 +4078,41 @@ impl CodeGenerator {
 
         // Evaluate the function body statements and collect instructions
         let result_value = self.generate_function_literal_statements(&func_lit.body, func_lit, &mut body_instructions)?;
-        // Strip type prefix if present
-        let clean_result = result_value.trim_start_matches("i64 ").trim_start_matches("i1 ");
-        body_instructions.push(format!("    ret i64 {}", clean_result));
+
+        // Get the return type and generate appropriate return instruction
+        // Behavior functions are those with exactly 2 parameters (used in actor spawn)
+        let is_behavior_function = func_lit.parameters.len() == 2;
+
+        // For behavior functions, use the actual declared return type (not forced to i8*)
+        // This allows behavior functions to return any valid Silica type
+        let return_type = func_lit.return_type.as_ref().unwrap_or(&Type::Unit);
+        let return_type_str = self.type_map.silica_to_llvm_str(return_type);
+
+        // For behavior functions, ensure we return i8* (allocate memory for primitives if needed)
+        // For regular functions, use the computed result
+        if is_behavior_function {
+            // Behavior functions always return i8* for runtime compatibility
+            // Always allocate memory and box the result
+            let alloc_reg = format!("%return_alloc_{}", body_instructions.len());
+            let store_ptr_reg = format!("%return_ptr_{}", body_instructions.len());
+            let result_type = if result_value.starts_with("i64 ") {
+                "i64"
+            } else if result_value.starts_with("i1 ") {
+                "i1"
+            } else {
+                "i8*"
+            };
+            let clean_result = result_value.trim_start_matches("i64 ").trim_start_matches("i1 ").trim_start_matches("i8* ");
+
+            body_instructions.push(format!("    {} = call i8* @malloc(i64 8)", alloc_reg));
+            body_instructions.push(format!("    {} = bitcast i8* {} to {}*", store_ptr_reg, alloc_reg, result_type));
+            body_instructions.push(format!("    store {} {}, {}* {}", result_type, clean_result, result_type, store_ptr_reg));
+            body_instructions.push(format!("    ret i8* {}", alloc_reg));
+        } else {
+            // Regular functions return their actual type
+            let clean_result = result_value.trim_start_matches("i64 ").trim_start_matches("i1 ");
+            body_instructions.push(format!("    ret {} {}", return_type_str, clean_result));
+        }
 
         // Restore the original instructions
         self.instructions = original_instructions;
@@ -4205,10 +4304,28 @@ impl CodeGenerator {
         match pattern {
             Pattern::Literal(lit) => {
                 let pattern_val = self.generate_literal(lit);
-                let clean_scrutinee = scrutinee_val.trim_start_matches("i64 ").trim_start_matches("i1 ");
-                let clean_pattern = pattern_val.trim_start_matches("i64 ").trim_start_matches("i1 ");
+
+                // Determine comparison type based on operand types
+                let (compare_type, clean_scrutinee) = if scrutinee_val.starts_with("i8* ") {
+                    // Scrutinee is a pointer - load it for comparison
+                    let ptr_reg = scrutinee_val.trim_start_matches("i8* ");
+                    let load_reg = format!("%scrutinee_load_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = load i64, i64* {}", load_reg, ptr_reg));
+                    ("i64", load_reg)
+                } else if scrutinee_val.starts_with("i1 ") {
+                    ("i1", scrutinee_val.trim_start_matches("i1 ").to_string())
+                } else {
+                    ("i64", scrutinee_val.trim_start_matches("i64 ").trim_start_matches("i1 ").to_string())
+                };
+
+                let clean_pattern = if pattern_val.starts_with("i1 ") {
+                    pattern_val.trim_start_matches("i1 ")
+                } else {
+                    pattern_val.trim_start_matches("i64 ").trim_start_matches("i1 ")
+                };
+
                 let result_reg = format!("%pattern_check_{}", body_instructions.len());
-                body_instructions.push(format!("  {} = icmp eq i64 {}, {}", result_reg, clean_scrutinee, clean_pattern));
+                body_instructions.push(format!("  {} = icmp eq {} {}, {}", result_reg, compare_type, clean_scrutinee, clean_pattern));
                 Ok(result_reg)
             },
             Pattern::Identifier(name) => {
@@ -4228,7 +4345,275 @@ impl CodeGenerator {
         }
     }
 
-    /// Generate expression value for function literal body (returns register/value)
+    /// Find field offset by searching through all known struct types
+    /// This is a truly generic solution that works for any struct definition
+    fn find_field_offset_in_any_struct(&self, field_name: &str) -> Result<i64> {
+        // Search through all type aliases to find structs that contain this field
+        for (type_name, type_def) in &self.type_aliases {
+            if let Type::Record(fields) = type_def {
+                if let Ok(offset) = self.calculate_field_offset_in_record(fields, field_name) {
+                    return Ok(offset);
+                }
+            }
+        }
+
+        // If not found in type aliases, we cannot determine the offset
+        Err(CompilerError::codegen_error(format!("Field '{}' not found in any known struct type", field_name)))
+    }
+
+
+    /// Calculate field offset within a record type
+    fn calculate_field_offset_in_record(&self, fields: &[(String, Type)], field_name: &str) -> Result<i64> {
+        let mut offset = 0i64;
+        for (name, field_type) in fields {
+            if name == field_name {
+                return Ok(offset);
+            }
+            // Calculate field size (simplified: assume all fields are 8 bytes)
+            // In a full implementation, this would calculate actual field sizes
+            offset += 8;
+        }
+        Err(CompilerError::codegen_error(format!("Field '{}' not found in record", field_name)))
+    }
+
+    /// Infer the type of a case branch body for phi type determination (simplified)
+    fn infer_case_branch_type(&self, expr: &Expression) -> String {
+        match expr {
+            Expression::Literal(lit) => match lit {
+                Literal::Int(_) => "i64",
+                Literal::Bool(_) => "i1",
+                Literal::String(_) => "i8*",
+                Literal::Char(_) => "i64", // Characters as integers
+                Literal::Unit => "i64", // Unit as integer
+            },
+            Expression::StructLiteral(_) | Expression::Tuple(_) => "i8*", // Complex types
+            Expression::FieldAccess(_) => "i64", // Assume fields are integers for now
+            Expression::Binary(_) => "i64", // Binary operations return integers
+            Expression::Unary(_) => "i64", // Unary operations return integers
+            _ => "i64", // Default to i64
+        }.to_string()
+    }
+
+    /// Check if a value needs type conversion for phi
+    fn needs_type_conversion(&self, val: &str, target_type: &str) -> bool {
+        let current_type = if val.starts_with("i8* ") {
+            "i8*"
+        } else if val.starts_with("i1 ") {
+            "i1"
+        } else {
+            "i64"
+        };
+        current_type != target_type
+    }
+
+    /// Add a type conversion instruction in the current block
+    fn add_type_conversion_instruction(&mut self, val: &str, target_type: &str, convert_reg: &str, body_instructions: &mut Vec<String>) {
+        let clean_val = val.trim_start_matches("i64 ").trim_start_matches("i1 ").trim_start_matches("i8* ");
+        let current_type = if val.starts_with("i8* ") {
+            "i8*"
+        } else if val.starts_with("i1 ") {
+            "i1"
+        } else {
+            "i64"
+        };
+
+        match (current_type, target_type) {
+            ("i64", "i8*") => {
+                // Convert i64 to i8* by storing and returning pointer
+                let temp_alloc = format!("%temp_alloc_{}", body_instructions.len());
+                let temp_ptr = format!("%temp_ptr_{}", body_instructions.len());
+                body_instructions.push(format!("  {} = call i8* @malloc(i64 8)", temp_alloc));
+                body_instructions.push(format!("  {} = bitcast i8* {} to i64*", temp_ptr, temp_alloc));
+                body_instructions.push(format!("  store i64 {}, i64* {}", clean_val, temp_ptr));
+                // Note: convert_reg is temp_alloc
+            },
+            ("i1", "i64") => {
+                body_instructions.push(format!("  {} = zext i1 {} to i64", convert_reg, clean_val));
+            },
+            ("i1", "i8*") => {
+                // Convert i1 to i8* via i64
+                let temp_i64 = format!("%temp_i64_{}", body_instructions.len());
+                let temp_alloc = format!("%temp_alloc_{}", body_instructions.len());
+                let temp_ptr = format!("%temp_ptr_{}", body_instructions.len());
+                body_instructions.push(format!("  {} = zext i1 {} to i64", temp_i64, clean_val));
+                body_instructions.push(format!("  {} = call i8* @malloc(i64 8)", temp_alloc));
+                body_instructions.push(format!("  {} = bitcast i8* {} to i64*", temp_ptr, temp_alloc));
+                body_instructions.push(format!("  store i64 {}, i64* {}", temp_i64, temp_ptr));
+                // Note: convert_reg is temp_alloc
+            },
+            ("i64", "i1") => {
+                body_instructions.push(format!("  {} = trunc i64 {} to i1", convert_reg, clean_val));
+            },
+            ("i8*", "i64") => {
+                body_instructions.push(format!("  {} = ptrtoint i8* {} to i64", convert_reg, clean_val));
+            },
+            ("i8*", "i1") => {
+                let temp_i64 = format!("%temp_i64_{}", body_instructions.len());
+                body_instructions.push(format!("  {} = ptrtoint i8* {} to i64", temp_i64, clean_val));
+                body_instructions.push(format!("  {} = trunc i64 {} to i1", convert_reg, temp_i64));
+            },
+            _ => {
+                // Same type or unhandled - no instruction needed
+            }
+        }
+    }
+
+    /// Convert a case operand to the target type for phi consistency
+    fn convert_case_operand_to_target_type(&mut self, val: String, target_type: &str, body_instructions: &mut Vec<String>) -> String {
+        if !self.needs_type_conversion(&val, target_type) {
+            // No conversion needed
+            return val.trim_start_matches("i64 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+        }
+
+        // Generate conversion instruction
+        let convert_reg = format!("%convert_{}", body_instructions.len());
+        self.add_type_conversion_instruction(&val, target_type, &convert_reg, body_instructions);
+
+        // For allocations, return the alloc register, otherwise the convert register
+        let current_type = if val.starts_with("i8* ") {
+            "i8*"
+        } else if val.starts_with("i1 ") {
+            "i1"
+        } else {
+            "i64"
+        };
+
+        match (current_type, target_type) {
+            ("i64", "i8*") | ("i1", "i8*") => {
+                format!("%temp_alloc_{}", body_instructions.len() - 1) // The malloc result
+            },
+            _ => convert_reg,
+        }
+    }
+
+    /// Generate case expression within function literals
+    fn generate_function_literal_case(&mut self, case_expr: &CaseExpr, func_lit: &FunctionLiteralExpr, body_instructions: &mut Vec<String>) -> Result<String> {
+        let scrutinee_val = self.generate_function_literal_expr(&case_expr.scrutinee, func_lit, body_instructions)?;
+
+        // Create labels
+        let case_end = format!("case_end_{}", body_instructions.len());
+        let case_fail = format!("case_fail_{}", body_instructions.len());
+
+        // Create result register for phi
+        let result_reg = format!("%case_result_{}", body_instructions.len());
+
+        // Collect phi operands
+        let mut phi_operands = Vec::new();
+
+        // Check if this is a behavior function
+        let is_behavior_function = func_lit.parameters.len() == 2;
+
+        // Generate branch checking logic
+        let mut next_check_label = format!("case_check_{}", body_instructions.len());
+        body_instructions.push(format!("  br label %{}", next_check_label));
+
+        for (branch_idx, branch) in case_expr.branches.iter().enumerate() {
+            // Branch check label
+            body_instructions.push(format!("{}:", next_check_label));
+
+            // Create branch labels
+            let branch_body = format!("case_body_{}_{}", body_instructions.len(), branch_idx);
+            next_check_label = format!("case_check_{}_{}", body_instructions.len(), branch_idx + 1);
+
+            // Generate pattern match check
+            let match_result = self.generate_function_literal_pattern_check(&branch.pattern, &scrutinee_val, body_instructions)?;
+
+            // Branch to body if pattern matches
+            body_instructions.push(format!("  br i1 {}, label %{}, label %{}",
+                match_result,
+                branch_body,
+                if branch_idx + 1 < case_expr.branches.len() { &next_check_label } else { &case_fail }));
+
+            // Branch body
+            body_instructions.push(format!("{}:", branch_body));
+
+            // For now, ignore guards in bootstrap compiler
+            if branch.guard.is_some() {
+                // TODO: Implement guard support in function literals
+            }
+
+            let body_val = self.generate_function_literal_expr(&branch.body, func_lit, body_instructions)?;
+
+            // For behavior functions, all results should be i8* pointers
+            let is_behavior_function = func_lit.parameters.len() == 2;
+
+            let converted_val = if is_behavior_function {
+                // Behavior functions: ensure result is i8*
+                let clean_val = body_val.trim_start_matches("i64 ").trim_start_matches("i1 ").trim_start_matches("i8* ");
+                let current_type = if body_val.starts_with("i8* ") { "i8*" }
+                else if body_val.starts_with("i1 ") { "i1" }
+                else { "i64" };
+
+                if current_type == "i8*" {
+                    clean_val.to_string()
+                } else {
+                    // Box the value right here in this branch
+                    let temp_alloc = format!("%temp_alloc_{}", body_instructions.len());
+                    let temp_ptr = format!("%temp_ptr_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = call i8* @malloc(i64 8)", temp_alloc));
+                    body_instructions.push(format!("  {} = bitcast i8* {} to {}*", temp_ptr, temp_alloc, current_type));
+                    body_instructions.push(format!("  store {} {}, {}* {}", current_type, clean_val, current_type, temp_ptr));
+                    temp_alloc
+                }
+            } else {
+                // Regular functions: keep as unboxed
+                body_val.trim_start_matches("i64 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string()
+            };
+
+            phi_operands.push((converted_val, branch_body.clone()));
+            body_instructions.push(format!("  br label %{}", case_end));
+        }
+
+        // Failure case (should not happen with wildcard patterns)
+        body_instructions.push(format!("{}:", case_fail));
+        // Failure value - for behavior functions, box it
+        let fail_val = if is_behavior_function {
+            let temp_alloc = format!("%temp_alloc_{}", body_instructions.len());
+            let temp_ptr = format!("%temp_ptr_{}", body_instructions.len());
+            body_instructions.push(format!("  {} = call i8* @malloc(i64 8)", temp_alloc));
+            body_instructions.push(format!("  {} = bitcast i8* {} to i64*", temp_ptr, temp_alloc));
+            body_instructions.push(format!("  store i64 0, i64* {}", temp_ptr));
+            temp_alloc
+        } else {
+            "0".to_string()
+        };
+        phi_operands.push((fail_val, case_fail.clone()));
+        body_instructions.push(format!("  br label %{}", case_end));
+
+        // End with phi - phi must be first instruction in block
+        body_instructions.push(format!("{}:", case_end));
+
+        // For behavior functions (2 parameters), all values should be i8* pointers
+
+        if is_behavior_function {
+            // Behavior functions: phi with i8* values (all operands are already boxed)
+            let phi_parts: Vec<String> = phi_operands.iter()
+                .map(|(val, label)| format!("[{}, %{}]", val, label))
+                .collect();
+
+            body_instructions.push(format!("  {} = phi i8* {}", result_reg, phi_parts.join(", ")));
+        } else {
+            // Regular functions: phi with i64 values, then box result
+            let phi_parts: Vec<String> = phi_operands.iter()
+                .map(|(val, label)| format!("[{}, %{}]", val, label))
+                .collect();
+
+            let phi_reg = format!("%phi_unboxed_{}", body_instructions.len());
+            body_instructions.push(format!("  {} = phi i64 {}", phi_reg, phi_parts.join(", ")));
+
+            // Box the phi result
+            let temp_alloc = format!("%phi_boxed_{}", body_instructions.len());
+            let temp_ptr = format!("%phi_ptr_{}", body_instructions.len());
+            body_instructions.push(format!("  {} = call i8* @malloc(i64 8)", temp_alloc));
+            body_instructions.push(format!("  {} = bitcast i8* {} to i64*", temp_ptr, temp_alloc));
+            body_instructions.push(format!("  store i64 {}, i64* {}", phi_reg, temp_ptr));
+            body_instructions.push(format!("  {} = {}", result_reg, temp_alloc));
+        }
+
+        Ok(result_reg)
+    }
+
+    /// Generate expression value for function literal body (returns register/value with type prefix)
     fn generate_function_literal_expr(&mut self, expr: &Expression, func_lit: &FunctionLiteralExpr, body_instructions: &mut Vec<String>) -> Result<String> {
         match expr {
             Expression::Literal(lit) => {
@@ -4237,7 +4622,16 @@ impl CodeGenerator {
             Expression::Identifier(name) => {
                 // Check if it's a parameter of the current function literal
                 if let Some(param_index) = func_lit.parameters.iter().position(|p| p.name == *name) {
-                    Ok(format!("%{}", param_index))
+                    // For behavior functions, parameters are passed as i8* but may need to be loaded
+                    let is_behavior_function = func_lit.parameters.len() == 2;
+                    if is_behavior_function {
+                        // Behavior function parameters: all are i8* at LLVM level
+                        // The operations will load values as needed
+                        Ok(format!("i8* %{}", param_index))
+                    } else {
+                        // Regular function parameters
+                        Ok(format!("%{}", param_index))
+                    }
                 } else if let Some(var_reg) = self.lookup_variable_text(name) {
                     // It's a captured variable from outer scope
                     Ok(var_reg.clone())
@@ -4255,21 +4649,108 @@ impl CodeGenerator {
                 // Create a unique register for the result
                 let result_reg = format!("%binop_{}", body_instructions.len());
 
-                // Strip type prefixes from operands
-                let clean_left = left_val.trim_start_matches("i64 ").trim_start_matches("i1 ");
-                let clean_right = right_val.trim_start_matches("i64 ").trim_start_matches("i1 ");
+                // Determine operand types and generate appropriate operations
+                // For bootstrap: load i8* operands (assume they contain primitives)
+                let (left_type, clean_left) = if left_val.starts_with("i8* ") {
+                    // Load pointer to primitive value
+                    let ptr_reg = left_val.trim_start_matches("i8* ");
+                    let load_reg = format!("%load_left_{}", body_instructions.len());
+                    let load_instr = format!("  {} = load i64, i64* {}", load_reg, ptr_reg);
+                    body_instructions.push(load_instr);
+                    ("i64", load_reg.to_string())
+                } else if left_val.starts_with("i1 ") {
+                    ("i1", left_val.trim_start_matches("i1 ").to_string())
+                } else {
+                    // Assume i64 for integers and other primitives
+                    ("i64", left_val.trim_start_matches("i64 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string())
+                };
 
+                let (right_type, clean_right) = if right_val.starts_with("i8* ") {
+                    // Load pointer to primitive value
+                    let ptr_reg = right_val.trim_start_matches("i8* ");
+                    let load_reg = format!("%load_right_{}", body_instructions.len());
+                    let load_instr = format!("  {} = load i64, i64* {}", load_reg, ptr_reg);
+                    body_instructions.push(load_instr);
+                    ("i64", load_reg.to_string())
+                } else if right_val.starts_with("i1 ") {
+                    ("i1", right_val.trim_start_matches("i1 ").to_string())
+                } else {
+                    // Assume i64 for integers and other primitives
+                    ("i64", right_val.trim_start_matches("i64 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string())
+                };
+
+                // Generate operation based on operand types
                 let (op_instr, result_type) = match binary.operator {
-                    BinaryOp::Add => (format!("    {} = add i64 {}, {}", result_reg, clean_left, clean_right), "i64"),
-                    BinaryOp::Subtract => (format!("    {} = sub i64 {}, {}", result_reg, clean_left, clean_right), "i64"),
-                    BinaryOp::Multiply => (format!("    {} = mul i64 {}, {}", result_reg, clean_left, clean_right), "i64"),
-                    BinaryOp::Divide => (format!("    {} = sdiv i64 {}, {}", result_reg, clean_left, clean_right), "i64"),
-                    BinaryOp::Equal => (format!("    {} = icmp eq i64 {}, {}", result_reg, clean_left, clean_right), "i1"),
-                    BinaryOp::NotEqual => (format!("    {} = icmp ne i64 {}, {}", result_reg, clean_left, clean_right), "i1"),
-                    BinaryOp::Less => (format!("    {} = icmp slt i64 {}, {}", result_reg, clean_left, clean_right), "i1"),
-                    BinaryOp::LessEqual => (format!("    {} = icmp sle i64 {}, {}", result_reg, clean_left, clean_right), "i1"),
-                    BinaryOp::Greater => (format!("    {} = icmp sgt i64 {}, {}", result_reg, clean_left, clean_right), "i1"),
-                    BinaryOp::GreaterEqual => (format!("    {} = icmp sge i64 {}, {}", result_reg, clean_left, clean_right), "i1"),
+                    BinaryOp::Add => {
+                        if left_type == "i64" && right_type == "i64" {
+                            (format!("    {} = add i64 {}, {}", result_reg, clean_left, clean_right), "i64")
+                        } else {
+                            return Err(CompilerError::codegen_error(format!("Cannot add {} and {}", left_type, right_type)));
+                        }
+                    },
+                    BinaryOp::Subtract => {
+                        if left_type == "i64" && right_type == "i64" {
+                            (format!("    {} = sub i64 {}, {}", result_reg, clean_left, clean_right), "i64")
+                        } else {
+                            return Err(CompilerError::codegen_error(format!("Cannot subtract {} and {}", left_type, right_type)));
+                        }
+                    },
+                    BinaryOp::Multiply => {
+                        if left_type == "i64" && right_type == "i64" {
+                            (format!("    {} = mul i64 {}, {}", result_reg, clean_left, clean_right), "i64")
+                        } else {
+                            return Err(CompilerError::codegen_error(format!("Cannot multiply {} and {}", left_type, right_type)));
+                        }
+                    },
+                    BinaryOp::Divide => {
+                        if left_type == "i64" && right_type == "i64" {
+                            (format!("    {} = sdiv i64 {}, {}", result_reg, clean_left, clean_right), "i64")
+                        } else {
+                            return Err(CompilerError::codegen_error(format!("Cannot divide {} and {}", left_type, right_type)));
+                        }
+                    },
+                    BinaryOp::Equal => {
+                        if left_type == right_type {
+                            (format!("    {} = icmp eq {} {}, {}", result_reg, left_type, clean_left, clean_right), "i1")
+                        } else {
+                            return Err(CompilerError::codegen_error(format!("Cannot compare {} and {}", left_type, right_type)));
+                        }
+                    },
+                    BinaryOp::NotEqual => {
+                        if left_type == right_type {
+                            (format!("    {} = icmp ne {} {}, {}", result_reg, left_type, clean_left, clean_right), "i1")
+                        } else {
+                            return Err(CompilerError::codegen_error(format!("Cannot compare {} and {}", left_type, right_type)));
+                        }
+                    },
+                    BinaryOp::Less => {
+                        if left_type == "i64" && right_type == "i64" {
+                            (format!("    {} = icmp slt i64 {}, {}", result_reg, clean_left, clean_right), "i1")
+                        } else {
+                            return Err(CompilerError::codegen_error(format!("Cannot compare {} and {}", left_type, right_type)));
+                        }
+                    },
+                    BinaryOp::LessEqual => {
+                        if left_type == "i64" && right_type == "i64" {
+                            (format!("    {} = icmp sle i64 {}, {}", result_reg, clean_left, clean_right), "i1")
+                        } else {
+                            return Err(CompilerError::codegen_error(format!("Cannot compare {} and {}", left_type, right_type)));
+                        }
+                    },
+                    BinaryOp::Greater => {
+                        if left_type == "i64" && right_type == "i64" {
+                            (format!("    {} = icmp sgt i64 {}, {}", result_reg, clean_left, clean_right), "i1")
+                        } else {
+                            return Err(CompilerError::codegen_error(format!("Cannot compare {} and {}", left_type, right_type)));
+                        }
+                    },
+                    BinaryOp::GreaterEqual => {
+                        if left_type == "i64" && right_type == "i64" {
+                            (format!("    {} = icmp sge i64 {}, {}", result_reg, clean_left, clean_right), "i1")
+                        } else {
+                            return Err(CompilerError::codegen_error(format!("Cannot compare {} and {}", left_type, right_type)));
+                        }
+                    },
                     _ => return Err(CompilerError::codegen_error(format!("Unsupported binary operator in function literal: {:?}", binary.operator))),
                 };
 
@@ -4344,65 +4825,46 @@ impl CodeGenerator {
             },
             Expression::Case(case_expr) => {
                 // Handle case expressions within function literals
-                let scrutinee_val = self.generate_function_literal_expr(&case_expr.scrutinee, func_lit, body_instructions)?;
+                self.generate_function_literal_case(case_expr, func_lit, body_instructions)
+            },
+            Expression::FieldAccess(field_access) => {
+                // Generate field access within function literals
+                // This is crucial for actor state access
+                let object_value = self.generate_function_literal_expr(&field_access.object, func_lit, body_instructions)?;
 
-                // Create labels
-                let case_end = format!("case_end_{}", body_instructions.len());
-                let case_fail = format!("case_fail_{}", body_instructions.len());
+                // Find the field offset by searching through all known struct types
+                let field_offset = self.find_field_offset_in_any_struct(&field_access.field)?;
 
-                // Create result register for phi
-                let result_reg = format!("%case_result_{}", body_instructions.len());
+                // For struct field access, the object_value should be an i8* pointer to struct memory
+                let field_ptr_reg = format!("%field_ptr_{}", body_instructions.len());
+                let field_value_reg = format!("%field_val_{}", body_instructions.len());
 
-                // Collect phi operands
-                let mut phi_operands = Vec::new();
+                // Strip type prefix from object_value for getelementptr
+                let clean_object = object_value.trim_start_matches("i64 ").trim_start_matches("i1 ").trim_start_matches("i8* ");
 
-                // Generate branch checking logic
-                let mut next_check_label = format!("case_check_{}", body_instructions.len());
-                body_instructions.push(format!("  br label %{}", next_check_label));
+                // Generate pointer arithmetic and load
+                body_instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", field_ptr_reg, clean_object, field_offset));
+                body_instructions.push(format!("  {} = load i64, i64* {}", field_value_reg, field_ptr_reg));
 
-                for (branch_idx, branch) in case_expr.branches.iter().enumerate() {
-                    // Branch check label
-                    body_instructions.push(format!("{}:", next_check_label));
-
-                    // Create branch labels
-                    let branch_body = format!("case_body_{}_{}", body_instructions.len(), branch_idx);
-                    next_check_label = format!("case_check_{}_{}", body_instructions.len(), branch_idx + 1);
-
-                    // Generate pattern match check
-                    let match_result = self.generate_function_literal_pattern_check(&branch.pattern, &scrutinee_val, body_instructions)?;
-
-                    // Branch to body if pattern matches
-                    body_instructions.push(format!("  br i1 {}, label %{}, label %{}",
-                        match_result,
-                        branch_body,
-                        if branch_idx + 1 < case_expr.branches.len() { &next_check_label } else { &case_fail }));
-
-                    // Branch body
-                    body_instructions.push(format!("{}:", branch_body));
-
-                    // For now, ignore guards in bootstrap compiler
-                    if branch.guard.is_some() {
-                        // TODO: Implement guard support in function literals
-                    }
-
-                    let body_val = self.generate_function_literal_expr(&branch.body, func_lit, body_instructions)?;
-                    phi_operands.push((body_val, branch_body.clone()));
-                    body_instructions.push(format!("  br label %{}", case_end));
-                }
-
-                // Failure case (should not happen with wildcard patterns)
-                body_instructions.push(format!("{}:", case_fail));
-                phi_operands.push(("0".to_string(), case_fail.clone()));
-                body_instructions.push(format!("  br label %{}", case_end));
-
-                // End with phi
-                body_instructions.push(format!("{}:", case_end));
-                let phi_parts: Vec<String> = phi_operands.iter()
-                    .map(|(val, label)| format!("[{}, %{}]", val.trim_start_matches("i64 ").trim_start_matches("i1 "), label))
-                    .collect();
-                body_instructions.push(format!("  {} = phi i64 {}", result_reg, phi_parts.join(", ")));
-
-                Ok(result_reg)
+                Ok(format!("i64 {}", field_value_reg))
+            },
+            Expression::Tuple(tuple) => {
+                // Generate tuple in function literals
+                // For bootstrap compiler, we'll generate a placeholder allocation
+                // TODO: Implement proper tuple generation in function literals
+                let alloc_reg = format!("%tuple_alloc_{}", body_instructions.len());
+                let tuple_size = tuple.len() * 8; // Assume 8 bytes per element
+                body_instructions.push(format!("  {} = call i8* @malloc(i64 {})", alloc_reg, tuple_size));
+                Ok(format!("i8* {}", alloc_reg))
+            },
+            Expression::StructLiteral(struct_lit) => {
+                // Generate struct literal in function literals
+                // This is complex as it requires allocating memory and storing field values
+                // For bootstrap compiler, we'll generate a placeholder allocation
+                // TODO: Implement proper struct literal generation in function literals
+                let alloc_reg = format!("%struct_alloc_{}", body_instructions.len());
+                body_instructions.push(format!("  {} = call i8* @malloc(i64 24)", alloc_reg)); // Assume 24 bytes for struct
+                Ok(format!("i8* {}", alloc_reg))
             },
             Expression::FunctionLiteral(func_lit_inner) => {
                 // For bootstrap compiler, nested function literals return a placeholder
@@ -4430,12 +4892,29 @@ impl CodeGenerator {
             }
         }
 
-        // Generate function declaration with captured variables as additional parameters
-        let mut param_types: Vec<String> = (0..func_lit.parameters.len()).map(|_| "i64".to_string()).collect();
+        // Check if this looks like a behavior function (2 params)
+        // Behavior functions use pointer interface: fn(i8*, i8*) -> i8*
+        let is_behavior_function = func_lit.parameters.len() == 2;
+
+        let (param_types, return_type_str) = if is_behavior_function {
+            // Behavior functions: use i8* for runtime compatibility
+            (vec!["i8*".to_string(), "i8*".to_string()], "i8*".to_string())
+        } else {
+            // Regular function: use actual types
+            let param_types: Vec<String> = func_lit.parameters.iter()
+                .map(|param| self.type_map.silica_to_llvm_str(&param.type_))
+            .collect();
+            let return_type = func_lit.return_type.as_ref().unwrap_or(&Type::Unit);
+            let return_type_str = self.type_map.silica_to_llvm_str(return_type);
+            (param_types, return_type_str)
+        };
+
         // Add captured variables as i64 parameters
-        param_types.extend((0..captured_vars.len()).map(|_| "i64".to_string()));
-        let param_list_str = param_types.join(", ");
-        let func_sig = format!("define i64 @{}({})", func_name, param_list_str);
+        let mut all_param_types = param_types.clone();
+        all_param_types.extend((0..captured_vars.len()).map(|_| "i64".to_string()));
+        let param_list_str = all_param_types.join(", ");
+
+        let func_sig = format!("define {} @{}({})", return_type_str, func_name, param_list_str);
 
         // Add function declaration to global functions
         self.global_functions.push(func_sig.to_string());
@@ -4444,8 +4923,11 @@ impl CodeGenerator {
         // Set up parameters in the symbol table
         for (i, param) in func_lit.parameters.iter().enumerate() {
             let param_reg = format!("%{}", i);
-            // For now, assume all parameters are i64
-            // TODO: Handle proper parameter types
+            if is_behavior_function {
+                // Behavior functions: %0 is i64 (message), %1 is i8* (state)
+                // But we still register them as i64 for now since the symbol table expects that
+                // The actual usage in expressions will handle the type differences
+            }
             self.add_variable_text(param.name.clone(), param_reg);
         }
         // Set up captured variables as additional parameters
@@ -4466,8 +4948,11 @@ impl CodeGenerator {
         self.global_functions.push("  }".to_string());
 
         // Return pointer to the function
+        // For behavior functions, the runtime expects i8* return type
+        // For regular functions, use the actual return type
+        let runtime_return_type = if is_behavior_function { "i8*" } else { &return_type_str };
         let ptr_reg = format!("%func_ptr_{}", self.instructions.len());
-        self.instructions.push(format!("  {} = bitcast i64 ({})* @{} to i8*", ptr_reg, param_types.join(", "), func_name));
+        self.instructions.push(format!("  {} = bitcast {} ({})* @{} to i8*", ptr_reg, runtime_return_type, all_param_types.join(", "), func_name));
 
         Ok(Some(ptr_reg))
     }

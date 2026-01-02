@@ -26,13 +26,81 @@ pub struct SilicaRegion {
 pub struct SilicaActor {
     pub id: u64,                    // Unique actor ID
     pub state: *mut u8,             // Actor state (generic pointer for any type)
-    pub mailbox: *mut VecDeque<i64>, // Per-actor mailbox
-    pub behavior_fn: *mut u8,       // Function pointer for behavior (placeholder)
+    pub mailbox: Arc<Mutex<VecDeque<*mut u8>>>, // Synchronized mailbox
+    pub behavior_fn: *mut u8,       // Function pointer for behavior
 }
 
+// Safety: SilicaActor is Send because:
+// - The actor is created in the main thread
+// - The state pointer is allocated once and only modified by the actor's own thread
+// - The mailbox is properly synchronized with Arc<Mutex<>>
+// - The behavior function pointer is read-only
+unsafe impl Send for SilicaActor {}
+
+
 // Global actor registry
-static mut ACTOR_REGISTRY: Option<std::collections::HashMap<u64, *mut SilicaActor>> = None;
+static mut ACTOR_REGISTRY: Option<std::collections::HashMap<u64, Arc<Mutex<SilicaActor>>>> = None;
 static mut NEXT_ACTOR_ID: u64 = 1;
+
+// Store actor pointers for C API - maps raw pointers back to Arc references
+static mut ACTOR_PTR_MAP: Option<std::collections::HashMap<*mut SilicaActor, Arc<Mutex<SilicaActor>>>> = None;
+
+// Helper function to start an actor's message processing loop
+fn start_actor_message_loop(actor: Arc<Mutex<SilicaActor>>) {
+    // Spawn a new thread for the actor's message loop
+    std::thread::spawn(move || {
+        actor_message_loop(actor);
+    });
+}
+
+// Actor message processing loop
+// Continuously receives messages and processes them using the behavior function
+fn actor_message_loop(actor: Arc<Mutex<SilicaActor>>) {
+    loop {
+        // Try to receive a message (non-blocking for now)
+        let message_ptr = {
+            let mut actor_guard = actor.lock().unwrap();
+            let mut mailbox = actor_guard.mailbox.lock().unwrap();
+            mailbox.pop_front().unwrap_or(std::ptr::null_mut()) // Return null if no messages
+        };
+
+        if !message_ptr.is_null() {
+            // Get the current actor state and behavior function
+            let (state_ptr, behavior_fn_ptr) = {
+                let actor_guard = actor.lock().unwrap();
+                (actor_guard.state, actor_guard.behavior_fn)
+            };
+
+            // Call the behavior function if available
+            if !behavior_fn_ptr.is_null() {
+                // Cast the behavior function pointer to the uniform interface
+                // Behavior functions: fn(*mut u8 message, *mut u8 state) -> *mut u8 new_state
+                let behavior_fn = unsafe {
+                    std::mem::transmute::<*mut u8, unsafe extern "C" fn(*mut u8, *mut u8) -> *mut u8>(behavior_fn_ptr)
+                };
+
+                // Call behavior function: (message_ptr, state_ptr) -> new_state_ptr
+                let new_state_ptr = unsafe { behavior_fn(message_ptr, state_ptr) };
+
+                // Update the actor's state pointer
+                // Note: For the bootstrap compiler, behavior functions typically return the same pointer
+                // or a modified version. For now, we'll update the state pointer.
+                if !new_state_ptr.is_null() && new_state_ptr != state_ptr {
+                    // If the function returned a different pointer, update the actor's state
+                    let mut actor_guard = actor.lock().unwrap();
+                    actor_guard.state = new_state_ptr;
+                }
+            }
+
+            // Free the message memory after processing
+            // Note: In the bootstrap runtime, we don't actually free memory
+            // as the process will exit. In a full runtime, this would be important.
+        }
+
+        // Small delay to avoid busy waiting
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
 
 // Runtime functions that can be called from generated LLVM IR
 // Note: LLVM naturally uses C-like calling conventions for external functions
@@ -136,58 +204,78 @@ pub extern "C" fn silica_actor_spawn(initial_state: *mut u8, behavior_fn: *mut u
         id
     };
 
-    // Create actor mailbox
-    let mailbox = Box::new(VecDeque::new());
-    let mailbox_ptr = Box::into_raw(mailbox);
+    // Create synchronized actor mailbox
+    let mailbox = Arc::new(Mutex::new(VecDeque::new()));
 
     // Create actor structure
-    let actor = SilicaActor {
+    let actor = Arc::new(Mutex::new(SilicaActor {
         id: actor_id,
         state: initial_state,
-        mailbox: mailbox_ptr,
+        mailbox: mailbox.clone(),
         behavior_fn,
-    };
+    }));
 
-    let actor_ptr = Box::into_raw(Box::new(actor));
+    // Get a raw pointer for the C API
+    let actor_ptr = Arc::as_ptr(&actor) as *mut SilicaActor;
 
-    // Register the actor
+    // Register the actor and store pointer mapping
     unsafe {
         if let Some(ref mut registry) = ACTOR_REGISTRY {
-            registry.insert(actor_id, actor_ptr);
+            registry.insert(actor_id, actor.clone());
+        }
+        if ACTOR_PTR_MAP.is_none() {
+            ACTOR_PTR_MAP = Some(std::collections::HashMap::new());
+        }
+        if let Some(ref mut ptr_map) = ACTOR_PTR_MAP {
+            ptr_map.insert(actor_ptr, actor.clone());
         }
     }
 
+    // Start the actor's message processing loop in a new thread
+    start_actor_message_loop(actor);
+
+    // Return the raw pointer for the C API
     actor_ptr
 }
 
 #[no_mangle]
-pub extern "C" fn silica_actor_send(actor_ptr: *mut SilicaActor, message: i64) {
+pub extern "C" fn silica_actor_send(actor_ptr: *mut SilicaActor, message: *mut u8) {
     if actor_ptr.is_null() {
         // Invalid actor pointer
         return;
     }
 
     unsafe {
-        // Get the actor and add message to its mailbox
-        let actor = &mut *actor_ptr;
-        let mailbox = &mut *actor.mailbox;
+        // Get the Arc back from the pointer
+        if let Some(ref ptr_map) = ACTOR_PTR_MAP {
+            if let Some(actor_arc) = ptr_map.get(&actor_ptr) {
+                let actor_guard = actor_arc.lock().unwrap();
+                let mut mailbox = actor_guard.mailbox.lock().unwrap();
         mailbox.push_back(message);
+                // Note: No condvar notification for now - receiver will poll
+            }
+        }
     }
 }
 
 #[no_mangle]
-pub extern "C" fn silica_actor_recv(actor_ptr: *mut SilicaActor) -> i64 {
+pub extern "C" fn silica_actor_recv(actor_ptr: *mut SilicaActor) -> *mut u8 {
     if actor_ptr.is_null() {
-        return 0; // Error: invalid actor
+        return std::ptr::null_mut(); // Error: invalid actor
     }
 
     unsafe {
-        let actor = &mut *actor_ptr;
-        let mailbox = &mut *actor.mailbox;
-
-        // Try to receive a message from this actor's mailbox
-        mailbox.pop_front().unwrap_or(0) // Return 0 if no messages
+        // Get the Arc back from the pointer
+        if let Some(ref ptr_map) = ACTOR_PTR_MAP {
+            if let Some(actor_arc) = ptr_map.get(&actor_ptr) {
+                let actor_guard = actor_arc.lock().unwrap();
+                let mut mailbox = actor_guard.mailbox.lock().unwrap();
+                return mailbox.pop_front().unwrap_or(std::ptr::null_mut());
+            }
+        }
     }
+
+    std::ptr::null_mut() // Error or no messages
 }
 
 // File I/O functions - LLVM-compatible data structures
