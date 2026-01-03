@@ -1012,6 +1012,13 @@ impl Parser {
 
     /// Parse primary expressions (literals, identifiers, groupings)
     fn primary(&mut self) -> Result<Expression> {
+        // Handle core affinity keywords
+        if self.match_token(TokenKind::EfficiencyCores) {
+            return Ok(Expression::Identifier("efficiency_cores".to_string()));
+        } else if self.match_token(TokenKind::PerformanceCores) {
+            return Ok(Expression::Identifier("performance_cores".to_string()));
+        }
+
         if self.match_token(TokenKind::True) {
             Ok(Expression::Literal(Literal::Bool(true)))
         } else if self.match_token(TokenKind::False) {
@@ -1084,6 +1091,10 @@ impl Parser {
                 self.parse_alloc_ref()
             } else if name == "read_ref" && self.match_token(TokenKind::LeftParen) {
                 self.parse_read_ref()
+            } else if name == "core_id" && self.match_token(TokenKind::LeftParen) {
+                self.parse_core_id()
+            } else if name == "any_core" {
+                Ok(Expression::Identifier("any_core".to_string()))
             } else if name == "write_ref" && self.match_token(TokenKind::LeftParen) {
                 self.parse_write_ref()
             } else if name == "exec_command" && self.match_token(TokenKind::LeftParen) {
@@ -1467,18 +1478,43 @@ impl Parser {
         }))
     }
 
-    /// Parse spawn(initial_state, behavior) expression
+    /// Parse core_id(core_number) expression
+    fn parse_core_id(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let core_expr = self.expression()?;
+        self.consume(TokenKind::RightParen, "Expected ')' after core_id argument")?;
+
+        // For now, we'll represent this as a call expression
+        // In the future, this could be a dedicated AST node
+        Ok(Expression::Call(CallExpr {
+            function: Box::new(Expression::Identifier("core_id".to_string())),
+            arguments: vec![core_expr],
+            type_args: vec![],
+            location,
+        }))
+    }
+
+    /// Parse spawn(initial_state, behavior[, core_affinity]) expression
     fn parse_spawn(&mut self) -> Result<Expression> {
         let location = self.previous().location.clone();
         self.consume(TokenKind::LeftParen, "Expected '(' after 'spawn'")?;
         let initial_state = Box::new(self.expression()?);
         self.consume(TokenKind::Comma, "Expected ',' after initial_state in spawn")?;
         let behavior = Box::new(self.expression()?);
+
+        // Check for optional third parameter (core affinity)
+        let core_affinity = if self.match_token(TokenKind::Comma) {
+            Some(Box::new(self.expression()?))
+        } else {
+            None
+        };
+
         self.consume(TokenKind::RightParen, "Expected ')' after spawn arguments")?;
 
         Ok(Expression::Spawn(SpawnExpr {
             initial_state,
             behavior,
+            core_affinity,
             location,
         }))
     }

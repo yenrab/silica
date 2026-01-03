@@ -900,7 +900,15 @@ impl CodeGenerator {
             Expression::Identifier(name) => self.generate_identifier(name),
             Expression::Binary(binary) => self.generate_binary(binary),
             Expression::Unary(unary) => self.generate_unary(unary),
-            Expression::Call(call) => self.generate_call(call),
+            Expression::Call(call) => {
+                // Handle special core affinity calls
+                if let Expression::Identifier(func_name) = &*call.function {
+                    if func_name == "core_id" {
+                        return Ok(Some(self.generate_core_id_call(call)?));
+                    }
+                }
+                self.generate_call(call)
+            },
             Expression::If(if_expr) => self.generate_if(if_expr),
             Expression::Case(case) => self.generate_case(case),
             Expression::Do(do_expr) => self.generate_do(do_expr),
@@ -997,10 +1005,28 @@ impl CodeGenerator {
 
         if let (Some(lhs), Some(rhs)) = (left, right) {
             let temp_reg = format!("%t{}", self.instructions.len());
-            // For LLVM IR, we need to strip type prefixes from operands
-            // since the operation type is declared at the beginning
-            let clean_lhs = lhs.trim_start_matches("i64 ").trim_start_matches("i1 ");
-            let clean_rhs = rhs.trim_start_matches("i64 ").trim_start_matches("i1 ");
+
+            // Handle i8* operands by loading them
+            // Handle i8* operands by loading them
+            let clean_lhs = if lhs.contains("box") || lhs.contains("param") || (lhs.starts_with("%") && !lhs.contains("binop") && !lhs.contains("load") && !lhs.contains("bitcast")) {
+                // Left operand is likely an i8* register - load it
+                let load_reg = format!("%load_left_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = bitcast i8* {} to i64*", load_reg.clone() + "_cast", lhs));
+                self.instructions.push(format!("  {} = load i64, i64* {}_cast", load_reg, load_reg));
+                load_reg
+            } else {
+                lhs.trim_start_matches("i64 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string()
+            };
+
+            let clean_rhs = if rhs.contains("box") || rhs.contains("param") || (rhs.starts_with("%") && !rhs.contains("binop") && !rhs.contains("load") && !rhs.contains("bitcast")) {
+                // Right operand is likely an i8* register - load it
+                let load_reg = format!("%load_right_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = bitcast i8* {} to i64*", load_reg.clone() + "_cast", rhs));
+                self.instructions.push(format!("  {} = load i64, i64* {}_cast", load_reg, load_reg));
+                load_reg
+            } else {
+                rhs.trim_start_matches("i64 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string()
+            };
 
             let op_instr = match binary.operator {
                 BinaryOp::Add => format!("  {} = add i64 {}, {}", temp_reg, clean_lhs, clean_rhs),
@@ -1786,16 +1812,22 @@ impl CodeGenerator {
         let initial_state_val = self.generate_expression_llvm(&spawn.initial_state)?;
         let behavior_val = self.generate_expression_llvm(&spawn.behavior)?;
 
-        if let (Some(initial_state), Some(behavior)) = (initial_state_val, behavior_val) {
+        // Generate core affinity (default to 0 for any core)
+        let core_affinity_val = if let Some(ref affinity_expr) = spawn.core_affinity {
+            self.generate_expression_llvm(affinity_expr)?
+        } else {
+            Some((*self.context).i32_type().const_int(0, false).into())
+        };
+
+        if let (Some(initial_state), Some(behavior), Some(core_affinity)) = (initial_state_val, behavior_val, core_affinity_val) {
             if let (Some(module), Some(builder)) = (&self.module, &self.builder) {
                 unsafe {
                     // Get the silica_actor_spawn function
                     if let Some(spawn_func) = (*module).get_function("silica_actor_spawn") {
-                        // Call silica_actor_spawn(initial_state, behavior)
-                        // Note: behavior should be a function pointer, but for now we pass the value
+                        // Call silica_actor_spawn(initial_state, behavior, core_affinity)
                         let _call_result = builder.build_call(
                             spawn_func,
-                            &[initial_state.into(), behavior.into()],
+                            &[initial_state.into(), behavior.into(), core_affinity.into()],
                             "actor_spawn_result"
                         ).unwrap();
 
@@ -1811,7 +1843,7 @@ impl CodeGenerator {
                 Err(CompilerError::codegen_error("LLVM module or builder not initialized".to_string()))
             }
         } else {
-            Err(CompilerError::codegen_error("Invalid initial state or behavior for spawn".to_string()))
+            Err(CompilerError::codegen_error("Invalid arguments for spawn".to_string()))
         }
     }
 
@@ -2229,11 +2261,191 @@ impl CodeGenerator {
     /// Generate LLVM value for case expressions (pattern matching) (LLVM backend)
     #[cfg(feature = "llvm_backend")]
     fn generate_case_llvm(&mut self, case: &CaseExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
-        // Temporary simple implementation: just return the first branch
-        if !case.branches.is_empty() {
-            return self.generate_expression_llvm(&case.branches[0].body);
+        if case.branches.is_empty() {
+            return Err(CompilerError::codegen_error("Case expression must have at least one branch".to_string()));
         }
-        Err(CompilerError::codegen_error("Case expression must have at least one branch".to_string()))
+
+        if let (Some(context), Some(module), Some(builder)) = (&self.context, &self.module, &self.builder) {
+            unsafe {
+                // Generate scrutinee value
+                let scrutinee_val = self.generate_expression_llvm(&case.scrutinee)?
+                    .ok_or_else(|| CompilerError::codegen_error("Case scrutinee must produce a value".to_string()))?;
+
+                // Allocate result variable (all case branches return i64)
+                let result_type = (*context).i64_type();
+                let result_alloca = builder.build_alloca(result_type, "case_result").unwrap();
+
+                // Create basic blocks for case logic
+                let current_fn = builder.get_insert_block().unwrap().get_parent();
+                let case_end_block = (*context).append_basic_block(current_fn, "case_end");
+                let case_fail_block = (*context).append_basic_block(current_fn, "case_fail");
+
+                // Default failure case - store 0
+                builder.position_at_end(case_fail_block);
+                builder.build_store(result_alloca, result_type.const_int(0, false)).unwrap();
+                builder.build_unconditional_branch(case_end_block);
+
+                // Generate each branch
+                let mut next_check_block = None;
+                for (branch_idx, branch) in case.branches.iter().enumerate() {
+                    // Create blocks for this branch
+                    let check_block = if branch_idx == 0 {
+                        // First branch - continue from current block
+                        builder.get_insert_block()
+                    } else {
+                        (*context).append_basic_block(current_fn, &format!("case_check_{}", branch_idx))
+                    };
+
+                    let body_block = (*context).append_basic_block(current_fn, &format!("case_body_{}", branch_idx));
+                    let bind_block = if branch.guard.is_some() {
+                        Some((*context).append_basic_block(current_fn, &format!("case_bind_{}", branch_idx)))
+                    } else {
+                        None
+                    };
+
+                    // Position at check block (skip for first branch)
+                    if branch_idx > 0 {
+                        builder.position_at_end(check_block);
+                    }
+
+                    // Generate pattern match condition
+                    let pattern_matches = self.generate_pattern_match_llvm(&branch.pattern, &scrutinee_val)?;
+
+                    // Branch based on pattern match
+                    let success_block = bind_block.as_ref().unwrap_or(&body_block);
+                    let fail_block = if branch_idx + 1 < case.branches.len() {
+                        next_check_block.get_or_insert_with(|| {
+                            (*context).append_basic_block(current_fn, &format!("case_check_{}", branch_idx + 1))
+                        })
+                    } else {
+                        &case_fail_block
+                    };
+
+                    builder.build_conditional_branch(pattern_matches, *success_block, *fail_block);
+
+                    // Handle guard if present
+                    if let Some(guard_expr) = &branch.guard {
+                        if let Some(bind_block) = bind_block {
+                            builder.position_at_end(bind_block);
+
+                            // Bind pattern variables to scope
+                            self.bind_pattern_variables(&branch.pattern, &scrutinee_val)?;
+
+                            // Evaluate guard
+                            let guard_val = self.generate_expression_llvm(guard_expr)?
+                                .ok_or_else(|| CompilerError::codegen_error("Guard expression must produce a value".to_string()))?;
+
+                            // Guard must be boolean (i1), convert if needed
+                            let guard_bool = if guard_val.get_type().as_int_type().unwrap().get_bit_width() == 1 {
+                                guard_val.into_int_value()
+                            } else {
+                                // Convert i64 to i1 (non-zero = true)
+                                builder.build_int_compare(inkwell::IntPredicate::NE, guard_val.into_int_value(), result_type.const_int(0, false), "guard_bool").unwrap()
+                            };
+
+                            builder.build_conditional_branch(guard_bool, body_block, *fail_block);
+                        }
+                    }
+
+                    // Generate branch body
+                    builder.position_at_end(body_block);
+
+                    // Bind pattern variables for body evaluation
+                    self.bind_pattern_variables(&branch.pattern, &scrutinee_val)?;
+
+                    // Generate body expression
+                    let body_val = self.generate_expression_llvm(&branch.body)?
+                        .ok_or_else(|| CompilerError::codegen_error("Case branch body must produce a value".to_string()))?;
+
+                    // Convert body value to i64 if needed and store to result
+                    let body_i64 = match body_val.get_type() {
+                        inkwell::types::BasicTypeEnum::IntType(int_type) if int_type.get_bit_width() == 64 => {
+                            body_val.into_int_value()
+                        }
+                        inkwell::types::BasicTypeEnum::IntType(int_type) if int_type.get_bit_width() == 1 => {
+                            // Convert bool to i64
+                            builder.build_int_z_extend(body_val.into_int_value(), result_type, "bool_to_i64").unwrap()
+                        }
+                        inkwell::types::BasicTypeEnum::PointerType(_) => {
+                            // This should not happen - if we get a pointer, there's double boxing
+                            // Convert pointer to i64 (bitcast)
+                            builder.build_ptr_to_int(body_val.into_pointer_value(), result_type, "ptr_to_i64").unwrap()
+                        }
+                        _ => return Err(CompilerError::codegen_error("Unsupported type in case branch".to_string())),
+                    };
+
+                    builder.build_store(result_alloca, body_i64).unwrap();
+                    builder.build_unconditional_branch(case_end_block);
+                }
+
+                // Load final result
+                builder.position_at_end(case_end_block);
+                let final_result = builder.build_load(result_type, result_alloca, "case_final").unwrap();
+
+                Ok(Some(final_result.into()))
+            }
+        } else {
+            Err(CompilerError::codegen_error("LLVM context, module, or builder not initialized".to_string()))
+        }
+    }
+
+    /// Generate LLVM pattern match condition for case expressions (LLVM backend)
+    #[cfg(feature = "llvm_backend")]
+    fn generate_pattern_match_llvm(&mut self, pattern: &Pattern, scrutinee: &inkwell::values::BasicValueEnum<'static>) -> Result<inkwell::values::IntValue<'static>> {
+        match pattern {
+            Pattern::Wildcard => {
+                // Wildcard always matches - return true
+                if let Some(context) = &self.context {
+                    unsafe {
+                        Ok((*context).bool_type().const_int(1, false))
+                    }
+                } else {
+                    Err(CompilerError::codegen_error("LLVM context not initialized".to_string()))
+                }
+            }
+            Pattern::Identifier(_) => {
+                // Identifier pattern always matches and binds
+                if let Some(context) = &self.context {
+                    unsafe {
+                        Ok((*context).bool_type().const_int(1, false))
+                    }
+                } else {
+                    Err(CompilerError::codegen_error("LLVM context not initialized".to_string()))
+                }
+            }
+            Pattern::Literal(lit) => {
+                // Compare literal with scrutinee
+                if let Some(builder) = &self.builder {
+                    unsafe {
+                        match lit {
+                            Literal::Int(pattern_val) => {
+                                let pattern_const = (*self.context).i64_type().const_int(*pattern_val as u64, false);
+                                Ok(builder.build_int_compare(inkwell::IntPredicate::EQ, scrutinee.into_int_value(), pattern_const, "literal_match").unwrap())
+                            }
+                            Literal::Bool(pattern_bool) => {
+                                let pattern_const = (*self.context).bool_type().const_int(if *pattern_bool { 1 } else { 0 }, false);
+                                Ok(builder.build_int_compare(inkwell::IntPredicate::EQ, scrutinee.into_int_value(), pattern_const, "bool_match").unwrap())
+                            }
+                            _ => Err(CompilerError::codegen_error("Unsupported literal type in pattern".to_string())),
+                        }
+                    }
+                } else {
+                    Err(CompilerError::codegen_error("LLVM builder not initialized".to_string()))
+                }
+            }
+            Pattern::Tuple(patterns) => {
+                // For now, only support single-element tuple patterns
+                if patterns.len() == 1 {
+                    self.generate_pattern_match_llvm(&patterns[0], scrutinee)
+                } else {
+                    Err(CompilerError::codegen_error("Multi-element tuple patterns not yet supported".to_string()))
+                }
+            }
+            Pattern::Record(_) => {
+                // Record patterns not yet implemented
+                Err(CompilerError::codegen_error("Record patterns not yet supported".to_string()))
+            }
+        }
     }
 
     /// Bind variables from pattern matching (without generating LLVM comparison code)
@@ -2408,9 +2620,21 @@ impl CodeGenerator {
         self.enter_scope_text();
 
         // Generate scrutinee
-        let scrutinee_reg = match self.generate_expression(&case.scrutinee)? {
+        let boxed_scrutinee_reg = match self.generate_expression(&case.scrutinee)? {
             Some(reg) => reg,
             None => return codegen_error("Case scrutinee must produce a value".to_string()),
+        };
+
+        // Unbox the scrutinee if it's boxed
+        let clean_scrutinee_reg = boxed_scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+        let scrutinee_reg = if clean_scrutinee_reg.contains("box_result") || clean_scrutinee_reg.contains("param") || clean_scrutinee_reg.starts_with("%box_") || clean_scrutinee_reg.starts_with("%param_") {
+            // Load the value from the boxed pointer
+            let load_reg = format!("%scrutinee_load_{}", self.instructions.len());
+            self.instructions.push(format!("  {} = bitcast i8* {} to i64*", load_reg.clone() + "_cast", clean_scrutinee_reg));
+            self.instructions.push(format!("  {} = load i64, i64* {}_cast", load_reg, load_reg));
+            load_reg
+        } else {
+            clean_scrutinee_reg
         };
 
         // Allocate result variable
@@ -2513,7 +2737,7 @@ impl CodeGenerator {
     }
 
     /// Generate runtime pattern matching check that returns an i1 result
-    fn generate_pattern_variable_binding(&mut self, pattern: &Pattern, scrutinee_reg: &str, branch_idx: usize) -> Result<HashMap<String, String>> {
+    fn generate_pattern_variable_binding(&mut self, pattern: &Pattern, scrutinee_reg: &str, _branch_idx: usize) -> Result<HashMap<String, String>> {
         let mut bound_vars = HashMap::new();
 
         match pattern {
@@ -2628,7 +2852,15 @@ impl CodeGenerator {
                         } else {
                             scrutinee_reg
                         };
-                        self.instructions.push(format!("  {} = icmp eq i64 {}, {}", cmp_reg, reg_name, n));
+                        // If the register is a boxed value, load it first
+                        if reg_name.contains("box_result") || reg_name.contains("param") || reg_name.starts_with("%box_") || reg_name.starts_with("%param_") {
+                            let load_reg = format!("%scrutinee_load_{}", self.instructions.len());
+                            self.instructions.push(format!("  {} = bitcast i8* {} to i64*", load_reg.clone() + "_cast", reg_name));
+                            self.instructions.push(format!("  {} = load i64, i64* {}_cast", load_reg, load_reg));
+                            self.instructions.push(format!("  {} = icmp eq i64 {}, {}", cmp_reg, load_reg, n));
+                        } else {
+                            self.instructions.push(format!("  {} = icmp eq i64 {}, {}", cmp_reg, reg_name, n));
+                        }
                         Ok(cmp_reg)
                     }
                     Literal::Bool(b) => {
@@ -2707,15 +2939,11 @@ impl CodeGenerator {
             self.instructions.push(format!("  br label %{}", end_label));
 
             // Generate merge block with phi
-            // Determine the result type based on the values
-            let result_type = if then_val.starts_with("i64 ") || else_val.starts_with("i64 ") {
-                "i64"
-            } else {
-                "i8*"  // Default to pointer type for function literals
-            };
+            // For behavior functions, always use i8*
+            let result_type = "i8*";
             self.instructions.push(format!("{}:", end_label));
-            self.instructions.push(format!("  {} = phi {} [{}, %{}], [{}, %{}]",
-                result_reg, result_type,
+            self.instructions.push(format!("  {} = phi i8* [{}, %{}], [{}, %{}]",
+                result_reg,
                 then_val.trim_start_matches("i64 ").trim_start_matches("i8* "),
                 then_label,
                 else_val.trim_start_matches("i64 ").trim_start_matches("i8* "),
@@ -3832,7 +4060,25 @@ impl CodeGenerator {
         let initial_state = self.generate_expression(&spawn.initial_state)?;
         let behavior = self.generate_expression(&spawn.behavior)?;
 
-        if let (Some(state), Some(behav)) = (initial_state, behavior) {
+        // Generate core affinity expression (default to 0 for any core)
+        let core_affinity = if let Some(ref affinity_expr) = spawn.core_affinity {
+            match &**affinity_expr {
+                Expression::Identifier(name) if name == "any_core" => {
+                    Some("i32 0".to_string()) // Any core
+                },
+                Expression::Identifier(name) if name == "performance_cores" => {
+                    Some("i32 -1".to_string()) // Performance cores
+                },
+                Expression::Identifier(name) if name == "efficiency_cores" => {
+                    Some("i32 -2".to_string()) // Efficiency cores
+                },
+                _ => self.generate_expression(affinity_expr)?,
+            }
+        } else {
+            Some("i32 0".to_string()) // Default: any core
+        };
+
+        if let (Some(state), Some(behav), Some(affinity)) = (initial_state, behavior, core_affinity) {
             let actor_reg = format!("%actor_{}", self.instructions.len());
 
 
@@ -3898,15 +4144,48 @@ impl CodeGenerator {
             }
 
             // Call Silica runtime actor spawn function
-            // silica_actor_spawn(initial_state_ptr, behavior_fn_ptr) -> actor_ref
+            // silica_actor_spawn(initial_state_ptr, behavior_fn_ptr, core_affinity) -> actor_ref
             let temp_actor = format!("%temp_actor_{}", self.instructions.len());
-            self.instructions.push(format!("  {} = call i8* @silica_actor_spawn(i8* {}, i8* {})", temp_actor, final_ptr, behav));
+
+            // Convert affinity based on type - for now, assume i32 values
+            // TODO: Extend to handle CoreId, PerformanceCores, EfficiencyCores, etc.
+            let affinity_val = if affinity.starts_with("i32 ") {
+                affinity[4..].to_string()
+            } else {
+                // Default to 0 (any core) for complex expressions
+                "0".to_string()
+            };
+
+            self.instructions.push(format!("  {} = call i8* @silica_actor_spawn(i8* {}, i8* {}, i32 {})", temp_actor, final_ptr, behav, affinity_val));
             // Cast actor reference to i64 for return (bootstrap compiler compatibility)
             self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", actor_reg, temp_actor));
 
             Ok(Some(actor_reg))
         } else {
             codegen_error("Invalid initial state or behavior for spawn".to_string())
+        }
+    }
+
+    /// Generate LLVM IR for core_id(core_number) call
+    fn generate_core_id_call(&mut self, call: &CallExpr) -> Result<String> {
+        if call.arguments.len() != 1 {
+            return codegen_error("core_id expects exactly 1 argument".to_string());
+        }
+
+        let core_expr = self.generate_expression(&call.arguments[0])?;
+        if let Some(core_val) = core_expr {
+            // Convert the core number to i32
+            if core_val.starts_with("i64 ") {
+                let core_num = &core_val[4..];
+                Ok(format!("i32 {}", core_num))
+            } else {
+                // For other expressions, truncate to i32
+                let reg = format!("%core_id_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = trunc i64 {} to i32", reg, core_val));
+                Ok(reg)
+            }
+        } else {
+            codegen_error("Invalid core_id argument".to_string())
         }
     }
 
@@ -4544,10 +4823,17 @@ impl CodeGenerator {
                 else if body_val.starts_with("i1 ") { "i1" }
                 else { "i64" };
 
-                if current_type == "i8*" {
+                // DEBUG: Add debug statements
+                body_instructions.push(format!("  ; DEBUG: body_val='{}', clean_val='{}', current_type='{}'", body_val, clean_val, current_type));
+
+                // Check if the value is already boxed
+                if clean_val.contains("box_result") || clean_val.contains("param") || clean_val.starts_with("%box_") || clean_val.starts_with("%param_") || clean_val.starts_with("%temp_alloc_") {
+                    // Already boxed
+                    clean_val.to_string()
+                } else if current_type == "i8*" {
                     clean_val.to_string()
                 } else {
-                    // Box the value right here in this branch
+                    // Box the value
                     let temp_alloc = format!("%temp_alloc_{}", body_instructions.len());
                     let temp_ptr = format!("%temp_ptr_{}", body_instructions.len());
                     body_instructions.push(format!("  {} = call i8* @malloc(i64 8)", temp_alloc));
@@ -4620,21 +4906,30 @@ impl CodeGenerator {
                 Ok(self.generate_literal(lit))
             },
             Expression::Identifier(name) => {
+                // Handle special core affinity identifiers
+                if name == "any_core" {
+                    return Ok("i32 0".to_string()); // 0 means any core
+                }
+
                 // Check if it's a parameter of the current function literal
                 if let Some(param_index) = func_lit.parameters.iter().position(|p| p.name == *name) {
                     // For behavior functions, parameters are passed as i8* but may need to be loaded
                     let is_behavior_function = func_lit.parameters.len() == 2;
                     if is_behavior_function {
                         // Behavior function parameters: all are i8* at LLVM level
-                        // The operations will load values as needed
                         Ok(format!("i8* %{}", param_index))
                     } else {
                         // Regular function parameters
                         Ok(format!("%{}", param_index))
                     }
                 } else if let Some(var_reg) = self.lookup_variable_text(name) {
-                    // It's a captured variable from outer scope
-                    Ok(var_reg.clone())
+                    // For behavior functions, if the var_reg is a parameter register, return i8*
+                    if func_lit.parameters.len() == 2 && (var_reg == "%0" || var_reg == "%1") {
+                        Ok(format!("i8* {}", var_reg))
+                    } else {
+                        // It's a captured variable from outer scope
+                        Ok(var_reg.clone())
+                    }
                 } else {
                     // For bootstrap compiler, assume undefined variables are captured
                     // In a full implementation, this would be an error
@@ -4654,9 +4949,17 @@ impl CodeGenerator {
                 let (left_type, clean_left) = if left_val.starts_with("i8* ") {
                     // Load pointer to primitive value
                     let ptr_reg = left_val.trim_start_matches("i8* ");
+                    let bitcast_reg = format!("%bitcast_left_{}", body_instructions.len());
                     let load_reg = format!("%load_left_{}", body_instructions.len());
-                    let load_instr = format!("  {} = load i64, i64* {}", load_reg, ptr_reg);
-                    body_instructions.push(load_instr);
+                    body_instructions.push(format!("  {} = bitcast i8* {} to i64*", bitcast_reg, ptr_reg));
+                    body_instructions.push(format!("  {} = load i64, i64* {}", load_reg, bitcast_reg));
+                    ("i64", load_reg.to_string())
+                } else if left_val.contains("box_result") || left_val.contains("param") || left_val.starts_with("%box_") || left_val.starts_with("%param_") {
+                    // This is likely an i8* register (boxed result or parameter) - load it
+                    let bitcast_reg = format!("%bitcast_left_{}", body_instructions.len());
+                    let load_reg = format!("%load_left_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = bitcast i8* {} to i64*", bitcast_reg, left_val));
+                    body_instructions.push(format!("  {} = load i64, i64* {}", load_reg, bitcast_reg));
                     ("i64", load_reg.to_string())
                 } else if left_val.starts_with("i1 ") {
                     ("i1", left_val.trim_start_matches("i1 ").to_string())
@@ -4668,9 +4971,17 @@ impl CodeGenerator {
                 let (right_type, clean_right) = if right_val.starts_with("i8* ") {
                     // Load pointer to primitive value
                     let ptr_reg = right_val.trim_start_matches("i8* ");
+                    let bitcast_reg = format!("%bitcast_right_{}", body_instructions.len());
                     let load_reg = format!("%load_right_{}", body_instructions.len());
-                    let load_instr = format!("  {} = load i64, i64* {}", load_reg, ptr_reg);
-                    body_instructions.push(load_instr);
+                    body_instructions.push(format!("  {} = bitcast i8* {} to i64*", bitcast_reg, ptr_reg));
+                    body_instructions.push(format!("  {} = load i64, i64* {}", load_reg, bitcast_reg));
+                    ("i64", load_reg.to_string())
+                } else if right_val.contains("box") || right_val.contains("param") || right_val.starts_with("%box_") || right_val.starts_with("%param_") {
+                    // This is likely an i8* register (boxed result or parameter) - load it
+                    let bitcast_reg = format!("%bitcast_right_{}", body_instructions.len());
+                    let load_reg = format!("%load_right_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = bitcast i8* {} to i64*", bitcast_reg, right_val));
+                    body_instructions.push(format!("  {} = load i64, i64* {}", load_reg, bitcast_reg));
                     ("i64", load_reg.to_string())
                 } else if right_val.starts_with("i1 ") {
                     ("i1", right_val.trim_start_matches("i1 ").to_string())
@@ -4758,7 +5069,13 @@ impl CodeGenerator {
                 body_instructions.push(op_instr);
 
                 // Return the result with type prefix
-                Ok(format!("{} {}", result_type, result_reg))
+                // Box the result for function literals
+            let box_reg = format!("%box_result_{}", body_instructions.len());
+            let ptr_reg = format!("%ptr_result_{}", body_instructions.len());
+            body_instructions.push(format!("  {} = call i8* @malloc(i64 8)", box_reg));
+            body_instructions.push(format!("  {} = bitcast i8* {} to i64*", ptr_reg, box_reg));
+            body_instructions.push(format!("  store {} {}, {}* {}", result_type, result_reg, result_type, ptr_reg));
+            Ok(box_reg)
             },
             Expression::If(if_expr) => {
                 // Handle if expressions within function literals
@@ -4778,21 +5095,43 @@ impl CodeGenerator {
                 // Generate then block
                 body_instructions.push(format!("{}:", then_label));
                 let then_val = self.generate_function_literal_expr(&if_expr.then_branch, func_lit, body_instructions)?;
+                let then_final = if then_val.starts_with("i8* ") {
+                    // Already a pointer, use directly
+                    then_val.trim_start_matches("i8* ").to_string()
+                } else {
+                    // Box the integer result
+                    let int_reg = then_val.trim_start_matches("i64 ").trim_start_matches("i1 ");
+                    let box_reg = format!("%box_then_{}", body_instructions.len());
+                    let ptr_reg = format!("%ptr_then_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = call i8* @malloc(i64 8)", box_reg));
+                    body_instructions.push(format!("  {} = bitcast i8* {} to i64*", ptr_reg, box_reg));
+                    body_instructions.push(format!("  store i64 {}, i64* {}", int_reg, ptr_reg));
+                    box_reg
+                };
                 body_instructions.push(format!("  br label %{}", end_label));
 
                 // Generate else block
                 body_instructions.push(format!("{}:", else_label));
                 let else_val = self.generate_function_literal_expr(&if_expr.else_branch, func_lit, body_instructions)?;
+                let else_final = if else_val.starts_with("i8* ") {
+                    // Already a pointer, use directly
+                    else_val.trim_start_matches("i8* ").to_string()
+                } else {
+                    // Box the integer result
+                    let int_reg = else_val.trim_start_matches("i64 ").trim_start_matches("i1 ");
+                    let box_reg = format!("%box_else_{}", body_instructions.len());
+                    let ptr_reg = format!("%ptr_else_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = call i8* @malloc(i64 8)", box_reg));
+                    body_instructions.push(format!("  {} = bitcast i8* {} to i64*", ptr_reg, box_reg));
+                    body_instructions.push(format!("  store i64 {}, i64* {}", int_reg, ptr_reg));
+                    box_reg
+                };
                 body_instructions.push(format!("  br label %{}", end_label));
 
                 // Generate merge block with phi
                 body_instructions.push(format!("{}:", end_label));
-                body_instructions.push(format!("  {} = phi i64 [{}, %{}], [{}, %{}]",
-                    result_reg,
-                    then_val.trim_start_matches("i64 ").trim_start_matches("i1 "),
-                    then_label,
-                    else_val.trim_start_matches("i64 ").trim_start_matches("i1 "),
-                    else_label));
+                body_instructions.push(format!("  {} = phi i8* [{}, %{}], [{}, %{}]",
+                    result_reg, then_final, then_label, else_final, else_label));
 
                 Ok(result_reg)
             },
@@ -5255,6 +5594,12 @@ impl TypeMap {
             Type::Reference { .. } => "i64*".to_string(),
             Type::Buffer { .. } => "i8*".to_string(),
             Type::ActorRef { .. } => "i8*".to_string(),
+            // Core affinity types - represented as integers for runtime scheduling
+            Type::CoreId => "i32".to_string(),
+            Type::CoreSet(_) => "i8*".to_string(), // Complex type as opaque pointer
+            Type::AnyCore => "i32".to_string(),
+            Type::PerformanceCores => "i32".to_string(),
+            Type::EfficiencyCores => "i32".to_string(),
             Type::Variable(_) => "i64".to_string(),
             Type::Named(_) => "i64".to_string(),
             Type::Generic { .. } => "i8*".to_string(), // Generic types as opaque pointers

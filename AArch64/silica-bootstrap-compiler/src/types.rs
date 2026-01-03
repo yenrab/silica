@@ -902,6 +902,27 @@ impl<'a> TypeChecker<'a> {
             // Don't expand type aliases here - keep named types for method dispatch
             return Ok(instantiated);
         }
+        // Check core affinity types
+        if name == "core_id" {
+            return Ok(Type::CoreId);
+        } else if name == "core_set" {
+            return Ok(Type::Function {
+                parameters: vec![], // Variable arguments for core IDs
+                return_type: Box::new(Type::CoreSet(vec![])),
+            });
+        } else if name == "any_core" {
+            return Ok(Type::AnyCore);
+        } else if name == "performance_cores" {
+            return Ok(Type::PerformanceCores);
+        } else if name == "efficiency_cores" {
+            return Ok(Type::EfficiencyCores);
+        } else if name == "core_id" {
+            return Ok(Type::Function {
+                parameters: vec![Type::Int],
+                return_type: Box::new(Type::CoreId),
+            });
+        }
+
         // Check built-in functions
         else if name == "read_file" {
             return Ok(Type::Function {
@@ -1022,6 +1043,21 @@ impl<'a> TypeChecker<'a> {
                 let content_type = self.infer_expression(&call.arguments[1])?;
                 self.unify(&content_type, &Type::Named("string".to_string()))?;
                 return Ok(Type::Named("Result".to_string()));
+            }
+        }
+
+        // Handle special built-in function calls
+        if let Expression::Identifier(func_name) = &*call.function {
+            if func_name == "core_id" {
+                if call.arguments.len() != 1 {
+                    return type_error(
+                        call.location.clone(),
+                        "core_id expects exactly 1 argument".to_string(),
+                    );
+                }
+                let arg_type = self.infer_expression(&call.arguments[0])?;
+                self.add_constraint(arg_type, Type::Int);
+                return Ok(Type::CoreId);
             }
         }
 

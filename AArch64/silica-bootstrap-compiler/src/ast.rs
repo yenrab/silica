@@ -429,6 +429,7 @@ pub struct WriteRefExpr {
 pub struct SpawnExpr {
     pub initial_state: Box<Expression>,
     pub behavior: Box<Expression>,
+    pub core_affinity: Option<Box<Expression>>, // Optional core affinity specification
     pub location: SourceLocation,
 }
 
@@ -673,6 +674,13 @@ pub enum Type {
     ActorRef {
         message_type: Box<Type>,
     },
+
+    // Core affinity types
+    CoreId,        // Single CPU core identifier
+    CoreSet(Vec<u32>), // Set of CPU cores
+    AnyCore,       // Default: any available core
+    PerformanceCores, // Built-in: high-performance cores
+    EfficiencyCores,  // Built-in: low-power efficiency cores
 
     // Generic types
     Generic {

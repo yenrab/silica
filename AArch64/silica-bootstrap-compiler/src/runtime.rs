@@ -13,6 +13,9 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::ffi::OsStr;
 
+// CPU Affinity support for macOS/AArch64
+// TODO: Implement actual macOS CPU affinity using pthreads API
+
 // Basic region structure for memory management
 #[repr(C)]
 pub struct SilicaRegion {
@@ -45,12 +48,121 @@ static mut NEXT_ACTOR_ID: u64 = 1;
 // Store actor pointers for C API - maps raw pointers back to Arc references
 static mut ACTOR_PTR_MAP: Option<std::collections::HashMap<*mut SilicaActor, Arc<Mutex<SilicaActor>>>> = None;
 
+// Core affinity load balancing
+static mut NEXT_CORE_ID: i32 = 0;
+static mut NEXT_PERFORMANCE_CORE: i32 = 0;
+static mut NEXT_EFFICIENCY_CORE: i32 = 0;
+
 // Helper function to start an actor's message processing loop
-fn start_actor_message_loop(actor: Arc<Mutex<SilicaActor>>) {
+fn start_actor_message_loop(actor: Arc<Mutex<SilicaActor>>, core_affinity: i32) {
     // Spawn a new thread for the actor's message loop
     std::thread::spawn(move || {
+        // Set CPU affinity if specified (core_affinity != 0)
+        if core_affinity != 0 {
+            set_thread_affinity(core_affinity as u32);
+        }
         actor_message_loop(actor);
     });
+}
+
+/// Set CPU affinity for the current thread (macOS/AArch64 implementation)
+#[cfg(target_os = "macos")]
+fn set_thread_affinity(core_id: u32) {
+    // TODO: Implement macOS CPU affinity using pthreads API
+    // For now, this is a no-op to allow compilation
+    // In a full implementation, this would use:
+    // - pthread_self() to get current thread
+    // - pthread_setaffinity_np() to set CPU affinity
+    // - CPU_SET macros to manipulate cpu_set_t
+    let _ = core_id; // Suppress unused parameter warning
+}
+
+/// Get the number of available CPU cores
+fn get_available_cores() -> i32 {
+    // Use num_cpus crate if available, otherwise default to 4
+    #[cfg(feature = "num_cpus")]
+    {
+        num_cpus::get() as i32
+    }
+    #[cfg(not(feature = "num_cpus"))]
+    {
+        // Fallback: try to get from environment or default to 4
+        std::env::var("SILICA_CPU_CORES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4)
+    }
+}
+
+/// Select the next available core using round-robin load balancing
+fn select_next_core() -> i32 {
+    unsafe {
+        let core_count = get_available_cores();
+        let selected_core = NEXT_CORE_ID;
+        NEXT_CORE_ID = (NEXT_CORE_ID + 1) % core_count;
+        selected_core
+    }
+}
+
+/// Get performance cores (typically cores 0-3 on big.LITTLE systems)
+fn get_performance_cores() -> Vec<i32> {
+    // On most systems, performance cores are the lower-numbered cores
+    // This is a simplified assumption - in practice, you'd detect this
+    let total_cores = get_available_cores() as usize;
+    match total_cores {
+        0..=4 => (0..total_cores).map(|i| i as i32).collect(), // All cores are performance
+        5..=8 => (0..4).collect(), // First 4 are performance cores
+        _ => (0..(total_cores / 2)).map(|i| i as i32).collect(), // Half are performance
+    }
+}
+
+/// Get efficiency cores (typically higher-numbered cores on big.LITTLE systems)
+fn get_efficiency_cores() -> Vec<i32> {
+    let total_cores = get_available_cores() as usize;
+    match total_cores {
+        0..=4 => vec![], // No separate efficiency cores
+        5..=8 => (4..total_cores).map(|i| i as i32).collect(), // Last cores are efficiency
+        _ => ((total_cores / 2)..total_cores).map(|i| i as i32).collect(), // Second half are efficiency
+    }
+}
+
+/// Select next performance core using round-robin
+fn select_next_performance_core() -> i32 {
+    let perf_cores = get_performance_cores();
+    if perf_cores.is_empty() {
+        return select_next_core(); // Fallback to any core
+    }
+
+    unsafe {
+        let core_count = perf_cores.len() as i32;
+        let selected_idx = NEXT_PERFORMANCE_CORE % core_count;
+        let selected_core = perf_cores[selected_idx as usize];
+        NEXT_PERFORMANCE_CORE = (NEXT_PERFORMANCE_CORE + 1) % core_count;
+        selected_core
+    }
+}
+
+/// Select next efficiency core using round-robin
+fn select_next_efficiency_core() -> i32 {
+    let eff_cores = get_efficiency_cores();
+    if eff_cores.is_empty() {
+        return select_next_core(); // Fallback to any core
+    }
+
+    unsafe {
+        let core_count = eff_cores.len() as i32;
+        let selected_idx = NEXT_EFFICIENCY_CORE % core_count;
+        let selected_core = eff_cores[selected_idx as usize];
+        NEXT_EFFICIENCY_CORE = (NEXT_EFFICIENCY_CORE + 1) % core_count;
+        selected_core
+    }
+}
+
+/// Set CPU affinity for the current thread (fallback for other platforms)
+#[cfg(not(target_os = "macos"))]
+fn set_thread_affinity(_core_id: u32) {
+    // CPU affinity not implemented for this platform
+    // This is a no-op that allows compilation
 }
 
 // Actor message processing loop
@@ -189,7 +301,16 @@ pub extern "C" fn silica_region_destroy(region_ptr: *mut SilicaRegion) {
 }
 
 #[no_mangle]
-pub extern "C" fn silica_actor_spawn(initial_state: *mut u8, behavior_fn: *mut u8) -> *mut SilicaActor {
+pub extern "C" fn silica_actor_spawn(initial_state: *mut u8, behavior_fn: *mut u8, core_affinity: i32) -> *mut SilicaActor {
+    // Determine actual core affinity based on the requested type
+    let actual_core_affinity = match core_affinity {
+        0 => select_next_core(), // Any core - load balanced
+        -1 => select_next_performance_core(), // Performance cores - load balanced within group
+        -2 => select_next_efficiency_core(), // Efficiency cores - load balanced within group
+        positive if positive > 0 => positive, // Specific core ID
+        _ => select_next_core(), // Unknown negative values - fallback to any core
+    };
+
     // Initialize actor registry if needed
     unsafe {
         if ACTOR_REGISTRY.is_none() {
@@ -232,7 +353,7 @@ pub extern "C" fn silica_actor_spawn(initial_state: *mut u8, behavior_fn: *mut u
     }
 
     // Start the actor's message processing loop in a new thread
-    start_actor_message_loop(actor);
+    start_actor_message_loop(actor, actual_core_affinity);
 
     // Return the raw pointer for the C API
     actor_ptr
