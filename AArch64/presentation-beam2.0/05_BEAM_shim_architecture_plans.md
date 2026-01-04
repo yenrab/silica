@@ -49,6 +49,29 @@ fn receive_beam_message() -> proc[beam_process] beam_term {
 
 ---
 
+## AArch64 Hardware Preemption Support
+
+**BE AWARE for BEAM Shim Implementation:**
+
+AArch64 provides hardware support to make BEAM shim preemption fast and safe.
+
+**Interrupt-Driven Pausing:**
+- **Interrupts cause forced pauses**
+- The core can interrupt execution at instruction boundaries:
+  - IRQ / FIQ (normal & fast interrupts)
+  - SError (system error)
+  - Exceptions (syscalls, page faults)
+
+**Preemption Mechanism:**
+- **When this happens:**
+  - Current instruction completes
+  - CPU switches to a higher exception level (EL1 for kernel)
+  - BEAM shim decides what to do next
+
+**This is the mechanism the BEAM shim uses to pause computations.**
+
+---
+
 ## Transparent Native Compilation
 
 **For Existing Code:**
