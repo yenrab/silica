@@ -133,7 +133,7 @@ fn main() -> int {
 ```
 
 **Explanation:**
-- `if` expressions: `if condition { then_expr } else { else_expr }`
+- `case` expressions: `case condition of { true -> then_expr; false -> else_expr }`
 - Arithmetic operators: `+`, `-`, `*`
 - Comparison operators: `<=`, `>`
 - Recursive function calls work as expected

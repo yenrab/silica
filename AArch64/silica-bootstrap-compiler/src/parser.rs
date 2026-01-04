@@ -35,8 +35,25 @@ impl Parser {
         })
     }
 
+    /// Validate and fix token position if corrupted
+    fn validate_token_position(&self, token: &Token) -> SourceLocation {
+        if token.location.line > 10000 || token.location.line < 1 {
+            // Position is corrupted, create a synthetic location
+            SourceLocation::new(
+                token.location.file.clone(),
+                1, // Default to line 1
+                1, // Default to column 1
+                token.location.offset,
+            )
+        } else {
+            token.location.clone()
+        }
+    }
+
     /// Parse a top-level declaration
     fn declaration(&mut self) -> Result<Declaration> {
+        let current_token = self.peek();
+        let valid_location = self.validate_token_position(current_token);
 
         if self.match_token(TokenKind::Fn) {
             let result = self.function_declaration().map(Declaration::Function);
@@ -687,38 +704,6 @@ impl Parser {
 
     /// Parse assignment expression (lowest precedence)
     fn assignment(&mut self) -> Result<Expression> {
-        // First try to parse this as a pattern followed by '<-'
-        let current_pos = self.current;
-        if let Ok(pattern) = self.pattern() {
-            if self.match_token(TokenKind::LeftArrow) {
-                let value = self.assignment()?;
-
-                let mut statements = vec![
-                    Statement::Bind {
-                        pattern,
-                        expr: Box::new(value),
-                    }
-                ];
-
-                // Check for semicolon and additional expressions
-                if self.match_token(TokenKind::Semicolon) {
-                    let next_expr = self.assignment()?;
-                    statements.push(Statement::Expr(Box::new(next_expr)));
-                }
-
-                return Ok(Expression::Do(DoExpr {
-                    statements,
-                    location: self.previous().location.clone(),
-                }));
-            } else {
-                // Not a pattern assignment, backtrack
-                self.current = current_pos;
-            }
-        } else {
-            // Not a valid pattern, backtrack
-            self.current = current_pos;
-        }
-
         // Fall back to regular expression parsing
         let expr = self.or()?;
         Ok(expr)
@@ -1055,8 +1040,6 @@ impl Parser {
                     Ok(first_expr)
                 }
             }
-        } else if self.match_token(TokenKind::If) {
-            self.if_expression()
         } else if self.match_token(TokenKind::Case) {
             self.case_expression()
         } else if self.match_token(TokenKind::Do) {
@@ -1113,6 +1096,8 @@ impl Parser {
                 self.parse_print_bool()
             } else if name == "print_char" && self.match_token(TokenKind::LeftParen) {
                 self.parse_print_char()
+            } else if name == "get_cpu_topology_info" && self.match_token(TokenKind::LeftParen) {
+                self.parse_get_cpu_topology_info()
             } else if name == "read_lines" && self.match_token(TokenKind::LeftParen) {
                 self.parse_read_lines()
             } else if name == "append_file" && self.match_token(TokenKind::LeftParen) {
@@ -1290,6 +1275,16 @@ impl Parser {
 
         Ok(Expression::PrintChar(PrintCharExpr {
             value,
+            location,
+        }))
+    }
+
+    /// Parse get_cpu_topology_info() expression
+    fn parse_get_cpu_topology_info(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        self.consume(TokenKind::RightParen, "Expected ')' after get_cpu_topology_info")?;
+
+        Ok(Expression::GetCpuTopologyInfo(GetCpuTopologyInfoExpr {
             location,
         }))
     }
@@ -2057,6 +2052,12 @@ impl Parser {
         let mut statements = Vec::new();
 
         while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
+            // Validate current token position
+            let current_token = self.peek();
+            if current_token.location.line > 10000 {  // Sanity check
+                return parse_error(current_token.location.clone(),
+                    "Parser position tracking corrupted during statement parsing".to_string());
+            }
             // Try to parse assignment first
             let current_pos = self.current;
             // Check if this could be a pattern (identifier, tuple, or wildcard)
@@ -2086,7 +2087,33 @@ impl Parser {
             let expr = self.expression()?;
             // Semicolon is required for all statements except the last one
             if !self.check(TokenKind::RightBrace) {
-                self.consume(TokenKind::Semicolon, "Expected ';' after statement")?;
+                // Try to consume semicolon, but provide better error recovery
+                if let Err(_) = self.consume(TokenKind::Semicolon, "Expected ';' after statement") {
+                    // If semicolon consumption fails, check if we're at end of input or another valid token
+                    let current = self.peek();
+                    if current.kind == TokenKind::EOF || current.kind == TokenKind::RightBrace {
+                        // We're at a valid stopping point, continue without semicolon
+                        // This provides better error recovery for position tracking issues
+                    } else {
+                        // Check for common syntax errors and provide helpful messages
+                        let error_msg = match current.kind {
+                            TokenKind::Identifier(ref id) if id == "if" => {
+                                "Found 'if' keyword, but Silica does not support if-else statements. Use 'case' expressions instead: case condition of true -> ... false -> ...".to_string()
+                            },
+                            TokenKind::Identifier(ref id) if id == "else" => {
+                                "Found 'else' keyword, but Silica does not support if-else statements. Use 'case' expressions instead.".to_string()
+                            },
+                            TokenKind::Identifier(ref id) if id == "for" => {
+                                "Found 'for' keyword, but Silica does not support for loops. Use recursion instead.".to_string()
+                            },
+                            TokenKind::Identifier(ref id) if id == "while" => {
+                                "Found 'while' keyword, but Silica does not support while loops. Use recursion instead.".to_string()
+                            },
+                            _ => format!("Expected ';' after statement, found {:?}", current.kind)
+                        };
+                        return parse_error(self.validate_token_position(current), error_msg);
+                    }
+                }
             }
             statements.push(Statement::Expr(Box::new(expr)));
         }
@@ -2480,6 +2507,13 @@ impl Parser {
 
     fn peek(&self) -> &Token {
         &self.tokens[self.current]
+    }
+
+    /// Peek with validated position
+    fn peek_valid(&self) -> &Token {
+        let token = self.peek();
+        // Note: We can't modify the token in place, but we can validate it when used
+        token
     }
 
     fn previous(&self) -> &Token {

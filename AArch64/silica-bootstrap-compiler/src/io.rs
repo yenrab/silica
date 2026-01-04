@@ -41,10 +41,14 @@ pub extern "C" fn silica_print_bool(b: bool) {
     let _ = std::io::stdout().flush();
 }
 
-/// Print a single character to stdout
+/// Print a single Unicode character to stdout
 #[no_mangle]
-pub extern "C" fn silica_print_char(c: u8) {
-    print!("{}", c as char);
+pub extern "C" fn silica_print_char(c: u32) {
+    if let Some(ch) = char::from_u32(c) {
+        print!("{}", ch);
+    } else {
+        print!("�"); // Replacement character for invalid codepoints
+    }
     let _ = std::io::stdout().flush();
 }
 

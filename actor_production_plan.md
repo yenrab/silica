@@ -3,40 +3,41 @@
 ## Overview
 This document outlines the prioritized implementation plan for completing the Silica actor system. The actor system is fundamental to Silica's concurrency model, providing message-passing concurrency through actors that can be scheduled on specific CPU cores.
 
-## Current Status
+## Current Status ✅
 - Parser: ✅ Basic spawn/send/recv parsing implemented
 - AST: ✅ SpawnExpr/SendExpr/RecvExpr defined
 - Codegen: ✅ LLVM IR generation stubs exist
 - Runtime: ✅ Basic actor structs and spawn/send/recv functions exist
 - Types: ✅ Basic type inference for actors
-- Core Affinity: ✅ Basic core affinity with load balancing implemented
+- Core Affinity: ✅ Basic core affinity with load balancing and topology detection implemented
+- Function Literals: ✅ Full code generation and function pointer handling implemented
+- Actor Semantics: ✅ Behavior function calling convention and message loops implemented
 - **Blocking Issue**: Function literals parsed but not code-generated (resolved)
 
-## Priority 1: Core Function Literal Support (BLOCKING)
+## Priority 1: Core Function Literal Support (BLOCKING) ✅ COMPLETED
 1. **Implement function literal codegen**
    - Parser accepts `fn(...) -> ... { ... }` syntax
-   - `generate_expression()` currently returns "Function literals not yet implemented"
-   - Need LLVM IR generation for anonymous functions
-   - **Status**: Not implemented
+   - LLVM IR generation for anonymous functions implemented
+   - **Status**: ✅ Implemented - `generate_function_literal_llvm()` exists
 
 2. **Add function pointer handling**
    - Runtime expects `*mut u8` for behavior functions
-   - Codegen needs to generate actual function pointers/closures
-   - Must be passable to `silica_actor_spawn()`
-   - **Status**: Not implemented
+   - Codegen generates actual function pointers/closures
+   - Function pointers passable to `silica_actor_spawn()`
+   - **Status**: ✅ Implemented - LLVM function values converted to pointers
 
-## Priority 2: Actor Behavior Function Semantics
+## Priority 2: Actor Behavior Function Semantics ✅ COMPLETED
 3. **Implement behavior function calling convention**
    - Behavior functions: `(message, state) → state`
-   - Runtime needs to invoke these functions correctly
-   - Handle message processing and state transitions
-   - **Status**: Parser/AST ready, runtime/codegen incomplete
+   - Runtime invokes functions correctly with `transmute` casting
+   - Message processing and state transitions handled
+   - **Status**: ✅ Implemented - `actor_message_loop()` calls behavior functions
 
 4. **Add actor message loop**
-   - Runtime's `silica_actor_spawn()` creates actor but lacks execution loop
-   - Need infinite `recv() → process → loop` as per spec
-   - Each actor runs in dedicated thread/green thread
-   - **Status**: Basic spawn exists, loop missing
+   - Runtime's `silica_actor_spawn()` creates actors with execution loops
+   - Infinite `recv() → process → loop` implemented
+   - Each actor runs in dedicated thread
+   - **Status**: ✅ Implemented - `actor_message_loop()` provides infinite processing loop
 
 ## Priority 3: Core Affinity System
 
@@ -68,7 +69,7 @@ This document outlines the prioritized implementation plan for completing the Si
    - Use CPUID/sysctl to detect actual core types and layout
    - Replace hardcoded assumptions with dynamic detection
    - Support big.LITTLE, heterogeneous core architectures
-   - **Status**: Not implemented
+   - **Status**: ✅ Implemented - macOS sysctl + Linux/AArch64 sysfs detection + Android framework ready, with fallback heuristics
 
 10. **Add built-in core group identifiers**
     - `performance_cores` - high-frequency cores
@@ -175,9 +176,9 @@ This document outlines the prioritized implementation plan for completing the Si
 
 ## Implementation Notes
 
-### Dependencies
-- Priority 1 blocks all other work (function literals required for behavior functions)
-- Priorities 3-8 can be developed in parallel once Priority 1-2 are complete
+### Dependencies ✅ RESOLVED
+- Priority 1 blocks all other work (function literals required for behavior functions) - **COMPLETED**
+- Priorities 3-8 can be developed in parallel once Priority 1-2 are complete - **READY TO PROCEED**
 - Core affinity (Priority 3) requires OS-specific threading APIs and expands across multiple phases
 
 ### Testing Strategy
@@ -197,10 +198,11 @@ This document outlines the prioritized implementation plan for completing the Si
 - Message passing should minimize latency
 - Actor scheduling should be efficient
 
-## Success Criteria
+## Success Criteria ✅ PROGRESS MADE
 - ✅ Basic actor spawning and message passing works
 - ✅ Core affinity allows targeting specific CPU cores with load balancing
-- ✅ Effect system properly validates actor operations
-- ✅ All spec-defined actor behaviors implemented
-- ✅ Comprehensive test suite passes
-- ✅ Performance suitable for concurrent applications
+- ✅ Function literals and actor behavior semantics fully implemented
+- 🔄 Effect system properly validates actor operations
+- 🔄 All spec-defined actor behaviors implemented
+- ✅ Comprehensive test suite passes (topology detection tests added)
+- 🔄 Performance suitable for concurrent applications

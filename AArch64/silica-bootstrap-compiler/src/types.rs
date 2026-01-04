@@ -228,6 +228,7 @@ impl<'a> TypeChecker<'a> {
             Expression::PrintInt(print_int) => &print_int.location,
             Expression::PrintBool(print_bool) => &print_bool.location,
             Expression::PrintChar(print_char) => &print_char.location,
+            Expression::GetCpuTopologyInfo(get_topology) => &get_topology.location,
             Expression::ExecCommand(exec_cmd) => &exec_cmd.location,
             Expression::StructLiteral(struct_lit) => &struct_lit.location,
             Expression::FieldAccess(field_access) => &field_access.location,
@@ -681,6 +682,7 @@ impl<'a> TypeChecker<'a> {
                 self.infer_struct_literal(struct_lit)?
             },
             Expression::FieldAccess(field_access) => self.infer_field_access(field_access)?,
+            Expression::GetCpuTopologyInfo(_) => Type::String, // Returns string pointer
             _ => return type_error(
                 SourceLocation::unknown(),
                 format!("Type inference not implemented for: {:?}", expr),
@@ -862,6 +864,7 @@ impl<'a> TypeChecker<'a> {
             Expression::PrintInt(print_int) => Some(&print_int.location),
             Expression::PrintBool(print_bool) => Some(&print_bool.location),
             Expression::PrintChar(print_char) => Some(&print_char.location),
+            Expression::GetCpuTopologyInfo(get_topology) => Some(&get_topology.location),
             Expression::ReadLines(read_lines) => Some(&read_lines.location),
             Expression::AppendFile(append_file) => Some(&append_file.location),
             Expression::FileExists(file_exists) => Some(&file_exists.location),

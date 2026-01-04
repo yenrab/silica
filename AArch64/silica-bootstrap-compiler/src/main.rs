@@ -1,4 +1,4 @@
-use silica_compiler::{Compiler, codegen::OptimizationLevel};
+use silica_compiler::{Compiler, codegen::OptimizationLevel, CompileResult, errors::CompilerError};
 use std::env;
 
 fn parse_optimization_level(args: &[String]) -> OptimizationLevel {
@@ -88,12 +88,51 @@ fn main() {
 
     let mut compiler = Compiler::with_optimization_and_search_paths(optimization_level, search_paths.clone());
     match compiler.compile(&source, input_file, output_file) {
-        Ok(()) => {
+        Ok(CompileResult::Success) => {
             println!("✅ Compilation successful!");
             println!("Generated LLVM bitcode in {}", output_file);
         }
+        Ok(CompileResult::Skipped) => {
+            println!("✅ Compilation skipped (file contains no declarations)");
+        }
         Err(err) => {
-            eprintln!("❌ Compilation error: {}", err);
+            // Provide helpful error messages for common issues
+            match &err {
+                CompilerError::ParseError { location, message } => {
+                    let source_lines = source.lines().count();
+                    if location.line > source_lines || location.line > 10000 {
+                        eprintln!("❌ Compilation error: Parse error (position tracking corrupted)");
+                        eprintln!("  Error: {}", message);
+                        eprintln!("  Note: Position information is unreliable due to internal bug");
+                    } else {
+                        // Check for common syntax errors and provide better messages
+                        if message.contains("Expected ';' after statement") {
+                            if message.contains("Identifier(\"if\")") {
+                                eprintln!("❌ Compilation error: Unsupported 'if-else' syntax");
+                                eprintln!("  Silica uses 'case' expressions instead of if-else statements");
+                                eprintln!("  Replace: if condition {{ ... }} else {{ ... }}");
+                                eprintln!("  With:    case condition of {{ true -> ... false -> ... }}");
+                            } else if message.contains("Identifier(\"else\")") {
+                                eprintln!("❌ Compilation error: Unsupported 'else' keyword");
+                                eprintln!("  Silica uses 'case' expressions instead of if-else statements");
+                            } else if message.contains("Identifier(\"for\")") {
+                                eprintln!("❌ Compilation error: Unsupported 'for' loops");
+                                eprintln!("  Silica uses recursion instead of loops");
+                            } else if message.contains("Identifier(\"while\")") {
+                                eprintln!("❌ Compilation error: Unsupported 'while' loops");
+                                eprintln!("  Silica uses recursion instead of loops");
+                            } else {
+                                eprintln!("❌ Compilation error: {}", err);
+                            }
+                        } else {
+                            eprintln!("❌ Compilation error: {}", err);
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("❌ Compilation error: {}", err);
+                }
+            }
             std::process::exit(1);
         }
     }

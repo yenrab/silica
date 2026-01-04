@@ -2,7 +2,7 @@
 # Automatically discovers and builds all subdirectories containing Makefiles
 
 # Automatically discover all subdirectories that contain Makefiles
-SUBDIRS := $(shell find . -maxdepth 1 -type d -name "[0-9][0-9]_*" | sort | sed 's|^\./||')
+SUBDIRS := $(shell find . -maxdepth 1 -type d -name "[0-9][0-9][._]*" | sort | sed 's|^\./||')
 
 # LLVM tool paths (including Homebrew location on macOS)
 LLVM_AS := $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "")
@@ -132,7 +132,6 @@ help:
 	@echo "  04_patterns        - Case expressions & matching"
 	@echo "  05_memory          - Region-based memory management"
 	@echo "  06_traits          - Traits & polymorphism"
-	@echo "  07_concurrency     - Actor system & messaging"
 	@echo "  08_stdlib          - Standard library integration"
 	@echo "  09_binding         - Variable binding & sequencing"
 	@echo "  10_experimental    - Advanced & research features"

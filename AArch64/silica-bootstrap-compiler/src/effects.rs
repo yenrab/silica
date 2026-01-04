@@ -156,6 +156,7 @@ impl EffectChecker {
             Expression::PrintInt(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::PrintBool(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::PrintChar(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
+            Expression::GetCpuTopologyInfo(_) => Ok(vec![]), // Reading pre-detected topology info
             Expression::ReadLines(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::AppendFile(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::FileExists(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),

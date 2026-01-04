@@ -49,14 +49,6 @@ The subdirectories are numbered and ordered to ensure comprehensive testing - ru
 - Method resolution
 - **NEW:** Complex generic scenarios (multiple parameters, higher-order generics)
 
-### 07_concurrency/
-**Concurrency & Actors** - Test actor-based concurrency
-- Actor creation and spawning
-- Message passing (send/receive)
-- Actor mailboxes
-- Concurrent programming patterns
-- **NEW:** Advanced actor communication and lifecycle management
-
 ### 08_stdlib/
 **Standard Library** - Test stdlib integration and built-in functions
 - Standard library imports

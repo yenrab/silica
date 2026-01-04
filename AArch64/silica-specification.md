@@ -66,8 +66,8 @@ The following identifiers are reserved keywords:
 
 ```
 actor     atomic    bool      buf       case      char
-concurrency       device_io do        effect    else      end
-false     fn        if        int       mailbox   mem
+concurrency       device_io do        effect    end
+false     fn        int       mailbox   mem
 proc      recv      ref       region    return    self
 send      spawn     true      type      unit      use
 ```
@@ -218,7 +218,6 @@ expression ::= literal
              | expression binary_operator expression
              | unary_operator expression
              | function_call
-             | if_expression
              | case_expression
              | do_expression
 ```
@@ -238,18 +237,13 @@ function_call ::= expression "(" [argument_list] ")"
 argument_list ::= expression {"," expression}
 ```
 
-#### 3.3.3 If Expressions
-```
-if_expression ::= "if" expression "{" expression "}" "else" "{" expression "}"
-```
-
-#### 3.3.4 Case Expressions
+#### 3.3.3 Case Expressions
 ```
 case_expression ::= "case" expression "of" "{" {case_branch} "}"
 case_branch    ::= pattern "->" expression ";"
 ```
 
-#### 3.3.5 Do Expressions
+#### 3.3.4 Do Expressions
 ```
 do_expression ::= "do" {statement} "end"
 statement     ::= pattern "<-" expression ";"
@@ -626,10 +620,10 @@ Functions can throw exceptions using the `throw` keyword:
 
 ```silica
 fn safe_divide(x: int, y: int) -> int {
-    if y == 0 {
-        throw DivisionByZero
+    case y == 0 of {
+        true -> throw DivisionByZero
+        false -> x / y
     }
-    x / y
 }
 ```
 
@@ -1429,20 +1423,7 @@ region_state' = σ(region)[ref → new_value]
 
 ### 11.4 Control Flow Semantics
 
-#### 11.4.1 Conditional
-```
-ρ; σ; κ ⊢ e_cond ⇓ true; σ₁; κ₁
-ρ; σ₁; κ₁ ⊢ e_then ⇓ v; σ₂; κ₂
-─────────────────────────────────
-ρ; σ; κ ⊢ if e_cond { e_then } else { e_else } ⇓ v; σ₂; κ₂
-
-ρ; σ; κ ⊢ e_cond ⇓ false; σ₁; κ₁
-ρ; σ₁; κ₁ ⊢ e_else ⇓ v; σ₂; κ₂
-─────────────────────────────────
-ρ; σ; κ ⊢ if e_cond { e_then } else { e_else } ⇓ v; σ₂; κ₂
-```
-
-#### 11.4.2 Case Expression
+#### 11.4.1 Case Expression
 ```
 ρ; σ; κ ⊢ e_scrut ⇓ v; σ₁; κ₁
 pattern_match(v, p₁) = bindings₁

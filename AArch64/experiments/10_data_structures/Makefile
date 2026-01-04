@@ -61,6 +61,7 @@ ifdef HAS_LLVM_AS
 ifdef HAS_LLC
 	@echo "Building full executables with LLVM toolchain..."
 	@for ll_file in $(EXECUTABLES_LL); do \
+		if grep -q "^define " "$$ll_file"; then \
 		bc_file=$$(basename $$ll_file .ll).bc; \
 		obj_file=$$(basename $$ll_file .ll).o; \
 		exe_file=$$(basename $$ll_file .ll); \
@@ -68,7 +69,10 @@ ifdef HAS_LLC
 		$(HAS_LLVM_AS) $$ll_file -o $$bc_file && \
 		$(HAS_LLC) -filetype=obj $$bc_file -o $$obj_file && \
 		$(LINKER_CLANG) $$obj_file $(RUNTIME_LIB) -o $$exe_file && \
-		echo "    ✅ Successfully built $$exe_file"; \
+			echo "    ✅ Successfully built $$exe_file" || echo "    ❌ Failed to build $$exe_file"; \
+		else \
+			echo "  $$ll_file -> (skipped - no functions to compile)"; \
+		fi; \
 	done
 else
 	@echo "llc not found - install LLVM tools for full compilation"

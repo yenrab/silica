@@ -17,6 +17,15 @@ use effects::EffectAnalyzer;
 use codegen::{CodeGenerator, OptimizationLevel};
 use module_resolver::{ModuleResolver, SymbolTable};
 
+/// Result of compilation
+#[derive(Debug)]
+pub enum CompileResult {
+    /// Compilation produced output
+    Success,
+    /// Compilation was skipped (e.g., file has no declarations)
+    Skipped,
+}
+
 pub struct Compiler {
     codegen: CodeGenerator,
     module_resolver: ModuleResolver,
@@ -62,7 +71,7 @@ impl Compiler {
         }
     }
 
-    pub fn compile(&mut self, source: &str, input_file: &str, output_file: &str) -> Result<()> {
+    pub fn compile(&mut self, source: &str, input_file: &str, output_file: &str) -> Result<CompileResult> {
         // Phase 1: Lexical analysis
         println!("Phase 1: Lexical analysis...");
         let mut lexer = Lexer::new(source.to_string(), input_file.to_string());
@@ -74,6 +83,14 @@ impl Compiler {
         let mut parser = Parser::new(tokens);
         let program = parser.parse()?;
         println!("Successfully parsed program with {} declarations", program.declarations.len());
+
+        // Skip compilation if file contains no declarations (e.g., only comments)
+        if program.declarations.is_empty() {
+            println!("⚠️  File contains no declarations - skipping compilation");
+            // Create an empty output file so Makefile dependencies are satisfied
+            std::fs::write(output_file, "; Empty file - no declarations to compile\n")?;
+            return Ok(CompileResult::Skipped);
+        }
 
         // Phase 2.5: Module resolution
         println!("Phase 2.5: Module resolution...");
@@ -124,7 +141,7 @@ impl Compiler {
         // Optional: Print LLVM IR for debugging
         // codegen.print_ir();
 
-        Ok(())
+        Ok(CompileResult::Success)
     }
 
     /// Resolve imports and load modules

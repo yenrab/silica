@@ -251,6 +251,7 @@ pub enum Expression {
     PrintInt(PrintIntExpr),
     PrintBool(PrintBoolExpr),
     PrintChar(PrintCharExpr),
+    GetCpuTopologyInfo(GetCpuTopologyInfoExpr),
 
     // I/O operations
     ReadLines(ReadLinesExpr),
@@ -495,6 +496,12 @@ pub struct PrintBoolExpr {
 #[derive(Debug, Clone)]
 pub struct PrintCharExpr {
     pub value: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Get CPU topology info expression: get_cpu_topology_info()
+#[derive(Debug, Clone)]
+pub struct GetCpuTopologyInfoExpr {
     pub location: SourceLocation,
 }
 

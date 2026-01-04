@@ -12,9 +12,475 @@ use std::fs;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::ffi::OsStr;
+use std::mem;
 
 // CPU Affinity support for macOS/AArch64
 // TODO: Implement actual macOS CPU affinity using pthreads API
+
+// CPU Topology Detection for macOS/AArch64
+#[cfg(target_os = "macos")]
+mod topology {
+    use std::mem;
+    use std::ptr;
+
+    // macOS sysctl constants for CPU topology
+    const CTL_HW: libc::c_int = 6;
+    const HW_NCPU: libc::c_int = 3;
+    const HW_AVAILCPU: libc::c_int = 25;
+
+    // CPU core type information
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum CoreType {
+        Performance,
+        Efficiency,
+        Unknown,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct CpuCore {
+        pub id: i32,
+        pub core_type: CoreType,
+        pub capacity: Option<u32>,
+    }
+
+    // Safe wrapper for sysctl
+    fn sysctl(name: &[libc::c_int], oldp: *mut libc::c_void, oldlenp: *mut libc::size_t) -> libc::c_int {
+        unsafe { libc::sysctl(name.as_ptr() as *mut _, name.len() as u32, oldp, oldlenp, ptr::null_mut(), 0) }
+    }
+
+    // Get number of CPUs using sysctl
+    pub fn get_cpu_count() -> Result<i32, String> {
+        let mut count: libc::c_int = 0;
+        let mut size = mem::size_of::<libc::c_int>();
+        let name = [CTL_HW, HW_NCPU];
+
+        let result = sysctl(&name, &mut count as *mut _ as *mut libc::c_void, &mut size);
+        if result == 0 {
+            Ok(count)
+        } else {
+            Err(format!("sysctl failed to get CPU count: {}", result))
+        }
+    }
+
+    // Detect core types using sysctlbyname
+    // On macOS, we can use various sysctl MIBs to detect CPU topology
+    pub fn detect_core_types() -> Result<Vec<CpuCore>, String> {
+        let cpu_count = get_cpu_count()?;
+
+        // Try to detect if this is an Apple Silicon system with different core types
+        // This is a simplified approach - in practice, Apple Silicon systems have
+        // performance cores (Firestorm) and efficiency cores (Icestorm)
+
+        let mut cores = Vec::new();
+
+        // For Apple Silicon, we typically have:
+        // - Performance cores: lower-numbered cores (usually cores 0-3)
+        // - Efficiency cores: higher-numbered cores (usually cores 4+)
+
+        // Use heuristics based on CPU count and sysctl information
+        // In a full implementation, this would query more detailed CPUID-like information
+
+        for i in 0..cpu_count {
+            let core_type = if cpu_count <= 4 {
+                // Single cluster systems - all cores are performance
+                CoreType::Performance
+            } else if i < cpu_count / 2 {
+                // First half are typically performance cores
+                CoreType::Performance
+            } else {
+                // Second half are typically efficiency cores
+                CoreType::Efficiency
+            };
+
+            cores.push(CpuCore {
+                id: i,
+                core_type,
+                capacity: None, // macOS sysctl doesn't provide capacity info
+            });
+        }
+
+        // Try to get more accurate information using sysctlbyname
+        // This is a more advanced approach that could be implemented
+        enhance_with_sysctlbyname(&mut cores)?;
+
+        Ok(cores)
+    }
+
+    // Try to enhance core type detection with sysctlbyname
+    fn enhance_with_sysctlbyname(cores: &mut Vec<CpuCore>) -> Result<(), String> {
+        // This would use sysctlbyname to get more detailed CPU information
+        // For now, we keep the basic heuristics
+        // In a full implementation, this could query:
+        // - "hw.cpusubtype" for CPU subtype information
+        // - "hw.cpufamily" for CPU family
+        // - "machdep.cpu.brand_string" for CPU brand
+        // - And potentially use IOKit or other APIs for more detailed topology
+
+        // For Apple Silicon detection, we could look for:
+        // - CPU brand strings containing "Apple" or specific model names
+        // - Cache topology information
+        // - Power management capabilities
+
+        Ok(())
+    }
+
+    // Get performance cores (cores that can run at high frequency)
+    pub fn get_performance_cores() -> Vec<i32> {
+        detect_core_types()
+            .unwrap_or_else(|_| {
+                // Fallback to heuristics if detection fails - create CpuCore vector
+                let cpu_count = get_cpu_count().unwrap_or(4);
+                let mut cores = Vec::new();
+                for i in 0..cpu_count {
+                    let core_type = if cpu_count <= 4 {
+                        CoreType::Performance
+                    } else if i < cpu_count / 2 {
+                        CoreType::Performance
+                    } else {
+                        CoreType::Efficiency
+                    };
+                    cores.push(CpuCore { id: i, core_type, capacity: None });
+                }
+                cores
+            })
+            .into_iter()
+            .filter(|core| core.core_type == CoreType::Performance)
+            .map(|core| core.id)
+            .collect()
+    }
+
+    // Get efficiency cores (cores optimized for low power)
+    pub fn get_efficiency_cores() -> Vec<i32> {
+        detect_core_types()
+            .unwrap_or_else(|_| {
+                // Fallback to heuristics if detection fails - create CpuCore vector
+                let cpu_count = get_cpu_count().unwrap_or(4);
+                let mut cores = Vec::new();
+                for i in 0..cpu_count {
+                    let core_type = if cpu_count <= 4 {
+                        CoreType::Performance
+                    } else if i < cpu_count / 2 {
+                        CoreType::Performance
+                    } else {
+                        CoreType::Efficiency
+                    };
+                    cores.push(CpuCore { id: i, core_type, capacity: None });
+                }
+                cores
+            })
+            .into_iter()
+            .filter(|core| core.core_type == CoreType::Efficiency)
+            .map(|core| core.id)
+            .collect()
+    }
+}
+
+// Linux/AArch64 CPU topology detection using sysfs
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+mod topology {
+    use std::fs;
+    use std::path::Path;
+    use std::io::Read;
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum CoreType {
+        Performance,
+        Efficiency,
+        Unknown,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct CpuCore {
+        pub id: i32,
+        pub core_type: CoreType,
+        pub capacity: Option<u32>, // CPU capacity (relative performance)
+    }
+
+    // Read CPU capacity from sysfs
+    fn read_cpu_capacity(cpu_id: i32) -> Option<u32> {
+        let path = format!("/sys/devices/system/cpu/cpu{}/cpu_capacity", cpu_id);
+        if let Ok(mut file) = fs::File::open(&path) {
+            let mut contents = String::new();
+            if file.read_to_string(&mut contents).is_ok() {
+                contents.trim().parse::<u32>().ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    // Check if CPU core exists
+    fn cpu_exists(cpu_id: i32) -> bool {
+        Path::new(&format!("/sys/devices/system/cpu/cpu{}", cpu_id)).exists()
+    }
+
+    // Get maximum CPU capacity across all cores
+    fn get_max_capacity(cores: &[CpuCore]) -> u32 {
+        cores.iter()
+            .filter_map(|core| core.capacity)
+            .max()
+            .unwrap_or(1024) // Default to 1024 if no capacity info
+    }
+
+    // Detect core types based on capacity information
+    pub fn detect_core_types() -> Result<Vec<CpuCore>, String> {
+        let mut cores = Vec::new();
+        let mut cpu_id = 0;
+
+        // Enumerate all CPU cores
+        while cpu_exists(cpu_id) {
+            let capacity = read_cpu_capacity(cpu_id);
+            cores.push(CpuCore {
+                id: cpu_id,
+                core_type: CoreType::Unknown, // Will be determined below
+                capacity,
+            });
+            cpu_id += 1;
+        }
+
+        if cores.is_empty() {
+            return Err("No CPU cores detected".to_string());
+        }
+
+        // Classify cores based on capacity relative to maximum
+        let max_capacity = get_max_capacity(&cores);
+        let capacity_threshold = (max_capacity as f32 * 0.8) as u32; // 80% of max is efficiency
+
+        for core in &mut cores {
+            core.core_type = match core.capacity {
+                Some(cap) if cap >= max_capacity => CoreType::Performance,
+                Some(cap) if cap >= capacity_threshold => CoreType::Performance,
+                Some(_) => CoreType::Efficiency,
+                None => {
+                    // No capacity info - fall back to position-based heuristics
+                    if core.id < (cores.len() / 2) as i32 {
+                        CoreType::Performance
+                    } else {
+                        CoreType::Efficiency
+                    }
+                }
+            };
+        }
+
+        Ok(cores)
+    }
+
+    // Get CPU count using sysfs
+    pub fn get_cpu_count() -> Result<i32, String> {
+        let mut count = 0;
+        while cpu_exists(count) {
+            count += 1;
+        }
+
+        if count == 0 {
+            Err("No CPUs detected".to_string())
+        } else {
+            Ok(count)
+        }
+    }
+
+    pub fn get_performance_cores() -> Vec<i32> {
+        detect_core_types()
+            .unwrap_or_else(|_| vec![])
+            .into_iter()
+            .filter(|core| core.core_type == CoreType::Performance)
+            .map(|core| core.id)
+            .collect()
+    }
+
+    pub fn get_efficiency_cores() -> Vec<i32> {
+        detect_core_types()
+            .unwrap_or_else(|_| vec![])
+            .into_iter()
+            .filter(|core| core.core_type == CoreType::Efficiency)
+            .map(|core| core.id)
+            .collect()
+    }
+}
+
+// Android/AArch64 - similar to Linux but with Android-specific features
+#[cfg(all(target_arch = "aarch64", target_os = "android"))]
+mod topology {
+    // For Android, we can use the Linux implementation as a base
+    // but could add Android-specific thermal management integration
+    use std::fs;
+    use std::io::Read;
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum CoreType {
+        Performance,
+        Efficiency,
+        Unknown,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct CpuCore {
+        pub id: i32,
+        pub core_type: CoreType,
+        pub capacity: Option<u32>,
+    }
+
+    fn read_cpu_capacity(cpu_id: i32) -> Option<u32> {
+        let path = format!("/sys/devices/system/cpu/cpu{}/cpu_capacity", cpu_id);
+        if let Ok(mut file) = fs::File::open(&path) {
+            let mut contents = String::new();
+            if file.read_to_string(&mut contents).is_ok() {
+                contents.trim().parse::<u32>().ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn cpu_exists(cpu_id: i32) -> bool {
+        std::path::Path::new(&format!("/sys/devices/system/cpu/cpu{}", cpu_id)).exists()
+    }
+
+    fn get_max_capacity(cores: &[CpuCore]) -> u32 {
+        cores.iter()
+            .filter_map(|core| core.capacity)
+            .max()
+            .unwrap_or(1024)
+    }
+
+    pub fn detect_core_types() -> Result<Vec<CpuCore>, String> {
+        let mut cores = Vec::new();
+        let mut cpu_id = 0;
+
+        while cpu_exists(cpu_id) {
+            let capacity = read_cpu_capacity(cpu_id);
+            cores.push(CpuCore {
+                id: cpu_id,
+                core_type: CoreType::Unknown,
+                capacity,
+            });
+            cpu_id += 1;
+        }
+
+        if cores.is_empty() {
+            return Err("No CPU cores detected".to_string());
+        }
+
+        let max_capacity = get_max_capacity(&cores);
+        let capacity_threshold = (max_capacity as f32 * 0.8) as u32;
+
+        for core in &mut cores {
+            core.core_type = match core.capacity {
+                Some(cap) if cap >= capacity_threshold => CoreType::Performance,
+                Some(_) => CoreType::Efficiency,
+                None => {
+                    // Android fallback - often cores 4+ are efficiency cores
+                    if core.id >= 4 {
+                        CoreType::Efficiency
+                    } else {
+                        CoreType::Performance
+                    }
+                }
+            };
+        }
+
+        Ok(cores)
+    }
+
+    pub fn get_cpu_count() -> Result<i32, String> {
+        let mut count = 0;
+        while cpu_exists(count) {
+            count += 1;
+        }
+
+        if count == 0 {
+            Err("No CPUs detected".to_string())
+        } else {
+            Ok(count)
+        }
+    }
+
+    pub fn get_performance_cores() -> Vec<i32> {
+        detect_core_types()
+            .unwrap_or_else(|_| vec![])
+            .into_iter()
+            .filter(|core| core.core_type == CoreType::Performance)
+            .map(|core| core.id)
+            .collect()
+    }
+
+    pub fn get_efficiency_cores() -> Vec<i32> {
+        detect_core_types()
+            .unwrap_or_else(|_| vec![])
+            .into_iter()
+            .filter(|core| core.core_type == CoreType::Efficiency)
+            .map(|core| core.id)
+            .collect()
+    }
+}
+
+// Fallback implementation for non-macOS, non-Linux-AArch64 platforms
+#[cfg(not(any(
+    target_os = "macos",
+    all(target_arch = "aarch64", target_os = "linux"),
+    all(target_arch = "aarch64", target_os = "android")
+)))]
+mod topology {
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum CoreType {
+        Performance,
+        Efficiency,
+        Unknown,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct CpuCore {
+        pub id: i32,
+        pub core_type: CoreType,
+        pub capacity: Option<u32>,
+    }
+
+    pub fn detect_core_types() -> Result<Vec<CpuCore>, String> {
+        // Fallback: use simple heuristics
+        let cpu_count = crate::get_available_cores();
+        let mut cores = Vec::new();
+
+        for i in 0..cpu_count {
+            let core_type = if cpu_count <= 4 {
+                CoreType::Performance
+            } else if i < cpu_count / 2 {
+                CoreType::Performance
+            } else {
+                CoreType::Efficiency
+            };
+
+            cores.push(CpuCore {
+                id: i,
+                core_type,
+                capacity: None, // No capacity info in fallback
+            });
+        }
+
+        Ok(cores)
+    }
+
+    pub fn get_performance_cores() -> Vec<i32> {
+        detect_core_types()
+            .unwrap_or_else(|_| vec![])
+            .into_iter()
+            .filter(|core| core.core_type == CoreType::Performance)
+            .map(|core| core.id)
+            .collect()
+    }
+
+    pub fn get_efficiency_cores() -> Vec<i32> {
+        detect_core_types()
+            .unwrap_or_else(|_| vec![])
+            .into_iter()
+            .filter(|core| core.core_type == CoreType::Efficiency)
+            .map(|core| core.id)
+            .collect()
+    }
+}
 
 // Basic region structure for memory management
 #[repr(C)]
@@ -79,18 +545,53 @@ fn set_thread_affinity(core_id: u32) {
 
 /// Get the number of available CPU cores
 fn get_available_cores() -> i32 {
-    // Use num_cpus crate if available, otherwise default to 4
+    // Try topology detection first (macOS specific)
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(count) = topology::get_cpu_count() {
+            return count;
+        }
+    }
+
+    // Fallback: use num_cpus crate if available
     #[cfg(feature = "num_cpus")]
     {
         num_cpus::get() as i32
     }
+
+    // Final fallback: environment variable or default
     #[cfg(not(feature = "num_cpus"))]
     {
-        // Fallback: try to get from environment or default to 4
         std::env::var("SILICA_CPU_CORES")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(4)
+    }
+}
+
+/// Get detailed CPU topology information for debugging
+pub fn get_cpu_topology_info() -> String {
+    match topology::detect_core_types() {
+        Ok(cores) => {
+            let perf_cores: Vec<_> = cores.iter().filter(|c| c.core_type == topology::CoreType::Performance).collect();
+            let eff_cores: Vec<_> = cores.iter().filter(|c| c.core_type == topology::CoreType::Efficiency).collect();
+
+            let capacity_info = cores.iter()
+                .filter_map(|c| c.capacity.map(|cap| format!("cpu{}:{}", c.id, cap)))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            format!(
+                "CPU Topology: {} total cores, {} performance cores ({:?}), {} efficiency cores ({:?}) [capacities: {}]",
+                cores.len(),
+                perf_cores.len(),
+                perf_cores.iter().map(|c| c.id).collect::<Vec<_>>(),
+                eff_cores.len(),
+                eff_cores.iter().map(|c| c.id).collect::<Vec<_>>(),
+                if capacity_info.is_empty() { "N/A".to_string() } else { capacity_info }
+            )
+        }
+        Err(e) => format!("CPU Topology detection failed: {}", e),
     }
 }
 
@@ -104,26 +605,14 @@ fn select_next_core() -> i32 {
     }
 }
 
-/// Get performance cores (typically cores 0-3 on big.LITTLE systems)
+/// Get performance cores using runtime topology detection
 fn get_performance_cores() -> Vec<i32> {
-    // On most systems, performance cores are the lower-numbered cores
-    // This is a simplified assumption - in practice, you'd detect this
-    let total_cores = get_available_cores() as usize;
-    match total_cores {
-        0..=4 => (0..total_cores).map(|i| i as i32).collect(), // All cores are performance
-        5..=8 => (0..4).collect(), // First 4 are performance cores
-        _ => (0..(total_cores / 2)).map(|i| i as i32).collect(), // Half are performance
-    }
+    topology::get_performance_cores()
 }
 
-/// Get efficiency cores (typically higher-numbered cores on big.LITTLE systems)
+/// Get efficiency cores using runtime topology detection
 fn get_efficiency_cores() -> Vec<i32> {
-    let total_cores = get_available_cores() as usize;
-    match total_cores {
-        0..=4 => vec![], // No separate efficiency cores
-        5..=8 => (4..total_cores).map(|i| i as i32).collect(), // Last cores are efficiency
-        _ => ((total_cores / 2)..total_cores).map(|i| i as i32).collect(), // Second half are efficiency
-    }
+    topology::get_efficiency_cores()
 }
 
 /// Select next performance core using round-robin
@@ -629,6 +1118,21 @@ pub extern "C" fn silica_free_process_result(result_ptr: *mut ProcessResult) {
             }
         }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn silica_get_cpu_topology_info() -> *mut u8 {
+    let info_string = get_cpu_topology_info();
+
+    // Create a SilicaString with the topology info
+    let content_bytes = info_string.as_bytes();
+    let silica_string = Box::new(SilicaString {
+        data: content_bytes.as_ptr() as *mut u8,
+        length: content_bytes.len(),
+    });
+
+    // Return the boxed SilicaString as a raw pointer
+    Box::into_raw(silica_string) as *mut u8
 }
 
 #[cfg(test)]

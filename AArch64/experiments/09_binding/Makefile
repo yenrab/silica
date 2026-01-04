@@ -11,12 +11,18 @@ SEARCH_PATHS := -I ../../stdlib
 # Find all .silica files
 SILICA_FILES := $(wildcard *.silica)
 
+# Tests that are expected to fail compilation (negative tests)
+EXPECTED_FAILURES := test_shadowing
+
 # Separate executables (have main) from modules (don't have main)
-EXECUTABLES := $(shell grep -l "^fn main" $(SILICA_FILES) 2>/dev/null | sed 's/\.silica$$//')
+ALL_EXECUTABLES := $(shell grep -l "^fn main" $(SILICA_FILES) 2>/dev/null | sed 's/\.silica$$//')
+EXECUTABLES := $(filter-out $(EXPECTED_FAILURES), $(ALL_EXECUTABLES))
+EXPECTED_FAILURE_EXECUTABLES := $(filter $(EXPECTED_FAILURES), $(ALL_EXECUTABLES))
 MODULES := $(shell for f in $(SILICA_FILES); do if ! grep -q "^fn main" "$$f"; then basename "$$f" .silica; fi; done)
 
 # Output files
 EXECUTABLES_LL := $(addsuffix .ll, $(EXECUTABLES))
+EXPECTED_FAILURE_LL := $(addsuffix .ll, $(EXPECTED_FAILURE_EXECUTABLES))
 MODULES_LL := $(addsuffix .ll, $(MODULES))
 
 # Use inherited LLVM tool paths or detect them (including Homebrew)
@@ -41,7 +47,14 @@ $(RUNTIME_LIB): ../../silica-bootstrap-compiler/src/runtime.rs
 all: executables-all modules
 
 # Compile executable files (those with main functions)
-executables: $(EXECUTABLES_LL)
+executables: $(EXECUTABLES_LL) expected-failures
+
+# Compile expected failure tests (should fail but don't stop build)
+expected-failures: $(EXPECTED_FAILURE_LL)
+
+$(EXPECTED_FAILURE_LL): %.ll: %.silica
+	@echo "Compiling expected failure test: $< -> $@ (expected to fail)"
+	-@$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS) && echo "    ⚠️  Test $@ was expected to fail but succeeded!" || echo "    ✅ Test $@ failed as expected"
 
 %.ll: %.silica
 	@echo "Compiling executable: $< -> $@"
@@ -68,7 +81,7 @@ ifdef HAS_LLC
 		$(HAS_LLVM_AS) $$ll_file -o $$bc_file && \
 		$(HAS_LLC) -filetype=obj $$bc_file -o $$obj_file && \
 		$(LINKER_CLANG) $$obj_file $(RUNTIME_LIB) -o $$exe_file && \
-		echo "    ✅ Successfully built $$exe_file"; \
+		echo "    ✅ Successfully built $$exe_file" || echo "    ❌ Failed to build $$exe_file"; \
 	done
 else
 	@echo "llc not found - install LLVM tools for full compilation"
@@ -79,7 +92,7 @@ endif
 
 # Clean all generated files
 clean:
-	rm -f *.ll *.bc *.o $(EXECUTABLES) runtime.o
+	rm -f *.ll *.bc *.o $(EXECUTABLES) $(EXPECTED_FAILURE_EXECUTABLES) runtime.o
 
 # Show what will be built
 help:
