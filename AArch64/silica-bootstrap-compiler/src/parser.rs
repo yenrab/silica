@@ -313,6 +313,19 @@ impl Parser {
 
     /// Parse a type expression
     fn parse_type(&mut self) -> Result<Type> {
+        // Built-in types (check these first to avoid conflicts)
+        if self.match_token(TokenKind::Int) {
+            return Ok(Type::Int);
+        } else if self.match_token(TokenKind::Bool) {
+            return Ok(Type::Bool);
+        } else if self.match_token(TokenKind::Char) {
+            return Ok(Type::Char);
+        } else if self.match_token(TokenKind::Unit) {
+            return Ok(Type::Unit);
+        } else if self.match_token(TokenKind::String) {
+            return Ok(Type::String);
+        }
+
         // Reference type: &Type
         if self.match_token(TokenKind::Ampersand) {
             let element_type = self.parse_type()?;
@@ -474,16 +487,6 @@ impl Parser {
             Ok(Type::ActorRef {
                 message_type: Box::new(message_type),
             })
-        } else if self.match_token(TokenKind::Int) {
-            Ok(Type::Int)
-        } else if self.match_token(TokenKind::Bool) {
-            Ok(Type::Bool)
-        } else if self.match_token(TokenKind::Char) {
-            Ok(Type::Char)
-        } else if self.match_token(TokenKind::Unit) {
-            Ok(Type::Unit)
-        } else if self.match_token(TokenKind::String) {
-            Ok(Type::String)
         } else {
             // User-defined type name or type operator
             let name = self.consume_identifier("Expected type name")?;
@@ -637,7 +640,7 @@ impl Parser {
             if type_params.contains(&name) {
                 Ok(Type::Variable(name))
             } else {
-            Ok(Type::Named(name))
+                Ok(Type::Named(name))
             }
         }
     }
@@ -1008,14 +1011,13 @@ impl Parser {
             Ok(Expression::Literal(Literal::Bool(true)))
         } else if self.match_token(TokenKind::False) {
             Ok(Expression::Literal(Literal::Bool(false)))
-        } else if let TokenKind::IntegerLiteral(value) = self.peek().kind {
+        } else if let TokenKind::IntegerLiteral(value) = self.peek().kind.clone() {
             self.advance();
             Ok(Expression::Literal(Literal::Int(value)))
-        } else if let TokenKind::StringLiteral(value) = &self.peek().kind {
-            let value = value.clone();
+        } else if let TokenKind::StringLiteral(value) = self.peek().kind.clone() {
             self.advance();
             Ok(Expression::Literal(Literal::String(value)))
-        } else if let TokenKind::CharLiteral(value) = self.peek().kind {
+        } else if let TokenKind::CharLiteral(value) = self.peek().kind.clone() {
             self.advance();
             Ok(Expression::Literal(Literal::Char(value)))
         } else if self.match_token(TokenKind::LeftParen) {
@@ -1444,16 +1446,17 @@ impl Parser {
 
     /// Parse generic instantiation: TypeName<Arg1, Arg2>(payload)
     fn parse_generic_instantiation(&mut self, type_name: String, location: SourceLocation) -> Result<Expression> {
-        // Parse type arguments
-        let mut type_args = Vec::new();
-        if !self.check(TokenKind::Greater) {
-            loop {
-                type_args.push(self.parse_type()?);
-                if !self.match_token(TokenKind::Comma) {
-                    break;
-                }
-            }
-        }
+                    // Parse type arguments
+                    let mut type_args = Vec::new();
+                    if !self.check(TokenKind::Greater) {
+                        loop {
+                            let ty = self.parse_type()?;
+                            type_args.push(ty);
+                            if !self.match_token(TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                    }
         self.consume(TokenKind::Greater, "Expected '>' after type arguments")?;
 
         // Parse optional payload (for enum variants like Some(42))
@@ -2252,62 +2255,77 @@ impl Parser {
                 self.advance();
                 return Ok(Pattern::Literal(Literal::Char(value)));
             }
-            _ => {}
+            _ => {} // Fall through to handle other pattern types (identifiers, wildcards, tuples, etc.)
         }
 
-        if let TokenKind::Identifier(name) = &self.peek().kind {
-            let name = name.clone();
-            let start_location = self.peek().location.clone();
+        if matches!(&self.peek().kind, TokenKind::Identifier(_) | TokenKind::Underscore) {
+            let (name, start_location) = match &self.peek().kind {
+                TokenKind::Identifier(n) => (n.clone(), self.peek().location.clone()),
+                TokenKind::Underscore => ("_".to_string(), self.peek().location.clone()),
+                _ => unreachable!(),
+            };
             self.advance();
 
-            // Check for generic variant: Constructor<Type>(payload)
-            if self.match_token(TokenKind::Less) {
-                // Parse type arguments
-                let mut type_args = Vec::new();
-                if !self.check(TokenKind::Greater) {
-                    loop {
-                        type_args.push(self.parse_type()?);
-                        if !self.match_token(TokenKind::Comma) {
-                            break;
+            // Type annotation is optional for simple identifiers, required for wildcards
+            if self.match_token(TokenKind::Colon) {
+                let type_ = self.parse_type()?;
+
+                // Check for generic variant: Constructor<Type>(payload)
+                if self.match_token(TokenKind::Less) {
+                    // Parse type arguments
+                    let mut type_args = Vec::new();
+                    if !self.check(TokenKind::Greater) {
+                        loop {
+                            let ty = self.parse_type()?;
+                            type_args.push(ty);
+                            if !self.match_token(TokenKind::Comma) {
+                                break;
+                            }
                         }
                     }
+                    self.consume(TokenKind::Greater, "Expected '>' after type arguments")?;
+
+                    // Parse payload if present
+                    let payload = if self.match_token(TokenKind::LeftParen) {
+                        let pat = self.pattern()?;
+                        self.consume(TokenKind::RightParen, "Expected ')' after payload")?;
+                        Some(Box::new(pat))
+                    } else {
+                        None
+                    };
+
+                    return Ok(Pattern::GenericVariant {
+                        constructor: name,
+                        type_args,
+                        payload,
+                    });
                 }
-                self.consume(TokenKind::Greater, "Expected '>' after type arguments")?;
+                // Check for regular variant: Constructor(payload)
+                else if self.match_token(TokenKind::LeftParen) {
+                    let payload = if self.check(TokenKind::RightParen) {
+                        None
+                    } else {
+                        let pat = self.pattern()?;
+                        Some(Box::new(pat))
+                    };
+                    self.consume(TokenKind::RightParen, "Expected ')' after variant payload")?;
 
-                // Parse payload if present
-                let payload = if self.match_token(TokenKind::LeftParen) {
-                    let pat = self.pattern()?;
-                    self.consume(TokenKind::RightParen, "Expected ')' after payload")?;
-                    Some(Box::new(pat))
+                    return Ok(Pattern::Variant {
+                        constructor: name,
+                        payload,
+                    });
                 } else {
-                    None
-                };
-
-                Ok(Pattern::GenericVariant {
-                    constructor: name,
-                    type_args,
-                    payload,
-                })
-            }
-            // Check for regular variant: Constructor(payload)
-            else if self.match_token(TokenKind::LeftParen) {
-                let payload = if self.check(TokenKind::RightParen) {
-                    None
-                } else {
-                    let pat = self.pattern()?;
-                    Some(Box::new(pat))
-                };
-                self.consume(TokenKind::RightParen, "Expected ')' after variant payload")?;
-
-                Ok(Pattern::Variant {
-                    constructor: name,
-                    payload,
-                })
+                    // Typed identifier
+                    return Ok(Pattern::TypedIdentifier { name, type_ });
+                }
             } else {
-            Ok(Pattern::Identifier(name))
+                // No type annotation
+                if name == "_" {
+                    return parse_error(start_location, "Wildcards must have explicit type annotations: _: Type".to_string());
+                }
+                // Untyped identifier
+                return Ok(Pattern::Identifier(name));
             }
-        } else if self.match_token(TokenKind::Underscore) {
-            Ok(Pattern::Wildcard)
         } else if self.match_token(TokenKind::LeftParen) {
             let mut patterns = Vec::new();
             if !self.check(TokenKind::RightParen) {
@@ -2387,6 +2405,9 @@ impl Parser {
     fn collect_bound_vars_from_pattern(&self, pattern: &Pattern, bound_vars: &mut std::collections::HashSet<String>) {
         match pattern {
             Pattern::Identifier(name) => {
+                bound_vars.insert(name.clone());
+            }
+            Pattern::TypedIdentifier { name, .. } => {
                 if name != "_" {
                     bound_vars.insert(name.clone());
                 }
@@ -2398,9 +2419,6 @@ impl Parser {
             }
             Pattern::Literal(_) => {
                 // Literals don't bind variables
-            }
-            Pattern::Wildcard => {
-                // Wildcards don't bind variables
             }
             Pattern::Record(fields) => {
                 for (_, field_pattern) in fields {

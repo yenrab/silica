@@ -297,9 +297,10 @@ pattern ::= literal_pattern
           | variant_pattern
 
 literal_pattern  ::= literal
-identifier_pattern ::= identifier
+identifier_pattern ::= identifier ":" type
 wildcard_pattern  ::= "_"
-tuple_pattern     ::= "(" pattern {"," pattern} ")"
+tuple_pattern     ::= "(" typed_pattern {"," typed_pattern} ")"
+typed_pattern     ::= identifier ":" type
 record_pattern    ::= "{" identifier ":" pattern {"," identifier ":" pattern} "}"
 variant_pattern   ::= identifier [pattern]
 ```
@@ -333,9 +334,10 @@ Where:
 ρ ⊢ () ⇓ () ⇒ ρ        (unit literal match)
 ```
 
-**Identifier Pattern:**
+**Typed Identifier Pattern:**
 ```
-ρ ⊢ x ⇓ v ⇒ ρ[x → v]    (bind identifier to value)
+ρ ⊢ x:τ ⇓ v ⇒ ρ[x → v]    (bind identifier to typed value)
+  where typeof(v) ≡ τ
 ```
 
 **Wildcard Pattern:**
@@ -343,11 +345,12 @@ Where:
 ρ ⊢ _ ⇓ v ⇒ ρ           (match any value, no binding)
 ```
 
-**Tuple Pattern:**
+**Typed Tuple Pattern:**
 ```
-ρ ⊢ p₁ ⇓ v₁ ⇒ ρ₁    ρ₁ ⊢ p₂ ⇓ v₂ ⇒ ρ₂    ...    ρₙ₋₁ ⊢ pₙ ⇓ vₙ ⇒ ρₙ
+ρ ⊢ x₁:τ₁ ⇓ v₁ ⇒ ρ₁    ρ₁ ⊢ x₂:τ₂ ⇓ v₂ ⇒ ρ₂    ...    ρₙ₋₁ ⊢ xₙ:τₙ ⇓ vₙ ⇒ ρₙ
+  where typeof(vᵢ) ≡ τᵢ for each i
 ─────────────────────────────────────────────────────────────────────
-ρ ⊢ (p₁, p₂, ..., pₙ) ⇓ (v₁, v₂, ..., vₙ) ⇒ ρₙ
+ρ ⊢ (x₁:τ₁, x₂:τ₂, ..., xₙ:τₙ) ⇓ (v₁, v₂, ..., vₙ) ⇒ ρₙ
 ```
 
 **Record Pattern:**
@@ -481,6 +484,19 @@ The `char` type represents Unicode scalar values.
 ```
 type char
 ```
+
+#### 4.1.5 Any Type
+The `any` type is a special type that can represent values of any other type. It is used for type matching and dynamic typing scenarios where the exact type is not known at compile time or needs to be determined at runtime.
+
+```
+type any
+```
+
+The `any` type supports:
+- Assignment from any other type
+- Type matching with any other type
+- Runtime type introspection capabilities
+- Explicit casting to concrete types
 
 ### 4.2 Compound Types
 
@@ -1069,8 +1085,8 @@ fn pure_add(x: int, y: int) -> int {
 
 fn allocate_pair(r: region(R, normal))
     : proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) {
-    x <- alloc_ref(r, 1)
-    y <- alloc_ref(r, 2)
+    x: ref(R, normal, int) <- alloc_ref(r, 1)
+    y: ref(R, normal, int) <- alloc_ref(r, 2)
     return (x, y)
 }
 -- Effects properly declared: mem(normal)
@@ -1186,8 +1202,8 @@ fn allocate_pair(r: region(R, normal))
 fn allocate_quad(r: region(R, normal))
     : proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int),
                          ref(R, normal, int), ref(R, normal, int)) {
-    (a, b) <- allocate_pair(r)
-    (c, d) <- allocate_pair(r)
+    (a: ref(R, normal, int), b: ref(R, normal, int)) <- allocate_pair(r)
+    (c: ref(R, normal, int), d: ref(R, normal, int)) <- allocate_pair(r)
     return (a, b, c, d)
 }
 ```

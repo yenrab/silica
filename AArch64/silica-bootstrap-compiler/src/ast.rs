@@ -613,7 +613,7 @@ pub struct ConstructorCallExpr {
 pub enum Pattern {
     Literal(Literal),
     Identifier(String),
-    Wildcard,
+    TypedIdentifier { name: String, type_: Type },
     Tuple(Vec<Pattern>),
     Record(Vec<(String, Pattern)>),
     Variant { constructor: String, payload: Option<Box<Pattern>> },

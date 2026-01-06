@@ -301,7 +301,11 @@ impl<'a> TypeChecker<'a> {
             (Type::Char, Type::Char) => true,
             (Type::String, Type::String) => true,
             (Type::Unit, Type::Unit) => true,
-            _ => false, // Simplified - doesn't handle generics, tuples, etc.
+            (Type::Tuple(types1), Type::Tuple(types2)) => {
+                types1.len() == types2.len() &&
+                types1.iter().zip(types2.iter()).all(|(t1, t2)| self.types_equal(t1, t2))
+            }
+            _ => false, // Doesn't handle all complex types yet
         }
     }
     pub fn new() -> Self {
@@ -536,6 +540,9 @@ impl<'a> TypeChecker<'a> {
     fn collect_bound_vars_from_pattern_typecheck(&self, pattern: &Pattern, bound_vars: &mut std::collections::HashSet<String>) {
         match pattern {
             Pattern::Identifier(name) => {
+                bound_vars.insert(name.clone());
+            }
+            Pattern::TypedIdentifier { name, .. } => {
                 if name != "_" {
                     bound_vars.insert(name.clone());
                 }
@@ -547,9 +554,6 @@ impl<'a> TypeChecker<'a> {
             }
             Pattern::Literal(_) => {
                 // Literals don't bind variables
-            }
-            Pattern::Wildcard => {
-                // Wildcards don't bind variables
             }
             Pattern::Record(fields) => {
                 for (_, field_pattern) in fields {
@@ -1337,6 +1341,9 @@ impl<'a> TypeChecker<'a> {
     /// Check that a pattern is compatible with the expected type
     fn check_pattern_type(&mut self, pattern: &Pattern, expected_type: &Type, location: &SourceLocation) -> Result<()> {
         match pattern {
+            Pattern::Identifier(_) => {
+                // Untyped identifiers accept any type
+            }
             Pattern::Literal(lit) => {
                 let lit_type = match lit {
                     Literal::Unit => Type::Unit,
@@ -1347,8 +1354,13 @@ impl<'a> TypeChecker<'a> {
                 };
                 self.add_constraint(expected_type.clone(), lit_type);
             }
-            Pattern::Identifier(_) | Pattern::Wildcard => {
-                // These match any type, no constraint needed
+            Pattern::TypedIdentifier { type_: pattern_type, .. } => {
+                // Check that the pattern type matches the expected type
+                self.add_constraint(expected_type.clone(), pattern_type.clone());
+            }
+            Pattern::TypedIdentifier { type_, .. } => {
+                // Check that the pattern type matches the expected type
+                self.add_constraint(expected_type.clone(), type_.clone());
             }
             Pattern::Tuple(patterns) => {
                 if let Type::Tuple(elem_types) = expected_type {
@@ -1451,7 +1463,8 @@ impl<'a> TypeChecker<'a> {
                     // Bind pattern variables to the type environment (keep named types for method dispatch)
                     self.bind_pattern_variables(pattern, &expr_type, &do_expr.location)?;
 
-                    last_type = expr_type;
+                    // Bind statements don't contribute to the return type - they just bind variables
+                    // The return type comes from the final expression, or Unit if there is none
                 }
                 Statement::Expr(expr) => {
                     last_type = self.infer_expression(expr)?;
@@ -1469,17 +1482,36 @@ impl<'a> TypeChecker<'a> {
 
         match pattern {
             Pattern::Identifier(name) => {
-                // Check for variable shadowing before binding
-                self.check_variable_shadowing(name, location)?;
-                // Bind identifier pattern to type (keep named types for method dispatch)
+                // Untyped identifier - bind to the actual type
+                if self.env.contains_key(name) {
+                    return type_error(location.clone(), format!("Pattern variable '{}' shadows an existing binding", name));
+                }
                 self.env.insert(name.clone(), TypeScheme {
-                    vars: vec![], // No type variables for now
-                    ty: ty.clone(), // Keep original type, don't expand aliases
+                    vars: vec![],
+                    ty: ty.clone(),
                 });
                 Ok(())
             }
-            Pattern::Wildcard => {
-                // Wildcard matches anything, no binding needed
+            Pattern::TypedIdentifier { name, type_ } => {
+                // Check for variable shadowing before binding (skip for wildcards)
+                if name != "_" {
+                    self.check_variable_shadowing(name, location)?;
+                }
+                // Verify that the declared type matches the actual type
+                let expanded_declared_ty = self.expand_type_aliases(type_);
+                let expanded_actual_ty = self.expand_type_aliases(ty);
+                if !self.types_equal(&expanded_actual_ty, &expanded_declared_ty) {
+                    return type_error(location.clone(),
+                        format!("Pattern declares type {:?} but value has type {:?}",
+                               type_, expanded_actual_ty));
+                }
+                // Bind identifier pattern to the declared type (skip for wildcards)
+                if name != "_" {
+                    self.env.insert(name.clone(), TypeScheme {
+                        vars: vec![], // No type variables for now
+                        ty: type_.clone(), // Use declared type
+                    });
+                }
                 Ok(())
             }
             Pattern::Tuple(patterns) => {
@@ -2341,6 +2373,33 @@ impl<'a> TypeChecker<'a> {
                     ty: expanded_expected_type.clone(),
                 });
             }
+            Pattern::TypedIdentifier { name, type_ } => {
+                // Skip shadowing check and binding for wildcards
+                if name != "_" {
+                    if env.contains_key(name) {
+                        return type_error(location.clone(), format!("Pattern variable '{}' shadows an existing binding", name));
+                    }
+                    // Check that the declared type matches the expected type
+                    let expanded_declared_type = self.expand_type_aliases(type_);
+                    if !self.types_equal(&expanded_expected_type, &expanded_declared_type) {
+                        return type_error(location.clone(),
+                            format!("Pattern declares type {:?} but expected type {:?}",
+                                   type_, expanded_expected_type));
+                    }
+                    env.insert(name.clone(), TypeScheme {
+                        vars: vec![],
+                        ty: expanded_declared_type,
+                    });
+                } else {
+                    // For wildcards, just check type compatibility but don't bind
+                    let expanded_declared_type = self.expand_type_aliases(type_);
+                    if !self.types_equal(&expanded_expected_type, &expanded_declared_type) {
+                        return type_error(location.clone(),
+                            format!("Wildcard pattern declares type {:?} but expected type {:?}",
+                                   type_, expanded_expected_type));
+                    }
+                }
+            }
             Pattern::Tuple(elements) => {
                 if let Type::Tuple(element_types) = &expanded_expected_type {
                     if elements.len() != element_types.len() {
@@ -2355,9 +2414,6 @@ impl<'a> TypeChecker<'a> {
                     return type_error(location.clone(),
                         format!("Tuple pattern expected tuple type, found {:?}", expanded_expected_type));
                 }
-            }
-            Pattern::Wildcard => {
-                // Wildcard matches anything, no variables to bind
             }
             _ => return type_error(location.clone(), format!("Unsupported pattern type: {:?}", pattern)),
         }
@@ -2381,7 +2437,7 @@ impl<'a> TypeChecker<'a> {
                     // For now, just check that the pattern can bind the expression type
                     // More sophisticated pattern type checking would go here
                     match pattern {
-                        crate::ast::Pattern::Identifier(name) => {
+                        crate::ast::Pattern::TypedIdentifier { name, type_ } => {
                             if name != "_" {
                                 self.env.insert(name.clone(), TypeScheme {
                                     vars: vec![],

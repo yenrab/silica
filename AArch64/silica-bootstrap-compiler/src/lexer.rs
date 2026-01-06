@@ -586,9 +586,9 @@ impl Lexer {
         self.advance(); // skip first :
         if self.peek_char() == Some(':') {
             self.advance();
-            self.make_token(TokenKind::DoubleColon, "::")
+            self.make_token_at_current_pos(TokenKind::DoubleColon, "::")
         } else {
-            self.make_token(TokenKind::Colon, ":")
+            self.make_token_at_current_pos(TokenKind::Colon, ":")
         }
     }
 
