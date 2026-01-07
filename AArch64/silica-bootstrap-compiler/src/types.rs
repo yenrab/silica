@@ -1460,6 +1460,16 @@ impl<'a> TypeChecker<'a> {
                     let expr_type = self.infer_expression(expr)?;
                     // eprintln!("DEBUG BIND: expr_type = {:?}", expr_type);
 
+                    // Require explicit type annotations for tuple bindings
+                    if let Type::Tuple(_) = &expr_type {
+                        if let crate::ast::Pattern::Identifier(_) = pattern {
+                            return Err(CompilerError::TypeError {
+                                location: do_expr.location.clone(),
+                                message: format!("Tuple bindings must have explicit type annotations. Use 'variable:(type) <- expression' instead of 'variable <- expression'")
+                            });
+                        }
+                    }
+
                     // Bind pattern variables to the type environment (keep named types for method dispatch)
                     self.bind_pattern_variables(pattern, &expr_type, &do_expr.location)?;
 
@@ -2434,6 +2444,15 @@ impl<'a> TypeChecker<'a> {
             match statement {
                 crate::ast::Statement::Bind { pattern, expr } => {
                     let expr_type = self.infer_expression(expr)?;
+                    // Require explicit type annotations for tuple bindings
+                    if let Type::Tuple(_) = &expr_type {
+                        if let crate::ast::Pattern::Identifier(_) = pattern {
+                            return Err(CompilerError::TypeError {
+                                location: SourceLocation::unknown(), // TODO: get proper location
+                                message: format!("Tuple bindings must have explicit type annotations. Use 'variable:(type) <- expression' instead of 'variable <- expression'")
+                            });
+                        }
+                    }
                     // For now, just check that the pattern can bind the expression type
                     // More sophisticated pattern type checking would go here
                     match pattern {

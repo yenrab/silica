@@ -3754,6 +3754,14 @@ impl CodeGenerator {
         }
     }
 
+    /// Extract element types from a tuple type
+    fn extract_tuple_element_types(&self, tuple_type: &Type) -> Option<Vec<Type>> {
+        match tuple_type {
+            Type::Tuple(element_types) => Some(element_types.clone()),
+            _ => None,
+        }
+    }
+
     /// Generate LLVM IR for do expressions
     fn generate_do(&mut self, do_expr: &DoExpr) -> Result<Option<String>> {
         // Enter a new scope for the do expression
@@ -3824,21 +3832,94 @@ impl CodeGenerator {
                             result = value;
                         }
                         Pattern::Tuple(elements) => {
-                            // Handle tuple decomposition with fixed offsets
+                            // Handle generic tuple decomposition
+                            // This implementation works for tuples where all elements are 8-byte aligned
+                            // For full genericity with mixed types, proper offset calculation based on
+                            // element types and alignment would be needed.
                             if let Some(ref tuple_ptr_raw) = value {
                                 // Strip type prefixes from tuple pointer
                                 let tuple_ptr = tuple_ptr_raw.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
 
-                                // Use fixed offsets: elements are at 16, 24, 32, etc.
+                                // Get the expression type for tuple decomposition
+                                let expr_type_opt = if let Some(location) = Self::try_get_expression_location(expr) {
+                                    self.expression_types.get(location).cloned()
+                                } else {
+                                    // For expressions without location (like literals), infer the type directly
+                                    match **expr {
+                                        Expression::Literal(Literal::Int(_)) => Some(Type::Int),
+                                        Expression::Literal(Literal::Bool(_)) => Some(Type::Bool),
+                                        Expression::Literal(Literal::Char(_)) => Some(Type::Char),
+                                        Expression::Literal(Literal::String(_)) => Some(Type::String),
+                                        Expression::Literal(Literal::Unit) => Some(Type::Unit),
+                                        _ => None,
+                                    }
+                                };
+
+                                // Calculate proper offsets using compile-time type information
+                                // This mirrors the tuple creation logic for accurate offset calculation
+                                let element_count = elements.len() as i64;
+                                let mut current_offset = 8 + element_count; // After count and type IDs
+
+                                // Get the element types from the tuple type
+                                // Try from expression type first, then fall back to pattern types
+                                let element_types = if let Some(expr_type) = expr_type_opt {
+                                    self.extract_tuple_element_types(&expr_type)
+                                } else {
+                                    // Try to infer from the pattern types
+                                    let mut pattern_types = Vec::new();
+                                    for elem_pattern in elements {
+                                        match elem_pattern {
+                                            Pattern::TypedIdentifier { type_, .. } => {
+                                                pattern_types.push(type_.clone());
+                                            }
+                                            Pattern::Identifier(_) => {
+                                                // For untyped patterns, assume i64
+                                                pattern_types.push(Type::Int);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    if !pattern_types.is_empty() {
+                                        Some(pattern_types)
+                                    } else {
+                                        None
+                                    }
+                                };
+
+                                // Calculate offsets for each element based on types
+                                let mut element_offsets = Vec::new();
+                                if let Some(ref types) = element_types {
+                                    for (i, silica_type) in types.iter().enumerate() {
+                                        let (size, alignment) = match silica_type {
+                                            Type::Bool => (1, 1),
+                                            Type::Char => (4, 4),
+                                            Type::Int => (8, 8),
+                                            Type::String => (8, 8),
+                                            _ => (8, 8), // Default
+                                        };
+
+                                        // Align offset to element alignment
+                                        current_offset = ((current_offset + alignment - 1) / alignment) * alignment;
+
+                                        element_offsets.push(current_offset);
+                                        current_offset += size;
+                                    }
+                                } else {
+                                    // Fallback: assume all elements are i64 at 8-byte intervals
+                                    for i in 0..elements.len() {
+                                        element_offsets.push(16 + (i as i64 * 8));
+                                    }
+                                }
+
                                 for (i, elem_pattern) in elements.iter().enumerate() {
+                                    let elem_offset = element_offsets.get(i).copied().unwrap_or(16 + (i as i64 * 8));
+
                                     match elem_pattern {
                                         Pattern::Identifier(elem_name) => {
-                                            // Use fixed offset calculation: 16 + i * 8
-                                            let fixed_offset = 16 + (i as i64 * 8);
                                             let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
-                                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_ptr, fixed_offset));
+                                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_ptr, elem_offset));
 
-                                            // Load and store as i64 for untyped identifiers
+                                            // Load as i64 for untyped identifiers (simplified generic handling)
                                             let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
                                             self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
                                             if elem_name != "_" {
@@ -3847,44 +3928,50 @@ impl CodeGenerator {
                                                 self.variables.insert(elem_name.clone(), final_val_reg);
                                             }
                                         }
-                                        Pattern::TypedIdentifier { name: elem_name, .. } => {
+                                        Pattern::TypedIdentifier { name: elem_name, type_: elem_type } => {
                                             if elem_name == "_" {
-                                                // Wildcards don't bind variables - skip
-                                            } else {
-                                                // Use fixed offset calculation: 16 + i * 8
-                                                let fixed_offset = 16 + (i as i64 * 8);
-                                                let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
-                                                self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_ptr, fixed_offset));
+                                                continue; // Wildcards don't bind variables
+                                            }
 
-                                                // Determine storage type based on declared type
-                                                let is_boolean_var = match elem_pattern {
-                                                    Pattern::TypedIdentifier { type_, .. } => matches!(type_, Type::Bool),
-                                                    _ => false,  // Default to i64 for untyped identifiers
-                                                };
+                                            let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
+                                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_ptr, elem_offset));
 
-                                                if is_boolean_var {
-                                                    // Load and store as i1 for boolean variables
+                                            // Load based on declared type (generic type handling)
+                                            let final_val_reg = format!("%{}", elem_name);
+                                            match elem_type {
+                                                Type::Bool => {
+                                                    // Load as boolean (i1)
                                                     let i1_cast_reg = format!("%i1_cast_{}_{}", self.instructions.len(), i);
                                                     self.instructions.push(format!("  {} = bitcast i8* {} to i1*", i1_cast_reg, elem_ptr_reg));
-                                                    let i1_val_reg = format!("%i1_val_{}_{}", self.instructions.len(), i);
-                                                    self.instructions.push(format!("  {} = load i1, i1* {}", i1_val_reg, i1_cast_reg));
-                                                    // Store directly as i1 (don't extend to i64)
-                                                    if elem_name != "_" {
-                                                        let final_val_reg = format!("%{}", elem_name);
-                                                        self.instructions.push(format!("  {} = add i1 {}, 0", final_val_reg, i1_val_reg));
-                                                        self.variables.insert(elem_name.clone(), final_val_reg);
-                                                    }
-                                                } else {
-                                                    // Load and store as i64 for other types (int, etc.)
+                                                    self.instructions.push(format!("  {} = load i1, i1* {}", final_val_reg, i1_cast_reg));
+                                                }
+                                                Type::Int => {
+                                                    // Load as integer (i64)
                                                     let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
                                                     self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
-                                                    if elem_name != "_" {
-                                                        let final_val_reg = format!("%{}", elem_name);
-                                                        self.instructions.push(format!("  {} = load i64, i64* {}", final_val_reg, i64_cast_reg));
-                                                        self.variables.insert(elem_name.clone(), final_val_reg);
-                                                    }
+                                                    self.instructions.push(format!("  {} = load i64, i64* {}", final_val_reg, i64_cast_reg));
+                                                }
+                                                Type::Char => {
+                                                    // Load as character (i32)
+                                                    let i32_cast_reg = format!("%i32_cast_{}_{}", self.instructions.len(), i);
+                                                    self.instructions.push(format!("  {} = bitcast i8* {} to i32*", i32_cast_reg, elem_ptr_reg));
+                                                    self.instructions.push(format!("  {} = load i32, i32* {}", final_val_reg, i32_cast_reg));
+                                                }
+                                                Type::String => {
+                                                    // Load as string (i8*) - strings are stored as i8* in memory
+                                                    let string_ptr_cast_reg = format!("%{}_string_cast_{}", elem_name, self.instructions.len());
+                                                    self.instructions.push(format!("  {} = bitcast i8* {} to i8**", string_ptr_cast_reg, elem_ptr_reg));
+                                                    self.instructions.push(format!("  {} = load i8*, i8** {}", final_val_reg, string_ptr_cast_reg));
+                                                }
+                                                _ => {
+                                                    // Default to i64 for unknown types
+                                                    let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
+                                                    self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
+                                                    self.instructions.push(format!("  {} = load i64, i64* {}", final_val_reg, i64_cast_reg));
                                                 }
                                             }
+
+                                            self.variables.insert(elem_name.clone(), final_val_reg);
                                         }
                                         Pattern::Literal(_) => {
                                             // Literals don't bind variables
