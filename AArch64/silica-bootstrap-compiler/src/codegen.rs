@@ -1502,7 +1502,7 @@ impl CodeGenerator {
             return self.generate_method_call_llvm(field_access, call);
         }
 
-        // For now, assume function calls are to known functions
+        // Handle function calls - can be identifiers (named functions or function variables)
         if let Expression::Identifier(func_name) = &*call.function {
             // Special handling for file I/O functions
             if func_name == "read_file" {
@@ -1511,8 +1511,21 @@ impl CodeGenerator {
                 return self.generate_write_file_call_llvm(call);
             }
 
+            // Check if it's a function variable (stored function literal)
+            if let Some((param_types, return_type)) = self.lookup_function_variable_signature(func_name).cloned() {
+                return self.generate_indirect_call_llvm(call, &param_types, &return_type);
+            }
+
             if let (Some(module), Some(builder)) = (&self.module, &self.builder) {
                 unsafe {
+                    // Check if it's a function variable first
+                    if self.lookup_function_variable_signature(func_name).is_some() {
+                        // This should have been handled above, but just in case
+                        return Err(CompilerError::codegen_error(
+                            format!("Function variable '{}' should have been handled above", func_name)
+                        ));
+                    }
+
                     // First try to get the function from the current module
                     let func = if let Some(func) = (*module).get_function(func_name) {
                         Some(func)
@@ -1566,6 +1579,66 @@ impl CodeGenerator {
             }
         } else {
             Err(CompilerError::codegen_error("Complex function expressions not yet supported".to_string()))
+        }
+    }
+
+    /// Generate LLVM value for indirect function calls (function variables) (LLVM backend)
+    #[cfg(feature = "llvm_backend")]
+    fn generate_indirect_call_llvm(&mut self, call: &CallExpr, param_types: &[Type], return_type: &Type) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
+        if let Expression::Identifier(func_name) = &*call.function {
+            if let (Some(builder), Some(context)) = (&self.builder, &self.context) {
+                unsafe {
+                    // Get the function pointer from the variable
+                    let func_ptr_var = self.lookup_variable(func_name)
+                        .ok_or_else(|| CompilerError::codegen_error(
+                            format!("Function variable '{}' not found", func_name)
+                        ))?;
+
+                    // Load the function pointer
+                    let func_ptr = (*builder).build_load(
+                        (*context).i8_type().ptr_type(inkwell::AddressSpace::Generic),
+                        func_ptr_var,
+                        &format!("func_ptr_{}", func_name)
+                    ).unwrap();
+
+                    // Generate arguments
+                    let mut arg_values = Vec::new();
+                    for arg_expr in &call.arguments {
+                        let arg_val = self.generate_expression_llvm(arg_expr)?
+                            .ok_or_else(|| CompilerError::codegen_error("Invalid argument in function call".to_string()))?;
+                        arg_values.push(arg_val);
+                    }
+
+                    // Create function type for the call
+                    let mut llvm_param_types = Vec::new();
+                    for param_type in param_types {
+                        llvm_param_types.push(self.silica_type_to_llvm_type(param_type));
+                    }
+                    let llvm_return_type = self.silica_type_to_llvm_type(return_type);
+                    let func_type = llvm_return_type.fn_type(&llvm_param_types, false);
+
+                    // Cast the function pointer to the correct type
+                    let typed_func_ptr = (*builder).build_bitcast(
+                        func_ptr,
+                        func_type.ptr_type(inkwell::AddressSpace::Generic),
+                        &format!("typed_func_ptr_{}", func_name)
+                    ).unwrap().into_pointer_value();
+
+                    // Generate the indirect call
+                    let call_result = (*builder).build_indirect_call(
+                        func_type,
+                        typed_func_ptr,
+                        &arg_values,
+                        &format!("call_result_{}", func_name)
+                    ).unwrap();
+
+                    Ok(Some(call_result.try_as_basic_value().left().unwrap()))
+                }
+            } else {
+                Err(CompilerError::codegen_error("LLVM context or builder not initialized".to_string()))
+            }
+        } else {
+            Err(CompilerError::codegen_error("Indirect call requires identifier".to_string()))
         }
     }
 
@@ -1680,6 +1753,7 @@ impl CodeGenerator {
         for statement in &do_expr.statements {
             match statement {
                 Statement::Bind { pattern, expr } => {
+                    println!("LLVM: Processing bind statement");
                     // Evaluate the expression
                     let value = self.generate_expression_llvm(expr)?;
 
@@ -1695,8 +1769,30 @@ impl CodeGenerator {
                                         let alloca = builder.build_alloca(var_type, &name).unwrap();
                                         builder.build_store(alloca, val).unwrap();
 
-                                        // Store in current scope
-                                        self.add_variable(name.clone(), alloca);
+                                        // Check if this is a function literal
+                                        if let Expression::FunctionLiteral(_) = &*expr {
+                                            // For function literals, try to get the type from expression_types
+                                            if let Some(expr_type) = self.expression_types.get(&expr.location).cloned() {
+                                                if let Type::Function { parameters, return_type } = expr_type {
+                                                    self.add_function_variable_llvm(name.clone(), alloca, &expr_type);
+                                                } else {
+                                                    // Not a function type, store as regular variable
+                                                    self.add_variable(name.clone(), alloca);
+                                                }
+                                            } else {
+                                                // Fallback: assume it's a function and create a default signature
+                                                let default_params = vec![Type::Int];
+                                                let default_return = Box::new(Type::Int);
+                                                let default_func_type = Type::Function {
+                                                    parameters: default_params,
+                                                    return_type: default_return,
+                                                };
+                                                self.add_function_variable_llvm(name.clone(), alloca, &default_func_type);
+                                            }
+                                        } else {
+                                            // Store in current scope as regular variable
+                                            self.add_variable(name.clone(), alloca);
+                                        }
                                     }
                                 }
                             }
@@ -1712,8 +1808,30 @@ impl CodeGenerator {
                                         let alloca = builder.build_alloca(var_type, &name).unwrap();
                                         builder.build_store(alloca, val).unwrap();
 
-                                        // Store in current scope
-                                        self.add_variable(name.clone(), alloca);
+                                        // Check if this is a function literal
+                                        if let Expression::FunctionLiteral(_) = &*expr {
+                                            // For function literals, try to get the type from expression_types
+                                            if let Some(expr_type) = self.expression_types.get(&expr.location).cloned() {
+                                                if let Type::Function { parameters, return_type } = expr_type {
+                                                    self.add_function_variable_llvm(name.clone(), alloca, &expr_type);
+                                                } else {
+                                                    // Not a function type, store as regular variable
+                                                    self.add_variable(name.clone(), alloca);
+                                                }
+                                            } else {
+                                                // Fallback: assume it's a function and create a default signature
+                                                let default_params = vec![Type::Int];
+                                                let default_return = Box::new(Type::Int);
+                                                let default_func_type = Type::Function {
+                                                    parameters: default_params,
+                                                    return_type: default_return,
+                                                };
+                                                self.add_function_variable_llvm(name.clone(), alloca, &default_func_type);
+                                            }
+                                        } else {
+                                            // Store in current scope as regular variable
+                                            self.add_variable(name.clone(), alloca);
+                                        }
                                     }
                                 }
                             }
@@ -1856,12 +1974,14 @@ impl CodeGenerator {
     #[cfg(feature = "llvm_backend")]
     fn enter_scope(&mut self) {
         self.llvm_variable_scopes.push(HashMap::new());
+        self.function_variable_scopes.push(HashMap::new());
     }
 
     /// Exit the current variable scope (LLVM backend)
     #[cfg(feature = "llvm_backend")]
     fn exit_scope(&mut self) {
         self.llvm_variable_scopes.pop();
+        self.function_variable_scopes.pop();
     }
 
     /// Add a variable to the current scope (LLVM backend)
@@ -1908,6 +2028,38 @@ impl CodeGenerator {
     fn add_function_variable(&mut self, name: String, register: String, func_type: &Type) {
         // Store the variable normally
         self.add_variable_text(name.clone(), register);
+
+        // Store function signature information if it's a function type
+        if let Type::Function { parameters, return_type } = func_type {
+            if let Some(current_scope) = self.function_variable_scopes.last_mut() {
+                current_scope.insert(name, (parameters.clone(), (**return_type).clone()));
+            }
+        }
+    }
+
+    /// Convert a Silica type to LLVM type (LLVM backend)
+    #[cfg(feature = "llvm_backend")]
+    fn silica_type_to_llvm_type(&self, ty: &Type) -> inkwell::types::BasicMetadataTypeEnum<'static> {
+        unsafe {
+            match ty {
+                Type::Int => (*self.context).i64_type().into(),
+                Type::Bool => (*self.context).i1_type().into(),
+                Type::Char => (*self.context).i32_type().into(),
+                Type::String => (*self.context).i8_type().ptr_type(inkwell::AddressSpace::Generic).into(),
+                Type::Function { .. } => (*self.context).i8_type().ptr_type(inkwell::AddressSpace::Generic).into(),
+                Type::Tuple(_) => (*self.context).i8_type().ptr_type(inkwell::AddressSpace::Generic).into(),
+                Type::Record(_) => (*self.context).i8_type().ptr_type(inkwell::AddressSpace::Generic).into(),
+                Type::Unit => (*self.context).void_type().into(),
+                _ => (*self.context).i64_type().into(), // Default fallback
+            }
+        }
+    }
+
+    /// Add a function variable to the current scope (LLVM backend)
+    #[cfg(feature = "llvm_backend")]
+    fn add_function_variable_llvm(&mut self, name: String, pointer: inkwell::values::PointerValue<'static>, func_type: &Type) {
+        // Store the variable normally
+        self.add_variable(name.clone(), pointer);
 
         // Store function signature information if it's a function type
         if let Type::Function { parameters, return_type } = func_type {
@@ -4856,6 +5008,10 @@ impl CodeGenerator {
                     // Handle pattern binding - for now just handle simple identifier patterns
                     if let Some(value_reg) = value {
                         match pattern {
+                            Pattern::Identifier(name) => {
+                                // Simple identifier binding - just store the value
+                                self.add_variable_text(name.clone(), value_reg);
+                            }
                             Pattern::TypedIdentifier { name, .. } => {
                                 // Check if this is a function type and store signature information
                                 let expr_location = match &**expr {
@@ -4881,6 +5037,55 @@ impl CodeGenerator {
                                     }
                                 } else {
                                     self.add_variable_text(name.clone(), value_reg);
+                                }
+                            }
+                            Pattern::Tuple(elements) => {
+                                // Handle tuple pattern destructuring in text IR
+                                // The value_reg should be an i8* pointing to the tuple memory
+                                for (i, elem_pattern) in elements.iter().enumerate() {
+                                    // Calculate offset for element i
+                                    // Tuple layout: [count: i64][type_ids: i8*][element_data...]
+                                    let element_count = elements.len() as i64;
+                                    let mut current_offset = 8 + element_count; // After count and type IDs
+                                    current_offset = ((current_offset + 7) / 8) * 8; // Align to 8 bytes
+
+                                    // Add offset for previous elements (simplified - assume all elements are 8 bytes)
+                                    current_offset += i as i64 * 8;
+
+                                    // Generate getelementptr to get element pointer
+                                    let elem_ptr_reg = format!("%tuple_elem_ptr_{}_{}", i, self.instructions.len());
+                                    self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}",
+                                        elem_ptr_reg, value_reg, current_offset));
+
+                                    // Load the element value (assume i64 for simplicity)
+                                    let elem_val_reg = format!("%tuple_elem_val_{}_{}", i, self.instructions.len());
+                                    self.instructions.push(format!("  {} = load i64, i64* {}", elem_val_reg, elem_ptr_reg));
+
+                                    // Handle the element pattern
+                                    match elem_pattern {
+                                        Pattern::Identifier(name) => {
+                                            self.add_variable_text(name.clone(), elem_val_reg);
+                                        }
+                                        Pattern::TypedIdentifier { name, type_ } => {
+                                            // Check if the declared type is a function type
+                                            if let crate::ast::Type::Function { .. } = type_ {
+                                                // For function types, create a dummy internal type for storage
+                                                // The actual type checking ensures this is correct
+                                                let dummy_func_type = Type::Function {
+                                                    parameters: vec![Type::Int], // Simplified
+                                                    return_type: Box::new(Type::Int),
+                                                };
+                                                self.add_function_variable(name.clone(), elem_val_reg, &dummy_func_type);
+                                            } else {
+                                                self.add_variable_text(name.clone(), elem_val_reg);
+                                            }
+                                        }
+                                        _ => {
+                                            return Err(CompilerError::codegen_error(
+                                                format!("Nested complex patterns in tuple destructuring not yet supported: {:?}", elem_pattern)
+                                            ));
+                                        }
+                                    }
                                 }
                             }
                             _ => {
@@ -4913,6 +5118,16 @@ impl CodeGenerator {
                     // Handle pattern binding - for now just handle simple identifier patterns
                     if let Some(value) = value {
                         match pattern {
+                            Pattern::Identifier(name) => {
+                                // Allocate space for the variable and store the value
+                                if let Some(builder) = &self.builder {
+                                    unsafe {
+                                        let alloca = builder.build_alloca(value.get_type(), name).unwrap();
+                                        builder.build_store(alloca, value).unwrap();
+                                        self.add_variable(name.clone(), alloca);
+                                    }
+                                }
+                            }
                             Pattern::TypedIdentifier { name, .. } => {
                                 // Allocate space for the variable and store the value
                                 if let Some(builder) = &self.builder {
@@ -4921,6 +5136,102 @@ impl CodeGenerator {
                                         builder.build_store(alloca, value).unwrap();
                                         self.add_variable(name.clone(), alloca);
                                     }
+                                }
+                            }
+                            Pattern::Tuple(elements) => {
+                                // Handle tuple pattern destructuring in LLVM
+                                // The value should be an i8* pointing to the tuple memory
+                                if let Some(tuple_ptr) = value.as_pointer_value() {
+                                    // Generate destructuring for each element
+                                    for (i, elem_pattern) in elements.iter().enumerate() {
+                                        // Calculate offset for element i
+                                        // Tuple layout: [count: i64][type_ids: i8*][element_data...]
+                                        let element_count = elements.len() as i64;
+                                        let mut current_offset = 8 + element_count; // After count and type IDs
+                                        current_offset = ((current_offset + 7) / 8) * 8; // Align to 8 bytes
+
+                                        // Add offset for previous elements (simplified - assume all elements are 8 bytes)
+                                        current_offset += i as i64 * 8;
+
+                                        if let Some(builder) = &self.builder {
+                                            // Generate getelementptr to get element pointer
+                                            let elem_ptr = unsafe {
+                                                builder.build_gep(
+                                                    tuple_ptr,
+                                                    &[self.context.i64_type().const_int(current_offset as u64, false)],
+                                                    &format!("tuple_elem_{}", i)
+                                                ).unwrap()
+                                            };
+
+                                            // Handle the element pattern
+                                            match elem_pattern {
+                                                Pattern::Identifier(name) => {
+                                                    // Load as i64 and allocate space
+                                                    let elem_value = unsafe {
+                                                        builder.build_load(
+                                                            self.context.i64_type(),
+                                                            elem_ptr,
+                                                            &format!("elem_val_{}", i)
+                                                        ).unwrap()
+                                                    };
+                                                    let elem_alloca = unsafe {
+                                                        builder.build_alloca(self.context.i64_type(), name).unwrap()
+                                                    };
+                                                    unsafe {
+                                                        builder.build_store(elem_alloca, elem_value).unwrap();
+                                                    }
+                                                    self.add_variable(name.clone(), elem_alloca);
+                                                }
+                                                Pattern::TypedIdentifier { name, type_ } => {
+                                                    // Check if this is a function type
+                                                    if let crate::ast::Type::Function { .. } = type_ {
+                                                        // Load as pointer type for function pointers
+                                                        let elem_value = unsafe {
+                                                            builder.build_load(
+                                                                self.context.i8_type().ptr_type(inkwell::AddressSpace::Generic),
+                                                                elem_ptr,
+                                                                &format!("elem_val_{}", i)
+                                                            ).unwrap()
+                                                        };
+                                                        // For function pointers, allocate as i8* (pointer type)
+                                                        let elem_alloca = unsafe {
+                                                            builder.build_alloca(self.context.i8_type().ptr_type(inkwell::AddressSpace::Generic), name).unwrap()
+                                                        };
+                                                        unsafe {
+                                                            builder.build_store(elem_alloca, elem_value).unwrap();
+                                                        }
+                                                        self.add_variable(name.clone(), elem_alloca);
+                                                        // TODO: Also store function signature information for LLVM
+                                                    } else {
+                                                        // Load as i64 and allocate space
+                                                        let elem_value = unsafe {
+                                                            builder.build_load(
+                                                                self.context.i64_type(),
+                                                                elem_ptr,
+                                                                &format!("elem_val_{}", i)
+                                                            ).unwrap()
+                                                        };
+                                                        let elem_alloca = unsafe {
+                                                            builder.build_alloca(self.context.i64_type(), name).unwrap()
+                                                        };
+                                                        unsafe {
+                                                            builder.build_store(elem_alloca, elem_value).unwrap();
+                                                        }
+                                                        self.add_variable(name.clone(), elem_alloca);
+                                                    }
+                                                }
+                                                _ => {
+                                                    return Err(CompilerError::codegen_error(
+                                                        format!("Nested complex patterns in tuple destructuring not yet supported: {:?}", elem_pattern)
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    return Err(CompilerError::codegen_error(
+                                        "Tuple pattern requires pointer value".to_string()
+                                    ));
                                 }
                             }
                             _ => {

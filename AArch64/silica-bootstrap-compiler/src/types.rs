@@ -305,6 +305,20 @@ impl<'a> TypeChecker<'a> {
                 types1.len() == types2.len() &&
                 types1.iter().zip(types2.iter()).all(|(t1, t2)| self.types_equal(t1, t2))
             }
+            (Type::Function { parameters: params1, return_type: ret1 },
+             Type::Function { parameters: params2, return_type: ret2 }) => {
+                params1.len() == params2.len() &&
+                params1.iter().zip(params2.iter()).all(|(p1, p2)| self.types_equal(p1, p2)) &&
+                self.types_equal(ret1, ret2)
+            }
+            (Type::PolymorphicFunction { type_params: tp1, parameters: params1, return_type: ret1 },
+             Type::PolymorphicFunction { type_params: tp2, parameters: params2, return_type: ret2 }) => {
+                // For polymorphic functions, we need to handle type parameter instantiation
+                // For now, do a simple check
+                tp1.len() == tp2.len() &&
+                params1.len() == params2.len()
+                // TODO: More sophisticated polymorphic function comparison
+            }
             _ => false, // Doesn't handle all complex types yet
         }
     }
@@ -655,7 +669,10 @@ impl<'a> TypeChecker<'a> {
             Expression::Call(call) => self.infer_call(call)?,
             Expression::FunctionLiteral(func) => self.infer_function_literal(func)?,
             Expression::If(if_expr) => self.infer_if(if_expr)?,
-            Expression::Case(case) => self.infer_case(case)?,
+            Expression::Case(case) => {
+                eprintln!("DEBUG: About to call infer_case");
+                self.infer_case(case)?
+            },
             Expression::Do(do_expr) => self.infer_do(do_expr)?,
             Expression::Region(region) => self.infer_region(region)?,
             Expression::AllocRef(alloc) => self.infer_alloc_ref(alloc)?,
@@ -1301,41 +1318,28 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for case expression
     fn infer_case(&mut self, case: &CaseExpr) -> Result<Type> {
-        // Infer scrutinee type for pattern checking (disabled for now)
-        // let scrutinee_type = self.infer_expression(&case.scrutinee)?;
+        // Infer scrutinee type for pattern checking
+        let scrutinee_type = self.infer_expression(&case.scrutinee)?;
 
         if case.branches.is_empty() {
             return type_error(case.location.clone(), "Case expression must have at least one branch".to_string());
         }
 
-        // Check pattern types and guard expressions
+        // Check pattern types only (guards and bodies handled by code generator for bootstrap)
         for branch in &case.branches {
-            // Check that pattern matches scrutinee type
-            // For now, skip detailed pattern type checking in case expressions
-            // TODO: Add proper pattern binding to type environment
-            // self.check_pattern_type(&branch.pattern, &scrutinee_type, &branch.location)?;
+            // Create a temporary environment for pattern variables
+            let mut pattern_env = HashMap::new();
 
-            // Check guard expression if present (must be Bool type)
-            // For now, skip guard checking in case expressions
-            // TODO: Add proper pattern variable scoping for guards
-            // if let Some(ref guard) = branch.guard {
-            //     let guard_type = self.infer_expression(guard)?;
-            //     self.add_constraint(Type::Bool, guard_type);
-            // }
+            // Check pattern and bind variables
+            self.check_pattern(&branch.pattern, &scrutinee_type, &case.location, &mut pattern_env)?;
         }
 
-        // All branches must have the same type
-        // For now, skip branch body type checking in case expressions
-        // TODO: Add proper pattern variable scoping
-        // let first_branch_type = self.infer_expression(&case.branches[0].body)?;
-        // for branch in &case.branches[1..] {
-        //     let branch_type = self.infer_expression(&branch.body)?;
-        //     self.add_constraint(first_branch_type.clone(), branch_type);
-        // }
+        // Basic exhaustiveness checking for bootstrap compiler
+        self.check_exhaustiveness(&scrutinee_type, &case.branches, &case.location)?;
 
-        // Case expressions return the type of their branches, not the scrutinee
-        // For now, assume branches return Int
-        Ok(Type::Int)
+        // For bootstrap compiler, case expressions return the scrutinee type
+        // This is a simplification - the code generator handles actual branch types
+        Ok(scrutinee_type)
     }
 
     /// Check that a pattern is compatible with the expected type
@@ -2425,8 +2429,216 @@ impl<'a> TypeChecker<'a> {
                         format!("Tuple pattern expected tuple type, found {:?}", expanded_expected_type));
                 }
             }
+            Pattern::Record(fields) => {
+                if let Type::Record(record_fields) = &expanded_expected_type {
+                    // Create a map of field name to type for easy lookup
+                    let mut field_type_map = std::collections::HashMap::new();
+                    for (field_name, field_type) in record_fields {
+                        field_type_map.insert(field_name, field_type);
+                    }
+
+                    // Check that all pattern fields exist in the record type
+                    for (field_name, field_pattern) in fields {
+                        match field_type_map.get(field_name) {
+                            Some(field_type) => {
+                                self.check_pattern(field_pattern, field_type, location, env)?;
+                            }
+                            None => {
+                                return type_error(location.clone(),
+                                    format!("Record pattern field '{}' does not exist in type {:?}", field_name, expanded_expected_type));
+                            }
+                        }
+                    }
+                } else {
+                    return type_error(location.clone(),
+                        format!("Record pattern expected record type, found {:?}", expanded_expected_type));
+                }
+            }
+            Pattern::Variant { constructor, payload } => {
+                if let Type::Variant(variants) = &expanded_expected_type {
+                    // Find the variant with the matching constructor
+                    let mut found_variant = None;
+                    for (variant_name, variant_payload_type) in variants {
+                        if variant_name == constructor {
+                            found_variant = Some(variant_payload_type);
+                            break;
+                        }
+                    }
+
+                    match (found_variant, payload) {
+                        (Some(Some(expected_payload_type)), Some(pattern_payload)) => {
+                            // Variant has payload, pattern has payload
+                            self.check_pattern(pattern_payload, expected_payload_type, location, env)?;
+                        }
+                        (Some(None), None) => {
+                            // Variant has no payload, pattern has no payload - this is correct
+                        }
+                        _ => {
+                            return type_error(location.clone(),
+                                format!("Variant pattern '{}' payload mismatch for type {:?}", constructor, expanded_expected_type));
+                        }
+                    }
+                } else {
+                    return type_error(location.clone(),
+                        format!("Variant pattern expected variant type, found {:?}", expanded_expected_type));
+                }
+            }
+            Pattern::GenericVariant { constructor, type_args, payload } => {
+                // For now, treat generic variants similarly to regular variants
+                // TODO: Handle type argument instantiation properly
+                if let Type::Variant(variants) = &expanded_expected_type {
+                    let mut found_variant = None;
+                    for (variant_name, variant_payload_type) in variants {
+                        if variant_name == constructor {
+                            found_variant = Some(variant_payload_type);
+                            break;
+                        }
+                    }
+
+                    match (found_variant, payload) {
+                        (Some(Some(expected_payload_type)), Some(pattern_payload)) => {
+                            // For generic variants, we might need to substitute type args
+                            // For now, just check the pattern directly
+                            self.check_pattern(pattern_payload, expected_payload_type, location, env)?;
+                        }
+                        (Some(None), None) => {
+                            // Variant has no payload, pattern has no payload
+                        }
+                        _ => {
+                            return type_error(location.clone(),
+                                format!("Generic variant pattern '{}' payload mismatch for type {:?}", constructor, expanded_expected_type));
+                        }
+                    }
+                } else {
+                    return type_error(location.clone(),
+                        format!("Generic variant pattern expected variant type, found {:?}", expanded_expected_type));
+                }
+            }
+            Pattern::Alternative(patterns) => {
+                if let Type::Sum(sum_types) = &expanded_expected_type {
+                    // Alternative patterns should match one of the sum types
+                    // For now, require that all alternatives match the same sum type
+                    // TODO: More sophisticated alternative pattern checking
+                    if patterns.len() != sum_types.len() {
+                        return type_error(location.clone(),
+                            format!("Alternative pattern has {} alternatives but sum type has {} types",
+                                patterns.len(), sum_types.len()));
+                    }
+
+                    for (pattern, sum_type) in patterns.iter().zip(sum_types) {
+                        self.check_pattern(pattern, sum_type, location, env)?;
+                    }
+                } else {
+                    return type_error(location.clone(),
+                        format!("Alternative pattern expected sum type, found {:?}", expanded_expected_type));
+                }
+            }
+            Pattern::Literal(lit) => {
+                // Literal patterns should match the literal type
+                let lit_type = match lit {
+                    crate::ast::Literal::Unit => Type::Unit,
+                    crate::ast::Literal::Bool(_) => Type::Bool,
+                    crate::ast::Literal::Int(_) => Type::Int,
+                    crate::ast::Literal::Char(_) => Type::Char,
+                    crate::ast::Literal::String(_) => Type::String,
+                };
+
+                if !self.types_equal(&expanded_expected_type, &lit_type) {
+                    return type_error(location.clone(),
+                        format!("Literal pattern type {:?} does not match expected type {:?}", lit_type, expanded_expected_type));
+                }
+            }
             _ => return type_error(location.clone(), format!("Unsupported pattern type: {:?}", pattern)),
         }
+        Ok(())
+    }
+
+    /// Check exhaustiveness of case patterns
+    fn check_exhaustiveness(&self, scrutinee_type: &Type, branches: &[CaseBranch], location: &SourceLocation) -> Result<()> {
+        // Basic exhaustiveness checking for bootstrap compiler
+        match scrutinee_type {
+            Type::Bool => {
+                // For boolean, must cover true and false (or have wildcard)
+                let mut covers_true = false;
+                let mut covers_false = false;
+                let mut has_wildcard = false;
+
+                for branch in branches {
+                    match &branch.pattern {
+                        Pattern::Literal(Literal::Bool(true)) => covers_true = true,
+                        Pattern::Literal(Literal::Bool(false)) => covers_false = true,
+                        Pattern::Identifier(_) => {
+                            // Variable pattern covers everything
+                            has_wildcard = true;
+                        }
+                        Pattern::TypedIdentifier { .. } => {
+                            // Typed variable pattern covers everything
+                            has_wildcard = true;
+                        }
+                        _ => {
+                            // Other patterns might be exhaustive, but for now treat as non-exhaustive
+                        }
+                    }
+
+                    // If guard is present, this branch might not cover all cases
+                    if branch.guard.is_some() {
+                        // Guards make exhaustiveness checking more complex
+                        // For bootstrap compiler, skip detailed analysis
+                        has_wildcard = true;
+                    }
+                }
+
+                if !has_wildcard && (!covers_true || !covers_false) {
+                    return type_error(location.clone(),
+                        format!("Non-exhaustive patterns for boolean type. Missing cases: {}{}",
+                            if !covers_true { "true" } else { "" },
+                            if !covers_false { if !covers_true { ", false" } else { "false" } } else { "" }));
+                }
+            }
+            Type::Variant(variants) => {
+                // For variant types, check if all constructors are covered
+                let mut covered_constructors = std::collections::HashSet::new();
+                let mut has_wildcard = false;
+
+                for branch in branches {
+                    match &branch.pattern {
+                        Pattern::Variant { constructor, .. } => {
+                            covered_constructors.insert(constructor.clone());
+                        }
+                        Pattern::Identifier(_) | Pattern::TypedIdentifier { .. } => {
+                            has_wildcard = true;
+                        }
+                        _ => {
+                            // Other patterns don't cover variant constructors
+                        }
+                    }
+
+                    // Guards complicate exhaustiveness
+                    if branch.guard.is_some() {
+                        has_wildcard = true;
+                    }
+                }
+
+                if !has_wildcard {
+                    let all_constructors: std::collections::HashSet<String> =
+                        variants.iter().map(|(name, _)| name.clone()).collect();
+
+                    let missing: Vec<String> = all_constructors.difference(&covered_constructors)
+                        .cloned().collect();
+
+                    if !missing.is_empty() {
+                        return type_error(location.clone(),
+                            format!("Non-exhaustive patterns for variant type. Missing constructors: {}",
+                                missing.join(", ")));
+                    }
+                }
+            }
+            _ => {
+                // For other types, we don't do exhaustiveness checking in bootstrap compiler
+                // This includes complex types like tuples, records, etc.
+            }
+        }
+
         Ok(())
     }
 
@@ -2453,23 +2665,12 @@ impl<'a> TypeChecker<'a> {
                             });
                         }
                     }
-                    // For now, just check that the pattern can bind the expression type
-                    // More sophisticated pattern type checking would go here
-                    match pattern {
-                        crate::ast::Pattern::TypedIdentifier { name, type_ } => {
-                            if name != "_" {
-                                self.env.insert(name.clone(), TypeScheme {
-                                    vars: vec![],
-                                    ty: expr_type,
-                                });
-                            }
-                        }
-                        _ => {
-                            return Err(CompilerError::type_error(
-                                SourceLocation::new("".to_string(), 0, 0, 0),
-                                format!("Complex patterns not yet supported in type checking: {:?}", pattern)
-                            ));
-                        }
+                    // Check pattern against expression type and bind variables
+                    let mut pattern_env = HashMap::new();
+                    self.check_pattern(pattern, &expr_type, &SourceLocation::unknown(), &mut pattern_env)?;
+                    // Merge the pattern bindings into the main environment
+                    for (name, scheme) in pattern_env {
+                        self.env.insert(name, scheme);
                     }
                 }
                 crate::ast::Statement::Expr(expr) => {
