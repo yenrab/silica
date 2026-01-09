@@ -5782,10 +5782,20 @@ impl CodeGenerator {
                     // Generate the expression
                     let expr_result = self.generate_function_literal_expr(expr, func_lit, body_instructions)?;
 
-                    // For now, just handle identifier patterns
-                    if let Pattern::TypedIdentifier { name: var_name, .. } = pattern {
-                        // Add to symbol table for this function literal scope
-                        self.add_variable_text(var_name.clone(), expr_result.clone());
+                    // Handle identifier patterns (both simple and typed)
+                    match pattern {
+                        Pattern::Identifier(var_name) => {
+                            // Simple identifier binding
+                            self.add_variable_text(var_name.clone(), expr_result.clone());
+                        }
+                        Pattern::TypedIdentifier { name: var_name, .. } => {
+                            // Typed identifier binding
+                            self.add_variable_text(var_name.clone(), expr_result.clone());
+                        }
+                        _ => {
+                            // For other pattern types, we could add support later
+                            // For now, just ignore them (they don't contribute to return value)
+                        }
                     }
                     // The result of a bind statement doesn't contribute to the return value
                 }
