@@ -36,15 +36,23 @@ end
 
 **Silica:**
 ```silica
-fn counter_loop(count: int) -> proc[concurrency] unit {
-    recv() match {
-        :increment -> counter_loop(count + 1)
-        {:get, caller} -> {
-            send(caller, count)
-            counter_loop(count)
-        }
-        :reset -> counter_loop(0)
+type CounterMsg = { tag: string, reply_channel: int };
+type GetMsg = { tag: string, reply_channel: int };
+
+fn counter_handler(msg: CounterMsg, state: int) -> int {
+    case msg.tag of {
+        "increment" -> state + 1;
+        "get" -> {
+            // In real implementation, would send reply via channel
+            state  // Return current state for now
+        };
+        "reset" -> 0;
+        _ -> state
     }
+}
+
+fn spawn_counter(initial_count: int) -> int proc[concurrency] {
+    spawn(initial_count, counter_handler)
 }
 ```
 
