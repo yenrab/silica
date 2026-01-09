@@ -21,10 +21,10 @@ impl Token {
 /// TokenKind enumerates all possible token types in Silica
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
-    // Keywords (26 total)
+    // Keywords (27 total)
     Actor, ActorRef, As, Atomic, Bool, Buf, Case, Char, Concurrency, CoreId, CoreSet, DeviceIO, EfficiencyCores, PerformanceCores,
     Do, Effect, Else, End, Enum, Export, False, Fn, For, From, If,
-    Impl, Import, Int, Let, Mailbox, Mem, Module, Normal, Of, Proc,
+    Impl, Import, Int, Let, Mailbox, Mem, Module, Normal, Not, Of, Proc,
     Pub, Recv, Ref, Region, Return, Self_, Send, Spawn, String, Struct,
     Trait, True, Type, Underscore, Unit, Use, Where,
 
@@ -67,7 +67,7 @@ impl TokenKind {
             TokenKind::For | TokenKind::From |             TokenKind::If | TokenKind::Impl |
             TokenKind::Import | TokenKind::Int | TokenKind::Let |
             TokenKind::Mailbox | TokenKind::Mem | TokenKind::Module |
-            TokenKind::Normal | TokenKind::Of | TokenKind::Proc |
+            TokenKind::Normal | TokenKind::Not | TokenKind::Of | TokenKind::Proc |
             TokenKind::Pub | TokenKind::Recv | TokenKind::Ref |
             TokenKind::Region | TokenKind::Return | TokenKind::Self_ |
             TokenKind::Send | TokenKind::Spawn | TokenKind::String |
@@ -335,6 +335,7 @@ impl Lexer {
             "mem" => TokenKind::Mem,
             "module" => TokenKind::Module,
             "normal" => TokenKind::Normal,
+            "not" => TokenKind::Not,
             "of" => TokenKind::Of,
             "proc" => TokenKind::Proc,
             "pub" => TokenKind::Pub,

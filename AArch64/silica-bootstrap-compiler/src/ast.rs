@@ -26,10 +26,8 @@ pub enum Declaration {
 #[derive(Debug, Clone)]
 pub struct FunctionDecl {
     pub name: String,
-    pub type_params: Vec<TypeParam>, // Generic type parameters with bounds
     pub parameters: Vec<Parameter>,
     pub return_type: Option<Type>,
-    pub where_clause: Option<WhereClause>,
     pub body: Vec<Statement>,
     pub effects: Vec<Effect>,
     pub location: SourceLocation,
@@ -86,7 +84,6 @@ pub struct ExportDecl {
 #[derive(Debug, Clone)]
 pub struct StructDecl {
     pub name: String,
-    pub type_params: Vec<TypeParam>, // Generic type parameters with bounds
     pub fields: Vec<StructField>,
     pub location: SourceLocation,
 }
@@ -103,7 +100,6 @@ pub struct StructField {
 #[derive(Debug, Clone)]
 pub struct EnumDecl {
     pub name: String,
-    pub type_params: Vec<TypeParam>, // Generic type parameters with bounds
     pub variants: Vec<EnumVariant>,
     pub location: SourceLocation,
 }
@@ -128,7 +124,6 @@ pub struct AssociatedType {
 #[derive(Debug, Clone)]
 pub struct TraitDecl {
     pub name: String,
-    pub type_params: Vec<TypeParam>, // Generic type parameters with bounds
     pub associated_types: Vec<AssociatedType>,
     pub methods: Vec<TraitMethod>,
     pub location: SourceLocation,
@@ -151,48 +146,10 @@ pub struct AssociatedTypeDef {
     pub location: SourceLocation,
 }
 
-/// Type parameter with optional trait bounds
-#[derive(Debug, Clone)]
-pub struct TypeParam {
-    pub name: String,
-    pub bounds: Vec<TraitBound>, // Trait bounds like T: Eq + Ord
-}
-
-impl PartialEq for TypeParam {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-        // For now, we only compare names for equality
-        // Bounds comparison would be more complex
-    }
-}
-
-/// Trait bound for generic constraints
-#[derive(Debug, Clone)]
-pub struct TraitBound {
-    pub trait_name: String,
-    pub type_args: Vec<Type>, // For generic traits like Iterator<Item = T>
-}
-
-/// Where clause predicate
-#[derive(Debug, Clone)]
-pub enum WherePredicate {
-    TraitBound {
-        type_: Type,
-        bounds: Vec<TraitBound>,
-    },
-}
-
-/// Where clause
-#[derive(Debug, Clone)]
-pub struct WhereClause {
-    pub predicates: Vec<WherePredicate>,
-}
-
 /// Implementation declaration
 #[derive(Debug, Clone)]
 pub struct ImplDecl {
     pub trait_name: Option<String>, // None for inherent impls
-    pub type_params: Vec<TypeParam>,
     pub for_type: Type,
     pub associated_types: Vec<AssociatedTypeDef>,
     pub methods: Vec<FunctionDecl>,
@@ -203,7 +160,6 @@ pub struct ImplDecl {
 #[derive(Debug, Clone)]
 pub struct TypeAliasDecl {
     pub name: String,
-    pub type_params: Vec<TypeParam>, // Generic type parameters with bounds
     pub aliased_type: Type,
     pub location: SourceLocation,
 }
@@ -271,8 +227,6 @@ pub enum Expression {
     FieldAccess(FieldAccessExpr),
     Tuple(Vec<Expression>), // Tuple literals: (expr1, expr2, ...)
 
-    // Generic types
-    GenericInstantiation(GenericInstantiationExpr),
     ConstructorCall(ConstructorCallExpr),
 }
 
@@ -330,7 +284,6 @@ pub enum Statement {
 #[derive(Debug, Clone)]
 pub struct CallExpr {
     pub function: Box<Expression>,
-    pub type_args: Vec<Type>, // Optional type arguments for generic calls
     pub arguments: Vec<Expression>,
     pub location: SourceLocation,
 }
@@ -338,10 +291,8 @@ pub struct CallExpr {
 /// Function literal expression (lambda/anonymous function)
 #[derive(Debug, Clone)]
 pub struct FunctionLiteralExpr {
-    pub type_params: Vec<TypeParam>, // Generic type parameters with bounds
     pub parameters: Vec<Parameter>,
     pub return_type: Option<Type>,
-    pub where_clause: Option<WhereClause>,
     pub body: Vec<Statement>,
     pub effects: Vec<Effect>,
     pub captured_vars: Vec<String>, // Variables captured from outer scope
@@ -586,15 +537,6 @@ pub struct FieldAccessExpr {
     pub location: SourceLocation,
 }
 
-/// Generic instantiation expression: TypeName<Arg1, Arg2>(value)
-/// Creates a value of a generic type, e.g., Some(42) for Option<int>
-#[derive(Debug, Clone)]
-pub struct GenericInstantiationExpr {
-    pub type_name: String,
-    pub type_args: Vec<Type>,
-    pub payload: Option<Box<Expression>>,
-    pub location: SourceLocation,
-}
 
 /// Constructor call expression: TypeName::Constructor<Args>(payload)
 /// Creates a value using a constructor, e.g., Option::Some<int>(42)
@@ -617,7 +559,6 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     Record(Vec<(String, Pattern)>),
     Variant { constructor: String, payload: Option<Box<Pattern>> },
-    GenericVariant { constructor: String, type_args: Vec<Type>, payload: Option<Box<Pattern>> },
     Alternative(Vec<Pattern>), // Pattern alternatives: pat1 | pat2 | pat3
 }
 
@@ -641,12 +582,6 @@ pub enum Type {
         parameters: Vec<Type>,
         return_type: Box<Type>,
         captured_types: Vec<Type>, // Types of captured variables
-    },
-    // Polymorphic function types (higher-order)
-    PolymorphicFunction {
-        type_params: Vec<TypeParam>,  // Type parameters with bounds
-        parameters: Vec<Type>,
-        return_type: Box<Type>,
     },
 
     // Compound types
@@ -689,11 +624,6 @@ pub enum Type {
     PerformanceCores, // Built-in: high-performance cores
     EfficiencyCores,  // Built-in: low-power efficiency cores
 
-    // Generic types
-    Generic {
-        name: String,
-        type_args: Vec<Type>,
-    },
 
     // Type variables (for polymorphism)
     Variable(String),

@@ -91,13 +91,6 @@ impl Parser {
         let location = self.previous().location.clone();
         let name = self.consume_identifier("Expected function name")?;
 
-        // Parse optional type parameters
-        let type_params = if self.match_token(TokenKind::Less) {
-            self.parse_type_parameters()?
-        } else {
-            Vec::new()
-        };
-
         self.consume(TokenKind::LeftParen, "Expected '(' after function name")?;
         let parameters = self.parameter_list()?;
         self.consume(TokenKind::RightParen, "Expected ')' after parameters")?;
@@ -117,12 +110,6 @@ impl Parser {
             Vec::new()
         };
 
-        // Parse optional where clause
-        let where_clause = if self.match_token(TokenKind::Where) {
-            Some(self.parse_where_clause()?)
-        } else {
-            None
-        };
 
         self.consume(TokenKind::LeftBrace, "Expected '{' before function body")?;
         let body = self.parse_statements()?;
@@ -130,10 +117,8 @@ impl Parser {
 
         Ok(FunctionDecl {
             name,
-            type_params,
             parameters,
             return_type,
-            where_clause,
             body,
             effects,
             location,
@@ -522,127 +507,8 @@ impl Parser {
     }
 
     /// Parse type with optional type parameters in scope
-    fn parse_type_with_params(&mut self, type_params: &[String]) -> Result<Type> {
-        if self.match_token(TokenKind::LeftParen) {
-            // Tuple type or function type
-            if self.match_token(TokenKind::RightParen) {
-                // Unit type
-                Ok(Type::Unit)
-            } else {
-                let first_type = self.parse_type_with_params(type_params)?;
-                if self.match_token(TokenKind::Comma) {
-                    // Tuple type
-                    let mut types = vec![first_type];
-                    loop {
-                        types.push(self.parse_type_with_params(type_params)?);
-                        if !self.match_token(TokenKind::Comma) {
-                            break;
-                        }
-                    }
-                    self.consume(TokenKind::RightParen, "Expected ')' after tuple types")?;
-                    Ok(Type::Tuple(types))
-                } else {
-                    // Function type
-                    self.consume(TokenKind::RightArrow, "Expected '->' in function type")?;
-                    let return_type = self.parse_type_with_params(type_params)?;
-                    self.consume(TokenKind::RightParen, "Expected ')' after function type")?;
-                    Ok(Type::Function {
-                        parameters: vec![first_type],
-                        return_type: Box::new(return_type),
-                    })
-                }
-            }
-        } else if self.match_token(TokenKind::Proc) {
-            // Process type
-            self.consume(TokenKind::LeftBracket, "Expected '[' after 'proc'")?;
-            let effects = self.effect_list()?;
-            self.consume(TokenKind::RightBracket, "Expected ']' after effects")?;
-            let result_type = self.parse_type_with_params(type_params)?;
-            Ok(Type::Process {
-                effects,
-                result_type: Box::new(result_type),
-            })
-        } else if self.match_token(TokenKind::LeftBrace) {
-            // Record type
-            let mut fields = Vec::new();
-            while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
-                let field_name = self.consume_identifier("Expected field name")?;
-                self.consume(TokenKind::Colon, "Expected ':' after field name")?;
-                let field_type = self.parse_type_with_params(type_params)?;
-                fields.push((field_name, field_type));
-
-                if !self.match_token(TokenKind::Comma) {
-                    break;
-                }
-            }
-            self.consume(TokenKind::RightBrace, "Expected '}' after record fields")?;
-            Ok(Type::Record(fields))
-        } else if self.match_token(TokenKind::Region) {
-            // Region type
-            self.consume(TokenKind::LeftParen, "Expected '(' after 'region'")?;
-            let space = self.memory_space()?;
-            self.consume(TokenKind::RightParen, "Expected ')' after memory space")?;
-            Ok(Type::Region { space })
-        } else if self.match_token(TokenKind::Ref) {
-            // Reference type
-            self.consume(TokenKind::LeftParen, "Expected '(' after 'ref'")?;
-            let region = self.parse_type_with_params(type_params)?;
-            self.consume(TokenKind::Comma, "Expected ',' after region")?;
-            let space = self.memory_space()?;
-            self.consume(TokenKind::Comma, "Expected ',' after memory space")?;
-            let element_type = self.parse_type_with_params(type_params)?;
-            self.consume(TokenKind::RightParen, "Expected ')' after reference type")?;
-            Ok(Type::Reference {
-                region: Box::new(region),
-                space,
-                element_type: Box::new(element_type),
-            })
-        } else if self.match_token(TokenKind::Buf) {
-            // Buffer type
-            self.consume(TokenKind::LeftParen, "Expected '(' after 'buf'")?;
-            let region = self.parse_type_with_params(type_params)?;
-            self.consume(TokenKind::Comma, "Expected ',' after region")?;
-            let space = self.memory_space()?;
-            self.consume(TokenKind::Comma, "Expected ',' after memory space")?;
-            let element_type = self.parse_type_with_params(type_params)?;
-            self.consume(TokenKind::Comma, "Expected ',' after element type")?;
-            let capacity = self.consume_integer("Expected buffer capacity")?;
-            self.consume(TokenKind::RightParen, "Expected ')' after buffer type")?;
-            Ok(Type::Buffer {
-                region: Box::new(region),
-                space,
-                element_type: Box::new(element_type),
-                capacity: capacity as usize,
-            })
-        } else if self.match_token(TokenKind::ActorRef) {
-            // Actor reference type
-            self.consume(TokenKind::LeftParen, "Expected '(' after 'actor_ref'")?;
-            let message_type = self.parse_type_with_params(type_params)?;
-            self.consume(TokenKind::RightParen, "Expected ')' after message type")?;
-            Ok(Type::ActorRef {
-                message_type: Box::new(message_type),
-            })
-        } else if self.match_token(TokenKind::Int) {
-            Ok(Type::Int)
-        } else if self.match_token(TokenKind::Bool) {
-            Ok(Type::Bool)
-        } else if self.match_token(TokenKind::Char) {
-            Ok(Type::Char)
-        } else if self.match_token(TokenKind::Unit) {
-            Ok(Type::Unit)
-        } else if self.match_token(TokenKind::String) {
-            Ok(Type::String)
-        } else {
-            // User-defined type name or type variable
-            let name = self.consume_identifier("Expected type name")?;
-
-            // Check if this is a type parameter
-            if type_params.contains(&name) {
-                Ok(Type::Variable(name))
-            } else {
-                Ok(Type::Named(name))
-            }
-        }
+    fn parse_type_with_params(&mut self, _type_params: &[String]) -> Result<Type> {
+        self.parse_type()
     }
 
     /// Parse memory space
@@ -843,8 +709,8 @@ impl Parser {
 
     /// Parse unary expressions
     fn unary(&mut self) -> Result<Expression> {
-        if self.match_token(TokenKind::Bang) || self.match_token(TokenKind::Minus) {
-            let operator = if self.previous().kind == TokenKind::Bang {
+        if self.match_token(TokenKind::Bang) || self.match_token(TokenKind::Not) || self.match_token(TokenKind::Minus) {
+            let operator = if self.previous().kind == TokenKind::Bang || self.previous().kind == TokenKind::Not {
                 UnaryOp::Not
             } else {
                 UnaryOp::Negate
@@ -867,8 +733,6 @@ impl Parser {
         loop {
             if self.match_token(TokenKind::LeftParen) {
                 expr = self.finish_call(expr)?;
-            } else if self.match_token(TokenKind::Less) {
-                expr = self.finish_generic_call(expr)?;
             } else if self.match_token(TokenKind::Dot) {
                 expr = self.finish_field_access(expr)?;
             } else {
@@ -882,13 +746,8 @@ impl Parser {
     /// Finish parsing a function call
     fn finish_call(&mut self, callee: Expression) -> Result<Expression> {
         let mut arguments = Vec::new();
-        let mut type_args = Vec::new();
         let location = self.previous().location.clone();
 
-        // Check for optional type arguments
-        if self.match_token(TokenKind::Less) {
-            type_args = self.parse_type_arguments()?;
-        }
 
         // Parse arguments
         if !self.check(TokenKind::RightParen) {
@@ -904,47 +763,11 @@ impl Parser {
 
         Ok(Expression::Call(CallExpr {
             function: Box::new(callee),
-            type_args,
             arguments,
             location,
         }))
     }
 
-    /// Finish parsing generic function call: func<type_args>(args)
-    fn finish_generic_call(&mut self, function_expr: Expression) -> Result<Expression> {
-        let location = self.previous().location.clone();
-
-        // Parse type arguments
-        let type_args = self.parse_type_arguments()?;
-        self.consume(TokenKind::LeftParen, "Expected '(' after type arguments")?;
-
-        // Parse regular arguments
-        let mut arguments = Vec::new();
-        if !self.check(TokenKind::RightParen) {
-            loop {
-                arguments.push(self.expression()?);
-                if !self.match_token(TokenKind::Comma) {
-                    break;
-                }
-            }
-        }
-        self.consume(TokenKind::RightParen, "Expected ')' after arguments")?;
-
-        // For now, only support identifier functions
-        match function_expr {
-            Expression::Identifier(function_name) => {
-                Ok(Expression::Call(CallExpr {
-                    function: Box::new(Expression::Identifier(function_name)),
-                    type_args,
-                    arguments,
-                    location,
-                }))
-            }
-            _ => {
-                parse_error(location, "Generic calls only supported on identifiers".to_string())
-            }
-        }
-    }
 
     /// Finish parsing field access: object.field
     fn finish_field_access(&mut self, object: Expression) -> Result<Expression> {
@@ -1444,37 +1267,6 @@ impl Parser {
         }))
     }
 
-    /// Parse generic instantiation: TypeName<Arg1, Arg2>(payload)
-    fn parse_generic_instantiation(&mut self, type_name: String, location: SourceLocation) -> Result<Expression> {
-                    // Parse type arguments
-                    let mut type_args = Vec::new();
-                    if !self.check(TokenKind::Greater) {
-                        loop {
-                            let ty = self.parse_type()?;
-                            type_args.push(ty);
-                            if !self.match_token(TokenKind::Comma) {
-                                break;
-                            }
-                        }
-                    }
-        self.consume(TokenKind::Greater, "Expected '>' after type arguments")?;
-
-        // Parse optional payload (for enum variants like Some(42))
-        let payload = if self.match_token(TokenKind::LeftParen) {
-            let expr = self.expression()?;
-            self.consume(TokenKind::RightParen, "Expected ')' after payload")?;
-            Some(Box::new(expr))
-        } else {
-            None
-        };
-
-        Ok(Expression::GenericInstantiation(GenericInstantiationExpr {
-            type_name,
-            type_args,
-            payload,
-            location,
-        }))
-    }
 
     /// Parse core_id(core_number) expression
     fn parse_core_id(&mut self) -> Result<Expression> {
@@ -1487,7 +1279,6 @@ impl Parser {
         Ok(Expression::Call(CallExpr {
             function: Box::new(Expression::Identifier("core_id".to_string())),
             arguments: vec![core_expr],
-            type_args: vec![],
             location,
         }))
     }
@@ -1559,12 +1350,6 @@ impl Parser {
         let location = self.previous().location.clone();
         let name = self.consume_identifier("Expected struct name")?;
 
-        // Parse optional type parameters
-        let type_params = if self.match_token(TokenKind::Less) {
-            self.parse_type_parameters()?
-        } else {
-            Vec::new()
-        };
 
         self.consume(TokenKind::LeftBrace, "Expected '{' after struct name")?;
 
@@ -1572,8 +1357,7 @@ impl Parser {
         while !self.check(TokenKind::RightBrace) {
             let field_name = self.consume_identifier("Expected field name")?;
             self.consume(TokenKind::Colon, "Expected ':' after field name")?;
-            let param_names: Vec<String> = type_params.iter().map(|tp| tp.name.clone()).collect();
-            let field_type = self.parse_type_with_params(&param_names)?;
+            let field_type = self.parse_type()?;
 
             fields.push(StructField {
                 name: field_name,
@@ -1591,7 +1375,6 @@ impl Parser {
 
         Ok(StructDecl {
             name,
-            type_params,
             fields,
             location,
         })
@@ -1602,12 +1385,6 @@ impl Parser {
         let location = self.previous().location.clone();
         let name = self.consume_identifier("Expected enum name")?;
 
-        // Parse optional type parameters
-        let type_params = if self.match_token(TokenKind::Less) {
-            self.parse_type_parameters()?
-        } else {
-            Vec::new()
-        };
 
         self.consume(TokenKind::LeftBrace, "Expected '{' after enum name")?;
 
@@ -1620,10 +1397,9 @@ impl Parser {
                 let variant = if self.match_token(TokenKind::LeftParen) {
                     // Tuple variant: Variant(Type, Type)
                     let mut fields = Vec::new();
-                    let param_names: Vec<String> = type_params.iter().map(|tp| tp.name.clone()).collect();
                     if !self.check(TokenKind::RightParen) {
                         loop {
-                            fields.push(self.parse_type_with_params(&param_names)?);
+                            fields.push(self.parse_type()?);
                             if !self.match_token(TokenKind::Comma) {
                                 break;
                             }
@@ -1671,7 +1447,6 @@ impl Parser {
 
         Ok(EnumDecl {
             name,
-            type_params,
             variants,
             location,
         })
@@ -1682,12 +1457,6 @@ impl Parser {
         let location = self.previous().location.clone();
         let name = self.consume_identifier("Expected trait name")?;
 
-        // Parse optional type parameters
-        let type_params = if self.match_token(TokenKind::Less) {
-            self.parse_type_parameters()?
-        } else {
-            Vec::new()
-        };
 
         self.consume(TokenKind::LeftBrace, "Expected '{' after trait name")?;
 
@@ -1783,7 +1552,6 @@ impl Parser {
 
         Ok(TraitDecl {
             name,
-            type_params,
             associated_types,
             methods,
             location,
@@ -1795,12 +1563,6 @@ impl Parser {
         // eprintln!("DEBUG IMPL: impl_declaration called");
         let location = self.previous().location.clone();
 
-        // Parse optional type parameters
-        let type_params = if self.match_token(TokenKind::Less) {
-            self.parse_type_parameters()?
-        } else {
-            Vec::new()
-        };
 
         // Check if this is a trait implementation
         let trait_name = if let TokenKind::Identifier(name) = &self.peek().kind {
@@ -1855,7 +1617,6 @@ impl Parser {
 
         Ok(ImplDecl {
             trait_name,
-            type_params,
             for_type,
             associated_types,
             methods,
@@ -1868,12 +1629,6 @@ impl Parser {
         let location = self.previous().location.clone();
         let name = self.consume_identifier("Expected type alias name")?;
 
-        // Parse optional type parameters
-        let type_params = if self.match_token(TokenKind::Less) {
-            self.parse_type_parameters()?
-        } else {
-            Vec::new()
-        };
 
         self.consume(TokenKind::Equal, "Expected '=' after type alias name")?;
         let aliased_type = self.parse_type()?;
@@ -1881,113 +1636,14 @@ impl Parser {
 
         Ok(TypeAliasDecl {
             name,
-            type_params,
             aliased_type,
             location,
         })
     }
 
     /// Parse type parameters: <T, U, V>
-    fn parse_type_parameters(&mut self) -> Result<Vec<TypeParam>> {
-        let mut params = Vec::new();
 
-        if !self.check(TokenKind::Greater) {
-            loop {
-                let param_name = self.consume_identifier("Expected type parameter name")?;
-                let mut bounds = Vec::new();
 
-                // Check for trait bounds (e.g., T: Eq + Ord)
-                if self.match_token(TokenKind::Colon) {
-                    loop {
-                        let trait_name = self.consume_identifier("Expected trait name in bound")?;
-                        let type_args = if self.match_token(TokenKind::Less) {
-                            self.parse_type_arguments()?
-                        } else {
-                            Vec::new()
-                        };
-
-                        bounds.push(TraitBound {
-                            trait_name,
-                            type_args,
-                        });
-
-                        if !self.match_token(TokenKind::Plus) {
-                            break;
-                        }
-                    }
-                }
-
-                params.push(TypeParam {
-                    name: param_name,
-                    bounds,
-                });
-
-                if !self.match_token(TokenKind::Comma) {
-                    break;
-                }
-            }
-        }
-
-        self.consume(TokenKind::Greater, "Expected '>' after type parameters")?;
-        Ok(params)
-    }
-
-    /// Parse type arguments: <int, string, T>
-    fn parse_type_arguments(&mut self) -> Result<Vec<Type>> {
-        let mut args = Vec::new();
-
-        if !self.check(TokenKind::Greater) {
-            loop {
-                let ty = self.parse_type()?;
-                args.push(ty);
-
-                if !self.match_token(TokenKind::Comma) {
-                    break;
-                }
-            }
-        }
-
-        self.consume(TokenKind::Greater, "Expected '>' after type arguments")?;
-        Ok(args)
-    }
-
-    /// Parse where clause
-    fn parse_where_clause(&mut self) -> Result<WhereClause> {
-        let mut predicates = Vec::new();
-
-        loop {
-            // Parse type : bounds
-            let type_ = self.parse_type()?;
-            self.consume(TokenKind::Colon, "Expected ':' after type in where clause")?;
-
-            let mut bounds = Vec::new();
-            loop {
-                let trait_name = self.consume_identifier("Expected trait name in bound")?;
-                let type_args = if self.match_token(TokenKind::Less) {
-                    self.parse_type_arguments()?
-                } else {
-                    Vec::new()
-                };
-
-                bounds.push(TraitBound {
-                    trait_name,
-                    type_args,
-                });
-
-                if !self.match_token(TokenKind::Plus) {
-                    break;
-                }
-            }
-
-            predicates.push(WherePredicate::TraitBound { type_, bounds });
-
-            if !self.match_token(TokenKind::Comma) {
-                break;
-            }
-        }
-
-        Ok(WhereClause { predicates })
-    }
 
     /// Parse if expression
     fn if_expression(&mut self) -> Result<Expression> {
@@ -2175,12 +1831,6 @@ impl Parser {
     fn function_literal(&mut self) -> Result<Expression> {
         let location = self.previous().location.clone();
 
-        // Parse optional type parameters
-        let type_params = if self.match_token(TokenKind::Less) {
-            self.parse_type_parameters()?
-        } else {
-            Vec::new()
-        };
 
         self.consume(TokenKind::LeftParen, "Expected '(' after 'fn'")?;
         let parameters = self.parameter_list()?;
@@ -2201,12 +1851,6 @@ impl Parser {
             Vec::new()
         };
 
-        // Parse where clause if present
-        let where_clause = if self.match_token(TokenKind::Where) {
-            Some(self.parse_where_clause()?)
-        } else {
-            None
-        };
 
         // Parse function body
         self.consume(TokenKind::LeftBrace, "Expected '{' after function signature")?;
@@ -2217,10 +1861,8 @@ impl Parser {
         let captured_vars = Vec::new();
 
         Ok(Expression::FunctionLiteral(FunctionLiteralExpr {
-            type_params,
             parameters,
             return_type,
-            where_clause,
             body,
             effects,
             captured_vars,
@@ -2270,38 +1912,8 @@ impl Parser {
             if self.match_token(TokenKind::Colon) {
                 let type_ = self.parse_type()?;
 
-                // Check for generic variant: Constructor<Type>(payload)
-                if self.match_token(TokenKind::Less) {
-                    // Parse type arguments
-                    let mut type_args = Vec::new();
-                    if !self.check(TokenKind::Greater) {
-                        loop {
-                            let ty = self.parse_type()?;
-                            type_args.push(ty);
-                            if !self.match_token(TokenKind::Comma) {
-                                break;
-                            }
-                        }
-                    }
-                    self.consume(TokenKind::Greater, "Expected '>' after type arguments")?;
-
-                    // Parse payload if present
-                    let payload = if self.match_token(TokenKind::LeftParen) {
-                        let pat = self.pattern()?;
-                        self.consume(TokenKind::RightParen, "Expected ')' after payload")?;
-                        Some(Box::new(pat))
-                    } else {
-                        None
-                    };
-
-                    return Ok(Pattern::GenericVariant {
-                        constructor: name,
-                        type_args,
-                        payload,
-                    });
-                }
                 // Check for regular variant: Constructor(payload)
-                else if self.match_token(TokenKind::LeftParen) {
+                if self.match_token(TokenKind::LeftParen) {
                     let payload = if self.check(TokenKind::RightParen) {
                         None
                     } else {
@@ -2426,11 +2038,6 @@ impl Parser {
                 }
             }
             Pattern::Variant { payload, .. } => {
-                if let Some(payload_pattern) = payload {
-                    self.collect_bound_vars_from_pattern(payload_pattern, bound_vars);
-                }
-            }
-            Pattern::GenericVariant { payload, .. } => {
                 if let Some(payload_pattern) = payload {
                     self.collect_bound_vars_from_pattern(payload_pattern, bound_vars);
                 }

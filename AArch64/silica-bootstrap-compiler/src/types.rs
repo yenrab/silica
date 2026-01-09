@@ -52,7 +52,6 @@ pub struct TypeChecker<'a> {
     substitution: Substitution,
     struct_defs: HashMap<String, Vec<StructField>>,
     symbol_table: Option<&'a crate::module_resolver::SymbolTable>,
-    generic_instantiations: HashMap<String, Vec<Type>>,
     trait_impls: Vec<TraitImpl>, // All trait implementations
     trait_defs: HashMap<String, TraitDecl>, // Trait definitions
     type_aliases: HashMap<String, Type>, // Type alias definitions (expanded)
@@ -233,7 +232,6 @@ impl<'a> TypeChecker<'a> {
             Expression::StructLiteral(struct_lit) => &struct_lit.location,
             Expression::FieldAccess(field_access) => &field_access.location,
             Expression::Tuple(_) => panic!("Tuple location should be handled specially"),
-            Expression::GenericInstantiation(generic) => &generic.location,
             Expression::ConstructorCall(ctor) => &ctor.location,
             Expression::FunctionLiteral(func) => &func.location,
             Expression::ReadLines(read_lines) => &read_lines.location,
@@ -296,6 +294,19 @@ impl<'a> TypeChecker<'a> {
     fn types_equal(&self, t1: &Type, t2: &Type) -> bool {
         match (t1, t2) {
             (Type::Named(n1), Type::Named(n2)) => n1 == n2,
+            // Handle named types that refer to structs as equal to their record representations
+            (Type::Named(name), Type::Record(fields)) |
+            (Type::Record(fields), Type::Named(name)) => {
+                if let Some(struct_def) = self.struct_defs.get(name) {
+                    // Check if the record fields match the struct definition
+                    struct_def.len() == fields.len() &&
+                    struct_def.iter().zip(fields.iter()).all(|(struct_field, (record_name, record_type))|
+                        struct_field.name == *record_name && self.types_equal(&struct_field.ty, record_type)
+                    )
+                } else {
+                    false
+                }
+            }
             (Type::Int, Type::Int) => true,
             (Type::Bool, Type::Bool) => true,
             (Type::Char, Type::Char) => true,
@@ -305,19 +316,50 @@ impl<'a> TypeChecker<'a> {
                 types1.len() == types2.len() &&
                 types1.iter().zip(types2.iter()).all(|(t1, t2)| self.types_equal(t1, t2))
             }
+            (Type::Record(fields1), Type::Record(fields2)) => {
+                fields1.len() == fields2.len() &&
+                fields1.iter().zip(fields2.iter()).all(|((name1, ty1), (name2, ty2))|
+                    name1 == name2 && self.types_equal(ty1, ty2)
+                )
+            }
             (Type::Function { parameters: params1, return_type: ret1 },
              Type::Function { parameters: params2, return_type: ret2 }) => {
                 params1.len() == params2.len() &&
                 params1.iter().zip(params2.iter()).all(|(p1, p2)| self.types_equal(p1, p2)) &&
                 self.types_equal(ret1, ret2)
             }
-            (Type::PolymorphicFunction { type_params: tp1, parameters: params1, return_type: ret1 },
-             Type::PolymorphicFunction { type_params: tp2, parameters: params2, return_type: ret2 }) => {
-                // For polymorphic functions, we need to handle type parameter instantiation
-                // For now, do a simple check
-                tp1.len() == tp2.len() &&
-                params1.len() == params2.len()
-                // TODO: More sophisticated polymorphic function comparison
+            (Type::Region { space: ref space1 }, Type::Region { space: ref space2 }) => space1 == space2,
+            (Type::Reference { region: ref reg1, space: ref space1, element_type: ref elem1 },
+             Type::Reference { region: ref reg2, space: ref space2, element_type: ref elem2 }) => {
+                let regions_compatible = match (&**reg1, &**reg2) {
+                    (&Type::Named(ref name1), &Type::Region { space: ref space2 }) => {
+                        // Check if the named type refers to a region variable
+                        if let Some(scheme) = self.env.get(name1) {
+                            matches!(&scheme.ty, Type::Region { space } if space == space2)
+                        } else {
+                            false
+                        }
+                    },
+                    (&Type::Region { space: ref space1 }, &Type::Named(ref name2)) => {
+                        // Check if the named type refers to a region variable
+                        if let Some(scheme) = self.env.get(name2) {
+                            matches!(&scheme.ty, Type::Region { space } if space == space1)
+                        } else {
+                            false
+                        }
+                    },
+                    _ => self.types_equal(reg1, reg2)
+                };
+                space1 == space2 &&
+                regions_compatible &&
+                self.types_equal(elem1, elem2)
+            }
+            (Type::Buffer { region: reg1, space: space1, element_type: elem1, capacity: cap1 },
+             Type::Buffer { region: reg2, space: space2, element_type: elem2, capacity: cap2 }) => {
+                space1 == space2 &&
+                cap1 == cap2 &&
+                self.types_equal(reg1, reg2) &&
+                self.types_equal(elem1, elem2)
             }
             _ => false, // Doesn't handle all complex types yet
         }
@@ -359,7 +401,6 @@ impl<'a> TypeChecker<'a> {
             constraints: Vec::new(),
             substitution: Substitution::new(),
             struct_defs: HashMap::new(),
-            generic_instantiations: HashMap::new(),
             trait_impls: Vec::new(),
             trait_defs: HashMap::new(),
             type_aliases: HashMap::new(),
@@ -402,59 +443,14 @@ impl<'a> TypeChecker<'a> {
 
     /// Check function declaration
     fn check_function_declaration(&mut self, func: &FunctionDecl) -> Result<()> {
-        // Convert type parameter names to TypeVars
-        let type_vars: Vec<TypeVar> = func.type_params.iter()
-            .map(|type_param| TypeVar(type_param.name.clone()))
+        // Convert parameter types, expanding aliases first
+        let param_types: Vec<Type> = func.parameters.iter()
+            .map(|param| self.expand_type_aliases(&param.type_))
             .collect();
-
-        // Create substitution map for type parameters
-        let mut type_param_subst: HashMap<String, Type> = HashMap::new();
-        for (i, type_param) in func.type_params.iter().enumerate() {
-            type_param_subst.insert(type_param.name.clone(), Type::Variable(type_vars[i].0.clone()));
-        }
-
-        // Check that trait bounds refer to valid traits
-        for type_param in &func.type_params {
-            for bound in &type_param.bounds {
-                if !self.trait_defs.contains_key(&bound.trait_name) {
-                    return type_error(
-                        func.location.clone(),
-                        format!("Trait '{}' not found (required by type parameter '{}')", bound.trait_name, type_param.name)
-                    );
-                }
-            }
-        }
-
-        // Convert parameter types, expanding aliases first, then substituting type parameters with variables
-        let mut param_types: Vec<Type> = func.parameters.iter()
-            .map(|param| {
-                let expanded_type = self.expand_type_aliases(&param.type_);
-                self.substitute_type(&expanded_type, &type_param_subst)
-            })
-            .collect();
-
-        // Convert polymorphic function types that use the same type parameters
-        // to regular function types for simpler unification
-        for param_type in &mut param_types {
-            if let Type::PolymorphicFunction { type_params, parameters, return_type } = param_type {
-                // Check if all type parameters are already bound by the outer function
-                let all_bound = type_params.iter().all(|tp| type_param_subst.contains_key(&tp.name));
-                if all_bound {
-                    // Convert to regular function type
-                    *param_type = Type::Function {
-                        parameters: parameters.clone(),
-                        return_type: return_type.clone(),
-                    };
-                }
-            }
-        }
 
         // Convert return type, expanding aliases first
         let return_type = func.return_type.as_ref()
-            .map(|rt| {
-                let expanded_type = self.expand_type_aliases(rt);
-                self.substitute_type(&expanded_type, &type_param_subst)
-            })
+            .map(|rt| self.expand_type_aliases(rt))
             .unwrap_or(Type::Unit);
 
         // Create function type
@@ -463,9 +459,9 @@ impl<'a> TypeChecker<'a> {
             return_type: Box::new(return_type),
         };
 
-        // Add function to environment as polymorphic scheme
+        // Add function to environment
         let scheme = TypeScheme {
-            vars: type_vars,
+            vars: vec![],
             ty: func_type,
         };
         self.add_variable_to_env(func.name.clone(), scheme, &func.location)?;
@@ -497,7 +493,7 @@ impl<'a> TypeChecker<'a> {
 
         let body_type = self.infer_statements(&func.body)?;
         let expected_return = func.return_type.as_ref()
-            .map(|rt| self.substitute_type(rt, &type_param_subst))
+            .map(|rt| rt.clone())
             .unwrap_or(Type::Unit);
 
         // Restore environment
@@ -575,11 +571,6 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Pattern::Variant { payload, .. } => {
-                if let Some(payload_pattern) = payload {
-                    self.collect_bound_vars_from_pattern_typecheck(payload_pattern, bound_vars);
-                }
-            }
-            Pattern::GenericVariant { payload, .. } => {
                 if let Some(payload_pattern) = payload {
                     self.collect_bound_vars_from_pattern_typecheck(payload_pattern, bound_vars);
                 }
@@ -669,10 +660,7 @@ impl<'a> TypeChecker<'a> {
             Expression::Call(call) => self.infer_call(call)?,
             Expression::FunctionLiteral(func) => self.infer_function_literal(func)?,
             Expression::If(if_expr) => self.infer_if(if_expr)?,
-            Expression::Case(case) => {
-                eprintln!("DEBUG: About to call infer_case");
-                self.infer_case(case)?
-            },
+            Expression::Case(case) => self.infer_case(case)?,
             Expression::Do(do_expr) => self.infer_do(do_expr)?,
             Expression::Region(region) => self.infer_region(region)?,
             Expression::AllocRef(alloc) => self.infer_alloc_ref(alloc)?,
@@ -818,10 +806,8 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            // Return the struct type
-            Ok(Type::Record(
-                struct_def.iter().map(|f| (f.name.clone(), f.ty.clone())).collect()
-            ))
+            // Return the named struct type
+            Ok(Type::Named(struct_lit.type_name.clone()))
         } else {
             type_error(
                 struct_lit.location.clone(),
@@ -840,24 +826,49 @@ impl<'a> TypeChecker<'a> {
     fn infer_field_access(&mut self, field_access: &FieldAccessExpr) -> Result<Type> {
         // Infer the type of the object being accessed
         let object_type = self.infer_expression(&field_access.object)?;
+        // Expand type aliases to get the actual type
+        let expanded_object_type = self.expand_type_aliases(&object_type);
 
-        // Check if it's a record/struct type
-        if let Type::Record(fields) = &object_type {
-            // Find the field
-            for (field_name, field_type) in fields {
-                if field_name == &field_access.field {
-                    return Ok(field_type.clone());
+        // Check if it's a record/struct type or a named type that refers to a struct
+        match &expanded_object_type {
+            Type::Record(fields) => {
+                // Find the field
+                for (field_name, field_type) in fields {
+                    if field_name == &field_access.field {
+                        return Ok(field_type.clone());
+                    }
+                }
+                return type_error(
+                    field_access.location.clone(),
+                    format!("Field '{}' not found in struct", field_access.field),
+                );
+            }
+            Type::Named(name) => {
+                // Check if this named type refers to a struct
+                if let Some(struct_def) = self.struct_defs.get(name) {
+                    // Find the field in the struct definition
+                    for field in struct_def {
+                        if field.name == field_access.field {
+                            return Ok(field.ty.clone());
+                        }
+                    }
+                    return type_error(
+                        field_access.location.clone(),
+                        format!("Field '{}' not found in struct '{}'", field_access.field, name),
+                    );
+                } else {
+                    return type_error(
+                        field_access.location.clone(),
+                        format!("Cannot access field '{}' on non-struct type {:?}", field_access.field, object_type),
+                    );
                 }
             }
-            return type_error(
-                field_access.location.clone(),
-                format!("Field '{}' not found in struct", field_access.field),
-            );
-        } else {
-            return type_error(
-                field_access.location.clone(),
-                format!("Cannot access field '{}' on non-struct type {:?}", field_access.field, object_type),
-            );
+            _ => {
+                return type_error(
+                    field_access.location.clone(),
+                    format!("Cannot access field '{}' on non-struct type {:?}", field_access.field, object_type),
+                );
+            }
         }
     }
 
@@ -897,7 +908,6 @@ impl<'a> TypeChecker<'a> {
             Expression::ExecCommand(exec_cmd) => Some(&exec_cmd.location),
             Expression::StructLiteral(struct_lit) => Some(&struct_lit.location),
             Expression::FieldAccess(field_access) => Some(&field_access.location),
-            Expression::GenericInstantiation(generic) => Some(&generic.location),
             Expression::ConstructorCall(ctor) => Some(&ctor.location),
             Expression::FunctionLiteral(func) => Some(&func.location),
             // Tuples don't have their own location, only elements do
@@ -1106,35 +1116,6 @@ impl<'a> TypeChecker<'a> {
             return Ok(*return_type.clone());
         }
 
-        // Handle polymorphic function types
-        if let Type::PolymorphicFunction { type_params, parameters, return_type } = &func_type {
-            if parameters.len() != call.arguments.len() {
-                return type_error(
-                    call.location.clone(),
-                    format!("Function expects {} arguments, got {}", parameters.len(), call.arguments.len()),
-                );
-            }
-
-            // Create fresh type variables for type parameters
-            let mut type_subst: HashMap<String, Type> = HashMap::new();
-            for type_param in type_params {
-                type_subst.insert(type_param.name.clone(), Type::Variable(TypeVar::fresh().0));
-            }
-
-            // Substitute parameters and return type
-            let subst_parameters: Vec<Type> = parameters.iter()
-                .map(|p| self.substitute_type(p, &type_subst))
-                .collect();
-            let subst_return_type = self.substitute_type(return_type, &type_subst);
-
-            // Check argument types
-            for (arg_expr, expected_type) in call.arguments.iter().zip(subst_parameters) {
-                let actual_type = self.infer_expression(arg_expr)?;
-                self.add_constraint(actual_type, expected_type);
-            }
-
-            return Ok(subst_return_type);
-        }
 
         // Fallback: create fresh type variables for arguments and return type
         let arg_types: Vec<Type> = call.arguments.iter()
@@ -1202,38 +1183,13 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for function literal
     fn infer_function_literal(&mut self, func: &FunctionLiteralExpr) -> Result<Type> {
-        // Convert type parameter names to TypeVars
-        let type_vars: Vec<TypeVar> = func.type_params.iter()
-            .map(|type_param| TypeVar(type_param.name.clone()))
-            .collect();
-
-        // Create substitution map for type parameters
-        let mut type_param_subst: HashMap<String, Type> = HashMap::new();
-        for (i, type_param) in func.type_params.iter().enumerate() {
-            type_param_subst.insert(type_param.name.clone(), Type::Variable(type_vars[i].0.clone()));
-        }
-
-        // Check that trait bounds refer to valid traits
-        for type_param in &func.type_params {
-            for bound in &type_param.bounds {
-                if !self.trait_defs.contains_key(&bound.trait_name) {
-                    return type_error(
-                        func.location.clone(),
-                        format!("Trait '{}' not found (required by type parameter '{}')", bound.trait_name, type_param.name)
-                    );
-                }
-            }
-        }
-
-        // Convert parameter types, substituting type parameters with variables
+        // Convert parameter types
         let param_types: Vec<Type> = func.parameters.iter()
-            .map(|param| self.substitute_type(&param.type_, &type_param_subst))
+            .map(|param| param.type_.clone())
             .collect();
 
         // Convert return type
-        let return_type = func.return_type.as_ref()
-            .map(|rt| self.substitute_type(rt, &type_param_subst))
-            .unwrap_or(Type::Unit);
+        let return_type = func.return_type.clone().unwrap_or(Type::Unit);
 
         // Create function type
         let func_type = Type::Function {
@@ -1325,21 +1281,58 @@ impl<'a> TypeChecker<'a> {
             return type_error(case.location.clone(), "Case expression must have at least one branch".to_string());
         }
 
-        // Check pattern types only (guards and bodies handled by code generator for bootstrap)
-        for branch in &case.branches {
-            // Create a temporary environment for pattern variables
-            let mut pattern_env = HashMap::new();
-
-            // Check pattern and bind variables
-            self.check_pattern(&branch.pattern, &scrutinee_type, &case.location, &mut pattern_env)?;
-        }
 
         // Basic exhaustiveness checking for bootstrap compiler
         self.check_exhaustiveness(&scrutinee_type, &case.branches, &case.location)?;
 
-        // For bootstrap compiler, case expressions return the scrutinee type
-        // This is a simplification - the code generator handles actual branch types
-        Ok(scrutinee_type)
+        // Infer return type from case branches
+        // All branches must have the same type
+        let mut first_branch_type = None;
+
+        for (branch_idx, branch) in case.branches.iter().enumerate() {
+            // Create pattern environment for this branch
+            let mut pattern_env = HashMap::new();
+            self.check_pattern(&branch.pattern, &scrutinee_type, &case.location, &mut pattern_env)?;
+
+            // Check guard expression if present (must be Bool type)
+            // Guards are evaluated with pattern variables in scope
+            if let Some(ref guard) = branch.guard {
+                // Set up pattern variables in environment for guard evaluation
+                let saved_env = self.env.clone();
+                for (var_name, type_scheme) in &pattern_env {
+                    self.env.insert(var_name.clone(), type_scheme.clone());
+                }
+
+                // Guards must evaluate to boolean type
+                let guard_type = self.infer_expression(guard)?;
+                self.add_constraint(Type::Bool, guard_type);
+
+                // Restore environment
+                self.env = saved_env;
+            }
+
+            // Set up pattern variables in environment for body type checking
+            let saved_env = self.env.clone();
+            for (var_name, type_scheme) in &pattern_env {
+                self.env.insert(var_name.clone(), type_scheme.clone());
+            }
+
+            // Infer branch body type with pattern variables in scope
+            let branch_type = self.infer_expression(&branch.body)?;
+
+            // Restore environment
+            self.env = saved_env;
+
+            // Check type consistency
+            if branch_idx == 0 {
+                first_branch_type = Some(branch_type.clone());
+            } else {
+                // For bootstrap compiler, skip unification and assume all branches have the same type
+                // The code generator will handle this properly
+            }
+        }
+
+        Ok(first_branch_type.unwrap())
     }
 
     /// Check that a pattern is compatible with the expected type
@@ -1418,31 +1411,6 @@ impl<'a> TypeChecker<'a> {
                         format!("Variant pattern expected variant type, got {:?}", expected_type));
                 }
             }
-            Pattern::GenericVariant { constructor, type_args: _, payload } => {
-                // For now, treat generic variants like regular variants
-                // TODO: Handle type arguments properly
-                if let Type::Variant(variants) = expected_type {
-                    let (_, expected_payload_type) = variants.iter()
-                        .find(|(name, _)| name == constructor)
-                        .ok_or_else(|| CompilerError::type_error(location.clone(),
-                            format!("Variant constructor '{}' not found in type", constructor)))?;
-
-                    if let Some(pattern) = payload {
-                        if let Some(ref expected_type) = expected_payload_type {
-                            self.check_pattern_type(pattern, expected_type, location)?;
-                        } else {
-                            return type_error(location.clone(),
-                                format!("Variant '{}' does not expect payload", constructor));
-                        }
-                    } else if expected_payload_type.is_some() {
-                        return type_error(location.clone(),
-                            format!("Variant '{}' expects payload", constructor));
-                    }
-                } else {
-                    return type_error(location.clone(),
-                        format!("Variant pattern expected variant type, got {:?}", expected_type));
-                }
-            }
             Pattern::Alternative(patterns) => {
                 // All alternatives must match the same type
                 for pattern in patterns {
@@ -1464,14 +1432,12 @@ impl<'a> TypeChecker<'a> {
                     let expr_type = self.infer_expression(expr)?;
                     // eprintln!("DEBUG BIND: expr_type = {:?}", expr_type);
 
-                    // Require explicit type annotations for tuple bindings
-                    if let Type::Tuple(_) = &expr_type {
-                        if let crate::ast::Pattern::Identifier(_) = pattern {
-                            return Err(CompilerError::TypeError {
-                                location: do_expr.location.clone(),
-                                message: format!("Tuple bindings must have explicit type annotations. Use 'variable:(type) <- expression' instead of 'variable <- expression'")
-                            });
-                        }
+                    // Require explicit type annotations for ALL bindings
+                    if let crate::ast::Pattern::Identifier(_) = pattern {
+                        return Err(CompilerError::TypeError {
+                            location: do_expr.location.clone(),
+                            message: format!("Variable bindings must have explicit type annotations. Use 'variable:type <- expression' instead of 'variable <- expression'")
+                        });
                     }
 
                     // Bind pattern variables to the type environment (keep named types for method dispatch)
@@ -1514,10 +1480,12 @@ impl<'a> TypeChecker<'a> {
                 // Verify that the declared type matches the actual type
                 let expanded_declared_ty = self.expand_type_aliases(type_);
                 let expanded_actual_ty = self.expand_type_aliases(ty);
-                if !self.types_equal(&expanded_actual_ty, &expanded_declared_ty) {
+                let types_match = self.types_equal(&expanded_actual_ty, &expanded_declared_ty);
+
+                if !types_match {
                     return type_error(location.clone(),
-                        format!("Pattern declares type {:?} but value has type {:?}",
-                               type_, expanded_actual_ty));
+                        format!("BIND: Pattern declares type {:?} (expanded: {:?}) but value has type {:?}",
+                               type_, expanded_declared_ty, expanded_actual_ty));
                 }
                 // Bind identifier pattern to the declared type (skip for wildcards)
                 if name != "_" {
@@ -1640,67 +1608,7 @@ impl<'a> TypeChecker<'a> {
                 self.unify(ret1, ret2)
             }
 
-            // Polymorphic function unification
-            (Type::PolymorphicFunction { type_params: tp1, parameters: params1, return_type: ret1 },
-             Type::PolymorphicFunction { type_params: tp2, parameters: params2, return_type: ret2 }) => {
-                if tp1.len() != tp2.len() || params1.len() != params2.len() {
-                    return type_error(
-                        SourceLocation::unknown(),
-                        "Polymorphic function signature mismatch".to_string(),
-                    );
-                }
 
-                // Create fresh type variables for unification
-                let mut fresh_vars: HashMap<String, Type> = HashMap::new();
-                for i in 0..tp1.len() {
-                    let fresh_var = TypeVar::fresh().0;
-                    fresh_vars.insert(tp1[i].name.clone(), Type::Variable(fresh_var.clone()));
-                    fresh_vars.insert(tp2[i].name.clone(), Type::Variable(fresh_var));
-                }
-
-                // Substitute and unify parameters
-                for (p1, p2) in params1.iter().zip(params2) {
-                    let subst_p1 = self.substitute_type(p1, &fresh_vars);
-                    let subst_p2 = self.substitute_type(p2, &fresh_vars);
-                    self.unify(&subst_p1, &subst_p2)?;
-                }
-
-                // Substitute and unify return types
-                let subst_ret1 = self.substitute_type(ret1, &fresh_vars);
-                let subst_ret2 = self.substitute_type(ret2, &fresh_vars);
-                self.unify(&subst_ret1, &subst_ret2)
-            }
-
-            // Unify PolymorphicFunction with concrete Function
-            (Type::PolymorphicFunction { type_params, parameters: poly_params, return_type: poly_ret },
-             Type::Function { parameters: func_params, return_type: func_ret }) |
-            (Type::Function { parameters: func_params, return_type: func_ret },
-             Type::PolymorphicFunction { type_params, parameters: poly_params, return_type: poly_ret }) => {
-                if poly_params.len() != func_params.len() {
-                    return type_error(
-                        SourceLocation::unknown(),
-                        "Function arity mismatch with polymorphic function".to_string(),
-                    );
-                }
-
-                // Create substitution map from polymorphic params to concrete params
-                let mut substitution: HashMap<String, Type> = HashMap::new();
-                for type_param in type_params {
-                    substitution.insert(type_param.name.clone(), Type::Variable(TypeVar::fresh().0));
-                }
-
-                // Substitute polymorphic parameters and return type
-                let subst_poly_params: Vec<Type> = poly_params.iter()
-                    .map(|p| self.substitute_type(p, &substitution))
-                    .collect();
-                let subst_poly_ret = self.substitute_type(poly_ret, &substitution);
-
-                // Unify the substituted polymorphic function with the concrete function
-                for (poly_param, func_param) in subst_poly_params.iter().zip(func_params) {
-                    self.unify(poly_param, func_param)?;
-                }
-                self.unify(&subst_poly_ret, func_ret)
-            }
 
             // Process unification
             (Type::Process { effects: e1, result_type: r1 },
@@ -1768,10 +1676,28 @@ impl<'a> TypeChecker<'a> {
     /// Infer type for alloc_ref expression
     fn infer_alloc_ref(&mut self, alloc: &AllocRefExpr) -> Result<Type> {
         // alloc_ref(region, initial_value) returns a reference
-        // For now, we'll return a simple reference type
-        // In a full implementation, this would create a proper reference type
-        // with region and element type information
-        Ok(Type::Int) // Placeholder - should be a reference type
+        let region_type = self.infer_expression(&alloc.region)?;
+        let element_type = self.infer_expression(&alloc.initial_value)?;
+
+        // For now, assume normal memory space
+        let space = MemorySpace::Normal;
+
+        // If the region is a named variable, look up its actual type from the environment
+        let resolved_region_type = if let Type::Named(name) = &region_type {
+            if let Some(scheme) = self.env.get(name) {
+                scheme.ty.clone()
+            } else {
+                region_type // Keep as Named if not found
+            }
+        } else {
+            region_type
+        };
+
+        Ok(Type::Reference {
+            region: Box::new(resolved_region_type),
+            space,
+            element_type: Box::new(element_type),
+        })
     }
 
     /// Infer type for read_ref expression
@@ -2150,6 +2076,14 @@ impl<'a> TypeChecker<'a> {
                 if let Some(aliased_type) = self.type_aliases.get(name) {
                     // Expand the aliased type recursively
                     self.expand_type_aliases(aliased_type)
+                } else if let Some(struct_def) = self.struct_defs.get(name) {
+                    // Expand struct names to their record representations
+                    Type::Record(
+                        struct_def.iter().map(|f| (f.name.clone(), f.ty.clone())).collect()
+                    )
+                } else if let Some(scheme) = self.env.get(name) {
+                    // Check if it's a variable in the environment
+                    self.expand_type_aliases(&scheme.ty)
                 } else {
                     // Check if it's a built-in type
                     match name.as_str() {
@@ -2172,12 +2106,6 @@ impl<'a> TypeChecker<'a> {
                 Type::Function {
                     parameters: parameters.iter().map(|param| self.expand_type_aliases(param)).collect(),
                     return_type: Box::new(self.expand_type_aliases(return_type)),
-                }
-            }
-            Type::Generic { name, type_args } => {
-                Type::Generic {
-                    name: name.clone(),
-                    type_args: type_args.iter().map(|arg| self.expand_type_aliases(arg)).collect(),
                 }
             }
             Type::Process { effects, result_type } => {
@@ -2208,20 +2136,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 Ok(())
             }
-            Type::Generic { type_args, .. } => {
-                // Validate all type arguments
-                for arg in type_args {
-                    self.validate_type(arg)?;
-                }
-                Ok(())
-            }
             Type::Function { parameters, return_type } => {
-                for param in parameters {
-                    self.validate_type(param)?;
-                }
-                self.validate_type(return_type)
-            }
-            Type::PolymorphicFunction { parameters, return_type, .. } => {
                 for param in parameters {
                     self.validate_type(param)?;
                 }
@@ -2257,9 +2172,6 @@ impl<'a> TypeChecker<'a> {
         &self.struct_defs
     }
 
-    pub fn get_generic_instantiations(&self) -> &HashMap<String, Vec<Type>> {
-        &self.generic_instantiations
-    }
 
     /// Substitute type variables in a type
     fn substitute_type(&self, ty: &Type, substitution: &HashMap<String, Type>) -> Type {
@@ -2269,15 +2181,6 @@ impl<'a> TypeChecker<'a> {
             }
             Type::Function { parameters, return_type } => {
                 Type::Function {
-                    parameters: parameters.iter().map(|p| self.substitute_type(p, substitution)).collect(),
-                    return_type: Box::new(self.substitute_type(return_type, substitution)),
-                }
-            }
-            Type::PolymorphicFunction { type_params, parameters, return_type } => {
-                // Type parameters are bound variables, don't substitute them
-                // But substitute in parameter and return types
-                Type::PolymorphicFunction {
-                    type_params: type_params.clone(),
                     parameters: parameters.iter().map(|p| self.substitute_type(p, substitution)).collect(),
                     return_type: Box::new(self.substitute_type(return_type, substitution)),
                 }
@@ -2344,16 +2247,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Infer type for type application
-    fn infer_type_application(&mut self, constructor: &Type, args: &[Type]) -> Result<Type> {
-        // For now, create a generic type application
-        // In a full implementation, this would apply type constructors
-        match constructor {
-            Type::Named(name) => Ok(Type::Generic {
-                name: name.clone(),
-                type_args: args.to_vec(),
-            }),
-            _ => Ok(Type::Named("TypeApplication".to_string())), // Placeholder
-        }
+    fn infer_type_application(&mut self, _constructor: &Type, _args: &[Type]) -> Result<Type> {
+        // Since generics are removed, just return a placeholder type
+        Ok(Type::Named("TypeApplication".to_string()))
     }
 
     /// Infer type for tuple expression
@@ -2395,10 +2291,12 @@ impl<'a> TypeChecker<'a> {
                     }
                     // Check that the declared type matches the expected type
                     let expanded_declared_type = self.expand_type_aliases(type_);
-                    if !self.types_equal(&expanded_expected_type, &expanded_declared_type) {
+                    let types_match = self.types_equal(&expanded_expected_type, &expanded_declared_type);
+
+                    if !types_match {
                         return type_error(location.clone(),
-                            format!("Pattern declares type {:?} but expected type {:?}",
-                                   type_, expanded_expected_type));
+                            format!("CHECK: Pattern declares type {:?} (expanded: {:?}) but value has type {:?}",
+                                   type_, expanded_declared_type, expanded_expected_type));
                     }
                     env.insert(name.clone(), TypeScheme {
                         vars: vec![],
@@ -2481,37 +2379,6 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     return type_error(location.clone(),
                         format!("Variant pattern expected variant type, found {:?}", expanded_expected_type));
-                }
-            }
-            Pattern::GenericVariant { constructor, type_args, payload } => {
-                // For now, treat generic variants similarly to regular variants
-                // TODO: Handle type argument instantiation properly
-                if let Type::Variant(variants) = &expanded_expected_type {
-                    let mut found_variant = None;
-                    for (variant_name, variant_payload_type) in variants {
-                        if variant_name == constructor {
-                            found_variant = Some(variant_payload_type);
-                            break;
-                        }
-                    }
-
-                    match (found_variant, payload) {
-                        (Some(Some(expected_payload_type)), Some(pattern_payload)) => {
-                            // For generic variants, we might need to substitute type args
-                            // For now, just check the pattern directly
-                            self.check_pattern(pattern_payload, expected_payload_type, location, env)?;
-                        }
-                        (Some(None), None) => {
-                            // Variant has no payload, pattern has no payload
-                        }
-                        _ => {
-                            return type_error(location.clone(),
-                                format!("Generic variant pattern '{}' payload mismatch for type {:?}", constructor, expanded_expected_type));
-                        }
-                    }
-                } else {
-                    return type_error(location.clone(),
-                        format!("Generic variant pattern expected variant type, found {:?}", expanded_expected_type));
                 }
             }
             Pattern::Alternative(patterns) => {
@@ -2656,14 +2523,12 @@ impl<'a> TypeChecker<'a> {
             match statement {
                 crate::ast::Statement::Bind { pattern, expr } => {
                     let expr_type = self.infer_expression(expr)?;
-                    // Require explicit type annotations for tuple bindings
-                    if let Type::Tuple(_) = &expr_type {
-                        if let crate::ast::Pattern::Identifier(_) = pattern {
-                            return Err(CompilerError::TypeError {
-                                location: SourceLocation::unknown(), // TODO: get proper location
-                                message: format!("Tuple bindings must have explicit type annotations. Use 'variable:(type) <- expression' instead of 'variable <- expression'")
-                            });
-                        }
+                    // Require explicit type annotations for ALL bindings
+                    if let crate::ast::Pattern::Identifier(_) = pattern {
+                        return Err(CompilerError::TypeError {
+                            location: SourceLocation::unknown(), // TODO: get proper location
+                            message: format!("Variable bindings must have explicit type annotations. Use 'variable:type <- expression' instead of 'variable <- expression'")
+                        });
                     }
                     // Check pattern against expression type and bind variables
                     let mut pattern_env = HashMap::new();

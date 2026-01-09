@@ -168,7 +168,6 @@ impl EffectChecker {
             Expression::ExecCommand(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::StructLiteral(_) => Ok(vec![]), // Struct literals have no effects
             Expression::FieldAccess(_) => Ok(vec![]),   // Field access has no effects
-            Expression::GenericInstantiation(_) => Ok(vec![]), // Generic instantiation has no effects
             Expression::ConstructorCall(_) => Ok(vec![]), // Constructor calls have no effects
             Expression::Tuple(_) => Ok(vec![]), // Tuple literals have no effects
         }
