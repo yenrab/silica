@@ -262,14 +262,12 @@ parameter      ::= identifier ":" type
 
 #### 3.4.2 Type Declarations
 ```
-type_declaration ::= "type" identifier [type_parameters] "=" type ";"
-
-type_parameters ::= "<" identifier {"," identifier} ">"
+type_declaration ::= "type" identifier "=" type ";"
 ```
 
 #### 3.4.3 Effect Declarations
 ```
-effect_declaration ::= "effect" identifier [type_parameters] "=" effect ";"
+effect_declaration ::= "effect" identifier "=" effect ";"
 ```
 
 #### 3.4.4 Import Declarations
@@ -417,17 +415,16 @@ type ::= type_identifier
        | variant_type
        | effect_type
 
-type_identifier ::= identifier [type_arguments]
-type_arguments  ::= "<" type {"," type} ">"
+type_identifier ::= identifier
 
 function_type   ::= "(" [type {"," type}] ")" "->" type
 tuple_type      ::= "(" type {"," type} ")"
-record_type     ::= "{" identifier ":" type {"," identifier ":" type} "}"
-variant_type    ::= identifier [type] {"|" identifier [type]}
+record_type     ::= "struct" identifier "{" identifier ":" type {"," identifier ":" type} "}"
+variant_type    ::= identifier {"|" identifier}
 
 effect_type     ::= "proc" "[" effect_list "]" type
 effect_list     ::= effect {"," effect}
-effect          ::= effect_identifier [type_arguments]
+effect          ::= effect_identifier
 ```
 
 ### 3.7 Effects
@@ -533,8 +530,7 @@ Variant types represent sum types with the form `Constructor1 [Type1] | Construc
 
 Examples:
 ```
-type option<T> = Some(T) | None
-type result<T, E> = Ok(T) | Error(E)
+type status = Ok | Error
 ```
 
 ### 4.3 Process Types
@@ -595,13 +591,16 @@ actor_ref(int)                       -- actor accepting int messages
 Record patterns allow destructuring record values:
 
 ```silica
-type point = {x: int, y: int}
+struct Point {
+    x: int,
+    y: int
+}
 
-fn distance_from_origin(p: point) -> int {
-    case p of
-        {x: 0, y: 0} -> 0
-        {x, y} -> sqrt(x*x + y*y)
-    end
+fn distance_from_origin(p: Point) -> int {
+    case p.x == 0 && p.y == 0 of {
+        true -> 0
+        false -> p.x * p.x + p.y * p.y  // Simplified for now
+    }
 }
 ```
 
@@ -609,13 +608,14 @@ fn distance_from_origin(p: point) -> int {
 Variant patterns match against sum type constructors:
 
 ```silica
-type result<T, E> = Ok(T) | Error(E)
+// Note: Sum types and variant patterns not yet implemented in experiments
+// This shows the intended future syntax
 
-fn handle_result(r: result<int, string>) -> string {
-    case r of
-        Ok(value) -> "Success: " + int_to_string(value)
-        Error(msg) -> "Error: " + msg
-    end
+fn handle_result(success: boolean, message: string) -> string {
+    case success of {
+        true -> "Success: " + message
+        false -> "Error: " + message
+    }
 }
 ```
 
@@ -632,47 +632,43 @@ type exception =
 ```
 
 #### 5.2.2 Throwing Exceptions
-Functions can throw exceptions using the `throw` keyword:
+Safe division using case expressions:
 
 ```silica
 fn safe_divide(x: int, y: int) -> int {
     case y == 0 of {
-        true -> throw DivisionByZero
+        true -> 0  // Return 0 for division by zero
         false -> x / y
     }
 }
 ```
 
-#### 5.2.3 Exception Handling
-Exception handlers use pattern matching:
+#### 5.2.3 Result Handling
+Error handling through return values (exceptions not yet implemented):
 
 ```silica
-fn main() -> unit {
-    try {
-        result <- safe_divide(10, 0)
-        print("Result: " + int_to_string(result))
-    } catch DivisionByZero {
-        print("Division by zero!")
-    } catch InvalidArgument(msg) {
-        print("Invalid argument: " + msg)
-    }
+fn main() -> int {
+    do
+        result:int <- safe_divide(10, 2);
+        // In future: proper error handling with Result types
+        result
+    end
 }
 ```
 
 ### 5.3 Advanced Effects
 
-#### 5.3.1 Effect Polymorphism
-Effects can be parameterized:
+#### 5.3.1 Effect Composition
+Effects can be combined:
 
 ```silica
-effect logging<L> = [mem(normal)]  -- logging with different levels
+effect io_and_mem = [device_io, mem(normal)]
 
-fn with_logging<E, L>(action: proc[E] int, level: L)
-    : proc[E, logging<L>] int {
-    log(level, "Starting operation")
-    result <- action
-    log(level, "Operation complete")
-    return result
+fn combined_operation() : proc[io_and_mem] int {
+    do
+        // Operations that require both I/O and memory effects
+        42
+    end
 }
 ```
 
@@ -757,47 +753,18 @@ not (p and q)       -- equivalent to (not p) or (not q)
 
 ## 7. Type System
 
-### 6.1 Type Variables and Polymorphism
-
-#### 6.1.1 Type Variables
-Type variables are placeholders for unknown types, written as single uppercase letters or descriptive names starting with a lowercase letter.
-
-```
-type_variable ::= uppercase_letter | lowercase_identifier
-uppercase_letter ::= "A" | "B" | ... | "Z"
-```
-
-Examples: `T`, `U`, `element_type`, `key_type`
-
-#### 6.1.2 Polymorphic Types
-Types can be parameterized by type variables, enabling generic programming.
-
-```
-polymorphic_type ::= type_constructor "<" type_variable {"," type_variable} ">"
-```
-
-Examples:
-```
-list<T>         -- list parameterized by element type
-option<T>       -- optional value of type T
-pair<T, U>      -- pair of values with types T and U
-```
-
-#### 6.1.3 Type Constructors
+### 6.1 Type Constructors
 Type constructors define how to build complex types from simpler ones.
 
 Built-in type constructors:
-- `list<T>` - homogeneous sequence
-- `option<T>` - optional value
-- `result<T, E>` - computation result or error
 - `ref<R, S, T>` - reference in region R, space S, to type T
 - `buf<R, S, T, N>` - buffer in region R, space S, of N elements of type T
 
-User-defined type constructors are declared with type parameters:
+User-defined types are declared with concrete types:
 
 ```
-type stack<T> = { elements: list<T>, size: int }
-type map<K, V> = { data: list<pair<K, V>>, size: int }
+type int_stack = { elements: list<int>, size: int }
+type string_map = { data: list<pair<string, string>>, size: int }
 ```
 
 ### 6.2 Type Equivalence and Subtyping
@@ -809,11 +776,10 @@ Types are equivalent if they have the same structure:
 int ≡ int                                   -- primitive types
 (int, bool) ≡ (int, bool)                   -- tuple types
 {a: int, b: bool} ≡ {a: int, b: bool}       -- record types
-list<int> ≡ list<int>                       -- polymorphic types
 ```
 
 #### 6.2.2 Nominal Equivalence for User Types
-User-defined types are equivalent only if they have the same name and type arguments:
+User-defined types are equivalent only if they have the same name:
 
 ```
 type my_int = int
@@ -824,11 +790,7 @@ my_int ≢ int         -- user type vs primitive
 ```
 
 #### 6.2.3 Subtyping Rules
-Silica has limited subtyping for variance in polymorphic types:
-
-- **Covariant positions**: Function return types, tuple/record fields
-- **Contravariant positions**: Function parameter types
-- **Invariant positions**: Mutable references, atomic operations
+Silica has no subtyping - all types must match exactly.
 
 ```
 list<T> <: list<U>    if T <: U    -- covariant
@@ -843,19 +805,23 @@ Silica uses Hindley-Milner style type inference extended for effects.
 For expressions without explicit type annotations, the compiler infers the most general type.
 
 #### 6.3.2 Inference Algorithm
-1. Assign fresh type variables to unbound identifiers
-2. Generate constraints from expression structure
-3. Solve constraints using unification
-4. Apply effect inference rules
-5. Generalize types at let-bindings
+1. Check explicit type annotations first
+2. Infer types from literal values
+3. Propagate types through expressions
+4. Verify effect annotations match operations
 
 #### 6.3.3 Type Annotations
 Explicit type annotations can be provided to guide inference or document intent:
 
 ```
 fn add(x: int, y: int) -> int { x + y }        -- explicit types
-fn identity<T>(x: T) -> T { x }                -- polymorphic with annotation
-let x: int = 42                               -- explicit variable type
+
+fn example() -> int {
+    do
+        x:int <- 42;                           -- variable binding with type
+        x
+    end
+}
 ```
 
 ## 8. Effect System
@@ -875,9 +841,9 @@ Silica defines several built-in effects that track different kinds of side effec
 Effects can be aliased for convenience and abstraction:
 
 ```
-effect actor_eff<Msg> = [mailbox<Msg>, concurrency]
+effect actor_eff = [mailbox<Msg>, concurrency]
 effect io_eff = [mem(normal), device_io]
-effect atomic_eff<Space> = [mem(Space), atomic]
+effect atomic_eff = [mem(atomic), atomic]
 ```
 
 #### 7.1.3 User-Defined Effects
@@ -885,7 +851,7 @@ New effects can be declared for domain-specific side effects:
 
 ```
 effect logging = []        -- pure effect for logging framework
-effect database<Conn> = [mem(normal), device_io]  -- database operations
+effect database = [mem(normal), device_io]  -- database operations
 ```
 
 ### 7.2 Effect Composition
@@ -937,23 +903,13 @@ Effects form a subeffecting lattice:
 Functions track effects of their body:
 
 ```
-fn allocate_int(region)
-    : proc[mem(normal)] ref(region, normal, int) {
+fn allocate_int(region: region(R, normal))
+    : proc[mem(normal)] ref(R, normal, int) {
     alloc_ref(region, 0)  // built-in memory allocation primitive
 }
 ```
 
-#### 7.3.2 Effect Polymorphism
-Effects can be polymorphic over type parameters:
-
-```
-fn generic_alloc<R, T>(region: region<R, normal>, value: T)
-    : proc[mem(normal)] ref(R, normal, T) {
-    alloc_ref(region, value)  // built-in memory allocation primitive
-}
-```
-
-#### 7.3.3 Effect Variables
+#### 7.3.2 Effect Composition
 Effect variables allow abstracting over unknown effects:
 
 ```
@@ -1591,21 +1547,23 @@ alloc_ref(r, 42)    -- Runtime error: capability violation
 Actors are created with initial state and behavior function:
 
 ```
-spawn_actor(initial_state, behavior_fn) : proc[concurrency] actor_ref<Msg>
+spawn(initial_state, behavior_fn) : proc[concurrency] actor_ref<Msg>
 ```
 
-The behavior function has type: `(Msg, State) -> proc[mailbox<Msg>, concurrency, ...] State`
+The behavior function has type: `(Msg, State) -> int` (simplified for current implementation)
 
 #### 13.1.2 Actor Execution Model
-Each actor executes as an infinite loop:
+Each actor executes as an infinite loop in the runtime system:
 
 ```
 actor_loop(state, behavior) {
-    message <- recv()           -- receive message
-    new_state <- behavior(message, state)  -- process message
+    message <- recv()           -- runtime receives message from mailbox
+    new_state <- behavior(message, state)  -- user behavior processes message
     actor_loop(new_state, behavior)        -- continue with new state
 }
 ```
+
+**Important**: The `recv()` operation is performed by the actor runtime system, not by user code. User-defined behavior functions only receive the message and current state as parameters - they never call `recv()` directly.
 
 #### 13.1.3 Actor Identity
 Each actor has a unique identity:
@@ -1697,12 +1655,14 @@ Messages are delivered exactly once, in FIFO order per sender.
 
 ### 14.2 Message Receive Semantics
 
-#### 14.2.1 Blocking Receive
-Receive blocks until a message is available:
+#### 14.2.1 Runtime Message Reception
+Message reception is handled automatically by the actor runtime system. The `recv()` operation is not available for direct use in user code:
 
 ```
-recv() : proc[mailbox<Msg>, concurrency] Msg
+recv() : proc[mailbox<Msg>, concurrency] Msg  -- Runtime internal function
 ```
+
+User behavior functions receive messages as parameters rather than calling `recv()` directly.
 
 #### 14.2.2 Mailbox Semantics
 Each actor has a single mailbox that queues incoming messages:
@@ -1720,12 +1680,12 @@ Mailbox State:
 recv() returns Message 1, removes it from queue
 ```
 
-#### 14.2.3 Message Patterns
-Receive can use pattern matching:
+#### 14.2.3 Message Patterns in Behavior Functions
+Behavior functions receive messages as parameters and can use pattern matching on them:
 
 ```
 fn selective_receiver(msg: msg_type, state: unit) : proc[mailbox<msg_type>] unit {
-    case recv() of
+    case msg of
         {request, data} -> handle_request(data)
         ping -> handle_ping()
         quit -> terminate()
@@ -1733,6 +1693,8 @@ fn selective_receiver(msg: msg_type, state: unit) : proc[mailbox<msg_type>] unit
     return ()
 }
 ```
+
+The message parameter is automatically provided by the actor runtime when a message is received.
 
 ### 14.3 Message Types and Serialization
 
@@ -1914,10 +1876,11 @@ Between actors, only explicit synchronization establishes ordering:
 atomic_store(flag, true, release)
 send(actor2, data)
 
--- Actor 2
-msg <- recv()
-flag_value <- atomic_load(flag, acquire)
--- flag_value is guaranteed to be true
+-- Actor 2 behavior function
+fn process_message(msg: Data, state: unit) -> unit {
+    flag_value <- atomic_load(flag, acquire)
+    -- flag_value is guaranteed to be true
+}
 ```
 
 ### 16.3 Race Condition Prevention
@@ -2060,8 +2023,10 @@ Imported functions are accessed directly by name:
 use math_utils;
 
 fn main() -> int {
-    let result = add(3, 4);        -- 'add' from math_utils module
-    multiply(result, 2)            -- 'multiply' from math_utils module
+    do
+        result:int <- add(3, 4);   -- 'add' from math_utils module
+        multiply(result, 2)        -- 'multiply' from math_utils module
+    end
 }
 ```
 
@@ -2094,9 +2059,9 @@ use math_utils;
 
 fn main() -> int {
     do
-        sum <- add(3, 4);        -- uses function from math_utils
-        product <- multiply(sum, 2);  -- uses another function from math_utils
-        return product;
+        sum:int <- add(3, 4);        -- uses function from math_utils
+        product:int <- multiply(sum, 2);  -- uses another function from math_utils
+        product
     end
 }
 ```
@@ -2680,11 +2645,13 @@ buffer_capacity(buffer) -> int
 
 ### 20.4 Actor Operations
 ```
-spawn_actor(initial_state, behavior) -> proc[concurrency] actor_ref<Msg>
+spawn(initial_state, behavior) -> proc[concurrency] actor_ref<Msg>
 send(actor, message) -> proc[concurrency] unit
-recv() -> proc[mailbox<Msg>, concurrency] Msg
+recv() -> proc[mailbox<Msg>, concurrency] Msg          -- Runtime internal
 self() -> proc[mailbox<Msg>, concurrency] actor_ref<Msg>
 ```
+
+**Note**: `recv()` is a runtime internal function and cannot be called directly from user code.
 
 ### 20.4.1 CPU Affinity Operations
 
@@ -3572,24 +3539,68 @@ Actor B state: 0 → 1
 Traits define interfaces that types can implement:
 
 ```silica
-trait Eq<T> {
-    fn equals(self: T, other: T) -> bool
+trait Display {
+    fn to_string(self) -> string
 }
 
-trait Ord<T> extends Eq<T> {
-    fn compare(self: T, other: T) -> ordering
+trait Comparable {
+    fn equals(self, other) -> bool
+    fn less_than(self, other) -> bool
 }
 ```
 
-#### 29.1.2 Trait Implementations
+#### 29.1.2 Trait Inheritance and Sub-traits
+Traits can be created using other traits as sub-traits. Sub-traits are independent traits that can be implemented separately, and traits can accumulate functionality by including multiple sub-traits.
+
+**Sub-trait Inheritance:**
+```silica
+trait Printable {
+    fn to_string(self) -> string
+}
+
+trait Debug includes Printable {
+    fn debug_string(self) -> string
+}
+
+// Debug automatically includes Printable's methods
+```
+
+**Trait Composition through Accumulation:**
+```silica
+trait Serializable {
+    fn serialize(self) -> bytes
+}
+
+trait Comparable {
+    fn equals(self, other) -> bool
+}
+
+// A trait that accumulates multiple sub-traits
+trait FullFeatured includes Printable, Serializable, Comparable {
+    fn version(self) -> int
+}
+
+// FullFeatured includes methods from all three sub-traits:
+// - to_string() from Printable
+// - serialize() from Serializable
+// - equals() from Comparable
+// - version() (its own method)
+```
+
+**Important Notes:**
+- Sub-traits remain independent and can be implemented separately
+- When implementing a trait that includes others, you must implement all methods from the trait and its sub-traits
+- Sub-traits can be used independently of their extending traits
+
+#### 29.1.3 Implementation Requirements for Inherited Traits
 Types implement traits with concrete methods:
 
 ```silica
-impl Eq<int> for int {
-    fn equals(self, other) = self == other
+impl Display for int {
+    fn to_string(self) = int_to_string(self)
 }
 
-impl Ord<int> for int {
+impl Comparable for int {
     fn equals(self, other) = self == other
     fn compare(self, other) =
         if self < other { Less }
@@ -3598,62 +3609,84 @@ impl Ord<int> for int {
 }
 ```
 
-#### 29.1.3 Trait Bounds
+#### 29.1.4 Trait Bounds
 Functions can require trait implementations:
 
 ```silica
-fn sort<T where Ord<T>>(list: list<T>) -> list<T> {
-    -- Implementation uses Ord operations
+fn print_value(x) where Display {
+    print(to_string(x))
 }
 ```
 
-### 29.2 Advanced Generics
-
-#### 29.2.1 Higher-Kinded Types
-Types parameterized by type constructors:
+#### 29.1.5 Implementing Inherited Traits
+When implementing a trait that includes other traits, you must implement all methods from the trait and its sub-traits:
 
 ```silica
-type Monad<M<_>> = {
-    pure<A>(value: A) -> M<A>,
-    bind<A, B>(ma: M<A>, f: (A) -> M<B>) -> M<B>
+trait Printable {
+    fn to_string(self) -> string
 }
 
-type Maybe<A> = Some(A) | None
+trait Debug includes Printable {
+    fn debug_string(self) -> string
+}
 
-impl Monad<Maybe> for Maybe {
-    fn pure(value) = Some(value)
-    fn bind(ma, f) = case ma of
-        Some(a) -> f(a)
-        None -> None
-    end
+// Implementation must provide both methods
+impl Debug for int {
+    fn to_string(self) = int_to_string(self)        // From Printable sub-trait
+    fn debug_string(self) = format("int: {}", self) // From Debug trait
+}
+
+// Sub-traits can be implemented independently
+impl Printable for bool {
+    fn to_string(self) = if self { "true" } else { "false" }
 }
 ```
 
-#### 29.2.2 Associated Types
-Traits with associated types:
+### 29.2 Trait Composition
+
+#### 29.2.1 Multiple Trait Implementation
+Types can implement multiple traits:
 
 ```silica
-trait Iterator<T> {
-    type Item
-    fn next(self) -> option<Item>
+struct Person {
+    name: string,
+    age: int
 }
 
-impl Iterator<list<T>> for list<T> {
-    type Item = T
-    fn next(self) = list_head(self)
+impl Display for Person {
+    fn to_string(self) = format("Person({}, {})", self.name, self.age)
+}
+
+impl Comparable for Person {
+    fn equals(self, other) = self.name == other.name && self.age == other.age
+    fn less_than(self, other) = self.age < other.age
 }
 ```
 
-#### 29.2.3 Generic Constraints
-Complex type relationships:
+#### 29.2.2 Complex Trait Relationships
+Types can implement traits that require coordination between multiple traits:
 
 ```silica
-fn zip_with<A, B, C, F where (A) -> (B) -> C>(
-    fa: F<A>,
-    fb: F<B>,
-    f: (A, B) -> C
-) -> F<C> {
-    -- Generic function over functors
+trait Display {
+    fn to_string(self) -> string
+}
+
+trait Debug {
+    fn debug_string(self) -> string
+}
+
+// A type that implements both traits
+struct Point {
+    x: int,
+    y: int
+}
+
+impl Display for Point {
+    fn to_string(self) = format("({}, {})", self.x, self.y)
+}
+
+impl Debug for Point {
+    fn debug_string(self) = format("Point {{ x: {}, y: {} }}", self.x, self.y)
 }
 ```
 
@@ -3664,10 +3697,10 @@ fn zip_with<A, B, C, F where (A) -> (B) -> C>(
 *Advanced features deliverables completed:*
 - Advanced pattern matching with records and variants
 - Structured exception handling
-- Advanced effect system with polymorphism and inheritance
+- Advanced effect system with composition and inheritance
 - Compiler optimizations and incremental compilation
 - IDE support with language server and debugging
-- Advanced type system with traits and higher-kinded types
+- Advanced type system with traits
 
 *Specification Complete: All Major Features Specified*
 

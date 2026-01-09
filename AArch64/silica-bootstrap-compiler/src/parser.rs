@@ -1452,11 +1452,25 @@ impl Parser {
         })
     }
 
-    /// Parse trait declaration: trait Name<T, U> { fn method(&self, param: Type) -> ReturnType; }
+    /// Parse trait declaration: trait Name includes Trait1, Trait2 { fn method(&self, param: Type) -> ReturnType; }
     fn trait_declaration(&mut self) -> Result<TraitDecl> {
         let location = self.previous().location.clone();
         let name = self.consume_identifier("Expected trait name")?;
 
+        // Parse optional included traits
+        let included_traits = if self.match_token(TokenKind::Includes) {
+            let mut traits = Vec::new();
+            loop {
+                let trait_name = self.consume_identifier("Expected trait name after 'includes'")?;
+                traits.push(trait_name);
+                if !self.match_token(TokenKind::Comma) {
+                    break;
+                }
+            }
+            traits
+        } else {
+            Vec::new()
+        };
 
         self.consume(TokenKind::LeftBrace, "Expected '{' after trait name")?;
 
@@ -1552,6 +1566,7 @@ impl Parser {
 
         Ok(TraitDecl {
             name,
+            included_traits,
             associated_types,
             methods,
             location,

@@ -1934,6 +1934,16 @@ impl<'a> TypeChecker<'a> {
 
     /// Check trait declaration
     fn check_trait_declaration(&mut self, trait_decl: &TraitDecl) -> Result<()> {
+        // Check that all included traits exist
+        for included_trait in &trait_decl.included_traits {
+            if !self.trait_defs.contains_key(included_trait) {
+                return Err(CompilerError::type_error(
+                    trait_decl.location.clone(),
+                    format!("Trait '{}' includes unknown trait '{}'", trait_decl.name, included_trait)
+                ));
+            }
+        }
+
         // Check that all method signatures are valid
 
         // eprintln!("DEBUG TRAIT: check_trait_declaration called for trait {:?}", trait_decl.name);

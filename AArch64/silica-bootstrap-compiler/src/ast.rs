@@ -124,6 +124,7 @@ pub struct AssociatedType {
 #[derive(Debug, Clone)]
 pub struct TraitDecl {
     pub name: String,
+    pub included_traits: Vec<String>, // Traits this trait includes (sub-traits)
     pub associated_types: Vec<AssociatedType>,
     pub methods: Vec<TraitMethod>,
     pub location: SourceLocation,

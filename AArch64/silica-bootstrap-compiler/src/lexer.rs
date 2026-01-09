@@ -21,8 +21,8 @@ impl Token {
 /// TokenKind enumerates all possible token types in Silica
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
-    // Keywords (27 total)
-    Actor, ActorRef, As, Atomic, Bool, Buf, Case, Char, Concurrency, CoreId, CoreSet, DeviceIO, EfficiencyCores, PerformanceCores,
+    // Keywords (28 total)
+    Actor, ActorRef, As, Atomic, Bool, Buf, Case, Char, Concurrency, CoreId, CoreSet, DeviceIO, EfficiencyCores, Includes, PerformanceCores,
     Do, Effect, Else, End, Enum, Export, False, Fn, For, From, If,
     Impl, Import, Int, Let, Mailbox, Mem, Module, Normal, Not, Of, Proc,
     Pub, Recv, Ref, Region, Return, Self_, Send, Spawn, String, Struct,
@@ -61,7 +61,7 @@ impl TokenKind {
             TokenKind::Actor | TokenKind::ActorRef | TokenKind::As |
             TokenKind::Atomic | TokenKind::Bool | TokenKind::Buf |
             TokenKind::Case | TokenKind::Char | TokenKind::Concurrency |
-            TokenKind::CoreId | TokenKind::CoreSet | TokenKind::DeviceIO | TokenKind::Do | TokenKind::Effect | TokenKind::EfficiencyCores | TokenKind::PerformanceCores |
+            TokenKind::CoreId | TokenKind::CoreSet | TokenKind::DeviceIO | TokenKind::Do | TokenKind::Effect | TokenKind::EfficiencyCores | TokenKind::Includes | TokenKind::PerformanceCores |
             TokenKind::Else | TokenKind::End | TokenKind::Enum |
             TokenKind::Export | TokenKind::False | TokenKind::Fn |
             TokenKind::For | TokenKind::From |             TokenKind::If | TokenKind::Impl |
@@ -328,6 +328,7 @@ impl Lexer {
             "from" => TokenKind::From,
             "if" => TokenKind::If,
             "impl" => TokenKind::Impl,
+            "includes" => TokenKind::Includes,
             "import" => TokenKind::Import,
             "int" => TokenKind::Int,
             "let" => TokenKind::Let,

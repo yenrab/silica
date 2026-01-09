@@ -4438,6 +4438,26 @@ impl CodeGenerator {
         Ok(())
     }
 
+    /// Convert a Silica type to LLVM type string
+    fn silica_type_to_llvm(&self, ty: &crate::ast::Type) -> Result<String> {
+        match ty {
+            crate::ast::Type::Int => Ok("i64".to_string()),
+            crate::ast::Type::Bool => Ok("i1".to_string()),
+            crate::ast::Type::Char => Ok("i32".to_string()), // Unicode code point
+            crate::ast::Type::String => Ok("i8*".to_string()),
+            crate::ast::Type::Unit => Ok("void".to_string()),
+            crate::ast::Type::Named(name) => {
+                // Check if it's a struct type
+                if self.struct_defs.contains_key(name) || self.type_aliases.contains_key(name) {
+                    Ok("i8*".to_string()) // Structs are passed as pointers
+                } else {
+                    Err(CompilerError::codegen_error(format!("Unknown named type: {}", name)))
+                }
+            }
+            _ => Err(CompilerError::codegen_error(format!("Unsupported type in method parameters: {:?}", ty)))
+        }
+    }
+
     /// Generate LLVM IR for a single trait method implementation
     fn generate_trait_method(&mut self, type_name: &str, method: &crate::ast::FunctionDecl) -> Result<()> {
         let method_name = format!("{}_{}", type_name, method.name);
@@ -4447,7 +4467,8 @@ impl CodeGenerator {
 
         // Add other parameters (skip self in the method signature)
         for param in method.parameters.iter().skip(1) {
-            param_strs.push(format!("i64 %{}", param.name));
+            let llvm_type = self.silica_type_to_llvm(&param.type_)?;
+            param_strs.push(format!("{} %{}", llvm_type, param.name));
         }
 
         let params_str = param_strs.join(", ");
@@ -4471,15 +4492,11 @@ impl CodeGenerator {
         // For trait methods, expect a single expression statement
         if method.body.len() == 1 {
             if let crate::ast::Statement::Expr(expr) = &method.body[0] {
-                match expr.as_ref() {
-            Expression::Binary(binary) => {
-                // Handle binary operations like self.x + self.y
-                self.generate_binary_operation_for_method_with_type(type_name, binary)?;
-            }
-            _ => {
-                return Err(CompilerError::codegen_error("Complex method bodies not yet supported".to_string()));
-            }
-                }
+                // Generate the expression result
+                let result_val = self.generate_expression_in_method(type_name, method, expr.as_ref())?;
+
+                // Return the result
+                self.instructions.push(format!("  ret i64 {}", result_val));
             } else {
                 return Err(CompilerError::codegen_error("Trait methods must have expression bodies".to_string()));
             }
@@ -4491,106 +4508,339 @@ impl CodeGenerator {
     }
 
     /// Generate binary operations in method bodies (like self.x + self.y)
-    fn generate_binary_operation_for_method_with_type(&mut self, type_name: &str, binary: &crate::ast::BinaryExpr) -> Result<()> {
-        // Handle different binary operations
-        // eprintln!("DEBUG BINARY: operator = {:?}, left = {:?}, right = {:?}", binary.operator, binary.left, binary.right);
-        match binary.operator {
-            crate::ast::BinaryOp::Add | crate::ast::BinaryOp::Multiply => {
-                // Generate the left operand (can be complex expression)
-                let left_val = self.generate_expression_in_method(type_name, &binary.left)?;
+    fn generate_binary_operation_for_method_with_type(&mut self, type_name: &str, method: &crate::ast::FunctionDecl, binary: &crate::ast::BinaryExpr) -> Result<()> {
+        // Handle binary operations directly in this method context
+        let left_val = self.generate_expression_in_method(type_name, method, &binary.left)?;
+        let right_val = self.generate_expression_in_method(type_name, method, &binary.right)?;
 
-                // Generate the right operand (can be complex expression)
-                let right_val = self.generate_expression_in_method(type_name, &binary.right)?;
-
-                // Generate the operation
-                let op = match binary.operator {
-                    crate::ast::BinaryOp::Add => "add",
-                    crate::ast::BinaryOp::Multiply => "mul",
-                    _ => unreachable!(),
-                };
-
-                let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = {} i64 {}, {}", result_reg, op, left_val, right_val));
-
-                // Return the result
-                self.instructions.push(format!("  ret i64 %{}", result_reg));
+        let result_reg = match binary.operator {
+            crate::ast::BinaryOp::Add => {
+                let reg = self.next_register();
+                self.instructions.push(format!("  %{} = add i64 {}, {}", reg, left_val, right_val));
+                reg
+            }
+            crate::ast::BinaryOp::Subtract => {
+                let reg = self.next_register();
+                self.instructions.push(format!("  %{} = sub i64 {}, {}", reg, left_val, right_val));
+                reg
+            }
+            crate::ast::BinaryOp::Multiply => {
+                let reg = self.next_register();
+                self.instructions.push(format!("  %{} = mul i64 {}, {}", reg, left_val, right_val));
+                reg
             }
             _ => {
-                return Err(CompilerError::codegen_error("Unsupported binary operator in method".to_string()));
+                return Err(CompilerError::codegen_error(format!("Unsupported binary operator in method: {:?}", binary.operator)));
             }
-        }
+        };
+
+        // Return the result
+        self.instructions.push(format!("  ret i64 %{}", result_reg));
 
         Ok(())
     }
 
     /// Generate any expression within method bodies
-    fn generate_expression_in_method(&mut self, type_name: &str, expr: &Expression) -> Result<String> {
+    fn generate_expression_in_method(&mut self, type_name: &str, method: &crate::ast::FunctionDecl, expr: &Expression) -> Result<String> {
         match expr {
             Expression::FieldAccess(field_access) => {
-                self.generate_field_access_for_method_with_type(type_name, field_access)
+                self.generate_field_access_for_method_with_type(type_name, method, field_access)
             }
             Expression::Literal(lit) => {
                 self.generate_literal_value(lit)
             }
             Expression::Identifier(name) => {
-                // Handle method parameters like "other"
-                if name == "other" {
-                    // This is a method parameter, return it as a register
-                    Ok("%other".to_string())
+                // Check if it's the self parameter
+                if name == "self" {
+                    Ok("%self".to_string())
                 } else {
-                    Err(CompilerError::codegen_error(format!("Unsupported identifier in method: {}", name)))
+                    // Check if it's a method parameter
+                    let is_param = method.parameters.iter().any(|param| param.name == *name);
+                    if is_param {
+                        Ok(format!("%{}", name))
+                    } else {
+                        Err(CompilerError::codegen_error(format!("Unsupported identifier in method: {}", name)))
+                    }
                 }
             }
             Expression::Binary(binary) => {
                 // Handle nested binary expressions
-                self.generate_nested_binary_in_method(type_name, binary)
+                self.generate_nested_binary_in_method(type_name, method, binary)
+            }
+            Expression::Unary(unary) => {
+                // Handle unary expressions
+                self.generate_unary_in_method(type_name, method, unary)
+            }
+            Expression::If(if_expr) => {
+                self.generate_if_in_method(type_name, method, if_expr)
+            }
+            Expression::Case(case_expr) => {
+                self.generate_case_in_method(type_name, method, case_expr)
+            }
+            Expression::Call(call) => {
+                // For now, only support simple method calls within trait methods
+                Err(CompilerError::codegen_error("Method calls in trait method bodies not yet supported".to_string()))
             }
             _ => {
-                Err(CompilerError::codegen_error("Unsupported expression type in method".to_string()))
+                Err(CompilerError::codegen_error(format!("Unsupported expression type in method: {:?}", expr)))
             }
         }
     }
 
     /// Generate nested binary expressions within methods
-    fn generate_nested_binary_in_method(&mut self, type_name: &str, binary: &crate::ast::BinaryExpr) -> Result<String> {
-        match binary.operator {
-            crate::ast::BinaryOp::Add => {
-                let left_val = self.generate_expression_in_method(type_name, &binary.left)?;
-                let right_val = self.generate_expression_in_method(type_name, &binary.right)?;
+    fn generate_nested_binary_in_method(&mut self, type_name: &str, method: &crate::ast::FunctionDecl, binary: &crate::ast::BinaryExpr) -> Result<String> {
+        let left_val = self.generate_expression_in_method(type_name, method, &binary.left)?;
+        let right_val = self.generate_expression_in_method(type_name, method, &binary.right)?;
 
+        match binary.operator {
+            // Arithmetic operators
+            crate::ast::BinaryOp::Add => {
                 let result_reg = self.next_register();
                 self.instructions.push(format!("  %{} = add i64 {}, {}", result_reg, left_val, right_val));
-
+                Ok(format!("%{}", result_reg))
+            }
+            crate::ast::BinaryOp::Subtract => {
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = sub i64 {}, {}", result_reg, left_val, right_val));
+                Ok(format!("%{}", result_reg))
+            }
+            crate::ast::BinaryOp::Multiply => {
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = mul i64 {}, {}", result_reg, left_val, right_val));
+                Ok(format!("%{}", result_reg))
+            }
+            crate::ast::BinaryOp::Divide => {
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = sdiv i64 {}, {}", result_reg, left_val, right_val));
+                Ok(format!("%{}", result_reg))
+            }
+            crate::ast::BinaryOp::Modulo => {
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = srem i64 {}, {}", result_reg, left_val, right_val));
+                Ok(format!("%{}", result_reg))
+            }
+            // Comparison operators
+            crate::ast::BinaryOp::Equal => {
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = icmp eq i64 {}, {}", result_reg, left_val, right_val));
+                // Convert i1 to i64 (true=1, false=0)
+                let ext_reg = self.next_register();
+                self.instructions.push(format!("  %{} = zext i1 %{} to i64", ext_reg, result_reg));
+                Ok(format!("%{}", ext_reg))
+            }
+            crate::ast::BinaryOp::NotEqual => {
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = icmp ne i64 {}, {}", result_reg, left_val, right_val));
+                let ext_reg = self.next_register();
+                self.instructions.push(format!("  %{} = zext i1 %{} to i64", ext_reg, result_reg));
+                Ok(format!("%{}", ext_reg))
+            }
+            crate::ast::BinaryOp::Less => {
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = icmp slt i64 {}, {}", result_reg, left_val, right_val));
+                let ext_reg = self.next_register();
+                self.instructions.push(format!("  %{} = zext i1 %{} to i64", ext_reg, result_reg));
+                Ok(format!("%{}", ext_reg))
+            }
+            crate::ast::BinaryOp::LessEqual => {
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = icmp sle i64 {}, {}", result_reg, left_val, right_val));
+                let ext_reg = self.next_register();
+                self.instructions.push(format!("  %{} = zext i1 %{} to i64", ext_reg, result_reg));
+                Ok(format!("%{}", ext_reg))
+            }
+            crate::ast::BinaryOp::Greater => {
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = icmp sgt i64 {}, {}", result_reg, left_val, right_val));
+                let ext_reg = self.next_register();
+                self.instructions.push(format!("  %{} = zext i1 %{} to i64", ext_reg, result_reg));
+                Ok(format!("%{}", ext_reg))
+            }
+            crate::ast::BinaryOp::GreaterEqual => {
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = icmp sge i64 {}, {}", result_reg, left_val, right_val));
+                let ext_reg = self.next_register();
+                self.instructions.push(format!("  %{} = zext i1 %{} to i64", ext_reg, result_reg));
+                Ok(format!("%{}", ext_reg))
+            }
+            // Logical operators
+            crate::ast::BinaryOp::And => {
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = and i64 {}, {}", result_reg, left_val, right_val));
+                Ok(format!("%{}", result_reg))
+            }
+            crate::ast::BinaryOp::Or => {
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = or i64 {}, {}", result_reg, left_val, right_val));
                 Ok(format!("%{}", result_reg))
             }
             _ => {
-                Err(CompilerError::codegen_error("Unsupported nested binary operator in method".to_string()))
+                Err(CompilerError::codegen_error(format!("Unsupported binary operator in method: {:?}", binary.operator)))
             }
         }
     }
 
+    /// Generate unary expressions within methods
+    fn generate_unary_in_method(&mut self, type_name: &str, method: &crate::ast::FunctionDecl, unary: &crate::ast::UnaryExpr) -> Result<String> {
+        let operand_val = self.generate_expression_in_method(type_name, method, &unary.operand)?;
+
+        match unary.operator {
+            crate::ast::UnaryOp::Negate => {
+                // For negation: 0 - value
+                let zero_reg = self.next_register();
+                self.instructions.push(format!("  %{} = add i64 0, 0", zero_reg)); // Load 0
+
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = sub i64 %{}, {}", result_reg, zero_reg, operand_val));
+
+                Ok(format!("%{}", result_reg))
+            }
+            crate::ast::UnaryOp::Not => {
+                // For logical not: xor with 1
+                let result_reg = self.next_register();
+                self.instructions.push(format!("  %{} = xor i64 {}, 1", result_reg, operand_val));
+
+                Ok(format!("%{}", result_reg))
+            }
+            _ => {
+                Err(CompilerError::codegen_error(format!("Unsupported unary operator in method: {:?}", unary.operator)))
+            }
+        }
+    }
+
+    /// Generate if expressions within methods
+    fn generate_if_in_method(&mut self, type_name: &str, method: &crate::ast::FunctionDecl, if_expr: &crate::ast::IfExpr) -> Result<String> {
+        // Generate labels for the if statement
+        let then_label = format!("if_then_{}", self.next_register());
+        let else_label = format!("if_else_{}", self.next_register());
+        let end_label = format!("if_end_{}", self.next_register());
+
+        // Generate the condition
+        let cond_val = self.generate_expression_in_method(type_name, method, &if_expr.condition)?;
+
+        // Compare condition with 0 (false)
+        let cond_reg = self.next_register();
+        self.instructions.push(format!("  %{} = icmp ne i64 {}, 0", cond_reg, cond_val));
+
+        // Branch based on condition
+        self.instructions.push(format!("  br i1 %{}, label %{}, label %{}", cond_reg, then_label, else_label));
+
+        // Generate then block
+        self.instructions.push(format!("{}:", then_label));
+        let then_val = self.generate_expression_in_method(type_name, method, &if_expr.then_branch)?;
+        let then_result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = add i64 {}, 0", then_result_reg, then_val)); // Copy to result register
+        self.instructions.push(format!("  br label %{}", end_label));
+
+        // Generate else block
+        self.instructions.push(format!("{}:", else_label));
+        let else_val = self.generate_expression_in_method(type_name, method, &if_expr.else_branch)?;
+        let else_result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = add i64 {}, 0", else_result_reg, else_val)); // Copy to result register
+        self.instructions.push(format!("  br label %{}", end_label));
+
+        // Phi node to merge the results
+        self.instructions.push(format!("{}:", end_label));
+        let phi_reg = self.next_register();
+        self.instructions.push(format!("  %{} = phi i64 [%{}, %{}], [%{}, %{}]",
+                                      phi_reg, then_result_reg, then_label, else_result_reg, else_label));
+
+        Ok(format!("%{}", phi_reg))
+    }
+
+    /// Generate case expressions within methods
+    fn generate_case_in_method(&mut self, type_name: &str, method: &crate::ast::FunctionDecl, case_expr: &crate::ast::CaseExpr) -> Result<String> {
+        // For now, only support boolean case expressions (true/false patterns)
+        // This handles the common case of conditional logic in trait methods
+
+        // Generate the scrutinee (condition)
+        let scrutinee_val = self.generate_expression_in_method(type_name, method, &case_expr.scrutinee)?;
+
+        // Compare scrutinee with 0 (false) to get boolean
+        let bool_reg = self.next_register();
+        self.instructions.push(format!("  %{} = icmp ne i64 {}, 0", bool_reg, scrutinee_val));
+
+        // Create labels
+        let case_end = format!("case_end_{}", self.next_register());
+        let true_label = format!("case_true_{}", self.next_register());
+        let false_label = format!("case_false_{}", self.next_register());
+
+        // Branch based on boolean value
+        self.instructions.push(format!("  br i1 %{}, label %{}, label %{}", bool_reg, true_label, false_label));
+
+        // Find true and false branches
+        let mut true_expr = None;
+        let mut false_expr = None;
+
+        for branch in &case_expr.branches {
+            match &branch.pattern {
+                crate::ast::Pattern::Literal(crate::ast::Literal::Bool(true)) => {
+                    true_expr = Some(&branch.body);
+                }
+                crate::ast::Pattern::Literal(crate::ast::Literal::Bool(false)) => {
+                    false_expr = Some(&branch.body);
+                }
+                _ => {
+                    return Err(CompilerError::codegen_error(format!("Unsupported case pattern in method: {:?}", branch.pattern)));
+                }
+            }
+        }
+
+        // Generate true branch
+        self.instructions.push(format!("{}:", true_label));
+        let true_val = if let Some(expr) = true_expr {
+            self.generate_expression_in_method(type_name, method, expr)?
+        } else {
+            return Err(CompilerError::codegen_error("Case expression missing true branch".to_string()));
+        };
+        let true_result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = add i64 {}, 0", true_result_reg, true_val)); // Copy to result register
+        self.instructions.push(format!("  br label %{}", case_end));
+
+        // Generate false branch
+        self.instructions.push(format!("{}:", false_label));
+        let false_val = if let Some(expr) = false_expr {
+            self.generate_expression_in_method(type_name, method, expr)?
+        } else {
+            return Err(CompilerError::codegen_error("Case expression missing false branch".to_string()));
+        };
+        let false_result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = add i64 {}, 0", false_result_reg, false_val)); // Copy to result register
+        self.instructions.push(format!("  br label %{}", case_end));
+
+        // Phi node to merge the results
+        self.instructions.push(format!("{}:", case_end));
+        let phi_reg = self.next_register();
+        self.instructions.push(format!("  %{} = phi i64 [%{}, %{}], [%{}, %{}]",
+                                      phi_reg, true_result_reg, true_label, false_result_reg, false_label));
+
+        Ok(format!("%{}", phi_reg))
+    }
+
     /// Generate field access within method bodies
-    fn generate_field_access_for_method_with_type(&mut self, type_name: &str, field_access: &crate::ast::FieldAccessExpr) -> Result<String> {
+    fn generate_field_access_for_method_with_type(&mut self, type_name: &str, method: &crate::ast::FunctionDecl, field_access: &crate::ast::FieldAccessExpr) -> Result<String> {
         // For self.field, generate code to load the field from the struct pointer
         match &*field_access.object {
             Expression::Identifier(var_name) if var_name == "self" => {
-                // Look up the struct layout from type aliases
-                let offset = if let Some(Type::Record(fields)) = self.type_aliases.get(type_name) {
-                    // Find the field offset
-                    let mut current_offset = 0;
-                    for (field_name, _) in fields {
-                        if field_name == &field_access.field {
-                            break;
-                        }
-                        current_offset += 8; // Assume 8-byte fields for now
+                // Look up the struct definition or type alias
+                let field_index = if let Some(struct_def) = self.struct_defs.get(type_name) {
+                    // It's a struct definition
+                    struct_def.iter().position(|field| field.name == field_access.field)
+                        .ok_or_else(|| CompilerError::codegen_error(format!("Unknown field '{}' in struct '{}'", field_access.field, type_name)))?
+                } else if let Some(type_info) = self.type_aliases.get(type_name) {
+                    // Check if it's a type alias with a record type
+                    if let crate::ast::Type::Record(fields) = type_info {
+                        fields.iter().position(|(field_name, _)| field_name == &field_access.field)
+                            .ok_or_else(|| CompilerError::codegen_error(format!("Unknown field '{}' in type '{}'", field_access.field, type_name)))?
+                    } else {
+                        return Err(CompilerError::codegen_error(format!("Type '{}' is not a record type", type_name)));
                     }
-                    if current_offset >= fields.len() * 8 {
-                        return Err(CompilerError::codegen_error(format!("Unknown field '{}' in type '{}'", field_access.field, type_name)));
-                    }
-                    current_offset
                 } else {
-                    return Err(CompilerError::codegen_error(format!("Cannot find struct layout for type '{}'", type_name)));
+                    return Err(CompilerError::codegen_error(format!("Cannot find struct definition or type alias for '{}'", type_name)));
                 };
+
+                // Calculate offset (assume 8 bytes per field)
+                let offset = field_index * 8;
 
                 let ptr_reg = self.next_register();
                 let typed_reg = self.next_register();

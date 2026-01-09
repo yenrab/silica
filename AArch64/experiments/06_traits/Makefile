@@ -1,13 +1,13 @@
 # Makefile for Silica experiments in this directory
 # Automatically detects executable files (with main) vs modules (without main)
 
-SILICA_COMPILER := ../../silica-bootstrap-compiler/target/release/silica-boot
+SILICA_COMPILER := ../../silica-bootstrap-compiler/target/debug/silica-boot
 
 # Ensure compiler is built without LLVM backend features for consistent text-based generation
 $(SILICA_COMPILER):
 	@echo "Building Silica compiler..."
 	rm -f $(SILICA_COMPILER)
-	cd ../../silica-bootstrap-compiler && cargo build --release --no-default-features
+	cd ../../silica-bootstrap-compiler && cargo build --no-default-features
 SEARCH_PATHS := -I ../../stdlib
 
 # Find all .silica files
@@ -63,14 +63,18 @@ ifdef HAS_LLVM_AS
 ifdef HAS_LLC
 	@echo "Building full executables with LLVM toolchain..."
 	@for ll_file in $(EXECUTABLES_LL); do \
-		bc_file=$$(basename $$ll_file .ll).bc; \
-		obj_file=$$(basename $$ll_file .ll).o; \
-		exe_file=$$(basename $$ll_file .ll); \
-		echo "  $$ll_file -> $$exe_file"; \
-		$(HAS_LLVM_AS) $$ll_file -o $$bc_file && \
-		$(HAS_LLC) -filetype=obj $$bc_file -o $$obj_file && \
-		$(LINKER_CLANG) $$obj_file $(RUNTIME_LIB) -o $$exe_file && \
-		echo "    ✅ Successfully built $$exe_file"; \
+		if [ -f "$$ll_file" ]; then \
+			bc_file=$$(basename $$ll_file .ll).bc; \
+			obj_file=$$(basename $$ll_file .ll).o; \
+			exe_file=$$(basename $$ll_file .ll); \
+			echo "  $$ll_file -> $$exe_file"; \
+			$(HAS_LLVM_AS) $$ll_file -o $$bc_file && \
+			$(HAS_LLC) -filetype=obj $$bc_file -o $$obj_file && \
+			$(LINKER_CLANG) $$obj_file $(RUNTIME_LIB) -o $$exe_file && \
+			echo "    ✅ Successfully built $$exe_file"; \
+		else \
+			echo "  $$ll_file not found - skipping"; \
+		fi; \
 	done
 else
 	@echo "llc not found - install LLVM tools for full compilation"
@@ -86,7 +90,7 @@ clean:
 # Force rebuild of compiler
 rebuild-compiler:
 	@echo "Forcing rebuild of Silica compiler..."
-	cd ../../silica-bootstrap-compiler && cargo build --release --no-default-features
+	cd ../../silica-bootstrap-compiler && cargo build --no-default-features
 
 # Clean everything including compiler
 clean-all: clean rebuild-compiler
