@@ -72,10 +72,10 @@ fn main() {
     let optimization_level = parse_optimization_level(&args);
     let search_paths = parse_search_paths(&args);
 
-    println!("Compiling Silica file: {}", input_file);
-    println!("Output: {}", output_file);
-    println!("Optimization level: {:?}", optimization_level);
-    println!("Search paths: {:?}", search_paths);
+    // println!("Compiling Silica file: {}", input_file);
+    // println!("Output: {}", output_file);
+    // println!("Optimization level: {:?}", optimization_level);
+    // println!("Search paths: {:?}", search_paths);
 
     // Read source from file
     let source = match std::fs::read_to_string(input_file) {
@@ -89,8 +89,8 @@ fn main() {
     let mut compiler = Compiler::with_optimization_and_search_paths(optimization_level, search_paths.clone());
     match compiler.compile(&source, input_file, output_file) {
         Ok(CompileResult::Success) => {
-            println!("✅ Compilation successful!");
-            println!("Generated LLVM bitcode in {}", output_file);
+            // println!("✅ Compilation successful!");
+            // println!("Generated LLVM bitcode in {}", output_file);
         }
         Ok(CompileResult::Skipped) => {
             println!("✅ Compilation skipped (file contains no declarations)");
@@ -98,7 +98,7 @@ fn main() {
         Err(err) => {
             // Provide helpful error messages for common issues
             match &err {
-                CompilerError::ParseError { location, message } => {
+                CompilerError::ParseError { location, message, metadata: _ } => {
                     let source_lines = source.lines().count();
                     if location.line > source_lines || location.line > 10000 {
                         eprintln!("❌ Compilation error: Parse error (position tracking corrupted)");

@@ -57,7 +57,6 @@ $(EXPECTED_FAILURE_LL): %.ll: %.silica
 	-@$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS) && echo "    ⚠️  Test $@ was expected to fail but succeeded!" || echo "    ✅ Test $@ failed as expected"
 
 %.ll: %.silica
-	@echo "Compiling executable: $< -> $@"
 	$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Compile module files (those without main functions)
@@ -65,7 +64,6 @@ modules: $(MODULES_LL)
 
 # Modules are compiled the same way, but marked as such
 $(MODULES_LL): %.ll: %.silica
-	@echo "Compiling module: $< -> $@"
 	$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Build executables if LLVM tools are available

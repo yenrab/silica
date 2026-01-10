@@ -1,4 +1,4 @@
-use crate::errors::{Result, SourceLocation, lexer_error};
+use crate::errors::{Result, SourceLocation, lexer_error, lexer_error_with_metadata};
 
 /// Token represents a lexical token in Silica source code
 #[derive(Debug, Clone, PartialEq)]
@@ -173,10 +173,15 @@ impl Lexer {
                 '\'' => self.read_char(),
                 '0'..='9' => self.read_number(),
                 'a'..='z' | 'A'..='Z' | '_' => self.read_identifier_or_keyword(),
-                _ => lexer_error(
-                    start_location,
-                    format!("Unexpected character: {}", c),
-                ),
+                _ => {
+                    let metadata = self.build_error_metadata("E0001", &start_location, Some("spec:§2.1"))
+                        .build();
+                    lexer_error_with_metadata(
+                        start_location,
+                        format!("Unexpected character: {}", c),
+                        metadata,
+                    )
+                },
             },
             None => Ok(Some(Token::new(TokenKind::EOF, "".to_string(), start_location))),
         }
@@ -263,9 +268,13 @@ impl Lexer {
                     self.advance();
                 }
                 (None, _) => {
-                    return lexer_error(
-                        SourceLocation::new(self.file.clone(), self.line, self.column, self.position),
+                    let location = SourceLocation::new(self.file.clone(), self.line, self.column, self.position);
+                    let metadata = self.build_error_metadata("E0006", &location, Some("spec:§2.3.2"))
+                        .build();
+                    return lexer_error_with_metadata(
+                        location,
                         "Unterminated block comment".to_string(),
+                        metadata,
                     );
                 }
             }
@@ -391,10 +400,16 @@ impl Lexer {
                     self.source[start..self.position].to_string(),
                     start_location,
                 ))),
-                Err(_) => lexer_error(
-                    start_location,
-                    format!("Invalid hex literal: {}", hex_str),
-                ),
+                Err(_) => {
+                    let metadata = self.build_error_metadata("E0005", &start_location, Some("spec:§2.2.3"))
+                        .suggestion("Check that hex digits are valid (0-9, a-f, A-F)".to_string())
+                        .build();
+                    lexer_error_with_metadata(
+                        start_location,
+                        format!("Invalid hex literal: {}", hex_str),
+                        metadata,
+                    )
+                },
             }
         }
         // Handle binary literals
@@ -417,10 +432,16 @@ impl Lexer {
                     self.source[start..self.position].to_string(),
                     start_location,
                 ))),
-                Err(_) => lexer_error(
-                    start_location,
-                    format!("Invalid binary literal: {}", bin_str),
-                ),
+                Err(_) => {
+                    let metadata = self.build_error_metadata("E0005", &start_location, Some("spec:§2.2.3"))
+                        .suggestion("Check that binary digits are valid (0 or 1)".to_string())
+                        .build();
+                    lexer_error_with_metadata(
+                        start_location,
+                        format!("Invalid binary literal: {}", bin_str),
+                        metadata,
+                    )
+                },
             }
         }
         // Handle decimal literals
@@ -440,10 +461,16 @@ impl Lexer {
                     num_str.to_string(),
                     start_location,
                 ))),
-                Err(_) => lexer_error(
-                    start_location,
-                    format!("Invalid integer literal: {}", num_str),
-                ),
+                Err(_) => {
+                    let metadata = self.build_error_metadata("E0005", &start_location, Some("spec:§2.2.3"))
+                        .suggestion("Ensure the number is within valid range for i64".to_string())
+                        .build();
+                    lexer_error_with_metadata(
+                        start_location,
+                        format!("Invalid integer literal: {}", num_str),
+                        metadata,
+                    )
+                },
             }
         }
     }
@@ -475,9 +502,13 @@ impl Lexer {
                     '"' => result.push('"'),
                     '\'' => result.push('\''),
                     _ => {
-                        return lexer_error(
+                        let metadata = self.build_error_metadata("E0002", &start_location, Some("spec:§2.2.3"))
+                            .suggestion("Valid escape sequences are: \\n, \\t, \\r, \\\\, \\\", \\'".to_string())
+                            .build();
+                        return lexer_error_with_metadata(
                             start_location,
                             format!("Invalid escape sequence: \\{}", c),
+                            metadata,
                         );
                     }
                 }
@@ -496,10 +527,16 @@ impl Lexer {
             }
         }
 
-        lexer_error(
-            start_location,
-            "Unterminated string literal".to_string(),
-        )
+        {
+            let metadata = self.build_error_metadata("E0003", &start_location, Some("spec:§2.2.3"))
+                .suggestion("Add closing double quote (\") to terminate the string literal".to_string())
+                .build();
+            lexer_error_with_metadata(
+                start_location,
+                "Unterminated string literal".to_string(),
+                metadata,
+            )
+        }
     }
 
     /// Read character literals
@@ -543,15 +580,23 @@ impl Lexer {
                         '\''
                     }
                     Some(c) => {
-                        return lexer_error(
+                        let metadata = self.build_error_metadata("E0002", &start_location, Some("spec:§2.2.3"))
+                            .suggestion("Valid escape sequences are: \\n, \\t, \\r, \\\\, \\\", \\'".to_string())
+                            .build();
+                        return lexer_error_with_metadata(
                             start_location,
                             format!("Invalid escape sequence: \\{}", c),
+                            metadata,
                         );
                     }
                     None => {
-                        return lexer_error(
+                        let metadata = self.build_error_metadata("E0004", &start_location, Some("spec:§2.2.3"))
+                            .suggestion("Add closing single quote (') to terminate the character literal".to_string())
+                            .build();
+                        return lexer_error_with_metadata(
                             start_location,
                             "Unexpected end of file in character literal".to_string(),
+                            metadata,
                         );
                     }
                 }
@@ -561,9 +606,13 @@ impl Lexer {
                 c
             }
             None => {
-                return lexer_error(
+                let metadata = self.build_error_metadata("E0004", &start_location, Some("spec:§2.2.3"))
+                    .suggestion("Add closing single quote (') to terminate the character literal".to_string())
+                    .build();
+                return lexer_error_with_metadata(
                     start_location,
                     "Unexpected end of file in character literal".to_string(),
+                    metadata,
                 );
             }
         };
@@ -577,10 +626,16 @@ impl Lexer {
                     start_location,
                 )))
             }
-            _ => lexer_error(
-                start_location,
-                "Expected closing quote in character literal".to_string(),
-            ),
+            _ => {
+                let metadata = self.build_error_metadata("E0004", &start_location, Some("spec:§2.2.3"))
+                    .suggestion("Character literals must contain exactly one character. Use single quotes: 'a'".to_string())
+                    .build();
+                lexer_error_with_metadata(
+                    start_location,
+                    "Expected closing quote in character literal".to_string(),
+                    metadata,
+                )
+            },
         }
     }
 
@@ -709,5 +764,31 @@ impl Lexer {
         );
         // Don't advance - characters already consumed
         Ok(Some(Token::new(kind, lexeme.to_string(), location)))
+    }
+
+    /// Create error metadata builder with surrounding code context
+    fn build_error_metadata(&self, error_code: &str, location: &SourceLocation, spec_section: Option<&str>) -> crate::errors::ErrorMetadataBuilder {
+        use crate::errors::{ErrorMetadataBuilder, ErrorSeverity, extract_surrounding_code};
+        
+        let mut builder = ErrorMetadataBuilder::new(error_code.to_string())
+            .severity(ErrorSeverity::Error);
+        
+        // Add surrounding code context
+        if let Some(context) = extract_surrounding_code(&self.source, location, 3) {
+            builder = builder.surrounding_code(context);
+        }
+        
+        // Add specification reference
+        if let Some(section) = spec_section {
+            // Remove "spec:" prefix if present, store just "§X.Y"
+            let clean_section = if section.starts_with("spec:") {
+                section.strip_prefix("spec:").unwrap_or(section)
+            } else {
+                section
+            };
+            builder = builder.specification(clean_section.to_string(), None);
+        }
+        
+        builder
     }
 }

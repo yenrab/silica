@@ -23,7 +23,7 @@ all: $(SUBDIRS)
 # Build each subdirectory
 $(SUBDIRS):
 	@echo "🏗️  Building $@ experiments..."
-	if [ -f "$@/Makefile" ]; then \
+	@if [ -f "$@/Makefile" ]; then \
 		$(MAKE) -C $@ all; \
 	else \
 		echo "⚠️  No Makefile found in $@ - skipping"; \
@@ -33,7 +33,7 @@ $(SUBDIRS):
 # Clean all subdirectories
 clean:
 	@echo "🧹 Cleaning all experiments..."
-	for dir in $(SUBDIRS); do \
+	@for dir in $(SUBDIRS); do \
 		if [ -f "$$dir/Makefile" ]; then \
 			$(MAKE) -C $$dir clean; \
 		fi; \
@@ -55,7 +55,7 @@ rebuild-all: clean-all all
 # Build only executables across all directories
 executables:
 	@echo "🏗️  Building all executables..."
-	for dir in $(SUBDIRS); do \
+	@for dir in $(SUBDIRS); do \
 		if [ -f "$$dir/Makefile" ]; then \
 			echo "Building executables in $$dir..."; \
 			$(MAKE) -C $$dir executables; \
@@ -66,7 +66,7 @@ executables:
 # Build only modules across all directories
 modules:
 	@echo "🏗️  Building all modules..."
-	for dir in $(SUBDIRS); do \
+	@for dir in $(SUBDIRS); do \
 		if [ -f "$$dir/Makefile" ]; then \
 			echo "Building modules in $$dir..."; \
 			$(MAKE) -C $$dir modules; \
@@ -77,11 +77,11 @@ modules:
 # Build full executables across all directories (requires LLVM tools)
 executables-full:
 	@echo "🏗️  Building all full executables..."
-	if [ -z "$(HAS_LLVM_TOOLS)" ]; then \
+	@if [ -z "$(HAS_LLVM_TOOLS)" ]; then \
 		echo "❌ LLVM tools not found. Install LLVM (brew install llvm on macOS)"; \
 		exit 1; \
 	fi
-	for dir in $(SUBDIRS); do \
+	@for dir in $(SUBDIRS); do \
 		if [ -f "$$dir/Makefile" ]; then \
 			echo "Building full executables in $$dir..."; \
 			$(MAKE) -C $$dir executables-full; \

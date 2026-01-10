@@ -73,27 +73,27 @@ impl Compiler {
 
     pub fn compile(&mut self, source: &str, input_file: &str, output_file: &str) -> Result<CompileResult> {
         // Phase 1: Lexical analysis
-        println!("Phase 1: Lexical analysis...");
+        // println!("Phase 1: Lexical analysis...");
         let mut lexer = Lexer::new(source.to_string(), input_file.to_string());
         let tokens = lexer.tokenize()?;
-        println!("Successfully tokenized {} tokens", tokens.len());
+        // println!("Successfully tokenized {} tokens", tokens.len());
 
         // Phase 2: Parsing
-        println!("Phase 2: Parsing...");
+        // println!("Phase 2: Parsing...");
         let mut parser = Parser::new(tokens);
         let program = parser.parse()?;
-        println!("Successfully parsed program with {} declarations", program.declarations.len());
+        // println!("Successfully parsed program with {} declarations", program.declarations.len());
 
         // Skip compilation if file contains no declarations (e.g., only comments)
         if program.declarations.is_empty() {
-            println!("⚠️  File contains no declarations - skipping compilation");
+            // println!("⚠️  File contains no declarations - skipping compilation");
             // Create an empty output file so Makefile dependencies are satisfied
             std::fs::write(output_file, "; Empty file - no declarations to compile\n")?;
             return Ok(CompileResult::Skipped);
         }
 
         // Phase 2.5: Module resolution and combination
-        println!("Phase 2.5: Module resolution...");
+        // println!("Phase 2.5: Module resolution...");
         let combined_program = self.resolve_imports_and_combine(&program)?;
 
         // Set symbol table in code generator
@@ -101,45 +101,45 @@ impl Compiler {
         self.codegen.set_symbol_table(symbol_table_clone);
 
         // Phase 3: Type checking
-        println!("Phase 3: Type checking happening...");
+        // println!("Phase 3: Type checking happening...");
         let mut type_checker = TypeChecker::with_symbol_table(Some(&self.symbol_table));
         // eprintln!("DEBUG LIB: About to call check_program");
         type_checker.check_program(&combined_program)?;
         // println!("DEBUG LIB: check_program completed successfully");
-        println!("Type checking passed");
+        // println!("Type checking passed");
 
         // Phase 4: Effect analysis
-        println!("Phase 4: Effect analysis...");
+        // println!("Phase 4: Effect analysis...");
         // Pass type information from type checker to effect analyzer
         let mut effect_analyzer = EffectAnalyzer::with_types(
             type_checker.expression_types.clone(),
             type_checker.actor_mailbox_types.clone(),
         );
         effect_analyzer.analyze_program(&combined_program)?;
-        println!("Effect analysis passed");
+        // println!("Effect analysis passed");
 
         // TODO: Pass struct definitions and generic instantiations when supported
 
         // Phase 5: Code generation
-        println!("Phase 5: LLVM code generation...");
+        // println!("Phase 5: LLVM code generation...");
         self.codegen.set_expression_types(type_checker.expression_types.clone());
         self.codegen.set_type_aliases(type_checker.get_type_aliases().clone());
         self.codegen.set_struct_defs(type_checker.get_struct_defs().clone());
         self.codegen.set_trait_impls(type_checker.get_trait_impls().clone());
         self.codegen.generate_program(&combined_program)?;
-        println!("Code generation completed");
+        // println!("Code generation completed");
 
         // Print the LLVM IR for verification
-        println!("\nGenerated LLVM IR (Text Representation):");
-        println!("=========================================");
-        self.codegen.print_ir();
+        // println!("\nGenerated LLVM IR (Text Representation):");
+        // println!("=========================================");
+        //self.codegen.print_ir();
 
         // Write the generated code to file
         self.codegen.write_to_file(output_file)?;
-        println!("📄 LLVM text IR written to {}", output_file);
+        // println!("📄 LLVM text IR written to {}", output_file);
 
-        println!("\nFull compilation pipeline completed successfully!");
-        println!("Program structure: {} declarations", program.declarations.len());
+        // println!("\nFull compilation pipeline completed successfully!");
+        // println!("Program structure: {} declarations", program.declarations.len());
 
         // Optional: Print LLVM IR for debugging
         // codegen.print_ir();
@@ -199,8 +199,8 @@ impl Compiler {
         // Process modules in reverse order (dependencies first)
         for module_name in modules_to_process.iter().rev() {
             let module = self.module_resolver.get_module(module_name).unwrap();
-            println!("Loading module: {}", module_name);
-            println!("Loaded module '{}' with {} exports", module.name, module.exports.len());
+            // println!("Loading module: {}", module_name);
+            // println!("Loaded module '{}' with {} exports", module.name, module.exports.len());
 
             // Add all non-import declarations from this module
             for decl in &module.ast {
@@ -215,8 +215,8 @@ impl Compiler {
         // Functions must be defined before they're used
         all_declarations.extend(main_declarations);
 
-        println!("Module resolution completed - combined {} declarations from {} modules",
-                 all_declarations.len(), processed_modules.len());
+        // println!("Module resolution completed - combined {} declarations from {} modules",
+        //          all_declarations.len(), processed_modules.len());
 
         // Create combined program
         Ok(crate::ast::Program {

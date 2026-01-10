@@ -32,7 +32,6 @@ all: executables-all
 executables: $(EXECUTABLES_LL)
 
 %.ll: %.silica
-	@echo "Compiling executable: $< -> $@"
 	../../silica-bootstrap-compiler/target/release/silica-boot $< $@ -I ../../stdlib
 
 # Compile module files (those without main functions) to LLVM IR
@@ -40,7 +39,6 @@ modules: $(MODULES_LL)
 
 # Modules are compiled the same way, but marked as such
 $(MODULES_LL): %.ll: %.silica
-	@echo "Compiling module: $< -> $@"
 	../../silica-bootstrap-compiler/target/release/silica-boot $< $@ -I ../../stdlib
 
 # Build full executables - depends on LLVM IR files being built

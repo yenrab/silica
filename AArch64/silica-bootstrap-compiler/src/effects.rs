@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::errors::{Result, effect_error, SourceLocation};
+use crate::errors::{Result, effect_error, effect_error_with_metadata, SourceLocation, ErrorMetadataBuilder, ErrorSeverity};
 use std::collections::{HashSet, HashMap};
 
 /// Effect context tracking active capabilities
@@ -72,9 +72,15 @@ impl EffectChecker {
                 }
             }
             if !found_compatible {
-                return effect_error(
+                let metadata = ErrorMetadataBuilder::new("E3002".to_string())
+                    .severity(ErrorSeverity::Error)
+                    .specification("§8".to_string(), None)
+                    .suggestion(format!("Add effect {:?} to function's proc[...] declaration", required))
+                    .build();
+                return effect_error_with_metadata(
                     SourceLocation::unknown(),
                     format!("Effect not active: {:?} (available: {:?})", required, self.context.active_effects),
+                    metadata,
                 );
             }
         }
@@ -108,10 +114,17 @@ impl EffectChecker {
                 }
             }
             if !all_allowed {
-                return effect_error(
+                let metadata = ErrorMetadataBuilder::new("E3001".to_string())
+                    .severity(ErrorSeverity::Error)
+                    .specification("§8".to_string(), None)
+                    .suggestion("Add required effects to function's proc[...] declaration".to_string())
+                    .suggestion_with_example("Example:".to_string(), "fn my_func() : proc[concurrency, mem(normal)] { ... }".to_string())
+                    .build();
+                return effect_error_with_metadata(
                     SourceLocation::unknown(),
                     format!("Expression requires effect not covered by active capabilities: {:?} (active: {:?}). Note: active_effects is empty - function may not have declared required effects with proc[...].",
                            expr_effects, self.context.active_effects),
+                    metadata,
                 );
             }
             // All effects are temporarily allowed for bootstrap compiler
@@ -149,10 +162,16 @@ impl EffectChecker {
                 if let Effect::Concurrency = expr_effect {
                     continue;
                 }
-                return effect_error(
+                let metadata = ErrorMetadataBuilder::new("E3001".to_string())
+                    .severity(ErrorSeverity::Error)
+                    .specification("§8".to_string(), None)
+                    .suggestion(format!("Add effect {:?} to function's proc[...] declaration", expr_effect))
+                    .build();
+                return effect_error_with_metadata(
                     SourceLocation::unknown(),
                     format!("Expression requires effect not covered by active capabilities: {:?} (active: {:?})",
                            expr_effect, self.context.active_effects),
+                    metadata,
                 );
             }
         }
@@ -457,9 +476,15 @@ impl EffectChecker {
     pub fn check_effect_compatibility(&self, declared: &[Effect], required: &[Effect]) -> Result<()> {
         for req in required {
             if !declared.contains(req) {
-                return effect_error(
+                let metadata = ErrorMetadataBuilder::new("E3003".to_string())
+                    .severity(ErrorSeverity::Error)
+                    .specification("§8".to_string(), None)
+                    .suggestion(format!("Add effect {:?} to function's proc[...] declaration", req))
+                    .build();
+                return effect_error_with_metadata(
                     SourceLocation::unknown(),
                     format!("Required effect {:?} not declared", req),
+                    metadata,
                 );
             }
         }
@@ -738,10 +763,15 @@ impl EffectAnalyzer {
         
         // If function declares effects but they weren't pushed, that's a bug
         if declared_count > 0 && active_count < declared_count {
-            return effect_error(
+            let metadata = ErrorMetadataBuilder::new("E3004".to_string())
+                .severity(ErrorSeverity::Error)
+                .specification("§8".to_string(), None)  // Display will add "spec:" prefix
+                .build();
+            return effect_error_with_metadata(
                 func.location.clone(),
-                format!("Internal error: Failed to push all declared effects. Declared: {} ({:?}), Active: {}", 
-                       declared_count, declared_effects, active_count)
+                format!("Internal error: Failed to push all declared effects. Declared: {} ({:?}), Active: {}",
+                       declared_count, declared_effects, active_count),
+                metadata,
             );
         }
         

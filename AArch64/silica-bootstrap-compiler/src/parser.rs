@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::errors::{Result, SourceLocation, parse_error};
+use crate::errors::{Result, SourceLocation, parse_error, parse_error_with_metadata, ErrorMetadataBuilder, ErrorSeverity};
 use crate::lexer::{Lexer, Token, TokenKind};
 
 /// Parser performs recursive descent parsing of Silica source code
@@ -79,9 +79,13 @@ impl Parser {
             // eprintln!("DEBUG PARSER: impl_declaration result: {:?}", result.is_ok());
             result
         } else {
-            parse_error(
-                self.peek().location.clone(),
+            let location = self.peek().location.clone();
+            let metadata = self.build_parse_error_metadata("E1001", &location, Some("spec:§3.2"), None)
+                .build();
+            parse_error_with_metadata(
+                location,
                 "Expected declaration (fn, type, effect, module, import, export, struct, enum, trait, or impl)".to_string(),
+                metadata,
             )
         }
     }
@@ -513,9 +517,15 @@ impl Parser {
         } else if self.match_token(TokenKind::Atomic) {
             Ok(MemorySpace::Atomic)
         } else {
-            parse_error(
-                self.peek().location.clone(),
+            let location = self.peek().location.clone();
+            let metadata = self.build_parse_error_metadata("E1006", &location, Some("spec:§10"), None)
+                .suggestion("Use 'normal' for normal memory space".to_string())
+                .suggestion("Use 'atomic' for atomic memory space".to_string())
+                .build();
+            parse_error_with_metadata(
+                location,
                 "Expected 'normal' or 'atomic' memory space".to_string(),
+                metadata,
             )
         }
     }
@@ -783,10 +793,15 @@ impl Parser {
         // Extract type name from the expression (should be an identifier)
         let type_name = match type_expr {
             Expression::Identifier(name) => name,
-            _ => return parse_error(
-                location.clone(),
-                "Expected type name before struct literal".to_string(),
-            ),
+            _ => {
+                let metadata = self.build_parse_error_metadata("E1003", &location, Some("spec:§3"), None)
+                    .build();
+                return parse_error_with_metadata(
+                    location.clone(),
+                    "Expected type name before struct literal".to_string(),
+                    metadata,
+                );
+            }
         };
 
         let mut fields = Vec::new();
@@ -800,9 +815,13 @@ impl Parser {
             fields.push((field_name, field_value));
 
             if !self.match_token(TokenKind::Comma) && !self.check(TokenKind::RightBrace) {
-                return parse_error(
-                    self.peek().location.clone(),
+                let location = self.peek().location.clone();
+                let metadata = self.build_parse_error_metadata("E1001", &location, Some("spec:§3"), None)
+                    .build();
+                return parse_error_with_metadata(
+                    location,
                     "Expected ',' or '}' after field".to_string(),
+                    metadata,
                 );
             }
         }
@@ -955,9 +974,13 @@ impl Parser {
             // Handle cast(actor, message) expression
             self.parse_cast()
         } else {
-            parse_error(
-                self.peek().location.clone(),
+            let location = self.peek().location.clone();
+            let metadata = self.build_parse_error_metadata("E1005", &location, Some("spec:§3.3"), None)
+                .build();
+            parse_error_with_metadata(
+                location,
                 "Expected expression".to_string(),
+                metadata,
             )
         }
     }
@@ -1567,7 +1590,10 @@ impl Parser {
                     location: method_location,
                 });
                 } else {
-                    return parse_error(self.peek().location.clone(), "Expected 'type' or 'fn' in trait declaration".to_string());
+                    let location = self.peek().location.clone();
+                    let metadata = self.build_parse_error_metadata("E1001", &location, Some("spec:§7"), None)
+                        .build();
+                    return parse_error_with_metadata(location, "Expected 'type' or 'fn' in trait declaration".to_string(), metadata);
                 }
 
                 if self.check(TokenKind::RightBrace) {
@@ -1601,7 +1627,9 @@ impl Parser {
                 Some(name_clone)
             } else {
                 // This was actually the type name, not a trait name
-                return parse_error(location, "Expected 'for' after trait name in impl".to_string());
+                let metadata = self.build_parse_error_metadata("E1001", &location, Some("spec:§7"), None)
+                    .build();
+                return parse_error_with_metadata(location, "Expected 'for' after trait name in impl".to_string(), metadata);
             }
         } else {
             None // Inherent impl
@@ -1612,7 +1640,11 @@ impl Parser {
         self.advance();
         let for_type = match token.kind {
             TokenKind::Identifier(name) => Type::Named(name),
-            _ => return parse_error(token.location, "Expected type name".to_string()),
+            _ => {
+                let metadata = self.build_parse_error_metadata("E1003", &token.location, Some("spec:§3"), None)
+                    .build();
+                return parse_error_with_metadata(token.location, "Expected type name".to_string(), metadata);
+            }
         };
         
         let mut associated_types: Vec<crate::ast::AssociatedTypeDef> = Vec::new();
@@ -1744,8 +1776,12 @@ impl Parser {
             let current_token = self.peek();
             let error_location = current_token.location.clone(); // Clone location before any mutable operations
             if current_token.location.line > 10000 {  // Sanity check
-                return parse_error(error_location,
-                    "Parser position tracking corrupted during statement parsing".to_string());
+                let metadata = ErrorMetadataBuilder::new("E9002".to_string())
+                    .severity(ErrorSeverity::Error)
+                    .build();
+                return parse_error_with_metadata(error_location,
+                    "Parser position tracking corrupted during statement parsing".to_string(),
+                    metadata);
             }
             
             // Reject nested function declarations (fn keyword followed by identifier)
@@ -1754,9 +1790,16 @@ impl Parser {
                 let saved_pos = self.current;
                 self.advance(); // consume 'fn'
                 if matches!(self.peek().kind, TokenKind::Identifier(_)) {
-                    return parse_error(
+                    let metadata = ErrorMetadataBuilder::new("E1002".to_string())
+                        .severity(ErrorSeverity::Error)
+                        .specification("§3.4.1".to_string(), Some("Function Declarations".to_string()))
+                        .suggestion("Move the function to top-level or use a function literal (lambda) instead".to_string())
+                        .suggestion_with_example("Use function literal:".to_string(), "fn helper() { fn(x: int) { x + 1 } }".to_string())
+                        .build();
+                    return parse_error_with_metadata(
                         error_location,
-                        "Nested function declarations are not allowed in Silica. Functions must be declared at top-level.".to_string()
+                        "Nested function declarations are not allowed in Silica. Functions must be declared at top-level.".to_string(),
+                        metadata,
                     );
                 }
                 // Not a function declaration, backtrack and parse as function literal
@@ -1801,22 +1844,37 @@ impl Parser {
                         // This provides better error recovery for position tracking issues
                     } else {
                         // Check for common syntax errors and provide helpful messages
-                        let error_msg = match current.kind {
+                        let (error_msg, error_code, suggestion) = match current.kind {
                             TokenKind::Identifier(ref id) if id == "if" => {
-                                "Found 'if' keyword, but Silica does not support if-else statements. Use 'case' expressions instead: case condition of true -> ... false -> ...".to_string()
+                                ("Found 'if' keyword, but Silica does not support if-else statements. Use 'case' expressions instead: case condition of true -> ... false -> ...".to_string(),
+                                 "E1008".to_string(),
+                                 "Use 'case' expressions: case condition of { true -> ... false -> ... }".to_string())
                             },
                             TokenKind::Identifier(ref id) if id == "else" => {
-                                "Found 'else' keyword, but Silica does not support if-else statements. Use 'case' expressions instead.".to_string()
+                                ("Found 'else' keyword, but Silica does not support if-else statements. Use 'case' expressions instead.".to_string(),
+                                 "E1008".to_string(),
+                                 "Use 'case' expressions instead of if-else".to_string())
                             },
                             TokenKind::Identifier(ref id) if id == "for" => {
-                                "Found 'for' keyword, but Silica does not support for loops. Use recursion instead.".to_string()
+                                ("Found 'for' keyword, but Silica does not support for loops. Use recursion instead.".to_string(),
+                                 "E1008".to_string(),
+                                 "Use recursion instead of for loops".to_string())
                             },
                             TokenKind::Identifier(ref id) if id == "while" => {
-                                "Found 'while' keyword, but Silica does not support while loops. Use recursion instead.".to_string()
+                                ("Found 'while' keyword, but Silica does not support while loops. Use recursion instead.".to_string(),
+                                 "E1008".to_string(),
+                                 "Use recursion instead of while loops".to_string())
                             },
-                            _ => format!("Expected ';' after statement, found {:?}", current.kind)
+                            _ => (format!("Expected ';' after statement, found {:?}", current.kind),
+                                  "E1001".to_string(),
+                                  "Add semicolon (;) after the statement".to_string())
                         };
-                        return parse_error(self.validate_token_position(current), error_msg);
+                        let metadata = ErrorMetadataBuilder::new(error_code)
+                            .severity(ErrorSeverity::Error)
+                            .specification("§3".to_string(), None)
+                            .suggestion(suggestion)
+                            .build();
+                        return parse_error_with_metadata(self.validate_token_position(current), error_msg, metadata);
                     }
                 }
             }
@@ -1979,7 +2037,13 @@ impl Parser {
             } else {
                 // No type annotation
                 if name == "_" {
-                    return parse_error(start_location, "Wildcards must have explicit type annotations: _: Type".to_string());
+                    let metadata = ErrorMetadataBuilder::new("E1007".to_string())
+                        .severity(ErrorSeverity::Error)
+                        .specification("§3".to_string(), None)  // Display will add "spec:" prefix
+                        .suggestion("Add explicit type annotation: _: Type".to_string())
+                        .suggestion_with_example("Example:".to_string(), "let _: int <- get_value();".to_string())
+                        .build();
+                    return parse_error_with_metadata(start_location, "Wildcards must have explicit type annotations: _: Type".to_string(), metadata);
                 }
                 // Untyped identifier
                 return Ok(Pattern::Identifier(name));
@@ -1997,9 +2061,13 @@ impl Parser {
             self.consume(TokenKind::RightParen, "Expected ')' after tuple pattern")?;
             Ok(Pattern::Tuple(patterns))
         } else {
-            parse_error(
-                self.peek().location.clone(),
+            let location = self.peek().location.clone();
+            let metadata = self.build_parse_error_metadata("E1001", &location, Some("spec:§3"), None)
+                .build();
+            parse_error_with_metadata(
+                location,
                 "Expected pattern".to_string(),
+                metadata,
             )
         }
     }
@@ -2195,7 +2263,10 @@ impl Parser {
         if self.check(kind) {
             Ok(self.advance())
         } else {
-            parse_error(self.peek().location.clone(), message.to_string())
+            let location = self.peek().location.clone();
+            let metadata = self.build_parse_error_metadata("E1001", &location, Some("spec:§3"), Some(message))
+                .build();
+            parse_error_with_metadata(location, message.to_string(), metadata)
         }
     }
 
@@ -2221,7 +2292,34 @@ impl Parser {
             self.advance();
             Ok(value)
         } else {
-            parse_error(self.peek().location.clone(), message.to_string())
+            let location = self.peek().location.clone();
+            let metadata = self.build_parse_error_metadata("E1001", &location, Some("spec:§3"), Some(message))
+                .build();
+            parse_error_with_metadata(location, message.to_string(), metadata)
         }
+    }
+
+    /// Create error metadata builder for parse errors
+    fn build_parse_error_metadata(&self, error_code: &str, location: &SourceLocation, spec_section: Option<&str>, suggestion: Option<&str>) -> ErrorMetadataBuilder {
+        let mut builder = ErrorMetadataBuilder::new(error_code.to_string())
+            .severity(ErrorSeverity::Error);
+        
+        // Add specification reference
+        if let Some(section) = spec_section {
+            // Remove "spec:" prefix if present, store just "§X.Y"
+            let clean_section = if section.starts_with("spec:") {
+                section.strip_prefix("spec:").unwrap_or(section)
+            } else {
+                section
+            };
+            builder = builder.specification(clean_section.to_string(), None);
+        }
+        
+        // Add suggestion if provided
+        if let Some(sug) = suggestion {
+            builder = builder.suggestion(sug.to_string());
+        }
+        
+        builder
     }
 }

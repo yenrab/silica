@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::errors::{Result, CompilerError, type_error, SourceLocation};
+use crate::errors::{Result, CompilerError, type_error, type_error_with_metadata, SourceLocation, ErrorMetadataBuilder, ErrorSeverity, TypeInfo};
 use std::collections::HashMap;
 
 /// Type variable for polymorphism
@@ -63,12 +63,17 @@ pub struct TypeChecker<'a> {
 impl<'a> TypeChecker<'a> {
     /// Resolve a type through type aliases to its canonical form
     pub fn resolve_type(&self, type_: &Type) -> Result<Type> {
+        self.resolve_type_with_location(type_, None)
+    }
+
+    /// Resolve a type through type aliases to its canonical form with location for error reporting
+    pub fn resolve_type_with_location(&self, type_: &Type, location: Option<SourceLocation>) -> Result<Type> {
         match type_ {
             Type::Named(name) => {
                 // Check if this is a type alias
                 if let Some(alias_target) = self.type_aliases.get(name) {
-                    // Recursively resolve the alias target
-                    self.resolve_type(alias_target)
+                    // Recursively resolve the alias target (preserve location)
+                    self.resolve_type_with_location(alias_target, location)
                 } else if self.struct_defs.contains_key(name) {
                     // This is a direct struct type
                     Ok(type_.clone())
@@ -80,10 +85,15 @@ impl<'a> TypeChecker<'a> {
                         "char" => Ok(Type::Char),
                         "string" => Ok(Type::String),
                         "unit" => Ok(Type::Unit),
-                        _ => type_error(
-                            SourceLocation::new("".to_string(), 0, 0, 0), // TODO: Pass proper location
-                            format!("Undefined type: {}", name),
-                        ),
+                        _ => {
+                            let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
+                            let metadata = ErrorMetadataBuilder::new("E2002".to_string())
+                                .severity(ErrorSeverity::Error)
+                                .specification("§6.1".to_string(), None)
+                                .suggestion(format!("Check if type '{}' is imported or declared", name))
+                                .build();
+                            type_error_with_metadata(error_location, format!("Undefined type: {}", name), metadata)
+                        }
                     }
                 }
             }
@@ -91,14 +101,16 @@ impl<'a> TypeChecker<'a> {
             Type::Tuple(types) => {
                 let mut resolved_types = Vec::new();
                 for t in types {
-                    resolved_types.push(self.resolve_type(t)?);
+                    // For tuples, we don't have per-element location, so pass None
+                    resolved_types.push(self.resolve_type_with_location(t, None)?);
                 }
                 Ok(Type::Tuple(resolved_types))
             }
             Type::Record(fields) => {
                 let mut resolved_fields = Vec::new();
                 for (name, t) in fields {
-                    resolved_fields.push((name.clone(), self.resolve_type(t)?));
+                    // For records, we don't have per-field location, so pass None
+                    resolved_fields.push((name.clone(), self.resolve_type_with_location(t, None)?));
                 }
                 Ok(Type::Record(resolved_fields))
             }
@@ -116,8 +128,14 @@ impl<'a> TypeChecker<'a> {
 
     /// Resolve a type name to its canonical type
     pub fn resolve_type_name(&self, name: &str) -> Result<Type> {
+        self.resolve_type_name_with_location(name, None)
+    }
+
+    /// Resolve a type name to its canonical type with location for error reporting
+    pub fn resolve_type_name_with_location(&self, name: &str, location: Option<SourceLocation>) -> Result<Type> {
         if let Some(alias_target) = self.type_aliases.get(name) {
-            self.resolve_type(alias_target)
+            // Pass location through to resolve_type
+            self.resolve_type_with_location(alias_target, location)
         } else if self.struct_defs.contains_key(name) {
             Ok(Type::Named(name.to_string()))
         } else {
@@ -128,10 +146,15 @@ impl<'a> TypeChecker<'a> {
                 "char" => Ok(Type::Char),
                 "string" => Ok(Type::String),
                 "unit" => Ok(Type::Unit),
-                _ => type_error(
-                    SourceLocation::new("".to_string(), 0, 0, 0),
-                    format!("Undefined type: {}", name),
-                ),
+                _ => {
+                    let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
+                    let metadata = ErrorMetadataBuilder::new("E2002".to_string())
+                        .severity(ErrorSeverity::Error)
+                        .specification("§6.1".to_string(), None)
+                        .suggestion(format!("Check if type '{}' is imported or declared", name))
+                        .build();
+                    type_error_with_metadata(error_location, format!("Undefined type: {}", name), metadata)
+                }
             }
         }
     }
@@ -166,9 +189,15 @@ impl<'a> TypeChecker<'a> {
     /// Check if a variable name would shadow an existing binding
     fn check_variable_shadowing(&self, name: &str, location: &SourceLocation) -> Result<()> {
         if self.env.contains_key(name) {
-            return type_error(
+            let metadata = ErrorMetadataBuilder::new("E2004".to_string())
+                .severity(ErrorSeverity::Error)
+                .specification("§6".to_string(), None)
+                .suggestion(format!("Rename variable '{}' to avoid shadowing", name))
+                .build();
+            return type_error_with_metadata(
                 location.clone(),
-                format!("Variable '{}' shadows an existing binding. Variable shadowing is not allowed in Silica.", name)
+                format!("Variable '{}' shadows an existing binding. Variable shadowing is not allowed in Silica.", name),
+                metadata
             );
         }
         Ok(())
@@ -479,6 +508,17 @@ impl<'a> TypeChecker<'a> {
 
     /// Check function declaration
     fn check_function_declaration(&mut self, func: &FunctionDecl) -> Result<()> {
+        // Validate parameter types with location BEFORE expanding aliases
+        for param in &func.parameters {
+            self.validate_type_with_location(&param.type_, Some(param.location.clone()))?;
+        }
+
+        // Validate return type with location BEFORE expanding aliases
+        if let Some(ref rt) = func.return_type {
+            // Use function location as fallback for return type (return type doesn't have its own location in AST)
+            self.validate_type_with_location(rt, Some(func.location.clone()))?;
+        }
+
         // Convert parameter types, expanding aliases first
         let param_types: Vec<Type> = func.parameters.iter()
             .map(|param| self.expand_type_aliases(&param.type_))
@@ -535,8 +575,30 @@ impl<'a> TypeChecker<'a> {
         // Restore environment
         self.env = saved_env;
 
-        // Add constraint for return type
-        self.add_constraint(body_type, expected_return);
+        // Check return type directly to provide better error messages with location
+        // First try to unify, and if it fails, provide a better error message
+        if let Err(e) = self.unify_with_location(&body_type, &expected_return, Some(func.location.clone())) {
+            // If unification failed, provide a better error message with function location
+            if let CompilerError::TypeError { message, .. } = &e {
+                if message.contains("Cannot unify types") {
+                    let metadata = ErrorMetadataBuilder::new("E2008".to_string())
+                        .severity(ErrorSeverity::Error)
+                        .specification("§6.3".to_string(), None)
+                        .expected_actual(
+                            format!("{:?}", expected_return),
+                            format!("{:?}", body_type)
+                        )
+                        .build();
+                    return type_error_with_metadata(
+                        func.location.clone(),
+                        format!("Function '{}' declared to return {:?}, but body returns {:?}", 
+                                func.name, expected_return, body_type),
+                        metadata,
+                    );
+                }
+            }
+            return Err(e);
+        }
 
         Ok(())
     }
@@ -747,7 +809,7 @@ impl<'a> TypeChecker<'a> {
     fn infer_struct_literal(&mut self, struct_lit: &StructLiteralExpr) -> Result<Type> {
         // eprintln!("DEBUG STRUCT: infer_struct_literal called for type {}", struct_lit.type_name);
         // Resolve the type name through aliases to find the actual struct
-        let resolved_type = self.resolve_type_name(&struct_lit.type_name)?;
+        let resolved_type = self.resolve_type_name_with_location(&struct_lit.type_name, Some(struct_lit.location.clone()))?;
         // eprintln!("DEBUG STRUCT: resolved_type = {:?}", resolved_type);
 
         match resolved_type {
@@ -780,13 +842,15 @@ impl<'a> TypeChecker<'a> {
 
                         // Type check the field value
                         let field_type = self.infer_expression(field_expr)?;
-                        let resolved_expected_type = self.resolve_type(expected_type)?;
-                        if !self.types_equal(&field_type, &resolved_expected_type) {
+                        // Resolve both types through type aliases before comparison
+                        let resolved_field_type = self.resolve_type_with_location(&field_type, Some(struct_lit.location.clone()))?;
+                        let resolved_expected_type = self.resolve_type_with_location(expected_type, Some(struct_lit.location.clone()))?;
+                        if !self.types_equal(&resolved_field_type, &resolved_expected_type) {
                             return type_error(
                                 struct_lit.location.clone(),
                                 format!(
                                     "Field '{}' expects type {:?} but got {:?}",
-                                    field_name, resolved_expected_type, field_type
+                                    field_name, resolved_expected_type, resolved_field_type
                                 ),
                             );
                         }
@@ -830,14 +894,15 @@ impl<'a> TypeChecker<'a> {
                 // Infer the type of the field expression
                 let field_type = self.infer_expression(field_expr)?;
 
-                // Check that it matches the expected type
-                let expected_type = &expected_field.ty;
-                if !self.types_equal(&field_type, expected_type) {
+                // Resolve both types through type aliases before comparison
+                let resolved_field_type = self.resolve_type_with_location(&field_type, Some(struct_lit.location.clone()))?;
+                let resolved_expected_type = self.resolve_type_with_location(&expected_field.ty, Some(struct_lit.location.clone()))?;
+                if !self.types_equal(&resolved_field_type, &resolved_expected_type) {
                     return type_error(
                         struct_lit.location.clone(),
                         format!(
                             "Field '{}' expects type {:?} but got {:?}",
-                            field_name, expected_type, field_type
+                            field_name, resolved_expected_type, resolved_field_type
                         ),
                     );
                 }
@@ -1100,7 +1165,8 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
                 let path_type = self.infer_expression(&call.arguments[0])?;
-                self.unify(&path_type, &Type::Named("string".to_string()))?;
+                let path_location = Self::try_get_expression_location(&call.arguments[0]).cloned();
+                self.unify_with_location(&path_type, &Type::Named("string".to_string()), path_location)?;
                 return Ok(Type::Named("Result".to_string()));
             } else if func_name == "write_file" {
                 // write_file(path: string, content: string) -> Result<unit, string>
@@ -1111,9 +1177,11 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
                 let path_type = self.infer_expression(&call.arguments[0])?;
-                self.unify(&path_type, &Type::Named("string".to_string()))?;
+                let path_location = Self::try_get_expression_location(&call.arguments[0]).cloned();
+                self.unify_with_location(&path_type, &Type::Named("string".to_string()), path_location)?;
                 let content_type = self.infer_expression(&call.arguments[1])?;
-                self.unify(&content_type, &Type::Named("string".to_string()))?;
+                let content_location = Self::try_get_expression_location(&call.arguments[1]).cloned();
+                self.unify_with_location(&content_type, &Type::Named("string".to_string()), content_location)?;
                 return Ok(Type::Named("Result".to_string()));
             }
         }
@@ -1133,7 +1201,26 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        let func_type = self.infer_expression(&call.function)?;
+        // Try to infer the function type, and provide a better error message
+        // if it's an undefined identifier used as a function
+        let func_type = match self.infer_expression(&call.function) {
+            Ok(ty) => ty,
+            Err(e) => {
+                // If it's an identifier and the error is about undefined variable,
+                // provide a better error message for function calls
+                if let Expression::Identifier(func_name) = &*call.function {
+                    if let CompilerError::TypeError { message, .. } = &e {
+                        if message.contains("Undefined variable") {
+                            return type_error(
+                                call.location.clone(),
+                                format!("Undefined function: {}", func_name),
+                            );
+                        }
+                    }
+                }
+                return Err(e);
+            }
+        };
 
         // Check if we already have a function type
         if let Type::Function { parameters, return_type } = &func_type {
@@ -1472,9 +1559,15 @@ impl<'a> TypeChecker<'a> {
 
                     // Require explicit type annotations for ALL bindings
                     if let crate::ast::Pattern::Identifier(_) = pattern {
+                        let metadata = ErrorMetadataBuilder::new("E2000".to_string())
+                            .severity(ErrorSeverity::Error)
+                            .specification("§6".to_string(), None)
+                            .suggestion("Add explicit type annotation: variable:type <- expression".to_string())
+                            .build();
                         return Err(CompilerError::TypeError {
                             location: do_expr.location.clone(),
-                            message: format!("Variable bindings must have explicit type annotations. Use 'variable:type <- expression' instead of 'variable <- expression'")
+                            message: format!("Variable bindings must have explicit type annotations. Use 'variable:type <- expression' instead of 'variable <- expression'"),
+                            metadata,
                         });
                     }
 
@@ -1577,7 +1670,17 @@ impl<'a> TypeChecker<'a> {
 
     /// Unify two types
     fn unify(&mut self, t1: &Type, t2: &Type) -> Result<()> {
-        match (t1, t2) {
+        self.unify_with_location(t1, t2, None)
+    }
+
+    /// Unify two types with location for error reporting
+    fn unify_with_location(&mut self, t1: &Type, t2: &Type, location: Option<SourceLocation>) -> Result<()> {
+        // Try to expand Named types to their underlying types before unification
+        // This handles type aliases and struct names
+        let expanded_t1 = self.expand_type_aliases(t1);
+        let expanded_t2 = self.expand_type_aliases(t2);
+
+        match (&expanded_t1, &expanded_t2) {
             // Identical types unify trivially
             (Type::Unit, Type::Unit) |
             (Type::Bool, Type::Bool) |
@@ -1595,39 +1698,69 @@ impl<'a> TypeChecker<'a> {
             (Type::Function { parameters: params1, return_type: ret1 },
              Type::Function { parameters: params2, return_type: ret2 }) => {
                 if params1.len() != params2.len() {
-                    return type_error(
-                        SourceLocation::unknown(),
-                        "Function arity mismatch".to_string(),
+                    let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
+                    let metadata = ErrorMetadataBuilder::new("E2007".to_string())
+                        .severity(ErrorSeverity::Error)
+                        .specification("§6.3".to_string(), None)
+                        .expected_actual(
+                            format!("Function with {} parameters", params1.len()),
+                            format!("Function with {} parameters", params2.len())
+                        )
+                        .build();
+                    return type_error_with_metadata(
+                        error_location,
+                        format!("Function arity mismatch: expected {} parameters, found {}", params1.len(), params2.len()),
+                        metadata,
                     );
                 }
                 for (p1, p2) in params1.iter().zip(params2) {
-                    self.unify(p1, p2)?;
+                    self.unify_with_location(p1, p2, location.clone())?;
                 }
-                self.unify(ret1, ret2)
+                self.unify_with_location(ret1, ret2, location)
             }
 
             // Closure unification
             (Type::Closure { parameters: params1, return_type: ret1, captured_types: caps1 },
              Type::Closure { parameters: params2, return_type: ret2, captured_types: caps2 }) => {
                 if params1.len() != params2.len() {
-                    return type_error(
-                        SourceLocation::unknown(),
-                        "Closure arity mismatch".to_string(),
+                    let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
+                    let metadata = ErrorMetadataBuilder::new("E2007".to_string())
+                        .severity(ErrorSeverity::Error)
+                        .specification("§6.3".to_string(), None)
+                        .expected_actual(
+                            format!("Closure with {} parameters", params1.len()),
+                            format!("Closure with {} parameters", params2.len())
+                        )
+                        .build();
+                    return type_error_with_metadata(
+                        error_location,
+                        format!("Closure arity mismatch: expected {} parameters, found {}", params1.len(), params2.len()),
+                        metadata,
                     );
                 }
                 if caps1.len() != caps2.len() {
-                    return type_error(
-                        SourceLocation::unknown(),
-                        "Closure capture count mismatch".to_string(),
+                    let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
+                    let metadata = ErrorMetadataBuilder::new("E2007".to_string())
+                        .severity(ErrorSeverity::Error)
+                        .specification("§6.3".to_string(), None)
+                        .expected_actual(
+                            format!("Closure with {} captured variables", caps1.len()),
+                            format!("Closure with {} captured variables", caps2.len())
+                        )
+                        .build();
+                    return type_error_with_metadata(
+                        error_location,
+                        format!("Closure capture count mismatch: expected {} captures, found {}", caps1.len(), caps2.len()),
+                        metadata,
                     );
                 }
                 for (p1, p2) in params1.iter().zip(params2) {
-                    self.unify(p1, p2)?;
+                    self.unify_with_location(p1, p2, location.clone())?;
                 }
                 for (c1, c2) in caps1.iter().zip(caps2) {
-                    self.unify(c1, c2)?;
+                    self.unify_with_location(c1, c2, location.clone())?;
                 }
-                self.unify(ret1, ret2)
+                self.unify_with_location(ret1, ret2, location)
             }
 
             // Unify Closure with Function (closure can be used as function)
@@ -1636,62 +1769,175 @@ impl<'a> TypeChecker<'a> {
             (Type::Function { parameters: params2, return_type: ret2 },
              Type::Closure { parameters: params1, return_type: ret1, .. }) => {
                 if params1.len() != params2.len() {
-                    return type_error(
-                        SourceLocation::unknown(),
-                        "Function/closure arity mismatch".to_string(),
+                    let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
+                    let metadata = ErrorMetadataBuilder::new("E2007".to_string())
+                        .severity(ErrorSeverity::Error)
+                        .specification("§6.3".to_string(), None)
+                        .expected_actual(
+                            format!("Function/closure with {} parameters", params1.len()),
+                            format!("Function/closure with {} parameters", params2.len())
+                        )
+                        .build();
+                    return type_error_with_metadata(
+                        error_location,
+                        format!("Function/closure arity mismatch: expected {} parameters, found {}", params1.len(), params2.len()),
+                        metadata,
                     );
                 }
                 for (p1, p2) in params1.iter().zip(params2) {
-                    self.unify(p1, p2)?;
+                    self.unify_with_location(p1, p2, location.clone())?;
                 }
-                self.unify(ret1, ret2)
+                self.unify_with_location(ret1, ret2, location)
             }
-
-
 
             // Process unification
             (Type::Process { effects: e1, result_type: r1 },
              Type::Process { effects: e2, result_type: r2 }) => {
                 // TODO: Effect unification
-                self.unify(r1, r2)
+                self.unify_with_location(r1, r2, location)
             }
 
             // Tuple unification
             (Type::Tuple(types1), Type::Tuple(types2)) => {
                 if types1.len() != types2.len() {
-                    return type_error(
-                        SourceLocation::unknown(),
-                        "Tuple arity mismatch".to_string(),
+                    let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
+                    let metadata = ErrorMetadataBuilder::new("E2005".to_string())
+                        .severity(ErrorSeverity::Error)
+                        .specification("§6.1".to_string(), None)
+                        .expected_actual(
+                            format!("Tuple with {} elements", types1.len()),
+                            format!("Tuple with {} elements", types2.len())
+                        )
+                        .build();
+                    return type_error_with_metadata(
+                        error_location,
+                        format!("Tuple arity mismatch: expected {} elements, found {}", types1.len(), types2.len()),
+                        metadata,
                     );
                 }
                 for (t1, t2) in types1.iter().zip(types2) {
-                    self.unify(t1, t2)?;
+                    self.unify_with_location(t1, t2, location.clone())?;
                 }
                 Ok(())
             }
 
-            // Record unification (simplified)
+            // Record unification
             (Type::Record(fields1), Type::Record(fields2)) => {
                 if fields1.len() != fields2.len() {
-                    return type_error(
-                        SourceLocation::unknown(),
-                        "Record field count mismatch".to_string(),
+                    let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
+                    let metadata = ErrorMetadataBuilder::new("E2006".to_string())
+                        .severity(ErrorSeverity::Error)
+                        .specification("§6.1".to_string(), None)
+                        .expected_actual(
+                            format!("Record with {} fields", fields1.len()),
+                            format!("Record with {} fields", fields2.len())
+                        )
+                        .build();
+                    return type_error_with_metadata(
+                        error_location,
+                        format!("Record field count mismatch: expected {} fields, found {}", fields1.len(), fields2.len()),
+                        metadata,
                     );
                 }
                 // TODO: Field name matching
                 for ((_, t1), (_, t2)) in fields1.iter().zip(fields2) {
-                    self.unify(t1, t2)?;
+                    self.unify_with_location(t1, t2, location.clone())?;
                 }
                 Ok(())
             }
 
-            // Named type unification (simplified)
+            // Named type unification - handle both original types and expanded types
+            // First check if both are Named with same name
             (Type::Named(name1), Type::Named(name2)) if name1 == name2 => Ok(()),
+            
+            // Handle Named with Record (after expansion, Named might still be present if it's not a struct/alias)
+            // Check if Named type refers to a struct that matches the Record
+            (Type::Named(name), Type::Record(fields)) |
+            (Type::Record(fields), Type::Named(name)) => {
+                // Check if the Named type refers to a struct definition
+                // Clone the struct_def to avoid borrow checker issues
+                let struct_def_opt = self.struct_defs.get(name).cloned();
+                if let Some(struct_def) = struct_def_opt {
+                    // Check if the record fields match the struct definition
+                    if struct_def.len() != fields.len() {
+                        let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
+                        let metadata = ErrorMetadataBuilder::new("E2006".to_string())
+                            .severity(ErrorSeverity::Error)
+                            .specification("§6.1".to_string(), None)
+                            .expected_actual(
+                                format!("Struct {} with {} fields", name, struct_def.len()),
+                                format!("Record with {} fields", fields.len())
+                            )
+                            .build();
+                        return type_error_with_metadata(
+                            error_location,
+                            format!("Type mismatch: struct {} expects {} fields, but record has {}", name, struct_def.len(), fields.len()),
+                            metadata,
+                        );
+                    }
+                    // Unify each field type
+                    for (struct_field, (record_name, record_type)) in struct_def.iter().zip(fields.iter()) {
+                        if struct_field.name != *record_name {
+                            let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
+                            let metadata = ErrorMetadataBuilder::new("E2006".to_string())
+                                .severity(ErrorSeverity::Error)
+                                .specification("§6.1".to_string(), None)
+                                .expected_actual(
+                                    format!("Field '{}'", struct_field.name),
+                                    format!("Field '{}'", record_name)
+                                )
+                                .build();
+                            return type_error_with_metadata(
+                                error_location,
+                                format!("Field name mismatch: expected '{}', found '{}'", struct_field.name, record_name),
+                                metadata,
+                            );
+                        }
+                        self.unify_with_location(&struct_field.ty, record_type, location.clone())?;
+                    }
+                    Ok(())
+                } else {
+                    // Named type doesn't refer to a struct, try to unify the original types
+                    // This handles cases where expansion didn't change the types
+                    self.unify_named_with_type(t1, t2, location)
+                }
+            }
 
-            _ => type_error(
-                SourceLocation::unknown(),
-                format!("Cannot unify types: {:?} and {:?}", t1, t2),
-            ),
+            // Fallback: try to unify original types (in case expansion didn't help)
+            _ => {
+                // If expanded types are different from original, recursively try with expanded types
+                // Otherwise, use the fallback error handler
+                if t1 != &expanded_t1 || t2 != &expanded_t2 {
+                    // Types were expanded, recursively try with expanded types
+                    self.unify_with_location(&expanded_t1, &expanded_t2, location)
+                } else {
+                    // Types weren't expanded, use fallback error handler
+                    self.unify_named_with_type(t1, t2, location)
+                }
+            }
+        }
+    }
+
+    /// Helper to unify Named types with other types (fallback)
+    fn unify_named_with_type(&mut self, t1: &Type, t2: &Type, location: Option<SourceLocation>) -> Result<()> {
+        match (t1, t2) {
+            (Type::Named(name1), Type::Named(name2)) if name1 == name2 => Ok(()),
+            _ => {
+                let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
+                let metadata = ErrorMetadataBuilder::new("E2003".to_string())
+                    .severity(ErrorSeverity::Error)
+                    .specification("§6.3".to_string(), None)
+                    .expected_actual(
+                        format!("{:?}", t1),
+                        format!("{:?}", t2)
+                    )
+                    .build();
+                type_error_with_metadata(
+                    error_location,
+                    format!("Cannot unify types: {:?} and {:?}", t1, t2),
+                    metadata,
+                )
+            }
         }
     }
 
@@ -1887,7 +2133,8 @@ impl<'a> TypeChecker<'a> {
     fn infer_read_file(&mut self, read_file: &ReadFileExpr) -> Result<Type> {
         // Check that path is a string
         let path_type = self.infer_expression(&read_file.path)?;
-        self.unify(&path_type, &Type::Named("string".to_string()))?;
+        let path_location = Self::try_get_expression_location(&read_file.path).cloned();
+        self.unify_with_location(&path_type, &Type::Named("string".to_string()), path_location)?;
 
         // read_file returns Result<string, string>
         // For now, we'll represent this as a generic type
@@ -1897,11 +2144,13 @@ impl<'a> TypeChecker<'a> {
     fn infer_write_file(&mut self, write_file: &WriteFileExpr) -> Result<Type> {
         // Check that path is a string
         let path_type = self.infer_expression(&write_file.path)?;
-        self.unify(&path_type, &Type::Named("string".to_string()))?;
+        let path_location = Self::try_get_expression_location(&write_file.path).cloned();
+        self.unify_with_location(&path_type, &Type::Named("string".to_string()), path_location)?;
 
         // Check that content is a string
         let content_type = self.infer_expression(&write_file.content)?;
-        self.unify(&content_type, &Type::Named("string".to_string()))?;
+        let content_location = Self::try_get_expression_location(&write_file.content).cloned();
+        self.unify_with_location(&content_type, &Type::Named("string".to_string()), content_location)?;
 
         // write_file returns Result<unit, string>
         Ok(Type::Named("Result".to_string()))
@@ -2041,7 +2290,7 @@ impl<'a> TypeChecker<'a> {
     fn check_struct_declaration(&mut self, struct_decl: &StructDecl) -> Result<()> {
         // Check that all field types are valid
         for field in &struct_decl.fields {
-            self.validate_type(&field.ty)?;
+            self.validate_type_with_location(&field.ty, Some(field.location.clone()))?;
         }
 
         // Add the struct type to the environment
@@ -2060,14 +2309,14 @@ impl<'a> TypeChecker<'a> {
         for variant in &enum_decl.variants {
             match variant {
                 EnumVariant::Unit { .. } => {}
-                EnumVariant::Tuple { fields, .. } => {
+                EnumVariant::Tuple { fields, location, .. } => {
                     for field_type in fields {
-                        self.validate_type(field_type)?;
+                        self.validate_type_with_location(field_type, Some(location.clone()))?;
                     }
                 }
-                EnumVariant::Struct { fields, .. } => {
+                EnumVariant::Struct { fields, location, .. } => {
                     for field in fields {
-                        self.validate_type(&field.ty)?;
+                        self.validate_type_with_location(&field.ty, Some(field.location.clone()))?;
                     }
                 }
             }
@@ -2102,11 +2351,12 @@ impl<'a> TypeChecker<'a> {
             
             
             for param in &method.params {
-                self.validate_type(&param.type_)?;
+                self.validate_type_with_location(&param.type_, Some(param.location.clone()))?;
             }
             if let Some(ref return_type) = method.return_type {
                 // eprintln!("DEBUG TRAIT: return_type = {:?}", return_type);
-                self.validate_type(return_type)?;
+                // Return type doesn't have direct location, use method location
+                self.validate_type_with_location(return_type, Some(method.location.clone()))?;
             }
         }
         
@@ -2143,23 +2393,28 @@ impl<'a> TypeChecker<'a> {
         
 
         // Validate the type being implemented for
-        self.validate_type(&impl_decl.for_type)?;
+        // Try to extract location from for_type if it's Named
+        let for_type_location = match &impl_decl.for_type {
+            Type::Named(_) => Some(impl_decl.location.clone()), // Use impl location as fallback
+            _ => Some(impl_decl.location.clone()),
+        };
+        self.validate_type_with_location(&impl_decl.for_type, for_type_location)?;
 
         // Check all method implementations (validate types without adding to environment)
         for method in &impl_decl.methods {
             // Validate parameter types
             for param in &method.parameters {
-                self.validate_type(&param.type_)?;
+                self.validate_type_with_location(&param.type_, Some(param.location.clone()))?;
             }
             // Validate return type
             if let Some(ref return_type) = method.return_type {
-                self.validate_type(return_type)?;
+                self.validate_type_with_location(return_type, Some(method.location.clone()))?;
             }
         }
 
         // Check associated type definitions
         for assoc_type_def in &impl_decl.associated_types {
-            self.validate_type(&assoc_type_def.type_)?;
+            self.validate_type_with_location(&assoc_type_def.type_, Some(assoc_type_def.location.clone()))?;
         }
 
         // If this is a trait implementation (not inherent impl)
@@ -2208,8 +2463,8 @@ impl<'a> TypeChecker<'a> {
 
     /// Check type alias declaration
     fn check_type_alias_declaration(&mut self, alias_decl: &TypeAliasDecl) -> Result<()> {
-        // Validate the aliased type
-        self.validate_type(&alias_decl.aliased_type)?;
+        // Validate the aliased type - use alias declaration location
+        self.validate_type_with_location(&alias_decl.aliased_type, Some(alias_decl.location.clone()))?;
 
         // Expand the aliased type to resolve all built-in types
         let expanded_aliased_type = self.expand_type_aliases(&alias_decl.aliased_type);
@@ -2279,6 +2534,11 @@ impl<'a> TypeChecker<'a> {
 
     /// Validate that a type is well-formed
     fn validate_type(&self, ty: &Type) -> Result<()> {
+        self.validate_type_with_location(ty, None)
+    }
+
+    /// Validate that a type is well-formed with location for error reporting
+    fn validate_type_with_location(&self, ty: &Type, location: Option<SourceLocation>) -> Result<()> {
         match ty {
             Type::Named(name) => {
                 // Allow "Self" as a special type in trait contexts
@@ -2287,37 +2547,44 @@ impl<'a> TypeChecker<'a> {
                 }
                 // Check if the named type exists in the environment
                 if !self.env.contains_key(name) {
-                    return type_error(
-                        SourceLocation::unknown(),
+                    let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
+                    let metadata = ErrorMetadataBuilder::new("E2002".to_string())
+                        .severity(ErrorSeverity::Error)
+                        .specification("§6.1".to_string(), None)
+                        .suggestion(format!("Check if type '{}' is imported or declared", name))
+                        .build();
+                    return type_error_with_metadata(
+                        error_location,
                         format!("Unknown type: {} (env contains: {:?})", name, self.env.keys().collect::<Vec<_>>()),
+                        metadata,
                     );
                 }
                 Ok(())
             }
             Type::Function { parameters, return_type } => {
                 for param in parameters {
-                    self.validate_type(param)?;
+                    self.validate_type_with_location(param, location.clone())?;
                 }
-                self.validate_type(return_type)
+                self.validate_type_with_location(return_type, location)
             }
             Type::Closure { parameters, return_type, captured_types } => {
                 for param in parameters {
-                    self.validate_type(param)?;
+                    self.validate_type_with_location(param, location.clone())?;
                 }
                 for captured in captured_types {
-                    self.validate_type(captured)?;
+                    self.validate_type_with_location(captured, location.clone())?;
                 }
-                self.validate_type(return_type)
+                self.validate_type_with_location(return_type, location)
             }
             Type::Tuple(types) => {
                 for ty in types {
-                    self.validate_type(ty)?;
+                    self.validate_type_with_location(ty, location.clone())?;
                 }
                 Ok(())
             }
             Type::Record(fields) => {
                 for (_, ty) in fields {
-                    self.validate_type(ty)?;
+                    self.validate_type_with_location(ty, location.clone())?;
                 }
                 Ok(())
             }
@@ -2683,9 +2950,15 @@ impl<'a> TypeChecker<'a> {
                     let expr_type = self.infer_expression(expr)?;
                     // Require explicit type annotations for ALL bindings
                     if let crate::ast::Pattern::Identifier(_) = pattern {
+                        let metadata = ErrorMetadataBuilder::new("E2000".to_string())
+                            .severity(ErrorSeverity::Error)
+                            .specification("§6".to_string(), None)
+                            .suggestion("Add explicit type annotation: variable:type <- expression".to_string())
+                            .build();
                         return Err(CompilerError::TypeError {
                             location: SourceLocation::unknown(), // TODO: get proper location
-                            message: format!("Variable bindings must have explicit type annotations. Use 'variable:type <- expression' instead of 'variable <- expression'")
+                            message: format!("Variable bindings must have explicit type annotations. Use 'variable:type <- expression' instead of 'variable <- expression'"),
+                            metadata,
                         });
                     }
                     // Check pattern against expression type and bind variables
