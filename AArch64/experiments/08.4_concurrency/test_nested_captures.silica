@@ -1,0 +1,62 @@
+// Test deeply nested variable captures in actor lambdas
+// Multiple levels of scope with captured variables
+
+type Query = { value: int };
+impl ActorMessage for Query { }
+
+type Answer = { query_value: int, answer: int };
+impl ActorMessage for Answer { }
+
+type CalculatorState = { calculations: int };
+impl ActorState for CalculatorState { }
+
+type ClientState = { answers_received: int };
+impl ActorState for ClientState { }
+
+// Helper function moved to top-level (nested functions are not allowed in Silica)
+fn create_calculator(factor: int, client: actor_ref, global_factor: int) -> actor_ref {
+    // Level 2: Function scope
+    local_offset: int <- 10;
+    multiplier: int <- factor * 2;  // Uses captured factor
+    
+    // Spawn calculator actor with multiple levels of captures
+    calculator_ref: actor_ref <- spawn(
+        CalculatorState { calculations: 0 },
+        fn(msg: Query, state: CalculatorState) -> CalculatorState {
+            // Uses: global_factor (level 1, passed as parameter), factor (level 2), 
+            //       local_offset (level 3), multiplier (level 3), client (level 2)
+            result: int <- (msg.value * global_factor * multiplier) + local_offset;
+            cast(client, Answer { query_value: msg.value, answer: result });
+            CalculatorState { calculations: state.calculations + 1 }
+        }
+    );
+    
+    calculator_ref
+}
+
+fn main() -> int proc[concurrency] {
+    // Level 1: Outer scope
+    global_factor: int <- 2;
+
+    // Spawn client that receives answers
+    client_ref: actor_ref <- spawn(
+        ClientState { answers_received: 0 },
+        fn(msg: Answer, state: ClientState) -> ClientState {
+            ClientState { answers_received: state.answers_received + 1 }
+        }
+    );
+
+    // Create calculator with factor 3
+    // Calculator will use: global_factor=2, factor=3, multiplier=6, local_offset=10
+    // Formula: (value * 2 * 6) + 10 = (value * 12) + 10
+    calc_ref: actor_ref <- create_calculator(3, client_ref, global_factor);
+
+    // Cast queries to calculator
+    // Query 5: (5 * 12) + 10 = 70
+    // Query 10: (10 * 12) + 10 = 130
+    cast(calc_ref, Query { value: 5 });
+    cast(calc_ref, Query { value: 10 });
+
+    // Client should receive 2 answers
+    0
+}

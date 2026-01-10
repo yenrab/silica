@@ -1,0 +1,51 @@
+// Test actor lambdas that capture variables outside their scope
+// Verifies that captured variables work correctly in actor behavior functions
+
+type Task = { id: int, value: int };
+impl ActorMessage for Task { }
+
+type Result = { task_id: int, computed: int };
+impl ActorMessage for Result { }
+
+type WorkerState = { completed: int };
+impl ActorState for WorkerState { }
+
+fn main() -> int proc[concurrency] {
+    // Variables to be captured by actor lambdas
+    multiplier: int <- 5;
+    offset: int <- 10;
+    result_actor_id: int <- 999;
+
+    // Spawn a result collector actor
+    collector_ref: actor_ref <- spawn(
+        WorkerState { completed: 0 },
+        fn(msg: Result, state: WorkerState) -> WorkerState {
+            WorkerState { completed: state.completed + 1 }
+        }
+    );
+
+    // Spawn a worker actor with lambda that captures multiplier, offset, and collector_ref
+    worker_ref: actor_ref <- spawn(
+        WorkerState { completed: 0 },
+        fn(msg: Task, state: WorkerState) -> WorkerState {
+            // Use captured variables: multiplier and offset
+            computed: int <- (msg.value * multiplier) + offset;
+            
+            // Use captured collector_ref to send result back
+            cast(collector_ref, Result { task_id: msg.id, computed: computed });
+            
+            WorkerState { completed: state.completed + 1 }
+        }
+    );
+
+    // Cast tasks to the worker
+    // Worker will use captured multiplier (5) and offset (10)
+    // Task 1: (20 * 5) + 10 = 110
+    // Task 2: (30 * 5) + 10 = 160
+    cast(worker_ref, Task { id: 1, value: 20 });
+    cast(worker_ref, Task { id: 2, value: 30 });
+
+    // The worker should cast results to collector_ref
+    // Collector should receive Result { task_id: 1, computed: 110 } and { task_id: 2, computed: 160 }
+    0
+}

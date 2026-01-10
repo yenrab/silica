@@ -197,6 +197,7 @@ pub enum Expression {
     Spawn(SpawnExpr),
     Send(SendExpr),
     Recv(RecvExpr),
+    Cast(CastExpr),
 
     // File I/O operations
     ReadFile(ReadFileExpr),
@@ -398,6 +399,14 @@ pub struct SendExpr {
 #[derive(Debug, Clone)]
 pub struct RecvExpr {
     pub actor: Option<Box<Expression>>, // Optional actor to receive from
+    pub location: SourceLocation,
+}
+
+/// Asynchronous message cast expression
+#[derive(Debug, Clone)]
+pub struct CastExpr {
+    pub actor: Box<Expression>,
+    pub message: Box<Expression>,
     pub location: SourceLocation,
 }
 
@@ -614,9 +623,7 @@ pub enum Type {
     },
 
     // Actor types
-    ActorRef {
-        message_type: Box<Type>,
-    },
+    ActorRef, // Primitive type (like int, bool) - not parameterized
 
     // Core affinity types
     CoreId,        // Single CPU core identifier

@@ -254,10 +254,49 @@ statement     ::= pattern "<-" expression ";"
 
 #### 3.4.1 Function Declarations
 ```
-function_declaration ::= "fn" identifier parameter_list [":" type] "{" expression "}"
+function_declaration ::= "fn" identifier parameter_list [":" type] ["proc" "[" effect_list "]"] "{" statement_list "}"
 
 parameter_list ::= "(" [parameter {"," parameter}] ")"
 parameter      ::= identifier ":" type
+```
+
+**Restriction: Function declarations are only allowed at the top level of a program.** Nested function declarations inside other function bodies are not permitted in Silica. This restriction ensures:
+
+1. **Clear program structure**: All functions are visible at the module level, making dependencies and call graphs explicit
+2. **Simplified compilation**: Top-level functions simplify code generation and optimization
+3. **Consistent scoping**: Function names are always in the module scope, avoiding complex nested scoping rules
+
+If you need to define a helper function that is only used within another function, you have two options:
+- **Move the function to top-level**: Declare it at the module level and pass any needed context as parameters
+- **Use function literals (lambdas)**: Anonymous functions created with `fn(...) { ... }` can be used within expressions and can capture variables from their enclosing scope
+
+**Example - Invalid (nested function):**
+```silica
+fn outer() -> int {
+    fn inner(x: int) -> int {  // ERROR: Nested function declarations are not allowed
+        x + 1
+    }
+    inner(5)
+}
+```
+
+**Example - Valid (top-level function):**
+```silica
+fn helper(x: int) -> int {
+    x + 1
+}
+
+fn outer() -> int {
+    helper(5)
+}
+```
+
+**Example - Valid (function literal):**
+```silica
+fn outer() -> int {
+    inner: (int) -> int <- fn(x: int) -> int { x + 1 };
+    inner(5)
+}
 ```
 
 #### 3.4.2 Type Declarations
@@ -577,11 +616,13 @@ atomic_ref(R, normal, int)           -- atomic reference to int
 ### 4.5 Actor Types
 
 #### 4.5.1 Actor Reference Types
-Actor references: `actor_ref(MsgType)`.
+Actor references are a primitive type (like `int` or `bool`):
 
 ```
-actor_ref(int)                       -- actor accepting int messages
+actor_ref                            -- actor reference (primitive type)
 ```
+
+The `actor_ref` type is not parameterized by message type. It is a primitive type that represents a reference to an actor, created by the `spawn()` function.
 
 ## 5. Language Features
 
@@ -1547,10 +1588,12 @@ alloc_ref(r, 42)    -- Runtime error: capability violation
 Actors are created with initial state and behavior function:
 
 ```
-spawn(initial_state, behavior_fn) : proc[concurrency] actor_ref<Msg>
+spawn(initial_state, behavior_fn) : proc[concurrency] actor_ref
 ```
 
 The behavior function has type: `(Msg, State) -> int` (simplified for current implementation)
+
+The `initial_state` parameter must implement the `ActorState` trait (for named types only). The `actor_ref` return type is a primitive type (like `int` or `bool`), not parameterized by message type.
 
 #### 13.1.2 Actor Execution Model
 Each actor executes as an infinite loop in the runtime system:
@@ -1569,8 +1612,10 @@ actor_loop(state, behavior) {
 Each actor has a unique identity:
 
 ```
-self() : proc[mailbox<Msg>, concurrency] actor_ref<Msg>
+self() : proc[mailbox<Msg>, concurrency] actor_ref
 ```
+
+The `actor_ref` type is a primitive type (like `int` or `bool`), representing a reference to an actor.
 
 ### 13.2 Actor Behavior Functions
 
@@ -1578,15 +1623,21 @@ self() : proc[mailbox<Msg>, concurrency] actor_ref<Msg>
 Behavior functions transform messages and state:
 
 ```
-fn counter(msg: msg_type, state: int)
-    : proc[mailbox<msg_type>, concurrency] int {
+type Request = {command: string, reply_to: actor_ref};
+type Response = {result: int};
+impl ActorMessage for Request;
+impl ActorMessage for Response;
+
+fn counter(msg: Request, state: int)
+    : proc[mailbox<Request>, concurrency] int {
 
     case msg of
-        increment -> return state + 1
-        {get, reply_to} ->
-            send(reply_to, state)
+        {command: "increment", reply_to} -> return state + 1
+        {command: "get", reply_to} ->
+            -- Send response back using cast
+            cast(reply_to, Response {result: state})
             return state
-        reset -> return 0
+        {command: "reset", reply_to} -> return 0
     end
 }
 ```
@@ -1596,7 +1647,7 @@ Actor state is private and can only be modified by the actor itself:
 
 ```
 -- External code cannot access or modify actor state
-actor_ref <- spawn_actor(0, counter)
+actor_ref <- spawn(0, counter)
 -- No way to read or write the counter value directly
 ```
 
@@ -1621,8 +1672,8 @@ fn fragile_behavior(msg: string, state: unit) : proc[mailbox<string>] unit {
 Actor failures don't affect other actors:
 
 ```
-actor1 <- spawn_actor((), fragile_behavior)
-actor2 <- spawn_actor((), robust_behavior)
+actor1 <- spawn((), fragile_behavior)
+actor2 <- spawn((), robust_behavior)
 
 send(actor1, "quit")    -- actor1 terminates
 send(actor2, "ping")    -- actor2 continues normally
@@ -1636,12 +1687,21 @@ send(actor2, "ping")    -- actor2 continues normally
 Messages are sent asynchronously:
 
 ```
-send(actor_ref, message) : proc[concurrency] unit
+send(actor: actor_ref, message: ActorMessage) : proc[concurrency] unit
 ```
 
-Send never blocks - messages are queued in the actor's mailbox.
+Send never blocks - messages are queued in the actor's mailbox. The `message` parameter must be a type that implements the `ActorMessage` trait (for named types only).
 
-#### 14.1.2 Message Ordering
+#### 14.1.2 Asynchronous Cast
+Messages can be sent asynchronously without blocking, with success/failure indication:
+
+```
+cast(actor: actor_ref, message: ActorMessage) : proc[concurrency] bool
+```
+
+Cast never blocks - messages are queued in the actor's mailbox and the function returns immediately. Returns `true` if the message was successfully enqueued, `false` if the actor doesn't exist or the mailbox is full. The `message` parameter must be a type that implements the `ActorMessage` trait (for named types only).
+
+#### 14.1.3 Message Ordering
 Messages from the same sender maintain order:
 
 ```
@@ -1650,7 +1710,7 @@ send(actor, msg2)
 -- actor receives msg1, then msg2
 ```
 
-#### 14.1.3 Message Delivery
+#### 14.1.4 Message Delivery
 Messages are delivered exactly once, in FIFO order per sender.
 
 ### 14.2 Message Receive Semantics
@@ -1696,21 +1756,79 @@ fn selective_receiver(msg: msg_type, state: unit) : proc[mailbox<msg_type>] unit
 
 The message parameter is automatically provided by the actor runtime when a message is received.
 
+### 14.2.4 Cast vs Send
+Both `cast()` and `send()` send messages asynchronously without blocking:
+
+- **`send()`**: Returns `unit` - fire-and-forget message sending
+- **`cast()`**: Returns `bool` - indicates success/failure of message enqueueing
+
+Use `cast()` when you need to know if the message was successfully enqueued. Use `send()` for simple fire-and-forget messaging.
+
 ### 14.3 Message Types and Serialization
 
-#### 14.3.1 Message Type Safety
-Messages must match the actor's expected message type:
+#### 14.3.1 ActorState Trait
+The `ActorState` trait is a marker trait that must be implemented by types used as actor initial state:
 
 ```
-actor_ref<int> <- spawn_actor(0, int_handler)
-send(actor_ref, 42)        -- ✓ correct type
-send(actor_ref, "hello")   -- ✗ type error
+trait ActorState {
+    // No methods required - marker trait for type safety
+}
 ```
 
-#### 14.3.2 Message Passing Guarantees
-- **Type Safety**: Messages are type-checked at send
+Only the `initial_state` parameter in `spawn(initial_state, ...)` must implement `ActorState`. The trait is only implemented for named types (structs, type aliases) - no blanket implementations for primitive types.
+
+#### 14.3.2 ActorMessage Trait
+The `ActorMessage` trait is a marker trait that must be implemented by types used as messages:
+
+```
+trait ActorMessage {
+    // No methods required - marker trait for type safety
+}
+```
+
+All types used in `send()` or `cast()` must implement `ActorMessage`. The trait is only implemented for named types (structs, type aliases) - no blanket implementations for primitive types.
+
+#### 14.3.3 Message Type Safety
+Messages must implement the `ActorMessage` trait:
+
+```
+type Request = {data: int, reply_to: actor_ref};
+impl ActorMessage for Request;
+
+actor_ref <- spawn(0, handler)
+cast(actor_ref, Request {data: 42, reply_to: some_actor})  -- ✓ correct type
+cast(actor_ref, 42)  -- ✗ type error: int doesn't implement ActorMessage
+```
+
+#### 14.3.4 Cast-Back Pattern
+Messages can include a `reply_to` field containing an `actor_ref` for sending responses back:
+
+```
+type Request = {data: int, reply_to: actor_ref};
+type Response = {result: int};
+impl ActorMessage for Request;
+impl ActorMessage for Response;
+
+fn handler(msg: Request, state: State) -> State {
+    case msg of
+        {data, reply_to} ->
+            -- Process request and send response back
+            cast(reply_to, Response {result: data * 2})
+            -- ... update state ...
+    end
+}
+```
+
+The `reply_to` field is optional - messages without it cannot be used for cast-back, but this is enforced at compile time through field access checks. Attempting to access `reply_to` on a message type that doesn't have it results in a compile-time error.
+
+#### 14.3.5 Message Passing Guarantees
+- **Type Safety**: Messages are type-checked at compile time - must implement `ActorMessage` trait
+- **Trait Checking**: All type inference and trait checking happens at compile time, not runtime
+- **Compile-Time Verification**: Field access (e.g., `reply_to`) is verified at compile time - attempting to access a field that doesn't exist in the message type results in a compile-time error
 - **Immutability**: Message data cannot be mutated after sending
 - **Isolation**: Message contents are copied between actors
+- **Cast Success Indication**: `cast()` returns `bool` indicating success/failure of message enqueueing
+- **Actor Reference Type**: `actor_ref` is a primitive type (like `int` or `bool`), not parameterized by message type
 
 ## 16. Atomic Operations
 
@@ -3609,7 +3727,42 @@ impl Comparable for int {
 }
 ```
 
-#### 29.1.4 Trait Bounds
+#### 29.1.4 Actor System Traits
+Silica provides two marker traits for the actor system:
+
+**ActorState Trait:**
+```silica
+trait ActorState {
+    // No methods required - marker trait for type safety
+}
+```
+
+Types used as actor initial state in `spawn(initial_state, ...)` must implement `ActorState`. Only named types (structs, type aliases) implement this trait - no blanket implementations for primitive types.
+
+**ActorMessage Trait:**
+```silica
+trait ActorMessage {
+    // No methods required - marker trait for type safety
+}
+```
+
+Types used as messages in `send()` or `cast()` must implement `ActorMessage`. Only named types (structs, type aliases) implement this trait - no blanket implementations for primitive types.
+
+**Trait-as-Type:**
+When a trait is used directly as a type (e.g., `ActorMessage`), it represents any concrete type implementing that trait. This is resolved at compile time through trait implementation checking.
+
+**Example:**
+```silica
+type Request = {data: int, reply_to: actor_ref};
+type Response = {result: int};
+impl ActorMessage for Request;
+impl ActorMessage for Response;
+
+-- ActorMessage can be used as a type
+cast(actor_ref, message: ActorMessage) : proc[concurrency] bool
+```
+
+#### 29.1.5 Trait Bounds
 Functions can require trait implementations:
 
 ```silica
@@ -3618,7 +3771,7 @@ fn print_value(x) where Display {
 }
 ```
 
-#### 29.1.5 Implementing Inherited Traits
+#### 29.1.6 Implementing Inherited Traits
 When implementing a trait that includes other traits, you must implement all methods from the trait and its sub-traits:
 
 ```silica

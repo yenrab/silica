@@ -6,7 +6,7 @@
  */
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::fs;
 use std::io::{Read, Write};
@@ -512,7 +512,9 @@ static mut ACTOR_REGISTRY: Option<std::collections::HashMap<u64, Arc<Mutex<Silic
 static mut NEXT_ACTOR_ID: u64 = 1;
 
 // Store actor pointers for C API - maps raw pointers back to Arc references
-static mut ACTOR_PTR_MAP: Option<std::collections::HashMap<*mut SilicaActor, Arc<Mutex<SilicaActor>>>> = None;
+// Using OnceLock for thread-safe initialization and access
+// Using usize as key (pointer value) instead of *mut to satisfy Send requirement
+static ACTOR_PTR_MAP: OnceLock<Mutex<std::collections::HashMap<usize, Arc<Mutex<SilicaActor>>>>> = OnceLock::new();
 
 // Core affinity load balancing
 static mut NEXT_CORE_ID: i32 = 0;
@@ -833,12 +835,10 @@ pub extern "C" fn silica_actor_spawn(initial_state: *mut u8, behavior_fn: *mut u
         if let Some(ref mut registry) = ACTOR_REGISTRY {
             registry.insert(actor_id, actor.clone());
         }
-        if ACTOR_PTR_MAP.is_none() {
-            ACTOR_PTR_MAP = Some(std::collections::HashMap::new());
-        }
-        if let Some(ref mut ptr_map) = ACTOR_PTR_MAP {
-            ptr_map.insert(actor_ptr, actor.clone());
-        }
+        // Thread-safe initialization and access using OnceLock
+        // Cast pointer to usize for use as HashMap key (usize is Send)
+        let ptr_map = ACTOR_PTR_MAP.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+        ptr_map.lock().unwrap().insert(actor_ptr as usize, actor.clone());
     }
 
     // Start the actor's message processing loop in a new thread
@@ -855,15 +855,15 @@ pub extern "C" fn silica_actor_send(actor_ptr: *mut SilicaActor, message: *mut u
         return;
     }
 
-    unsafe {
-        // Get the Arc back from the pointer
-        if let Some(ref ptr_map) = ACTOR_PTR_MAP {
-            if let Some(actor_arc) = ptr_map.get(&actor_ptr) {
-                let actor_guard = actor_arc.lock().unwrap();
-                let mut mailbox = actor_guard.mailbox.lock().unwrap();
-        mailbox.push_back(message);
-                // Note: No condvar notification for now - receiver will poll
-            }
+    // Get the Arc back from the pointer (thread-safe access)
+    // Cast pointer to usize for HashMap lookup
+    if let Some(ptr_map) = ACTOR_PTR_MAP.get() {
+        let map_guard = ptr_map.lock().unwrap();
+        if let Some(actor_arc) = map_guard.get(&(actor_ptr as usize)) {
+            let actor_guard = actor_arc.lock().unwrap();
+            let mut mailbox = actor_guard.mailbox.lock().unwrap();
+            mailbox.push_back(message);
+            // Note: No condvar notification for now - receiver will poll
         }
     }
 }
@@ -874,18 +874,40 @@ pub extern "C" fn silica_actor_recv(actor_ptr: *mut SilicaActor) -> *mut u8 {
         return std::ptr::null_mut(); // Error: invalid actor
     }
 
-    unsafe {
-        // Get the Arc back from the pointer
-        if let Some(ref ptr_map) = ACTOR_PTR_MAP {
-            if let Some(actor_arc) = ptr_map.get(&actor_ptr) {
-                let actor_guard = actor_arc.lock().unwrap();
-                let mut mailbox = actor_guard.mailbox.lock().unwrap();
-                return mailbox.pop_front().unwrap_or(std::ptr::null_mut());
-            }
+    // Get the Arc back from the pointer (thread-safe access)
+    // Cast pointer to usize for HashMap lookup
+    if let Some(ptr_map) = ACTOR_PTR_MAP.get() {
+        let map_guard = ptr_map.lock().unwrap();
+        if let Some(actor_arc) = map_guard.get(&(actor_ptr as usize)) {
+            let actor_guard = actor_arc.lock().unwrap();
+            let mut mailbox = actor_guard.mailbox.lock().unwrap();
+            return mailbox.pop_front().unwrap_or(std::ptr::null_mut());
         }
     }
 
     std::ptr::null_mut() // Error or no messages
+}
+
+#[no_mangle]
+pub extern "C" fn silica_actor_cast(actor: *mut SilicaActor, message: *mut u8) -> bool {
+    // Non-blocking: enqueue message and return immediately
+    // Returns true if message successfully enqueued, false if actor doesn't exist or mailbox full
+    if actor.is_null() {
+        return false;
+    }
+
+    // Get the Arc back from the pointer (thread-safe access)
+    // Cast pointer to usize for HashMap lookup
+    if let Some(ptr_map) = ACTOR_PTR_MAP.get() {
+        let map_guard = ptr_map.lock().unwrap();
+        if let Some(actor_arc) = map_guard.get(&(actor as usize)) {
+            let actor_guard = actor_arc.lock().unwrap();
+            let mut mailbox = actor_guard.mailbox.lock().unwrap();
+            mailbox.push_back(message);
+            return true;
+        }
+    }
+    false
 }
 
 // File I/O functions - LLVM-compatible data structures

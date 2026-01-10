@@ -22,7 +22,7 @@ impl Token {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // Keywords (28 total)
-    Actor, ActorRef, As, Atomic, Bool, Buf, Case, Char, Concurrency, CoreId, CoreSet, DeviceIO, EfficiencyCores, Includes, PerformanceCores,
+    Actor, ActorRef, As, Atomic, Bool, Buf, Case, Cast, Char, Concurrency, CoreId, CoreSet, DeviceIO, EfficiencyCores, Includes, PerformanceCores,
     Do, Effect, Else, End, Enum, Export, False, Fn, For, From, If,
     Impl, Import, Int, Let, Mailbox, Mem, Module, Normal, Not, Of, Proc,
     Pub, Recv, Ref, Region, Return, Self_, Send, Spawn, String, Struct,
@@ -60,7 +60,7 @@ impl TokenKind {
         matches!(self,
             TokenKind::Actor | TokenKind::ActorRef | TokenKind::As |
             TokenKind::Atomic | TokenKind::Bool | TokenKind::Buf |
-            TokenKind::Case | TokenKind::Char | TokenKind::Concurrency |
+            TokenKind::Case | TokenKind::Cast | TokenKind::Char | TokenKind::Concurrency |
             TokenKind::CoreId | TokenKind::CoreSet | TokenKind::DeviceIO | TokenKind::Do | TokenKind::Effect | TokenKind::EfficiencyCores | TokenKind::Includes | TokenKind::PerformanceCores |
             TokenKind::Else | TokenKind::End | TokenKind::Enum |
             TokenKind::Export | TokenKind::False | TokenKind::Fn |
@@ -312,6 +312,7 @@ impl Lexer {
             "boolean" => TokenKind::Bool,
             "buf" => TokenKind::Buf,
             "case" => TokenKind::Case,
+            "cast" => TokenKind::Cast,
             "char" => TokenKind::Char,
             "concurrency" => TokenKind::Concurrency,
             "device_io" => TokenKind::DeviceIO,

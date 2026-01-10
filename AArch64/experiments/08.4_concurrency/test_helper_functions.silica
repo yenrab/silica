@@ -1,0 +1,89 @@
+// Test cast() with helper functions
+// Demonstrates helper functions that create actors, perform casts, and coordinate actor communication
+
+type Task = { id: int, data: int };
+impl ActorMessage for Task { }
+
+type TaskResult = { task_id: int, result: int };
+impl ActorMessage for TaskResult { }
+
+type WorkerState = { worker_id: int, tasks_processed: int };
+impl ActorState for WorkerState { }
+
+type CoordinatorState = { total_results: int };
+impl ActorState for CoordinatorState { }
+
+// Helper function to create a worker actor with specific configuration
+fn create_worker(worker_id: int, coordinator: actor_ref, multiplier: int) -> actor_ref {
+    spawn(
+        WorkerState { worker_id: worker_id, tasks_processed: 0 },
+        fn(msg: Task, state: WorkerState) -> WorkerState {
+            // Process task: multiply data by worker's multiplier
+            result: int <- msg.data * multiplier;
+            
+            // Cast result back to coordinator
+            cast(coordinator, TaskResult { task_id: msg.id, result: result });
+            
+            WorkerState { worker_id: state.worker_id, tasks_processed: state.tasks_processed + 1 }
+        }
+    )
+}
+
+// Helper function to cast a task to a worker
+fn send_task(worker: actor_ref, task_id: int, data: int) -> bool {
+    cast(worker, Task { id: task_id, data: data })
+}
+
+// Helper function to create a coordinator actor
+fn create_coordinator() -> actor_ref {
+    spawn(
+        CoordinatorState { total_results: 0 },
+        fn(msg: TaskResult, state: CoordinatorState) -> CoordinatorState {
+            CoordinatorState { total_results: state.total_results + 1 }
+        }
+    )
+}
+
+// Helper function to send multiple tasks to a worker
+fn send_tasks_to_worker(worker: actor_ref, task1_id: int, task1_data: int, task2_id: int, task2_data: int) -> int {
+    success1: bool <- send_task(worker, task1_id, task1_data);
+    success2: bool <- send_task(worker, task2_id, task2_data);
+    
+    // Return count of successful sends
+    if success1 && success2 {
+        2
+    } else if success1 || success2 {
+        1
+    } else {
+        0
+    }
+}
+
+fn main() -> int proc[concurrency] {
+    // Create coordinator using helper function
+    coordinator_ref: actor_ref <- create_coordinator();
+    
+    // Create workers using helper function with different multipliers
+    worker1_ref: actor_ref <- create_worker(1, coordinator_ref, 2);
+    worker2_ref: actor_ref <- create_worker(2, coordinator_ref, 3);
+    worker3_ref: actor_ref <- create_worker(3, coordinator_ref, 4);
+    
+    // Send tasks using helper function
+    // Worker 1: tasks with data 10 and 40 -> results: 20, 80
+    send_tasks_to_worker(worker1_ref, 1, 10, 4, 40);
+    
+    // Worker 2: tasks with data 20 and 50 -> results: 60, 150
+    send_tasks_to_worker(worker2_ref, 2, 20, 5, 50);
+    
+    // Worker 3: single task with data 30 -> result: 120
+    send_task(worker3_ref, 3, 30);
+    
+    // Coordinator should receive 5 results total:
+    // TaskResult { task_id: 1, result: 20 }
+    // TaskResult { task_id: 2, result: 60 }
+    // TaskResult { task_id: 3, result: 120 }
+    // TaskResult { task_id: 4, result: 80 }
+    // TaskResult { task_id: 5, result: 150 }
+    
+    0
+}

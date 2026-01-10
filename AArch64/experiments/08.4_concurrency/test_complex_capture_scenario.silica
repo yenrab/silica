@@ -1,0 +1,66 @@
+// Test complex scenario with multiple captured variables and nested actor creation
+// Demonstrates real actor behavior with captured state from outer scope
+
+type WorkItem = { task: int, priority: int };
+impl ActorMessage for WorkItem { }
+
+type WorkResult = { task: int, result: int, worker_id: int };
+impl ActorMessage for WorkResult { }
+
+type CoordinatorState = { total_tasks: int };
+impl ActorState for CoordinatorState { }
+
+type WorkerState = { worker_id: int, tasks_completed: int };
+impl ActorState for WorkerState { }
+
+fn main() -> int proc[concurrency] {
+    // Outer scope variables to be captured
+    base_multiplier: int <- 3;
+    bonus: int <- 7;
+    coordinator_id: int <- 1000;
+
+    // Spawn coordinator that receives results
+    coordinator_ref: actor_ref <- spawn(
+        CoordinatorState { total_tasks: 0 },
+        fn(msg: WorkResult, state: CoordinatorState) -> CoordinatorState {
+            CoordinatorState { total_tasks: state.total_tasks + 1 }
+        }
+    );
+
+    // Spawn worker 1 with captured variables
+    worker1_id: int <- 1;
+    worker1_ref: actor_ref <- spawn(
+        WorkerState { worker_id: worker1_id, tasks_completed: 0 },
+        fn(msg: WorkItem, state: WorkerState) -> WorkerState {
+            // Use captured base_multiplier and bonus
+            // Also capture coordinator_ref and worker1_id
+            computed: int <- (msg.task * base_multiplier) + bonus;
+            cast(coordinator_ref, WorkResult { task: msg.task, result: computed, worker_id: worker1_id });
+            WorkerState { worker_id: state.worker_id, tasks_completed: state.tasks_completed + 1 }
+        }
+    );
+
+    // Spawn worker 2 with different captured multiplier
+    worker2_id: int <- 2;
+    worker2_multiplier: int <- 5;  // Different multiplier for worker 2
+    worker2_ref: actor_ref <- spawn(
+        WorkerState { worker_id: worker2_id, tasks_completed: 0 },
+        fn(msg: WorkItem, state: WorkerState) -> WorkerState {
+            // Worker 2 uses different multiplier but same bonus
+            computed: int <- (msg.task * worker2_multiplier) + bonus;
+            cast(coordinator_ref, WorkResult { task: msg.task, result: computed, worker_id: worker2_id });
+            WorkerState { worker_id: state.worker_id, tasks_completed: state.tasks_completed + 1 }
+        }
+    );
+
+    // Cast work items to both workers
+    // Worker 1: (10 * 3) + 7 = 37, (20 * 3) + 7 = 67
+    // Worker 2: (10 * 5) + 7 = 57, (20 * 5) + 7 = 107
+    cast(worker1_ref, WorkItem { task: 10, priority: 1 });
+    cast(worker2_ref, WorkItem { task: 10, priority: 1 });
+    cast(worker1_ref, WorkItem { task: 20, priority: 2 });
+    cast(worker2_ref, WorkItem { task: 20, priority: 2 });
+
+    // Coordinator should receive 4 results total
+    0
+}

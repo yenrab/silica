@@ -110,7 +110,11 @@ impl Compiler {
 
         // Phase 4: Effect analysis
         println!("Phase 4: Effect analysis...");
-        let mut effect_analyzer = EffectAnalyzer::new();
+        // Pass type information from type checker to effect analyzer
+        let mut effect_analyzer = EffectAnalyzer::with_types(
+            type_checker.expression_types.clone(),
+            type_checker.actor_mailbox_types.clone(),
+        );
         effect_analyzer.analyze_program(&combined_program)?;
         println!("Effect analysis passed");
 

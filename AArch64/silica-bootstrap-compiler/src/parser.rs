@@ -465,13 +465,8 @@ impl Parser {
                 capacity: capacity as usize,
             })
         } else if self.match_token(TokenKind::ActorRef) {
-            // Actor reference type
-            self.consume(TokenKind::LeftParen, "Expected '(' after 'actor_ref'")?;
-            let message_type = self.parse_type()?;
-            self.consume(TokenKind::RightParen, "Expected ')' after message type")?;
-            Ok(Type::ActorRef {
-                message_type: Box::new(message_type),
-            })
+            // Actor reference type - primitive type (like int, bool)
+            Ok(Type::ActorRef)
         } else {
             // User-defined type name or type operator
             let name = self.consume_identifier("Expected type name")?;
@@ -956,6 +951,9 @@ impl Parser {
         } else if self.match_token(TokenKind::Recv) {
             // Handle recv() expression
             self.parse_recv()
+        } else if self.match_token(TokenKind::Cast) {
+            // Handle cast(actor, message) expression
+            self.parse_cast()
         } else {
             parse_error(
                 self.peek().location.clone(),
@@ -1345,6 +1343,22 @@ impl Parser {
         }))
     }
 
+    /// Parse cast(actor, message) expression
+    fn parse_cast(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        self.consume(TokenKind::LeftParen, "Expected '(' after 'cast'")?;
+        let actor = Box::new(self.expression()?);
+        self.consume(TokenKind::Comma, "Expected ',' after actor in cast")?;
+        let message = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after cast arguments")?;
+
+        Ok(Expression::Cast(CastExpr {
+            actor,
+            message,
+            location,
+        }))
+    }
+
     /// Parse struct declaration: struct Name<T, U> { field: Type, ... }
     fn struct_declaration(&mut self) -> Result<StructDecl> {
         let location = self.previous().location.clone();
@@ -1600,11 +1614,12 @@ impl Parser {
             TokenKind::Identifier(name) => Type::Named(name),
             _ => return parse_error(token.location, "Expected type name".to_string()),
         };
-        self.consume(TokenKind::LeftBrace, "Expected '{' after impl type")?;
-
+        
         let mut associated_types: Vec<crate::ast::AssociatedTypeDef> = Vec::new();
         let mut methods = Vec::new();
 
+        // Require braces for impl blocks (even if empty for marker traits)
+        self.consume(TokenKind::LeftBrace, "Expected '{' after impl type")?;
 
         // Parse methods properly in impl blocks
         // eprintln!("DEBUG IMPL: Starting method parsing loop");
@@ -1625,7 +1640,6 @@ impl Parser {
             }
         }
         // eprintln!("DEBUG IMPL: Finished method parsing loop, found {} methods", methods.len());
-
 
         self.consume(TokenKind::RightBrace, "Expected '}' after impl members")?;
 
@@ -1728,10 +1742,27 @@ impl Parser {
         while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
             // Validate current token position
             let current_token = self.peek();
+            let error_location = current_token.location.clone(); // Clone location before any mutable operations
             if current_token.location.line > 10000 {  // Sanity check
-                return parse_error(current_token.location.clone(),
+                return parse_error(error_location,
                     "Parser position tracking corrupted during statement parsing".to_string());
             }
+            
+            // Reject nested function declarations (fn keyword followed by identifier)
+            // Function declarations are only allowed at top-level, not inside function bodies
+            if self.check(TokenKind::Fn) {
+                let saved_pos = self.current;
+                self.advance(); // consume 'fn'
+                if matches!(self.peek().kind, TokenKind::Identifier(_)) {
+                    return parse_error(
+                        error_location,
+                        "Nested function declarations are not allowed in Silica. Functions must be declared at top-level.".to_string()
+                    );
+                }
+                // Not a function declaration, backtrack and parse as function literal
+                self.current = saved_pos;
+            }
+            
             // Try to parse assignment first
             let current_pos = self.current;
             // Check if this could be a pattern (identifier, tuple, or wildcard)

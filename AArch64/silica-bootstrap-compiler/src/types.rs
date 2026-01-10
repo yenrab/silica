@@ -57,6 +57,7 @@ pub struct TypeChecker<'a> {
     type_aliases: HashMap<String, Type>, // Type alias definitions (expanded)
     type_alias_decls: HashMap<String, TypeAliasDecl>, // Complete type alias declarations
     pub expression_types: HashMap<SourceLocation, Type>, // Types of expressions for code generation
+    pub actor_mailbox_types: HashMap<SourceLocation, Type>, // Map from spawn locations to message types
 }
 
 impl<'a> TypeChecker<'a> {
@@ -219,6 +220,7 @@ impl<'a> TypeChecker<'a> {
             Expression::WriteRef(write) => &write.location,
             Expression::Spawn(spawn) => &spawn.location,
             Expression::Send(send) => &send.location,
+            Expression::Cast(cast) => &cast.location,
             Expression::Recv(recv) => &recv.location,
             Expression::ReadFile(read_file) => &read_file.location,
             Expression::WriteFile(write_file) => &write_file.location,
@@ -312,6 +314,7 @@ impl<'a> TypeChecker<'a> {
             (Type::Char, Type::Char) => true,
             (Type::String, Type::String) => true,
             (Type::Unit, Type::Unit) => true,
+            (Type::ActorRef, Type::ActorRef) => true,
             (Type::Tuple(types1), Type::Tuple(types2)) => {
                 types1.len() == types2.len() &&
                 types1.iter().zip(types2.iter()).all(|(t1, t2)| self.types_equal(t1, t2))
@@ -396,17 +399,50 @@ impl<'a> TypeChecker<'a> {
             vars: vec![],
             ty: Type::Unit,
         });
+        
+        // Initialize built-in traits
+        let mut trait_defs = HashMap::new();
+        
+        // Add ActorMessage trait (marker trait for actor messages)
+        trait_defs.insert("ActorMessage".to_string(), TraitDecl {
+            name: "ActorMessage".to_string(),
+            included_traits: Vec::new(),
+            associated_types: Vec::new(),
+            methods: Vec::new(), // Marker trait - no methods
+            location: SourceLocation::unknown(),
+        });
+        
+        // Add ActorState trait (marker trait for actor initial state)
+        trait_defs.insert("ActorState".to_string(), TraitDecl {
+            name: "ActorState".to_string(),
+            included_traits: Vec::new(),
+            associated_types: Vec::new(),
+            methods: Vec::new(), // Marker trait - no methods
+            location: SourceLocation::unknown(),
+        });
+        
+        // Add trait types to environment
+        env.insert("ActorMessage".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Named("ActorMessage".to_string()),
+        });
+        env.insert("ActorState".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Named("ActorState".to_string()),
+        });
+        
         TypeChecker {
             env,
             constraints: Vec::new(),
             substitution: Substitution::new(),
             struct_defs: HashMap::new(),
             trait_impls: Vec::new(),
-            trait_defs: HashMap::new(),
+            trait_defs,
             type_aliases: HashMap::new(),
             type_alias_decls: HashMap::new(),
             symbol_table,
             expression_types: HashMap::new(),
+            actor_mailbox_types: HashMap::new(),
         }
     }
 
@@ -668,6 +704,7 @@ impl<'a> TypeChecker<'a> {
             Expression::WriteRef(write) => self.infer_write_ref(write)?,
             Expression::Spawn(spawn) => self.infer_spawn(spawn)?,
             Expression::Send(send) => self.infer_send(send)?,
+            Expression::Cast(cast) => self.infer_cast(cast)?,
             Expression::Recv(recv) => self.infer_recv(recv)?,
             Expression::ReadFile(read_file) => self.infer_read_file(read_file)?,
             Expression::WriteFile(write_file) => self.infer_write_file(write_file)?,
@@ -888,6 +925,7 @@ impl<'a> TypeChecker<'a> {
             Expression::WriteRef(write) => Some(&write.location),
             Expression::Spawn(spawn) => Some(&spawn.location),
             Expression::Send(send) => Some(&send.location),
+            Expression::Cast(cast) => Some(&cast.location),
             Expression::Recv(recv) => Some(&recv.location),
             Expression::ReadFile(read_file) => Some(&read_file.location),
             Expression::WriteFile(write_file) => Some(&write_file.location),
@@ -1545,7 +1583,8 @@ impl<'a> TypeChecker<'a> {
             (Type::Bool, Type::Bool) |
             (Type::Int, Type::Int) |
             (Type::Char, Type::Char) |
-            (Type::String, Type::String) => Ok(()),
+            (Type::String, Type::String) |
+            (Type::ActorRef, Type::ActorRef) => Ok(()),
 
             // Variable unification
             (Type::Variable(var), ty) | (ty, Type::Variable(var)) => {
@@ -1716,15 +1755,73 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for spawn expression
     fn infer_spawn(&mut self, spawn: &SpawnExpr) -> Result<Type> {
-        // spawn(initial_state, behavior) returns an actor_ref
-        // For now, we'll return a placeholder type
-        // In a full implementation, this would create a proper ActorRef type
-        Ok(Type::Int) // Placeholder - should be ActorRef type
+        // spawn(initial_state, behavior) returns an actor_ref (primitive type)
+        // Check that initial_state implements ActorState trait (for named types only)
+        let initial_state_type = self.infer_expression(&spawn.initial_state)?;
+        
+        // Check ActorState trait implementation for named types
+        if let Type::Named(_) | Type::Record(_) = initial_state_type {
+            // For named types, verify ActorState trait implementation
+            if !self.type_implements_trait(&initial_state_type, "ActorState") {
+                let error_location = Self::try_get_expression_location(&spawn.initial_state)
+                    .unwrap_or(&spawn.location);
+                return Err(CompilerError::type_error(
+                    error_location.clone(),
+                    format!("Type used as actor initial_state must implement ActorState trait")
+                ));
+            }
+        }
+        
+        // Extract message type from behavior function for mailbox effect tracking
+        // Try to extract from function literal first (most common case)
+        let message_type = if let Expression::FunctionLiteral(func) = &*spawn.behavior {
+            // Behavior function should have (message, state) -> state signature
+            // First parameter is the message type
+            if let Some(first_param) = func.parameters.first() {
+                first_param.type_.clone()
+            } else {
+                Type::Unit // Fallback if no parameters
+            }
+        } else {
+            // Behavior is not a function literal - try to get type from type inference
+            let behavior_type = self.infer_expression(&spawn.behavior)?;
+            if let Type::Function { parameters, .. } = behavior_type {
+                // First parameter is the message type
+                if let Some(first_param) = parameters.first() {
+                    first_param.clone()
+                } else {
+                    Type::Unit // Fallback if no parameters
+                }
+            } else {
+                Type::Unit // Fallback
+            }
+        };
+        
+        // Track actor mailbox type for effect checking
+        self.actor_mailbox_types.insert(spawn.location.clone(), message_type);
+        
+        Ok(Type::ActorRef) // Return primitive actor_ref type
     }
 
     /// Infer type for send expression
     fn infer_send(&mut self, send: &SendExpr) -> Result<Type> {
         // send(actor, message) returns unit
+        // Verify message implements ActorMessage trait (for named types)
+        let message_type = self.infer_expression(&send.message)?;
+        
+        // Check ActorMessage trait implementation for named types
+        if let Type::Named(_) | Type::Record(_) = message_type {
+            // For named types, verify ActorMessage trait implementation
+            if !self.type_implements_trait(&message_type, "ActorMessage") {
+                let error_location = Self::try_get_expression_location(&send.message)
+                    .unwrap_or(&send.location);
+                return Err(CompilerError::type_error(
+                    error_location.clone(),
+                    format!("Message type must implement ActorMessage trait")
+                ));
+            }
+        }
+        
         Ok(Type::Unit)
     }
 
@@ -1734,6 +1831,57 @@ impl<'a> TypeChecker<'a> {
         // For now, assume it returns an integer
         // In a full implementation, this would depend on the actor's mailbox type
         Ok(Type::Int)
+    }
+
+    /// Infer type for cast expression
+    fn infer_cast(&mut self, cast: &CastExpr) -> Result<Type> {
+        // cast(actor: actor_ref, message: ActorMessage) : proc[concurrency] bool
+        // Verify actor is actor_ref (primitive type)
+        let actor_type = self.infer_expression(&cast.actor)?;
+        self.add_constraint(actor_type, Type::ActorRef);
+        
+        // Verify message implements ActorMessage trait (for named types)
+        let message_type = self.infer_expression(&cast.message)?;
+        
+        // Check ActorMessage trait implementation for named types
+        if let Type::Named(_) | Type::Record(_) = message_type {
+            // For named types, verify ActorMessage trait implementation
+            if !self.type_implements_trait(&message_type, "ActorMessage") {
+                let error_location = Self::try_get_expression_location(&cast.message)
+                    .unwrap_or(&cast.location);
+                return Err(CompilerError::type_error(
+                    error_location.clone(),
+                    format!("Message type must implement ActorMessage trait")
+                ));
+            }
+        } else {
+            // For non-named types, check if it's typed as ActorMessage trait directly
+            // This would be handled by trait-as-type resolution
+            // For now, we require named types to implement the trait
+            let error_location = Self::try_get_expression_location(&cast.message)
+                .unwrap_or(&cast.location);
+            return Err(CompilerError::type_error(
+                error_location.clone(),
+                format!("Message must be a named type implementing ActorMessage trait")
+            ));
+        }
+        
+        // cast returns bool
+        Ok(Type::Bool)
+    }
+
+    /// Check if a type implements a given trait
+    fn type_implements_trait(&self, ty: &Type, trait_name: &str) -> bool {
+        // Check if there's a trait implementation for this type and trait
+        for trait_impl in &self.trait_impls {
+            if trait_impl.trait_name == trait_name {
+                // Check if the types match (using types_equal which handles type aliases)
+                if self.types_equal(&trait_impl.for_type, ty) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn infer_read_file(&mut self, read_file: &ReadFileExpr) -> Result<Type> {

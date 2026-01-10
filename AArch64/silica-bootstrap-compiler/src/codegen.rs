@@ -183,6 +183,7 @@ impl CodeGenerator {
             Expression::WriteRef(write) => Some(&write.location),
             Expression::Spawn(spawn) => Some(&spawn.location),
             Expression::Send(send) => Some(&send.location),
+            Expression::Cast(cast) => Some(&cast.location),
             Expression::Recv(recv) => Some(&recv.location),
             Expression::ReadFile(read_file) => Some(&read_file.location),
             Expression::WriteFile(write_file) => Some(&write_file.location),
@@ -420,7 +421,8 @@ impl CodeGenerator {
 
         // Actor management functions
         self.instructions.push("declare i8* @silica_actor_spawn(i8*, i8*, i32)".to_string());
-        self.instructions.push("declare void @silica_actor_send(i8*, i64)".to_string());
+        self.instructions.push("declare void @silica_actor_send(i8*, i8*)".to_string());
+        self.instructions.push("declare i1 @silica_actor_cast(i8*, i8*)".to_string());
         self.instructions.push("declare i64 @silica_actor_recv(i8*)".to_string());
 
         // File I/O functions
@@ -608,8 +610,11 @@ impl CodeGenerator {
                 let actor_spawn_type = i8_ptr.fn_type(&[i8_ptr.into(), i8_ptr.into(), i32_type.into()], false);
                 module.add_function("silica_actor_spawn", actor_spawn_type, None);
 
-                let actor_send_type = void_type.fn_type(&[i8_ptr.into(), i64_type.into()], false);
+                let actor_send_type = void_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false);
                 module.add_function("silica_actor_send", actor_send_type, None);
+
+                let actor_cast_type = i1_type.fn_type(&[i8_ptr.into(), i8_ptr.into()], false);
+                module.add_function("silica_actor_cast", actor_cast_type, None);
 
                 let actor_recv_type = i64_type.fn_type(&[i8_ptr.into()], false);
                 module.add_function("silica_actor_recv", actor_recv_type, None);
@@ -893,13 +898,45 @@ impl CodeGenerator {
             _ => {
                 // Return the result of the function body
                 if let Some(result_val) = body_result {
-                    // Handle case where result_val might have type prefix
-                    let return_operand = if result_val.starts_with(&format!("{} ", return_type_str)) {
-                        result_val.trim_start_matches(&format!("{} ", return_type_str)).to_string()
+                    // Handle type conversions if needed (e.g., i64 to i8* for ActorRef)
+                    // Check if result_val has type prefix or is just a register name
+                    // Special case: actor reference registers from spawn are i64 but function returns i8*
+                    if return_type_str == "i8*" && result_val.starts_with("%actor_") {
+                        // This is an actor reference register (i64) that needs conversion to i8*
+                        let ptr_reg = format!("%return_ptr_{}", self.instructions.len());
+                        self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, result_val));
+                        self.instructions.push(format!("  ret i8* {}", ptr_reg));
                     } else {
-                        result_val
-                    };
-                    self.instructions.push(format!("  ret {} {}", return_type_str, return_operand));
+                        // Extract type and register from result_val
+                        let (result_type, result_reg) = if result_val.starts_with("i64 ") {
+                            ("i64".to_string(), result_val.trim_start_matches("i64 ").to_string())
+                        } else if result_val.starts_with("i8* ") {
+                            ("i8*".to_string(), result_val.trim_start_matches("i8* ").to_string())
+                        } else if result_val.starts_with("i1 ") {
+                            ("i1".to_string(), result_val.trim_start_matches("i1 ").to_string())
+                        } else if result_val.starts_with("i32 ") {
+                            ("i32".to_string(), result_val.trim_start_matches("i32 ").to_string())
+                        } else {
+                            // No type prefix - assume it matches the return type
+                            (return_type_str.to_string(), result_val)
+                        };
+                        
+                        // Check if type conversion is needed
+                        if return_type_str == "i8*" && result_type == "i64" {
+                            // Need to convert i64 to i8* (e.g., for ActorRef return type)
+                            let ptr_reg = format!("%return_ptr_{}", self.instructions.len());
+                            self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, result_reg));
+                            self.instructions.push(format!("  ret i8* {}", ptr_reg));
+                        } else if return_type_str == "i64" && result_type == "i8*" {
+                            // Need to convert i8* to i64 (unlikely but handle for completeness)
+                            let int_reg = format!("%return_int_{}", self.instructions.len());
+                            self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", int_reg, result_reg));
+                            self.instructions.push(format!("  ret i64 {}", int_reg));
+                        } else {
+                            // Types match or no conversion needed
+                            self.instructions.push(format!("  ret {} {}", return_type_str, result_reg));
+                        }
+                    }
                 } else {
                     // Fallback to dummy value if no result
                     self.instructions.push(format!("  ret {} 0", return_type_str));
@@ -947,6 +984,7 @@ impl CodeGenerator {
             Expression::WriteRef(write) => self.generate_write_ref(write),
             Expression::Spawn(spawn) => self.generate_spawn(spawn),
             Expression::Send(send) => self.generate_send(send),
+            Expression::Cast(cast) => self.generate_cast(cast),
             Expression::Recv(recv) => self.generate_recv(recv),
             Expression::ReadFile(read_file) => self.generate_read_file(read_file),
             Expression::WriteFile(write_file) => self.generate_write_file(write_file),
@@ -1320,19 +1358,41 @@ impl CodeGenerator {
                         arg_strs.iter().enumerate()
                             .map(|(i, arg)| {
                                 if let Some(expected_type) = param_types.get(i) {
-                                    // Always strip any existing type prefix and add the correct one
-                                    let clean_arg = if arg.starts_with("i64 ") {
-                                        arg.strip_prefix("i64 ").unwrap()
+                                    // Extract actual type and register from argument
+                                    let (actual_type, clean_arg) = if arg.starts_with("i64 ") {
+                                        ("i64", arg.strip_prefix("i64 ").unwrap())
                                     } else if arg.starts_with("i32 ") {
-                                        arg.strip_prefix("i32 ").unwrap()
+                                        ("i32", arg.strip_prefix("i32 ").unwrap())
                                     } else if arg.starts_with("i1 ") {
-                                        arg.strip_prefix("i1 ").unwrap()
+                                        ("i1", arg.strip_prefix("i1 ").unwrap())
                                     } else if arg.starts_with("i8* ") {
-                                        arg.strip_prefix("i8* ").unwrap()
+                                        ("i8*", arg.strip_prefix("i8* ").unwrap())
                                     } else {
-                                        arg.as_str()
+                                        // No type prefix - try to infer from register name
+                                        if arg.starts_with("%actor_") {
+                                            // Actor references from spawn are i64
+                                            ("i64", arg.as_str())
+                                        } else {
+                                            // Default: assume i64
+                                            ("i64", arg.as_str())
+                                        }
                                     };
-                                    format!("{} {}", expected_type, clean_arg)
+                                    
+                                    // Check if type conversion is needed
+                                    if expected_type == "i8*" && actual_type == "i64" {
+                                        // Need to convert i64 to i8* (e.g., ActorRef parameter)
+                                        let conv_reg = format!("%arg_conv_{}", self.instructions.len());
+                                        self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", conv_reg, clean_arg));
+                                        format!("i8* {}", conv_reg)
+                                    } else if expected_type == "i64" && actual_type == "i8*" {
+                                        // Need to convert i8* to i64
+                                        let conv_reg = format!("%arg_conv_{}", self.instructions.len());
+                                        self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", conv_reg, clean_arg));
+                                        format!("i64 {}", conv_reg)
+                                    } else {
+                                        // Types match or no conversion needed
+                                        format!("{} {}", expected_type, clean_arg)
+                                    }
                                 } else {
                                     // No expected type - use heuristic with prefix stripping
                                     let clean_arg = if arg.starts_with("i64 ") {
@@ -1533,24 +1593,46 @@ impl CodeGenerator {
                 }
             }
 
-            // Add type prefixes to arguments
+            // Add type prefixes to arguments with type conversion if needed
             let typed_args: Vec<String> = arg_strs.iter().enumerate()
                 .map(|(i, arg)| {
                     if let Some(expected_type) = param_types.get(i) {
                         let expected_type_str = self.get_llvm_type_string(expected_type);
-                        // Always strip any existing type prefix and add the correct one
-                        let clean_arg = if arg.starts_with("i64 ") {
-                            arg.strip_prefix("i64 ").unwrap()
+                        // Extract actual type and register from argument
+                        let (actual_type, clean_arg) = if arg.starts_with("i64 ") {
+                            ("i64", arg.strip_prefix("i64 ").unwrap())
                         } else if arg.starts_with("i32 ") {
-                            arg.strip_prefix("i32 ").unwrap()
+                            ("i32", arg.strip_prefix("i32 ").unwrap())
                         } else if arg.starts_with("i1 ") {
-                            arg.strip_prefix("i1 ").unwrap()
+                            ("i1", arg.strip_prefix("i1 ").unwrap())
                         } else if arg.starts_with("i8* ") {
-                            arg.strip_prefix("i8* ").unwrap()
+                            ("i8*", arg.strip_prefix("i8* ").unwrap())
                         } else {
-                            arg.as_str()
+                            // No type prefix - try to infer from register name
+                            if arg.starts_with("%actor_") {
+                                // Actor references from spawn are i64
+                                ("i64", arg.as_str())
+                            } else {
+                                // Default: assume i64
+                                ("i64", arg.as_str())
+                            }
                         };
-                        format!("{} {}", expected_type_str, clean_arg)
+                        
+                        // Check if type conversion is needed
+                        if expected_type_str == "i8*" && actual_type == "i64" {
+                            // Need to convert i64 to i8* (e.g., ActorRef parameter)
+                            let conv_reg = format!("%arg_conv_{}", self.instructions.len());
+                            self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", conv_reg, clean_arg));
+                            format!("i8* {}", conv_reg)
+                        } else if expected_type_str == "i64" && actual_type == "i8*" {
+                            // Need to convert i8* to i64
+                            let conv_reg = format!("%arg_conv_{}", self.instructions.len());
+                            self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", conv_reg, clean_arg));
+                            format!("i64 {}", conv_reg)
+                        } else {
+                            // Types match or no conversion needed
+                            format!("{} {}", expected_type_str, clean_arg)
+                        }
                     } else {
                         // No expected type - use heuristic with prefix stripping
                         let clean_arg = if arg.starts_with("i64 ") {
@@ -1712,6 +1794,7 @@ impl CodeGenerator {
             Expression::FieldAccess(field_access) => self.generate_field_access_llvm(field_access),
             Expression::Spawn(spawn) => self.generate_spawn_llvm(spawn),
             Expression::Send(send) => self.generate_send_llvm(send),
+            Expression::Cast(cast) => self.generate_cast_llvm(cast),
             Expression::Recv(recv) => self.generate_recv_llvm(recv),
             Expression::ReadFile(read_file) => self.generate_read_file_llvm(read_file),
             Expression::WriteFile(write_file) => self.generate_write_file_llvm(write_file),
@@ -2553,6 +2636,46 @@ impl CodeGenerator {
             }
         } else {
             Err(CompilerError::codegen_error("Invalid actor or message for send".to_string()))
+        }
+    }
+
+    /// Generate LLVM message cast (LLVM backend)
+    #[cfg(feature = "llvm_backend")]
+    fn generate_cast_llvm(&mut self, cast: &CastExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
+        // Generate actor and message expressions
+        let actor_val = self.generate_expression_llvm(&cast.actor)?;
+        let message_val = self.generate_expression_llvm(&cast.message)?;
+
+        if let (Some(actor), Some(message)) = (actor_val, message_val) {
+            if let (Some(module), Some(builder)) = (&self.module, &self.builder) {
+                unsafe {
+                    // Get the silica_actor_cast function (returns i1 bool)
+                    if let Some(cast_func) = (*module).get_function("silica_actor_cast") {
+                        // Call silica_actor_cast(actor, message) -> bool (i1)
+                        let result = builder.build_call(
+                            cast_func,
+                            &[actor.into(), message.into()],
+                            "cast_result"
+                        ).unwrap();
+
+                        // Cast returns bool (i1), convert to i64 for consistency with other expressions
+                        let bool_val = result.try_as_basic_value().left().unwrap().into_int_value();
+                        let i64_val = builder.build_int_z_extend_or_bit_cast(
+                            bool_val,
+                            (*self.context).i64_type(),
+                            "cast_bool_i64"
+                        ).unwrap();
+
+                        Ok(Some(i64_val.into()))
+                    } else {
+                        Err(CompilerError::codegen_error("silica_actor_cast function not found".to_string()))
+                    }
+                }
+            } else {
+                Err(CompilerError::codegen_error("LLVM module or builder not initialized".to_string()))
+            }
+        } else {
+            Err(CompilerError::codegen_error("Invalid actor or message for cast".to_string()))
         }
     }
 
@@ -5903,13 +6026,113 @@ impl CodeGenerator {
                 self.instructions.push(format!("  {} = bitcast i64* {} to i8*", msg_final_ptr, int_ptr));
             }
 
+            // Convert actor_ref from i64 to i8* if needed (spawn returns i64, but send expects i8*)
+            let actor_ptr = if actor_ref.starts_with("i64 ") {
+                // Extract the register name
+                let actor_reg = &actor_ref[4..];
+                let ptr_reg = format!("%actor_ptr_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, actor_reg));
+                ptr_reg
+            } else if actor_ref.starts_with("%") && !actor_ref.contains("i8*") {
+                // Register that's likely i64 - convert to i8*
+                let ptr_reg = format!("%actor_ptr_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, actor_ref));
+                ptr_reg
+            } else {
+                // Already a pointer or has type prefix - use directly
+                if let Some(stripped) = actor_ref.strip_prefix("i8* ") {
+                    stripped.to_string()
+                } else {
+                    actor_ref
+                }
+            };
+            
             // Call Silica runtime send function
-            self.instructions.push(format!("  call void @silica_actor_send({}, {})", actor_ref, msg_final_ptr));
+            self.instructions.push(format!("  call void @silica_actor_send({}, {})", actor_ptr, msg_final_ptr));
 
             // Send operations return unit, so no result register
             Ok(None)
         } else {
             codegen_error("Invalid actor or message for send".to_string())
+        }
+    }
+
+    /// Generate LLVM IR for message cast (cast)
+    fn generate_cast(&mut self, cast: &CastExpr) -> Result<Option<String>> {
+        // Generate actor and message expressions
+        let actor = self.generate_expression(&cast.actor)?;
+        let message = self.generate_expression(&cast.message)?;
+
+        if let (Some(actor_ref), Some(mut msg)) = (actor, message) {
+            // For messages, we need to allocate memory and store the message value
+            // This is similar to how states are handled in spawn
+            let mut msg_final_ptr = format!("%msg_final_{}", self.instructions.len());
+
+            if msg.starts_with("i64 ") {
+                // Integer message - allocate and store
+                let int_val = &msg[4..];
+                let alloc_reg = format!("%msg_alloc_{}", self.instructions.len());
+                let int_ptr = format!("%msg_int_ptr_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg)); // Allocate 8 bytes for i64
+                self.instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                self.instructions.push(format!("  store i64 {}, i64* {}", int_val, int_ptr));
+                self.instructions.push(format!("  {} = bitcast i64* {} to i8*", msg_final_ptr, int_ptr));
+            } else if msg.starts_with("%") {
+                // Register containing a value - allocate memory and store
+                if msg.contains("tuple_alloc") {
+                    // Tuple pointer - use directly
+                    msg_final_ptr.clone_from(&msg);
+                } else {
+                    // i64 register - allocate and store
+                    let alloc_reg = format!("%msg_alloc_{}", self.instructions.len());
+                    let int_ptr = format!("%msg_int_ptr_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg));
+                    self.instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                    self.instructions.push(format!("  store i64 {}, i64* {}", msg, int_ptr));
+                    self.instructions.push(format!("  {} = bitcast i64* {} to i8*", msg_final_ptr, int_ptr));
+                }
+            } else {
+                // Other types - assume they need memory allocation
+                let alloc_reg = format!("%msg_alloc_{}", self.instructions.len());
+                let int_ptr = format!("%msg_int_ptr_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg));
+                self.instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                self.instructions.push(format!("  store i64 0, i64* {}", int_ptr)); // Default
+                self.instructions.push(format!("  {} = bitcast i64* {} to i8*", msg_final_ptr, int_ptr));
+            }
+
+            // Convert actor_ref from i64 to i8* if needed (spawn returns i64, but cast expects i8*)
+            let actor_ptr = if actor_ref.starts_with("i64 ") {
+                // Extract the register name
+                let actor_reg = &actor_ref[4..];
+                let ptr_reg = format!("%actor_ptr_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, actor_reg));
+                ptr_reg
+            } else if actor_ref.starts_with("%") && !actor_ref.contains("i8*") {
+                // Register that's likely i64 - convert to i8*
+                let ptr_reg = format!("%actor_ptr_{}", self.instructions.len());
+                self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, actor_ref));
+                ptr_reg
+            } else {
+                // Already a pointer or has type prefix - use directly
+                if let Some(stripped) = actor_ref.strip_prefix("i8* ") {
+                    stripped.to_string()
+                } else {
+                    actor_ref
+                }
+            };
+            
+            // Call Silica runtime cast function - returns bool
+            let result_reg = format!("%cast_result_{}", self.instructions.len());
+            self.instructions.push(format!("  {} = call i1 @silica_actor_cast(i8* {}, i8* {})", result_reg, actor_ptr, msg_final_ptr));
+            
+            // Convert bool (i1) to i64 for return
+            let bool_i64_reg = format!("%cast_bool_i64_{}", self.instructions.len());
+            self.instructions.push(format!("  {} = zext i1 {} to i64", bool_i64_reg, result_reg));
+
+            Ok(Some(bool_i64_reg))
+        } else {
+            codegen_error("Invalid actor or message for cast".to_string())
         }
     }
 
@@ -5945,13 +6168,19 @@ impl CodeGenerator {
         let original_instructions = std::mem::take(&mut self.instructions);
         let mut body_instructions = Vec::new();
 
-        // Set up captured variables in the symbol table (they're available from outer scope)
-        for captured_var in captured_vars {
-            if let Some(var_reg) = self.lookup_variable_text(captured_var) {
-                // Keep the existing register assignment
-                self.add_variable_text(captured_var.clone(), var_reg.clone());
-            }
-        }
+        // Captured variables are already set up as parameters in generate_function_literal
+        // (with names like %captured_0, %captured_1, etc.)
+        // They're in the innermost scope, so they'll be found first by lookup_variable_text
+        // Store the mapping of captured variable names to their parameter register indices
+        let captured_var_map: std::collections::HashMap<String, usize> = captured_vars.iter()
+            .enumerate()
+            .map(|(i, name)| (name.clone(), i))
+            .collect();
+        
+        // Store this map in a way that generate_function_literal_expr can access it
+        // For now, we'll pass it through the function calls, but a cleaner solution would be
+        // to store it in the CodeGenerator struct. For the bootstrap compiler, we'll use
+        // a workaround: check if the variable is in captured_vars when looking it up.
 
         // Get the return type and generate appropriate return instruction
         // Behavior functions are those with exactly 2 parameters (used in actor spawn)
@@ -6012,8 +6241,29 @@ impl CodeGenerator {
             }
         } else {
             // Regular functions return their actual type
-            let clean_result = result_value.trim_start_matches("i64 ").trim_start_matches("i1 ");
-            body_instructions.push(format!("    ret {} {}", return_type_str, clean_result));
+            // Handle type conversions if needed (e.g., i64 to i8* for ActorRef)
+            let (final_result_type, final_result_reg) = if return_type_str == "i8*" && result_value.starts_with("i64 ") {
+                // Need to convert i64 to i8* (e.g., for ActorRef return type)
+                let i64_reg = result_value.trim_start_matches("i64 ").to_string();
+                let ptr_reg = format!("%return_ptr_{}", body_instructions.len());
+                body_instructions.push(format!("    {} = inttoptr i64 {} to i8*", ptr_reg, i64_reg));
+                ("i8*".to_string(), ptr_reg)
+            } else if return_type_str == "i64" && result_value.starts_with("i8* ") {
+                // Need to convert i8* to i64 (unlikely but handle for completeness)
+                let ptr_reg = result_value.trim_start_matches("i8* ").to_string();
+                let int_reg = format!("%return_int_{}", body_instructions.len());
+                body_instructions.push(format!("    {} = ptrtoint i8* {} to i64", int_reg, ptr_reg));
+                ("i64".to_string(), int_reg)
+            } else {
+                // No conversion needed - extract register name
+                let clean_result = result_value.trim_start_matches("i64 ")
+                    .trim_start_matches("i1 ")
+                    .trim_start_matches("i8* ")
+                    .trim_start_matches("i32 ")
+                    .to_string();
+                (return_type_str.to_string(), clean_result)
+            };
+            body_instructions.push(format!("    ret {} {}", final_result_type, final_result_reg));
         }
 
         // Restore the original instructions
@@ -6214,11 +6464,56 @@ impl CodeGenerator {
                 // as they have their own scope. Just analyze their body.
                 self.collect_captured_variables_from_statements(&func_lit.body, &func_lit.parameters, &mut Vec::new())?;
             },
+            Expression::Cast(cast) => {
+                // Collect captured variables from cast actor and message
+                self.collect_captured_variables(&cast.actor, local_params, captured)?;
+                self.collect_captured_variables(&cast.message, local_params, captured)?;
+            },
+            Expression::Spawn(spawn) => {
+                // Collect captured variables from spawn expressions
+                self.collect_captured_variables(&spawn.initial_state, local_params, captured)?;
+                self.collect_captured_variables(&spawn.behavior, local_params, captured)?;
+                if let Some(affinity) = &spawn.core_affinity {
+                    self.collect_captured_variables(affinity, local_params, captured)?;
+                }
+            },
+            Expression::Send(send) => {
+                // Collect captured variables from send expressions
+                self.collect_captured_variables(&send.actor, local_params, captured)?;
+                self.collect_captured_variables(&send.message, local_params, captured)?;
+            },
+            Expression::Recv(recv) => {
+                // Collect captured variables from recv expressions
+                if let Some(actor) = &recv.actor {
+                    self.collect_captured_variables(actor, local_params, captured)?;
+                }
+            },
+            Expression::StructLiteral(struct_lit) => {
+                // Collect captured variables from struct literal field expressions
+                for (_, field_expr) in &struct_lit.fields {
+                    self.collect_captured_variables(field_expr, local_params, captured)?;
+                }
+            },
+            Expression::FieldAccess(field_access) => {
+                // Collect captured variables from field access object
+                self.collect_captured_variables(&field_access.object, local_params, captured)?;
+            },
+            Expression::Tuple(tuple) => {
+                // Collect captured variables from tuple elements
+                for elem in tuple {
+                    self.collect_captured_variables(elem, local_params, captured)?;
+                }
+            },
+            Expression::Unary(unary) => {
+                // Collect captured variables from unary operand
+                self.collect_captured_variables(&unary.operand, local_params, captured)?;
+            },
             Expression::Literal(_) => {
                 // Literals don't capture variables
             },
             _ => {
-                // For now, ignore other expression types
+                // For now, ignore other expression types that don't contain identifiers
+                // (e.g., ReadFile, WriteFile, etc. - these are handled separately if needed)
             }
         }
         Ok(())
@@ -6618,18 +6913,136 @@ impl CodeGenerator {
                     }
                 } else {
                     body_instructions.push(format!("  ; DEBUG: parameter '{}' not found, checking variables", name));
-                    if let Some(var_reg) = self.lookup_variable_text(name) {
-                    // For behavior functions, if the var_reg is a parameter register, return i8*
-                    if func_lit.parameters.len() == 2 && (var_reg == "%0" || var_reg == "%1") {
-                        Ok(format!("i8* {}", var_reg))
-                    } else {
-                        // It's a captured variable from outer scope
-                        Ok(var_reg.clone())
+                    
+                    // FIRST: Check if the variable is in the current scope (innermost scope)
+                    // This ensures captured variables (as parameters) take precedence over outer scope variables
+                    if let Some(current_scope) = self.variable_scopes.last() {
+                        if let Some(param_reg) = current_scope.get(name) {
+                            // Found in current scope - this is a parameter register (either %0, %1, or %captured_N)
+                            // For behavior functions, if the var_reg is a parameter register, return i8*
+                            if func_lit.parameters.len() == 2 && (param_reg == "%0" || param_reg == "%1") {
+                                return Ok(format!("i8* {}", param_reg));
+                            } else {
+                                // It's a captured variable parameter register - return with appropriate type
+                                // Check if it's a captured variable (starts with %captured_)
+                                if param_reg.starts_with("%captured_") {
+                                    // Captured variable - determine type from variable_types if available
+                                    let var_type = self.variable_types.get(name)
+                                        .or_else(|| {
+                                            // Try to infer from the outer scope value if available
+                                            self.lookup_variable_text(name).and_then(|outer_val| {
+                                                if outer_val.starts_with("i64 ") {
+                                                    Some(&Type::Int)
+                                                } else if outer_val.starts_with("i8* ") {
+                                                    Some(&Type::ActorRef)
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                        });
+                                    
+                                    if let Some(ty) = var_type {
+                                        let llvm_type = self.type_map.silica_to_llvm_str(ty);
+                                        return Ok(format!("{} {}", llvm_type, param_reg));
+                                    }
+                                    // Default to i64 for captured variables
+                                    return Ok(format!("i64 {}", param_reg));
+                                } else {
+                                    // Regular parameter - return as is
+                                    return Ok(param_reg.clone());
+                                }
+                            }
+                        }
                     }
-                } else {
-                    // For bootstrap compiler, assume undefined variables are captured
-                    // In a full implementation, this would be an error
-                    Ok(format!("captured_{}", name))
+                    
+                    // SECOND: If not in current scope, check outer scopes
+                    if let Some(var_reg) = self.lookup_variable_text(name) {
+                        // For behavior functions, if the var_reg is a parameter register, return i8*
+                        if func_lit.parameters.len() == 2 && (var_reg == "%0" || var_reg == "%1") {
+                            Ok(format!("i8* {}", var_reg))
+                        } else {
+                            // It's from outer scope - extract register name
+                            // BUT: if the register doesn't look like a parameter register, 
+                            // it means the variable should be captured but isn't in the current scope
+                            // In this case, we should NOT use the outer scope register directly
+                            let result = if var_reg.starts_with("i64 ") || var_reg.starts_with("i8* ") || var_reg.starts_with("i32 ") || var_reg.starts_with("i1 ") {
+                                // Has type prefix - extract register name
+                                let reg = var_reg.trim_start_matches("i64 ")
+                                    .trim_start_matches("i8* ")
+                                    .trim_start_matches("i32 ")
+                                    .trim_start_matches("i1 ")
+                                    .to_string();
+                                
+                                // Check if this register looks like an outer scope register (not a parameter)
+                                // If so, search all scopes for a parameter register for this variable
+                                if !reg.starts_with("%captured_") && !reg.chars().skip(1).all(|c| c.is_ascii_digit()) {
+                                    // This is an outer scope register - search all scopes for parameter register
+                                    for scope in self.variable_scopes.iter().rev() {
+                                        if let Some(param_reg) = scope.get(name) {
+                                            // Found parameter register - determine type and use it
+                                            let var_type = self.variable_types.get(name)
+                                                .or_else(|| {
+                                                    if var_reg.starts_with("i64 ") {
+                                                        Some(&Type::Int)
+                                                    } else if var_reg.starts_with("i8* ") {
+                                                        Some(&Type::ActorRef)
+                                                    } else {
+                                                        None
+                                                    }
+                                                });
+                                            
+                                            if let Some(ty) = var_type {
+                                                let llvm_type = self.type_map.silica_to_llvm_str(ty);
+                                                return Ok(format!("{} {}", llvm_type, param_reg));
+                                            }
+                                            // Default to i64
+                                            return Ok(format!("i64 {}", param_reg));
+                                        }
+                                    }
+                                    // Not found in any scope as parameter register - this is an error
+                                    return Err(CompilerError::codegen_error(
+                                        format!("Variable '{}' should be captured but parameter register not found. Outer scope register: {}", name, reg)
+                                    ));
+                                }
+                                
+                                // Use the extracted register (should be %captured_N)
+                                if reg.starts_with('%') {
+                                    reg
+                                } else {
+                                    format!("%{}", reg)
+                                }
+                            } else if var_reg.starts_with('%') {
+                                // Check if this looks like an outer scope register
+                                if !var_reg.starts_with("%captured_") && !var_reg.chars().skip(1).all(|c| c.is_ascii_digit()) {
+                                    // This is an outer scope register - search all scopes for parameter register
+                                    for scope in self.variable_scopes.iter().rev() {
+                                        if let Some(param_reg) = scope.get(name) {
+                                            // Found parameter register - determine type and use it
+                                            let var_type = self.variable_types.get(name);
+                                            if let Some(ty) = var_type {
+                                                let llvm_type = self.type_map.silica_to_llvm_str(ty);
+                                                return Ok(format!("{} {}", llvm_type, param_reg));
+                                            }
+                                            // Default to i64
+                                            return Ok(format!("i64 {}", param_reg));
+                                        }
+                                    }
+                                    // Not found in any scope as parameter register - this is an error
+                                    return Err(CompilerError::codegen_error(
+                                        format!("Variable '{}' should be captured but parameter register not found. Outer scope register: {}", name, var_reg)
+                                    ));
+                                }
+                                var_reg.clone()
+                            } else {
+                                format!("%{}", var_reg)
+                            };
+                            Ok(result)
+                        }
+                    } else {
+                        // For bootstrap compiler, assume undefined variables are captured
+                        // In a full implementation, this would be an error
+                        // Return as a register name with % prefix
+                        Ok(format!("%captured_{}", name))
                     }
                 }
             },
@@ -6983,12 +7396,93 @@ impl CodeGenerator {
                 Ok(format!("i8* {}", alloc_reg))
             },
             Expression::StructLiteral(struct_lit) => {
-                // Generate struct literal in function literals
-                // This is complex as it requires allocating memory and storing field values
-                // For bootstrap compiler, we'll generate a placeholder allocation
-                // TODO: Implement proper struct literal generation in function literals
+                // Generate struct literal in function literals with proper field initialization
+                if struct_lit.fields.is_empty() {
+                    return Ok("i8* null".to_string());
+                }
+                
+                // Get struct definition to know field types and layout
+                let mut field_type_map = HashMap::new();
+                if let Some(struct_def) = self.struct_defs.get(&struct_lit.type_name) {
+                    for field_def in struct_def {
+                        field_type_map.insert(field_def.name.clone(), field_def.ty.clone());
+                    }
+                } else if let Some(alias_type) = self.type_aliases.get(&struct_lit.type_name) {
+                    if let Type::Record(fields) = alias_type {
+                        for (field_name, field_type) in fields {
+                            field_type_map.insert(field_name.clone(), field_type.clone());
+                        }
+                    }
+                }
+                
+                // Generate all field expressions
+                let mut field_values = Vec::new();
+                let mut field_types = Vec::new();
+                
+                for (field_name, field_expr) in &struct_lit.fields {
+                    let field_type = field_type_map.get(field_name)
+                        .cloned()
+                        .unwrap_or_else(|| Type::Int); // Default to int if unknown
+                    
+                    let field_value = self.generate_function_literal_expr(field_expr, func_lit, body_instructions)?;
+                    field_values.push((field_name.clone(), field_value));
+                    field_types.push(field_type);
+                }
+                
+                // Calculate memory layout
+                let mut total_size = 0;
+                let mut field_layout = Vec::new();
+                for field_type in &field_types {
+                    let (llvm_type_str, size, alignment) = self.get_llvm_type_info(field_type);
+                    let aligned_offset = ((total_size + alignment - 1) / alignment) * alignment;
+                    field_layout.push((aligned_offset, llvm_type_str, size));
+                    total_size = aligned_offset + size;
+                }
+                
+                // Allocate memory
                 let alloc_reg = format!("%struct_alloc_{}", body_instructions.len());
-                body_instructions.push(format!("  {} = call i8* @malloc(i64 24)", alloc_reg)); // Assume 24 bytes for struct
+                body_instructions.push(format!("  {} = call i8* @malloc(i64 {})", alloc_reg, total_size));
+                
+                // Store each field at its proper offset
+                for (i, ((field_name, field_value), (offset, llvm_type_str, _))) in field_values.iter().zip(field_layout.iter()).enumerate() {
+                    let field_ptr_reg = format!("%field_ptr_{}_{}", body_instructions.len(), i);
+                    let field_ptr_typed_reg = format!("%field_ptr_typed_{}_{}", body_instructions.len(), i);
+                    
+                    // Get pointer to field location
+                    body_instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", field_ptr_reg, alloc_reg, offset));
+                    
+                    // Cast to appropriate pointer type
+                    let llvm_type_ptr = format!("{}*", llvm_type_str);
+                    body_instructions.push(format!("  {} = bitcast i8* {} to {}", field_ptr_typed_reg, field_ptr_reg, llvm_type_ptr));
+                    
+                    // Extract and store field value
+                    let clean_field_val = if field_value.starts_with(&format!("{} ", llvm_type_str)) {
+                        // Has type prefix - extract register name and ensure % prefix
+                        let reg = field_value.trim_start_matches(&format!("{} ", llvm_type_str)).to_string();
+                        if reg.starts_with('%') {
+                            reg
+                        } else {
+                            format!("%{}", reg)
+                        }
+                    } else if field_value.starts_with("i8* ") {
+                        // Boxed value - load it
+                        let load_reg = format!("%load_field_{}_{}", body_instructions.len(), i);
+                        let bitcast_reg = format!("%bitcast_field_{}_{}", body_instructions.len(), i);
+                        body_instructions.push(format!("  {} = bitcast i8* {} to {}*", bitcast_reg, field_value.trim_start_matches("i8* "), llvm_type_str));
+                        body_instructions.push(format!("  {} = load {}, {}* {}", load_reg, llvm_type_str, llvm_type_str, bitcast_reg));
+                        load_reg
+                    } else {
+                        // Assume it's a register - ensure it has % prefix
+                        if field_value.starts_with('%') {
+                            field_value.clone()
+                        } else {
+                            format!("%{}", field_value)
+                        }
+                    };
+                    
+                    body_instructions.push(format!("  store {} {}, {}* {}", llvm_type_str, clean_field_val, llvm_type_str, field_ptr_typed_reg));
+                }
+                
                 Ok(format!("i8* {}", alloc_reg))
             },
             Expression::FunctionLiteral(func_lit_inner) => {
@@ -6999,6 +7493,175 @@ impl CodeGenerator {
             Expression::Call(call) => {
                 // Handle function calls within function literals - this enables helper functions!
                 self.generate_function_literal_call(call, func_lit, body_instructions)
+            },
+            Expression::Cast(cast) => {
+                // Handle cast expressions within function literals
+                // Generate actor reference and message expressions
+                let actor_val = self.generate_function_literal_expr(&cast.actor, func_lit, body_instructions)?;
+                let message_val = self.generate_function_literal_expr(&cast.message, func_lit, body_instructions)?;
+                
+                // Extract actor register (may be i64 or i8*)
+                // Ensure register names always have % prefix
+                // IMPORTANT: If the register doesn't look like a parameter register (%captured_N or %0, %1),
+                // check if the variable is in the current scope as a parameter register
+                let (actor_reg, actor_type) = if actor_val.starts_with("i64 ") {
+                    let reg = actor_val.trim_start_matches("i64 ").to_string();
+                    // Check if this is an outer scope register - if so, check current scope for parameter register
+                    if !reg.starts_with("%captured_") && !reg.chars().skip(1).all(|c| c.is_ascii_digit()) {
+                        // This looks like an outer scope register - check if variable is in current scope
+                        if let Expression::Identifier(var_name) = &*cast.actor {
+                            if let Some(current_scope) = self.variable_scopes.last() {
+                                if let Some(param_reg) = current_scope.get(var_name) {
+                                    // Found parameter register in current scope - use it
+                                    return Ok(format!("i64 {}", param_reg));
+                                }
+                            }
+                        }
+                    }
+                    // Ensure % prefix
+                    let reg_with_prefix = if reg.starts_with('%') { reg } else { format!("%{}", reg) };
+                    (reg_with_prefix, "i64")
+                } else if actor_val.starts_with("i8* ") {
+                    let reg = actor_val.trim_start_matches("i8* ").to_string();
+                    // Check if this is an outer scope register - if so, check current scope for parameter register
+                    if !reg.starts_with("%captured_") && !reg.chars().skip(1).all(|c| c.is_ascii_digit()) {
+                        // This looks like an outer scope register - check if variable is in current scope
+                        if let Expression::Identifier(var_name) = &*cast.actor {
+                            if let Some(current_scope) = self.variable_scopes.last() {
+                                if let Some(param_reg) = current_scope.get(var_name) {
+                                    // Found parameter register in current scope - use it
+                                    return Ok(format!("i8* {}", param_reg));
+                                }
+                            }
+                        }
+                    }
+                    // Ensure % prefix
+                    let reg_with_prefix = if reg.starts_with('%') { reg } else { format!("%{}", reg) };
+                    (reg_with_prefix, "i8*")
+                } else {
+                    // Assume it's a register name - ensure it has % prefix
+                    // Check if this is an outer scope register - if so, check current scope for parameter register
+                    let reg = if actor_val.starts_with('%') { 
+                        // Check if this looks like an outer scope register
+                        if !actor_val.starts_with("%captured_") && !actor_val.chars().skip(1).all(|c| c.is_ascii_digit()) {
+                            // This looks like an outer scope register - check if variable is in current scope
+                            if let Expression::Identifier(var_name) = &*cast.actor {
+                                if let Some(current_scope) = self.variable_scopes.last() {
+                                    if let Some(param_reg) = current_scope.get(var_name) {
+                                        // Found parameter register in current scope - determine type and use it
+                                        let var_type = self.variable_types.get(var_name)
+                                            .or_else(|| {
+                                                self.lookup_variable_text(var_name).and_then(|outer_val| {
+                                                    if outer_val.starts_with("i64 ") {
+                                                        Some(&Type::Int)
+                                                    } else if outer_val.starts_with("i8* ") {
+                                                        Some(&Type::ActorRef)
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
+                                            });
+                                        
+                                        if let Some(ty) = var_type {
+                                            let llvm_type = self.type_map.silica_to_llvm_str(ty);
+                                            return Ok(format!("{} {}", llvm_type, param_reg));
+                                        }
+                                        // Default to i64
+                                        return Ok(format!("i64 {}", param_reg));
+                                    }
+                                }
+                            }
+                        }
+                        actor_val 
+                    } else { 
+                        format!("%{}", actor_val) 
+                    };
+                    (reg, "unknown")
+                };
+                
+                // Convert actor to i8* if needed (spawn returns i64, but cast expects i8*)
+                // Ensure actor_reg has % prefix for LLVM IR
+                let actor_reg_with_prefix = if actor_reg.starts_with('%') {
+                    actor_reg.clone()
+                } else {
+                    format!("%{}", actor_reg)
+                };
+                
+                let actor_ptr = if actor_type == "i64" {
+                    let ptr_reg = format!("%actor_ptr_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, actor_reg_with_prefix));
+                    ptr_reg
+                } else if actor_type == "i8*" {
+                    actor_reg_with_prefix
+                } else {
+                    // Try to determine type from variable lookup
+                    let clean_reg = actor_reg.trim_start_matches('%');
+                    if let Some(var_type) = self.variable_types.get(clean_reg) {
+                        if matches!(var_type, Type::ActorRef) {
+                            // ActorRef is stored as i64, convert to i8*
+                            let ptr_reg = format!("%actor_ptr_{}", body_instructions.len());
+                            body_instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, actor_reg_with_prefix));
+                            ptr_reg
+                        } else {
+                            actor_reg_with_prefix
+                        }
+                    } else {
+                        // Assume it's already i8* if we can't determine
+                        actor_reg_with_prefix
+                    }
+                };
+                
+                // Handle message - it might be a struct literal, integer, or other type
+                let msg_final_ptr = if message_val.starts_with("i8* ") {
+                    // Already a pointer (e.g., from struct literal allocation)
+                    message_val.trim_start_matches("i8* ").to_string()
+                } else if message_val.starts_with("i64 ") {
+                    // Integer message - allocate and store
+                    let int_val = message_val.trim_start_matches("i64 ");
+                    let alloc_reg = format!("%msg_alloc_{}", body_instructions.len());
+                    let int_ptr = format!("%msg_int_ptr_{}", body_instructions.len());
+                    let msg_ptr_reg = format!("%msg_ptr_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg));
+                    body_instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                    body_instructions.push(format!("  store i64 {}, i64* {}", int_val, int_ptr));
+                    body_instructions.push(format!("  {} = bitcast i64* {} to i8*", msg_ptr_reg, int_ptr));
+                    msg_ptr_reg
+                } else if message_val.starts_with("%") {
+                    // Register containing a value - check if it's a struct allocation or needs allocation
+                    if message_val.contains("struct_alloc") || message_val.contains("tuple_alloc") {
+                        // Already allocated - use directly (already has % prefix)
+                        message_val
+                    } else {
+                        // i64 register - allocate and store
+                        // message_val already has % prefix
+                        let alloc_reg = format!("%msg_alloc_{}", body_instructions.len());
+                        let int_ptr = format!("%msg_int_ptr_{}", body_instructions.len());
+                        let msg_ptr_reg = format!("%msg_ptr_{}", body_instructions.len());
+                        body_instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg));
+                        body_instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                        body_instructions.push(format!("  store i64 {}, i64* {}", message_val, int_ptr));
+                        body_instructions.push(format!("  {} = bitcast i64* {} to i8*", msg_ptr_reg, int_ptr));
+                        msg_ptr_reg
+                    }
+                } else {
+                    // Other types - assume they need memory allocation
+                    let alloc_reg = format!("%msg_alloc_{}", body_instructions.len());
+                    let int_ptr = format!("%msg_int_ptr_{}", body_instructions.len());
+                    let msg_ptr_reg = format!("%msg_ptr_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = call i8* @malloc(i64 8)", alloc_reg));
+                    body_instructions.push(format!("  {} = bitcast i8* {} to i64*", int_ptr, alloc_reg));
+                    body_instructions.push(format!("  store i64 0, i64* {}", int_ptr)); // Default
+                    body_instructions.push(format!("  {} = bitcast i64* {} to i8*", msg_ptr_reg, int_ptr));
+                    msg_ptr_reg
+                };
+                
+                // Generate cast call: silica_actor_cast(actor_ptr, message_ptr) -> bool
+                let result_reg = format!("%cast_result_{}", body_instructions.len());
+                body_instructions.push(format!("  {} = call i1 @silica_actor_cast(i8* {}, i8* {})", 
+                    result_reg, actor_ptr, msg_final_ptr));
+                
+                // Return bool result (i1)
+                Ok(format!("i1 {}", result_reg))
             },
             _ => Err(CompilerError::codegen_error(format!("Unsupported expression type in function literal: {:?}", expr))),
         }
@@ -7087,7 +7750,11 @@ impl CodeGenerator {
             }
             self.add_variable_text(param.name.clone(), param_reg);
         }
-        // Set up captured variables as additional parameters
+        // Enter a new scope for the function literal body
+        // This ensures captured variables (as parameters) take precedence over outer scope variables
+        self.enter_scope_text();
+        
+        // Set up captured variables as additional parameters in the new scope
         for (i, (captured_var, _)) in captured_vars_with_types.iter().enumerate() {
             let param_reg = format!("%captured_{}", i);
             self.add_variable_text(captured_var.clone(), param_reg);
@@ -7096,6 +7763,9 @@ impl CodeGenerator {
         // Generate function body from the actual expression
         // For function literals, we need to generate the body in a separate context
         let body_instructions = self.generate_function_literal_body_with_captures(func_lit, &captured_vars)?;
+        
+        // Exit the function literal body scope
+        self.exit_scope_text();
         self.global_functions.extend(body_instructions);
 
         // Note: Variables are automatically cleaned up when exiting scope
@@ -7487,7 +8157,7 @@ impl TypeMap {
             Type::Region { .. } => "i8*".to_string(),
             Type::Reference { .. } => "i64*".to_string(),
             Type::Buffer { .. } => "i8*".to_string(),
-            Type::ActorRef { .. } => "i8*".to_string(),
+            Type::ActorRef => "i8*".to_string(),
             // Core affinity types - represented as integers for runtime scheduling
             Type::CoreId => "i32".to_string(),
             Type::CoreSet(_) => "i8*".to_string(), // Complex type as opaque pointer
