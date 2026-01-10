@@ -92,10 +92,9 @@ impl Compiler {
             return Ok(CompileResult::Skipped);
         }
 
-        // Phase 2.5: Module resolution
+        // Phase 2.5: Module resolution and combination
         println!("Phase 2.5: Module resolution...");
-        self.resolve_imports(&program)?;
-        println!("Module resolution completed");
+        let combined_program = self.resolve_imports_and_combine(&program)?;
 
         // Set symbol table in code generator
         let symbol_table_clone = Box::new(self.symbol_table.clone());
@@ -105,14 +104,14 @@ impl Compiler {
         println!("Phase 3: Type checking happening...");
         let mut type_checker = TypeChecker::with_symbol_table(Some(&self.symbol_table));
         // eprintln!("DEBUG LIB: About to call check_program");
-        type_checker.check_program(&program)?;
+        type_checker.check_program(&combined_program)?;
         // println!("DEBUG LIB: check_program completed successfully");
         println!("Type checking passed");
 
         // Phase 4: Effect analysis
         println!("Phase 4: Effect analysis...");
         let mut effect_analyzer = EffectAnalyzer::new();
-        effect_analyzer.analyze_program(&program)?;
+        effect_analyzer.analyze_program(&combined_program)?;
         println!("Effect analysis passed");
 
         // TODO: Pass struct definitions and generic instantiations when supported
@@ -123,7 +122,7 @@ impl Compiler {
         self.codegen.set_type_aliases(type_checker.get_type_aliases().clone());
         self.codegen.set_struct_defs(type_checker.get_struct_defs().clone());
         self.codegen.set_trait_impls(type_checker.get_trait_impls().clone());
-        self.codegen.generate_program(&program)?;
+        self.codegen.generate_program(&combined_program)?;
         println!("Code generation completed");
 
         // Print the LLVM IR for verification
@@ -144,27 +143,81 @@ impl Compiler {
         Ok(CompileResult::Success)
     }
 
-    /// Resolve imports and load modules
-    fn resolve_imports(&mut self, program: &crate::ast::Program) -> Result<()> {
-        // Extract import declarations
-        let mut imports = Vec::new();
+    /// Resolve imports and load modules recursively, returning combined program with all declarations
+    fn resolve_imports_and_combine(&mut self, program: &crate::ast::Program) -> Result<crate::ast::Program> {
+        let mut all_declarations = Vec::new();
+        let mut processed_modules = std::collections::HashSet::new();
+        let mut modules_to_process = Vec::new();
+
+        // Collect main program declarations (in original order, excluding imports)
+        let mut main_declarations = Vec::new();
         for decl in &program.declarations {
             if let crate::ast::Declaration::Import(import_decl) = decl {
-                imports.push(import_decl);
+                for module_name in &import_decl.modules {
+                    if !processed_modules.contains(module_name) {
+                        modules_to_process.push(module_name.clone());
+                        processed_modules.insert(module_name.clone());
+                    }
+                }
+            } else {
+                main_declarations.push(decl.clone());
             }
         }
 
-        // Load each imported module
-        for import in imports {
-            for module_name in &import.modules {
-                println!("Loading module: {}", module_name);
-                self.module_resolver.load_module(module_name)?;
-                let module = self.module_resolver.get_module(module_name).unwrap();
-                self.symbol_table.add_module_symbols(module)?;
-                println!("Loaded module '{}' with {} exports", module.name, module.exports.len());
+        // First pass: collect ALL modules that need to be loaded (recursive dependencies)
+        let mut i = 0;
+        while i < modules_to_process.len() {
+            let module_name = &modules_to_process[i];
+
+            // Load the module to check its dependencies
+            self.module_resolver.load_module(module_name)?;
+            let module = self.module_resolver.get_module(module_name).unwrap();
+
+            // Add symbols to type checker
+            self.symbol_table.add_module_symbols(module)?;
+
+            // Check this module's imports and add any new dependencies
+            for decl in &module.ast {
+                if let crate::ast::Declaration::Import(import_decl) = decl {
+                    for dep_module_name in &import_decl.modules {
+                        if !processed_modules.contains(dep_module_name) {
+                            modules_to_process.push(dep_module_name.clone());
+                            processed_modules.insert(dep_module_name.clone());
+                        }
+                    }
+                }
+            }
+
+            i += 1;
+        }
+
+        // Second pass: add all declarations in dependency order
+        // Process modules in reverse order (dependencies first)
+        for module_name in modules_to_process.iter().rev() {
+            let module = self.module_resolver.get_module(module_name).unwrap();
+            println!("Loading module: {}", module_name);
+            println!("Loaded module '{}' with {} exports", module.name, module.exports.len());
+
+            // Add all non-import declarations from this module
+            for decl in &module.ast {
+                if !matches!(decl, crate::ast::Declaration::Import(_)) {
+                    all_declarations.push(decl.clone());
+                }
             }
         }
 
-        Ok(())
+
+        // Add main program declarations (preserving original order)
+        // Functions must be defined before they're used
+        all_declarations.extend(main_declarations);
+
+        println!("Module resolution completed - combined {} declarations from {} modules",
+                 all_declarations.len(), processed_modules.len());
+
+        // Create combined program
+        Ok(crate::ast::Program {
+            declarations: all_declarations,
+            location: program.location.clone(),
+        })
     }
 }

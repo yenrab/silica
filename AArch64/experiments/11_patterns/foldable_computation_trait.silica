@@ -1,0 +1,360 @@
+// =================================================
+// FOLDABLE COMPUTATION TRAIT
+// =================================================
+// This trait combines Functor and Monoid concepts to:
+// 1. Split data structures into parts (using functor-like operations)
+// 2. Compute on each part using monoid operations for combination
+// 3. Reassemble the final result
+//
+// This enables parallel/distributed computation patterns where:
+// - Data is split into independent parts
+// - Each part is processed separately
+// - Results are combined using monoid operations
+// - Final answer is reassembled
+// =================================================
+
+// =================================================
+// RESULT MONOID FOR ACCUMULATING COMPUTATIONS
+// =================================================
+
+trait ComputationResult {
+    // Monoid operations for combining results
+    fn combine(self: Self, other: Self) -> Self;
+    fn empty() -> Self;
+
+    // Extract final value from computation result
+    fn extract(self: Self) -> int;
+}
+
+// Concrete implementation for integer computations
+type IntResult = { value: int };
+
+impl ComputationResult for IntResult {
+    fn combine(self: IntResult, other: IntResult) -> IntResult {
+        IntResult { value: self.value + other.value }
+    }
+
+    fn empty() -> IntResult {
+        IntResult { value: 0 }
+    }
+
+    fn extract(self: IntResult) -> int {
+        self.value
+    }
+}
+
+// =================================================
+// FOLDABLE COMPUTATION TRAIT
+// =================================================
+// Combines splitting (functor-like), computation (monoid), and reassembly
+
+trait FoldableComputation {
+    // Split data into parts that can be processed independently
+    fn split_into_parts(self: Self, num_parts: int) -> ComputationParts;
+
+    // Reassemble parts back into final result
+    fn reassemble_from_parts(parts: ComputationParts) -> Self;
+
+    // Compute on each part using monoid operations
+    fn compute_parts(parts: ComputationParts, operation: (int) -> IntResult) -> ComputationResult {
+        let mut result = ComputationResult::empty();
+
+        // Process each part and combine results using monoid
+        let part_count = parts.get_count();
+        let mut i = 0;
+        while i < part_count {
+            let part_data = parts.get_part(i);
+            let part_result = operation(part_data);
+            result = result.combine(part_result);
+            i = i + 1;
+        }
+
+        result
+    }
+
+    // Full pipeline: split -> compute -> reassemble
+    fn process_with_monoid(self: Self, num_parts: int, operation: (int) -> IntResult) -> Self {
+        let parts = self.split_into_parts(num_parts);
+        let computation_result = Self::compute_parts(parts, operation);
+        self.reassemble_from_parts_with_result(parts, computation_result)
+    }
+
+    // Helper for reassembly with computation result
+    fn reassemble_from_parts_with_result(self: Self, parts: ComputationParts, result: ComputationResult) -> Self;
+}
+
+// =================================================
+// COMPUTATION PARTS ABSTRACTION
+// =================================================
+// Represents the split parts of data that can be processed independently
+
+trait ComputationParts {
+    fn get_count(self: Self) -> int;
+    fn get_part(self: Self, index: int) -> int;
+    fn set_part_result(self: Self, index: int, result: int) -> Self;
+}
+
+// Concrete implementation for array-like parts
+type ArrayParts = {
+    count: int,
+    data: int,        // Simplified: single value representing all parts
+    part_size: int
+};
+
+impl ComputationParts for ArrayParts {
+    fn get_count(self: ArrayParts) -> int {
+        self.count
+    }
+
+    fn get_part(self: ArrayParts, index: int) -> int {
+        // Simplified: distribute data across parts
+        if index < self.count {
+            (self.data / self.part_size) + (index * 10)  // Distribute data
+        } else {
+            0
+        }
+    }
+
+    fn set_part_result(self: ArrayParts, index: int, result: int) -> ArrayParts {
+        // Simplified: accumulate results
+        ArrayParts {
+            count: self.count,
+            data: self.data + result,
+            part_size: self.part_size
+        }
+    }
+}
+
+// =================================================
+// CONCRETE DATA STRUCTURE IMPLEMENTATIONS
+// =================================================
+
+// Example 1: Numeric aggregation (sum all elements)
+type NumericData = { values: int, count: int };
+
+impl FoldableComputation for NumericData {
+    fn split_into_parts(self: NumericData, num_parts: int) -> ComputationParts {
+        ArrayParts {
+            count: num_parts,
+            data: self.values,
+            part_size: self.values / num_parts
+        }
+    }
+
+    fn reassemble_from_parts_with_result(self: NumericData, parts: ComputationParts, result: ComputationResult) -> NumericData {
+        NumericData {
+            values: result.extract(),
+            count: self.count
+        }
+    }
+}
+
+// Example 2: Statistical computation (compute mean, variance, etc.)
+type StatisticalData = { sum: int, count: int, sum_squares: int };
+
+impl FoldableComputation for StatisticalData {
+    fn split_into_parts(self: StatisticalData, num_parts: int) -> ComputationParts {
+        ArrayParts {
+            count: num_parts,
+            data: self.sum,
+            part_size: self.sum / num_parts
+        }
+    }
+
+    fn reassemble_from_parts_with_result(self: StatisticalData, parts: ComputationParts, result: ComputationResult) -> StatisticalData {
+        // Reconstruct statistical measures from combined results
+        let new_sum = result.extract();
+        StatisticalData {
+            sum: new_sum,
+            count: self.count,
+            sum_squares: self.sum_squares  // Would be computed properly in real implementation
+        }
+    }
+}
+
+// Example 3: Matrix operations (distributed matrix computation)
+type MatrixData = { rows: int, cols: int, total_elements: int };
+
+impl FoldableComputation for MatrixData {
+    fn split_into_parts(self: MatrixData, num_parts: int) -> ComputationParts {
+        // Split matrix into row blocks or column blocks
+        ArrayParts {
+            count: num_parts,
+            data: self.total_elements,
+            part_size: self.total_elements / num_parts
+        }
+    }
+
+    fn reassemble_from_parts_with_result(self: MatrixData, parts: ComputationParts, result: ComputationResult) -> MatrixData {
+        // Matrix result reconstruction would be more complex
+        MatrixData {
+            rows: self.rows,
+            cols: self.cols,
+            total_elements: result.extract()
+        }
+    }
+}
+
+// =================================================
+// COMPUTATION OPERATIONS
+// =================================================
+
+// Sum operation (simple aggregation)
+fn sum_operation(value: int) -> IntResult {
+    IntResult { value: value }
+}
+
+// Count operation (count elements)
+fn count_operation(value: int) -> IntResult {
+    IntResult { value: 1 }
+}
+
+// Square operation (for variance calculation)
+fn square_operation(value: int) -> IntResult {
+    IntResult { value: value * value }
+}
+
+// Filter and sum (conditional aggregation)
+fn filter_positive_sum(value: int) -> IntResult {
+    if value > 0 {
+        IntResult { value: value }
+    } else {
+        IntResult::empty()
+    }
+}
+
+// =================================================
+// USAGE EXAMPLES
+// =================================================
+
+fn demonstrate_foldable_computation() -> int {
+    // Example 1: Numeric data processing
+    let numeric_data = NumericData { values: 100, count: 10 };
+
+    // Split into 4 parts, compute sum of each part, combine with monoid
+    let processed_numeric = numeric_data.process_with_monoid(4, sum_operation);
+
+    // Example 2: Statistical computation
+    let stat_data = StatisticalData { sum: 500, count: 50, sum_squares: 25000 };
+
+    // Compute statistical measures across parts
+    let processed_stat = stat_data.process_with_monoid(5, sum_operation);
+
+    // Example 3: Matrix processing
+    let matrix_data = MatrixData { rows: 10, cols: 10, total_elements: 100 };
+
+    // Distributed matrix computation
+    let processed_matrix = matrix_data.process_with_monoid(4, sum_operation);
+
+    // Example 4: Filtered operations
+    let filtered_result = numeric_data.process_with_monoid(3, filter_positive_sum);
+
+    // Verify results make sense
+    let numeric_ok = processed_numeric.values >= numeric_data.values;
+    let stat_ok = processed_stat.sum >= stat_data.sum;
+    let matrix_ok = processed_matrix.total_elements >= matrix_data.total_elements;
+    let filter_ok = filtered_result.values >= 0;
+
+    // Return score based on successful computations
+    (if numeric_ok { 1 } else { 0 }) +
+    (if stat_ok { 1 } else { 0 }) +
+    (if matrix_ok { 1 } else { 0 }) +
+    (if filter_ok { 1 } else { 0 }) +
+    processed_numeric.values / 100 +
+    processed_stat.sum / 100 +
+    processed_matrix.total_elements / 10 +
+    filtered_result.values / 10
+}
+
+// =================================================
+// ADVANCED EXAMPLE: PARALLEL TREE PROCESSING
+// =================================================
+
+// Tree structure for hierarchical computations
+type TreeNode = {
+    is_leaf: bool,
+    value: int,
+    left: TreeNode,
+    right: TreeNode
+};
+
+impl FoldableComputation for TreeNode {
+    fn split_into_parts(self: TreeNode, num_parts: int) -> ComputationParts {
+        // Split tree into subtrees for parallel processing
+        if self.is_leaf {
+            ArrayParts { count: 1, data: self.value, part_size: self.value }
+        } else {
+            // Distribute across available parts
+            ArrayParts { count: num_parts, data: self.value, part_size: self.value / num_parts }
+        }
+    }
+
+    fn reassemble_from_parts_with_result(self: TreeNode, parts: ComputationParts, result: ComputationResult) -> TreeNode {
+        // Reconstruct tree with computed result
+        TreeNode {
+            is_leaf: true,  // Simplified reconstruction
+            value: result.extract(),
+            left: self,
+            right: self
+        }
+    }
+}
+
+// Tree traversal operations
+fn tree_sum_operation(value: int) -> IntResult {
+    IntResult { value: value }
+}
+
+fn tree_max_operation(value: int) -> IntResult {
+    IntResult { value: value }  // Would need max monoid in full implementation
+}
+
+fn demonstrate_tree_computation() -> int {
+    // Create a simple tree structure
+    let leaf1 = TreeNode { is_leaf: true, value: 10, left: leaf1, right: leaf1 };
+    let leaf2 = TreeNode { is_leaf: true, value: 20, left: leaf2, right: leaf2 };
+    let tree = TreeNode { is_leaf: false, value: 0, left: leaf1, right: leaf2 };
+
+    // Process tree with distributed computation
+    let processed_tree = tree.process_with_monoid(2, tree_sum_operation);
+
+    // Result should be sum of all values
+    let expected_sum = 30;  // 10 + 20
+    let actual_sum = processed_tree.value;
+
+    if actual_sum == expected_sum { 1 } else { 0 }
+}
+
+// =================================================
+// MAIN DEMONSTRATION
+// =================================================
+
+fn main() -> int {
+    do
+        let basic_computation_score = demonstrate_foldable_computation();
+        let tree_computation_score = demonstrate_tree_computation();
+
+        // Additional manual verification
+        let data = NumericData { values: 50, count: 5 };
+        let parts = data.split_into_parts(2);
+
+        // Manual part processing
+        let part0 = parts.get_part(0);
+        let part1 = parts.get_part(1);
+        let result0 = sum_operation(part0);
+        let result1 = sum_operation(part1);
+        let combined = result0.combine(result1);
+
+        let manual_reassembly = data.reassemble_from_parts_with_result(parts, combined);
+
+        let manual_ok = manual_reassembly.values >= data.values;
+
+        basic_computation_score + tree_computation_score + (if manual_ok { 1 } else { 0 }) + combined.extract() / 10
+    end
+}
+
+// Expected computation flow:
+// 1. Data is split into independent parts
+// 2. Each part is processed using the operation function
+// 3. Results are combined using monoid operations
+// 4. Final result is reassembled into the original structure type

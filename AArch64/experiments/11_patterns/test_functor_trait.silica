@@ -25,126 +25,156 @@
 // =================================================
 
 // =================================================
-// COMPILE-TIME FUNCTOR LAW ENFORCEMENT (PHASE 2)
+// TRAIT-BASED FUNCTOR LAW ENFORCEMENT (PHASE 1 COMPATIBLE)
 // =================================================
-// This section demonstrates how refinement types could enforce
-// functor laws at compile time. Currently commented out as these
-// features don't exist in the Phase 1 bootstrap compiler.
+// This section demonstrates how traits can enforce functor laws
+// using runtime verification instead of compile-time proofs.
+// This works with the current Phase 1 bootstrap compiler.
 
-/*
-// Theoretical refinement type system for functor law enforcement
-// Note: This syntax is speculative and would need refinement
+// Core functor trait using traits instead of generics
+trait Functor {
+    // Core operation - must be implemented by concrete types
+    fn fmap(self: Self, f: (int) -> int) -> Self;
 
-// Core functor trait with refinement type law enforcement
-trait Functor<F> where F: * -> * {
-    // Core operation with structural preservation guarantee
-    fn fmap<A, B>(
-        self: F<A>,
-        f: (A) -> B
-    ) -> { result: F<B> | preserves_structure(self, result) };
-
-    // Identity law encoded in refinement types
-    // ∀x: F<A>. fmap(id, x) == x
-    fn identity_law<A>(
-        x: F<A>
-    ) -> { proof: bool | proof == true ∧ fmap(id_A, x) == x }
-    where id_A: (A) -> A = (a) -> a;
-
-    // Composition law encoded in refinement types
-    // ∀x: F<A>, f: A->B, g: B->C. fmap(g ∘ f, x) == fmap(g, fmap(f, x))
-    fn composition_law<A, B, C>(
-        x: F<A>,
-        f: (A) -> B,
-        g: (B) -> C
-    ) -> { proof: bool | proof == true ∧
-          fmap(compose(g, f), x) == fmap(g, fmap(f, x)) };
+    // Helper method for equality checking (must be implemented)
+    fn equals(self: Self, other: Self) -> bool;
 }
 
-// Helper functions for law verification (would be built into compiler)
-fn preserves_structure<A, B>(original: F<A>, mapped: F<B>) -> bool {
-    // Structure preservation check - same shape, same relationships
-    element_count(original) == element_count(mapped) ∧
-    shape_unchanged(original, mapped)
+// Helper functions for structure verification
+fn preserves_structure_count(original_count: int, mapped_count: int) -> bool {
+    original_count == mapped_count
 }
 
-fn element_count<F<A>>(container: F<A>) -> int {
-    // Count elements in container (implementation-specific)
-    match container {
-        Option::Some(_) => 1,
-        Option::None => 0,
-        List::Cons(_, tail) => 1 + element_count(tail),
-        List::Nil => 0
-    }
-}
+// Option implementation using traits
+type OptionInt = { is_some: bool, value: int };
 
-fn shape_unchanged<A, B>(original: F<A>, mapped: F<B>) -> bool {
-    // Verify structural relationships preserved
-    // (implementation would check tree structure, list order, etc.)
-    true  // Placeholder - actual implementation would be complex
-}
-
-fn compose<A, B, C>(g: (B) -> C, f: (A) -> B) -> (A) -> C {
-    (x) -> g(f(x))
-}
-
-// Refined Option implementation with compile-time law guarantees
-impl Functor<Option> for Option {
-    fn fmap<A, B>(
-        self: Option<A>,
-        f: (A) -> B
-    ) -> { result: Option<B> | preserves_structure(self, result) } {
-        match self {
-            Some(value) => Some(f(value)),
-            None => None
+impl Functor for OptionInt {
+    fn fmap(self: OptionInt, f: (int) -> int) -> OptionInt {
+        if self.is_some {
+            OptionInt { is_some: true, value: f(self.value) }
+        } else {
+            OptionInt { is_some: false, value: 0 }
         }
-        // Compiler would automatically verify preserves_structure
     }
 
-    // Compiler would verify these laws hold for all inputs
-    // No runtime checking needed - compile-time proof
-}
-
-// Refined List implementation with compile-time law guarantees
-impl Functor<List> for List {
-    fn fmap<A, B>(
-        self: List<A>,
-        f: (A) -> B
-    ) -> { result: List<B> | preserves_structure(self, result) } {
-        match self {
-            Cons(head, tail) => Cons(f(head), tail.fmap(f)),
-            Nil => Nil
+    fn equals(self: OptionInt, other: OptionInt) -> bool {
+        if self.is_some && other.is_some {
+            self.value == other.value
+        } else if !self.is_some && !other.is_some {
+            true
+        } else {
+            false
         }
-        // Compiler proves structural preservation automatically
+    }
+
+    // Law verification methods
+    fn identity_law_holds(self: OptionInt) -> bool {
+        identity_f <- (x) -> x;
+        mapped <- self.fmap(identity_f);
+        self.equals(mapped)
+    }
+
+    fn composition_law_holds(self: OptionInt) -> bool {
+        double <- (x) -> x * 2;
+        add_ten <- (x) -> x + 10;
+        composed <- (x) -> add_ten(double(x));
+
+        composed_mapped <- self.fmap(composed);
+        separate_mapped <- self.fmap(double).fmap(add_ten);
+
+        composed_mapped.equals(separate_mapped)
     }
 }
 
-// Example usage with compile-time guarantees
-fn compile_time_safe_functor_usage() -> int {
-    let option: Option<int> = Some(42);
+// List implementation using traits
+type ListInt = { is_nil: bool, head: int, tail: ListInt };
 
-    // Compiler guarantees this preserves structure and satisfies laws
-    let doubled = option.fmap((x) -> x * 2);  // Type: { result | preserves_structure(option, result) }
+impl Functor for ListInt {
+    fn fmap(self: ListInt, f: (int) -> int) -> ListInt {
+        if self.is_nil {
+            ListInt { is_nil: true, head: 0, tail: self }
+        } else {
+            ListInt {
+                is_nil: false,
+                head: f(self.head),
+                tail: self.tail.fmap(f)
+            }
+        }
+    }
 
-    // Compiler guarantees identity law holds
-    let identity_result = option.fmap((x) -> x);  // Must equal option
+    fn equals(self: ListInt, other: ListInt) -> bool {
+        if self.is_nil && other.is_nil {
+            true
+        } else if !self.is_nil && !other.is_nil {
+            (self.head == other.head) && self.tail.equals(other.tail)
+        } else {
+            false
+        }
+    }
 
-    // Compiler guarantees composition law holds
-    let composed = option.fmap((x) -> (x + 1) * 2);  // (x + 1) * 2
-    let separate = option.fmap((x) -> x + 1).fmap((x) -> x * 2);  // Same result
+    // Law verification methods
+    fn identity_law_holds(self: ListInt) -> bool {
+        identity_f <- (x) -> x;
+        mapped <- self.fmap(identity_f);
+        self.equals(mapped)
+    }
 
-    // Compiler proves: composed == separate
+    fn composition_law_holds(self: ListInt) -> bool {
+        double <- (x) -> x * 2;
+        add_ten <- (x) -> x + 10;
+        composed <- (x) -> add_ten(double(x));
 
-    match doubled {
-        Some(value) => value,  // 84
-        None => 0
+        composed_mapped <- self.fmap(composed);
+        separate_mapped <- self.fmap(double).fmap(add_ten);
+
+        composed_mapped.equals(separate_mapped)
     }
 }
 
-// Benefits of refinement type approach:
-// 1. Zero runtime overhead for law checking
-// 2. Mathematical proof that all functors are correct
-// 3. Compile-time error for incorrect implementations
-// 4. Rich type information guides correct usage
-// 5. Automatic verification of derived operations
-*/
+// Example usage with trait-based law verification
+fn trait_based_functor_usage() -> int {
+    // Test Option functor
+    let option_some = OptionInt { is_some: true, value: 42 };
+    let option_none = OptionInt { is_some: false, value: 0 };
+
+    // Verify laws hold for Option
+    let some_identity_ok = option_some.identity_law_holds();
+    let none_identity_ok = option_none.identity_law_holds();
+    let some_composition_ok = option_some.composition_law_holds();
+    let none_composition_ok = option_none.composition_law_holds();
+
+    // Test List functor
+    let list_nil = ListInt { is_nil: true, head: 0, tail: list_nil };
+    let list_one = ListInt { is_nil: false, head: 1, tail: list_nil };
+    let list_two = ListInt { is_nil: false, head: 2, tail: list_one };
+
+    // Verify laws hold for List
+    let nil_identity_ok = list_nil.identity_law_holds();
+    let one_identity_ok = list_one.identity_law_holds();
+    let two_composition_ok = list_two.composition_law_holds();
+
+    // Use fmap operations
+    let doubled_option = option_some.fmap((x) -> x * 2);
+    let doubled_list = list_two.fmap((x) -> x * 2);
+
+    // Count successful law verifications
+    let some_checks = if some_identity_ok { 1 } else { 0 } +
+                     if some_composition_ok { 1 } else { 0 };
+    let none_checks = if none_identity_ok { 1 } else { 0 } +
+                     if none_composition_ok { 1 } else { 0 };
+    let list_checks = if nil_identity_ok { 1 } else { 0 } +
+                     if one_identity_ok { 1 } else { 0 } +
+                     if two_composition_ok { 1 } else { 0 };
+
+    some_checks + none_checks + list_checks +
+    (if doubled_option.is_some { doubled_option.value } else { 0 }) +
+    (if !doubled_list.is_nil { doubled_list.head } else { 0 })
+}
+
+// Benefits of trait-based approach:
+// 1. Works with current Phase 1 compiler
+// 2. Runtime verification of functor laws
+// 3. Type-safe implementations using concrete types
+// 4. Extensible to new functor types
+// 5. Clear contracts through trait definitions
 

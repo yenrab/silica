@@ -94,6 +94,11 @@ impl ModuleResolver {
         self.loaded_modules.get(module_name)
     }
 
+    /// Get the count of currently loaded modules
+    pub fn loaded_module_count(&self) -> usize {
+        self.loaded_modules.len()
+    }
+
     /// Parse module source code using the compiler's parser
     fn parse_module_source(&self, source: &str) -> Result<Vec<Declaration>> {
         use crate::lexer::Lexer;
