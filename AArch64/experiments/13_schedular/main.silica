@@ -1,0 +1,159 @@
+// Main Application Module
+// Sets up and runs the work-stealing scheduler demonstration
+
+use scheduler;
+
+// Re-define types needed in main (since types aren't directly exported)
+type core_type = performance | efficiency;
+type process_affinity = 
+    Pinned(int)
+  | GroupAssigned(core_type)
+  | AnyCore;
+type work_msg = int;
+
+// Application state for tracking spawned actors and messages to send
+type app_state = {
+    scheduler: actor_ref,
+    core_actors: list<(int, actor_ref, core_type)>,  // (core_id, actor_ref, core_type)
+    worker_actors: list<(actor_ref, int, process_affinity)>,  // (actor_ref, worker_id, affinity)
+    messages_to_send: list<(actor_ref, work_msg)>  // (worker_actor, work_message)
+};
+
+// Recursive helper function to execute all spawns
+fn spawn_all(state: app_state, remaining_spawns: list<spawn_operation>) -> app_state proc[concurrency] {
+    do
+        // Check if list is empty using is_empty
+        if is_empty(remaining_spawns) then
+            // All spawns complete, return state
+            state
+        else
+            // Get first element and rest of list
+            let spawn_op = head(remaining_spawns);
+            let rest = tail(remaining_spawns);
+            
+            case spawn_op of
+                Some(op) ->
+                    case op of
+                        SpawnScheduler ->
+                            scheduler: actor_ref <- spawn({
+                                core_assignments: [],
+                                core_actors: [],
+                                pending_queries: [],
+                                metrics: (0, 0)
+                            }, scheduler_behavior);
+                            spawn_all({
+                                scheduler: scheduler,
+                                core_actors: state.core_actors,
+                                worker_actors: state.worker_actors,
+                                messages_to_send: state.messages_to_send
+                            }, rest)
+                        
+                        SpawnCore(core_id, core_type) ->
+                            core_actor: actor_ref <- spawn({
+                                core_id: core_id,
+                                core_type: core_type,
+                                pinned_processes: [],
+                                movable_processes: [],
+                                idle_count: 0,
+                                scheduler: state.scheduler
+                            }, core_behavior);
+                            spawn_all({
+                                scheduler: state.scheduler,
+                                core_actors: append(state.core_actors, [(core_id, core_actor, core_type)]),
+                                worker_actors: state.worker_actors,
+                                messages_to_send: state.messages_to_send
+                            }, rest)
+                        
+                        SpawnWorker(worker_id, core_actor, affinity) ->
+                            worker_actor: actor_ref <- spawn({
+                                worker_id: worker_id,
+                                core_actor: core_actor,
+                                computation_count: 0
+                            }, worker_behavior);
+                            spawn_all({
+                                scheduler: state.scheduler,
+                                core_actors: state.core_actors,
+                                worker_actors: append(state.worker_actors, [(worker_actor, worker_id, affinity)]),
+                                messages_to_send: state.messages_to_send
+                            }, rest)
+                    end
+                
+                None ->
+                    // Should not happen, but handle gracefully
+                    state
+            end
+        end
+    end
+}
+
+// Recursive helper function to execute all sends
+fn send_all(state: app_state, remaining_sends: list<(actor_ref, work_msg)>) -> app_state proc[concurrency] {
+    do
+        // Check if list is empty
+        if is_empty(remaining_sends) then
+            // All sends complete, return state
+            state
+        else
+            // Get first element and rest of list
+            let msg_pair = head(remaining_sends);
+            let rest = tail(remaining_sends);
+            
+            case msg_pair of
+                Some(pair) ->
+                    case pair of
+                        (actor, msg) ->
+                            send(actor, msg);
+                            send_all(state, rest)
+                    end
+                
+                None ->
+                    // Should not happen, but handle gracefully
+                    state
+            end
+        end
+    end
+}
+
+// Spawn operation types
+type spawn_operation =
+    SpawnScheduler
+  | SpawnCore(int, core_type)
+  | SpawnWorker(int, actor_ref, process_affinity);
+
+impl ActorMessage for spawn_operation { }
+
+// Main function - sets up the scheduler system
+fn main() -> int proc[concurrency] {
+    do
+        // Initial state with no actors spawned yet
+        let initial_state = {
+            scheduler: 0,  // Placeholder, will be set by spawn_all
+            core_actors: [],
+            worker_actors: [],
+            messages_to_send: []
+        };
+        
+        // Build list of spawn operations
+        // TODO: Get actual cores and create spawn operations
+        // For now, simplified example with placeholder spawns
+        let spawn_ops: list<spawn_operation> = [
+            SpawnScheduler,
+            // SpawnCore operations will be added here
+            // SpawnWorker operations will be added here
+        ];
+        
+        // Execute all spawns
+        spawned_state: app_state <- spawn_all(initial_state, spawn_ops);
+        
+        // Build list of messages to send to workers
+        // TODO: Create messages for all workers
+        let messages: list<(actor_ref, work_msg)> = [
+            // Messages will be added here
+        ];
+        
+        // Execute all sends
+        final_state: app_state <- send_all(spawned_state, messages);
+        
+        0
+    end
+}
