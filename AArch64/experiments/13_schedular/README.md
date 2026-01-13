@@ -1,6 +1,20 @@
 # Work-Stealing Scheduler Demonstration
 
-THIS IS CURRENTLY NON-FUNCTIONAL AND IS ONLY FOR CONCEPTUALIZATION PURPOSES
+## Status: Projected Behavior - Not Currently Implemented
+
+**This directory contains projected behaviors and examples** for advanced concurrency and scheduling features in Silica. These are **speculative implementations** that demonstrate potential future capabilities of the language and are **not currently supported** by the Silica compiler.
+
+These examples serve as:
+
+- Design exploration for future concurrency features
+- Proof-of-concept code for work-stealing schedulers
+- Examples of what could be possible with advanced actor system features
+
+**Note**: While basic actor concepts are implemented in Silica, the advanced scheduling and work-stealing features shown here are not yet functional. These files exist as design documents and future implementation guides.
+
+---
+
+*Previous note: THIS IS CURRENTLY NON-FUNCTIONAL AND IS ONLY FOR CONCEPTUALIZATION PURPOSES*
 
 
 This demonstration application showcases a work-stealing scheduler for Silica, designed to show Erlang engineers how Silica's actor-based concurrency model handles process migration between CPU cores.

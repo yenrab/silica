@@ -1295,11 +1295,18 @@ impl CodeGenerator {
                     self.instructions.push(format!("  {} = zext i1 {} to {}", extend_reg, trimmed, extend_type));
                     extend_reg
                 } else {
-                    // Ensure register names have % prefix
-                    if trimmed.starts_with('%') {
+                    // Check if this operand was originally a type-prefixed literal
+                    let is_literal_operand = lhs.starts_with("i64 ") || lhs.starts_with("i32 ") || lhs.starts_with("i1 ");
+                    if is_literal_operand {
+                        // Literal constants like "10" should be used as-is, not as registers
                         trimmed
                     } else {
-                        format!("%{}", trimmed)
+                        // Ensure register names have % prefix
+                        if trimmed.starts_with('%') {
+                            trimmed
+                        } else {
+                            format!("%{}", trimmed)
+                        }
                     }
                 }
             };
@@ -1325,11 +1332,18 @@ impl CodeGenerator {
                     self.instructions.push(format!("  {} = zext i1 {} to {}", extend_reg, trimmed, extend_type));
                     extend_reg
                 } else {
-                    // Ensure register names have % prefix
-                    if trimmed.starts_with('%') {
+                    // Check if this operand was originally a type-prefixed literal
+                    let is_literal_operand = rhs.starts_with("i64 ") || rhs.starts_with("i32 ") || rhs.starts_with("i1 ");
+                    if is_literal_operand {
+                        // Literal constants like "10" should be used as-is, not as registers
                         trimmed
                     } else {
-                        format!("%{}", trimmed)
+                        // Ensure register names have % prefix
+                        if trimmed.starts_with('%') {
+                            trimmed
+                        } else {
+                            format!("%{}", trimmed)
+                        }
                     }
                 }
             };
@@ -4849,6 +4863,55 @@ impl CodeGenerator {
         Ok(())
     }
 
+    /// Generate trait method calls within trait method bodies (self.method(args))
+    fn generate_trait_method_call(&mut self, type_name: &str, method: &crate::ast::FunctionDecl, field_access: &crate::ast::FieldAccessExpr, call: &crate::ast::CallExpr) -> Result<String> {
+        // Construct the method name: {type_name}_{method_name}
+        let method_name = format!("{}_{}", type_name, field_access.field);
+
+        // Generate argument values, starting with %self
+        let mut arg_values = vec!["%self".to_string()];
+
+        // Add the call arguments
+        for arg in &call.arguments {
+            let arg_val = self.generate_expression_in_method(type_name, method, arg)?;
+            arg_values.push(arg_val);
+        }
+
+        // Create a unique register for the result
+        let result_reg = format!("%call_{}", self.instructions.len());
+        let args_str = arg_values.join(", ");
+
+        // Generate the LLVM call instruction
+        self.instructions.push(format!("  {} = call i64 @{}({})", result_reg, method_name, args_str));
+
+        Ok(result_reg)
+    }
+
+    /// Generate function calls within trait method bodies
+    fn generate_function_call_in_method(&mut self, type_name: &str, method: &crate::ast::FunctionDecl, call: &crate::ast::CallExpr) -> Result<String> {
+        // For now, only support simple function calls by name
+        if let Expression::Identifier(func_name) = &*call.function {
+            // Generate argument values
+            let mut arg_values = Vec::new();
+            for arg in &call.arguments {
+                let arg_val = self.generate_expression_in_method(type_name, method, arg)?;
+                arg_values.push(arg_val);
+            }
+
+            // Create a unique register for the result
+            let result_reg = format!("%func_call_{}", self.instructions.len());
+            let args_str = arg_values.join(", ");
+
+            // Generate the LLVM call instruction
+            // For now, assume all functions return i64
+            self.instructions.push(format!("  {} = call i64 @{}({})", result_reg, func_name, args_str));
+
+            Ok(result_reg)
+        } else {
+            Err(CompilerError::codegen_error("Complex function calls not supported in trait method bodies".to_string()))
+        }
+    }
+
     /// Generate any expression within method bodies
     fn generate_expression_in_method(&mut self, type_name: &str, method: &crate::ast::FunctionDecl, expr: &Expression) -> Result<String> {
         match expr {
@@ -4887,8 +4950,19 @@ impl CodeGenerator {
                 self.generate_case_in_method(type_name, method, case_expr)
             }
             Expression::Call(call) => {
-                // For now, only support simple method calls within trait methods
-                Err(CompilerError::codegen_error("Method calls in trait method bodies not yet supported".to_string()))
+                // Handle method calls on self within trait method bodies
+                if let Expression::FieldAccess(field_access) = &*call.function {
+                    // Check if this is a method call on self
+                    if let Expression::Identifier(var_name) = &*field_access.object {
+                        if var_name == "self" {
+                            // This is a method call on self within a trait method
+                            return self.generate_trait_method_call(type_name, method, field_access, call);
+                        }
+                    }
+                }
+
+                // Handle regular function calls within trait methods
+                self.generate_function_call_in_method(type_name, method, call)
             }
             _ => {
                 Err(CompilerError::codegen_error(format!("Unsupported expression type in method: {:?}", expr)))

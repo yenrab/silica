@@ -2,7 +2,8 @@
 # Automatically discovers and builds all subdirectories containing Makefiles
 
 # Automatically discover all subdirectories that contain Makefiles
-SUBDIRS := $(shell find . -maxdepth 1 -type d -name "[0-9][0-9][._]*" | sort | sed 's|^\./||')
+# Exclude projected/future directories: 10_data_structures, 11_patterns, 13_schedular
+SUBDIRS := $(shell find . -maxdepth 1 -type d -name "[0-9][0-9][._]*" | grep -v -E "(10_data_structures|11_patterns|13_schedular)$$" | sort | sed 's|^\./||')
 
 # LLVM tool paths (including Homebrew location on macOS)
 LLVM_AS := $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "")

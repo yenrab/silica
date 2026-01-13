@@ -1,6 +1,18 @@
 # 11_patterns - Functional Programming Patterns in Silica
 
-This directory contains examples of functional programming patterns implemented using Silica's trait system. All implementations use concrete types instead of generics, making them compatible with the Phase 1 bootstrap compiler.
+## Status: Projected Behavior - Not Currently Implemented
+
+**This directory contains projected behaviors and examples** for functional programming patterns in Silica. These are **speculative implementations** that demonstrate potential future capabilities of the language's trait system and are **not currently supported** by the Silica compiler.
+
+These examples serve as:
+
+- Design exploration for future trait system features
+- Proof-of-concept code for functional programming patterns
+- Examples of what could be possible with advanced type system features
+
+**Note**: While some basic trait concepts are implemented in Silica, the advanced patterns shown here (monads, functors, monoids, etc.) are not yet functional. These files exist as design documents and future implementation guides.
+
+The implementations shown use concrete types instead of generics, but would require significant compiler enhancements to work properly.
 
 ## Files
 
