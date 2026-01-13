@@ -262,6 +262,8 @@ impl<'a> TypeChecker<'a> {
             Expression::StringLen(string_len) => &string_len.location,
             Expression::StringLenChars(string_len_chars) => &string_len_chars.location,
             Expression::StringConcat(string_concat) => &string_concat.location,
+            Expression::StringSubstring(string_substring) => &string_substring.location,
+            Expression::StringSubstringUntilChar(string_substring_until_char) => &string_substring_until_char.location,
             Expression::ExecCommand(exec_cmd) => &exec_cmd.location,
             Expression::StructLiteral(struct_lit) => &struct_lit.location,
             Expression::FieldAccess(field_access) => &field_access.location,
@@ -279,6 +281,8 @@ impl<'a> TypeChecker<'a> {
             Expression::StringLen(string_len) => &string_len.location,
             Expression::StringLenChars(string_len_chars) => &string_len_chars.location,
             Expression::StringConcat(string_concat) => &string_concat.location,
+            Expression::StringSubstring(string_substring) => &string_substring.location,
+            Expression::StringSubstringUntilChar(string_substring_until_char) => &string_substring_until_char.location,
             Expression::ExecCommand(exec_cmd) => &exec_cmd.location,
         }
     }
@@ -806,6 +810,8 @@ impl<'a> TypeChecker<'a> {
             Expression::StringLen(string_len) => self.infer_string_len(string_len)?,
             Expression::StringLenChars(string_len_chars) => self.infer_string_len_chars(string_len_chars)?,
             Expression::StringConcat(string_concat) => self.infer_string_concat(string_concat)?,
+            Expression::StringSubstring(string_substring) => self.infer_string_substring(string_substring)?,
+            Expression::StringSubstringUntilChar(string_substring_until_char) => self.infer_string_substring_until_char(string_substring_until_char)?,
             Expression::ExecCommand(exec_cmd) => self.infer_exec_command(exec_cmd)?,
             Expression::Tuple(exprs) => self.infer_tuple(exprs)?,
             Expression::StructLiteral(struct_lit) => {
@@ -1034,6 +1040,8 @@ impl<'a> TypeChecker<'a> {
             Expression::StringLen(string_len) => Some(&string_len.location),
             Expression::StringLenChars(string_len_chars) => Some(&string_len_chars.location),
             Expression::StringConcat(string_concat) => Some(&string_concat.location),
+            Expression::StringSubstring(string_substring) => Some(&string_substring.location),
+            Expression::StringSubstringUntilChar(string_substring_until_char) => Some(&string_substring_until_char.location),
             Expression::ExecCommand(exec_cmd) => Some(&exec_cmd.location),
             Expression::StructLiteral(struct_lit) => Some(&struct_lit.location),
             Expression::FieldAccess(field_access) => Some(&field_access.location),
@@ -2407,6 +2415,33 @@ impl<'a> TypeChecker<'a> {
         let b_type = self.infer_expression(&string_concat.b)?;
         self.unify(&b_type, &Type::String)?;
         // concat returns string
+        Ok(Type::String)
+    }
+
+    fn infer_string_substring(&mut self, string_substring: &StringSubstringExpr) -> Result<Type> {
+        // Check that string argument is a string
+        let string_type = self.infer_expression(&string_substring.string)?;
+        self.unify(&string_type, &Type::String)?;
+        // Check that start and end are integers
+        let start_type = self.infer_expression(&string_substring.start)?;
+        self.unify(&start_type, &Type::Int)?;
+        let end_type = self.infer_expression(&string_substring.end)?;
+        self.unify(&end_type, &Type::Int)?;
+        // substring returns string
+        Ok(Type::String)
+    }
+
+    fn infer_string_substring_until_char(&mut self, string_substring_until_char: &StringSubstringUntilCharExpr) -> Result<Type> {
+        // Check that string argument is a string
+        let string_type = self.infer_expression(&string_substring_until_char.string)?;
+        self.unify(&string_type, &Type::String)?;
+        // Check that start is an integer
+        let start_type = self.infer_expression(&string_substring_until_char.start)?;
+        self.unify(&start_type, &Type::Int)?;
+        // Check that char argument is a character
+        let char_type = self.infer_expression(&string_substring_until_char.char)?;
+        self.unify(&char_type, &Type::Char)?;
+        // substring_until_char returns string
         Ok(Type::String)
     }
 

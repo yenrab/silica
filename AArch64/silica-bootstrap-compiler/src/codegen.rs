@@ -204,6 +204,8 @@ impl CodeGenerator {
             Expression::StringLen(string_len) => Some(&string_len.location),
             Expression::StringLenChars(string_len_chars) => Some(&string_len_chars.location),
             Expression::StringConcat(string_concat) => Some(&string_concat.location),
+            Expression::StringSubstring(string_substring) => Some(&string_substring.location),
+            Expression::StringSubstringUntilChar(string_substring_until_char) => Some(&string_substring_until_char.location),
             Expression::ExecCommand(exec_cmd) => Some(&exec_cmd.location),
             Expression::StructLiteral(struct_lit) => Some(&struct_lit.location),
             Expression::FieldAccess(field_access) => Some(&field_access.location),
@@ -460,6 +462,8 @@ impl CodeGenerator {
         self.instructions.push("declare i64 @silica_string_len(i8*)".to_string());
         self.instructions.push("declare i64 @silica_string_len_chars(i8*)".to_string());
         self.instructions.push("declare i8* @silica_string_concat(i8*, i8*)".to_string());
+        self.instructions.push("declare i8* @silica_string_substring(i8*, i64, i64)".to_string());
+        self.instructions.push("declare i8* @silica_string_substring_until_char(i8*, i64, i32)".to_string());
 
         // Generate all declarations first to collect all string constants
         for decl in &program.declarations {
@@ -1052,6 +1056,8 @@ impl CodeGenerator {
             Expression::StringLen(string_len) => self.generate_string_len(string_len),
             Expression::StringLenChars(string_len_chars) => self.generate_string_len_chars(string_len_chars),
             Expression::StringConcat(string_concat) => self.generate_string_concat(string_concat),
+            Expression::StringSubstring(string_substring) => self.generate_string_substring(string_substring),
+            Expression::StringSubstringUntilChar(string_substring_until_char) => self.generate_string_substring_until_char(string_substring_until_char),
             Expression::ExecCommand(exec_cmd) => self.generate_exec_command(exec_cmd),
             Expression::FunctionLiteral(func_lit) => self.generate_function_literal(func_lit),
             Expression::Region(_) => {
@@ -8684,6 +8690,105 @@ impl CodeGenerator {
         // Returns i8* pointer to new SilicaString struct
         let result_reg = self.next_register();
         self.instructions.push(format!("  %{} = call i8* @silica_string_concat({}, {})", result_reg, a_arg, b_arg));
+        
+        Ok(Some(result_reg))
+    }
+
+    /// Generate LLVM IR for string substring expression
+    fn generate_string_substring(&mut self, string_substring: &StringSubstringExpr) -> Result<Option<String>> {
+        let string_val = self.generate_expression(&string_substring.string)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid string in substring".to_string()))?;
+        let start_val = self.generate_expression(&string_substring.start)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid start index in substring".to_string()))?;
+        let end_val = self.generate_expression(&string_substring.end)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid end index in substring".to_string()))?;
+
+        // Format string argument
+        let string_arg = if string_val.starts_with('%') {
+            format!("i8* {}", string_val)
+        } else if string_val.starts_with("getelementptr") {
+            // String constant - evaluate getelementptr first
+            let temp_reg = self.next_register();
+            let gep_instruction = self.convert_gep_to_instruction_format(&string_val);
+            self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+            format!("i8* %{}", temp_reg.trim_start_matches('%'))
+        } else {
+            format!("i8* %{}", string_val)
+        };
+
+        // Format start and end indices (should be i64 integers)
+        let start_arg = if start_val.starts_with('%') {
+            format!("i64 {}", start_val)
+        } else if start_val.starts_with("i64 ") {
+            start_val.clone()
+        } else {
+            // Assume it's a literal or register name
+            format!("i64 %{}", start_val.trim_start_matches('%'))
+        };
+
+        let end_arg = if end_val.starts_with('%') {
+            format!("i64 {}", end_val)
+        } else if end_val.starts_with("i64 ") {
+            end_val.clone()
+        } else {
+            // Assume it's a literal or register name
+            format!("i64 %{}", end_val.trim_start_matches('%'))
+        };
+
+        // Call silica_string_substring runtime function
+        // Returns i8* pointer to new SilicaString struct
+        let result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = call i8* @silica_string_substring({}, {}, {})", result_reg, string_arg, start_arg, end_arg));
+        
+        Ok(Some(result_reg))
+    }
+
+    /// Generate LLVM IR for string substring until character expression
+    fn generate_string_substring_until_char(&mut self, string_substring_until_char: &StringSubstringUntilCharExpr) -> Result<Option<String>> {
+        let string_val = self.generate_expression(&string_substring_until_char.string)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid string in substring_until_char".to_string()))?;
+        let start_val = self.generate_expression(&string_substring_until_char.start)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid start index in substring_until_char".to_string()))?;
+        let char_val = self.generate_expression(&string_substring_until_char.char)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid character in substring_until_char".to_string()))?;
+
+        // Format string argument
+        let string_arg = if string_val.starts_with('%') {
+            format!("i8* {}", string_val)
+        } else if string_val.starts_with("getelementptr") {
+            // String constant - evaluate getelementptr first
+            let temp_reg = self.next_register();
+            let gep_instruction = self.convert_gep_to_instruction_format(&string_val);
+            self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+            format!("i8* %{}", temp_reg.trim_start_matches('%'))
+        } else {
+            format!("i8* %{}", string_val)
+        };
+
+        // Format start index (should be i64 integer)
+        let start_arg = if start_val.starts_with('%') {
+            format!("i64 {}", start_val)
+        } else if start_val.starts_with("i64 ") {
+            start_val.clone()
+        } else {
+            // Assume it's a literal or register name
+            format!("i64 %{}", start_val.trim_start_matches('%'))
+        };
+
+        // Format character argument (should be i32)
+        let char_arg = if char_val.starts_with('%') {
+            format!("i32 {}", char_val)
+        } else if char_val.starts_with("i32 ") {
+            char_val.clone()
+        } else {
+            // Assume it's a literal or register name
+            format!("i32 %{}", char_val.trim_start_matches('%'))
+        };
+
+        // Call silica_string_substring_until_char runtime function
+        // Returns i8* pointer to new SilicaString struct
+        let result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = call i8* @silica_string_substring_until_char({}, {}, {})", result_reg, string_arg, start_arg, char_arg));
         
         Ok(Some(result_reg))
     }

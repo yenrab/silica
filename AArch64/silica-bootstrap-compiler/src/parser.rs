@@ -959,6 +959,10 @@ impl Parser {
                 self.parse_string_len_chars()
             } else if name == "concat" && self.match_token(TokenKind::LeftParen) {
                 self.parse_string_concat()
+            } else if name == "substring" && self.match_token(TokenKind::LeftParen) {
+                self.parse_string_substring()
+            } else if name == "substring_until_char" && self.match_token(TokenKind::LeftParen) {
+                self.parse_string_substring_until_char()
             } else if self.match_token(TokenKind::LeftBrace) {
                 // Parse struct literal: TypeName { field: value, ... }
                 let type_expr = Expression::Identifier(name);
@@ -1275,6 +1279,42 @@ impl Parser {
         Ok(Expression::StringConcat(StringConcatExpr {
             a,
             b,
+            location,
+        }))
+    }
+
+    /// Parse string substring expression: substring(s, start, end)
+    fn parse_string_substring(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let string = Box::new(self.expression()?);
+        self.consume(TokenKind::Comma, "Expected ',' after string argument in substring")?;
+        let start = Box::new(self.expression()?);
+        self.consume(TokenKind::Comma, "Expected ',' after start index in substring")?;
+        let end = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after substring arguments")?;
+
+        Ok(Expression::StringSubstring(StringSubstringExpr {
+            string,
+            start,
+            end,
+            location,
+        }))
+    }
+
+    /// Parse string substring until character expression: substring_until_char(s, start, char)
+    fn parse_string_substring_until_char(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let string = Box::new(self.expression()?);
+        self.consume(TokenKind::Comma, "Expected ',' after string argument in substring_until_char")?;
+        let start = Box::new(self.expression()?);
+        self.consume(TokenKind::Comma, "Expected ',' after start index in substring_until_char")?;
+        let char_expr = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after substring_until_char arguments")?;
+
+        Ok(Expression::StringSubstringUntilChar(StringSubstringUntilCharExpr {
+            string,
+            start,
+            char: char_expr,
             location,
         }))
     }

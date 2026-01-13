@@ -225,6 +225,8 @@ pub enum Expression {
     StringLen(StringLenExpr),
     StringLenChars(StringLenCharsExpr),
     StringConcat(StringConcatExpr),
+    StringSubstring(StringSubstringExpr),
+    StringSubstringUntilChar(StringSubstringUntilCharExpr),
 
     // Process execution operations
     ExecCommand(ExecCommandExpr),
@@ -547,6 +549,24 @@ pub struct StringLenCharsExpr {
 pub struct StringConcatExpr {
     pub a: Box<Expression>,
     pub b: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// String substring expression: substring(s, start, end)
+#[derive(Debug, Clone)]
+pub struct StringSubstringExpr {
+    pub string: Box<Expression>,
+    pub start: Box<Expression>,
+    pub end: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// String substring until character expression: substring_until_char(s, start, char)
+#[derive(Debug, Clone)]
+pub struct StringSubstringUntilCharExpr {
+    pub string: Box<Expression>,
+    pub start: Box<Expression>,
+    pub char: Box<Expression>,
     pub location: SourceLocation,
 }
 

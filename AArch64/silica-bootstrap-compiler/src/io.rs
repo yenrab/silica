@@ -267,3 +267,129 @@ fn create_silica_string_from_bytes(bytes: &[u8]) -> *mut u8 {
     // Return pointer to SilicaString (cast to i8* for C compatibility)
     Box::into_raw(silica_string) as *mut u8
 }
+
+/// Extract a substring from a string
+/// Accepts either string constant pointers (i8* to string data) or SilicaString pointers (i8* to SilicaString struct)
+/// start and end are byte indices (inclusive start, exclusive end)
+/// Returns i8* pointer to a new SilicaString struct containing the substring
+#[no_mangle]
+pub extern "C" fn silica_string_substring(str_ptr: *const u8, start: i64, end: i64) -> *mut u8 {
+    if str_ptr.is_null() {
+        return create_empty_silica_string();
+    }
+
+    // Get string data and length
+    let (data, len) = unsafe { get_string_data_and_length(str_ptr).unwrap_or((std::ptr::null(), 0)) };
+    
+    if len == 0 {
+        return create_empty_silica_string();
+    }
+
+    // Clamp indices to valid range
+    let start_idx = start.max(0).min(len as i64) as usize;
+    let end_idx = end.max(0).min(len as i64) as usize;
+    
+    // Ensure start <= end
+    let start_idx = start_idx.min(end_idx);
+    let end_idx = end_idx.max(start_idx);
+    
+    // Calculate substring length
+    let sub_len = end_idx - start_idx;
+    
+    if sub_len == 0 {
+        return create_empty_silica_string();
+    }
+
+    // Extract the substring bytes
+    let mut buffer = Vec::with_capacity(sub_len);
+    unsafe {
+        let slice = std::slice::from_raw_parts(data.add(start_idx), sub_len);
+        buffer.extend_from_slice(slice);
+    }
+
+    // Create SilicaString from the substring bytes
+    create_silica_string_from_bytes(&buffer)
+}
+
+/// Extract a substring from a string until a specific character is found
+/// Accepts either string constant pointers (i8* to string data) or SilicaString pointers (i8* to SilicaString struct)
+/// start is the byte index to start from
+/// char_code is the Unicode code point (i32) of the character to search for
+/// Returns i8* pointer to a new SilicaString struct containing the substring (excluding the terminating character)
+/// If the character is not found, returns the substring from start to the end of the string
+#[no_mangle]
+pub extern "C" fn silica_string_substring_until_char(str_ptr: *const u8, start: i64, char_code: i32) -> *mut u8 {
+    if str_ptr.is_null() {
+        return create_empty_silica_string();
+    }
+
+    // Get string data and length
+    let (data, len) = unsafe { get_string_data_and_length(str_ptr).unwrap_or((std::ptr::null(), 0)) };
+    
+    if len == 0 {
+        return create_empty_silica_string();
+    }
+
+    // Clamp start index to valid range
+    let start_idx = start.max(0).min(len as i64) as usize;
+    
+    if start_idx >= len {
+        return create_empty_silica_string();
+    }
+
+    // Convert char code to char (if valid)
+    let target_char = match char::from_u32(char_code as u32) {
+        Some(c) => c,
+        None => {
+            // Invalid character code - return empty string
+            return create_empty_silica_string();
+        }
+    };
+
+    // Search for the character starting from start_idx
+    let mut end_idx = len;
+    unsafe {
+        let slice = std::slice::from_raw_parts(data.add(start_idx), len - start_idx);
+        // Convert to string to search for character
+        if let Ok(s) = std::str::from_utf8(slice) {
+            // Search for the character in the string
+            if let Some(pos) = s.chars().position(|c| c == target_char) {
+                // Found the character - calculate byte position
+                // We need to find the byte offset corresponding to the character position
+                let mut byte_offset = 0;
+                for (i, c) in s.chars().enumerate() {
+                    if i == pos {
+                        break;
+                    }
+                    byte_offset += c.len_utf8();
+                }
+                end_idx = start_idx + byte_offset;
+            }
+            // If not found, end_idx remains at len (return rest of string)
+        } else {
+            // Invalid UTF-8 - search byte by byte
+            for i in start_idx..len {
+                if slice[i - start_idx] == target_char as u8 {
+                    end_idx = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Extract the substring bytes
+    let sub_len = end_idx - start_idx;
+    
+    if sub_len == 0 {
+        return create_empty_silica_string();
+    }
+
+    let mut buffer = Vec::with_capacity(sub_len);
+    unsafe {
+        let slice = std::slice::from_raw_parts(data.add(start_idx), sub_len);
+        buffer.extend_from_slice(slice);
+    }
+
+    // Create SilicaString from the substring bytes
+    create_silica_string_from_bytes(&buffer)
+}

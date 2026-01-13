@@ -319,6 +319,20 @@ impl EffectChecker {
                 effects.extend(self.collect_expression_effects(&string_concat.b)?);
                 Ok(effects)
             }
+            Expression::StringSubstring(string_substring) => {
+                let mut effects = Vec::new();
+                effects.extend(self.collect_expression_effects(&string_substring.string)?);
+                effects.extend(self.collect_expression_effects(&string_substring.start)?);
+                effects.extend(self.collect_expression_effects(&string_substring.end)?);
+                Ok(effects)
+            }
+            Expression::StringSubstringUntilChar(string_substring_until_char) => {
+                let mut effects = Vec::new();
+                effects.extend(self.collect_expression_effects(&string_substring_until_char.string)?);
+                effects.extend(self.collect_expression_effects(&string_substring_until_char.start)?);
+                effects.extend(self.collect_expression_effects(&string_substring_until_char.char)?);
+                Ok(effects)
+            }
             Expression::ReadLines(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::AppendFile(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::FileExists(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
@@ -738,6 +752,8 @@ impl EffectAnalyzer {
             Expression::StringLen(string_len) => Some(&string_len.location),
             Expression::StringLenChars(string_len_chars) => Some(&string_len_chars.location),
             Expression::StringConcat(string_concat) => Some(&string_concat.location),
+            Expression::StringSubstring(string_substring) => Some(&string_substring.location),
+            Expression::StringSubstringUntilChar(string_substring_until_char) => Some(&string_substring_until_char.location),
             Expression::ReadLines(read) => Some(&read.location),
             Expression::AppendFile(append) => Some(&append.location),
             Expression::FileExists(exists) => Some(&exists.location),
