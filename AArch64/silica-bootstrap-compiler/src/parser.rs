@@ -967,6 +967,8 @@ impl Parser {
                 self.parse_string_starts_with()
             } else if name == "ends_with" && self.match_token(TokenKind::LeftParen) {
                 self.parse_string_ends_with()
+            } else if name == "contains" && self.match_token(TokenKind::LeftParen) {
+                self.parse_string_contains()
             } else if self.match_token(TokenKind::LeftBrace) {
                 // Parse struct literal: TypeName { field: value, ... }
                 let type_expr = Expression::Identifier(name);
@@ -1349,6 +1351,21 @@ impl Parser {
         Ok(Expression::StringEndsWith(StringEndsWithExpr {
             string,
             suffix,
+            location,
+        }))
+    }
+
+    /// Parse string contains expression: contains(s, substr)
+    fn parse_string_contains(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let string = Box::new(self.expression()?);
+        self.consume(TokenKind::Comma, "Expected ',' after string argument in contains")?;
+        let substr = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after contains arguments")?;
+
+        Ok(Expression::StringContains(StringContainsExpr {
+            string,
+            substr,
             location,
         }))
     }

@@ -208,6 +208,7 @@ impl CodeGenerator {
             Expression::StringSubstringUntilChar(string_substring_until_char) => Some(&string_substring_until_char.location),
             Expression::StringStartsWith(string_starts_with) => Some(&string_starts_with.location),
             Expression::StringEndsWith(string_ends_with) => Some(&string_ends_with.location),
+            Expression::StringContains(string_contains) => Some(&string_contains.location),
             Expression::ExecCommand(exec_cmd) => Some(&exec_cmd.location),
             Expression::StructLiteral(struct_lit) => Some(&struct_lit.location),
             Expression::FieldAccess(field_access) => Some(&field_access.location),
@@ -468,6 +469,7 @@ impl CodeGenerator {
         self.instructions.push("declare i8* @silica_string_substring_until_char(i8*, i64, i32)".to_string());
         self.instructions.push("declare i1 @silica_string_starts_with(i8*, i8*)".to_string());
         self.instructions.push("declare i1 @silica_string_ends_with(i8*, i8*)".to_string());
+        self.instructions.push("declare i1 @silica_string_contains(i8*, i8*)".to_string());
 
         // Generate all declarations first to collect all string constants
         for decl in &program.declarations {
@@ -1064,6 +1066,7 @@ impl CodeGenerator {
             Expression::StringSubstringUntilChar(string_substring_until_char) => self.generate_string_substring_until_char(string_substring_until_char),
             Expression::StringStartsWith(string_starts_with) => self.generate_string_starts_with(string_starts_with),
             Expression::StringEndsWith(string_ends_with) => self.generate_string_ends_with(string_ends_with),
+            Expression::StringContains(string_contains) => self.generate_string_contains(string_contains),
             Expression::ExecCommand(exec_cmd) => self.generate_exec_command(exec_cmd),
             Expression::FunctionLiteral(func_lit) => self.generate_function_literal(func_lit),
             Expression::Region(_) => {
@@ -8911,6 +8914,59 @@ impl CodeGenerator {
         // Returns i1 (bool)
         let result_reg = self.next_register();
         self.instructions.push(format!("  %{} = call i1 @silica_string_ends_with({}, {})", result_reg, string_arg, suffix_arg));
+        
+        Ok(Some(result_reg))
+    }
+
+    /// Generate LLVM IR for string contains expression
+    fn generate_string_contains(&mut self, string_contains: &StringContainsExpr) -> Result<Option<String>> {
+        let string_val = self.generate_expression(&string_contains.string)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid string in contains".to_string()))?;
+        let substr_val = self.generate_expression(&string_contains.substr)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid substring in contains".to_string()))?;
+
+        // Format string argument - handle both string constants and runtime strings
+        // For runtime strings, pass the SilicaString struct pointer directly
+        // get_string_data_and_length will extract the data pointer from the struct
+        let string_arg = if string_val.contains("@str_const_") || string_val.starts_with("getelementptr") {
+            // String constant - evaluate getelementptr first
+            let temp_reg = self.next_register();
+            let gep_instruction = self.convert_gep_to_instruction_format(&string_val);
+            self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+            format!("i8* %{}", temp_reg.trim_start_matches('%'))
+        } else {
+            // Runtime string: pass the SilicaString struct pointer directly
+            // get_string_data_and_length will handle extracting the data pointer
+            if string_val.starts_with('%') {
+                format!("i8* {}", string_val)
+            } else {
+                format!("i8* %{}", string_val)
+            }
+        };
+
+        // Format substring argument - handle both string constants and runtime strings
+        // For runtime strings, pass the SilicaString struct pointer directly
+        // get_string_data_and_length will extract the data pointer from the struct
+        let substr_arg = if substr_val.contains("@str_const_") || substr_val.starts_with("getelementptr") {
+            // String constant - evaluate getelementptr first
+            let temp_reg = self.next_register();
+            let gep_instruction = self.convert_gep_to_instruction_format(&substr_val);
+            self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+            format!("i8* %{}", temp_reg.trim_start_matches('%'))
+        } else {
+            // Runtime string: pass the SilicaString struct pointer directly
+            // get_string_data_and_length will handle extracting the data pointer
+            if substr_val.starts_with('%') {
+                format!("i8* {}", substr_val)
+            } else {
+                format!("i8* %{}", substr_val)
+            }
+        };
+
+        // Call silica_string_contains runtime function
+        // Returns i1 (bool)
+        let result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = call i1 @silica_string_contains({}, {})", result_reg, string_arg, substr_arg));
         
         Ok(Some(result_reg))
     }

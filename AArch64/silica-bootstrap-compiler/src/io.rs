@@ -499,3 +499,50 @@ pub extern "C" fn silica_string_ends_with(str_ptr: *const u8, suffix_ptr: *const
         str_slice == suffix_slice
     }
 }
+
+/// Check if a string contains a substring
+/// Accepts either string constant pointers (i8* to string data) or SilicaString pointers (i8* to SilicaString struct)
+/// Returns true if the string contains the substring, false otherwise
+#[no_mangle]
+pub extern "C" fn silica_string_contains(str_ptr: *const u8, substr_ptr: *const u8) -> bool {
+    if str_ptr.is_null() || substr_ptr.is_null() {
+        return false;
+    }
+
+    // Get string data and lengths
+    let (str_data, str_len) = unsafe { get_string_data_and_length(str_ptr).unwrap_or((std::ptr::null(), 0)) };
+    let (substr_data, substr_len) = unsafe { get_string_data_and_length(substr_ptr).unwrap_or((std::ptr::null(), 0)) };
+
+    // Empty substring always matches
+    if substr_len == 0 {
+        return true;
+    }
+
+    // If substring is longer than string, can't match
+    if substr_len > str_len {
+        return false;
+    }
+
+    // Search for the substring in the string
+    // Use Rust's built-in string search for UTF-8 safety
+    unsafe {
+        let str_slice = std::slice::from_raw_parts(str_data, str_len);
+        let substr_slice = std::slice::from_raw_parts(substr_data, substr_len);
+        
+        // Try UTF-8 string search first (more efficient and UTF-8 safe)
+        if let (Ok(str_utf8), Ok(substr_utf8)) = (std::str::from_utf8(str_slice), std::str::from_utf8(substr_slice)) {
+            return str_utf8.contains(substr_utf8);
+        }
+        
+        // Fallback to byte search for invalid UTF-8
+        // Simple linear search
+        for i in 0..=(str_len - substr_len) {
+            let candidate = std::slice::from_raw_parts(str_data.add(i), substr_len);
+            if candidate == substr_slice {
+                return true;
+            }
+        }
+        
+        false
+    }
+}

@@ -229,6 +229,7 @@ pub enum Expression {
     StringSubstringUntilChar(StringSubstringUntilCharExpr),
     StringStartsWith(StringStartsWithExpr),
     StringEndsWith(StringEndsWithExpr),
+    StringContains(StringContainsExpr),
 
     // Process execution operations
     ExecCommand(ExecCommandExpr),
@@ -585,6 +586,14 @@ pub struct StringStartsWithExpr {
 pub struct StringEndsWithExpr {
     pub string: Box<Expression>,
     pub suffix: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// String contains expression: contains(s, substr)
+#[derive(Debug, Clone)]
+pub struct StringContainsExpr {
+    pub string: Box<Expression>,
+    pub substr: Box<Expression>,
     pub location: SourceLocation,
 }
 

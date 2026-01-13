@@ -345,6 +345,12 @@ impl EffectChecker {
                 effects.extend(self.collect_expression_effects(&string_ends_with.suffix)?);
                 Ok(effects)
             }
+            Expression::StringContains(string_contains) => {
+                let mut effects = Vec::new();
+                effects.extend(self.collect_expression_effects(&string_contains.string)?);
+                effects.extend(self.collect_expression_effects(&string_contains.substr)?);
+                Ok(effects)
+            }
             Expression::ReadLines(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::AppendFile(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::FileExists(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
@@ -768,6 +774,7 @@ impl EffectAnalyzer {
             Expression::StringSubstringUntilChar(string_substring_until_char) => Some(&string_substring_until_char.location),
             Expression::StringStartsWith(string_starts_with) => Some(&string_starts_with.location),
             Expression::StringEndsWith(string_ends_with) => Some(&string_ends_with.location),
+            Expression::StringContains(string_contains) => Some(&string_contains.location),
             Expression::ReadLines(read) => Some(&read.location),
             Expression::AppendFile(append) => Some(&append.location),
             Expression::FileExists(exists) => Some(&exists.location),

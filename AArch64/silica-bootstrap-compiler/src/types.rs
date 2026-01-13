@@ -266,6 +266,7 @@ impl<'a> TypeChecker<'a> {
             Expression::StringSubstringUntilChar(string_substring_until_char) => &string_substring_until_char.location,
             Expression::StringStartsWith(string_starts_with) => &string_starts_with.location,
             Expression::StringEndsWith(string_ends_with) => &string_ends_with.location,
+            Expression::StringContains(string_contains) => &string_contains.location,
             Expression::ExecCommand(exec_cmd) => &exec_cmd.location,
             Expression::StructLiteral(struct_lit) => &struct_lit.location,
             Expression::FieldAccess(field_access) => &field_access.location,
@@ -287,6 +288,7 @@ impl<'a> TypeChecker<'a> {
             Expression::StringSubstringUntilChar(string_substring_until_char) => &string_substring_until_char.location,
             Expression::StringStartsWith(string_starts_with) => &string_starts_with.location,
             Expression::StringEndsWith(string_ends_with) => &string_ends_with.location,
+            Expression::StringContains(string_contains) => &string_contains.location,
             Expression::ExecCommand(exec_cmd) => &exec_cmd.location,
         }
     }
@@ -818,6 +820,7 @@ impl<'a> TypeChecker<'a> {
             Expression::StringSubstringUntilChar(string_substring_until_char) => self.infer_string_substring_until_char(string_substring_until_char)?,
             Expression::StringStartsWith(string_starts_with) => self.infer_string_starts_with(string_starts_with)?,
             Expression::StringEndsWith(string_ends_with) => self.infer_string_ends_with(string_ends_with)?,
+            Expression::StringContains(string_contains) => self.infer_string_contains(string_contains)?,
             Expression::ExecCommand(exec_cmd) => self.infer_exec_command(exec_cmd)?,
             Expression::Tuple(exprs) => self.infer_tuple(exprs)?,
             Expression::StructLiteral(struct_lit) => {
@@ -1050,6 +1053,7 @@ impl<'a> TypeChecker<'a> {
             Expression::StringSubstringUntilChar(string_substring_until_char) => Some(&string_substring_until_char.location),
             Expression::StringStartsWith(string_starts_with) => Some(&string_starts_with.location),
             Expression::StringEndsWith(string_ends_with) => Some(&string_ends_with.location),
+            Expression::StringContains(string_contains) => Some(&string_contains.location),
             Expression::ExecCommand(exec_cmd) => Some(&exec_cmd.location),
             Expression::StructLiteral(struct_lit) => Some(&struct_lit.location),
             Expression::FieldAccess(field_access) => Some(&field_access.location),
@@ -2470,6 +2474,16 @@ impl<'a> TypeChecker<'a> {
         let suffix_type = self.infer_expression(&string_ends_with.suffix)?;
         self.unify(&suffix_type, &Type::String)?;
         // ends_with returns bool
+        Ok(Type::Bool)
+    }
+
+    fn infer_string_contains(&mut self, string_contains: &StringContainsExpr) -> Result<Type> {
+        // Check that both arguments are strings
+        let string_type = self.infer_expression(&string_contains.string)?;
+        self.unify(&string_type, &Type::String)?;
+        let substr_type = self.infer_expression(&string_contains.substr)?;
+        self.unify(&substr_type, &Type::String)?;
+        // contains returns bool
         Ok(Type::Bool)
     }
 
