@@ -221,6 +221,11 @@ pub enum Expression {
     RemoveDirectory(RemoveDirectoryExpr),
     ListDirectory(ListDirectoryExpr),
 
+    // String operations
+    StringLen(StringLenExpr),
+    StringLenChars(StringLenCharsExpr),
+    StringConcat(StringConcatExpr),
+
     // Process execution operations
     ExecCommand(ExecCommandExpr),
 
@@ -520,6 +525,28 @@ pub struct RemoveDirectoryExpr {
 #[derive(Debug, Clone)]
 pub struct ListDirectoryExpr {
     pub path: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// String length expression: len(s) - returns byte count
+#[derive(Debug, Clone)]
+pub struct StringLenExpr {
+    pub string: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// String character length expression: len_chars(s) - returns character count
+#[derive(Debug, Clone)]
+pub struct StringLenCharsExpr {
+    pub string: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// String concatenation expression: concat(a, b)
+#[derive(Debug, Clone)]
+pub struct StringConcatExpr {
+    pub a: Box<Expression>,
+    pub b: Box<Expression>,
     pub location: SourceLocation,
 }
 

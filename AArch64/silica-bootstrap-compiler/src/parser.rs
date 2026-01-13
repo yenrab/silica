@@ -953,6 +953,12 @@ impl Parser {
                 self.parse_remove_directory()
             } else if name == "list_directory" && self.match_token(TokenKind::LeftParen) {
                 self.parse_list_directory()
+            } else if name == "len" && self.match_token(TokenKind::LeftParen) {
+                self.parse_string_len()
+            } else if name == "len_chars" && self.match_token(TokenKind::LeftParen) {
+                self.parse_string_len_chars()
+            } else if name == "concat" && self.match_token(TokenKind::LeftParen) {
+                self.parse_string_concat()
             } else if self.match_token(TokenKind::LeftBrace) {
                 // Parse struct literal: TypeName { field: value, ... }
                 let type_expr = Expression::Identifier(name);
@@ -1230,6 +1236,45 @@ impl Parser {
 
         Ok(Expression::ListDirectory(ListDirectoryExpr {
             path,
+            location,
+        }))
+    }
+
+    /// Parse string length expression: len(s) - returns byte count
+    fn parse_string_len(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let string = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after len argument")?;
+
+        Ok(Expression::StringLen(StringLenExpr {
+            string,
+            location,
+        }))
+    }
+
+    /// Parse string character length expression: len_chars(s) - returns character count
+    fn parse_string_len_chars(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let string = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after len_chars argument")?;
+
+        Ok(Expression::StringLenChars(StringLenCharsExpr {
+            string,
+            location,
+        }))
+    }
+
+    /// Parse string concatenation expression: concat(a, b)
+    fn parse_string_concat(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let a = Box::new(self.expression()?);
+        self.consume(TokenKind::Comma, "Expected ',' after first argument in concat")?;
+        let b = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after concat arguments")?;
+
+        Ok(Expression::StringConcat(StringConcatExpr {
+            a,
+            b,
             location,
         }))
     }

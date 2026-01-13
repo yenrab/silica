@@ -259,6 +259,9 @@ impl<'a> TypeChecker<'a> {
             Expression::PrintBool(print_bool) => &print_bool.location,
             Expression::PrintChar(print_char) => &print_char.location,
             Expression::GetCpuTopologyInfo(get_topology) => &get_topology.location,
+            Expression::StringLen(string_len) => &string_len.location,
+            Expression::StringLenChars(string_len_chars) => &string_len_chars.location,
+            Expression::StringConcat(string_concat) => &string_concat.location,
             Expression::ExecCommand(exec_cmd) => &exec_cmd.location,
             Expression::StructLiteral(struct_lit) => &struct_lit.location,
             Expression::FieldAccess(field_access) => &field_access.location,
@@ -273,6 +276,10 @@ impl<'a> TypeChecker<'a> {
             Expression::CreateDirectory(create_dir) => &create_dir.location,
             Expression::RemoveDirectory(remove_dir) => &remove_dir.location,
             Expression::ListDirectory(list_dir) => &list_dir.location,
+            Expression::StringLen(string_len) => &string_len.location,
+            Expression::StringLenChars(string_len_chars) => &string_len_chars.location,
+            Expression::StringConcat(string_concat) => &string_concat.location,
+            Expression::ExecCommand(exec_cmd) => &exec_cmd.location,
         }
     }
 
@@ -450,6 +457,15 @@ impl<'a> TypeChecker<'a> {
             location: SourceLocation::unknown(),
         });
         
+        // Add ActorIO trait (marker trait for actor handlers that use I/O)
+        trait_defs.insert("ActorIO".to_string(), TraitDecl {
+            name: "ActorIO".to_string(),
+            included_traits: Vec::new(),
+            associated_types: Vec::new(),
+            methods: Vec::new(), // Marker trait - no methods
+            location: SourceLocation::unknown(),
+        });
+        
         // Add trait types to environment
         env.insert("ActorMessage".to_string(), TypeScheme {
             vars: vec![],
@@ -458,6 +474,10 @@ impl<'a> TypeChecker<'a> {
         env.insert("ActorState".to_string(), TypeScheme {
             vars: vec![],
             ty: Type::Named("ActorState".to_string()),
+        });
+        env.insert("ActorIO".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Named("ActorIO".to_string()),
         });
         
         TypeChecker {
@@ -783,6 +803,9 @@ impl<'a> TypeChecker<'a> {
             Expression::CreateDirectory(create_dir) => self.infer_create_directory(create_dir)?,
             Expression::RemoveDirectory(remove_dir) => self.infer_remove_directory(remove_dir)?,
             Expression::ListDirectory(list_dir) => self.infer_list_directory(list_dir)?,
+            Expression::StringLen(string_len) => self.infer_string_len(string_len)?,
+            Expression::StringLenChars(string_len_chars) => self.infer_string_len_chars(string_len_chars)?,
+            Expression::StringConcat(string_concat) => self.infer_string_concat(string_concat)?,
             Expression::ExecCommand(exec_cmd) => self.infer_exec_command(exec_cmd)?,
             Expression::Tuple(exprs) => self.infer_tuple(exprs)?,
             Expression::StructLiteral(struct_lit) => {
@@ -1008,6 +1031,9 @@ impl<'a> TypeChecker<'a> {
             Expression::CreateDirectory(create_dir) => Some(&create_dir.location),
             Expression::RemoveDirectory(remove_dir) => Some(&remove_dir.location),
             Expression::ListDirectory(list_dir) => Some(&list_dir.location),
+            Expression::StringLen(string_len) => Some(&string_len.location),
+            Expression::StringLenChars(string_len_chars) => Some(&string_len_chars.location),
+            Expression::StringConcat(string_concat) => Some(&string_concat.location),
             Expression::ExecCommand(exec_cmd) => Some(&exec_cmd.location),
             Expression::StructLiteral(struct_lit) => Some(&struct_lit.location),
             Expression::FieldAccess(field_access) => Some(&field_access.location),
@@ -1999,6 +2025,52 @@ impl<'a> TypeChecker<'a> {
         Ok(Type::Unit)
     }
 
+    /// Check if an expression contains I/O operations (print, file I/O, etc.)
+    fn contains_io_operations(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::Print(_) | Expression::PrintLn(_) | Expression::PrintInt(_) |
+            Expression::PrintBool(_) | Expression::PrintChar(_) |
+            Expression::ReadFile(_) | Expression::WriteFile(_) | Expression::AppendFile(_) |
+            Expression::ReadLines(_) | Expression::FileExists(_) | Expression::DeleteFile(_) |
+            Expression::GetFileSize(_) | Expression::CreateDirectory(_) |
+            Expression::RemoveDirectory(_) | Expression::ListDirectory(_) |
+            Expression::ExecCommand(_) => true,
+            Expression::Do(do_expr) => {
+                do_expr.statements.iter().any(|stmt| match stmt {
+                    Statement::Expr(e) => self.contains_io_operations(e),
+                    Statement::Bind { expr: e, .. } => self.contains_io_operations(e),
+                })
+            },
+            Expression::If(if_expr) => {
+                self.contains_io_operations(&if_expr.condition) ||
+                self.contains_io_operations(&if_expr.then_branch) ||
+                self.contains_io_operations(&if_expr.else_branch)
+            },
+            Expression::Case(case_expr) => {
+                self.contains_io_operations(&case_expr.scrutinee) ||
+                case_expr.branches.iter().any(|branch| self.contains_io_operations(&branch.body))
+            },
+            Expression::Call(call) => {
+                // Check if it's a call to an I/O function
+                if let Expression::Identifier(name) = &*call.function {
+                    matches!(name.as_str(), "print" | "println" | "print_int" | "print_bool" | 
+                        "print_char" | "read_file" | "write_file" | "append_file" | "read_lines" |
+                        "file_exists" | "delete_file" | "get_file_size" | "create_directory" |
+                        "remove_directory" | "list_directory" | "exec_command")
+                } else {
+                    call.arguments.iter().any(|arg| self.contains_io_operations(arg))
+                }
+            },
+            Expression::FunctionLiteral(func_lit) => {
+                func_lit.body.iter().any(|stmt| match stmt {
+                    Statement::Expr(e) => self.contains_io_operations(e),
+                    Statement::Bind { expr: e, .. } => self.contains_io_operations(e),
+                })
+            },
+            _ => false,
+        }
+    }
+
     /// Infer type for spawn expression
     fn infer_spawn(&mut self, spawn: &SpawnExpr) -> Result<Type> {
         // spawn(initial_state, behavior) returns an actor_ref (primitive type)
@@ -2015,6 +2087,80 @@ impl<'a> TypeChecker<'a> {
                     error_location.clone(),
                     format!("Type used as actor initial_state must implement ActorState trait")
                 ));
+            }
+        }
+        
+        // Check if behavior function uses I/O operations and requires ActorIO trait
+        let behavior_uses_io = if let Expression::FunctionLiteral(func) = &*spawn.behavior {
+            self.contains_io_operations(&Expression::FunctionLiteral(func.clone()))
+        } else {
+            self.contains_io_operations(&spawn.behavior)
+        };
+        
+        if behavior_uses_io {
+            // Behavior function uses I/O - check if it implements ActorIO trait
+            let behavior_type = self.infer_expression(&spawn.behavior)?;
+            
+            // For function literals, we need to check if the function type implements ActorIO
+            // Since ActorIO is a marker trait for function types used as handlers, we check
+            // if the function type itself implements ActorIO
+            // Expand type aliases in behavior_type to ensure proper matching
+            let expanded_behavior_type = self.expand_type_aliases(&behavior_type);
+            
+            let has_actor_io_impl = if let Type::Function { parameters, return_type } = &expanded_behavior_type {
+                // Check if there's an impl ActorIO for this function type
+                // We need to match the function signature, resolving type aliases first
+                self.trait_impls.iter().any(|impl_| {
+                    if impl_.trait_name != "ActorIO" {
+                        return false;
+                    }
+                    
+                    // Resolve type aliases in the impl's for_type (e.g., EchoHandler -> fn(...))
+                    let resolved_impl_type = match self.resolve_type(&impl_.for_type) {
+                        Ok(resolved) => resolved,
+                        Err(_) => impl_.for_type.clone(), // Fallback if resolution fails
+                    };
+                    
+                    // Expand any remaining type aliases in the resolved type
+                    let expanded_impl_type = self.expand_type_aliases(&resolved_impl_type);
+                    
+                    // Check if the resolved impl type matches the function literal type
+                    if let Type::Function { parameters: impl_params, return_type: impl_ret } = &expanded_impl_type {
+                        // Check if parameter counts match
+                        if parameters.len() != impl_params.len() {
+                            return false;
+                        }
+                        
+                        // Proper type matching: check that all parameter types match
+                        let params_match = parameters.iter().zip(impl_params.iter()).all(|(p1, p2)| {
+                            self.types_equal(p1, p2)
+                        });
+                        
+                        // Check return types match
+                        let ret_match = self.types_equal(return_type, impl_ret);
+                        
+                        params_match && ret_match
+                    } else {
+                        false
+                    }
+                })
+            } else {
+                false
+            };
+            
+            if !has_actor_io_impl {
+                let error_location = Self::try_get_expression_location(&spawn.behavior)
+                    .unwrap_or(&spawn.location);
+                let metadata = ErrorMetadataBuilder::new("E2011".to_string())
+                    .severity(ErrorSeverity::Error)
+                    .specification("spec:§3.4.1".to_string(), None)
+                    .suggestion("Add 'impl ActorIO for fn(Message, State) -> State;' declaration (or use a type alias) before using I/O operations in actor handler function literal".to_string())
+                    .build();
+                return Err(CompilerError::TypeError {
+                    message: format!("Function literal uses I/O operations but doesn't declare ActorIO trait. Actor handler functions that use print or file I/O must declare 'impl ActorIO for fn(Message, State) -> State;' (or matching signature)"),
+                    location: error_location.clone(),
+                    metadata,
+                });
             }
         }
         
@@ -2236,6 +2382,32 @@ impl<'a> TypeChecker<'a> {
         self.unify(&path_type, &Type::String)?;
         // get_file_size returns int
         Ok(Type::Int)
+    }
+
+    fn infer_string_len(&mut self, string_len: &StringLenExpr) -> Result<Type> {
+        // Check that argument is a string
+        let string_type = self.infer_expression(&string_len.string)?;
+        self.unify(&string_type, &Type::String)?;
+        // len returns int (byte count)
+        Ok(Type::Int)
+    }
+
+    fn infer_string_len_chars(&mut self, string_len_chars: &StringLenCharsExpr) -> Result<Type> {
+        // Check that argument is a string
+        let string_type = self.infer_expression(&string_len_chars.string)?;
+        self.unify(&string_type, &Type::String)?;
+        // len_chars returns int (character count)
+        Ok(Type::Int)
+    }
+
+    fn infer_string_concat(&mut self, string_concat: &StringConcatExpr) -> Result<Type> {
+        // Check that both arguments are strings
+        let a_type = self.infer_expression(&string_concat.a)?;
+        self.unify(&a_type, &Type::String)?;
+        let b_type = self.infer_expression(&string_concat.b)?;
+        self.unify(&b_type, &Type::String)?;
+        // concat returns string
+        Ok(Type::String)
     }
 
     fn infer_create_directory(&mut self, create_dir: &CreateDirectoryExpr) -> Result<Type> {

@@ -311,6 +311,14 @@ impl EffectChecker {
             Expression::PrintBool(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::PrintChar(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::GetCpuTopologyInfo(_) => Ok(vec![]), // Reading pre-detected topology info
+            Expression::StringLen(string_len) => self.collect_expression_effects(&string_len.string),
+            Expression::StringLenChars(string_len_chars) => self.collect_expression_effects(&string_len_chars.string),
+            Expression::StringConcat(string_concat) => {
+                let mut effects = Vec::new();
+                effects.extend(self.collect_expression_effects(&string_concat.a)?);
+                effects.extend(self.collect_expression_effects(&string_concat.b)?);
+                Ok(effects)
+            }
             Expression::ReadLines(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::AppendFile(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::FileExists(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
@@ -727,6 +735,9 @@ impl EffectAnalyzer {
             Expression::PrintBool(print) => Some(&print.location),
             Expression::PrintChar(print) => Some(&print.location),
             Expression::GetCpuTopologyInfo(info) => Some(&info.location),
+            Expression::StringLen(string_len) => Some(&string_len.location),
+            Expression::StringLenChars(string_len_chars) => Some(&string_len_chars.location),
+            Expression::StringConcat(string_concat) => Some(&string_concat.location),
             Expression::ReadLines(read) => Some(&read.location),
             Expression::AppendFile(append) => Some(&append.location),
             Expression::FileExists(exists) => Some(&exists.location),

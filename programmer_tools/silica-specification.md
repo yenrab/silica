@@ -299,6 +299,33 @@ fn outer() -> int {
 }
 ```
 
+**Function Literals with Effect Declarations:**
+
+Function literals can declare effects using the same `proc[...]` syntax as regular function declarations. This is required when the function literal uses operations that require specific effects (e.g., I/O operations, concurrency operations).
+
+**Syntax:**
+```
+function_literal ::= "fn" parameter_list [":" type] ["proc" "[" effect_list "]"] "{" statement_list "}"
+```
+
+**Example - Function literal with DeviceIO effect:**
+```silica
+fn main() -> int proc[concurrency, DeviceIO] {
+    echo_ref: actor_ref <- spawn(
+        EchoState { received: 0 },
+        fn(msg: Response, state: EchoState) -> EchoState proc[DeviceIO] {
+            print_string("Received message: ");
+            print_int(msg.result);
+            print_ln("");
+            EchoState { received: state.received + msg.result }
+        }
+    );
+    0
+}
+```
+
+**Note:** If a function literal uses operations requiring effects (such as `print_string`, `print_int`, `cast`, `spawn`, etc.) but doesn't declare those effects in `proc[...]`, a type error will occur. The function literal must declare all effects it uses, just like regular function declarations.
+
 #### 3.4.2 Type Declarations
 ```
 type_declaration ::= "type" identifier "=" type ";"
@@ -949,6 +976,21 @@ fn allocate_int(region: region(R, normal))
     alloc_ref(region, 0)  // built-in memory allocation primitive
 }
 ```
+
+**Function Literals and Effects:**
+
+Function literals (anonymous functions) can also declare effects using the same `proc[...]` syntax. This is required when the function literal uses operations that require specific effects:
+
+```
+// Function literal with DeviceIO effect
+fn(msg: Response, state: EchoState) -> EchoState proc[DeviceIO] {
+    print_string("Received message: ");
+    print_int(msg.result);
+    EchoState { received: state.received + msg.result }
+}
+```
+
+Function literals must declare all effects they use, just like regular function declarations. If a function literal uses an effect but doesn't declare it, a type error (E2011) will occur.
 
 #### 7.3.2 Effect Composition
 Effect variables allow abstracting over unknown effects:

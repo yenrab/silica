@@ -201,6 +201,9 @@ impl CodeGenerator {
             Expression::CreateDirectory(create_dir) => Some(&create_dir.location),
             Expression::RemoveDirectory(remove_dir) => Some(&remove_dir.location),
             Expression::ListDirectory(list_dir) => Some(&list_dir.location),
+            Expression::StringLen(string_len) => Some(&string_len.location),
+            Expression::StringLenChars(string_len_chars) => Some(&string_len_chars.location),
+            Expression::StringConcat(string_concat) => Some(&string_concat.location),
             Expression::ExecCommand(exec_cmd) => Some(&exec_cmd.location),
             Expression::StructLiteral(struct_lit) => Some(&struct_lit.location),
             Expression::FieldAccess(field_access) => Some(&field_access.location),
@@ -286,6 +289,7 @@ impl CodeGenerator {
                 if let Some(silica_main) = module.get_function("main") {
                     let call_result = builder.build_call(silica_main, &[], "result").unwrap();
                     let result: inkwell::values::BasicValueEnum<'static> = unsafe { std::mem::transmute(call_result.try_as_basic_value().unwrap_basic()) };
+
 
                     // Truncate i64 result to i32 for C main function
                     let truncated_result = builder.build_int_truncate(result.into_int_value(), i32_type, "truncated_result")
@@ -452,6 +456,11 @@ impl CodeGenerator {
         self.instructions.push("declare void @silica_print_char(i32)".to_string());
         self.instructions.push("declare i8* @silica_get_cpu_topology_info()".to_string());
 
+        // String functions
+        self.instructions.push("declare i64 @silica_string_len(i8*)".to_string());
+        self.instructions.push("declare i64 @silica_string_len_chars(i8*)".to_string());
+        self.instructions.push("declare i8* @silica_string_concat(i8*, i8*)".to_string());
+
         // Generate all declarations first to collect all string constants
         for decl in &program.declarations {
             match decl {
@@ -507,8 +516,34 @@ impl CodeGenerator {
 
         for (content, (const_name, _)) in constants {
             let len = content.len() + 1; // +1 for null terminator
-            let escaped_content = content.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\t", "\\t");
-            self.instructions.push(format!("{} = private unnamed_addr constant [{} x i8] c\"{}\\00\"", const_name, len, escaped_content));
+            // Build LLVM IR string literal with proper escaping
+            // The key insight: In LLVM IR, \n is an escape sequence (1 byte), not literal \ + n (2 bytes)
+            // When we write instruction.push_str("\\n"), we're writing literal \ + n (2 characters)
+            // But in the file, this becomes \n (2 characters), which LLVM should interpret as 1 byte
+            // However, the issue is that when we use format! with {}, it writes the string as-is
+            // So if escaped_content = "\\n" (2 bytes), format!("c\"{}\\00\"", escaped_content) becomes c"\\n\00"
+            // In LLVM IR, \\n means: \\ (escaped backslash, 1 byte) + n (1 byte) = 2 bytes, plus null = 3 bytes total
+            // We need c"\n\00" which means: \n (escape sequence, 1 byte) + null (1 byte) = 2 bytes total
+            // Solution: Write the escape sequences directly in the format string, not through string substitution
+            // Build LLVM IR string literal: write bytes directly using hexadecimal escape sequences
+            // Use \XX format where XX is the hexadecimal byte value (e.g., \0A for newline)
+            let mut instruction = format!("{} = private unnamed_addr constant [{} x i8] c\"", const_name, len);
+            for byte in content.bytes() {
+                match byte {
+                    b'\\' => instruction.push_str(r#"\\"#),  // Write \\ which becomes \ in LLVM IR
+                    b'"' => instruction.push_str(r#"\""#),  // Write \" which becomes " in LLVM IR
+                    b if b >= 32 && b < 127 && b != b'\\' && b != b'"' => {
+                        // Printable ASCII (excluding backslash and quote which are handled above)
+                        instruction.push(byte as char)
+                    },
+                    _ => {
+                        // All other bytes (including \n=0x0A, \t=0x09, \r=0x0D) as hexadecimal escape sequences
+                        instruction.push_str(&format!(r#"\{:02X}"#, byte));
+                    }
+                }
+            }
+            instruction.push_str(r#"\00""#);
+            self.instructions.push(instruction);
         }
         self.instructions.push("".to_string());
 
@@ -667,6 +702,7 @@ impl CodeGenerator {
 
                 let print_char_type = void_type.fn_type(&[i32_type.into()], false);
                 module.add_function("silica_print_char", print_char_type, None);
+
 
                 let topology_info_type = i8_ptr_type.fn_type(&[], false);
                 module.add_function("silica_get_cpu_topology_info", topology_info_type, None);
@@ -900,6 +936,7 @@ impl CodeGenerator {
         // Exit function scope
         self.exit_scope_text();
 
+
         // Generate return
         match return_type {
             Type::Unit => {
@@ -1012,6 +1049,9 @@ impl CodeGenerator {
             Expression::CreateDirectory(create_dir) => self.generate_create_directory(create_dir),
             Expression::RemoveDirectory(remove_dir) => self.generate_remove_directory(remove_dir),
             Expression::ListDirectory(list_dir) => self.generate_list_directory(list_dir),
+            Expression::StringLen(string_len) => self.generate_string_len(string_len),
+            Expression::StringLenChars(string_len_chars) => self.generate_string_len_chars(string_len_chars),
+            Expression::StringConcat(string_concat) => self.generate_string_concat(string_concat),
             Expression::ExecCommand(exec_cmd) => self.generate_exec_command(exec_cmd),
             Expression::FunctionLiteral(func_lit) => self.generate_function_literal(func_lit),
             Expression::Region(_) => {
@@ -1099,15 +1139,18 @@ impl CodeGenerator {
                     // Text backend: create named constants
                 if !self.string_constants.contains_key(s) {
                     let const_name = format!("@str_const_{}", self.string_constants.len());
-                    let length = s.len();
+                    // Store length including null terminator to match constant declaration
+                    let length = s.len() + 1;
                     self.string_constants.insert(s.clone(), (const_name, length));
                 }
                     let (const_name, length) = self.string_constants.get(s).unwrap();
 
                     // Generate getelementptr to convert array to pointer
-                    // getelementptr inbounds ([LEN x i8], [LEN x i8]* CONST_NAME, i64 0, i64 0)
+                    // length already includes null terminator
+                    // For constant expressions: getelementptr inbounds ([LEN x i8], [LEN x i8]* CONST_NAME, i64 0, i64 0)
+                    // For instructions: getelementptr inbounds [LEN x i8], [LEN x i8]* CONST_NAME, i32 0, i32 0
                     format!("getelementptr inbounds ([{} x i8], [{} x i8]* {}, i64 0, i64 0)",
-                           length + 1, length + 1, const_name)
+                           length, length, const_name)
                 }
             }
         }
@@ -5427,6 +5470,7 @@ impl CodeGenerator {
             Type::Tuple(_) => ("i8*".to_string(), 8, 8), // Nested tuple as pointer
             Type::Record(_) => ("i8*".to_string(), 8, 8), // Struct as pointer
             Type::Named(_) => ("i8*".to_string(), 8, 8), // Named type as pointer
+            Type::ActorRef => ("i64".to_string(), 8, 8), // ActorRef stored as i64 (pointer value)
             _ => ("i64".to_string(), 8, 8), // Default fallback
         }
     }
@@ -7499,14 +7543,26 @@ impl CodeGenerator {
                 // Generate pointer arithmetic
                 body_instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", field_ptr_reg, clean_object, field_offset));
 
-                // Cast to appropriate pointer type and load the value
-                let llvm_field_type = self.type_map.silica_to_llvm_str(&field_type);
+                // For ActorRef fields, always load as i64 (how they're stored)
+                // Even though silica_to_llvm_str returns i8* for ActorRef, we need to load as i64
+                let (llvm_field_type, should_load_as_i64) = if matches!(field_type, Type::ActorRef) {
+                    ("i64".to_string(), true)
+                } else {
+                    (self.type_map.silica_to_llvm_str(&field_type), false)
+                };
                 let llvm_field_type_ptr = format!("{}*", llvm_field_type);
 
                 body_instructions.push(format!("  {} = bitcast i8* {} to {}", field_ptr_typed_reg, field_ptr_reg, llvm_field_type_ptr));
-                body_instructions.push(format!("  {} = load {}, {} {}", field_value_reg, llvm_field_type, llvm_field_type_ptr, field_ptr_typed_reg));
-
-                Ok(format!("{} {}", llvm_field_type, field_value_reg))
+                
+                if should_load_as_i64 {
+                    // Load ActorRef as i64 (stored as pointer value)
+                    body_instructions.push(format!("  {} = load i64, i64* {}", field_value_reg, field_ptr_typed_reg));
+                    Ok(format!("i64 {}", field_value_reg))
+                } else {
+                    // Load other types normally
+                    body_instructions.push(format!("  {} = load {}, {} {}", field_value_reg, llvm_field_type, llvm_field_type_ptr, field_ptr_typed_reg));
+                    Ok(format!("{} {}", llvm_field_type, field_value_reg))
+                }
             },
             Expression::Tuple(tuple) => {
                 // Generate tuple in function literals
@@ -7785,6 +7841,125 @@ impl CodeGenerator {
                 // Return bool result (i1)
                 Ok(format!("i1 {}", result_reg))
             },
+            Expression::Print(print) => {
+                // Generate print expression in function literal
+                let value_val = self.generate_function_literal_expr(&print.value, func_lit, body_instructions)?;
+                
+                // For strings, we need the pointer and length
+                // Handle different string representations
+                let (str_ptr, str_len) = if value_val.contains("getelementptr") && value_val.contains("@str_const_") {
+                    // String literal: getelementptr expression - convert to instruction format and store in register
+                    let length = self.find_string_constant_length(&value_val).unwrap_or(0);
+                    let gep_instruction = if value_val.starts_with("getelementptr inbounds (") {
+                        self.convert_gep_to_instruction_format(&value_val)
+                    } else {
+                        value_val.clone()
+                    };
+                    let ptr_reg = format!("%str_ptr_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = {}", ptr_reg, gep_instruction));
+                    (ptr_reg, length)
+                } else if value_val.starts_with("i8* ") {
+                    // Already a pointer register - extract register name
+                    let ptr_reg = value_val.trim_start_matches("i8* ");
+                    // Try to find string length from string constants
+                    let length = self.find_string_constant_length(&value_val).unwrap_or(0);
+                    (ptr_reg.to_string(), length)
+                } else if value_val.contains("@str_const_") {
+                    // String constant reference - convert getelementptr to instruction format if needed
+                    let length = self.find_string_constant_length(&value_val).unwrap_or(0);
+                    let fixed_val = if value_val.contains("getelementptr") && value_val.starts_with("getelementptr inbounds (") {
+                        self.convert_gep_to_instruction_format(&value_val)
+                    } else {
+                        value_val.clone()
+                    };
+                    let ptr_reg = format!("%str_ptr_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = {}", ptr_reg, fixed_val));
+                    (ptr_reg, length)
+                } else {
+                    // Assume it's a string pointer register - default length 0 (runtime will handle)
+                    let ptr_reg = value_val.trim_start_matches("i8* ").trim_start_matches("i64 ");
+                    (ptr_reg.to_string(), 0)
+                };
+                
+                // Call silica_print with string pointer and length
+                body_instructions.push(format!("  call void @silica_print(i8* {}, i64 {})", str_ptr, str_len));
+                
+                // Print returns unit - return empty string (unit value)
+                Ok("".to_string())
+            },
+            Expression::PrintInt(print_int) => {
+                // Generate print_int expression in function literal
+                let value_val = self.generate_function_literal_expr(&print_int.value, func_lit, body_instructions)?;
+                
+                // Extract i64 value - handle boxed values
+                let int_arg = if value_val.starts_with("i8* ") {
+                    // Boxed value - unbox it
+                    let ptr_reg = value_val.trim_start_matches("i8* ");
+                    let bitcast_reg = format!("%bitcast_print_int_{}", body_instructions.len());
+                    let load_reg = format!("%load_print_int_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = bitcast i8* {} to i64*", bitcast_reg, ptr_reg));
+                    body_instructions.push(format!("  {} = load i64, i64* {}", load_reg, bitcast_reg));
+                    format!("i64 {}", load_reg)
+                } else if value_val.starts_with("i64 ") {
+                    // Already i64
+                    value_val
+                } else {
+                    // Assume it's a register - wrap with i64
+                    format!("i64 {}", value_val.trim_start_matches("i64 "))
+                };
+                
+                // Call silica_print_int with i64 value
+                body_instructions.push(format!("  call void @silica_print_int({})", int_arg));
+                
+                // PrintInt returns unit - return empty string (unit value)
+                Ok("".to_string())
+            },
+            Expression::PrintLn(println) => {
+                // Generate println expression in function literal
+                let value_val = self.generate_function_literal_expr(&println.value, func_lit, body_instructions)?;
+                
+                // For strings, we need the pointer and length
+                // Handle different string representations
+                let (str_ptr, str_len) = if value_val.contains("getelementptr") && value_val.contains("@str_const_") {
+                    // String literal: getelementptr expression - convert to instruction format and store in register
+                    let length = self.find_string_constant_length(&value_val).unwrap_or(0);
+                    let gep_instruction = if value_val.starts_with("getelementptr inbounds (") {
+                        self.convert_gep_to_instruction_format(&value_val)
+                    } else {
+                        value_val.clone()
+                    };
+                    let ptr_reg = format!("%str_ptr_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = {}", ptr_reg, gep_instruction));
+                    (ptr_reg, length)
+                } else if value_val.starts_with("i8* ") {
+                    // Already a pointer register - extract register name
+                    let ptr_reg = value_val.trim_start_matches("i8* ");
+                    // Try to find string length from string constants
+                    let length = self.find_string_constant_length(&value_val).unwrap_or(0);
+                    (ptr_reg.to_string(), length)
+                } else if value_val.contains("@str_const_") {
+                    // String constant reference - convert getelementptr to instruction format if needed
+                    let length = self.find_string_constant_length(&value_val).unwrap_or(0);
+                    let fixed_val = if value_val.contains("getelementptr") && value_val.starts_with("getelementptr inbounds (") {
+                        self.convert_gep_to_instruction_format(&value_val)
+                    } else {
+                        value_val.clone()
+                    };
+                    let ptr_reg = format!("%str_ptr_{}", body_instructions.len());
+                    body_instructions.push(format!("  {} = {}", ptr_reg, fixed_val));
+                    (ptr_reg, length)
+                } else {
+                    // Assume it's a string pointer register - default length 0 (runtime will handle)
+                    let ptr_reg = value_val.trim_start_matches("i8* ").trim_start_matches("i64 ");
+                    (ptr_reg.to_string(), 0)
+                };
+                
+                // Call silica_println with string pointer and length
+                body_instructions.push(format!("  call void @silica_println(i8* {}, i64 {})", str_ptr, str_len));
+                
+                // PrintLn returns unit - return empty string (unit value)
+                Ok("".to_string())
+            },
             _ => Err(CompilerError::codegen_error(format!("Unsupported expression type in function literal: {:?}", expr))),
         }
     }
@@ -7944,10 +8119,19 @@ impl CodeGenerator {
         let path_val = self.generate_expression(&call.arguments[0])?
             .ok_or_else(|| CompilerError::codegen_error("Invalid path argument in read_file".to_string()))?;
 
+        // Format the path argument: getelementptr constant expressions need i8* type prefix in function calls
+        let path_arg = if path_val.starts_with("getelementptr") {
+            format!("i8* {}", path_val)  // Constant expression needs type prefix
+        } else if path_val.starts_with('%') {
+            format!("i8* {}", path_val)
+        } else {
+            format!("i8* {}", path_val)
+        };
+
         // Generate call to silica_read_file
         let result_reg = format!("%read_result_{}", self.instructions.len());
         self.instructions.push(format!("  ; Call silica_read_file({}, 0)", path_val));
-        self.instructions.push(format!("  {} = call {{ i1, i8* }} @silica_read_file(i8* {}, i64 0)", result_reg, path_val));
+        self.instructions.push(format!("  {} = call {{ i1, i8* }} @silica_read_file({}, i64 0)", result_reg, path_arg));
 
         Ok(Some(result_reg))
     }
@@ -7976,11 +8160,48 @@ impl CodeGenerator {
         let value_val = self.generate_expression(&print.value)?
             .ok_or_else(|| CompilerError::codegen_error("Invalid value in print".to_string()))?;
 
-        // Determine the string length
-        let length = self.find_string_constant_length(&value_val).unwrap_or(0);
+        // Format the argument: getelementptr constant expressions need i8* type prefix in function calls
+        // For registers, add i8* type prefix and ensure % prefix is present
+        let arg = if value_val.starts_with("getelementptr") {
+            format!("i8* {}", value_val)  // Constant expression needs type prefix
+        } else if value_val.starts_with('%') {
+            format!("i8* {}", value_val)
+        } else {
+            // Register name without % prefix - add it
+            format!("i8* %{}", value_val)
+        };
 
-        // Call silica_print with the string value and length
-        self.instructions.push(format!("  call void @silica_print(i8* {}, i64 {})", value_val, length));
+        // Determine the string length
+        // Check if this is a string constant (contains getelementptr or @str_const_)
+        if value_val.contains("@str_const_") || value_val.starts_with("getelementptr") {
+            // String constant: find the length from string_constants
+            let length = self.find_string_constant_length(&value_val).unwrap_or(0);
+            // Call silica_print with the string value and length (literal)
+            self.instructions.push(format!("  call void @silica_print({}, i64 {})", arg, length));
+        } else {
+            // Runtime string: value_val is an i8* pointer to a SilicaString struct
+            // SilicaString struct: { data: *mut u8, length: usize }
+            // We need to extract the data pointer (first field) from the struct
+            let string_ptr_reg = if value_val.starts_with('%') {
+                value_val.trim_start_matches('%').to_string()
+            } else {
+                value_val.trim_start_matches('%').to_string()
+            };
+            
+            // Extract the data pointer from SilicaString struct (first field at offset 0)
+            // Cast struct pointer to i8** (pointer to i8*), then load the i8* value
+            let data_ptr_typed_reg = self.next_register();
+            let data_reg = self.next_register();
+            self.instructions.push(format!("  %{} = bitcast i8* %{} to i8**", data_ptr_typed_reg, string_ptr_reg));
+            self.instructions.push(format!("  %{} = load i8*, i8** %{}", data_reg, data_ptr_typed_reg));
+            
+            // Call silica_string_len runtime function to get length
+            let length_reg = self.next_register();
+            self.instructions.push(format!("  %{} = call i64 @silica_string_len(i8* %{})", length_reg, string_ptr_reg));
+            
+            // Call silica_print with the data pointer (not the struct pointer) and length
+            self.instructions.push(format!("  call void @silica_print(i8* %{}, i64 %{})", data_reg, length_reg));
+        }
 
         Ok(None) // print returns unit
     }
@@ -7990,39 +8211,60 @@ impl CodeGenerator {
         let value_val = self.generate_expression(&println.value)?
             .ok_or_else(|| CompilerError::codegen_error("Invalid value in println".to_string()))?;
 
-        // Determine the string length
+        // Format the argument: getelementptr constant expressions need i8* type prefix in function calls
+        // For registers, add i8* type prefix and ensure % prefix is present
+        let arg = if value_val.starts_with("getelementptr") {
+            format!("i8* {}", value_val)  // Constant expression needs type prefix
+        } else if value_val.starts_with('%') {
+            format!("i8* {}", value_val)
+        } else {
+            // Register name without % prefix - add it
+            format!("i8* %{}", value_val)
+        };
+
+        // Determine the string length - extract from value_val before formatting
         let length = self.find_string_constant_length(&value_val).unwrap_or(0);
 
         // Call silica_println with the string value and length
-        self.instructions.push(format!("  call void @silica_println(i8* {}, i64 {})", value_val, length));
+        self.instructions.push(format!("  call void @silica_println({}, i64 {})", arg, length));
 
         Ok(None) // println returns unit
     }
 
     /// Helper method to find the length of a string constant by its reference
+    /// Returns the string length WITHOUT null terminator (for runtime function calls)
     fn find_string_constant_length(&self, const_ref: &str) -> Option<usize> {
         // First try exact match (for backward compatibility)
         for (_content, (name, length)) in &self.string_constants {
             if name == const_ref {
-                return Some(*length);
+                // length includes null terminator, subtract 1 for runtime functions
+                return Some(*length - 1);
             }
         }
 
         // If not found, try to parse getelementptr expression
-        // Format: getelementptr inbounds ([LEN x i8], [LEN x i8]* @CONST_NAME, i64 0, i64 0)
-        if const_ref.starts_with("getelementptr inbounds") && const_ref.contains("@str_const_") {
-            // Extract the constant name from the getelementptr expression
-            // Find @str_const_ and extract until the next comma or space
+        // Formats:
+        //   - getelementptr inbounds ([LEN x i8], [LEN x i8]* @CONST_NAME, i64 0, i64 0)  (constant expression)
+        //   - getelementptr inbounds [LEN x i8], [LEN x i8]* @CONST_NAME, i32 0, i32 0   (instruction)
+        //   - i8* getelementptr inbounds ([LEN x i8], [LEN x i8]* @CONST_NAME, i64 0, i64 0)  (with type prefix)
+        if const_ref.contains("@str_const_") {
+            // Extract the constant name from the expression
+            // Find @str_const_ and extract the full constant name
             if let Some(at_pos) = const_ref.find("@str_const_") {
                 let name_start = at_pos;
-                let name_end = const_ref[name_start..].find(|c: char| !c.is_alphanumeric() && c != '_' && c != '@')
+                // Find the end of the constant name - it ends at comma, space, closing paren, or end of string
+                let remaining = &const_ref[name_start..];
+                let name_end = remaining
+                    .find(|c: char| c == ',' || c == ' ' || c == ')' || c == ',')
                     .map(|pos| name_start + pos)
                     .unwrap_or(const_ref.len());
                 let const_name = &const_ref[name_start..name_end];
 
+                // Look up the constant by name
                 for (_content, (name, length)) in &self.string_constants {
                     if name == const_name {
-                        return Some(*length);
+                        // length includes null terminator, subtract 1 for runtime functions
+                        return Some(*length - 1);
                     }
                 }
             }
@@ -8041,7 +8283,13 @@ impl CodeGenerator {
         let arg = if value_val.starts_with("i64 ") {
             value_val
         } else {
-            format!("i64 {}", value_val)
+            // If it's a register name (starts with 't' or is numeric), add % prefix
+            let reg_val = if value_val.starts_with('%') {
+                value_val
+            } else {
+                format!("%{}", value_val)
+            };
+            format!("i64 {}", reg_val)
         };
         self.instructions.push(format!("  call void @silica_print_int({})", arg));
 
@@ -8058,7 +8306,13 @@ impl CodeGenerator {
         let arg = if value_val.starts_with("i1 ") {
             value_val
         } else {
-            format!("i1 {}", value_val)
+            // If it's a register name (starts with 't' or is numeric), add % prefix
+            let reg_val = if value_val.starts_with('%') {
+                value_val
+            } else {
+                format!("%{}", value_val)
+            };
+            format!("i1 {}", reg_val)
         };
         self.instructions.push(format!("  call void @silica_print_bool({})", arg));
 
@@ -8074,7 +8328,13 @@ impl CodeGenerator {
         let arg = if value_val.starts_with("i32 ") {
             value_val
         } else {
-            format!("i32 {}", value_val)
+            // If it's a register name (starts with 't' or is numeric), add % prefix
+            let reg_val = if value_val.starts_with('%') {
+                value_val
+            } else {
+                format!("%{}", value_val)
+            };
+            format!("i32 {}", reg_val)
         };
         self.instructions.push(format!("  call void @silica_print_char({})", arg));
 
@@ -8124,9 +8384,18 @@ impl CodeGenerator {
         // Determine the path length
         let path_length = self.find_string_constant_length(&path_val).unwrap_or(0);
 
+        // Format the path argument: getelementptr constant expressions need i8* type prefix in function calls
+        let path_arg = if path_val.starts_with("getelementptr") {
+            format!("i8* {}", path_val)  // Constant expression needs type prefix
+        } else if path_val.starts_with('%') {
+            format!("i8* {}", path_val)
+        } else {
+            format!("i8* {}", path_val)
+        };
+
         // Call silica_read_file and extract the string content
         let result_reg = self.next_register();
-        self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_read_file(i8* {}, i64 {})", result_reg, path_val, path_length));
+        self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_read_file({}, i64 {})", result_reg, path_arg, path_length));
 
         // Extract SilicaString pointer (contains actual file content)
         let silica_string_ptr_reg = self.next_register();
@@ -8164,9 +8433,18 @@ impl CodeGenerator {
         let path_val = self.generate_expression(&file_exists.path)?
             .ok_or_else(|| CompilerError::codegen_error("Invalid path in file_exists".to_string()))?;
 
+        // Format the path argument: getelementptr constant expressions need i8* type prefix in function calls
+        let path_arg = if path_val.starts_with("getelementptr") {
+            format!("i8* {}", path_val)  // Constant expression needs type prefix
+        } else if path_val.starts_with('%') {
+            format!("i8* {}", path_val)
+        } else {
+            format!("i8* {}", path_val)
+        };
+
         // For now, just call silica_read_file and check if it succeeds
         let result_reg = self.next_register();
-        self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_read_file(i8* {}, i64 0)", result_reg, path_val));
+        self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_read_file({}, i64 0)", result_reg, path_arg));
 
         // Extract the success flag
         let success_reg = self.next_register();
@@ -8213,12 +8491,201 @@ impl CodeGenerator {
             let empty_string = String::new();
             if !self.string_constants.contains_key(&empty_string) {
                 let const_name = format!("@str_const_{}", self.string_constants.len());
-                let length = empty_string.len();
+                // Store length including null terminator to match constant declaration
+                let length = empty_string.len() + 1;
                 self.string_constants.insert(empty_string.clone(), (const_name, length));
             }
             let (const_name, _) = self.string_constants.get(&empty_string).unwrap();
             Ok(Some(const_name.clone()))
         }
+    }
+
+    /// Generate LLVM IR for string length expression
+    fn generate_string_len(&mut self, string_len: &StringLenExpr) -> Result<Option<String>> {
+        let string_val = self.generate_expression(&string_len.string)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid string in len".to_string()))?;
+
+        // Check if this is a string constant (contains getelementptr or @str_const_)
+        if string_val.contains("@str_const_") || string_val.starts_with("getelementptr") {
+            // Find the length from string_constants
+            let length = self.find_string_constant_length(&string_val).unwrap_or(0);
+            
+            let result_reg = self.next_register();
+            self.instructions.push(format!("  %{} = add i64 {}, 0", result_reg, length));
+            Ok(Some(result_reg))
+        } else {
+            // string_val is an i8* pointer to a SilicaString struct (for runtime strings)
+            // Call runtime function to get the length
+            // First, ensure we have a register for the string pointer
+            let string_ptr_reg = if string_val.starts_with('%') {
+                string_val.trim_start_matches('%').to_string()
+            } else if string_val.starts_with("getelementptr") {
+                // Need to evaluate the getelementptr first - convert from constant expression to instruction format
+                let temp_reg = self.next_register();
+                let gep_instruction = self.convert_gep_to_instruction_format(&string_val);
+                self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+                temp_reg.trim_start_matches('%').to_string()
+            } else {
+                // Assume it's already a register name
+                string_val.trim_start_matches('%').to_string()
+            };
+            
+            // Call silica_string_len runtime function
+            let result_reg = self.next_register();
+            self.instructions.push(format!("  %{} = call i64 @silica_string_len(i8* %{})", result_reg, string_ptr_reg));
+            
+            Ok(Some(result_reg))
+        }
+    }
+
+    /// Generate LLVM IR for string character length expression
+    fn generate_string_len_chars(&mut self, string_len_chars: &StringLenCharsExpr) -> Result<Option<String>> {
+        let string_val = self.generate_expression(&string_len_chars.string)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid string in len_chars".to_string()))?;
+
+        // Check if this is a string constant (contains getelementptr or @str_const_)
+        if string_val.contains("@str_const_") || string_val.starts_with("getelementptr") {
+            // Find the string content from string_constants and count characters
+            let char_count = if let Some(const_name) = self.extract_constant_name(&string_val) {
+                // Find the string content by constant name
+                self.string_constants.iter()
+                    .find(|(_, (name, _))| name == &const_name)
+                    .map(|(content, _)| content.chars().count())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            
+            let result_reg = self.next_register();
+            self.instructions.push(format!("  %{} = add i64 {}, 0", result_reg, char_count));
+            Ok(Some(result_reg))
+        } else {
+            // string_val is an i8* pointer to a SilicaString struct (for runtime strings)
+            // Call runtime function to get the character count
+            let string_ptr_reg = if string_val.starts_with('%') {
+                string_val.trim_start_matches('%').to_string()
+            } else if string_val.starts_with("getelementptr") {
+                // Need to evaluate the getelementptr first - convert from constant expression to instruction format
+                let temp_reg = self.next_register();
+                let gep_instruction = self.convert_gep_to_instruction_format(&string_val);
+                self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+                temp_reg.trim_start_matches('%').to_string()
+            } else {
+                // Assume it's already a register name
+                string_val.trim_start_matches('%').to_string()
+            };
+            
+            // Call silica_string_len_chars runtime function
+            let result_reg = self.next_register();
+            self.instructions.push(format!("  %{} = call i64 @silica_string_len_chars(i8* %{})", result_reg, string_ptr_reg));
+            
+            Ok(Some(result_reg))
+        }
+    }
+
+    /// Convert getelementptr from constant expression format to instruction format
+    /// Constant format: getelementptr inbounds ([LEN x i8], [LEN x i8]* @CONST, i64 0, i64 0)
+    /// Instruction format: getelementptr inbounds [LEN x i8], [LEN x i8]* @CONST, i32 0, i32 0
+    fn convert_gep_to_instruction_format(&self, gep_expr: &str) -> String {
+        if gep_expr.starts_with("getelementptr inbounds (") {
+            // Parse: getelementptr inbounds ([LEN x i8], [LEN x i8]* @CONST, i64 0, i64 0)
+            // Convert to: getelementptr inbounds [LEN x i8], [LEN x i8]* @CONST, i32 0, i32 0
+            // Find the opening parenthesis after "inbounds "
+            if let Some(open_paren_pos) = gep_expr.find('(') {
+                // Find the closing bracket of the first array type: [LEN x i8]
+                if let Some(close_bracket_pos) = gep_expr[open_paren_pos+1..].find(']') {
+                    let array_type_end = open_paren_pos + 1 + close_bracket_pos + 1;
+                    // Extract the array type: [LEN x i8]
+                    let array_type = &gep_expr[open_paren_pos+1..array_type_end];
+                    // Find the comma that separates the two types
+                    if let Some(comma_pos) = gep_expr[array_type_end..].find(',') {
+                        // Everything after the comma: " [LEN x i8]* @CONST, i64 0, i64 0)"
+                        let after_comma = &gep_expr[array_type_end + comma_pos + 1..];
+                        // Trim whitespace and closing parenthesis
+                        let pointer_and_indices = after_comma.trim_end_matches(')').trim_start();
+                        // pointer_and_indices = "[LEN x i8]* @CONST, i64 0, i64 0"
+                        // Convert i64 indices to i32 for array indexing (more standard in LLVM IR)
+                        let pointer_and_indices_i32 = pointer_and_indices.replace("i64 0", "i32 0");
+                        // Use array type as element type for array pointers
+                        return format!("getelementptr inbounds {}, {}", array_type, pointer_and_indices_i32);
+                    }
+                }
+            }
+        }
+        // If parsing fails, return as-is (might already be in instruction format)
+        gep_expr.to_string()
+    }
+
+    /// Helper to extract constant name from getelementptr expression or direct reference
+    fn extract_constant_name(&self, const_ref: &str) -> Option<String> {
+        // First try exact match
+        for (_content, (name, _)) in &self.string_constants {
+            if name == const_ref {
+                return Some(name.clone());
+            }
+        }
+
+        // If not found, try to parse getelementptr expression
+        if const_ref.starts_with("getelementptr inbounds") && const_ref.contains("@str_const_") {
+            if let Some(at_pos) = const_ref.find("@str_const_") {
+                let name_start = at_pos;
+                let name_end = const_ref[name_start..].find(|c: char| !c.is_alphanumeric() && c != '_' && c != '@')
+                    .map(|pos| name_start + pos)
+                    .unwrap_or(const_ref.len());
+                return Some(const_ref[name_start..name_end].to_string());
+            }
+        }
+
+        None
+    }
+
+    /// Generate LLVM IR for string concatenation expression
+    fn generate_string_concat(&mut self, string_concat: &StringConcatExpr) -> Result<Option<String>> {
+        let a_val = self.generate_expression(&string_concat.a)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid first string in concat".to_string()))?;
+        let b_val = self.generate_expression(&string_concat.b)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid second string in concat".to_string()))?;
+
+        // Both arguments need to be i8* pointers
+        // For string constants (getelementptr expressions), they need to be evaluated and formatted
+        // For runtime strings, they're already i8* pointers to SilicaString structs
+        
+        // Handle first argument (a)
+        let a_arg = if a_val.starts_with('%') {
+            // Already a register
+            format!("i8* {}", a_val)
+        } else if a_val.starts_with("getelementptr") {
+            // String constant - evaluate getelementptr first, then use in function call
+            let temp_reg = self.next_register();
+            let gep_instruction = self.convert_gep_to_instruction_format(&a_val);
+            self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+            format!("i8* %{}", temp_reg.trim_start_matches('%'))
+        } else {
+            // Register name without % prefix - add it
+            format!("i8* %{}", a_val)
+        };
+
+        // Handle second argument (b)
+        let b_arg = if b_val.starts_with('%') {
+            // Already a register
+            format!("i8* {}", b_val)
+        } else if b_val.starts_with("getelementptr") {
+            // String constant - evaluate getelementptr first, then use in function call
+            let temp_reg = self.next_register();
+            let gep_instruction = self.convert_gep_to_instruction_format(&b_val);
+            self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+            format!("i8* %{}", temp_reg.trim_start_matches('%'))
+        } else {
+            // Register name without % prefix - add it
+            format!("i8* %{}", b_val)
+        };
+
+        // Call silica_string_concat runtime function
+        // Returns i8* pointer to new SilicaString struct
+        let result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = call i8* @silica_string_concat({}, {})", result_reg, a_arg, b_arg));
+        
+        Ok(Some(result_reg))
     }
 
     /// Generate LLVM IR for exec_command expression
