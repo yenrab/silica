@@ -227,6 +227,8 @@ pub enum Expression {
     StringConcat(StringConcatExpr),
     StringSubstring(StringSubstringExpr),
     StringSubstringUntilChar(StringSubstringUntilCharExpr),
+    StringStartsWith(StringStartsWithExpr),
+    StringEndsWith(StringEndsWithExpr),
 
     // Process execution operations
     ExecCommand(ExecCommandExpr),
@@ -567,6 +569,22 @@ pub struct StringSubstringUntilCharExpr {
     pub string: Box<Expression>,
     pub start: Box<Expression>,
     pub char: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// String starts with expression: starts_with(s, prefix)
+#[derive(Debug, Clone)]
+pub struct StringStartsWithExpr {
+    pub string: Box<Expression>,
+    pub prefix: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// String ends with expression: ends_with(s, suffix)
+#[derive(Debug, Clone)]
+pub struct StringEndsWithExpr {
+    pub string: Box<Expression>,
+    pub suffix: Box<Expression>,
     pub location: SourceLocation,
 }
 

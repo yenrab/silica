@@ -963,6 +963,10 @@ impl Parser {
                 self.parse_string_substring()
             } else if name == "substring_until_char" && self.match_token(TokenKind::LeftParen) {
                 self.parse_string_substring_until_char()
+            } else if name == "starts_with" && self.match_token(TokenKind::LeftParen) {
+                self.parse_string_starts_with()
+            } else if name == "ends_with" && self.match_token(TokenKind::LeftParen) {
+                self.parse_string_ends_with()
             } else if self.match_token(TokenKind::LeftBrace) {
                 // Parse struct literal: TypeName { field: value, ... }
                 let type_expr = Expression::Identifier(name);
@@ -1315,6 +1319,36 @@ impl Parser {
             string,
             start,
             char: char_expr,
+            location,
+        }))
+    }
+
+    /// Parse string starts with expression: starts_with(s, prefix)
+    fn parse_string_starts_with(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let string = Box::new(self.expression()?);
+        self.consume(TokenKind::Comma, "Expected ',' after string argument in starts_with")?;
+        let prefix = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after starts_with arguments")?;
+
+        Ok(Expression::StringStartsWith(StringStartsWithExpr {
+            string,
+            prefix,
+            location,
+        }))
+    }
+
+    /// Parse string ends with expression: ends_with(s, suffix)
+    fn parse_string_ends_with(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let string = Box::new(self.expression()?);
+        self.consume(TokenKind::Comma, "Expected ',' after string argument in ends_with")?;
+        let suffix = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after ends_with arguments")?;
+
+        Ok(Expression::StringEndsWith(StringEndsWithExpr {
+            string,
+            suffix,
             location,
         }))
     }

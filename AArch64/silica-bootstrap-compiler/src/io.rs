@@ -163,25 +163,53 @@ pub extern "C" fn silica_string_len_chars(silica_string_ptr: *const u8) -> usize
 
 /// Helper to extract string data and length from either a string constant pointer or SilicaString pointer
 unsafe fn get_string_data_and_length(ptr: *const u8) -> Option<(*const u8, usize)> {
+    // eprintln!("[DEBUG] get_string_data_and_length: ptr = {:p}", ptr);
+    
     if ptr.is_null() {
+        // eprintln!("[DEBUG] get_string_data_and_length: ptr is null, returning None");
         return None;
     }
 
     // Try to interpret as SilicaString pointer first
     // SilicaString is { data: *mut u8, length: usize }
     let silica_string_ptr = ptr as *const usize;
+    // eprintln!("[DEBUG] get_string_data_and_length: silica_string_ptr = {:p}", silica_string_ptr);
+    
+    // Read the first field (data pointer)
+    // eprintln!("[DEBUG] get_string_data_and_length: About to read data_ptr from struct...");
     let data_ptr = *silica_string_ptr as *const u8;
+    // eprintln!("[DEBUG] get_string_data_and_length: data_ptr = {:p}", data_ptr);
+    
+    // Read the second field (length)
+    // eprintln!("[DEBUG] get_string_data_and_length: About to read length from struct...");
     let length = *(silica_string_ptr.add(1));
+    // eprintln!("[DEBUG] get_string_data_and_length: length = {}", length);
 
     // Heuristic: if data_ptr is not null and length is reasonable, assume it's a SilicaString
-    if !data_ptr.is_null() && length < 1024 * 1024 * 1024 {
-        // Verify the data pointer is valid by checking if it's different from the struct pointer
-        if data_ptr != ptr {
-            return Some((data_ptr, length));
-        }
+    // Also check that data_ptr is a reasonable pointer value (not too large, which would indicate
+    // we're reading string data as if it were a pointer)
+    let data_ptr_value = data_ptr as usize;
+    let ptr_value = ptr as usize;
+    
+    // Check if data_ptr looks like a valid pointer:
+    // - Not null
+    // - Different from struct pointer
+    // - Within reasonable memory range (typical user space addresses on 64-bit systems)
+    // - Length is reasonable
+    let looks_like_valid_pointer = !data_ptr.is_null() 
+        && data_ptr != ptr
+        && data_ptr_value < 0x7fffffffffff  // Reasonable upper bound for user space
+        && data_ptr_value > 0x1000;  // Reasonable lower bound (avoid null page)
+    
+    if looks_like_valid_pointer && length < 1024 * 1024 * 1024 {
+        // eprintln!("[DEBUG] get_string_data_and_length: Detected as SilicaString (valid pointer), returning (data_ptr={:p}, length={})", data_ptr, length);
+        return Some((data_ptr, length));
+    } else {
+        // eprintln!("[DEBUG] get_string_data_and_length: Failed SilicaString heuristic (looks_like_valid_pointer={}, data_ptr={:p}, length={}), treating as C string", looks_like_valid_pointer, data_ptr, length);
     }
 
     // Otherwise, treat as a null-terminated C string
+    // eprintln!("[DEBUG] get_string_data_and_length: Treating as null-terminated C string, scanning for null terminator...");
     let mut len = 0;
     let mut p = ptr;
     while *p != 0 {
@@ -189,9 +217,11 @@ unsafe fn get_string_data_and_length(ptr: *const u8) -> Option<(*const u8, usize
         p = p.add(1);
         if len > 1024 * 1024 {
             // Safety limit
+            // eprintln!("[DEBUG] get_string_data_and_length: Hit safety limit (1MB), stopping scan");
             break;
         }
     }
+    // eprintln!("[DEBUG] get_string_data_and_length: C string length = {}, returning (ptr={:p}, len={})", len, ptr, len);
     Some((ptr, len))
 }
 
@@ -392,4 +422,80 @@ pub extern "C" fn silica_string_substring_until_char(str_ptr: *const u8, start: 
 
     // Create SilicaString from the substring bytes
     create_silica_string_from_bytes(&buffer)
+}
+
+/// Check if a string starts with a prefix
+/// Accepts either string constant pointers (i8* to string data) or SilicaString pointers (i8* to SilicaString struct)
+/// Returns true if the string starts with the prefix, false otherwise
+#[no_mangle]
+pub extern "C" fn silica_string_starts_with(str_ptr: *const u8, prefix_ptr: *const u8) -> bool {
+    // eprintln!("[DEBUG] silica_string_starts_with: called with str_ptr={:p}, prefix_ptr={:p}", str_ptr, prefix_ptr);
+    
+    if str_ptr.is_null() || prefix_ptr.is_null() {
+        // eprintln!("[DEBUG] silica_string_starts_with: One or both pointers are null, returning false");
+        return false;
+    }
+
+    // Get string data and lengths
+    // eprintln!("[DEBUG] silica_string_starts_with: Getting string data and length for str_ptr...");
+    let (str_data, str_len) = unsafe { get_string_data_and_length(str_ptr).unwrap_or((std::ptr::null(), 0)) };
+    // eprintln!("[DEBUG] silica_string_starts_with: str_data={:p}, str_len={}", str_data, str_len);
+    
+    // eprintln!("[DEBUG] silica_string_starts_with: Getting string data and length for prefix_ptr...");
+    let (prefix_data, prefix_len) = unsafe { get_string_data_and_length(prefix_ptr).unwrap_or((std::ptr::null(), 0)) };
+    // eprintln!("[DEBUG] silica_string_starts_with: prefix_data={:p}, prefix_len={}", prefix_data, prefix_len);
+
+    // Empty prefix always matches
+    if prefix_len == 0 {
+        // eprintln!("[DEBUG] silica_string_starts_with: prefix_len is 0, returning true");
+        return true;
+    }
+
+    // If prefix is longer than string, can't match
+    if prefix_len > str_len {
+        // eprintln!("[DEBUG] silica_string_starts_with: prefix_len ({}) > str_len ({}), returning false", prefix_len, str_len);
+        return false;
+    }
+
+    // Compare bytes
+    // eprintln!("[DEBUG] silica_string_starts_with: Comparing {} bytes...", prefix_len);
+    unsafe {
+        let str_slice = std::slice::from_raw_parts(str_data, prefix_len);
+        let prefix_slice = std::slice::from_raw_parts(prefix_data, prefix_len);
+        let result = str_slice == prefix_slice;
+        // eprintln!("[DEBUG] silica_string_starts_with: Comparison result = {}", result);
+        result
+    }
+}
+
+/// Check if a string ends with a suffix
+/// Accepts either string constant pointers (i8* to string data) or SilicaString pointers (i8* to SilicaString struct)
+/// Returns true if the string ends with the suffix, false otherwise
+#[no_mangle]
+pub extern "C" fn silica_string_ends_with(str_ptr: *const u8, suffix_ptr: *const u8) -> bool {
+    if str_ptr.is_null() || suffix_ptr.is_null() {
+        return false;
+    }
+
+    // Get string data and lengths
+    let (str_data, str_len) = unsafe { get_string_data_and_length(str_ptr).unwrap_or((std::ptr::null(), 0)) };
+    let (suffix_data, suffix_len) = unsafe { get_string_data_and_length(suffix_ptr).unwrap_or((std::ptr::null(), 0)) };
+
+    // Empty suffix always matches
+    if suffix_len == 0 {
+        return true;
+    }
+
+    // If suffix is longer than string, can't match
+    if suffix_len > str_len {
+        return false;
+    }
+
+    // Compare bytes from the end
+    // Start comparing from position (str_len - suffix_len)
+    unsafe {
+        let str_slice = std::slice::from_raw_parts(str_data.add(str_len - suffix_len), suffix_len);
+        let suffix_slice = std::slice::from_raw_parts(suffix_data, suffix_len);
+        str_slice == suffix_slice
+    }
 }

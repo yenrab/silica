@@ -206,6 +206,8 @@ impl CodeGenerator {
             Expression::StringConcat(string_concat) => Some(&string_concat.location),
             Expression::StringSubstring(string_substring) => Some(&string_substring.location),
             Expression::StringSubstringUntilChar(string_substring_until_char) => Some(&string_substring_until_char.location),
+            Expression::StringStartsWith(string_starts_with) => Some(&string_starts_with.location),
+            Expression::StringEndsWith(string_ends_with) => Some(&string_ends_with.location),
             Expression::ExecCommand(exec_cmd) => Some(&exec_cmd.location),
             Expression::StructLiteral(struct_lit) => Some(&struct_lit.location),
             Expression::FieldAccess(field_access) => Some(&field_access.location),
@@ -464,6 +466,8 @@ impl CodeGenerator {
         self.instructions.push("declare i8* @silica_string_concat(i8*, i8*)".to_string());
         self.instructions.push("declare i8* @silica_string_substring(i8*, i64, i64)".to_string());
         self.instructions.push("declare i8* @silica_string_substring_until_char(i8*, i64, i32)".to_string());
+        self.instructions.push("declare i1 @silica_string_starts_with(i8*, i8*)".to_string());
+        self.instructions.push("declare i1 @silica_string_ends_with(i8*, i8*)".to_string());
 
         // Generate all declarations first to collect all string constants
         for decl in &program.declarations {
@@ -1058,6 +1062,8 @@ impl CodeGenerator {
             Expression::StringConcat(string_concat) => self.generate_string_concat(string_concat),
             Expression::StringSubstring(string_substring) => self.generate_string_substring(string_substring),
             Expression::StringSubstringUntilChar(string_substring_until_char) => self.generate_string_substring_until_char(string_substring_until_char),
+            Expression::StringStartsWith(string_starts_with) => self.generate_string_starts_with(string_starts_with),
+            Expression::StringEndsWith(string_ends_with) => self.generate_string_ends_with(string_ends_with),
             Expression::ExecCommand(exec_cmd) => self.generate_exec_command(exec_cmd),
             Expression::FunctionLiteral(func_lit) => self.generate_function_literal(func_lit),
             Expression::Region(_) => {
@@ -1286,7 +1292,12 @@ impl CodeGenerator {
                     self.instructions.push(format!("  {} = zext i1 {} to {}", extend_reg, trimmed, extend_type));
                     extend_reg
                 } else {
-                    trimmed
+                    // Ensure register names have % prefix
+                    if trimmed.starts_with('%') {
+                        trimmed
+                    } else {
+                        format!("%{}", trimmed)
+                    }
                 }
             };
 
@@ -1311,7 +1322,12 @@ impl CodeGenerator {
                     self.instructions.push(format!("  {} = zext i1 {} to {}", extend_reg, trimmed, extend_type));
                     extend_reg
                 } else {
-                    trimmed
+                    // Ensure register names have % prefix
+                    if trimmed.starts_with('%') {
+                        trimmed
+                    } else {
+                        format!("%{}", trimmed)
+                    }
                 }
             };
 
@@ -8789,6 +8805,112 @@ impl CodeGenerator {
         // Returns i8* pointer to new SilicaString struct
         let result_reg = self.next_register();
         self.instructions.push(format!("  %{} = call i8* @silica_string_substring_until_char({}, {}, {})", result_reg, string_arg, start_arg, char_arg));
+        
+        Ok(Some(result_reg))
+    }
+
+    /// Generate LLVM IR for string starts with expression
+    fn generate_string_starts_with(&mut self, string_starts_with: &StringStartsWithExpr) -> Result<Option<String>> {
+        let string_val = self.generate_expression(&string_starts_with.string)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid string in starts_with".to_string()))?;
+        let prefix_val = self.generate_expression(&string_starts_with.prefix)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid prefix in starts_with".to_string()))?;
+
+        // Format string argument - handle both string constants and runtime strings
+        // For runtime strings, pass the SilicaString struct pointer directly
+        // get_string_data_and_length will extract the data pointer from the struct
+        let string_arg = if string_val.contains("@str_const_") || string_val.starts_with("getelementptr") {
+            // String constant - evaluate getelementptr first
+            let temp_reg = self.next_register();
+            let gep_instruction = self.convert_gep_to_instruction_format(&string_val);
+            self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+            format!("i8* %{}", temp_reg.trim_start_matches('%'))
+        } else {
+            // Runtime string: pass the SilicaString struct pointer directly
+            // get_string_data_and_length will handle extracting the data pointer
+            if string_val.starts_with('%') {
+                format!("i8* {}", string_val)
+            } else {
+                format!("i8* %{}", string_val)
+            }
+        };
+
+        // Format prefix argument - handle both string constants and runtime strings
+        // For runtime strings, pass the SilicaString struct pointer directly
+        // get_string_data_and_length will extract the data pointer from the struct
+        let prefix_arg = if prefix_val.contains("@str_const_") || prefix_val.starts_with("getelementptr") {
+            // String constant - evaluate getelementptr first
+            let temp_reg = self.next_register();
+            let gep_instruction = self.convert_gep_to_instruction_format(&prefix_val);
+            self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+            format!("i8* %{}", temp_reg.trim_start_matches('%'))
+        } else {
+            // Runtime string: pass the SilicaString struct pointer directly
+            // get_string_data_and_length will handle extracting the data pointer
+            if prefix_val.starts_with('%') {
+                format!("i8* {}", prefix_val)
+            } else {
+                format!("i8* %{}", prefix_val)
+            }
+        };
+
+        // Call silica_string_starts_with runtime function
+        // Returns i1 (bool)
+        let result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = call i1 @silica_string_starts_with({}, {})", result_reg, string_arg, prefix_arg));
+        
+        Ok(Some(result_reg))
+    }
+
+    /// Generate LLVM IR for string ends with expression
+    fn generate_string_ends_with(&mut self, string_ends_with: &StringEndsWithExpr) -> Result<Option<String>> {
+        let string_val = self.generate_expression(&string_ends_with.string)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid string in ends_with".to_string()))?;
+        let suffix_val = self.generate_expression(&string_ends_with.suffix)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid suffix in ends_with".to_string()))?;
+
+        // Format string argument - handle both string constants and runtime strings
+        // For runtime strings, pass the SilicaString struct pointer directly
+        // get_string_data_and_length will extract the data pointer from the struct
+        let string_arg = if string_val.contains("@str_const_") || string_val.starts_with("getelementptr") {
+            // String constant - evaluate getelementptr first
+            let temp_reg = self.next_register();
+            let gep_instruction = self.convert_gep_to_instruction_format(&string_val);
+            self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+            format!("i8* %{}", temp_reg.trim_start_matches('%'))
+        } else {
+            // Runtime string: pass the SilicaString struct pointer directly
+            // get_string_data_and_length will handle extracting the data pointer
+            if string_val.starts_with('%') {
+                format!("i8* {}", string_val)
+            } else {
+                format!("i8* %{}", string_val)
+            }
+        };
+
+        // Format suffix argument - handle both string constants and runtime strings
+        // For runtime strings, pass the SilicaString struct pointer directly
+        // get_string_data_and_length will extract the data pointer from the struct
+        let suffix_arg = if suffix_val.contains("@str_const_") || suffix_val.starts_with("getelementptr") {
+            // String constant - evaluate getelementptr first
+            let temp_reg = self.next_register();
+            let gep_instruction = self.convert_gep_to_instruction_format(&suffix_val);
+            self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+            format!("i8* %{}", temp_reg.trim_start_matches('%'))
+        } else {
+            // Runtime string: pass the SilicaString struct pointer directly
+            // get_string_data_and_length will handle extracting the data pointer
+            if suffix_val.starts_with('%') {
+                format!("i8* {}", suffix_val)
+            } else {
+                format!("i8* %{}", suffix_val)
+            }
+        };
+
+        // Call silica_string_ends_with runtime function
+        // Returns i1 (bool)
+        let result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = call i1 @silica_string_ends_with({}, {})", result_reg, string_arg, suffix_arg));
         
         Ok(Some(result_reg))
     }

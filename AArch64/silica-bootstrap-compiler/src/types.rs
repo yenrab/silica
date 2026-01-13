@@ -264,6 +264,8 @@ impl<'a> TypeChecker<'a> {
             Expression::StringConcat(string_concat) => &string_concat.location,
             Expression::StringSubstring(string_substring) => &string_substring.location,
             Expression::StringSubstringUntilChar(string_substring_until_char) => &string_substring_until_char.location,
+            Expression::StringStartsWith(string_starts_with) => &string_starts_with.location,
+            Expression::StringEndsWith(string_ends_with) => &string_ends_with.location,
             Expression::ExecCommand(exec_cmd) => &exec_cmd.location,
             Expression::StructLiteral(struct_lit) => &struct_lit.location,
             Expression::FieldAccess(field_access) => &field_access.location,
@@ -283,6 +285,8 @@ impl<'a> TypeChecker<'a> {
             Expression::StringConcat(string_concat) => &string_concat.location,
             Expression::StringSubstring(string_substring) => &string_substring.location,
             Expression::StringSubstringUntilChar(string_substring_until_char) => &string_substring_until_char.location,
+            Expression::StringStartsWith(string_starts_with) => &string_starts_with.location,
+            Expression::StringEndsWith(string_ends_with) => &string_ends_with.location,
             Expression::ExecCommand(exec_cmd) => &exec_cmd.location,
         }
     }
@@ -812,6 +816,8 @@ impl<'a> TypeChecker<'a> {
             Expression::StringConcat(string_concat) => self.infer_string_concat(string_concat)?,
             Expression::StringSubstring(string_substring) => self.infer_string_substring(string_substring)?,
             Expression::StringSubstringUntilChar(string_substring_until_char) => self.infer_string_substring_until_char(string_substring_until_char)?,
+            Expression::StringStartsWith(string_starts_with) => self.infer_string_starts_with(string_starts_with)?,
+            Expression::StringEndsWith(string_ends_with) => self.infer_string_ends_with(string_ends_with)?,
             Expression::ExecCommand(exec_cmd) => self.infer_exec_command(exec_cmd)?,
             Expression::Tuple(exprs) => self.infer_tuple(exprs)?,
             Expression::StructLiteral(struct_lit) => {
@@ -1042,6 +1048,8 @@ impl<'a> TypeChecker<'a> {
             Expression::StringConcat(string_concat) => Some(&string_concat.location),
             Expression::StringSubstring(string_substring) => Some(&string_substring.location),
             Expression::StringSubstringUntilChar(string_substring_until_char) => Some(&string_substring_until_char.location),
+            Expression::StringStartsWith(string_starts_with) => Some(&string_starts_with.location),
+            Expression::StringEndsWith(string_ends_with) => Some(&string_ends_with.location),
             Expression::ExecCommand(exec_cmd) => Some(&exec_cmd.location),
             Expression::StructLiteral(struct_lit) => Some(&struct_lit.location),
             Expression::FieldAccess(field_access) => Some(&field_access.location),
@@ -2443,6 +2451,26 @@ impl<'a> TypeChecker<'a> {
         self.unify(&char_type, &Type::Char)?;
         // substring_until_char returns string
         Ok(Type::String)
+    }
+
+    fn infer_string_starts_with(&mut self, string_starts_with: &StringStartsWithExpr) -> Result<Type> {
+        // Check that both arguments are strings
+        let string_type = self.infer_expression(&string_starts_with.string)?;
+        self.unify(&string_type, &Type::String)?;
+        let prefix_type = self.infer_expression(&string_starts_with.prefix)?;
+        self.unify(&prefix_type, &Type::String)?;
+        // starts_with returns bool
+        Ok(Type::Bool)
+    }
+
+    fn infer_string_ends_with(&mut self, string_ends_with: &StringEndsWithExpr) -> Result<Type> {
+        // Check that both arguments are strings
+        let string_type = self.infer_expression(&string_ends_with.string)?;
+        self.unify(&string_type, &Type::String)?;
+        let suffix_type = self.infer_expression(&string_ends_with.suffix)?;
+        self.unify(&suffix_type, &Type::String)?;
+        // ends_with returns bool
+        Ok(Type::Bool)
     }
 
     fn infer_create_directory(&mut self, create_dir: &CreateDirectoryExpr) -> Result<Type> {

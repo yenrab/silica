@@ -333,6 +333,18 @@ impl EffectChecker {
                 effects.extend(self.collect_expression_effects(&string_substring_until_char.char)?);
                 Ok(effects)
             }
+            Expression::StringStartsWith(string_starts_with) => {
+                let mut effects = Vec::new();
+                effects.extend(self.collect_expression_effects(&string_starts_with.string)?);
+                effects.extend(self.collect_expression_effects(&string_starts_with.prefix)?);
+                Ok(effects)
+            }
+            Expression::StringEndsWith(string_ends_with) => {
+                let mut effects = Vec::new();
+                effects.extend(self.collect_expression_effects(&string_ends_with.string)?);
+                effects.extend(self.collect_expression_effects(&string_ends_with.suffix)?);
+                Ok(effects)
+            }
             Expression::ReadLines(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::AppendFile(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::FileExists(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
@@ -754,6 +766,8 @@ impl EffectAnalyzer {
             Expression::StringConcat(string_concat) => Some(&string_concat.location),
             Expression::StringSubstring(string_substring) => Some(&string_substring.location),
             Expression::StringSubstringUntilChar(string_substring_until_char) => Some(&string_substring_until_char.location),
+            Expression::StringStartsWith(string_starts_with) => Some(&string_starts_with.location),
+            Expression::StringEndsWith(string_ends_with) => Some(&string_ends_with.location),
             Expression::ReadLines(read) => Some(&read.location),
             Expression::AppendFile(append) => Some(&append.location),
             Expression::FileExists(exists) => Some(&exists.location),
