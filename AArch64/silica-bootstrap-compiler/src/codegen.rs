@@ -4868,18 +4868,51 @@ impl CodeGenerator {
         // Construct the method name: {type_name}_{method_name}
         let method_name = format!("{}_{}", type_name, field_access.field);
 
-        // Generate argument values, starting with %self
-        let mut arg_values = vec!["%self".to_string()];
+        // Resolve the callee signature from trait impls (so we can type arguments correctly)
+        let callee_sig = self.trait_impls.iter()
+            .find(|impl_| {
+                // Match impls for this concrete receiver type and containing this method name
+                matches!(&impl_.for_type, Type::Named(n) if n == type_name) && impl_.methods.contains_key(&field_access.field)
+            })
+            .and_then(|impl_| impl_.methods.get(&field_access.field));
 
-        // Add the call arguments
-        for arg in &call.arguments {
+        // Expected LLVM param types for the call arguments (excluding self).
+        // Fall back to i64 if we can't resolve.
+        let expected_param_types: Vec<String> = callee_sig
+            .map(|m| {
+                m.parameters.iter()
+                    .skip(1) // skip self
+                    .map(|p| self.type_map.silica_to_llvm_str(&p.type_))
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![]);
+
+        // Generate typed arguments, starting with self (i8*)
+        let mut typed_args = vec!["i8* %self".to_string()];
+
+        // Add the call arguments with LLVM types based on the callee signature
+        for (idx, arg) in call.arguments.iter().enumerate() {
             let arg_val = self.generate_expression_in_method(type_name, method, arg)?;
-            arg_values.push(arg_val);
+
+            // Determine expected type string for this argument position
+            let expected_ty = expected_param_types.get(idx).cloned().unwrap_or_else(|| "i64".to_string());
+
+            // Strip any existing type prefix so we can re-apply the expected type
+            let clean_arg = arg_val
+                .trim_start_matches("i64 ")
+                .trim_start_matches("i32 ")
+                .trim_start_matches("i1 ")
+                .trim_start_matches("i8* ")
+                .to_string();
+
+            // Ensure registers remain registers; literals remain literals
+            let typed_arg = format!("{} {}", expected_ty, clean_arg);
+            typed_args.push(typed_arg);
         }
 
         // Create a unique register for the result
         let result_reg = format!("%call_{}", self.instructions.len());
-        let args_str = arg_values.join(", ");
+        let args_str = typed_args.join(", ");
 
         // Generate the LLVM call instruction
         self.instructions.push(format!("  {} = call i64 @{}({})", result_reg, method_name, args_str));
