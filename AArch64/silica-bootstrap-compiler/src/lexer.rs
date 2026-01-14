@@ -21,10 +21,10 @@ impl Token {
 /// TokenKind enumerates all possible token types in Silica
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
-    // Keywords (28 total)
+    // Keywords (33 total)
     Actor, ActorRef, As, Atomic, Bool, Buf, Case, Cast, Char, Concurrency, CoreId, CoreSet, DeviceIO, EfficiencyCores, Includes, PerformanceCores,
-    Do, Effect, Else, End, Enum, Export, False, Fn, For, From, If,
-    Impl, Import, Int, Let, Mailbox, Mem, Module, Normal, Not, Of, Proc,
+    Do, Effect, Else, End, Enum, Export, False, Float16, Float32, Fn, For, From, If,
+    Impl, Import, Int8, Int16, Int32, Int64, Let, Mailbox, Mem, Module, Normal, Not, Of, Proc,
     Pub, Recv, Ref, Region, Return, Self_, Send, Spawn, String, Struct,
     Trait, True, Type, Underscore, Unit, Use, Where,
 
@@ -65,7 +65,7 @@ impl TokenKind {
             TokenKind::Else | TokenKind::End | TokenKind::Enum |
             TokenKind::Export | TokenKind::False | TokenKind::Fn |
             TokenKind::For | TokenKind::From |             TokenKind::If | TokenKind::Impl |
-            TokenKind::Import | TokenKind::Int | TokenKind::Let |
+            TokenKind::Import | TokenKind::Int8 | TokenKind::Int16 | TokenKind::Int32 | TokenKind::Int64 | TokenKind::Float16 | TokenKind::Float32 | TokenKind::Let |
             TokenKind::Mailbox | TokenKind::Mem | TokenKind::Module |
             TokenKind::Normal | TokenKind::Not | TokenKind::Of | TokenKind::Proc |
             TokenKind::Pub | TokenKind::Recv | TokenKind::Ref |
@@ -340,7 +340,12 @@ impl Lexer {
             "impl" => TokenKind::Impl,
             "includes" => TokenKind::Includes,
             "import" => TokenKind::Import,
-            "int" => TokenKind::Int,
+            "int8" => TokenKind::Int8,
+            "int16" => TokenKind::Int16,
+            "int32" => TokenKind::Int32,
+            "int64" => TokenKind::Int64,
+            "float16" => TokenKind::Float16,
+            "float32" => TokenKind::Float32,
             "let" => TokenKind::Let,
             "mailbox" => TokenKind::Mailbox,
             "mem" => TokenKind::Mem,

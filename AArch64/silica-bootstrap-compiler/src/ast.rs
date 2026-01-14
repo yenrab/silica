@@ -652,7 +652,12 @@ pub enum Type {
     // Primitive types
     Unit,
     Bool,
-    Int,
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    Float16,
+    Float32,
     Char,
     String,
 

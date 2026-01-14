@@ -224,7 +224,7 @@ impl CodeGenerator {
     fn types_equal_codegen(&self, t1: &Type, t2: &Type) -> bool {
         match (t1, t2) {
             (Type::Named(n1), Type::Named(n2)) => n1 == n2,
-            (Type::Int, Type::Int) => true,
+            (Type::Int64, Type::Int64) => true,
             (Type::Bool, Type::Bool) => true,
             (Type::Char, Type::Char) => true,
             (Type::String, Type::String) => true,
@@ -243,7 +243,12 @@ impl CodeGenerator {
                 } else {
                     // Check if it's a built-in type
                     match name.as_str() {
-                        "int" => Type::Int,
+                        "int8" => Type::Int8,
+                        "int16" => Type::Int16,
+                        "int32" => Type::Int32,
+                        "int64" => Type::Int64,
+                        "float16" => Type::Float16,
+                        "float32" => Type::Float32,
                         "bool" => Type::Bool,
                         "char" => Type::Char,
                         "string" => Type::String,
@@ -1097,7 +1102,12 @@ impl CodeGenerator {
     /// Get the size in bytes for a Silica type in LLVM
     fn get_type_size_bytes(&self, ty: &Type) -> i64 {
         match ty {
-            Type::Int => 8,      // i64
+            Type::Int8 => 1,       // i8
+            Type::Int16 => 2,      // i16
+            Type::Int32 => 4,       // i32
+            Type::Int64 => 8,       // i64
+            Type::Float16 => 2,     // half (f16)
+            Type::Float32 => 4,     // float (f32)
             Type::Bool => 1,     // i1
             Type::Char => 4,     // i32
             Type::String => 8,   // i8* (pointer)
@@ -1123,7 +1133,12 @@ impl CodeGenerator {
     /// Get the alignment in bytes for a Silica type in LLVM
     fn get_type_alignment_bytes(&self, ty: &Type) -> i64 {
         match ty {
-            Type::Int => 8,      // i64 alignment
+            Type::Int8 => 1,       // i8 alignment
+            Type::Int16 => 2,      // i16 alignment
+            Type::Int32 => 4,      // i32 alignment
+            Type::Int64 => 8,      // i64 alignment
+            Type::Float16 => 2,    // half alignment
+            Type::Float32 => 4,    // float alignment
             Type::Bool => 1,     // i1 alignment
             Type::Char => 4,     // i32 alignment
             Type::String => 8,   // i8* alignment
@@ -1217,7 +1232,12 @@ impl CodeGenerator {
                         if let Some(var_type) = self.variable_types.get(clean_reg) {
                             match var_type {
                                 Type::Char => "i32",
-                                Type::Int => "i64",
+                                Type::Int8 => "i8",
+                                Type::Int16 => "i16",
+                                Type::Int32 => "i32",
+                                Type::Int64 => "i64",
+                                Type::Float16 => "half",
+                                Type::Float32 => "float",
                                 Type::Bool => "i1",
                                 _ => "i64", // fallback
                             }
@@ -1240,7 +1260,12 @@ impl CodeGenerator {
                         if let Some(var_type) = self.variable_types.get(clean_reg) {
                             match var_type {
                                 Type::Char => "i32",
-                                Type::Int => "i64",
+                                Type::Int8 => "i8",
+                                Type::Int16 => "i16",
+                                Type::Int32 => "i32",
+                                Type::Int64 => "i64",
+                                Type::Float16 => "half",
+                                Type::Float32 => "float",
                                 Type::Bool => "i1",
                                 _ => "i64", // fallback
                             }
@@ -2231,8 +2256,8 @@ impl CodeGenerator {
                                                 }
                                             } else {
                                                 // Fallback: assume it's a function and create a default signature
-                                                let default_params = vec![Type::Int];
-                                                let default_return = Box::new(Type::Int);
+                                                let default_params = vec![Type::Int64];
+                                                let default_return = Box::new(Type::Int64);
                                                 let default_func_type = Type::Function {
                                                     parameters: default_params,
                                                     return_type: default_return,
@@ -2270,8 +2295,8 @@ impl CodeGenerator {
                                                 }
                                             } else {
                                                 // Fallback: assume it's a function and create a default signature
-                                                let default_params = vec![Type::Int];
-                                                let default_return = Box::new(Type::Int);
+                                                let default_params = vec![Type::Int64];
+                                                let default_return = Box::new(Type::Int64);
                                                 let default_func_type = Type::Function {
                                                     parameters: default_params,
                                                     return_type: default_return,
@@ -2492,7 +2517,12 @@ impl CodeGenerator {
     fn silica_type_to_llvm_type(&self, ty: &Type) -> inkwell::types::BasicMetadataTypeEnum<'static> {
         unsafe {
             match ty {
-                Type::Int => (*self.context).i64_type().into(),
+                Type::Int8 => (*self.context).i8_type().into(),
+                Type::Int16 => (*self.context).i16_type().into(),
+                Type::Int32 => (*self.context).i32_type().into(),
+                Type::Int64 => (*self.context).i64_type().into(),
+                Type::Float16 => (*self.context).f16_type().into(),
+                Type::Float32 => (*self.context).f32_type().into(),
                 Type::Bool => (*self.context).i1_type().into(),
                 Type::Char => (*self.context).i32_type().into(),
                 Type::String => (*self.context).i8_type().ptr_type(inkwell::AddressSpace::Generic).into(),
@@ -2548,7 +2578,12 @@ impl CodeGenerator {
     /// Convert a Silica type to LLVM type string
     fn get_llvm_type_string(&self, ty: &Type) -> String {
         match ty {
-            Type::Int => "i64".to_string(),
+            Type::Int8 => "i8".to_string(),
+            Type::Int16 => "i16".to_string(),
+            Type::Int32 => "i32".to_string(),
+            Type::Int64 => "i64".to_string(),
+            Type::Float16 => "half".to_string(),
+            Type::Float32 => "float".to_string(),
             Type::Bool => "i1".to_string(),
             Type::Char => "i32".to_string(),
             Type::String => "i8*".to_string(),
@@ -3070,7 +3105,7 @@ impl CodeGenerator {
                         func_lit.parameters.iter().map(|param| {
                             match &param.type_ {
                                 Type::Bool => context.i1_type().into(),
-                                Type::Int => context.i64_type().into(),
+                                Type::Int64 => context.i64_type().into(),
                                 Type::Char => context.i32_type().into(),
                                 _ => context.i8_type().ptr_type(inkwell::AddressSpace::Generic).into(), // Complex types as pointers
                             }
@@ -3085,7 +3120,7 @@ impl CodeGenerator {
                 let llvm_return_type = match return_type {
                     Type::Unit => context.void_type(),
                     Type::Bool => context.i1_type().into(),
-                    Type::Int => context.i64_type().into(),
+                    Type::Int64 => context.i64_type().into(),
                     Type::Char => context.i32_type().into(),
                     _ => context.i8_type().ptr_type(inkwell::AddressSpace::Generic).into(), // Complex types as pointers
                 };
@@ -3277,7 +3312,7 @@ impl CodeGenerator {
     #[cfg(feature = "llvm_backend")]
     fn type_to_string(&self, ty: &Type) -> String {
         match ty {
-            Type::Int => "int".to_string(),
+            Type::Int64 => "int".to_string(),
             Type::Bool => "bool".to_string(),
             Type::Char => "char".to_string(),
             Type::String => "string".to_string(),
@@ -4179,7 +4214,12 @@ impl CodeGenerator {
             match ty {
                 Type::Unit => (*self.context).i64_type().into(), // Unit is represented as i64 for now
                 Type::Bool => (*self.context).bool_type().into(),
-                Type::Int => (*self.context).i64_type().into(),
+                Type::Int8 => (*self.context).i8_type().into(),
+                Type::Int16 => (*self.context).i16_type().into(),
+                Type::Int32 => (*self.context).i32_type().into(),
+                Type::Int64 => (*self.context).i64_type().into(),
+                Type::Float16 => (*self.context).f16_type().into(),
+                Type::Float32 => (*self.context).f32_type().into(),
                 Type::Char => (*self.context).i32_type().into(),
                 Type::String => (*self.context).ptr_type(inkwell::AddressSpace::default()).into(),
                 Type::Tuple(_) => (*self.context).ptr_type(inkwell::AddressSpace::default()).into(), // Tuples as opaque pointers
@@ -4488,7 +4528,7 @@ impl CodeGenerator {
                                 } else {
                                     // For expressions without location (like literals), infer the type directly
                                     match **expr {
-                                        Expression::Literal(Literal::Int(_)) => Some(Type::Int),
+                                        Expression::Literal(Literal::Int(_)) => Some(Type::Int64),
                                         Expression::Literal(Literal::Bool(_)) => Some(Type::Bool),
                                         Expression::Literal(Literal::Char(_)) => Some(Type::Char),
                                         Expression::Literal(Literal::String(_)) => Some(Type::String),
@@ -4515,7 +4555,7 @@ impl CodeGenerator {
                                 } else {
                                     // For expressions without location (like literals), infer the type directly
                                     match **expr {
-                                        Expression::Literal(Literal::Int(_)) => Some(Type::Int),
+                                        Expression::Literal(Literal::Int(_)) => Some(Type::Int64),
                                         Expression::Literal(Literal::Bool(_)) => Some(Type::Bool),
                                         Expression::Literal(Literal::Char(_)) => Some(Type::Char),
                                         Expression::Literal(Literal::String(_)) => Some(Type::String),
@@ -4545,7 +4585,7 @@ impl CodeGenerator {
                                 } else {
                                     // For expressions without location (like literals), infer the type directly
                                     match **expr {
-                                        Expression::Literal(Literal::Int(_)) => Some(Type::Int),
+                                        Expression::Literal(Literal::Int(_)) => Some(Type::Int64),
                                         Expression::Literal(Literal::Bool(_)) => Some(Type::Bool),
                                         Expression::Literal(Literal::Char(_)) => Some(Type::Char),
                                         Expression::Literal(Literal::String(_)) => Some(Type::String),
@@ -4573,7 +4613,7 @@ impl CodeGenerator {
                                             }
                                             Pattern::Identifier(_) => {
                                                 // For untyped patterns, assume i64
-                                                pattern_types.push(Type::Int);
+                                                pattern_types.push(Type::Int64);
                                             }
                                             _ => {}
                                         }
@@ -4592,7 +4632,7 @@ impl CodeGenerator {
                                         let (size, alignment) = match silica_type {
                                             Type::Bool => (1, 1),
                                             Type::Char => (4, 4),
-                                            Type::Int => (8, 8),
+                                            Type::Int64 => (8, 8),
                                             Type::String => (8, 8),
                                             _ => (8, 8), // Default
                                         };
@@ -4644,7 +4684,7 @@ impl CodeGenerator {
                                                     self.instructions.push(format!("  {} = bitcast i8* {} to i1*", i1_cast_reg, elem_ptr_reg));
                                                     self.instructions.push(format!("  {} = load i1, i1* {}", final_val_reg, i1_cast_reg));
                                                 }
-                                                Type::Int => {
+                                                Type::Int64 => {
                                                     // Load as integer (i64)
                                                     let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
                                                     self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
@@ -4764,7 +4804,7 @@ impl CodeGenerator {
     /// Convert a Silica type to LLVM type string
     fn silica_type_to_llvm(&self, ty: &crate::ast::Type) -> Result<String> {
         match ty {
-            crate::ast::Type::Int => Ok("i64".to_string()),
+            crate::ast::Type::Int64 => Ok("i64".to_string()),
             crate::ast::Type::Bool => Ok("i1".to_string()),
             crate::ast::Type::Char => Ok("i32".to_string()), // Unicode code point
             crate::ast::Type::String => Ok("i8*".to_string()),
@@ -5418,19 +5458,19 @@ impl CodeGenerator {
                 Expression::Identifier(name) => {
                     self.variable_types.get(name)
                         .cloned()
-                        .unwrap_or(Type::Int) // Fallback if not found
+                        .unwrap_or(Type::Int64) // Fallback if not found
                 },
                 // For other expressions, try to get from expression_types
                 _ => {
                     if let Some(location) = crate::types::TypeChecker::try_get_expression_location(element_expr) {
                         self.expression_types.get(location)
                             .cloned()
-                            .unwrap_or(Type::Int)
+                            .unwrap_or(Type::Int64)
                     } else {
                         // For expressions without location, infer from the expression
                         match element_expr {
                             Expression::Literal(Literal::Bool(_)) => Type::Bool,
-                            Expression::Literal(Literal::Int(_)) => Type::Int,
+                            Expression::Literal(Literal::Int(_)) => Type::Int64,
                             Expression::Literal(Literal::Char(_)) => Type::Char,
                             Expression::Literal(Literal::String(_)) => Type::String,
                             Expression::StructLiteral(struct_lit) => {
@@ -5438,7 +5478,7 @@ impl CodeGenerator {
                                 Type::Named(struct_lit.type_name.clone())
                             },
                             Expression::Tuple(_) => Type::Tuple(vec![]), // Complex tuple type
-                            _ => Type::Int, // Default fallback
+                            _ => Type::Int64, // Default fallback
                         }
                     }
                 }
@@ -5564,7 +5604,7 @@ impl CodeGenerator {
     fn infer_expression_type(&self, expr: &Expression) -> Type {
         match expr {
             Expression::Literal(lit) => match lit {
-                Literal::Int(_) => Type::Int,
+                Literal::Int(_) => Type::Int64,
                 Literal::Bool(_) => Type::Bool,
                 Literal::Char(_) => Type::Char,
                 Literal::String(_) => Type::String,
@@ -5578,23 +5618,23 @@ impl CodeGenerator {
                     var_type.clone()
                 } else {
                     // Fallback for unknown identifiers (builtins, etc.)
-                    Type::Int
+                    Type::Int64
                 }
             }
-            Expression::Binary(_) => Type::Int, // Binary operations typically return Int
-            Expression::Unary(_) => Type::Int, // Unary operations typically return Int
-            Expression::Call(_) => Type::Int, // Function calls default to Int return
-            Expression::If(_) => Type::Int, // If expressions default to Int
-            Expression::Tuple(_) => Type::Int, // Nested tuples as Int (simplified)
+            Expression::Binary(_) => Type::Int64, // Binary operations typically return Int
+            Expression::Unary(_) => Type::Int64, // Unary operations typically return Int
+            Expression::Call(_) => Type::Int64, // Function calls default to Int return
+            Expression::If(_) => Type::Int64, // If expressions default to Int
+            Expression::Tuple(_) => Type::Int64, // Nested tuples as Int (simplified)
             // Other expression types default to Int for now
-            _ => Type::Int,
+            _ => Type::Int64,
         }
     }
 
     /// Get LLVM type information for a Silica type
     fn get_llvm_type_info(&self, silica_type: &Type) -> (String, i64, i64) {
         match silica_type {
-            Type::Int => ("i64".to_string(), 8, 8),
+            Type::Int64 => ("i64".to_string(), 8, 8),
             Type::Bool => ("i1".to_string(), 1, 1),
             Type::Char => ("i32".to_string(), 4, 4),
             Type::String => ("i8*".to_string(), 8, 8), // Pointer
@@ -5979,7 +6019,7 @@ impl CodeGenerator {
                                             has_typed_patterns = true;
                                             type_.clone()
                                         }
-                                        _ => Type::Int, // Temporary fallback
+                                        _ => Type::Int64, // Temporary fallback
                                     };
                                     element_types.push(elem_type);
                                 }
@@ -6032,7 +6072,7 @@ impl CodeGenerator {
                                     // Load the element value based on its type
                                     let elem_val_reg = format!("%tuple_elem_val_{}_{}", i, self.instructions.len());
                                     match elem_type {
-                                        Type::Int => {
+                                        Type::Int64 => {
                                             // Cast i8* to i64* and load
                                             let cast_reg = format!("%tuple_elem_cast_{}_{}", i, self.instructions.len());
                                             self.instructions.push(format!("  {} = bitcast i8* {} to i64*", cast_reg, elem_ptr_reg));
@@ -6089,8 +6129,8 @@ impl CodeGenerator {
                                                 // For function types, create a dummy internal type for storage
                                                 // The actual type checking ensures this is correct
                                                 let dummy_func_type = Type::Function {
-                                                    parameters: vec![Type::Int], // Simplified
-                                                    return_type: Box::new(Type::Int),
+                                                    parameters: vec![Type::Int64], // Simplified
+                                                    return_type: Box::new(Type::Int64),
                                                 };
                                                 self.add_function_variable(name.clone(), elem_val_reg, &dummy_func_type);
                                             } else {
@@ -6099,12 +6139,12 @@ impl CodeGenerator {
                                             // Store the type information
                                             // Convert ast::Type to the internal Type representation
                                             let silica_type = match type_ {
-                                                crate::ast::Type::Int => Type::Int,
+                                                crate::ast::Type::Int64 => Type::Int64,
                                                 crate::ast::Type::Bool => Type::Bool,
                                                 crate::ast::Type::Char => Type::Char,
                                                 crate::ast::Type::String => Type::String,
                                                 crate::ast::Type::Tuple(_) => Type::Tuple(vec![]), // Simplified
-                                                _ => Type::Int, // Fallback
+                                                _ => Type::Int64, // Fallback
                                             };
                                             self.variable_types.insert(name.clone(), silica_type);
                                         }
@@ -6625,7 +6665,7 @@ impl CodeGenerator {
             } else {
                 // For now, assume all captured variables are i64 if type is not found
                 // This is a temporary fix until proper type inference is implemented
-                captured_vars_with_types.push((name, Type::Int));
+                captured_vars_with_types.push((name, Type::Int64));
             }
         }
 
@@ -7230,7 +7270,7 @@ impl CodeGenerator {
                                             // Try to infer from the outer scope value if available
                                             self.lookup_variable_text(name).and_then(|outer_val| {
                                                 if outer_val.starts_with("i64 ") {
-                                                    Some(&Type::Int)
+                                                    Some(&Type::Int64)
                                                 } else if outer_val.starts_with("i8* ") {
                                                     Some(&Type::ActorRef)
                                                 } else {
@@ -7281,7 +7321,7 @@ impl CodeGenerator {
                                             let var_type = self.variable_types.get(name)
                                                 .or_else(|| {
                                                     if var_reg.starts_with("i64 ") {
-                                                        Some(&Type::Int)
+                                                        Some(&Type::Int64)
                                                     } else if var_reg.starts_with("i8* ") {
                                                         Some(&Type::ActorRef)
                                                     } else {
@@ -7385,7 +7425,7 @@ impl CodeGenerator {
                         // Look up the actual LLVM type for this variable
                         match var_type {
                             Type::Char => ("i32", format!("%{}", clean_reg)),
-                            Type::Int => ("i64", format!("%{}", clean_reg)),
+                            Type::Int64 => ("i64", format!("%{}", clean_reg)),
                             Type::Bool => ("i1", format!("%{}", clean_reg)),
                             _ => ("i64", format!("%{}", clean_reg)), // fallback for other types
                         }
@@ -7426,7 +7466,7 @@ impl CodeGenerator {
                         // Look up the actual LLVM type for this variable
                         match var_type {
                             Type::Char => ("i32", format!("%{}", clean_reg)),
-                            Type::Int => ("i64", format!("%{}", clean_reg)),
+                            Type::Int64 => ("i64", format!("%{}", clean_reg)),
                             Type::Bool => ("i1", format!("%{}", clean_reg)),
                             _ => ("i64", format!("%{}", clean_reg)), // fallback for other types
                         }
@@ -7732,7 +7772,7 @@ impl CodeGenerator {
                 for (field_name, field_expr) in &struct_lit.fields {
                     let field_type = field_type_map.get(field_name)
                         .cloned()
-                        .unwrap_or_else(|| Type::Int); // Default to int if unknown
+                        .unwrap_or_else(|| Type::Int64); // Default to int if unknown
                     
                     let field_value = self.generate_function_literal_expr(field_expr, func_lit, body_instructions)?;
                     field_values.push((field_name.clone(), field_value));
@@ -7863,7 +7903,7 @@ impl CodeGenerator {
                                             .or_else(|| {
                                                 self.lookup_variable_text(var_name).and_then(|outer_val| {
                                                     if outer_val.starts_with("i64 ") {
-                                                        Some(&Type::Int)
+                                                        Some(&Type::Int64)
                                                     } else if outer_val.starts_with("i8* ") {
                                                         Some(&Type::ActorRef)
                                                     } else {
@@ -9125,7 +9165,12 @@ impl TypeMap {
         match silica_type {
             Type::Unit => "void".to_string(),
             Type::Bool => "i1".to_string(),
-            Type::Int => "i64".to_string(),
+            Type::Int8 => "i8".to_string(),
+            Type::Int16 => "i16".to_string(),
+            Type::Int32 => "i32".to_string(),
+            Type::Int64 => "i64".to_string(),
+            Type::Float16 => "half".to_string(),
+            Type::Float32 => "float".to_string(),
             Type::Char => "i32".to_string(),
             Type::String => "i8*".to_string(),
             Type::Function { .. } => "i8*".to_string(), // Function pointers as void*

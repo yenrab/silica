@@ -303,8 +303,19 @@ impl Parser {
     /// Parse a type expression
     fn parse_type(&mut self) -> Result<Type> {
         // Built-in types (check these first to avoid conflicts)
-        if self.match_token(TokenKind::Int) {
-            return Ok(Type::Int);
+        // Check numeric types in order to avoid partial matches (int64 before int)
+        if self.match_token(TokenKind::Int64) {
+            return Ok(Type::Int64);
+        } else if self.match_token(TokenKind::Int32) {
+            return Ok(Type::Int32);
+        } else if self.match_token(TokenKind::Int16) {
+            return Ok(Type::Int16);
+        } else if self.match_token(TokenKind::Int8) {
+            return Ok(Type::Int8);
+        } else if self.match_token(TokenKind::Float32) {
+            return Ok(Type::Float32);
+        } else if self.match_token(TokenKind::Float16) {
+            return Ok(Type::Float16);
         } else if self.match_token(TokenKind::Bool) {
             return Ok(Type::Bool);
         } else if self.match_token(TokenKind::Char) {
@@ -324,7 +335,12 @@ impl Parser {
                 Type::Named(name) => name.clone(),
                 Type::Unit => "unit".to_string(),
                 Type::Bool => "bool".to_string(),
-                Type::Int => "int".to_string(),
+                Type::Int8 => "int8".to_string(),
+                Type::Int16 => "int16".to_string(),
+                Type::Int32 => "int32".to_string(),
+                Type::Int64 => "int64".to_string(),
+                Type::Float16 => "float16".to_string(),
+                Type::Float32 => "float32".to_string(),
                 Type::Char => "char".to_string(),
                 Type::String => "string".to_string(),
                 _ => "unknown".to_string(), // Placeholder for complex types

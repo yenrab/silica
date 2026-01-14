@@ -80,7 +80,17 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     // Check built-in types
                     match name.as_str() {
-                        "int" => Ok(Type::Int),
+                        "int8" => Ok(Type::Int8),
+                        "int16" => Ok(Type::Int16),
+                        "int32" => Ok(Type::Int32),
+                        "int8" => Ok(Type::Int8),
+                "int16" => Ok(Type::Int16),
+                "int32" => Ok(Type::Int32),
+                "int64" => Ok(Type::Int64),
+                "float16" => Ok(Type::Float16),
+                "float32" => Ok(Type::Float32),
+                        "float16" => Ok(Type::Float16),
+                        "float32" => Ok(Type::Float32),
                         "bool" => Ok(Type::Bool),
                         "char" => Ok(Type::Char),
                         "string" => Ok(Type::String),
@@ -115,7 +125,7 @@ impl<'a> TypeChecker<'a> {
                 Ok(Type::Record(resolved_fields))
             }
             // Simple types don't need resolution
-            Type::Int | Type::Bool | Type::Char | Type::String | Type::Unit => Ok(type_.clone()),
+            Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 | Type::Float16 | Type::Float32 | Type::Bool | Type::Char | Type::String | Type::Unit => Ok(type_.clone()),
             // TODO: Handle generic types, effects, etc.
             _ => Ok(type_.clone()), // For now, pass through unresolved
         }
@@ -141,7 +151,12 @@ impl<'a> TypeChecker<'a> {
         } else {
             // Check built-in types
             match name {
-                "int" => Ok(Type::Int),
+                "int8" => Ok(Type::Int8),
+                "int16" => Ok(Type::Int16),
+                "int32" => Ok(Type::Int32),
+                "int64" => Ok(Type::Int64),
+                "float16" => Ok(Type::Float16),
+                "float32" => Ok(Type::Float32),
                 "bool" => Ok(Type::Bool),
                 "char" => Ok(Type::Char),
                 "string" => Ok(Type::String),
@@ -355,7 +370,12 @@ impl<'a> TypeChecker<'a> {
                     false
                 }
             }
-            (Type::Int, Type::Int) => true,
+            (Type::Int8, Type::Int8) => true,
+            (Type::Int16, Type::Int16) => true,
+            (Type::Int32, Type::Int32) => true,
+            (Type::Int64, Type::Int64) => true,
+            (Type::Float16, Type::Float16) => true,
+            (Type::Float32, Type::Float32) => true,
             (Type::Bool, Type::Bool) => true,
             (Type::Char, Type::Char) => true,
             (Type::String, Type::String) => true,
@@ -425,9 +445,29 @@ impl<'a> TypeChecker<'a> {
         // eprintln!("DEBUG TYPECHECK: env created");
 
         // Add built-in types
-        env.insert("int".to_string(), TypeScheme {
+        env.insert("int8".to_string(), TypeScheme {
             vars: vec![],
-            ty: Type::Int,
+            ty: Type::Int8,
+        });
+        env.insert("int16".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Int16,
+        });
+        env.insert("int32".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Int32,
+        });
+        env.insert("int64".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Int64,
+        });
+        env.insert("float16".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Float16,
+        });
+        env.insert("float32".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Float32,
         });
         env.insert("bool".to_string(), TypeScheme {
             vars: vec![],
@@ -1070,7 +1110,7 @@ impl<'a> TypeChecker<'a> {
         match lit {
             Literal::Unit => Type::Unit,
             Literal::Bool(_) => Type::Bool,
-            Literal::Int(_) => Type::Int,
+            Literal::Int(_) => Type::Int64,
             Literal::Char(_) => Type::Char,
             Literal::String(_) => Type::String,
         }
@@ -1101,7 +1141,7 @@ impl<'a> TypeChecker<'a> {
             return Ok(Type::EfficiencyCores);
         } else if name == "core_id" {
             return Ok(Type::Function {
-                parameters: vec![Type::Int],
+                parameters: vec![Type::Int64],
                 return_type: Box::new(Type::CoreId),
             });
         }
@@ -1129,11 +1169,11 @@ impl<'a> TypeChecker<'a> {
                     // Found imported symbol - convert to appropriate function type
                     let mut parameters = Vec::new();
                     for _ in 0..symbol_info.arity {
-                        parameters.push(Type::Int); // Assume all parameters are int for now
+                        parameters.push(Type::Int64); // Assume all parameters are int for now
                     }
                     return Ok(Type::Function {
                         parameters,
-                        return_type: Box::new(Type::Int), // Assume all functions return int for now
+                        return_type: Box::new(Type::Int64), // Assume all functions return int for now
                     });
                 }
             }
@@ -1158,9 +1198,9 @@ impl<'a> TypeChecker<'a> {
         match binary.operator {
             BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo => {
                 // Arithmetic operators require int operands and return int
-                self.add_constraint(left_type, Type::Int);
-                self.add_constraint(right_type, Type::Int);
-                Ok(Type::Int)
+                self.add_constraint(left_type, Type::Int64);
+                self.add_constraint(right_type, Type::Int64);
+                Ok(Type::Int64)
             }
             BinaryOp::Equal | BinaryOp::NotEqual | BinaryOp::Less | BinaryOp::LessEqual |
             BinaryOp::Greater | BinaryOp::GreaterEqual => {
@@ -1187,8 +1227,8 @@ impl<'a> TypeChecker<'a> {
                 Ok(Type::Bool)
             }
             UnaryOp::Negate => {
-                self.add_constraint(operand_type, Type::Int);
-                Ok(Type::Int)
+                self.add_constraint(operand_type, Type::Int64);
+                Ok(Type::Int64)
             }
         }
     }
@@ -1242,7 +1282,7 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
                 let arg_type = self.infer_expression(&call.arguments[0])?;
-                self.add_constraint(arg_type, Type::Int);
+                self.add_constraint(arg_type, Type::Int64);
                 return Ok(Type::CoreId);
             }
         }
@@ -1414,7 +1454,7 @@ impl<'a> TypeChecker<'a> {
                     captured_types.push(var_scheme.ty.clone());
                 } else {
                     // This shouldn't happen if capture detection is correct
-                    captured_types.push(Type::Int); // fallback
+                    captured_types.push(Type::Int64); // fallback
                 }
             }
 
@@ -1516,7 +1556,7 @@ impl<'a> TypeChecker<'a> {
                 let lit_type = match lit {
                     Literal::Unit => Type::Unit,
                     Literal::Bool(_) => Type::Bool,
-                    Literal::Int(_) => Type::Int,
+                    Literal::Int(_) => Type::Int64,
                     Literal::Char(_) => Type::Char,
                     Literal::String(_) => Type::String,
                 };
@@ -1730,7 +1770,12 @@ impl<'a> TypeChecker<'a> {
             // Identical types unify trivially
             (Type::Unit, Type::Unit) |
             (Type::Bool, Type::Bool) |
-            (Type::Int, Type::Int) |
+            (Type::Int8, Type::Int8) |
+            (Type::Int16, Type::Int16) |
+            (Type::Int32, Type::Int32) |
+            (Type::Int64, Type::Int64) |
+            (Type::Float16, Type::Float16) |
+            (Type::Float32, Type::Float32) |
             (Type::Char, Type::Char) |
             (Type::String, Type::String) |
             (Type::ActorRef, Type::ActorRef) => Ok(()),
@@ -2036,7 +2081,7 @@ impl<'a> TypeChecker<'a> {
         // read_ref(reference) returns the element type
         // For now, assume references contain integers
         // In a full implementation, this would extract the element type from the reference
-        Ok(Type::Int)
+        Ok(Type::Int64)
     }
 
     /// Infer type for write_ref expression
@@ -2242,7 +2287,7 @@ impl<'a> TypeChecker<'a> {
         // recv() returns the received message type
         // For now, assume it returns an integer
         // In a full implementation, this would depend on the actor's mailbox type
-        Ok(Type::Int)
+        Ok(Type::Int64)
     }
 
     /// Infer type for cast expression
@@ -2341,7 +2386,7 @@ impl<'a> TypeChecker<'a> {
     fn infer_print_int(&mut self, print_int: &PrintIntExpr) -> Result<Type> {
         // Check that value is an int
         let value_type = self.infer_expression(&print_int.value)?;
-        self.unify(&value_type, &Type::Int)?;
+        self.unify(&value_type, &Type::Int64)?;
         // print_int returns unit
         Ok(Type::Unit)
     }
@@ -2401,7 +2446,7 @@ impl<'a> TypeChecker<'a> {
         let path_type = self.infer_expression(&get_file_size.path)?;
         self.unify(&path_type, &Type::String)?;
         // get_file_size returns int
-        Ok(Type::Int)
+        Ok(Type::Int64)
     }
 
     fn infer_string_len(&mut self, string_len: &StringLenExpr) -> Result<Type> {
@@ -2409,7 +2454,7 @@ impl<'a> TypeChecker<'a> {
         let string_type = self.infer_expression(&string_len.string)?;
         self.unify(&string_type, &Type::String)?;
         // len returns int (byte count)
-        Ok(Type::Int)
+        Ok(Type::Int64)
     }
 
     fn infer_string_len_chars(&mut self, string_len_chars: &StringLenCharsExpr) -> Result<Type> {
@@ -2417,7 +2462,7 @@ impl<'a> TypeChecker<'a> {
         let string_type = self.infer_expression(&string_len_chars.string)?;
         self.unify(&string_type, &Type::String)?;
         // len_chars returns int (character count)
-        Ok(Type::Int)
+        Ok(Type::Int64)
     }
 
     fn infer_string_concat(&mut self, string_concat: &StringConcatExpr) -> Result<Type> {
@@ -2436,9 +2481,9 @@ impl<'a> TypeChecker<'a> {
         self.unify(&string_type, &Type::String)?;
         // Check that start and end are integers
         let start_type = self.infer_expression(&string_substring.start)?;
-        self.unify(&start_type, &Type::Int)?;
+        self.unify(&start_type, &Type::Int64)?;
         let end_type = self.infer_expression(&string_substring.end)?;
-        self.unify(&end_type, &Type::Int)?;
+        self.unify(&end_type, &Type::Int64)?;
         // substring returns string
         Ok(Type::String)
     }
@@ -2449,7 +2494,7 @@ impl<'a> TypeChecker<'a> {
         self.unify(&string_type, &Type::String)?;
         // Check that start is an integer
         let start_type = self.infer_expression(&string_substring_until_char.start)?;
-        self.unify(&start_type, &Type::Int)?;
+        self.unify(&start_type, &Type::Int64)?;
         // Check that char argument is a character
         let char_type = self.infer_expression(&string_substring_until_char.char)?;
         self.unify(&char_type, &Type::Char)?;
@@ -2749,7 +2794,12 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     // Check if it's a built-in type
                     match name.as_str() {
-                        "int" => Type::Int,
+                        "int8" => Type::Int8,
+                        "int16" => Type::Int16,
+                        "int32" => Type::Int32,
+                        "int64" => Type::Int64,
+                        "float16" => Type::Float16,
+                        "float32" => Type::Float32,
                         "bool" => Type::Bool,
                         "char" => Type::Char,
                         "string" => Type::String,
@@ -3079,7 +3129,7 @@ impl<'a> TypeChecker<'a> {
                 let lit_type = match lit {
                     crate::ast::Literal::Unit => Type::Unit,
                     crate::ast::Literal::Bool(_) => Type::Bool,
-                    crate::ast::Literal::Int(_) => Type::Int,
+                    crate::ast::Literal::Int(_) => Type::Int64,
                     crate::ast::Literal::Char(_) => Type::Char,
                     crate::ast::Literal::String(_) => Type::String,
                 };
