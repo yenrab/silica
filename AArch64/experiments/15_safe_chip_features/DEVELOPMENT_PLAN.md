@@ -81,7 +81,7 @@ This plan outlines the development order for safe chip features in Silica, worki
 - [ ] Implement feature availability tracking in compiler context:
   - Track which features are available at compile-time
   - Enable type-checking for feature-dependent code
-  - Generate errors for unavailable feature usage
+  - Generate informational messages for commandline claimed but unavailable feature usage
 
 **Deliverables**:
 - Compiler flag parsing working
@@ -104,7 +104,7 @@ This plan outlines the development order for safe chip features in Silica, worki
   - Clear error messages indicating required features
 
 **Deliverables**:
-- Code generation respects feature flags
+- Code generation respects feature flags for available features
 - LLVM backend receives correct target features
 - Type system enforces feature availability
 
@@ -473,15 +473,23 @@ This plan outlines the development order for safe chip features in Silica, worki
 **Dependencies**: Phases 4-5 (safe memory operations), Phases 2-3 (SIMD operations)
 
 ### 7.1 MTE-Enabled Optimizations
-- [ ] Implement bounds check elimination
-  - Compiler removes software bounds checks when MTE is used
-  - Hardware validation replaces software checks
-- [ ] Implement SIMD operations without bounds checking
-  - Parallel hardware validation + SIMD computation
-- [ ] Enable aggressive compiler optimizations
-  - Loop unrolling
-  - Redundant check elimination
-  - Memory access optimization
+**Safety Note**: Silica does not perform software bounds checking. All bounds validation is performed by hardware via MTE. This design enables aggressive optimizations while maintaining memory safety through hardware-validated checks.
+
+- [ ] Implement compiler optimizations enabled by hardware bounds checking
+  - Silica relies exclusively on hardware MTE validation for bounds checking
+  - No software bounds checks are generated or needed
+  - Hardware MTE validation automatically checks bounds on every access
+  - Safety is maintained: hardware traps on invalid access (no memory corruption possible)
+- [ ] Implement SIMD operations with hardware-validated bounds
+  - No software bounds checks (Silica never generates them)
+  - Hardware MTE validation occurs in parallel with SIMD computation
+  - All memory accesses remain safe via hardware validation
+- [ ] Enable aggressive recursion optimizations
+  - Tail call optimization: Convert tail-recursive functions to iterative code (safe: MTE hardware validates all accesses)
+  - Recursion unrolling: Unroll recursive calls when hardware bounds validation is available (safe: hardware traps on invalid access)
+  - Recursive inlining: Inline recursive helper functions more aggressively (safe: hardware guarantees bounds validation)
+  - SIMD vectorization of recursive patterns: Vectorize recursive array processing operations (safe: hardware validates bounds in parallel with SIMD)
+  - Memory access optimization: Optimize memory access patterns in recursive functions (safe: hardware guarantees bounds validation)
 
 **Deliverables**:
 - Compiler optimizations implemented
