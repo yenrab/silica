@@ -820,11 +820,16 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for expression
     pub fn infer_expression(&mut self, expr: &Expression) -> Result<Type> {
+        self.infer_expression_with_context(expr, None)
+    }
+
+    /// Infer type for expression with optional context (expected type)
+    fn infer_expression_with_context(&mut self, expr: &Expression, expected_type: Option<&Type>) -> Result<Type> {
         let result_type = match expr {
-            Expression::Literal(lit) => self.infer_literal(lit),
+            Expression::Literal(lit) => self.infer_literal_with_context(lit, expected_type),
             Expression::Identifier(name) => self.infer_identifier(name)?,
-            Expression::Binary(binary) => self.infer_binary(binary)?,
-            Expression::Unary(unary) => self.infer_unary(unary)?,
+            Expression::Binary(binary) => self.infer_binary_with_context(binary, expected_type)?,
+            Expression::Unary(unary) => self.infer_unary_with_context(unary, expected_type)?,
             Expression::Call(call) => self.infer_call(call)?,
             Expression::FunctionLiteral(func) => self.infer_function_literal(func)?,
             Expression::If(if_expr) => self.infer_if(if_expr)?,
@@ -1107,10 +1112,40 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for literal
     fn infer_literal(&self, lit: &Literal) -> Type {
+        self.infer_literal_with_context(lit, None)
+    }
+
+    /// Infer type for literal with optional context (expected type)
+    fn infer_literal_with_context(&self, lit: &Literal, expected_type: Option<&Type>) -> Type {
         match lit {
             Literal::Unit => Type::Unit,
             Literal::Bool(_) => Type::Bool,
-            Literal::Int(_) => Type::Int64,
+            Literal::Int(_) => {
+                // For integer literals, use expected type if it's an integer type
+                if let Some(ty) = expected_type {
+                    match ty {
+                        Type::Int8 => Type::Int8,
+                        Type::Int16 => Type::Int16,
+                        Type::Int32 => Type::Int32,
+                        Type::Int64 => Type::Int64,
+                        _ => Type::Int64, // Default to int64
+                    }
+                } else {
+                    Type::Int64 // Default to int64
+                }
+            },
+            Literal::Float(_) => {
+                // For float literals, use expected type if it's a float type
+                if let Some(ty) = expected_type {
+                    match ty {
+                        Type::Float16 => Type::Float16,
+                        Type::Float32 => Type::Float32,
+                        _ => Type::Float32, // Default to float32
+                    }
+                } else {
+                    Type::Float32 // Default to float32
+                }
+            },
             Literal::Char(_) => Type::Char,
             Literal::String(_) => Type::String,
         }
@@ -1192,15 +1227,59 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for binary expression
     fn infer_binary(&mut self, binary: &BinaryExpr) -> Result<Type> {
-        let left_type = self.infer_expression(&binary.left)?;
-        let right_type = self.infer_expression(&binary.right)?;
+        self.infer_binary_with_context(binary, None)
+    }
+
+    /// Infer type for binary expression with optional context (expected type)
+    fn infer_binary_with_context(&mut self, binary: &BinaryExpr, expected_type: Option<&Type>) -> Result<Type> {
+        // For arithmetic operations, pass expected type to both operands so literals can infer their types
+        let left_type = match binary.operator {
+            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo => {
+                self.infer_expression_with_context(&binary.left, expected_type)?
+            }
+            _ => self.infer_expression(&binary.left)?,
+        };
+        let right_type = match binary.operator {
+            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo => {
+                self.infer_expression_with_context(&binary.right, expected_type)?
+            }
+            _ => self.infer_expression(&binary.right)?,
+        };
 
         match binary.operator {
-            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo => {
-                // Arithmetic operators require int operands and return int
-                self.add_constraint(left_type, Type::Int64);
-                self.add_constraint(right_type, Type::Int64);
-                Ok(Type::Int64)
+            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
+                // Arithmetic operators require numeric operands of the same type
+                let left_resolved = self.resolve_type(&left_type)?;
+                let right_resolved = self.resolve_type(&right_type)?;
+                
+                if !Self::is_numeric_type(&left_resolved) || !Self::is_numeric_type(&right_resolved) {
+                    return type_error(
+                        binary.location.clone(),
+                        format!("Arithmetic operations require numeric operands, found {:?} and {:?}", left_resolved, right_resolved)
+                    );
+                }
+                
+                // Both operands must be the same type (no implicit conversions)
+                self.add_constraint(left_type.clone(), right_type.clone());
+                
+                // Result type matches operand type (after unification)
+                Ok(left_type)
+            }
+            BinaryOp::Modulo => {
+                // Modulo only works on integer types
+                let left_resolved = self.resolve_type(&left_type)?;
+                let right_resolved = self.resolve_type(&right_type)?;
+                
+                if !Self::is_integer_type(&left_resolved) || !Self::is_integer_type(&right_resolved) {
+                    return type_error(
+                        binary.location.clone(),
+                        format!("Modulo operation requires integer operands, found {:?} and {:?}", left_resolved, right_resolved)
+                    );
+                }
+                
+                // Both operands must be the same type
+                self.add_constraint(left_type.clone(), right_type.clone());
+                Ok(left_type)
             }
             BinaryOp::Equal | BinaryOp::NotEqual | BinaryOp::Less | BinaryOp::LessEqual |
             BinaryOp::Greater | BinaryOp::GreaterEqual => {
@@ -1219,7 +1298,16 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for unary expression
     fn infer_unary(&mut self, unary: &UnaryExpr) -> Result<Type> {
-        let operand_type = self.infer_expression(&unary.operand)?;
+        self.infer_unary_with_context(unary, None)
+    }
+
+    /// Infer type for unary expression with optional context (expected type)
+    fn infer_unary_with_context(&mut self, unary: &UnaryExpr, expected_type: Option<&Type>) -> Result<Type> {
+        // For negation, pass expected type to operand so literals can infer their types
+        let operand_type = match unary.operator {
+            UnaryOp::Negate => self.infer_expression_with_context(&unary.operand, expected_type)?,
+            _ => self.infer_expression(&unary.operand)?,
+        };
 
         match unary.operator {
             UnaryOp::Not => {
@@ -1227,8 +1315,16 @@ impl<'a> TypeChecker<'a> {
                 Ok(Type::Bool)
             }
             UnaryOp::Negate => {
-                self.add_constraint(operand_type, Type::Int64);
-                Ok(Type::Int64)
+                // Negation works on all numeric types
+                let operand_resolved = self.resolve_type(&operand_type)?;
+                if !Self::is_numeric_type(&operand_resolved) {
+                    return type_error(
+                        unary.location.clone(),
+                        format!("Negation requires numeric operand, found {:?}", operand_resolved)
+                    );
+                }
+                // Result type matches operand type
+                Ok(operand_type)
             }
         }
     }
@@ -1250,9 +1346,10 @@ impl<'a> TypeChecker<'a> {
                         "read_file expects exactly 1 argument".to_string(),
                     );
                 }
-                let path_type = self.infer_expression(&call.arguments[0])?;
+                let expected_string = Type::Named("string".to_string());
+                let path_type = self.infer_expression_with_context(&call.arguments[0], Some(&expected_string))?;
                 let path_location = Self::try_get_expression_location(&call.arguments[0]).cloned();
-                self.unify_with_location(&path_type, &Type::Named("string".to_string()), path_location)?;
+                self.unify_with_location(&path_type, &expected_string, path_location)?;
                 return Ok(Type::Named("Result".to_string()));
             } else if func_name == "write_file" {
                 // write_file(path: string, content: string) -> Result<unit, string>
@@ -1262,12 +1359,13 @@ impl<'a> TypeChecker<'a> {
                         "write_file expects exactly 2 arguments".to_string(),
                     );
                 }
-                let path_type = self.infer_expression(&call.arguments[0])?;
+                let expected_string = Type::Named("string".to_string());
+                let path_type = self.infer_expression_with_context(&call.arguments[0], Some(&expected_string))?;
                 let path_location = Self::try_get_expression_location(&call.arguments[0]).cloned();
-                self.unify_with_location(&path_type, &Type::Named("string".to_string()), path_location)?;
-                let content_type = self.infer_expression(&call.arguments[1])?;
+                self.unify_with_location(&path_type, &expected_string, path_location)?;
+                let content_type = self.infer_expression_with_context(&call.arguments[1], Some(&expected_string))?;
                 let content_location = Self::try_get_expression_location(&call.arguments[1]).cloned();
-                self.unify_with_location(&content_type, &Type::Named("string".to_string()), content_location)?;
+                self.unify_with_location(&content_type, &expected_string, content_location)?;
                 return Ok(Type::Named("Result".to_string()));
             }
         }
@@ -1281,8 +1379,9 @@ impl<'a> TypeChecker<'a> {
                         "core_id expects exactly 1 argument".to_string(),
                     );
                 }
-                let arg_type = self.infer_expression(&call.arguments[0])?;
-                self.add_constraint(arg_type, Type::Int64);
+                let expected_int64 = Type::Int64;
+                let arg_type = self.infer_expression_with_context(&call.arguments[0], Some(&expected_int64))?;
+                self.add_constraint(arg_type, expected_int64);
                 return Ok(Type::CoreId);
             }
         }
@@ -1318,9 +1417,9 @@ impl<'a> TypeChecker<'a> {
                 );
             }
 
-            // Check argument types
+            // Check argument types - pass expected parameter types as context for literals
             for (arg_expr, expected_type) in call.arguments.iter().zip(parameters) {
-                let actual_type = self.infer_expression(arg_expr)?;
+                let actual_type = self.infer_expression_with_context(arg_expr, Some(expected_type))?;
                 self.add_constraint(actual_type, expected_type.clone());
             }
 
@@ -1341,9 +1440,9 @@ impl<'a> TypeChecker<'a> {
         };
         self.add_constraint(func_type, expected_func_type);
 
-        // Constrain arguments
+        // Constrain arguments - pass expected parameter types as context for literals
         for (arg_expr, expected_type) in call.arguments.iter().zip(arg_types) {
-            let actual_type = self.infer_expression(arg_expr)?;
+            let actual_type = self.infer_expression_with_context(arg_expr, Some(&expected_type))?;
             self.add_constraint(actual_type, expected_type);
         }
 
@@ -1374,9 +1473,9 @@ impl<'a> TypeChecker<'a> {
             }
             // Check receiver type matches method's self parameter
             self.add_constraint(receiver_type.clone(), self_param_type);
-            // Check call arguments against method parameters (skip self)
+            // Check call arguments against method parameters (skip self) - pass expected types as context
             for (arg_expr, expected_type) in call.arguments.iter().zip(method_params) {
-                let actual_type = self.infer_expression(arg_expr)?;
+                let actual_type = self.infer_expression_with_context(arg_expr, Some(&expected_type))?;
                 self.add_constraint(actual_type, expected_type);
             }
             // Return the method's return type
@@ -1557,6 +1656,7 @@ impl<'a> TypeChecker<'a> {
                     Literal::Unit => Type::Unit,
                     Literal::Bool(_) => Type::Bool,
                     Literal::Int(_) => Type::Int64,
+                    Literal::Float(_) => Type::Float32, // Default to float32
                     Literal::Char(_) => Type::Char,
                     Literal::String(_) => Type::String,
                 };
@@ -1639,8 +1739,20 @@ impl<'a> TypeChecker<'a> {
         for statement in &do_expr.statements {
             match statement {
                 Statement::Bind { pattern, expr } => {
-                    // Infer the type of the expression
-                    let expr_type = self.infer_expression(expr)?;
+                    // Get expected type from pattern if it's a typed identifier
+                    let expected_type = if let crate::ast::Pattern::TypedIdentifier { type_, .. } = pattern {
+                        Some(type_.clone())
+                    } else {
+                        None
+                    };
+                    
+                    // Infer the type of the expression (with context for float literals)
+                    let expr_type = if let Some(expected_ty) = &expected_type {
+                        // For float literals, use expected type if it's a float type
+                        self.infer_expression_with_context(expr, Some(expected_ty))?
+                    } else {
+                        self.infer_expression(expr)?
+                    };
                     // eprintln!("DEBUG BIND: expr_type = {:?}", expr_type);
 
                     // Require explicit type annotations for ALL bindings
@@ -1739,6 +1851,24 @@ impl<'a> TypeChecker<'a> {
                 Ok(())
             }
         }
+    }
+
+    /// Check if a type is a numeric type
+    fn is_numeric_type(ty: &Type) -> bool {
+        matches!(ty,
+            Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 |
+            Type::Float16 | Type::Float32
+        )
+    }
+
+    /// Check if a type is an integer type
+    fn is_integer_type(ty: &Type) -> bool {
+        matches!(ty, Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64)
+    }
+
+    /// Check if a type is a float type
+    fn is_float_type(ty: &Type) -> bool {
+        matches!(ty, Type::Float16 | Type::Float32)
     }
 
     /// Add a type constraint
@@ -3130,6 +3260,7 @@ impl<'a> TypeChecker<'a> {
                     crate::ast::Literal::Unit => Type::Unit,
                     crate::ast::Literal::Bool(_) => Type::Bool,
                     crate::ast::Literal::Int(_) => Type::Int64,
+                    crate::ast::Literal::Float(_) => Type::Float32, // Default to float32
                     crate::ast::Literal::Char(_) => Type::Char,
                     crate::ast::Literal::String(_) => Type::String,
                 };
@@ -3246,7 +3377,21 @@ impl<'a> TypeChecker<'a> {
         for statement in statements {
             match statement {
                 crate::ast::Statement::Bind { pattern, expr } => {
-                    let expr_type = self.infer_expression(expr)?;
+                    // Get expected type from pattern if it's a typed identifier
+                    let expected_type = if let crate::ast::Pattern::TypedIdentifier { type_, .. } = pattern {
+                        Some(type_.clone())
+                    } else {
+                        None
+                    };
+                    
+                    // Infer the type of the expression (with context for float literals)
+                    let expr_type = if let Some(expected_ty) = &expected_type {
+                        // For float literals, use expected type if it's a float type
+                        self.infer_expression_with_context(expr, Some(expected_ty))?
+                    } else {
+                        self.infer_expression(expr)?
+                    };
+                    
                     // Require explicit type annotations for ALL bindings
                     if let crate::ast::Pattern::Identifier(_) = pattern {
                         let metadata = ErrorMetadataBuilder::new("E2000".to_string())

@@ -867,6 +867,9 @@ impl Parser {
         } else if let TokenKind::IntegerLiteral(value) = self.peek().kind.clone() {
             self.advance();
             Ok(Expression::Literal(Literal::Int(value)))
+        } else if let TokenKind::FloatLiteral(value) = self.peek().kind.clone() {
+            self.advance();
+            Ok(Expression::Literal(Literal::Float(value)))
         } else if let TokenKind::StringLiteral(value) = self.peek().kind.clone() {
             self.advance();
             Ok(Expression::Literal(Literal::String(value)))
@@ -1961,7 +1964,22 @@ impl Parser {
             // Try to parse assignment first
             let current_pos = self.current;
             // Check if this could be a pattern (identifier, tuple, or wildcard)
-            if matches!(self.peek().kind, TokenKind::Identifier(_) | TokenKind::LeftParen | TokenKind::Underscore) {
+            // Only attempt pattern parsing if identifier is followed by colon (type annotation)
+            // or if it's a tuple/wildcard pattern, since bindings require type annotations
+            let could_be_binding = match self.peek().kind {
+                TokenKind::Identifier(_) => {
+                    // For identifiers, check if colon follows (indicating type annotation)
+                    if self.current + 1 < self.tokens.len() {
+                        self.tokens[self.current + 1].kind == TokenKind::Colon
+                    } else {
+                        false
+                    }
+                },
+                TokenKind::LeftParen | TokenKind::Underscore => true, // Tuples and wildcards can be patterns
+                _ => false,
+            };
+            
+            if could_be_binding {
                 // Try to parse a pattern followed by '<-'
                 let saved_pos = self.current;
                 if let Ok(pattern) = self.pattern() {
@@ -2134,6 +2152,11 @@ impl Parser {
                 let value = *value;
                 self.advance();
                 return Ok(Pattern::Literal(Literal::Int(value)));
+            }
+            TokenKind::FloatLiteral(value) => {
+                let value = *value;
+                self.advance();
+                return Ok(Pattern::Literal(Literal::Float(value)));
             }
             TokenKind::True => {
                 self.advance();

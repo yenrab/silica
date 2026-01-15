@@ -30,6 +30,7 @@ pub enum TokenKind {
 
     // Literals
     IntegerLiteral(i64),
+    FloatLiteral(f64),
     StringLiteral(String),
     CharLiteral(char),
 
@@ -81,6 +82,7 @@ impl TokenKind {
     pub fn is_literal(&self) -> bool {
         matches!(self,
             TokenKind::IntegerLiteral(_) |
+            TokenKind::FloatLiteral(_) |
             TokenKind::StringLiteral(_) |
             TokenKind::CharLiteral(_) |
             TokenKind::True | TokenKind::False
@@ -449,7 +451,7 @@ impl Lexer {
                 },
             }
         }
-        // Handle decimal literals
+        // Handle decimal literals (integer or float)
         else {
             while let Some(c) = self.peek_char() {
                 if c.is_ascii_digit() {
@@ -459,23 +461,79 @@ impl Lexer {
                 }
             }
 
-            let num_str = &self.source[start..self.position];
-            match num_str.parse::<i64>() {
-                Ok(value) => Ok(Some(Token::new(
-                    TokenKind::IntegerLiteral(value),
-                    num_str.to_string(),
-                    start_location,
-                ))),
-                Err(_) => {
-                    let metadata = self.build_error_metadata("E0005", &start_location, Some("spec:§2.2.3"))
-                        .suggestion("Ensure the number is within valid range for i64".to_string())
-                        .build();
-                    lexer_error_with_metadata(
+            // Check if this is a float literal (has decimal point followed by digits)
+            if self.peek_char() == Some('.') {
+                let next_char = self.peek_next_char();
+                if next_char.map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                    // This is a float literal
+                    self.advance(); // skip '.'
+                    while let Some(c) = self.peek_char() {
+                        if c.is_ascii_digit() {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                    
+                    let float_str = &self.source[start..self.position];
+                    match float_str.parse::<f64>() {
+                        Ok(value) => Ok(Some(Token::new(
+                            TokenKind::FloatLiteral(value),
+                            float_str.to_string(),
+                            start_location,
+                        ))),
+                        Err(_) => {
+                            let metadata = self.build_error_metadata("E0005", &start_location, Some("spec:§2.2.3"))
+                                .suggestion("Ensure the float literal is valid".to_string())
+                                .build();
+                            lexer_error_with_metadata(
+                                start_location,
+                                format!("Invalid float literal: {}", float_str),
+                                metadata,
+                            )
+                        },
+                    }
+                } else {
+                    // Just a dot, not part of float - parse as integer
+                    let num_str = &self.source[start..self.position];
+                    match num_str.parse::<i64>() {
+                        Ok(value) => Ok(Some(Token::new(
+                            TokenKind::IntegerLiteral(value),
+                            num_str.to_string(),
+                            start_location,
+                        ))),
+                        Err(_) => {
+                            let metadata = self.build_error_metadata("E0005", &start_location, Some("spec:§2.2.3"))
+                                .suggestion("Ensure the number is within valid range for i64".to_string())
+                                .build();
+                            lexer_error_with_metadata(
+                                start_location,
+                                format!("Invalid integer literal: {}", num_str),
+                                metadata,
+                            )
+                        },
+                    }
+                }
+            } else {
+                // Integer literal
+                let num_str = &self.source[start..self.position];
+                match num_str.parse::<i64>() {
+                    Ok(value) => Ok(Some(Token::new(
+                        TokenKind::IntegerLiteral(value),
+                        num_str.to_string(),
                         start_location,
-                        format!("Invalid integer literal: {}", num_str),
-                        metadata,
-                    )
-                },
+                    ))),
+                    Err(_) => {
+                        let metadata = self.build_error_metadata("E0005", &start_location, Some("spec:§2.2.3"))
+                            .suggestion("Ensure the number is within valid range for i64".to_string())
+                            .build();
+                        lexer_error_with_metadata(
+                            start_location,
+                            format!("Invalid integer literal: {}", num_str),
+                            metadata,
+                        )
+                    },
+                }
             }
         }
     }

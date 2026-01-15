@@ -167,6 +167,47 @@ impl CodeGenerator {
         reg
     }
 
+    /// Get the type of an expression from expression_types map
+    fn get_expression_type(&self, expr: &Expression) -> Result<Type> {
+        let location = Self::try_get_expression_location(expr)
+            .ok_or_else(|| CompilerError::codegen_error(
+                format!("Cannot get location for expression: {:?}", expr)
+            ))?;
+        self.expression_types.get(location)
+            .cloned()
+            .ok_or_else(|| CompilerError::codegen_error(
+                format!("Type information not available for expression at {:?}", location)
+            ))
+    }
+
+    /// Map Silica type to LLVM type string (for text IR)
+    fn type_to_llvm_string(ty: &Type) -> &'static str {
+        match ty {
+            Type::Int8 => "i8",
+            Type::Int16 => "i16",
+            Type::Int32 => "i32",
+            Type::Int64 => "i64",
+            Type::Float16 => "half",
+            Type::Float32 => "float",
+            Type::Bool => "i1",
+            Type::Char => "i32",
+            _ => "i64", // fallback
+        }
+    }
+
+    /// Check if a type is numeric
+    fn is_numeric_type(ty: &Type) -> bool {
+        matches!(ty,
+            Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 |
+            Type::Float16 | Type::Float32
+        )
+    }
+
+    /// Check if a type is an integer type
+    fn is_integer_type(ty: &Type) -> bool {
+        matches!(ty, Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64)
+    }
+
     /// Try to get the location of an expression for type lookup
     fn try_get_expression_location(expr: &Expression) -> Option<&SourceLocation> {
         match expr {
@@ -1024,7 +1065,12 @@ impl CodeGenerator {
         }
 
         match expr {
-            Expression::Literal(lit) => Ok(Some(self.generate_literal(lit))),
+            Expression::Literal(lit) => {
+                // Get the type from expression_types if available (for float literals)
+                let expr_type = Self::try_get_expression_location(expr)
+                    .and_then(|loc| self.expression_types.get(loc).cloned());
+                Ok(Some(self.generate_literal_with_type(lit, expr_type.as_ref())))
+            },
             Expression::Identifier(name) => self.generate_identifier(name),
             Expression::Binary(binary) => self.generate_binary(binary),
             Expression::Unary(unary) => self.generate_unary(unary),
@@ -1151,11 +1197,29 @@ impl CodeGenerator {
 
     /// Generate LLVM IR for literal values
     fn generate_literal(&mut self, lit: &Literal) -> String {
+        self.generate_literal_with_type(lit, None)
+    }
+
+    /// Generate LLVM IR for literal values with optional type context
+    fn generate_literal_with_type(&mut self, lit: &Literal, expr_type: Option<&Type>) -> String {
         match lit {
             Literal::Unit => "void".to_string(),
             Literal::Bool(true) => "i1 1".to_string(),
             Literal::Bool(false) => "i1 0".to_string(),
             Literal::Int(value) => format!("i64 {}", value),
+            Literal::Float(value) => {
+                // Use expression type if available, default to float32
+                let type_str = if let Some(ty) = expr_type {
+                    match ty {
+                        Type::Float16 => "half",
+                        Type::Float32 => "float",
+                        _ => "float", // default
+                    }
+                } else {
+                    "float" // default
+                };
+                format!("{} {}", type_str, value)
+            },
             Literal::Char(c) => format!("i32 {}", *c as i32),
             Literal::String(s) => {
                 #[cfg(feature = "llvm_backend")]
@@ -1274,27 +1338,31 @@ impl CodeGenerator {
                         }
                     };
 
-                    // For arithmetic operations, use a common type. For comparisons, types must match.
-                    match binary.operator {
-                        BinaryOp::Equal | BinaryOp::NotEqual | BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => {
-                            // Comparisons require same types
-                            if lhs_type == rhs_type {
-                                lhs_type
-                            } else {
-                                return Err(CompilerError::codegen_error(format!("Cannot compare {} and {}", lhs_type, rhs_type)));
+                    // For arithmetic operations, types must match exactly (no promotion)
+                    // For comparisons, types must also match
+                    if lhs_type != rhs_type {
+                        match binary.operator {
+                            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo => {
+                                return Err(CompilerError::codegen_error(
+                                    format!("Arithmetic operands must be same type: {} vs {}", lhs_type, rhs_type)
+                                ));
                             }
-                        },
-                        _ => {
-                            // For arithmetic, promote to common type
-                            if lhs_type == "i64" || rhs_type == "i64" {
-                                "i64"
-                            } else if lhs_type == "i32" || rhs_type == "i32" {
-                                "i32"
-                            } else {
-                                "i1"
+                            _ => {
+                                return Err(CompilerError::codegen_error(format!("Cannot compare {} and {}", lhs_type, rhs_type)));
                             }
                         }
                     }
+                    
+                    // For modulo, ensure it's an integer type
+                    if matches!(binary.operator, BinaryOp::Modulo) {
+                        if lhs_type == "half" || lhs_type == "float" {
+                            return Err(CompilerError::codegen_error(
+                                format!("Modulo operation requires integer operands, found {}", lhs_type)
+                            ));
+                        }
+                    }
+                    
+                    lhs_type // Both types are the same, use either one
                 }
             };
 
@@ -1373,12 +1441,29 @@ impl CodeGenerator {
                 }
             };
 
+            // Determine operation name based on type (int vs float)
+            let is_float = op_type == "half" || op_type == "float";
             let op_instr = match binary.operator {
-                BinaryOp::Add => format!("  {} = add {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
-                BinaryOp::Subtract => format!("  {} = sub {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
-                BinaryOp::Multiply => format!("  {} = mul {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
-                BinaryOp::Divide => format!("  {} = sdiv {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
-                BinaryOp::Modulo => format!("  {} = srem {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
+                BinaryOp::Add => {
+                    let op_name = if is_float { "fadd" } else { "add" };
+                    format!("  {} = {} {} {}, {}", temp_reg, op_name, op_type, clean_lhs, clean_rhs)
+                },
+                BinaryOp::Subtract => {
+                    let op_name = if is_float { "fsub" } else { "sub" };
+                    format!("  {} = {} {} {}, {}", temp_reg, op_name, op_type, clean_lhs, clean_rhs)
+                },
+                BinaryOp::Multiply => {
+                    let op_name = if is_float { "fmul" } else { "mul" };
+                    format!("  {} = {} {} {}, {}", temp_reg, op_name, op_type, clean_lhs, clean_rhs)
+                },
+                BinaryOp::Divide => {
+                    let op_name = if is_float { "fdiv" } else { "sdiv" };
+                    format!("  {} = {} {} {}, {}", temp_reg, op_name, op_type, clean_lhs, clean_rhs)
+                },
+                BinaryOp::Modulo => {
+                    // Modulo only for integers (already checked above)
+                    format!("  {} = srem {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                },
                 BinaryOp::Equal => format!("  {} = icmp eq {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
                 BinaryOp::NotEqual => format!("  {} = icmp ne {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
                 BinaryOp::Less => format!("  {} = icmp slt {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
@@ -1401,6 +1486,50 @@ impl CodeGenerator {
         let operand = self.generate_expression(&unary.operand)?;
 
         match unary.operator {
+            UnaryOp::Negate => {
+                // Negation works on all numeric types
+                if let Some(op) = operand {
+                    // Get operand type from expression_types if available
+                    let operand_type = Self::try_get_expression_location(&unary.operand)
+                        .and_then(|loc| self.expression_types.get(loc))
+                        .map(|ty| Self::type_to_llvm_string(ty))
+                        .unwrap_or_else(|| {
+                            // Fallback: determine from operand string
+                            if op.starts_with("i8* ") {
+                                "i64"
+                            } else if op.starts_with("i64 ") {
+                                "i64"
+                            } else if op.starts_with("i32 ") {
+                                "i32"
+                            } else if op.starts_with("i16 ") {
+                                "i16"
+                            } else if op.starts_with("i8 ") {
+                                "i8"
+                            } else if op.starts_with("half ") {
+                                "half"
+                            } else if op.starts_with("float ") {
+                                "float"
+                            } else {
+                                "i64" // fallback
+                            }
+                        });
+                    
+                    let temp_reg = format!("%t{}", self.instructions.len());
+                    let clean_op = op.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i16 ").trim_start_matches("i8 ").trim_start_matches("half ").trim_start_matches("float ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+                    let clean_op_reg = if clean_op.starts_with('%') { clean_op } else { format!("%{}", clean_op) };
+                    
+                    let is_float = operand_type == "half" || operand_type == "float";
+                    let op_instr = if is_float {
+                        format!("  {} = fsub {} 0.0, {}", temp_reg, operand_type, clean_op_reg)
+                    } else {
+                        format!("  {} = sub {} 0, {}", temp_reg, operand_type, clean_op_reg)
+                    };
+                    self.instructions.push(op_instr);
+                    Ok(Some(temp_reg))
+                } else {
+                    Err(CompilerError::codegen_error("Unary operation on invalid operand".to_string()))
+                }
+            }
             UnaryOp::Not => {
                 if let Some(op) = operand {
                     let temp_reg = format!("%t{}", self.instructions.len());
@@ -1421,10 +1550,44 @@ impl CodeGenerator {
                 }
             }
             UnaryOp::Negate => {
+                // Negation works on all numeric types
                 if let Some(op) = operand {
+                    // Get operand type from expression_types if available
+                    let operand_type = Self::try_get_expression_location(&unary.operand)
+                        .and_then(|loc| self.expression_types.get(loc))
+                        .map(|ty| Self::type_to_llvm_string(ty))
+                        .unwrap_or_else(|| {
+                            // Fallback: determine from operand string
+                            if op.starts_with("i8* ") {
+                                "i64"
+                            } else if op.starts_with("i64 ") {
+                                "i64"
+                            } else if op.starts_with("i32 ") {
+                                "i32"
+                            } else if op.starts_with("i16 ") {
+                                "i16"
+                            } else if op.starts_with("i8 ") {
+                                "i8"
+                            } else if op.starts_with("half ") {
+                                "half"
+                            } else if op.starts_with("float ") {
+                                "float"
+                            } else {
+                                "i64" // fallback
+                            }
+                        });
+                    
                     let temp_reg = format!("%t{}", self.instructions.len());
-                    let clean_op = op.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ");
-                    self.instructions.push(format!("  {} = sub i64 0, {}", temp_reg, clean_op));
+                    let clean_op = op.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i16 ").trim_start_matches("i8 ").trim_start_matches("half ").trim_start_matches("float ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+                    let clean_op_reg = if clean_op.starts_with('%') { clean_op } else { format!("%{}", clean_op) };
+                    
+                    let is_float = operand_type == "half" || operand_type == "float";
+                    let op_instr = if is_float {
+                        format!("  {} = fsub {} 0.0, {}", temp_reg, operand_type, clean_op_reg)
+                    } else {
+                        format!("  {} = sub {} 0, {}", temp_reg, operand_type, clean_op_reg)
+                    };
+                    self.instructions.push(op_instr);
                     Ok(Some(temp_reg))
                 } else {
                     Err(CompilerError::codegen_error("Negate operation on invalid operand".to_string()))
@@ -1933,7 +2096,12 @@ impl CodeGenerator {
     #[cfg(feature = "llvm_backend")]
     fn generate_expression_llvm(&mut self, expr: &Expression) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
         match expr {
-            Expression::Literal(lit) => self.generate_literal_llvm(lit),
+            Expression::Literal(lit) => {
+                // Get the type from expression_types if available (for float literals)
+                let expr_type = Self::try_get_expression_location(expr)
+                    .and_then(|loc| self.expression_types.get(loc));
+                self.generate_literal_llvm_with_type(lit, expr_type)
+            },
             Expression::Identifier(name) => self.generate_identifier_llvm(name),
             Expression::Binary(binary) => self.generate_binary_llvm(binary),
             Expression::Unary(unary) => self.generate_unary_llvm(unary),
@@ -2609,6 +2777,12 @@ impl CodeGenerator {
     /// Generate LLVM literal values (LLVM backend)
     #[cfg(feature = "llvm_backend")]
     fn generate_literal_llvm(&mut self, lit: &Literal) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
+        self.generate_literal_llvm_with_type(lit, None)
+    }
+
+    /// Generate LLVM literal values with optional type context (LLVM backend)
+    #[cfg(feature = "llvm_backend")]
+    fn generate_literal_llvm_with_type(&mut self, lit: &Literal, expr_type: Option<&Type>) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
         unsafe {
             let val = match lit {
                 Literal::Unit => {
@@ -2620,6 +2794,19 @@ impl CodeGenerator {
                 }
                 Literal::Int(i) => {
                     (*self.context).i64_type().const_int(*i as u64, false).into()
+                }
+                Literal::Float(f) => {
+                    // Use expression type if available, default to float32
+                    let float_type = if let Some(ty) = expr_type {
+                        match ty {
+                            Type::Float16 => (*self.context).f16_type(),
+                            Type::Float32 => (*self.context).f32_type(),
+                            _ => (*self.context).f32_type(), // default
+                        }
+                    } else {
+                        (*self.context).f32_type() // default
+                    };
+                    float_type.const_float(*f).into()
                 }
                 Literal::Char(c) => {
                     (*self.context).i32_type().const_int(*c as u32 as u64, false).into()
@@ -2662,20 +2849,141 @@ impl CodeGenerator {
         let right = self.generate_expression_llvm(&binary.right)?;
 
         if let (Some(left_val), Some(right_val)) = (left, right) {
+            // Get operand types for type-specific code generation
+            let left_type = self.get_expression_type(&binary.left).ok();
+            let right_type = self.get_expression_type(&binary.right).ok();
+            
             if let Some(builder) = &self.builder {
                 unsafe {
                     let result = match binary.operator {
-                        BinaryOp::Add => {
-                            builder.build_int_add(left_val.into_int_value(), right_val.into_int_value(), "add_result").unwrap().into()
+                        BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
+                            // Arithmetic operations - need to check types
+                            if let (Some(lt), Some(rt)) = (left_type, right_type) {
+                                // Ensure types match (type checker should have enforced this)
+                                if lt != rt {
+                                    return Err(CompilerError::codegen_error(
+                                        format!("Arithmetic operands must be same type: {:?} vs {:?}", lt, rt)
+                                    ));
+                                }
+                                
+                                // Generate type-specific operations
+                                match lt {
+                                    Type::Int8 => {
+                                        let left_i8 = left_val.into_int_value();
+                                        let right_i8 = right_val.into_int_value();
+                                        match binary.operator {
+                                            BinaryOp::Add => builder.build_int_add(left_i8, right_i8, "add_i8").unwrap().into(),
+                                            BinaryOp::Subtract => builder.build_int_sub(left_i8, right_i8, "sub_i8").unwrap().into(),
+                                            BinaryOp::Multiply => builder.build_int_mul(left_i8, right_i8, "mul_i8").unwrap().into(),
+                                            BinaryOp::Divide => builder.build_int_signed_div(left_i8, right_i8, "div_i8").unwrap().into(),
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                    Type::Int16 => {
+                                        let left_i16 = left_val.into_int_value();
+                                        let right_i16 = right_val.into_int_value();
+                                        match binary.operator {
+                                            BinaryOp::Add => builder.build_int_add(left_i16, right_i16, "add_i16").unwrap().into(),
+                                            BinaryOp::Subtract => builder.build_int_sub(left_i16, right_i16, "sub_i16").unwrap().into(),
+                                            BinaryOp::Multiply => builder.build_int_mul(left_i16, right_i16, "mul_i16").unwrap().into(),
+                                            BinaryOp::Divide => builder.build_int_signed_div(left_i16, right_i16, "div_i16").unwrap().into(),
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                    Type::Int32 => {
+                                        let left_i32 = left_val.into_int_value();
+                                        let right_i32 = right_val.into_int_value();
+                                        match binary.operator {
+                                            BinaryOp::Add => builder.build_int_add(left_i32, right_i32, "add_i32").unwrap().into(),
+                                            BinaryOp::Subtract => builder.build_int_sub(left_i32, right_i32, "sub_i32").unwrap().into(),
+                                            BinaryOp::Multiply => builder.build_int_mul(left_i32, right_i32, "mul_i32").unwrap().into(),
+                                            BinaryOp::Divide => builder.build_int_signed_div(left_i32, right_i32, "div_i32").unwrap().into(),
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                    Type::Int64 => {
+                                        let left_i64 = left_val.into_int_value();
+                                        let right_i64 = right_val.into_int_value();
+                                        match binary.operator {
+                                            BinaryOp::Add => builder.build_int_add(left_i64, right_i64, "add_i64").unwrap().into(),
+                                            BinaryOp::Subtract => builder.build_int_sub(left_i64, right_i64, "sub_i64").unwrap().into(),
+                                            BinaryOp::Multiply => builder.build_int_mul(left_i64, right_i64, "mul_i64").unwrap().into(),
+                                            BinaryOp::Divide => builder.build_int_signed_div(left_i64, right_i64, "div_i64").unwrap().into(),
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                    Type::Float16 => {
+                                        let left_f16 = left_val.into_float_value();
+                                        let right_f16 = right_val.into_float_value();
+                                        match binary.operator {
+                                            BinaryOp::Add => builder.build_float_add(left_f16, right_f16, "add_f16").unwrap().into(),
+                                            BinaryOp::Subtract => builder.build_float_sub(left_f16, right_f16, "sub_f16").unwrap().into(),
+                                            BinaryOp::Multiply => builder.build_float_mul(left_f16, right_f16, "mul_f16").unwrap().into(),
+                                            BinaryOp::Divide => builder.build_float_div(left_f16, right_f16, "div_f16").unwrap().into(),
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                    Type::Float32 => {
+                                        let left_f32 = left_val.into_float_value();
+                                        let right_f32 = right_val.into_float_value();
+                                        match binary.operator {
+                                            BinaryOp::Add => builder.build_float_add(left_f32, right_f32, "add_f32").unwrap().into(),
+                                            BinaryOp::Subtract => builder.build_float_sub(left_f32, right_f32, "sub_f32").unwrap().into(),
+                                            BinaryOp::Multiply => builder.build_float_mul(left_f32, right_f32, "mul_f32").unwrap().into(),
+                                            BinaryOp::Divide => builder.build_float_div(left_f32, right_f32, "div_f32").unwrap().into(),
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                    _ => {
+                                        // Fallback to int64 for unknown types (backward compatibility)
+                                        let left_i64 = left_val.into_int_value();
+                                        let right_i64 = right_val.into_int_value();
+                                        match binary.operator {
+                                            BinaryOp::Add => builder.build_int_add(left_i64, right_i64, "add_result").unwrap().into(),
+                                            BinaryOp::Subtract => builder.build_int_sub(left_i64, right_i64, "sub_result").unwrap().into(),
+                                            BinaryOp::Multiply => builder.build_int_mul(left_i64, right_i64, "mul_result").unwrap().into(),
+                                            BinaryOp::Divide => builder.build_int_signed_div(left_i64, right_i64, "div_result").unwrap().into(),
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Fallback if type information not available (backward compatibility)
+                                let left_i64 = left_val.into_int_value();
+                                let right_i64 = right_val.into_int_value();
+                                match binary.operator {
+                                    BinaryOp::Add => builder.build_int_add(left_i64, right_i64, "add_result").unwrap().into(),
+                                    BinaryOp::Subtract => builder.build_int_sub(left_i64, right_i64, "sub_result").unwrap().into(),
+                                    BinaryOp::Multiply => builder.build_int_mul(left_i64, right_i64, "mul_result").unwrap().into(),
+                                    BinaryOp::Divide => builder.build_int_signed_div(left_i64, right_i64, "div_result").unwrap().into(),
+                                    _ => unreachable!(),
+                                }
+                            }
                         }
-                        BinaryOp::Subtract => {
-                            builder.build_int_sub(left_val.into_int_value(), right_val.into_int_value(), "sub_result").unwrap().into()
-                        }
-                        BinaryOp::Multiply => {
-                            builder.build_int_mul(left_val.into_int_value(), right_val.into_int_value(), "mul_result").unwrap().into()
-                        }
-                        BinaryOp::Divide => {
-                            builder.build_int_signed_div(left_val.into_int_value(), right_val.into_int_value(), "div_result").unwrap().into()
+                        BinaryOp::Modulo => {
+                            // Modulo only works on integer types
+                            if let (Some(lt), Some(rt)) = (left_type, right_type) {
+                                if lt != rt {
+                                    return Err(CompilerError::codegen_error(
+                                        format!("Modulo operands must be same type: {:?} vs {:?}", lt, rt)
+                                    ));
+                                }
+                                
+                                if !Self::is_integer_type(&lt) {
+                                    return Err(CompilerError::codegen_error(
+                                        format!("Modulo operation requires integer operands, found {:?}", lt)
+                                    ));
+                                }
+                                
+                                let left_int = left_val.into_int_value();
+                                let right_int = right_val.into_int_value();
+                                builder.build_int_signed_rem(left_int, right_int, "mod_result").unwrap().into()
+                            } else {
+                                // Fallback
+                                let left_i64 = left_val.into_int_value();
+                                let right_i64 = right_val.into_int_value();
+                                builder.build_int_signed_rem(left_i64, right_i64, "mod_result").unwrap().into()
+                            }
                         }
                         BinaryOp::Equal => {
                             builder.build_int_compare(inkwell::IntPredicate::EQ, left_val.into_int_value(), right_val.into_int_value(), "eq_result").unwrap().into()
@@ -2714,12 +3022,51 @@ impl CodeGenerator {
         let operand = self.generate_expression_llvm(&unary.operand)?;
 
         if let Some(op_val) = operand {
+            // Get operand type for type-specific code generation
+            let operand_type = self.get_expression_type(&unary.operand).ok();
+            
             if let Some(builder) = &self.builder {
                 unsafe {
                     let result = match unary.operator {
                         UnaryOp::Negate => {
-                            let zero = (*self.context).i64_type().const_int(0, false);
-                            builder.build_int_sub(zero, op_val.into_int_value(), "neg_result").unwrap().into()
+                            // Negation works on all numeric types
+                            if let Some(ty) = operand_type {
+                                match ty {
+                                    Type::Int8 => {
+                                        let zero = (*self.context).i8_type().const_int(0, false);
+                                        builder.build_int_sub(zero, op_val.into_int_value(), "neg_i8").unwrap().into()
+                                    }
+                                    Type::Int16 => {
+                                        let zero = (*self.context).i16_type().const_int(0, false);
+                                        builder.build_int_sub(zero, op_val.into_int_value(), "neg_i16").unwrap().into()
+                                    }
+                                    Type::Int32 => {
+                                        let zero = (*self.context).i32_type().const_int(0, false);
+                                        builder.build_int_sub(zero, op_val.into_int_value(), "neg_i32").unwrap().into()
+                                    }
+                                    Type::Int64 => {
+                                        let zero = (*self.context).i64_type().const_int(0, false);
+                                        builder.build_int_sub(zero, op_val.into_int_value(), "neg_i64").unwrap().into()
+                                    }
+                                    Type::Float16 => {
+                                        let zero = (*self.context).f16_type().const_float(0.0);
+                                        builder.build_float_sub(zero, op_val.into_float_value(), "neg_f16").unwrap().into()
+                                    }
+                                    Type::Float32 => {
+                                        let zero = (*self.context).f32_type().const_float(0.0);
+                                        builder.build_float_sub(zero, op_val.into_float_value(), "neg_f32").unwrap().into()
+                                    }
+                                    _ => {
+                                        // Fallback to int64
+                                        let zero = (*self.context).i64_type().const_int(0, false);
+                                        builder.build_int_sub(zero, op_val.into_int_value(), "neg_result").unwrap().into()
+                                    }
+                                }
+                            } else {
+                                // Fallback if type information not available
+                                let zero = (*self.context).i64_type().const_int(0, false);
+                                builder.build_int_sub(zero, op_val.into_int_value(), "neg_result").unwrap().into()
+                            }
                         }
                         UnaryOp::Not => {
                             builder.build_not(op_val.into_int_value(), "not_result").unwrap().into()
@@ -3576,6 +3923,10 @@ impl CodeGenerator {
                                 let pattern_const = (*self.context).i64_type().const_int(*pattern_val as u64, false);
                                 Ok(builder.build_int_compare(inkwell::IntPredicate::EQ, scrutinee.into_int_value(), pattern_const, "literal_match").unwrap())
                             }
+                            Literal::Float(pattern_val) => {
+                                let pattern_const = (*self.context).f32_type().const_float(*pattern_val);
+                                Ok(builder.build_float_compare(inkwell::FloatPredicate::OEQ, scrutinee.into_float_value(), pattern_const, "float_match").unwrap())
+                            }
                             Literal::Bool(pattern_bool) => {
                                 let pattern_const = (*self.context).bool_type().const_int(if *pattern_bool { 1 } else { 0 }, false);
                                 Ok(builder.build_int_compare(inkwell::IntPredicate::EQ, scrutinee.into_int_value(), pattern_const, "bool_match").unwrap())
@@ -3777,6 +4128,24 @@ impl CodeGenerator {
                 Expression::FunctionLiteral(_) => Ok("i8*".to_string()),
                 Expression::Literal(Literal::String(_)) => Ok("i8*".to_string()),
                 Expression::Literal(Literal::Int(_)) => Ok("i64".to_string()),
+                Expression::Literal(Literal::Float(_)) => {
+                    // Get the type from expression_types if available (for float16 vs float32)
+                    // If type information is missing, this indicates missing type annotation
+                    let expr_type = Self::try_get_expression_location(&*first_branch.body)
+                        .and_then(|loc| self.expression_types.get(loc));
+                    match expr_type {
+                        Some(Type::Float16) => Ok("half".to_string()),
+                        Some(Type::Float32) => Ok("float".to_string()),
+                        Some(ty) => {
+                            // Non-float type stored - this is unexpected for a Float literal
+                            panic!("Float literal has non-float type in expression_types: {:?}", ty)
+                        },
+                        None => {
+                            // Type information missing - indicates missing type annotation
+                            panic!("Float literal type information missing - type annotation required for float16 vs float32 distinction")
+                        }
+                    }
+                },
                 Expression::Literal(Literal::Bool(_)) => Ok("i1".to_string()),
                 Expression::Literal(Literal::Char(_)) => Ok("i32".to_string()),
                 // Default to i64 for other expressions (binary ops, calls, etc.)
@@ -5608,6 +5977,32 @@ impl CodeGenerator {
                 Literal::Bool(_) => Type::Bool,
                 Literal::Char(_) => Type::Char,
                 Literal::String(_) => Type::String,
+                Literal::Float(_) => {
+                    // Get the type from expression_types if available (for float16 vs float32)
+                    // If type information is missing, this indicates missing type annotation
+                    // The type checker should have caught this, but if we reach here without
+                    // type info, we cannot determine float16 vs float32
+                    if let Some(location) = Self::try_get_expression_location(expr) {
+                        if let Some(ty) = self.expression_types.get(location) {
+                            match ty {
+                                Type::Float16 => Type::Float16,
+                                Type::Float32 => Type::Float32,
+                                _ => {
+                                    // Non-float type stored - this is unexpected for a Float literal
+                                    // This should not happen if type checking worked correctly
+                                    panic!("Float literal has non-float type in expression_types: {:?}", ty)
+                                }
+                            }
+                        } else {
+                            // Type information missing - indicates missing type annotation
+                            panic!("Float literal type information missing - type annotation required for float16 vs float32 distinction")
+                        }
+                    } else {
+                        // Literals don't have locations, so we can't look up their type
+                        // This means type information is not available - indicates missing annotation
+                        panic!("Float literal has no location - cannot determine float16 vs float32 without type annotation")
+                    }
+                },
                 Literal::Unit => Type::Unit,
             },
             Expression::Identifier(name) => {
@@ -6965,24 +7360,6 @@ impl CodeGenerator {
         Err(CompilerError::codegen_error(format!("Field '{}' not found in record", field_name)))
     }
 
-    /// Infer the type of a case branch body for phi type determination (simplified)
-    fn infer_case_branch_type(&self, expr: &Expression) -> String {
-        match expr {
-            Expression::Literal(lit) => match lit {
-                Literal::Int(_) => "i64",
-                Literal::Bool(_) => "i1",
-                Literal::String(_) => "i8*",
-                Literal::Char(_) => "i32", // Characters as i32
-                Literal::Unit => "i64", // Unit as integer
-            },
-            Expression::StructLiteral(_) | Expression::Tuple(_) => "i8*", // Complex types
-            Expression::FieldAccess(_) => "i64", // Assume fields are integers for now
-            Expression::Binary(_) => "i64", // Binary operations return integers
-            Expression::Unary(_) => "i64", // Unary operations return integers
-            _ => "i64", // Default to i64
-        }.to_string()
-    }
-
     /// Check if a value needs type conversion for phi
     fn needs_type_conversion(&self, val: &str, target_type: &str) -> bool {
         let current_type = if val.starts_with("i8* ") {
@@ -7393,9 +7770,31 @@ impl CodeGenerator {
                 let result_reg = format!("%binop_{}", body_instructions.len());
 
                 // Determine operand types and generate appropriate operations
+                // First try to get types from expression_types map
+                let left_expr_type = Self::try_get_expression_location(&binary.left)
+                    .and_then(|loc| self.expression_types.get(loc));
+                let right_expr_type = Self::try_get_expression_location(&binary.right)
+                    .and_then(|loc| self.expression_types.get(loc));
+                
                 // For bootstrap: load i8* operands (assume they contain primitives)
-                let (left_type, clean_left) = if left_val.starts_with("i8* ") {
-                    // Load pointer to boxed value
+                let (left_type, clean_left) = if let Some(ty) = left_expr_type {
+                    // Use type from expression_types map
+                    let llvm_type_str = Self::type_to_llvm_string(ty);
+                    if left_val.starts_with("i8* ") {
+                        // Load pointer to boxed value
+                        let ptr_reg = left_val.trim_start_matches("i8* ");
+                        let bitcast_reg = format!("%bitcast_left_{}", body_instructions.len());
+                        let load_reg = format!("%load_left_{}", body_instructions.len());
+                        body_instructions.push(format!("  {} = bitcast i8* {} to {}*", bitcast_reg, ptr_reg, llvm_type_str));
+                        body_instructions.push(format!("  {} = load {}, {}* {}", load_reg, llvm_type_str, llvm_type_str, bitcast_reg));
+                        (llvm_type_str, load_reg.to_string())
+                    } else if left_val.starts_with(&format!("{} ", llvm_type_str)) {
+                        (llvm_type_str, left_val.trim_start_matches(&format!("{} ", llvm_type_str)).to_string())
+                    } else {
+                        (llvm_type_str, left_val.trim_start_matches('%').to_string())
+                    }
+                } else if left_val.starts_with("i8* ") {
+                    // Load pointer to boxed value (fallback to i64)
                     let ptr_reg = left_val.trim_start_matches("i8* ");
                     let bitcast_reg = format!("%bitcast_left_{}", body_instructions.len());
                     let load_reg = format!("%load_left_{}", body_instructions.len());
@@ -7403,13 +7802,18 @@ impl CodeGenerator {
                     body_instructions.push(format!("  {} = load i64, i64* {}", load_reg, bitcast_reg));
                     ("i64", load_reg.to_string())
                 } else if left_val.starts_with("i64 ") {
-                    // Direct i64 value
                     ("i64", left_val.trim_start_matches("i64 ").to_string())
                 } else if left_val.starts_with("i32 ") {
-                    // Direct i32 value (char)
                     ("i32", left_val.trim_start_matches("i32 ").to_string())
+                } else if left_val.starts_with("i16 ") {
+                    ("i16", left_val.trim_start_matches("i16 ").to_string())
+                } else if left_val.starts_with("i8 ") {
+                    ("i8", left_val.trim_start_matches("i8 ").to_string())
+                } else if left_val.starts_with("half ") {
+                    ("half", left_val.trim_start_matches("half ").to_string())
+                } else if left_val.starts_with("float ") {
+                    ("float", left_val.trim_start_matches("float ").to_string())
                 } else if left_val.starts_with("i1 ") {
-                    // Direct i1 value (bool)
                     ("i1", left_val.trim_start_matches("i1 ").to_string())
                 } else if left_val.contains("box_result") || left_val.starts_with("%box_") {
                     // This is likely an i8* register (boxed result) - load it
@@ -7420,23 +7824,35 @@ impl CodeGenerator {
                     ("i64", load_reg.to_string())
                 } else {
                     // Check if this is a variable/register name that we know the type of
-                    let clean_reg = left_val.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").trim_start_matches('%');
+                    let clean_reg = left_val.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i16 ").trim_start_matches("i8 ").trim_start_matches("half ").trim_start_matches("float ").trim_start_matches("i1 ").trim_start_matches("i8* ").trim_start_matches('%');
                     if let Some(var_type) = self.variable_types.get(clean_reg) {
                         // Look up the actual LLVM type for this variable
-                        match var_type {
-                            Type::Char => ("i32", format!("%{}", clean_reg)),
-                            Type::Int64 => ("i64", format!("%{}", clean_reg)),
-                            Type::Bool => ("i1", format!("%{}", clean_reg)),
-                            _ => ("i64", format!("%{}", clean_reg)), // fallback for other types
-                        }
+                        let llvm_type_str = Self::type_to_llvm_string(var_type);
+                        (llvm_type_str, format!("%{}", clean_reg))
                     } else {
                         // Fallback: assume i64 for unknown register types in text IR
-                        ("i64", left_val.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string())
+                        ("i64", left_val.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i16 ").trim_start_matches("i8 ").trim_start_matches("half ").trim_start_matches("float ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string())
                     }
                 };
 
-                let (right_type, clean_right) = if right_val.starts_with("i8* ") {
-                    // Load pointer to boxed value
+                let (right_type, clean_right) = if let Some(ty) = right_expr_type {
+                    // Use type from expression_types map
+                    let llvm_type_str = Self::type_to_llvm_string(ty);
+                    if right_val.starts_with("i8* ") {
+                        // Load pointer to boxed value
+                        let ptr_reg = right_val.trim_start_matches("i8* ");
+                        let bitcast_reg = format!("%bitcast_right_{}", body_instructions.len());
+                        let load_reg = format!("%load_right_{}", body_instructions.len());
+                        body_instructions.push(format!("  {} = bitcast i8* {} to {}*", bitcast_reg, ptr_reg, llvm_type_str));
+                        body_instructions.push(format!("  {} = load {}, {}* {}", load_reg, llvm_type_str, llvm_type_str, bitcast_reg));
+                        (llvm_type_str, load_reg.to_string())
+                    } else if right_val.starts_with(&format!("{} ", llvm_type_str)) {
+                        (llvm_type_str, right_val.trim_start_matches(&format!("{} ", llvm_type_str)).to_string())
+                    } else {
+                        (llvm_type_str, right_val.trim_start_matches('%').to_string())
+                    }
+                } else if right_val.starts_with("i8* ") {
+                    // Load pointer to boxed value (fallback to i64)
                     let ptr_reg = right_val.trim_start_matches("i8* ");
                     let bitcast_reg = format!("%bitcast_right_{}", body_instructions.len());
                     let load_reg = format!("%load_right_{}", body_instructions.len());
@@ -7444,13 +7860,18 @@ impl CodeGenerator {
                     body_instructions.push(format!("  {} = load i64, i64* {}", load_reg, bitcast_reg));
                     ("i64", load_reg.to_string())
                 } else if right_val.starts_with("i64 ") {
-                    // Direct i64 value
                     ("i64", right_val.trim_start_matches("i64 ").to_string())
                 } else if right_val.starts_with("i32 ") {
-                    // Direct i32 value (char)
                     ("i32", right_val.trim_start_matches("i32 ").to_string())
+                } else if right_val.starts_with("i16 ") {
+                    ("i16", right_val.trim_start_matches("i16 ").to_string())
+                } else if right_val.starts_with("i8 ") {
+                    ("i8", right_val.trim_start_matches("i8 ").to_string())
+                } else if right_val.starts_with("half ") {
+                    ("half", right_val.trim_start_matches("half ").to_string())
+                } else if right_val.starts_with("float ") {
+                    ("float", right_val.trim_start_matches("float ").to_string())
                 } else if right_val.starts_with("i1 ") {
-                    // Direct i1 value (bool)
                     ("i1", right_val.trim_start_matches("i1 ").to_string())
                 } else if right_val.contains("box") || right_val.starts_with("%box_") {
                     // This is likely an i8* register (boxed result) - load it
@@ -7461,64 +7882,55 @@ impl CodeGenerator {
                     ("i64", load_reg.to_string())
                 } else {
                     // Check if this is a variable/register name that we know the type of
-                    let clean_reg = right_val.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").trim_start_matches('%');
+                    let clean_reg = right_val.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i16 ").trim_start_matches("i8 ").trim_start_matches("half ").trim_start_matches("float ").trim_start_matches("i1 ").trim_start_matches("i8* ").trim_start_matches('%');
                     if let Some(var_type) = self.variable_types.get(clean_reg) {
                         // Look up the actual LLVM type for this variable
-                        match var_type {
-                            Type::Char => ("i32", format!("%{}", clean_reg)),
-                            Type::Int64 => ("i64", format!("%{}", clean_reg)),
-                            Type::Bool => ("i1", format!("%{}", clean_reg)),
-                            _ => ("i64", format!("%{}", clean_reg)), // fallback for other types
-                        }
+                        let llvm_type_str = Self::type_to_llvm_string(var_type);
+                        (llvm_type_str, format!("%{}", clean_reg))
                     } else {
                         // Fallback: assume i64 for unknown register types in text IR
-                        ("i64", right_val.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string())
+                        ("i64", right_val.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i16 ").trim_start_matches("i8 ").trim_start_matches("half ").trim_start_matches("float ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string())
                     }
                 };
 
                 // Generate operation based on operand types
+                // Ensure types match (type checker should have enforced this)
+                if left_type != right_type {
+                    return Err(CompilerError::codegen_error(
+                        format!("Arithmetic operands must be same type: {} vs {}", left_type, right_type)
+                    ));
+                }
+                
                 let (op_instr, result_type) = match binary.operator {
                     BinaryOp::Add => {
-                        if left_type == "i64" && right_type == "i64" {
-                            (format!("    {} = add i64 {}, {}", result_reg, clean_left, clean_right), "i64")
-                        } else if left_type == "i32" && right_type == "i32" {
-                            (format!("    {} = add i32 {}, {}", result_reg, clean_left, clean_right), "i32")
-                        } else if left_type == "i1" && right_type == "i1" {
-                            (format!("    {} = add i1 {}, {}", result_reg, clean_left, clean_right), "i1")
-                        } else {
-                            return Err(CompilerError::codegen_error(format!("Cannot add {} and {}", left_type, right_type)));
-                        }
+                        // Determine if this is a float operation
+                        let is_float = left_type == "half" || left_type == "float";
+                        let op_name = if is_float { "fadd" } else { "add" };
+                        (format!("    {} = {} {} {}, {}", result_reg, op_name, left_type, clean_left, clean_right), left_type)
                     },
                     BinaryOp::Subtract => {
-                        if left_type == "i64" && right_type == "i64" {
-                            (format!("    {} = sub i64 {}, {}", result_reg, clean_left, clean_right), "i64")
-                        } else if left_type == "i32" && right_type == "i32" {
-                            (format!("    {} = sub i32 {}, {}", result_reg, clean_left, clean_right), "i32")
-                        } else if left_type == "i1" && right_type == "i1" {
-                            (format!("    {} = sub i1 {}, {}", result_reg, clean_left, clean_right), "i1")
-                        } else {
-                            return Err(CompilerError::codegen_error(format!("Cannot subtract {} and {}", left_type, right_type)));
-                        }
+                        let is_float = left_type == "half" || left_type == "float";
+                        let op_name = if is_float { "fsub" } else { "sub" };
+                        (format!("    {} = {} {} {}, {}", result_reg, op_name, left_type, clean_left, clean_right), left_type)
                     },
                     BinaryOp::Multiply => {
-                        if left_type == "i64" && right_type == "i64" {
-                            (format!("    {} = mul i64 {}, {}", result_reg, clean_left, clean_right), "i64")
-                        } else if left_type == "i32" && right_type == "i32" {
-                            (format!("    {} = mul i32 {}, {}", result_reg, clean_left, clean_right), "i32")
-                        } else if left_type == "i1" && right_type == "i1" {
-                            (format!("    {} = mul i1 {}, {}", result_reg, clean_left, clean_right), "i1")
-                        } else {
-                            return Err(CompilerError::codegen_error(format!("Cannot multiply {} and {}", left_type, right_type)));
-                        }
+                        let is_float = left_type == "half" || left_type == "float";
+                        let op_name = if is_float { "fmul" } else { "mul" };
+                        (format!("    {} = {} {} {}, {}", result_reg, op_name, left_type, clean_left, clean_right), left_type)
                     },
                     BinaryOp::Divide => {
-                        if left_type == "i64" && right_type == "i64" {
-                            (format!("    {} = sdiv i64 {}, {}", result_reg, clean_left, clean_right), "i64")
-                        } else if left_type == "i32" && right_type == "i32" {
-                            (format!("    {} = sdiv i32 {}, {}", result_reg, clean_left, clean_right), "i32")
-                        } else {
-                            return Err(CompilerError::codegen_error(format!("Cannot divide {} and {}", left_type, right_type)));
+                        let is_float = left_type == "half" || left_type == "float";
+                        let op_name = if is_float { "fdiv" } else { "sdiv" };
+                        (format!("    {} = {} {} {}, {}", result_reg, op_name, left_type, clean_left, clean_right), left_type)
+                    },
+                    BinaryOp::Modulo => {
+                        // Modulo only works on integer types
+                        if left_type == "half" || left_type == "float" {
+                            return Err(CompilerError::codegen_error(
+                                format!("Modulo operation requires integer operands, found {}", left_type)
+                            ));
                         }
+                        (format!("    {} = srem {} {}, {}", result_reg, left_type, clean_left, clean_right), left_type)
                     },
                     BinaryOp::Equal => {
                         if left_type == right_type {
