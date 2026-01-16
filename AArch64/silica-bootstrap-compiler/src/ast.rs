@@ -206,9 +206,15 @@ pub enum Expression {
     // Print operations
     Print(PrintExpr),
     PrintLn(PrintLnExpr),
-    PrintInt(PrintIntExpr),
+    PrintInt64(PrintInt64Expr),
+    PrintInt32(PrintInt32Expr),
+    PrintInt16(PrintInt16Expr),
+    PrintInt8(PrintInt8Expr),
     PrintBool(PrintBoolExpr),
     PrintChar(PrintCharExpr),
+    PrintFloat16(PrintFloat16Expr),
+    PrintFloat32(PrintFloat32Expr),
+    PrintFloat64(PrintFloat64Expr),
     GetCpuTopologyInfo(GetCpuTopologyInfoExpr),
 
     // I/O operations
@@ -453,9 +459,30 @@ pub struct PrintLnExpr {
     pub location: SourceLocation,
 }
 
-/// Print int expression: print_int(value)
+/// Print int64 expression: print_int64(value)
 #[derive(Debug, Clone)]
-pub struct PrintIntExpr {
+pub struct PrintInt64Expr {
+    pub value: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Print int8 expression: print_int8(value)
+#[derive(Debug, Clone)]
+pub struct PrintInt8Expr {
+    pub value: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Print int16 expression: print_int16(value)
+#[derive(Debug, Clone)]
+pub struct PrintInt16Expr {
+    pub value: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Print int32 expression: print_int32(value)
+#[derive(Debug, Clone)]
+pub struct PrintInt32Expr {
     pub value: Box<Expression>,
     pub location: SourceLocation,
 }
@@ -470,6 +497,27 @@ pub struct PrintBoolExpr {
 /// Print char expression: print_char(value)
 #[derive(Debug, Clone)]
 pub struct PrintCharExpr {
+    pub value: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Print float16 expression: print_float16(value)
+#[derive(Debug, Clone)]
+pub struct PrintFloat16Expr {
+    pub value: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Print float32 expression: print_float32(value)
+#[derive(Debug, Clone)]
+pub struct PrintFloat32Expr {
+    pub value: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Print float64 expression: print_float64(value)
+#[derive(Debug, Clone)]
+pub struct PrintFloat64Expr {
     pub value: Box<Expression>,
     pub location: SourceLocation,
 }
@@ -670,6 +718,7 @@ pub enum Type {
     Int64,
     Float16,
     Float32,
+    Float64,
     Char,
     String,
 

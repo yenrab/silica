@@ -89,6 +89,7 @@ impl<'a> TypeChecker<'a> {
                 "int64" => Ok(Type::Int64),
                 "float16" => Ok(Type::Float16),
                 "float32" => Ok(Type::Float32),
+                "float64" => Ok(Type::Float64),
                         "float16" => Ok(Type::Float16),
                         "float32" => Ok(Type::Float32),
                         "bool" => Ok(Type::Bool),
@@ -125,7 +126,7 @@ impl<'a> TypeChecker<'a> {
                 Ok(Type::Record(resolved_fields))
             }
             // Simple types don't need resolution
-            Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 | Type::Float16 | Type::Float32 | Type::Bool | Type::Char | Type::String | Type::Unit => Ok(type_.clone()),
+            Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 | Type::Float16 | Type::Float32 | Type::Float64 | Type::Bool | Type::Char | Type::String | Type::Unit => Ok(type_.clone()),
             // TODO: Handle generic types, effects, etc.
             _ => Ok(type_.clone()), // For now, pass through unresolved
         }
@@ -157,6 +158,7 @@ impl<'a> TypeChecker<'a> {
                 "int64" => Ok(Type::Int64),
                 "float16" => Ok(Type::Float16),
                 "float32" => Ok(Type::Float32),
+                "float64" => Ok(Type::Float64),
                 "bool" => Ok(Type::Bool),
                 "char" => Ok(Type::Char),
                 "string" => Ok(Type::String),
@@ -183,6 +185,7 @@ impl<'a> TypeChecker<'a> {
             crate::ast::Type::Int64 => Ok(Type::Int64),
             crate::ast::Type::Float16 => Ok(Type::Float16),
             crate::ast::Type::Float32 => Ok(Type::Float32),
+            crate::ast::Type::Float64 => Ok(Type::Float64),
             crate::ast::Type::Bool => Ok(Type::Bool),
             crate::ast::Type::Char => Ok(Type::Char),
             crate::ast::Type::String => Ok(Type::String),
@@ -313,9 +316,15 @@ impl<'a> TypeChecker<'a> {
             Expression::WriteFile(write_file) => &write_file.location,
             Expression::Print(print) => &print.location,
             Expression::PrintLn(println) => &println.location,
-            Expression::PrintInt(print_int) => &print_int.location,
+            Expression::PrintInt64(print_int64) => &print_int64.location,
+            Expression::PrintInt32(print_int32) => &print_int32.location,
+            Expression::PrintInt16(print_int16) => &print_int16.location,
+            Expression::PrintInt8(print_int8) => &print_int8.location,
             Expression::PrintBool(print_bool) => &print_bool.location,
             Expression::PrintChar(print_char) => &print_char.location,
+            Expression::PrintFloat16(print_float16) => &print_float16.location,
+            Expression::PrintFloat32(print_float32) => &print_float32.location,
+            Expression::PrintFloat64(print_float64) => &print_float64.location,
             Expression::GetCpuTopologyInfo(get_topology) => &get_topology.location,
             Expression::StringLen(string_len) => &string_len.location,
             Expression::StringLenChars(string_len_chars) => &string_len_chars.location,
@@ -420,6 +429,7 @@ impl<'a> TypeChecker<'a> {
             (Type::Int64, Type::Int64) => true,
             (Type::Float16, Type::Float16) => true,
             (Type::Float32, Type::Float32) => true,
+            (Type::Float64, Type::Float64) => true,
             (Type::Bool, Type::Bool) => true,
             (Type::Char, Type::Char) => true,
             (Type::String, Type::String) => true,
@@ -512,6 +522,10 @@ impl<'a> TypeChecker<'a> {
         env.insert("float32".to_string(), TypeScheme {
             vars: vec![],
             ty: Type::Float32,
+        });
+        env.insert("float64".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Float64,
         });
         env.insert("bool".to_string(), TypeScheme {
             vars: vec![],
@@ -884,7 +898,20 @@ impl<'a> TypeChecker<'a> {
             Expression::FunctionLiteral(func) => self.infer_function_literal(func)?,
             Expression::If(if_expr) => self.infer_if(if_expr)?,
             Expression::Case(case) => self.infer_case(case)?,
-            Expression::Do(do_expr) => self.infer_do(do_expr)?,
+            Expression::Do(do_expr) => {
+                // If there's an expected type and it's a Process, extract the result type
+                // Otherwise, pass the expected type directly to the do-block for proper type inference
+                if let Some(expected_ty) = expected_type {
+                    if let Type::Process { result_type, .. } = expected_ty {
+                        self.infer_do_with_context(do_expr, Some(result_type))?
+                    } else {
+                        // Pass expected type context so last expression can use it (e.g., for integer literals)
+                        self.infer_do_with_context(do_expr, Some(expected_ty))?
+                    }
+                } else {
+                    self.infer_do(do_expr)?
+                }
+            },
             Expression::Region(region) => self.infer_region(region)?,
             Expression::AllocRef(alloc) => self.infer_alloc_ref(alloc)?,
             Expression::ReadRef(read) => self.infer_read_ref(read)?,
@@ -897,9 +924,15 @@ impl<'a> TypeChecker<'a> {
             Expression::WriteFile(write_file) => self.infer_write_file(write_file)?,
             Expression::Print(print) => self.infer_print(print)?,
             Expression::PrintLn(println) => self.infer_println(println)?,
-            Expression::PrintInt(print_int) => self.infer_print_int(print_int)?,
+            Expression::PrintInt64(print_int64) => self.infer_print_int64(print_int64)?,
+            Expression::PrintInt32(print_int32) => self.infer_print_int32(print_int32)?,
+            Expression::PrintInt16(print_int16) => self.infer_print_int16(print_int16)?,
+            Expression::PrintInt8(print_int8) => self.infer_print_int8(print_int8)?,
             Expression::PrintBool(print_bool) => self.infer_print_bool(print_bool)?,
             Expression::PrintChar(print_char) => self.infer_print_char(print_char)?,
+            Expression::PrintFloat16(print_float16) => self.infer_print_float16(print_float16)?,
+            Expression::PrintFloat32(print_float32) => self.infer_print_float32(print_float32)?,
+            Expression::PrintFloat64(print_float64) => self.infer_print_float64(print_float64)?,
             Expression::ReadLines(read_lines) => self.infer_read_lines(read_lines)?,
             Expression::AppendFile(append_file) => self.infer_append_file(append_file)?,
             Expression::FileExists(file_exists) => self.infer_file_exists(file_exists)?,
@@ -1146,9 +1179,15 @@ impl<'a> TypeChecker<'a> {
             Expression::WriteFile(write_file) => Some(&write_file.location),
             Expression::Print(print) => Some(&print.location),
             Expression::PrintLn(println) => Some(&println.location),
-            Expression::PrintInt(print_int) => Some(&print_int.location),
+            Expression::PrintInt64(print_int64) => Some(&print_int64.location),
+            Expression::PrintInt32(print_int32) => Some(&print_int32.location),
+            Expression::PrintInt16(print_int16) => Some(&print_int16.location),
+            Expression::PrintInt8(print_int8) => Some(&print_int8.location),
             Expression::PrintBool(print_bool) => Some(&print_bool.location),
             Expression::PrintChar(print_char) => Some(&print_char.location),
+            Expression::PrintFloat16(print_float16) => Some(&print_float16.location),
+            Expression::PrintFloat32(print_float32) => Some(&print_float32.location),
+            Expression::PrintFloat64(print_float64) => Some(&print_float64.location),
             Expression::GetCpuTopologyInfo(get_topology) => Some(&get_topology.location),
             Expression::ReadLines(read_lines) => Some(&read_lines.location),
             Expression::AppendFile(append_file) => Some(&append_file.location),
@@ -1208,6 +1247,7 @@ impl<'a> TypeChecker<'a> {
                     match ty {
                         Type::Float16 => Type::Float16,
                         Type::Float32 => Type::Float32,
+                        Type::Float64 => Type::Float64,
                         _ => Type::Float32, // Default to float32
                     }
                 } else {
@@ -1802,20 +1842,28 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for do expression
     fn infer_do(&mut self, do_expr: &DoExpr) -> Result<Type> {
+        self.infer_do_with_context(do_expr, None)
+    }
+
+    /// Infer type for do expression with optional expected type for the last expression
+    fn infer_do_with_context(&mut self, do_expr: &DoExpr, expected_last_type: Option<&Type>) -> Result<Type> {
         let mut last_type = Type::Unit;
 
-        for statement in &do_expr.statements {
+        for (idx, statement) in do_expr.statements.iter().enumerate() {
+            let is_last = idx == do_expr.statements.len() - 1;
+            let expected_type = if is_last { expected_last_type } else { None };
+            
             match statement {
                 Statement::Bind { pattern, expr } => {
                     // Get expected type from pattern if it's a typed identifier
-                    let expected_type = if let crate::ast::Pattern::TypedIdentifier { type_, .. } = pattern {
+                    let pattern_expected_type = if let crate::ast::Pattern::TypedIdentifier { type_, .. } = pattern {
                         Some(type_.clone())
                     } else {
                         None
                     };
                     
                     // Infer the type of the expression (with context for float literals)
-                    let expr_type = if let Some(expected_ty) = &expected_type {
+                    let expr_type = if let Some(expected_ty) = &pattern_expected_type {
                         // For float literals, use expected type if it's a float type
                         self.infer_expression_with_context(expr, Some(expected_ty))?
                     } else {
@@ -1844,7 +1892,12 @@ impl<'a> TypeChecker<'a> {
                     // The return type comes from the final expression, or Unit if there is none
                 }
                 Statement::Expr(expr) => {
-                    last_type = self.infer_expression(expr)?;
+                    // Use expected type for the last expression
+                    last_type = if let Some(expected_ty) = expected_type {
+                        self.infer_expression_with_context(expr, Some(expected_ty))?
+                    } else {
+                        self.infer_expression(expr)?
+                    };
                 }
             }
         }
@@ -1925,7 +1978,7 @@ impl<'a> TypeChecker<'a> {
     fn is_numeric_type(ty: &Type) -> bool {
         matches!(ty,
             Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 |
-            Type::Float16 | Type::Float32
+            Type::Float16 | Type::Float32 | Type::Float64
         )
     }
 
@@ -1974,6 +2027,7 @@ impl<'a> TypeChecker<'a> {
             (Type::Int64, Type::Int64) |
             (Type::Float16, Type::Float16) |
             (Type::Float32, Type::Float32) |
+            (Type::Float64, Type::Float64) |
             (Type::Char, Type::Char) |
             (Type::String, Type::String) |
             (Type::ActorRef, Type::ActorRef) => Ok(()),
@@ -2213,17 +2267,20 @@ impl<'a> TypeChecker<'a> {
             (Type::Named(name1), Type::Named(name2)) if name1 == name2 => Ok(()),
             _ => {
                 let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
+                // Provide more context about what types couldn't be unified
+                let type1_str = format!("{:?}", t1);
+                let type2_str = format!("{:?}", t2);
                 let metadata = ErrorMetadataBuilder::new("E2003".to_string())
                     .severity(ErrorSeverity::Error)
                     .specification("§6.3".to_string(), None)
                     .expected_actual(
-                        format!("{:?}", t1),
-                        format!("{:?}", t2)
+                        type1_str.clone(),
+                        type2_str.clone()
                     )
                     .build();
                 type_error_with_metadata(
                     error_location,
-                    format!("Cannot unify types: {:?} and {:?}", t1, t2),
+                    format!("Cannot unify types: {} and {}", type1_str, type2_str),
                     metadata,
                 )
             }
@@ -2291,8 +2348,10 @@ impl<'a> TypeChecker<'a> {
     /// Check if an expression contains I/O operations (print, file I/O, etc.)
     fn contains_io_operations(&self, expr: &Expression) -> bool {
         match expr {
-            Expression::Print(_) | Expression::PrintLn(_) | Expression::PrintInt(_) |
-            Expression::PrintBool(_) | Expression::PrintChar(_) |
+            Expression::Print(_) | Expression::PrintLn(_) | Expression::PrintInt64(_) |
+            Expression::PrintBool(_) | Expression::PrintChar(_) | Expression::PrintInt32(_) | Expression::PrintInt16(_) | Expression::PrintInt8(_) | Expression::PrintFloat16(_) |
+            Expression::PrintFloat32(_) |
+            Expression::PrintFloat64(_) |
             Expression::ReadFile(_) | Expression::WriteFile(_) | Expression::AppendFile(_) |
             Expression::ReadLines(_) | Expression::FileExists(_) | Expression::DeleteFile(_) |
             Expression::GetFileSize(_) | Expression::CreateDirectory(_) |
@@ -2316,7 +2375,7 @@ impl<'a> TypeChecker<'a> {
             Expression::Call(call) => {
                 // Check if it's a call to an I/O function
                 if let Expression::Identifier(name) = &*call.function {
-                    matches!(name.as_str(), "print" | "println" | "print_int" | "print_bool" | 
+                    matches!(name.as_str(), "print" | "println" | "print_int64" | "print_bool" | 
                         "print_char" | "read_file" | "write_file" | "append_file" | "read_lines" |
                         "file_exists" | "delete_file" | "get_file_size" | "create_directory" |
                         "remove_directory" | "list_directory" | "exec_command")
@@ -2581,18 +2640,42 @@ impl<'a> TypeChecker<'a> {
         Ok(Type::Unit)
     }
 
-    fn infer_print_int(&mut self, print_int: &PrintIntExpr) -> Result<Type> {
-        // Check that value is an int
-        let value_type = self.infer_expression(&print_int.value)?;
+    fn infer_print_int64(&mut self, print_int64: &PrintInt64Expr) -> Result<Type> {
+        // Check that value is an int64
+        let value_type = self.infer_expression(&print_int64.value)?;
         self.unify(&value_type, &Type::Int64)?;
-        // print_int returns unit
+        // print_int64 returns unit
+        Ok(Type::Unit)
+    }
+
+    fn infer_print_int8(&mut self, print_int8: &PrintInt8Expr) -> Result<Type> {
+        // Check that value is an int8
+        let value_type = self.infer_expression(&print_int8.value)?;
+        self.unify(&value_type, &Type::Int8)?;
+        // print_int8 returns unit
+        Ok(Type::Unit)
+    }
+
+    fn infer_print_int16(&mut self, print_int16: &PrintInt16Expr) -> Result<Type> {
+        // Check that value is an int16
+        let value_type = self.infer_expression(&print_int16.value)?;
+        self.unify(&value_type, &Type::Int16)?;
+        // print_int16 returns unit
+        Ok(Type::Unit)
+    }
+
+    fn infer_print_int32(&mut self, print_int32: &PrintInt32Expr) -> Result<Type> {
+        // Check that value is an int32
+        let value_type = self.infer_expression(&print_int32.value)?;
+        self.unify(&value_type, &Type::Int32)?;
+        // print_int32 returns unit
         Ok(Type::Unit)
     }
 
     fn infer_print_bool(&mut self, print_bool: &PrintBoolExpr) -> Result<Type> {
         // Check that value is a bool
         let value_type = self.infer_expression(&print_bool.value)?;
-        self.unify(&value_type, &Type::Bool)?;
+        self.unify_with_location(&value_type, &Type::Bool, Some(print_bool.location.clone()))?;
         // print_bool returns unit
         Ok(Type::Unit)
     }
@@ -2602,6 +2685,30 @@ impl<'a> TypeChecker<'a> {
         let value_type = self.infer_expression(&print_char.value)?;
         self.unify(&value_type, &Type::Char)?;
         // print_char returns unit
+        Ok(Type::Unit)
+    }
+
+    fn infer_print_float16(&mut self, print_float16: &PrintFloat16Expr) -> Result<Type> {
+        // Check that value is a float16
+        let value_type = self.infer_expression(&print_float16.value)?;
+        self.unify(&value_type, &Type::Float16)?;
+        // print_float16 returns unit
+        Ok(Type::Unit)
+    }
+
+    fn infer_print_float32(&mut self, print_float32: &PrintFloat32Expr) -> Result<Type> {
+        // Check that value is a float32
+        let value_type = self.infer_expression(&print_float32.value)?;
+        self.unify(&value_type, &Type::Float32)?;
+        // print_float32 returns unit
+        Ok(Type::Unit)
+    }
+
+    fn infer_print_float64(&mut self, print_float64: &PrintFloat64Expr) -> Result<Type> {
+        // Check that value is a float64
+        let value_type = self.infer_expression(&print_float64.value)?;
+        self.unify(&value_type, &Type::Float64)?;
+        // print_float64 returns unit
         Ok(Type::Unit)
     }
 
@@ -2998,6 +3105,7 @@ impl<'a> TypeChecker<'a> {
                         "int64" => Type::Int64,
                         "float16" => Type::Float16,
                         "float32" => Type::Float32,
+                        "float64" => Type::Float64,
                         "bool" => Type::Bool,
                         "char" => Type::Char,
                         "string" => Type::String,

@@ -312,6 +312,8 @@ impl Parser {
             return Ok(Type::Int16);
         } else if self.match_token(TokenKind::Int8) {
             return Ok(Type::Int8);
+        } else if self.match_token(TokenKind::Float64) {
+            return Ok(Type::Float64);
         } else if self.match_token(TokenKind::Float32) {
             return Ok(Type::Float32);
         } else if self.match_token(TokenKind::Float16) {
@@ -990,12 +992,24 @@ impl Parser {
                 self.parse_print()
             } else if name == "println" && self.match_token(TokenKind::LeftParen) {
                 self.parse_println()
-            } else if name == "print_int" && self.match_token(TokenKind::LeftParen) {
-                self.parse_print_int()
+            } else if name == "print_int64" && self.match_token(TokenKind::LeftParen) {
+                self.parse_print_int64()
+            } else if name == "print_int32" && self.match_token(TokenKind::LeftParen) {
+                self.parse_print_int32()
+            } else if name == "print_int16" && self.match_token(TokenKind::LeftParen) {
+                self.parse_print_int16()
+            } else if name == "print_int8" && self.match_token(TokenKind::LeftParen) {
+                self.parse_print_int8()
             } else if name == "print_bool" && self.match_token(TokenKind::LeftParen) {
                 self.parse_print_bool()
             } else if name == "print_char" && self.match_token(TokenKind::LeftParen) {
                 self.parse_print_char()
+            } else if name == "print_float16" && self.match_token(TokenKind::LeftParen) {
+                self.parse_print_float16()
+            } else if name == "print_float32" && self.match_token(TokenKind::LeftParen) {
+                self.parse_print_float32()
+            } else if name == "print_float64" && self.match_token(TokenKind::LeftParen) {
+                self.parse_print_float64()
             } else if name == "get_cpu_topology_info" && self.match_token(TokenKind::LeftParen) {
                 self.parse_get_cpu_topology_info()
             } else if name == "read_lines" && self.match_token(TokenKind::LeftParen) {
@@ -1166,13 +1180,49 @@ impl Parser {
         }))
     }
 
-    /// Parse print_int(value) expression
-    fn parse_print_int(&mut self) -> Result<Expression> {
+    /// Parse print_int64(value) expression
+    fn parse_print_int64(&mut self) -> Result<Expression> {
         let location = self.previous().location.clone();
         let value = Box::new(self.expression()?);
-        self.consume(TokenKind::RightParen, "Expected ')' after print_int argument")?;
+        self.consume(TokenKind::RightParen, "Expected ')' after print_int64 argument")?;
 
-        Ok(Expression::PrintInt(PrintIntExpr {
+        Ok(Expression::PrintInt64(PrintInt64Expr {
+            value,
+            location,
+        }))
+    }
+
+    /// Parse print_int8(value) expression
+    fn parse_print_int8(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let value = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after print_int8 argument")?;
+
+        Ok(Expression::PrintInt8(PrintInt8Expr {
+            value,
+            location,
+        }))
+    }
+
+    /// Parse print_int16(value) expression
+    fn parse_print_int16(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let value = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after print_int16 argument")?;
+
+        Ok(Expression::PrintInt16(PrintInt16Expr {
+            value,
+            location,
+        }))
+    }
+
+    /// Parse print_int32(value) expression
+    fn parse_print_int32(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let value = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after print_int32 argument")?;
+
+        Ok(Expression::PrintInt32(PrintInt32Expr {
             value,
             location,
         }))
@@ -1197,6 +1247,42 @@ impl Parser {
         self.consume(TokenKind::RightParen, "Expected ')' after print_char argument")?;
 
         Ok(Expression::PrintChar(PrintCharExpr {
+            value,
+            location,
+        }))
+    }
+
+    /// Parse print_float16(value) expression
+    fn parse_print_float16(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let value = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after print_float16 argument")?;
+
+        Ok(Expression::PrintFloat16(PrintFloat16Expr {
+            value,
+            location,
+        }))
+    }
+
+    /// Parse print_float32(value) expression
+    fn parse_print_float32(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let value = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after print_float32 argument")?;
+
+        Ok(Expression::PrintFloat32(PrintFloat32Expr {
+            value,
+            location,
+        }))
+    }
+
+    /// Parse print_float64(value) expression
+    fn parse_print_float64(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let value = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after print_float64 argument")?;
+
+        Ok(Expression::PrintFloat64(PrintFloat64Expr {
             value,
             location,
         }))

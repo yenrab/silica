@@ -23,7 +23,7 @@ impl Token {
 pub enum TokenKind {
     // Keywords (33 total)
     Actor, ActorRef, As, Atomic, Bool, Buf, Case, Cast, Char, Concurrency, CoreId, CoreSet, DeviceIO, EfficiencyCores, Includes, PerformanceCores,
-    Do, Effect, Else, End, Enum, Export, False, Float16, Float32, Fn, For, From, If,
+    Do, Effect, Else, End, Enum, Export, False, Float16, Float32, Float64, Fn, For, From, If,
     Impl, Import, Int8, Int16, Int32, Int64, Mailbox, Mem, Module, Normal, Not, Of, Proc,
     Pub, Recv, Ref, Region, Return, Self_, Send, Spawn, String, Struct,
     Trait, True, Type, Underscore, Unit, Use, Where,
@@ -66,7 +66,7 @@ impl TokenKind {
             TokenKind::Else | TokenKind::End | TokenKind::Enum |
             TokenKind::Export | TokenKind::False | TokenKind::Fn |
             TokenKind::For | TokenKind::From |             TokenKind::If | TokenKind::Impl |
-            TokenKind::Import | TokenKind::Int8 | TokenKind::Int16 | TokenKind::Int32 | TokenKind::Int64 | TokenKind::Float16 | TokenKind::Float32 |
+            TokenKind::Import | TokenKind::Int8 | TokenKind::Int16 | TokenKind::Int32 | TokenKind::Int64 | TokenKind::Float16 | TokenKind::Float32 | TokenKind::Float64 |
             TokenKind::Mailbox | TokenKind::Mem | TokenKind::Module |
             TokenKind::Normal | TokenKind::Not | TokenKind::Of | TokenKind::Proc |
             TokenKind::Pub | TokenKind::Recv | TokenKind::Ref |
@@ -349,6 +349,7 @@ impl Lexer {
             "int64" => TokenKind::Int64,
             "float16" => TokenKind::Float16,
             "float32" => TokenKind::Float32,
+            "float64" => TokenKind::Float64,
             "mailbox" => TokenKind::Mailbox,
             "mem" => TokenKind::Mem,
             "module" => TokenKind::Module,
@@ -472,6 +473,40 @@ impl Lexer {
                             self.advance();
                         } else {
                             break;
+                        }
+                    }
+                    
+                    // Check for scientific notation (e/E followed by optional +/- and digits)
+                    if let Some(c) = self.peek_char() {
+                        if c == 'e' || c == 'E' {
+                            self.advance(); // skip 'e' or 'E'
+                            // Optional sign
+                            if let Some(sign) = self.peek_char() {
+                                if sign == '+' || sign == '-' {
+                                    self.advance(); // skip sign
+                                }
+                            }
+                            // Exponent digits
+                            let mut has_exponent_digits = false;
+                            while let Some(c) = self.peek_char() {
+                                if c.is_ascii_digit() {
+                                    self.advance();
+                                    has_exponent_digits = true;
+                                } else {
+                                    break;
+                                }
+                            }
+                            // If we saw 'e'/'E' but no digits, that's an error
+                            if !has_exponent_digits {
+                                let metadata = self.build_error_metadata("E0005", &start_location, Some("spec:§2.2.3"))
+                                    .suggestion("Scientific notation requires digits after 'e' or 'E'".to_string())
+                                    .build();
+                                return lexer_error_with_metadata(
+                                    start_location,
+                                    "Invalid float literal: missing exponent digits".to_string(),
+                                    metadata,
+                                );
+                            }
                         }
                     }
                     

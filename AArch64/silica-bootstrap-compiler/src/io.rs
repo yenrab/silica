@@ -51,7 +51,28 @@ pub extern "C" fn silica_println(str_ptr: *const u8, len: usize) {
 
 /// Print a 64-bit integer to stdout
 #[no_mangle]
-pub extern "C" fn silica_print_int(n: i64) {
+pub extern "C" fn silica_print_int64(n: i64) {
+    print!("{}", n);
+    let _ = std::io::stdout().flush();
+}
+
+/// Print an 8-bit integer to stdout
+#[no_mangle]
+pub extern "C" fn silica_print_int8(n: i8) {
+    print!("{}", n);
+    let _ = std::io::stdout().flush();
+}
+
+/// Print a 16-bit integer to stdout
+#[no_mangle]
+pub extern "C" fn silica_print_int16(n: i16) {
+    print!("{}", n);
+    let _ = std::io::stdout().flush();
+}
+
+/// Print a 32-bit integer to stdout
+#[no_mangle]
+pub extern "C" fn silica_print_int32(n: i32) {
     print!("{}", n);
     let _ = std::io::stdout().flush();
 }
@@ -72,6 +93,76 @@ pub extern "C" fn silica_print_char(c: u32) {
     let _ = std::io::stdout().flush();
 }
 
+/// Print a float16 (half-precision) value to stdout
+/// Receives the value as u16 (16 bits) and converts to f32 for display
+#[no_mangle]
+pub extern "C" fn silica_print_float16(half_bits: u16) {
+    // Convert half-precision (16-bit) float to f32 for printing
+    // IEEE 754 binary16 format: 1 sign bit, 5 exponent bits, 10 mantissa bits
+    let f32_val = half_to_f32(half_bits);
+    print!("{}", f32_val);
+    let _ = std::io::stdout().flush();
+}
+
+/// Print a float32 (single-precision) value to stdout
+#[no_mangle]
+pub extern "C" fn silica_print_float32(value: f32) {
+    print!("{}", value);
+    let _ = std::io::stdout().flush();
+}
+
+/// Print a float64 (double-precision) value to stdout
+#[no_mangle]
+pub extern "C" fn silica_print_float64(value: f64) {
+    print!("{}", value);
+    let _ = std::io::stdout().flush();
+}
+
+/// Convert IEEE 754 binary16 (half-precision) to f32
+fn half_to_f32(half: u16) -> f32 {
+    // Extract sign, exponent, and mantissa
+    let sign = (half >> 15) & 0x1;
+    let exponent = (half >> 10) & 0x1F;
+    let mantissa = half & 0x3FF;
+    
+    // Handle special cases
+    if exponent == 0 {
+        if mantissa == 0 {
+            // Zero (positive or negative)
+            if sign == 0 {
+                0.0
+            } else {
+                -0.0
+            }
+        } else {
+            // Denormalized number
+            let val = (mantissa as f32) * 2.0_f32.powi(-24);
+            if sign == 0 {
+                val
+            } else {
+                -val
+            }
+        }
+    } else if exponent == 0x1F {
+        // Infinity or NaN
+        if mantissa == 0 {
+            if sign == 0 {
+                f32::INFINITY
+            } else {
+                f32::NEG_INFINITY
+            }
+        } else {
+            f32::NAN
+        }
+    } else {
+        // Normalized number
+        let exp = (exponent as i32) - 15 + 127; // Adjust bias from 15 to 127
+        let mant = mantissa << 13; // Shift mantissa to f32 position (23 bits total, 10 from half)
+        let bits = ((sign as u32) << 31) | ((exp as u32) << 23) | (mant as u32);
+        f32::from_bits(bits)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,8 +177,8 @@ mod tests {
 
         silica_println(test_str.as_ptr(), test_str.len());
 
-        silica_print_int(42);
-        silica_print_int(-123);
+        silica_print_int64(42);
+        silica_print_int64(-123);
 
         silica_print_bool(true);
         silica_print_bool(false);
