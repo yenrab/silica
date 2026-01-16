@@ -528,10 +528,10 @@ fn start_actor_message_loop(actor: Arc<Mutex<SilicaActor>>, core_affinity: i32) 
         let actor_guard = actor.lock().unwrap();
         actor_guard.id
     };
-    eprintln!("[DEBUG] start_actor_message_loop: Starting message loop for actor ID {} with core_affinity={}", actor_id, core_affinity);
+    // eprintln!("[DEBUG] start_actor_message_loop: Starting message loop for actor ID {} with core_affinity={}", actor_id, core_affinity);
     // Spawn a new thread for the actor's message loop
     std::thread::spawn(move || {
-        eprintln!("[DEBUG] start_actor_message_loop: Thread spawned for actor ID {}", actor_id);
+        // eprintln!("[DEBUG] start_actor_message_loop: Thread spawned for actor ID {}", actor_id);
         // Set CPU affinity if specified (core_affinity != 0)
         if core_affinity != 0 {
             set_thread_affinity(core_affinity as u32);
@@ -671,12 +671,12 @@ fn actor_message_loop(actor: Arc<Mutex<SilicaActor>>) {
         let actor_guard = actor.lock().unwrap();
         actor_guard.id
     };
-    eprintln!("[DEBUG] actor_message_loop: Started for actor ID {}", actor_id);
+    // eprintln!("[DEBUG] actor_message_loop: Started for actor ID {}", actor_id);
     let mut loop_count = 0;
     loop {
         loop_count += 1;
         if loop_count % 100 == 0 {
-            eprintln!("[DEBUG] actor_message_loop: Loop iteration {} for actor {}", loop_count, actor_id);
+            // eprintln!("[DEBUG] actor_message_loop: Loop iteration {} for actor {}", loop_count, actor_id);
         }
         
         // Try to receive a message (non-blocking for now)
@@ -689,7 +689,7 @@ fn actor_message_loop(actor: Arc<Mutex<SilicaActor>>) {
         };
 
         if !message_ptr.is_null() {
-            eprintln!("[DEBUG] actor_message_loop: Received message {:p}, mailbox had {} messages", message_ptr, mailbox_size);
+            // eprintln!("[DEBUG] actor_message_loop: Received message {:p}, mailbox had {} messages", message_ptr, mailbox_size);
             // Get the current actor state and behavior function
             let (state_ptr, behavior_fn_ptr) = {
                 let actor_guard = actor.lock().unwrap();
@@ -698,7 +698,7 @@ fn actor_message_loop(actor: Arc<Mutex<SilicaActor>>) {
 
             // Call the behavior function if available
             if !behavior_fn_ptr.is_null() {
-                eprintln!("[DEBUG] actor_message_loop: Calling behavior function");
+                // eprintln!("[DEBUG] actor_message_loop: Calling behavior function");
                 // Cast the behavior function pointer to the uniform interface
                 // Behavior functions: fn(*mut u8 message, *mut u8 state) -> *mut u8 new_state
                 let behavior_fn = unsafe {
@@ -707,7 +707,7 @@ fn actor_message_loop(actor: Arc<Mutex<SilicaActor>>) {
 
                 // Call behavior function: (message_ptr, state_ptr) -> new_state_ptr
                 let new_state_ptr = unsafe { behavior_fn(message_ptr, state_ptr) };
-                eprintln!("[DEBUG] actor_message_loop: Behavior function returned {:p}", new_state_ptr);
+                // eprintln!("[DEBUG] actor_message_loop: Behavior function returned {:p}", new_state_ptr);
 
                 // Update the actor's state pointer
                 // Note: For the bootstrap compiler, behavior functions typically return the same pointer
@@ -718,14 +718,14 @@ fn actor_message_loop(actor: Arc<Mutex<SilicaActor>>) {
                     actor_guard.state = new_state_ptr;
                 }
             } else {
-                eprintln!("[DEBUG] actor_message_loop: Behavior function pointer is null!");
+                // eprintln!("[DEBUG] actor_message_loop: Behavior function pointer is null!");
             }
 
             // Free the message memory after processing
             // Note: In the bootstrap runtime, we don't actually free memory
             // as the process will exit. In a full runtime, this would be important.
         } else if mailbox_size > 0 {
-            eprintln!("[DEBUG] actor_message_loop: No message popped but mailbox size was {}", mailbox_size);
+            // eprintln!("[DEBUG] actor_message_loop: No message popped but mailbox size was {}", mailbox_size);
         }
 
         // Small delay to avoid busy waiting
@@ -821,8 +821,8 @@ pub extern "C" fn silica_region_destroy(region_ptr: *mut SilicaRegion) {
 
 #[no_mangle]
 pub extern "C" fn silica_actor_spawn(initial_state: *mut u8, behavior_fn: *mut u8, core_affinity: i32) -> *mut SilicaActor {
-    eprintln!("[DEBUG] silica_actor_spawn: Called with initial_state={:p}, behavior_fn={:p}, core_affinity={}", 
-              initial_state, behavior_fn, core_affinity);
+    // eprintln!("[DEBUG] silica_actor_spawn: Called with initial_state={:p}, behavior_fn={:p}, core_affinity={}", 
+    //           initial_state, behavior_fn, core_affinity);
     // Determine actual core affinity based on the requested type
     let actual_core_affinity = match core_affinity {
         0 => select_next_core(), // Any core - load balanced
@@ -831,7 +831,7 @@ pub extern "C" fn silica_actor_spawn(initial_state: *mut u8, behavior_fn: *mut u
         positive if positive > 0 => positive, // Specific core ID
         _ => select_next_core(), // Unknown negative values - fallback to any core
     };
-    eprintln!("[DEBUG] silica_actor_spawn: Actual core affinity={}", actual_core_affinity);
+    // eprintln!("[DEBUG] silica_actor_spawn: Actual core affinity={}", actual_core_affinity);
 
     // Initialize actor registry if needed
     unsafe {
@@ -846,7 +846,7 @@ pub extern "C" fn silica_actor_spawn(initial_state: *mut u8, behavior_fn: *mut u
         NEXT_ACTOR_ID += 1;
         id
     };
-    eprintln!("[DEBUG] silica_actor_spawn: Generated actor ID {}", actor_id);
+    // eprintln!("[DEBUG] silica_actor_spawn: Generated actor ID {}", actor_id);
 
     // Create synchronized actor mailbox
     let mailbox = Arc::new(Mutex::new(VecDeque::new()));
@@ -858,31 +858,31 @@ pub extern "C" fn silica_actor_spawn(initial_state: *mut u8, behavior_fn: *mut u
         mailbox: mailbox.clone(),
         behavior_fn,
     }));
-    eprintln!("[DEBUG] silica_actor_spawn: Created actor with ID {}", actor_id);
+    // eprintln!("[DEBUG] silica_actor_spawn: Created actor with ID {}", actor_id);
 
     // Get a raw pointer for the C API
     let actor_ptr = Arc::as_ptr(&actor) as *mut SilicaActor;
-    eprintln!("[DEBUG] silica_actor_spawn: Actor pointer is {:p} (usize: {})", actor_ptr, actor_ptr as usize);
+    // eprintln!("[DEBUG] silica_actor_spawn: Actor pointer is {:p} (usize: {})", actor_ptr, actor_ptr as usize);
 
     // Register the actor and store pointer mapping
     unsafe {
         if let Some(ref mut registry) = ACTOR_REGISTRY {
             registry.insert(actor_id, actor.clone());
-            eprintln!("[DEBUG] silica_actor_spawn: Registered actor {} in ACTOR_REGISTRY", actor_id);
+            // eprintln!("[DEBUG] silica_actor_spawn: Registered actor {} in ACTOR_REGISTRY", actor_id);
         }
         // Thread-safe initialization and access using OnceLock
         // Cast pointer to usize for use as HashMap key (usize is Send)
         let ptr_map = ACTOR_PTR_MAP.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
         ptr_map.lock().unwrap().insert(actor_ptr as usize, actor.clone());
-        eprintln!("[DEBUG] silica_actor_spawn: Registered actor {} in ACTOR_PTR_MAP with key {}", actor_id, actor_ptr as usize);
+        // eprintln!("[DEBUG] silica_actor_spawn: Registered actor {} in ACTOR_PTR_MAP with key {}", actor_id, actor_ptr as usize);
     }
 
     // Start the actor's message processing loop in a new thread
-    eprintln!("[DEBUG] silica_actor_spawn: Starting message loop for actor {}", actor_id);
+    // eprintln!("[DEBUG] silica_actor_spawn: Starting message loop for actor {}", actor_id);
     start_actor_message_loop(actor, actual_core_affinity);
 
     // Return the raw pointer for the C API
-    eprintln!("[DEBUG] silica_actor_spawn: Returning actor pointer {:p}", actor_ptr);
+    // eprintln!("[DEBUG] silica_actor_spawn: Returning actor pointer {:p}", actor_ptr);
     actor_ptr
 }
 
@@ -928,11 +928,11 @@ pub extern "C" fn silica_actor_recv(actor_ptr: *mut SilicaActor) -> *mut u8 {
 
 #[no_mangle]
 pub extern "C" fn silica_actor_cast(actor: *mut SilicaActor, message: *mut u8) -> bool {
-    eprintln!("[DEBUG] silica_actor_cast: Called with actor={:p}, message={:p}", actor, message);
+    // eprintln!("[DEBUG] silica_actor_cast: Called with actor={:p}, message={:p}", actor, message);
     // Non-blocking: enqueue message and return immediately
     // Returns true if message successfully enqueued, false if actor doesn't exist or mailbox full
     if actor.is_null() {
-        eprintln!("[DEBUG] silica_actor_cast: Actor is null, returning false");
+        // eprintln!("[DEBUG] silica_actor_cast: Actor is null, returning false");
         return false;
     }
 
@@ -946,15 +946,15 @@ pub extern "C" fn silica_actor_cast(actor: *mut SilicaActor, message: *mut u8) -
             let mailbox_size_before = mailbox.len();
             mailbox.push_back(message);
             let mailbox_size_after = mailbox.len();
-            eprintln!("[DEBUG] silica_actor_cast: Enqueued message, mailbox size: {} -> {}", mailbox_size_before, mailbox_size_after);
+            // eprintln!("[DEBUG] silica_actor_cast: Enqueued message, mailbox size: {} -> {}", mailbox_size_before, mailbox_size_after);
             return true;
         } else {
-            eprintln!("[DEBUG] silica_actor_cast: Actor not found in map for pointer {:p} (usize: {})", actor, actor as usize);
+            // eprintln!("[DEBUG] silica_actor_cast: Actor not found in map for pointer {:p} (usize: {})", actor, actor as usize);
         }
     } else {
-        eprintln!("[DEBUG] silica_actor_cast: ACTOR_PTR_MAP not initialized!");
+        // eprintln!("[DEBUG] silica_actor_cast: ACTOR_PTR_MAP not initialized!");
     }
-    eprintln!("[DEBUG] silica_actor_cast: Returning false");
+    // eprintln!("[DEBUG] silica_actor_cast: Returning false");
     false
 }
 

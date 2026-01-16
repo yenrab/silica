@@ -591,14 +591,14 @@ impl Parser {
     /// Parse expression with precedence
     fn expression(&mut self) -> Result<Expression> {
         let current_token = self.peek();
-        eprintln!("DEBUG PARSER: expression() called at {}:{} (token: {:?} '{}')", 
-                 current_token.location.line, current_token.location.column, 
-                 current_token.kind, current_token.lexeme);
+        // eprintln!("DEBUG PARSER: expression() called at {}:{} (token: {:?} '{}')", 
+        //          current_token.location.line, current_token.location.column, 
+        //          current_token.kind, current_token.lexeme);
         let result = self.assignment();
         if let Ok(ref expr) = result {
-            eprintln!("DEBUG PARSER: expression() succeeded, returning {:?}", std::mem::discriminant(expr));
+            // eprintln!("DEBUG PARSER: expression() succeeded, returning {:?}", std::mem::discriminant(expr));
         } else if let Err(ref e) = result {
-            eprintln!("DEBUG PARSER: expression() failed: {:?}", e);
+            // eprintln!("DEBUG PARSER: expression() failed: {:?}", e);
         }
         result
     }
@@ -696,13 +696,13 @@ impl Parser {
     /// Parse additive expressions
     fn term(&mut self) -> Result<Expression> {
         let current_token = self.peek();
-        eprintln!("DEBUG PARSER: term() called at {}:{} (token: {:?} '{}')", 
-                 current_token.location.line, current_token.location.column, 
-                 current_token.kind, current_token.lexeme);
+        // eprintln!("DEBUG PARSER: term() called at {}:{} (token: {:?} '{}')", 
+        //          current_token.location.line, current_token.location.column, 
+        //          current_token.kind, current_token.lexeme);
         let mut expr = self.factor()?;
 
         while self.match_token(TokenKind::Plus) || self.match_token(TokenKind::Minus) {
-            eprintln!("DEBUG PARSER: term() matched operator {:?}", self.previous().kind);
+            // eprintln!("DEBUG PARSER: term() matched operator {:?}", self.previous().kind);
             let operator = if self.previous().kind == TokenKind::Plus {
                 BinaryOp::Add
             } else {
@@ -879,9 +879,9 @@ impl Parser {
     /// Parse primary expressions (literals, identifiers, groupings)
     fn primary(&mut self) -> Result<Expression> {
         let current_token = self.peek();
-        eprintln!("DEBUG PARSER: primary() called at {}:{} (token: {:?} '{}')", 
-                 current_token.location.line, current_token.location.column, 
-                 current_token.kind, current_token.lexeme);
+        // eprintln!("DEBUG PARSER: primary() called at {}:{} (token: {:?} '{}')", 
+        //          current_token.location.line, current_token.location.column, 
+        //          current_token.kind, current_token.lexeme);
         // Handle core affinity keywords
         if self.match_token(TokenKind::EfficiencyCores) {
             return Ok(Expression::Identifier("efficiency_cores".to_string()));
@@ -962,7 +962,7 @@ impl Parser {
                 );
             }
             
-            eprintln!("DEBUG PARSER: primary() found identifier '{}' at {}:{}", name, start_location.line, start_location.column);
+            // eprintln!("DEBUG PARSER: primary() found identifier '{}' at {}:{}", name, start_location.line, start_location.column);
             self.advance(); // consume the identifier
 
             // Check for constructor syntax: TypeName::Constructor
@@ -2089,16 +2089,16 @@ impl Parser {
                 self.current = saved_pos;
             }
             
-            // Try to parse assignment first
-            let current_pos = self.current;
+            // Try to parse binding first (pattern followed by <-)
             // Check if this could be a pattern (identifier, tuple, or wildcard)
-            // Only attempt pattern parsing if identifier is followed by colon (type annotation)
-            // or if it's a tuple/wildcard pattern, since bindings require type annotations
+            // For identifiers, we need to check if they're followed by <- or colon
+            // For tuples/wildcards, they're always potential patterns
             let could_be_binding = match self.peek().kind {
                 TokenKind::Identifier(_) => {
-                    // For identifiers, check if colon follows (indicating type annotation)
+                    // For identifiers, check if colon (type annotation) or LeftArrow (<-) follows
                     if self.current + 1 < self.tokens.len() {
-                        self.tokens[self.current + 1].kind == TokenKind::Colon
+                        let next_kind = &self.tokens[self.current + 1].kind;
+                        matches!(next_kind, TokenKind::Colon | TokenKind::LeftArrow)
                     } else {
                         false
                     }
@@ -2131,56 +2131,65 @@ impl Parser {
 
             // Parse as regular expression statement
             let current_token = self.peek();
-            eprintln!("DEBUG PARSER: parse_statements() parsing expression statement at {}:{} (token: {:?} '{}')", 
-                     current_token.location.line, current_token.location.column, 
-                     current_token.kind, current_token.lexeme);
+            // eprintln!("DEBUG PARSER: parse_statements() parsing expression statement at {}:{} (token: {:?} '{}')", 
+            //          current_token.location.line, current_token.location.column, 
+            //          current_token.kind, current_token.lexeme);
             let expr = self.expression()?;
-            eprintln!("DEBUG PARSER: parse_statements() expression parsed successfully");
-            // Semicolon is required for all statements except the last one
-            if !self.check(TokenKind::RightBrace) {
-                // Try to consume semicolon, but provide better error recovery
-                if let Err(_) = self.consume(TokenKind::Semicolon, "Expected ';' after statement") {
-                    // If semicolon consumption fails, check if we're at end of input or another valid token
-                    let current = self.peek();
-                    if current.kind == TokenKind::EOF || current.kind == TokenKind::RightBrace {
-                        // We're at a valid stopping point, continue without semicolon
-                        // This provides better error recovery for position tracking issues
-                    } else {
-                        // Check for common syntax errors and provide helpful messages
-                        let (error_msg, error_code, suggestion) = match current.kind {
-                            TokenKind::Identifier(ref id) if id == "if" => {
-                                ("Found 'if' keyword, but Silica does not support if-else statements. Use 'case' expressions instead: case condition of true -> ... false -> ...".to_string(),
-                                 "E1008".to_string(),
-                                 "Use 'case' expressions: case condition of { true -> ... false -> ... }".to_string())
-                            },
-                            TokenKind::Identifier(ref id) if id == "else" => {
-                                ("Found 'else' keyword, but Silica does not support if-else statements. Use 'case' expressions instead.".to_string(),
-                                 "E1008".to_string(),
-                                 "Use 'case' expressions instead of if-else".to_string())
-                            },
-                            TokenKind::Identifier(ref id) if id == "for" => {
-                                ("Found 'for' keyword, but Silica does not support for loops. Use recursion instead.".to_string(),
-                                 "E1008".to_string(),
-                                 "Use recursion instead of for loops".to_string())
-                            },
-                            TokenKind::Identifier(ref id) if id == "while" => {
-                                ("Found 'while' keyword, but Silica does not support while loops. Use recursion instead.".to_string(),
-                                 "E1008".to_string(),
-                                 "Use recursion instead of while loops".to_string())
-                            },
-                            _ => (format!("Expected ';' after statement, found {:?}", current.kind),
-                                  "E1001".to_string(),
-                                  "Add semicolon (;) after the statement".to_string())
-                        };
-                        let metadata = ErrorMetadataBuilder::new(error_code)
-                            .severity(ErrorSeverity::Error)
-                            .specification("§3".to_string(), None)
-                            .suggestion(suggestion)
-                            .build();
-                        return parse_error_with_metadata(self.validate_token_position(current), error_msg, metadata);
-                    }
+            // eprintln!("DEBUG PARSER: parse_statements() expression parsed successfully");
+            // Semicolon is required for all statements except the last one before RightBrace
+            // Check if the next token is RightBrace - if so, semicolon is optional
+            if self.check(TokenKind::RightBrace) {
+                // Last statement before closing brace - semicolon is optional
+                statements.push(Statement::Expr(Box::new(expr)));
+                continue;
+            }
+            
+            // Not at end of block - semicolon is required
+            // Try to consume semicolon, but provide better error recovery
+            if let Err(_) = self.consume(TokenKind::Semicolon, "Expected ';' after statement") {
+                // If semicolon consumption fails, check if we're at end of input or another valid token
+                let current = self.peek();
+                if current.kind == TokenKind::EOF || current.kind == TokenKind::RightBrace {
+                    // We're at a valid stopping point, continue without semicolon
+                    // This provides better error recovery for position tracking issues
+                    statements.push(Statement::Expr(Box::new(expr)));
+                    continue;
+                } else {
+                    // Check for common syntax errors and provide helpful messages
+                    let (error_msg, error_code, suggestion) = match current.kind {
+                        TokenKind::Identifier(ref id) if id == "if" => {
+                            ("Found 'if' keyword, but Silica does not support if-else statements. Use 'case' expressions instead: case condition of true -> ... false -> ...".to_string(),
+                             "E1008".to_string(),
+                             "Use 'case' expressions: case condition of { true -> ... false -> ... }".to_string())
+                        },
+                        TokenKind::Identifier(ref id) if id == "else" => {
+                            ("Found 'else' keyword, but Silica does not support if-else statements. Use 'case' expressions instead.".to_string(),
+                             "E1008".to_string(),
+                             "Use 'case' expressions instead of if-else".to_string())
+                        },
+                        TokenKind::Identifier(ref id) if id == "for" => {
+                            ("Found 'for' keyword, but Silica does not support for loops. Use recursion instead.".to_string(),
+                             "E1008".to_string(),
+                             "Use recursion instead of for loops".to_string())
+                        },
+                        TokenKind::Identifier(ref id) if id == "while" => {
+                            ("Found 'while' keyword, but Silica does not support while loops. Use recursion instead.".to_string(),
+                             "E1008".to_string(),
+                             "Use recursion instead of while loops".to_string())
+                        },
+                        _ => (format!("Expected ';' after statement, found {:?}", current.kind),
+                              "E1001".to_string(),
+                              "Add semicolon (;) after the statement".to_string())
+                    };
+                    let metadata = ErrorMetadataBuilder::new(error_code)
+                        .severity(ErrorSeverity::Error)
+                        .specification("§3".to_string(), None)
+                        .suggestion(suggestion)
+                        .build();
+                    return parse_error_with_metadata(self.validate_token_position(current), error_msg, metadata);
                 }
             }
+            // Semicolon was consumed successfully (or was optional), add the statement
             statements.push(Statement::Expr(Box::new(expr)));
         }
 

@@ -1414,7 +1414,7 @@ impl CodeGenerator {
     fn generate_identifier(&self, name: &str) -> Result<Option<String>> {
         // First check the scope stack for variables
         if let Some(var_reg) = self.lookup_variable_text(name) {
-            eprintln!("DEBUG generate_identifier: found '{}' -> '{}'", name, var_reg);
+            // eprintln!("DEBUG generate_identifier: found '{}' -> '{}'", name, var_reg);
             Ok(Some(var_reg))
         }
         // Then check the global variables map
@@ -2121,20 +2121,20 @@ impl CodeGenerator {
             UnaryOp::Negate => {
                 // Negation works on all numeric types
                 if let Some(op) = operand {
-                    eprintln!("DEBUG generate_unary: op = '{}'", op);
+                    // eprintln!("DEBUG generate_unary: op = '{}'", op);
                     // Get operand type from expression_types if available
                     let operand_type = Self::try_get_expression_location(&unary.operand)
                         .and_then(|loc| {
-                            eprintln!("DEBUG generate_unary: found location, checking expression_types");
+                            // eprintln!("DEBUG generate_unary: found location, checking expression_types");
                             self.expression_types.get(loc)
                         })
                         .map(|ty| {
                             let llvm_type = Self::type_to_llvm_string(ty);
-                            eprintln!("DEBUG generate_unary: type from expression_types = {:?} -> '{}'", ty, llvm_type);
+                            // eprintln!("DEBUG generate_unary: type from expression_types = {:?} -> '{}'", ty, llvm_type);
                             llvm_type
                         })
                         .unwrap_or_else(|| {
-                            eprintln!("DEBUG generate_unary: no type in expression_types, using fallback");
+                            // eprintln!("DEBUG generate_unary: no type in expression_types, using fallback");
                             // Fallback: determine from operand string
                             if op.starts_with("i8* ") {
                                 "i64"
@@ -2166,10 +2166,10 @@ impl CodeGenerator {
                                     let outside_f32_range = val.abs() > 3.4e38 || (val.abs() < 1e-38 && val != 0.0);
                                     
                                     if has_high_precision || outside_f32_range {
-                                        eprintln!("DEBUG generate_unary: high-precision or out-of-range float literal, assuming double: {}", val);
+                                        // eprintln!("DEBUG generate_unary: high-precision or out-of-range float literal, assuming double: {}", val);
                                         "double"
                                     } else {
-                                        eprintln!("DEBUG generate_unary: low-precision float literal, defaulting to float: {}", val);
+                                        // eprintln!("DEBUG generate_unary: low-precision float literal, defaulting to float: {}", val);
                                         "float"
                                     }
                                 } else {
@@ -2177,12 +2177,12 @@ impl CodeGenerator {
                                 }
                             }
                         });
-                    eprintln!("DEBUG generate_unary: operand_type = '{}'", operand_type);
-                    eprintln!("DEBUG generate_unary: op = '{}'", op);
+                    // eprintln!("DEBUG generate_unary: operand_type = '{}'", operand_type);
+                    // eprintln!("DEBUG generate_unary: op = '{}'", op);
                     
                     let temp_reg = format!("%t{}", self.instructions.len());
                     let clean_op = op.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i16 ").trim_start_matches("i8 ").trim_start_matches("half ").trim_start_matches("float ").trim_start_matches("double ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
-                    eprintln!("DEBUG generate_unary: clean_op = '{}'", clean_op);
+                    // eprintln!("DEBUG generate_unary: clean_op = '{}'", clean_op);
                     // Check if clean_op is a numeric literal (can be parsed as number)
                     // If it's a literal, use it directly; otherwise add % prefix for register
                     let clean_op_reg = if clean_op.starts_with('%') {
@@ -2194,7 +2194,7 @@ impl CodeGenerator {
                         // It's a register name - add % prefix
                         format!("%{}", clean_op)
                     };
-                    eprintln!("DEBUG generate_unary: clean_op_reg = '{}'", clean_op_reg);
+                    // eprintln!("DEBUG generate_unary: clean_op_reg = '{}'", clean_op_reg);
                     
                     let is_float = operand_type == "half" || operand_type == "float" || operand_type == "double";
                     // Check if operand string indicates double type (even if type detection failed)
@@ -2215,22 +2215,22 @@ impl CodeGenerator {
                     };
                     
                     let actual_type = if is_double_from_string {
-                        eprintln!("DEBUG generate_unary: detected double from string prefix");
+                        // eprintln!("DEBUG generate_unary: detected double from string prefix");
                         "double"
                     } else if is_high_precision_double {
-                        eprintln!("DEBUG generate_unary: detected double from high precision: '{}'", clean_op_reg);
+                        // eprintln!("DEBUG generate_unary: detected double from high precision: '{}'", clean_op_reg);
                         "double"
                     } else {
                         operand_type
                     };
-                    eprintln!("DEBUG generate_unary: actual_type = '{}'", actual_type);
+                    // eprintln!("DEBUG generate_unary: actual_type = '{}'", actual_type);
                     let is_float_actual = actual_type == "half" || actual_type == "float" || actual_type == "double";
                     
                     let op_instr = if is_float_actual {
                         // For float operations, handle double literals specially
                         // If it's a double literal (not a register), create a constant first
                         let final_op = if actual_type == "double" && !clean_op_reg.starts_with('%') && clean_op_reg.parse::<f64>().is_ok() {
-                            eprintln!("DEBUG generate_unary: creating double constant for '{}'", clean_op_reg);
+                            // eprintln!("DEBUG generate_unary: creating double constant for '{}'", clean_op_reg);
                             // Create a double constant register (similar to print_float32 approach)
                             let double_const = format!("%double_const_unary_{}", self.instructions.len());
                             let instruction = self.create_float_constant_instruction(&clean_op_reg, &double_const, "double");
@@ -2239,11 +2239,11 @@ impl CodeGenerator {
                         } else {
                             clean_op_reg
                         };
-                        eprintln!("DEBUG generate_unary: final_op = '{}'", final_op);
+                        // eprintln!("DEBUG generate_unary: final_op = '{}'", final_op);
                         // Use appropriate zero literal for the type
                         let zero_literal = "0.0";
                         let instr = format!("  {} = fsub {} {}, {}", temp_reg, actual_type, zero_literal, final_op);
-                        eprintln!("DEBUG generate_unary: instruction = '{}'", instr);
+                        // eprintln!("DEBUG generate_unary: instruction = '{}'", instr);
                         instr
                     } else {
                         format!("  {} = sub {} 0, {}", temp_reg, operand_type, clean_op_reg)
@@ -4496,17 +4496,25 @@ impl CodeGenerator {
                 let expanded_object_type = self.expand_type_aliases(&object_type);
 
                 // Look up the field index from the struct definition
-                let field_index = if let Type::Named(type_name) = &expanded_object_type {
-                    // Look up the struct definition
-                    if let Some(struct_def) = self.struct_defs.get(type_name) {
-                        // Find the field index
-                        struct_def.iter().position(|field| field.name == field_access.field)
-                            .ok_or_else(|| CompilerError::codegen_error(format!("Unknown field '{}' in struct '{}'", field_access.field, type_name)))?
-                    } else {
+                let field_index = match &expanded_object_type {
+                    Type::Named(type_name) => {
+                        // Look up the struct definition
+                        if let Some(struct_def) = self.struct_defs.get(type_name) {
+                            // Find the field index
+                            struct_def.iter().position(|field| field.name == field_access.field)
+                                .ok_or_else(|| CompilerError::codegen_error(format!("Unknown field '{}' in struct '{}'", field_access.field, type_name)))?
+                        } else {
+                            return Err(CompilerError::codegen_error(format!("Cannot access field '{}' on non-struct type {:?}", field_access.field, expanded_object_type)));
+                        }
+                    }
+                    Type::Record(fields) => {
+                        // Find the field index directly from the record fields
+                        fields.iter().position(|(field_name, _)| field_name == &field_access.field)
+                            .ok_or_else(|| CompilerError::codegen_error(format!("Unknown field '{}' in record type {:?}", field_access.field, expanded_object_type)))?
+                    }
+                    _ => {
                         return Err(CompilerError::codegen_error(format!("Cannot access field '{}' on non-struct type {:?}", field_access.field, expanded_object_type)));
                     }
-                } else {
-                    return Err(CompilerError::codegen_error(format!("Cannot access field '{}' on non-struct type {:?}", field_access.field, expanded_object_type)));
                 };
 
                 // Calculate field offset and load the value
@@ -5825,84 +5833,82 @@ impl CodeGenerator {
                         Pattern::TypedIdentifier { name, type_ } => {
                             // Store the value in the current scope
                             if let Some(ref val) = value {
-                                eprintln!("DEBUG TypedIdentifier bind (do): name = '{}', val = '{}'", name, val);
+                                // eprintln!("DEBUG TypedIdentifier bind (do): name = '{}', val = '{}'", name, val);
                                 // For float16 and float64 bindings, we need to create a proper register instead of storing the literal string
                                 // Check if this is a float16 binding
                                 let stored_val = if matches!(type_, crate::ast::Type::Float16) {
                                     // Check if value is already a half register (from function call, etc.)
                                     if val.starts_with('%') && !val.contains(' ') {
-                                        eprintln!("DEBUG TypedIdentifier bind (do): float16 binding with register, using directly: '{}'", val);
+                                        // eprintln!("DEBUG TypedIdentifier bind (do): float16 binding with register, using directly: '{}'", val);
                                         // It's already a register - assume it's half and use directly
                                         val.clone()
                                     } else if val.starts_with("half ") || val.starts_with("float ") {
-                                        eprintln!("DEBUG TypedIdentifier bind (do): float16 binding with float literal");
+                                        // eprintln!("DEBUG TypedIdentifier bind (do): float16 binding with float literal");
                                         // Extract the constant value, handling both "half 3.14" and "float 3.14"
                                         let const_val = if val.starts_with("half ") {
                                             val.trim_start_matches("half ")
                                         } else {
                                             val.trim_start_matches("float ")
                                         };
-                                        eprintln!("DEBUG TypedIdentifier bind (do): const_val = '{}'", const_val);
+                                        // eprintln!("DEBUG TypedIdentifier bind (do): const_val = '{}'", const_val);
                                         // If const_val contains spaces, it's malformed - extract the numeric part
                                         let clean_const = if const_val.contains(' ') {
-                                            eprintln!("DEBUG TypedIdentifier bind (do): const_val contains spaces, extracting numeric part");
+                                            // eprintln!("DEBUG TypedIdentifier bind (do): const_val contains spaces, extracting numeric part");
                                             // Split and find the numeric constant
                                             let found = const_val.split_whitespace()
                                                 .find(|p| p.parse::<f64>().is_ok());
-                                            eprintln!("DEBUG TypedIdentifier bind (do): found numeric = {:?}", found);
+                                            // eprintln!("DEBUG TypedIdentifier bind (do): found numeric = {:?}", found);
                                             found.unwrap_or(const_val)
                                         } else {
                                             const_val
                                         };
-                                        eprintln!("DEBUG TypedIdentifier bind (do): clean_const = '{}'", clean_const);
+                                        // eprintln!("DEBUG TypedIdentifier bind (do): clean_const = '{}'", clean_const);
                                         // Create a float constant first, then convert to half
                                         let float_const = format!("%float_const_bind_{}", self.instructions.len());
                                         let instruction = self.create_float_constant_instruction(clean_const, &float_const, "float");
                                         self.instructions.push(instruction);
                                         let half_const = format!("%half_const_bind_{}", self.instructions.len());
                                         self.instructions.push(format!("  {} = fptrunc float {} to half", half_const, float_const));
-                                        eprintln!("DEBUG TypedIdentifier bind (do): created half_const = '{}'", half_const);
+                                        // eprintln!("DEBUG TypedIdentifier bind (do): created half_const = '{}'", half_const);
                                         half_const
                                     } else {
-                                        eprintln!("DEBUG TypedIdentifier bind (do): float16 binding but val doesn't match expected patterns, using as-is");
+                                        // eprintln!("DEBUG TypedIdentifier bind (do): float16 binding but val doesn't match expected patterns, using as-is");
                                         val.clone()
                                     }
                                 } else if matches!(type_, crate::ast::Type::Float64) && (val.starts_with("double ") || val.starts_with("float ")) {
-                                    eprintln!("DEBUG TypedIdentifier bind (do): float64 binding with float literal");
+                                    // eprintln!("DEBUG TypedIdentifier bind (do): float64 binding with float literal");
                                     // Extract the constant value, handling both "double 3.14" and "float 3.14"
                                     let const_val = if val.starts_with("double ") {
                                         val.trim_start_matches("double ")
                                     } else {
                                         val.trim_start_matches("float ")
                                     };
-                                    eprintln!("DEBUG TypedIdentifier bind (do): const_val = '{}'", const_val);
+                                    // eprintln!("DEBUG TypedIdentifier bind (do): const_val = '{}'", const_val);
                                     // If const_val contains spaces, it's malformed - extract the numeric part
                                     let clean_const = if const_val.contains(' ') {
-                                        eprintln!("DEBUG TypedIdentifier bind (do): const_val contains spaces, extracting numeric part");
+                                        // eprintln!("DEBUG TypedIdentifier bind (do): const_val contains spaces, extracting numeric part");
                                         let found = const_val.split_whitespace()
                                             .find(|p| p.parse::<f64>().is_ok());
-                                        eprintln!("DEBUG TypedIdentifier bind (do): found numeric = {:?}", found);
+                                        // eprintln!("DEBUG TypedIdentifier bind (do): found numeric = {:?}", found);
                                         found.unwrap_or(const_val)
                                     } else {
                                         const_val
                                     };
-                                    eprintln!("DEBUG TypedIdentifier bind (do): clean_const = '{}'", clean_const);
+                                    // eprintln!("DEBUG TypedIdentifier bind (do): clean_const = '{}'", clean_const);
                                     // Create a double constant register
                                     let double_const = format!("%double_const_bind_{}", self.instructions.len());
                                     let instruction = self.create_float_constant_instruction(clean_const, &double_const, "double");
                                     self.instructions.push(instruction);
-                                    eprintln!("DEBUG TypedIdentifier bind (do): created double_const = '{}'", double_const);
+                                    // eprintln!("DEBUG TypedIdentifier bind (do): created double_const = '{}'", double_const);
                                     double_const
                                 } else {
-                                    eprintln!("DEBUG TypedIdentifier bind (do): not float16/float64 binding or not float literal, using as-is");
+                                    // eprintln!("DEBUG TypedIdentifier bind (do): not float16/float64 binding or not float literal, using as-is");
                                     // For other types, use the value as-is
                                     val.clone()
                                 };
-                                eprintln!("DEBUG TypedIdentifier bind (do): storing '{}' -> '{}'", name, stored_val);
-                                // For text IR, we just track the variable name -> register mapping
+                                // eprintln!("DEBUG TypedIdentifier bind (do): storing '{}' -> '{}'", name, stored_val);
                                 // Clone stored_val before passing it to add_variable_text since we need it for result
                                 let stored_val_clone = stored_val.clone();
-                                self.add_variable_text(name.clone(), stored_val);
 
                                 // Use the type from the pattern annotation (the declared type)
                                 // Convert ast::Type to internal Type representation
@@ -5918,6 +5924,116 @@ impl CodeGenerator {
                                     crate::ast::Type::Char => Type::Char,
                                     crate::ast::Type::String => Type::String,
                                     crate::ast::Type::Unit => Type::Unit,
+                                    crate::ast::Type::Function { parameters, return_type } => {
+                                        // Recursively convert parameter types
+                                        let converted_params: Vec<Type> = parameters.iter().map(|param_type| {
+                                            match param_type {
+                                                crate::ast::Type::Int8 => Type::Int8,
+                                                crate::ast::Type::Int16 => Type::Int16,
+                                                crate::ast::Type::Int32 => Type::Int32,
+                                                crate::ast::Type::Int64 => Type::Int64,
+                                                crate::ast::Type::Float16 => Type::Float16,
+                                                crate::ast::Type::Float32 => Type::Float32,
+                                                crate::ast::Type::Float64 => Type::Float64,
+                                                crate::ast::Type::Bool => Type::Bool,
+                                                crate::ast::Type::Char => Type::Char,
+                                                crate::ast::Type::String => Type::String,
+                                                crate::ast::Type::Unit => Type::Unit,
+                                                crate::ast::Type::Function { parameters: nested_params, return_type: nested_ret } => {
+                                                    // Recursively handle nested function types
+                                                    let nested_converted_params: Vec<Type> = nested_params.iter().map(|p| match p {
+                                                        crate::ast::Type::Int8 => Type::Int8,
+                                                        crate::ast::Type::Int16 => Type::Int16,
+                                                        crate::ast::Type::Int32 => Type::Int32,
+                                                        crate::ast::Type::Int64 => Type::Int64,
+                                                        crate::ast::Type::Float16 => Type::Float16,
+                                                        crate::ast::Type::Float32 => Type::Float32,
+                                                        crate::ast::Type::Float64 => Type::Float64,
+                                                        crate::ast::Type::Bool => Type::Bool,
+                                                        crate::ast::Type::Char => Type::Char,
+                                                        crate::ast::Type::String => Type::String,
+                                                        crate::ast::Type::Unit => Type::Unit,
+                                                        _ => Type::Int64, // Fallback for nested types
+                                                    }).collect();
+                                                    let nested_converted_ret = match &**nested_ret {
+                                                        crate::ast::Type::Int8 => Type::Int8,
+                                                        crate::ast::Type::Int16 => Type::Int16,
+                                                        crate::ast::Type::Int32 => Type::Int32,
+                                                        crate::ast::Type::Int64 => Type::Int64,
+                                                        crate::ast::Type::Float16 => Type::Float16,
+                                                        crate::ast::Type::Float32 => Type::Float32,
+                                                        crate::ast::Type::Float64 => Type::Float64,
+                                                        crate::ast::Type::Bool => Type::Bool,
+                                                        crate::ast::Type::Char => Type::Char,
+                                                        crate::ast::Type::String => Type::String,
+                                                        crate::ast::Type::Unit => Type::Unit,
+                                                        _ => Type::Int64, // Fallback
+                                                    };
+                                                    Type::Function {
+                                                        parameters: nested_converted_params,
+                                                        return_type: Box::new(nested_converted_ret),
+                                                    }
+                                                },
+                                                crate::ast::Type::Named(name) => Type::Named(name.clone()),
+                                                _ => Type::Int64, // Fallback
+                                            }
+                                        }).collect();
+                                        // Convert return type
+                                        let converted_ret = match &**return_type {
+                                            crate::ast::Type::Int8 => Type::Int8,
+                                            crate::ast::Type::Int16 => Type::Int16,
+                                            crate::ast::Type::Int32 => Type::Int32,
+                                            crate::ast::Type::Int64 => Type::Int64,
+                                            crate::ast::Type::Float16 => Type::Float16,
+                                            crate::ast::Type::Float32 => Type::Float32,
+                                            crate::ast::Type::Float64 => Type::Float64,
+                                            crate::ast::Type::Bool => Type::Bool,
+                                            crate::ast::Type::Char => Type::Char,
+                                            crate::ast::Type::String => Type::String,
+                                            crate::ast::Type::Unit => Type::Unit,
+                                            crate::ast::Type::Function { parameters: nested_params, return_type: nested_ret } => {
+                                                // Recursively handle nested function types in return type
+                                                let nested_converted_params: Vec<Type> = nested_params.iter().map(|p| match p {
+                                                    crate::ast::Type::Int8 => Type::Int8,
+                                                    crate::ast::Type::Int16 => Type::Int16,
+                                                    crate::ast::Type::Int32 => Type::Int32,
+                                                    crate::ast::Type::Int64 => Type::Int64,
+                                                    crate::ast::Type::Float16 => Type::Float16,
+                                                    crate::ast::Type::Float32 => Type::Float32,
+                                                    crate::ast::Type::Float64 => Type::Float64,
+                                                    crate::ast::Type::Bool => Type::Bool,
+                                                    crate::ast::Type::Char => Type::Char,
+                                                    crate::ast::Type::String => Type::String,
+                                                    crate::ast::Type::Unit => Type::Unit,
+                                                    _ => Type::Int64, // Fallback
+                                                }).collect();
+                                                let nested_converted_ret = match &**nested_ret {
+                                                    crate::ast::Type::Int8 => Type::Int8,
+                                                    crate::ast::Type::Int16 => Type::Int16,
+                                                    crate::ast::Type::Int32 => Type::Int32,
+                                                    crate::ast::Type::Int64 => Type::Int64,
+                                                    crate::ast::Type::Float16 => Type::Float16,
+                                                    crate::ast::Type::Float32 => Type::Float32,
+                                                    crate::ast::Type::Float64 => Type::Float64,
+                                                    crate::ast::Type::Bool => Type::Bool,
+                                                    crate::ast::Type::Char => Type::Char,
+                                                    crate::ast::Type::String => Type::String,
+                                                    crate::ast::Type::Unit => Type::Unit,
+                                                    _ => Type::Int64, // Fallback
+                                                };
+                                                Type::Function {
+                                                    parameters: nested_converted_params,
+                                                    return_type: Box::new(nested_converted_ret),
+                                                }
+                                            },
+                                            crate::ast::Type::Named(name) => Type::Named(name.clone()),
+                                            _ => Type::Int64, // Fallback
+                                        };
+                                        Type::Function {
+                                            parameters: converted_params,
+                                            return_type: Box::new(converted_ret),
+                                        }
+                                    }
                                     crate::ast::Type::Tuple(elem_types) => {
                                         let converted: Vec<Type> = elem_types.iter().map(|t| match t {
                                             crate::ast::Type::Int8 => Type::Int8,
@@ -5939,7 +6055,17 @@ impl CodeGenerator {
                                     crate::ast::Type::Named(name) => Type::Named(name.clone()),
                                     _ => Type::Int64, // Fallback for other types
                                 };
-                                self.variable_types.insert(name.clone(), var_type);
+                                self.variable_types.insert(name.clone(), var_type.clone());
+                                
+                                // If this is a function type, register it in function_variable_scopes
+                                if let Type::Function { .. } = &var_type {
+                                    // eprintln!("DEBUG TypedIdentifier bind (do): registering function variable '{}' with type {:?}", name, var_type);
+                                    self.add_function_variable(name.clone(), stored_val, &var_type);
+                                } else {
+                                    // For non-function types, use regular variable storage
+                                    self.add_variable_text(name.clone(), stored_val);
+                                }
+                                
                                 // Update result to use the stored value (which may be a register for float16)
                                 result = Some(stored_val_clone);
                             } else {
@@ -7252,17 +7378,25 @@ impl CodeGenerator {
                 // eprintln!("DEBUG: Field access '{}' on object of type {:?}", field_access.field, expanded_object_type);
 
         // Look up the field index from the struct definition
-        let field_index = if let Type::Named(type_name) = &expanded_object_type {
-            // Look up the struct definition
-            if let Some(struct_def) = self.struct_defs.get(type_name.as_str()) {
-                // Find the field index
-                struct_def.iter().position(|field| field.name == field_access.field)
-                    .ok_or_else(|| CompilerError::codegen_error(format!("Unknown field '{}' in struct '{}'", field_access.field, type_name)))?
-            } else {
+        let field_index = match &expanded_object_type {
+            Type::Named(type_name) => {
+                // Look up the struct definition
+                if let Some(struct_def) = self.struct_defs.get(type_name.as_str()) {
+                    // Find the field index
+                    struct_def.iter().position(|field| field.name == field_access.field)
+                        .ok_or_else(|| CompilerError::codegen_error(format!("Unknown field '{}' in struct '{}'", field_access.field, type_name)))?
+                } else {
+                    return Err(CompilerError::codegen_error(format!("Cannot access field '{}' on non-struct type {:?}", field_access.field, expanded_object_type)));
+                }
+            }
+            Type::Record(fields) => {
+                // Find the field index directly from the record fields
+                fields.iter().position(|(field_name, _)| field_name == &field_access.field)
+                    .ok_or_else(|| CompilerError::codegen_error(format!("Unknown field '{}' in record type {:?}", field_access.field, expanded_object_type)))?
+            }
+            _ => {
                 return Err(CompilerError::codegen_error(format!("Cannot access field '{}' on non-struct type {:?}", field_access.field, expanded_object_type)));
             }
-        } else {
-            return Err(CompilerError::codegen_error(format!("Cannot access field '{}' on non-struct type {:?}", field_access.field, expanded_object_type)));
         };
 
         // Calculate field offset and load the value
@@ -7477,23 +7611,23 @@ impl CodeGenerator {
                             Pattern::TypedIdentifier { name, type_ } => {
                                 // For float16 and float64 bindings, we need to create a proper register instead of storing the literal string
                                 // Check if this is a float16 binding
-                                eprintln!("DEBUG TypedIdentifier bind (statements): name = '{}', type_ = {:?}, value_reg = '{}'", name, type_, value_reg);
+                                // eprintln!("DEBUG TypedIdentifier bind (statements): name = '{}', type_ = {:?}, value_reg = '{}'", name, type_, value_reg);
                                 let stored_val = if matches!(type_, crate::ast::Type::Float16) {
                                     // Check if value is already a half register (from function call, etc.)
                                     // Handle both bare registers (%t54) and type-prefixed registers (half %t54)
                                     if value_reg.starts_with('%') && !value_reg.contains(' ') {
-                                        eprintln!("DEBUG TypedIdentifier bind (statements): float16 binding with register, using directly: '{}'", value_reg);
+                                        // eprintln!("DEBUG TypedIdentifier bind (statements): float16 binding with register, using directly: '{}'", value_reg);
                                         // It's already a register - assume it's half and use directly
                                         value_reg.clone()
                                     } else if value_reg.starts_with("half ") {
                                         // Type-prefixed register (e.g., "half %t54") - strip the prefix
                                         let reg_part = value_reg.trim_start_matches("half ");
                                         if reg_part.starts_with('%') && !reg_part.contains(' ') {
-                                            eprintln!("DEBUG TypedIdentifier bind (statements): float16 binding with type-prefixed register, stripping prefix: '{}' -> '{}'", value_reg, reg_part);
+                                            // eprintln!("DEBUG TypedIdentifier bind (statements): float16 binding with type-prefixed register, stripping prefix: '{}' -> '{}'", value_reg, reg_part);
                                             reg_part.to_string()
                                         } else {
                                             // Not a register, treat as literal
-                                            eprintln!("DEBUG TypedIdentifier bind (statements): float16 binding with half literal: '{}'", value_reg);
+                                            // eprintln!("DEBUG TypedIdentifier bind (statements): float16 binding with half literal: '{}'", value_reg);
                                             // Extract the constant value
                                             let const_val = reg_part;
                                             // If const_val contains spaces, it's malformed - extract the numeric part
@@ -7512,11 +7646,11 @@ impl CodeGenerator {
                                             self.instructions.push(instruction);
                                             let half_const = format!("%half_const_bind_{}", self.instructions.len());
                                             self.instructions.push(format!("  {} = fptrunc float {} to half", half_const, float_const));
-                                            eprintln!("DEBUG TypedIdentifier bind (statements): created half_const = '{}'", half_const);
+                                            // eprintln!("DEBUG TypedIdentifier bind (statements): created half_const = '{}'", half_const);
                                             half_const
                                         }
                                     } else if value_reg.starts_with("float ") {
-                                        eprintln!("DEBUG TypedIdentifier bind (statements): float16 binding with float literal: '{}'", value_reg);
+                                        // eprintln!("DEBUG TypedIdentifier bind (statements): float16 binding with float literal: '{}'", value_reg);
                                         // Extract the constant value, handling both "half 3.14" and "float 3.14"
                                         let const_val = if value_reg.starts_with("half ") {
                                             value_reg.trim_start_matches("half ")
@@ -7539,10 +7673,10 @@ impl CodeGenerator {
                                         self.instructions.push(instruction);
                                         let half_const = format!("%half_const_bind_{}", self.instructions.len());
                                         self.instructions.push(format!("  {} = fptrunc float {} to half", half_const, float_const));
-                                        eprintln!("DEBUG TypedIdentifier bind (statements): created half_const = '{}'", half_const);
+                                        // eprintln!("DEBUG TypedIdentifier bind (statements): created half_const = '{}'", half_const);
                                         half_const
                                     } else {
-                                        eprintln!("DEBUG TypedIdentifier bind (statements): float16 binding but value_reg doesn't match expected patterns, using as-is: '{}'", value_reg);
+                                        // eprintln!("DEBUG TypedIdentifier bind (statements): float16 binding but value_reg doesn't match expected patterns, using as-is: '{}'", value_reg);
                                         // Value doesn't match expected patterns, use as-is
                                         value_reg.clone()
                                     }
@@ -7568,11 +7702,11 @@ impl CodeGenerator {
                                     self.instructions.push(instruction);
                                     double_const
                                 } else {
-                                    eprintln!("DEBUG TypedIdentifier bind (statements): not float16/float64 binding, using as-is: '{}'", value_reg);
+                                    // eprintln!("DEBUG TypedIdentifier bind (statements): not float16/float64 binding, using as-is: '{}'", value_reg);
                                     // For other types, use the value as-is
                                     value_reg.clone()
                                 };
-                                eprintln!("DEBUG TypedIdentifier bind (statements): stored_val = '{}'", stored_val);
+                                // eprintln!("DEBUG TypedIdentifier bind (statements): stored_val = '{}'", stored_val);
                                 
                                 // Use the type from the pattern annotation (the declared type)
                                 // Convert ast::Type to internal Type representation
@@ -7607,29 +7741,129 @@ impl CodeGenerator {
                                         Type::Tuple(converted)
                                     }
                                     crate::ast::Type::Named(name) => Type::Named(name.clone()),
-                                    crate::ast::Type::Function { .. } => {
-                                        // For function types, try to get from expression_types as fallback
-                                        let expr_location = match &**expr {
-                                            Expression::FunctionLiteral(func_lit) => &func_lit.location,
-                                            _ => {
-                                                self.add_variable_text(name.clone(), stored_val);
-                                                continue;
+                                    crate::ast::Type::Function { parameters, return_type } => {
+                                        // Recursively convert parameter types
+                                        let converted_params: Vec<Type> = parameters.iter().map(|param_type| {
+                                            match param_type {
+                                                crate::ast::Type::Int8 => Type::Int8,
+                                                crate::ast::Type::Int16 => Type::Int16,
+                                                crate::ast::Type::Int32 => Type::Int32,
+                                                crate::ast::Type::Int64 => Type::Int64,
+                                                crate::ast::Type::Float16 => Type::Float16,
+                                                crate::ast::Type::Float32 => Type::Float32,
+                                                crate::ast::Type::Float64 => Type::Float64,
+                                                crate::ast::Type::Bool => Type::Bool,
+                                                crate::ast::Type::Char => Type::Char,
+                                                crate::ast::Type::String => Type::String,
+                                                crate::ast::Type::Unit => Type::Unit,
+                                                crate::ast::Type::Function { parameters: nested_params, return_type: nested_ret } => {
+                                                    // Recursively handle nested function types
+                                                    let nested_converted_params: Vec<Type> = nested_params.iter().map(|p| match p {
+                                                        crate::ast::Type::Int8 => Type::Int8,
+                                                        crate::ast::Type::Int16 => Type::Int16,
+                                                        crate::ast::Type::Int32 => Type::Int32,
+                                                        crate::ast::Type::Int64 => Type::Int64,
+                                                        crate::ast::Type::Float16 => Type::Float16,
+                                                        crate::ast::Type::Float32 => Type::Float32,
+                                                        crate::ast::Type::Float64 => Type::Float64,
+                                                        crate::ast::Type::Bool => Type::Bool,
+                                                        crate::ast::Type::Char => Type::Char,
+                                                        crate::ast::Type::String => Type::String,
+                                                        crate::ast::Type::Unit => Type::Unit,
+                                                        _ => Type::Int64, // Fallback for nested types
+                                                    }).collect();
+                                                    let nested_converted_ret = match &**nested_ret {
+                                                        crate::ast::Type::Int8 => Type::Int8,
+                                                        crate::ast::Type::Int16 => Type::Int16,
+                                                        crate::ast::Type::Int32 => Type::Int32,
+                                                        crate::ast::Type::Int64 => Type::Int64,
+                                                        crate::ast::Type::Float16 => Type::Float16,
+                                                        crate::ast::Type::Float32 => Type::Float32,
+                                                        crate::ast::Type::Float64 => Type::Float64,
+                                                        crate::ast::Type::Bool => Type::Bool,
+                                                        crate::ast::Type::Char => Type::Char,
+                                                        crate::ast::Type::String => Type::String,
+                                                        crate::ast::Type::Unit => Type::Unit,
+                                                        _ => Type::Int64, // Fallback
+                                                    };
+                                                    Type::Function {
+                                                        parameters: nested_converted_params,
+                                                        return_type: Box::new(nested_converted_ret),
+                                                    }
+                                                },
+                                                crate::ast::Type::Named(name) => Type::Named(name.clone()),
+                                                _ => Type::Int64, // Fallback
                                             }
+                                        }).collect();
+                                        // Convert return type
+                                        let converted_ret = match &**return_type {
+                                            crate::ast::Type::Int8 => Type::Int8,
+                                            crate::ast::Type::Int16 => Type::Int16,
+                                            crate::ast::Type::Int32 => Type::Int32,
+                                            crate::ast::Type::Int64 => Type::Int64,
+                                            crate::ast::Type::Float16 => Type::Float16,
+                                            crate::ast::Type::Float32 => Type::Float32,
+                                            crate::ast::Type::Float64 => Type::Float64,
+                                            crate::ast::Type::Bool => Type::Bool,
+                                            crate::ast::Type::Char => Type::Char,
+                                            crate::ast::Type::String => Type::String,
+                                            crate::ast::Type::Unit => Type::Unit,
+                                            crate::ast::Type::Function { parameters: nested_params, return_type: nested_ret } => {
+                                                // Recursively handle nested function types in return type
+                                                let nested_converted_params: Vec<Type> = nested_params.iter().map(|p| match p {
+                                                    crate::ast::Type::Int8 => Type::Int8,
+                                                    crate::ast::Type::Int16 => Type::Int16,
+                                                    crate::ast::Type::Int32 => Type::Int32,
+                                                    crate::ast::Type::Int64 => Type::Int64,
+                                                    crate::ast::Type::Float16 => Type::Float16,
+                                                    crate::ast::Type::Float32 => Type::Float32,
+                                                    crate::ast::Type::Float64 => Type::Float64,
+                                                    crate::ast::Type::Bool => Type::Bool,
+                                                    crate::ast::Type::Char => Type::Char,
+                                                    crate::ast::Type::String => Type::String,
+                                                    crate::ast::Type::Unit => Type::Unit,
+                                                    _ => Type::Int64, // Fallback
+                                                }).collect();
+                                                let nested_converted_ret = match &**nested_ret {
+                                                    crate::ast::Type::Int8 => Type::Int8,
+                                                    crate::ast::Type::Int16 => Type::Int16,
+                                                    crate::ast::Type::Int32 => Type::Int32,
+                                                    crate::ast::Type::Int64 => Type::Int64,
+                                                    crate::ast::Type::Float16 => Type::Float16,
+                                                    crate::ast::Type::Float32 => Type::Float32,
+                                                    crate::ast::Type::Float64 => Type::Float64,
+                                                    crate::ast::Type::Bool => Type::Bool,
+                                                    crate::ast::Type::Char => Type::Char,
+                                                    crate::ast::Type::String => Type::String,
+                                                    crate::ast::Type::Unit => Type::Unit,
+                                                    _ => Type::Int64, // Fallback
+                                                };
+                                                Type::Function {
+                                                    parameters: nested_converted_params,
+                                                    return_type: Box::new(nested_converted_ret),
+                                                }
+                                            },
+                                            crate::ast::Type::Named(name) => Type::Named(name.clone()),
+                                            _ => Type::Int64, // Fallback
                                         };
-                                        if let Some(expr_type) = self.expression_types.get(expr_location).cloned() {
-                                            if matches!(expr_type, Type::Function { .. }) {
-                                                self.add_function_variable(name.clone(), stored_val, &expr_type);
-                                                self.variable_types.insert(name.clone(), expr_type);
-                                                continue;
-                                            }
+                                        Type::Function {
+                                            parameters: converted_params,
+                                            return_type: Box::new(converted_ret),
                                         }
-                                        Type::Int64 // Fallback
                                     }
                                     _ => Type::Int64, // Fallback for other types
                                 };
                                 
-                                self.add_variable_text(name.clone(), stored_val);
-                                self.variable_types.insert(name.clone(), var_type);
+                                self.variable_types.insert(name.clone(), var_type.clone());
+                                
+                                // If this is a function type, register it in function_variable_scopes
+                                if let Type::Function { .. } = &var_type {
+                                    // eprintln!("DEBUG TypedIdentifier bind (statements): registering function variable '{}' with type {:?}", name, var_type);
+                                    self.add_function_variable(name.clone(), stored_val, &var_type);
+                                } else {
+                                    // For non-function types, use regular variable storage
+                                    self.add_variable_text(name.clone(), stored_val);
+                                }
                             }
                             Pattern::Tuple(elements) => {
                                 // Handle tuple pattern destructuring in text IR
@@ -10361,58 +10595,58 @@ impl CodeGenerator {
         let value_val = self.generate_expression(&print_float16.value)?
             .ok_or_else(|| CompilerError::codegen_error("Invalid value in print_float16".to_string()))?;
 
-        eprintln!("DEBUG print_float16: value_val = '{}'", value_val);
+        // eprintln!("DEBUG print_float16: value_val = '{}'", value_val);
 
         // Convert half to i16 (u16) for the runtime function
         // The runtime function expects u16 (the bit representation of the half)
         // Follow the same pattern as print_float32: create a constant register for literals, use register directly otherwise
         // Handle both "half " and "float " prefixes (float16 values might be stored as "float " if type context wasn't passed correctly)
         let half_reg = if value_val.starts_with("half ") || value_val.starts_with("float ") {
-            eprintln!("DEBUG print_float16: value_val starts with 'half ' or 'float '");
+            // eprintln!("DEBUG print_float16: value_val starts with 'half ' or 'float '");
             // Extract the constant value - handle both "half 3.14" and "float 3.14" (and malformed values)
             let const_val = if value_val.starts_with("half ") {
                 value_val.trim_start_matches("half ")
             } else {
                 value_val.trim_start_matches("float ")
             };
-            eprintln!("DEBUG print_float16: const_val after trim = '{}'", const_val);
+            // eprintln!("DEBUG print_float16: const_val after trim = '{}'", const_val);
             // If const_val contains spaces, extract the numeric part
             let clean_const = if const_val.contains(' ') {
-                eprintln!("DEBUG print_float16: const_val contains spaces, extracting numeric part");
+                // eprintln!("DEBUG print_float16: const_val contains spaces, extracting numeric part");
                 let parts: Vec<&str> = const_val.split_whitespace().collect();
-                eprintln!("DEBUG print_float16: parts = {:?}", parts);
+                // eprintln!("DEBUG print_float16: parts = {:?}", parts);
                 let found = parts.iter()
                     .find(|p| p.parse::<f64>().is_ok() || (p.starts_with('-') && p[1..].parse::<f64>().is_ok()))
                     .copied();
-                eprintln!("DEBUG print_float16: found numeric part = {:?}", found);
+                // eprintln!("DEBUG print_float16: found numeric part = {:?}", found);
                 found.unwrap_or(const_val)
             } else {
                 const_val
             };
-            eprintln!("DEBUG print_float16: clean_const = '{}'", clean_const);
+            // eprintln!("DEBUG print_float16: clean_const = '{}'", clean_const);
             
             // Create a half constant register (similar to print_float32's approach)
             if clean_const.parse::<f64>().is_ok() {
-                eprintln!("DEBUG print_float16: clean_const parses as f64, creating constant register");
+                // eprintln!("DEBUG print_float16: clean_const parses as f64, creating constant register");
                 // Create float constant first, then convert to half
                 let float_const = format!("%float_const_print16_{}", self.instructions.len());
                 let instruction = self.create_float_constant_instruction(clean_const, &float_const, "float");
                 self.instructions.push(instruction);
                 let half_const = format!("%half_const_print16_{}", self.instructions.len());
                 self.instructions.push(format!("  {} = fptrunc float {} to half", half_const, float_const));
-                eprintln!("DEBUG print_float16: created half_const = '{}'", half_const);
+                // eprintln!("DEBUG print_float16: created half_const = '{}'", half_const);
                 half_const
             } else if clean_const.starts_with('%') {
-                eprintln!("DEBUG print_float16: clean_const starts with %, using as register: '{}'", clean_const);
+                // eprintln!("DEBUG print_float16: clean_const starts with %, using as register: '{}'", clean_const);
                 // It's already a register - assume it's a half register
                 clean_const.to_string()
             } else {
-                eprintln!("DEBUG print_float16: fallback, treating as register name: '{}'", clean_const);
+                // eprintln!("DEBUG print_float16: fallback, treating as register name: '{}'", clean_const);
                 // Fallback: treat as register name
                 format!("%{}", clean_const)
             }
         } else {
-            eprintln!("DEBUG print_float16: value_val does NOT start with 'half ' or 'float ', treating as register");
+            // eprintln!("DEBUG print_float16: value_val does NOT start with 'half ' or 'float ', treating as register");
             // If it's a register name (starts with %), we need to ensure it's a half register
             // Registers from our binding code will be named like %half_const_bind_XXX
             // Other registers (from binary ops, unary ops, etc.) might be float and need conversion
@@ -10428,10 +10662,10 @@ impl CodeGenerator {
             // (Actually, fptrunc requires the source to be float, so if it's half, we need a different approach)
             // For now, let's assume registers not from our binding code are float and convert them
             if reg_val.contains("half_const") || reg_val.contains("half_const_bind") || reg_val.contains("half_conv") {
-                eprintln!("DEBUG print_float16: register looks like half register, using directly: '{}'", reg_val);
+                // eprintln!("DEBUG print_float16: register looks like half register, using directly: '{}'", reg_val);
                 reg_val
             } else {
-                eprintln!("DEBUG print_float16: register '{}' might be float, converting to half", reg_val);
+                // eprintln!("DEBUG print_float16: register '{}' might be float, converting to half", reg_val);
                 // Convert float to half using fptrunc
                 // Note: This will fail if reg_val is already half, but we're assuming it's float
                 // If it fails, we'll need to track register types or use a different approach
@@ -10441,12 +10675,12 @@ impl CodeGenerator {
             }
         };
         
-        eprintln!("DEBUG print_float16: half_reg = '{}'", half_reg);
+        // eprintln!("DEBUG print_float16: half_reg = '{}'", half_reg);
         
         // Bitcast the half register to i16 for the runtime function
         let bitcast_reg = format!("%bitcast_float16_{}", self.instructions.len());
         let bitcast_instr = format!("  {} = bitcast half {} to i16", bitcast_reg, half_reg);
-        eprintln!("DEBUG print_float16: bitcast instruction = '{}'", bitcast_instr);
+        // eprintln!("DEBUG print_float16: bitcast instruction = '{}'", bitcast_instr);
         self.instructions.push(bitcast_instr);
         let u16_reg = bitcast_reg;
         

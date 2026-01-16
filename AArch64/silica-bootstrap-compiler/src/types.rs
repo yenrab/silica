@@ -221,6 +221,7 @@ impl<'a> TypeChecker<'a> {
             crate::ast::Type::Char => Ok(Type::Char),
             crate::ast::Type::String => Ok(Type::String),
             crate::ast::Type::Unit => Ok(Type::Unit),
+            crate::ast::Type::ActorRef => Ok(Type::ActorRef),
             crate::ast::Type::Named(name) => {
                 // Resolve the named type (could be a struct, alias, or built-in)
                 self.resolve_type_name_with_location(name, None)

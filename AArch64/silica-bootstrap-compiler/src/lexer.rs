@@ -123,7 +123,7 @@ impl Lexer {
         loop {
             match self.next_token()? {
                 Some(token) => {
-                    eprintln!("DEBUG LEXER: Token {:?} '{}' at {}:{}", token.kind, token.lexeme, token.location.line, token.location.column);
+                    // eprintln!("DEBUG LEXER: Token {:?} '{}' at {}:{}", token.kind, token.lexeme, token.location.line, token.location.column);
                     let is_eof = matches!(token.kind, TokenKind::EOF);
                     tokens.push(token);
                     if is_eof {
