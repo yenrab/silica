@@ -83,19 +83,32 @@ impl<'a> TypeChecker<'a> {
                         "int8" => Ok(Type::Int8),
                         "int16" => Ok(Type::Int16),
                         "int32" => Ok(Type::Int32),
-                        "int8" => Ok(Type::Int8),
-                "int16" => Ok(Type::Int16),
-                "int32" => Ok(Type::Int32),
-                "int64" => Ok(Type::Int64),
-                "float16" => Ok(Type::Float16),
-                "float32" => Ok(Type::Float32),
-                "float64" => Ok(Type::Float64),
+                        "int64" => Ok(Type::Int64),
                         "float16" => Ok(Type::Float16),
                         "float32" => Ok(Type::Float32),
+                        "float64" => Ok(Type::Float64),
                         "bool" => Ok(Type::Bool),
                         "char" => Ok(Type::Char),
                         "string" => Ok(Type::String),
                         "unit" => Ok(Type::Unit),
+                        // NEON 128-bit vector types
+                        "Vec128Int8" => Ok(Type::Vec128Int8),
+                        "Vec128Int16" => Ok(Type::Vec128Int16),
+                        "Vec128Int32" => Ok(Type::Vec128Int32),
+                        "Vec128Int64" => Ok(Type::Vec128Int64),
+                        "Vec128Float32" => Ok(Type::Vec128Float32),
+                        "Vec128Bool" => Ok(Type::Vec128Bool),
+                        // SVE scalable vector types
+                        "VecInt8" => Ok(Type::VecInt8),
+                        "VecInt16" => Ok(Type::VecInt16),
+                        "VecInt32" => Ok(Type::VecInt32),
+                        "VecInt64" => Ok(Type::VecInt64),
+                        "VecFloat16" => Ok(Type::VecFloat16),
+                        "VecFloat32" => Ok(Type::VecFloat32),
+                        "VecFloat64" => Ok(Type::VecFloat64),
+                        "VecBool" => Ok(Type::VecBool),
+                        // SVE predicate type
+                        "Pred" => Ok(Type::Pred),
                         _ => {
                             let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
                             let metadata = ErrorMetadataBuilder::new("E2002".to_string())
@@ -163,6 +176,24 @@ impl<'a> TypeChecker<'a> {
                 "char" => Ok(Type::Char),
                 "string" => Ok(Type::String),
                 "unit" => Ok(Type::Unit),
+                // NEON 128-bit vector types
+                "Vec128Int8" => Ok(Type::Vec128Int8),
+                "Vec128Int16" => Ok(Type::Vec128Int16),
+                "Vec128Int32" => Ok(Type::Vec128Int32),
+                "Vec128Int64" => Ok(Type::Vec128Int64),
+                "Vec128Float32" => Ok(Type::Vec128Float32),
+                "Vec128Bool" => Ok(Type::Vec128Bool),
+                // SVE scalable vector types
+                "VecInt8" => Ok(Type::VecInt8),
+                "VecInt16" => Ok(Type::VecInt16),
+                "VecInt32" => Ok(Type::VecInt32),
+                "VecInt64" => Ok(Type::VecInt64),
+                "VecFloat16" => Ok(Type::VecFloat16),
+                "VecFloat32" => Ok(Type::VecFloat32),
+                "VecFloat64" => Ok(Type::VecFloat64),
+                "VecBool" => Ok(Type::VecBool),
+                // SVE predicate type
+                "Pred" => Ok(Type::Pred),
                 _ => {
                     let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
                     let metadata = ErrorMetadataBuilder::new("E2002".to_string())
@@ -435,6 +466,24 @@ impl<'a> TypeChecker<'a> {
             (Type::String, Type::String) => true,
             (Type::Unit, Type::Unit) => true,
             (Type::ActorRef, Type::ActorRef) => true,
+            // NEON 128-bit vector types
+            (Type::Vec128Int8, Type::Vec128Int8) => true,
+            (Type::Vec128Int16, Type::Vec128Int16) => true,
+            (Type::Vec128Int32, Type::Vec128Int32) => true,
+            (Type::Vec128Int64, Type::Vec128Int64) => true,
+            (Type::Vec128Float32, Type::Vec128Float32) => true,
+            (Type::Vec128Bool, Type::Vec128Bool) => true,
+            // SVE scalable vector types
+            (Type::VecInt8, Type::VecInt8) => true,
+            (Type::VecInt16, Type::VecInt16) => true,
+            (Type::VecInt32, Type::VecInt32) => true,
+            (Type::VecInt64, Type::VecInt64) => true,
+            (Type::VecFloat16, Type::VecFloat16) => true,
+            (Type::VecFloat32, Type::VecFloat32) => true,
+            (Type::VecFloat64, Type::VecFloat64) => true,
+            (Type::VecBool, Type::VecBool) => true,
+            // SVE predicate type
+            (Type::Pred, Type::Pred) => true,
             (Type::Tuple(types1), Type::Tuple(types2)) => {
                 types1.len() == types2.len() &&
                 types1.iter().zip(types2.iter()).all(|(t1, t2)| self.types_equal(t1, t2))
@@ -544,6 +593,72 @@ impl<'a> TypeChecker<'a> {
             ty: Type::Unit,
         });
         
+        // Add NEON 128-bit vector types
+        env.insert("Vec128Int8".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Vec128Int8,
+        });
+        env.insert("Vec128Int16".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Vec128Int16,
+        });
+        env.insert("Vec128Int32".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Vec128Int32,
+        });
+        env.insert("Vec128Int64".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Vec128Int64,
+        });
+        env.insert("Vec128Float32".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Vec128Float32,
+        });
+        env.insert("Vec128Bool".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Vec128Bool,
+        });
+        
+        // Add SVE scalable vector types
+        env.insert("VecInt8".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::VecInt8,
+        });
+        env.insert("VecInt16".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::VecInt16,
+        });
+        env.insert("VecInt32".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::VecInt32,
+        });
+        env.insert("VecInt64".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::VecInt64,
+        });
+        env.insert("VecFloat16".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::VecFloat16,
+        });
+        env.insert("VecFloat32".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::VecFloat32,
+        });
+        env.insert("VecFloat64".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::VecFloat64,
+        });
+        env.insert("VecBool".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::VecBool,
+        });
+        
+        // Add SVE predicate type
+        env.insert("Pred".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Pred,
+        });
+        
         // Initialize built-in traits
         let mut trait_defs = HashMap::new();
         
@@ -574,6 +689,24 @@ impl<'a> TypeChecker<'a> {
             location: SourceLocation::unknown(),
         });
         
+        // Add Vec128Element trait (marker trait for NEON 128-bit vector compatible types)
+        trait_defs.insert("Vec128Element".to_string(), TraitDecl {
+            name: "Vec128Element".to_string(),
+            included_traits: Vec::new(),
+            associated_types: Vec::new(),
+            methods: Vec::new(), // Marker trait - no methods
+            location: SourceLocation::unknown(),
+        });
+        
+        // Add VecElement trait (marker trait for SVE scalable vector compatible types)
+        trait_defs.insert("VecElement".to_string(), TraitDecl {
+            name: "VecElement".to_string(),
+            included_traits: Vec::new(),
+            associated_types: Vec::new(),
+            methods: Vec::new(), // Marker trait - no methods
+            location: SourceLocation::unknown(),
+        });
+        
         // Add trait types to environment
         env.insert("ActorMessage".to_string(), TypeScheme {
             vars: vec![],
@@ -587,13 +720,100 @@ impl<'a> TypeChecker<'a> {
             vars: vec![],
             ty: Type::Named("ActorIO".to_string()),
         });
+        env.insert("Vec128Element".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Named("Vec128Element".to_string()),
+        });
+        env.insert("VecElement".to_string(), TypeScheme {
+            vars: vec![],
+            ty: Type::Named("VecElement".to_string()),
+        });
+        
+        // Initialize built-in trait implementations
+        let mut trait_impls = Vec::new();
+        
+        // Vec128Element implementations for NEON 128-bit vector compatible types
+        trait_impls.push(TraitImpl {
+            trait_name: "Vec128Element".to_string(),
+            for_type: Type::Int8,
+            methods: HashMap::new(), // Marker trait - no methods
+            associated_types: HashMap::new(),
+        });
+        trait_impls.push(TraitImpl {
+            trait_name: "Vec128Element".to_string(),
+            for_type: Type::Int16,
+            methods: HashMap::new(),
+            associated_types: HashMap::new(),
+        });
+        trait_impls.push(TraitImpl {
+            trait_name: "Vec128Element".to_string(),
+            for_type: Type::Int32,
+            methods: HashMap::new(),
+            associated_types: HashMap::new(),
+        });
+        trait_impls.push(TraitImpl {
+            trait_name: "Vec128Element".to_string(),
+            for_type: Type::Int64,
+            methods: HashMap::new(),
+            associated_types: HashMap::new(),
+        });
+        trait_impls.push(TraitImpl {
+            trait_name: "Vec128Element".to_string(),
+            for_type: Type::Float32,
+            methods: HashMap::new(),
+            associated_types: HashMap::new(),
+        });
+        
+        // VecElement implementations for SVE scalable vector compatible types
+        trait_impls.push(TraitImpl {
+            trait_name: "VecElement".to_string(),
+            for_type: Type::Int8,
+            methods: HashMap::new(),
+            associated_types: HashMap::new(),
+        });
+        trait_impls.push(TraitImpl {
+            trait_name: "VecElement".to_string(),
+            for_type: Type::Int16,
+            methods: HashMap::new(),
+            associated_types: HashMap::new(),
+        });
+        trait_impls.push(TraitImpl {
+            trait_name: "VecElement".to_string(),
+            for_type: Type::Int32,
+            methods: HashMap::new(),
+            associated_types: HashMap::new(),
+        });
+        trait_impls.push(TraitImpl {
+            trait_name: "VecElement".to_string(),
+            for_type: Type::Int64,
+            methods: HashMap::new(),
+            associated_types: HashMap::new(),
+        });
+        trait_impls.push(TraitImpl {
+            trait_name: "VecElement".to_string(),
+            for_type: Type::Float16,
+            methods: HashMap::new(),
+            associated_types: HashMap::new(),
+        });
+        trait_impls.push(TraitImpl {
+            trait_name: "VecElement".to_string(),
+            for_type: Type::Float32,
+            methods: HashMap::new(),
+            associated_types: HashMap::new(),
+        });
+        trait_impls.push(TraitImpl {
+            trait_name: "VecElement".to_string(),
+            for_type: Type::Float64,
+            methods: HashMap::new(),
+            associated_types: HashMap::new(),
+        });
         
         TypeChecker {
             env,
             constraints: Vec::new(),
             substitution: Substitution::new(),
             struct_defs: HashMap::new(),
-            trait_impls: Vec::new(),
+            trait_impls,
             trait_defs,
             type_aliases: HashMap::new(),
             type_alias_decls: HashMap::new(),

@@ -772,6 +772,26 @@ pub enum Type {
     PerformanceCores, // Built-in: high-performance cores
     EfficiencyCores,  // Built-in: low-power efficiency cores
 
+    // SIMD vector types - NEON 128-bit vectors
+    Vec128Int8,    // 16 × int8
+    Vec128Int16,   // 8 × int16
+    Vec128Int32,   // 4 × int32
+    Vec128Int64,   // 2 × int64
+    Vec128Float32, // 4 × float32
+    Vec128Bool,    // Boolean vector for comparisons
+
+    // SIMD vector types - SVE scalable vectors
+    VecInt8,       // Scalable vector of int8
+    VecInt16,      // Scalable vector of int16
+    VecInt32,      // Scalable vector of int32
+    VecInt64,      // Scalable vector of int64
+    VecFloat16,    // Scalable vector of float16
+    VecFloat32,    // Scalable vector of float32
+    VecFloat64,    // Scalable vector of float64
+    VecBool,       // Scalable boolean vector
+
+    // SVE predicate type
+    Pred,          // SVE predicate mask
 
     // Type variables (for polymorphism)
     Variable(String),

@@ -192,6 +192,24 @@ impl CodeGenerator {
             Type::Float64 => "double",
             Type::Bool => "i1",
             Type::Char => "i32",
+            // NEON 128-bit vector types
+            Type::Vec128Int8 => "<16 x i8>",
+            Type::Vec128Int16 => "<8 x i16>",
+            Type::Vec128Int32 => "<4 x i32>",
+            Type::Vec128Int64 => "<2 x i64>",
+            Type::Vec128Float32 => "<4 x float>",
+            Type::Vec128Bool => "<16 x i1>",
+            // SVE scalable vector types
+            Type::VecInt8 => "<vscale x 16 x i8>",
+            Type::VecInt16 => "<vscale x 8 x i16>",
+            Type::VecInt32 => "<vscale x 4 x i32>",
+            Type::VecInt64 => "<vscale x 2 x i64>",
+            Type::VecFloat16 => "<vscale x 8 x half>",
+            Type::VecFloat32 => "<vscale x 4 x float>",
+            Type::VecFloat64 => "<vscale x 2 x double>",
+            Type::VecBool => "<vscale x 16 x i1>",
+            // SVE predicate type
+            Type::Pred => "<vscale x 16 x i1>",
             _ => "i64", // fallback
         }
     }
@@ -3476,6 +3494,24 @@ impl CodeGenerator {
                 Type::Tuple(_) => (*self.context).i8_type().ptr_type(inkwell::AddressSpace::Generic).into(),
                 Type::Record(_) => (*self.context).i8_type().ptr_type(inkwell::AddressSpace::Generic).into(),
                 Type::Unit => (*self.context).void_type().into(),
+                // NEON 128-bit vector types
+                Type::Vec128Int8 => (*self.context).i8_type().vec_type(16).into(),
+                Type::Vec128Int16 => (*self.context).i16_type().vec_type(8).into(),
+                Type::Vec128Int32 => (*self.context).i32_type().vec_type(4).into(),
+                Type::Vec128Int64 => (*self.context).i64_type().vec_type(2).into(),
+                Type::Vec128Float32 => (*self.context).f32_type().vec_type(4).into(),
+                Type::Vec128Bool => (*self.context).i1_type().vec_type(16).into(),
+                // SVE scalable vector types - use fixed-size vectors as placeholder
+                Type::VecInt8 => (*self.context).i8_type().vec_type(16).into(),
+                Type::VecInt16 => (*self.context).i16_type().vec_type(8).into(),
+                Type::VecInt32 => (*self.context).i32_type().vec_type(4).into(),
+                Type::VecInt64 => (*self.context).i64_type().vec_type(2).into(),
+                Type::VecFloat16 => (*self.context).f16_type().vec_type(8).into(),
+                Type::VecFloat32 => (*self.context).f32_type().vec_type(4).into(),
+                Type::VecFloat64 => (*self.context).f64_type().vec_type(2).into(),
+                Type::VecBool => (*self.context).i1_type().vec_type(16).into(),
+                // SVE predicate type
+                Type::Pred => (*self.context).i1_type().vec_type(16).into(),
                 _ => (*self.context).i64_type().into(), // Default fallback
             }
         }
@@ -5450,6 +5486,24 @@ impl CodeGenerator {
                 Type::Tuple(_) => (*self.context).ptr_type(inkwell::AddressSpace::default()).into(), // Tuples as opaque pointers
                 Type::Record(_) => (*self.context).ptr_type(inkwell::AddressSpace::default()).into(), // Records as opaque pointers
                 Type::Reference { .. } => (*self.context).ptr_type(inkwell::AddressSpace::default()).into(),
+                // NEON 128-bit vector types
+                Type::Vec128Int8 => (*self.context).i8_type().vec_type(16).into(),
+                Type::Vec128Int16 => (*self.context).i16_type().vec_type(8).into(),
+                Type::Vec128Int32 => (*self.context).i32_type().vec_type(4).into(),
+                Type::Vec128Int64 => (*self.context).i64_type().vec_type(2).into(),
+                Type::Vec128Float32 => (*self.context).f32_type().vec_type(4).into(),
+                Type::Vec128Bool => (*self.context).bool_type().vec_type(16).into(),
+                // SVE scalable vector types - use fixed-size vectors as placeholder (SVE support requires target features)
+                Type::VecInt8 => (*self.context).i8_type().vec_type(16).into(), // Placeholder - will be vscale in actual SVE codegen
+                Type::VecInt16 => (*self.context).i16_type().vec_type(8).into(),
+                Type::VecInt32 => (*self.context).i32_type().vec_type(4).into(),
+                Type::VecInt64 => (*self.context).i64_type().vec_type(2).into(),
+                Type::VecFloat16 => (*self.context).f16_type().vec_type(8).into(),
+                Type::VecFloat32 => (*self.context).f32_type().vec_type(4).into(),
+                Type::VecFloat64 => (*self.context).f64_type().vec_type(2).into(),
+                Type::VecBool => (*self.context).bool_type().vec_type(16).into(),
+                // SVE predicate type
+                Type::Pred => (*self.context).bool_type().vec_type(16).into(), // Placeholder - will be vscale predicate in actual SVE codegen
                 _ => (*self.context).i64_type().into(), // Default to i64
             }
         }
@@ -7068,6 +7122,24 @@ impl CodeGenerator {
             Type::Record(_) => ("i8*".to_string(), 8, 8), // Struct as pointer
             Type::Named(_) => ("i8*".to_string(), 8, 8), // Named type as pointer
             Type::ActorRef => ("i64".to_string(), 8, 8), // ActorRef stored as i64 (pointer value)
+            // NEON 128-bit vector types (all 16 bytes)
+            Type::Vec128Int8 => ("<16 x i8>".to_string(), 16, 16),
+            Type::Vec128Int16 => ("<8 x i16>".to_string(), 16, 16),
+            Type::Vec128Int32 => ("<4 x i32>".to_string(), 16, 16),
+            Type::Vec128Int64 => ("<2 x i64>".to_string(), 16, 16),
+            Type::Vec128Float32 => ("<4 x float>".to_string(), 16, 16),
+            Type::Vec128Bool => ("<16 x i1>".to_string(), 16, 16),
+            // SVE scalable vector types (size depends on hardware, use placeholder)
+            Type::VecInt8 => ("<vscale x 16 x i8>".to_string(), 16, 16), // Placeholder size
+            Type::VecInt16 => ("<vscale x 8 x i16>".to_string(), 16, 16),
+            Type::VecInt32 => ("<vscale x 4 x i32>".to_string(), 16, 16),
+            Type::VecInt64 => ("<vscale x 2 x i64>".to_string(), 16, 16),
+            Type::VecFloat16 => ("<vscale x 8 x half>".to_string(), 16, 16),
+            Type::VecFloat32 => ("<vscale x 4 x float>".to_string(), 16, 16),
+            Type::VecFloat64 => ("<vscale x 2 x double>".to_string(), 16, 16),
+            Type::VecBool => ("<vscale x 16 x i1>".to_string(), 16, 16),
+            // SVE predicate type
+            Type::Pred => ("<vscale x 16 x i1>".to_string(), 16, 16), // Placeholder size
             _ => ("i64".to_string(), 8, 8), // Default fallback
         }
     }
@@ -11314,6 +11386,24 @@ impl TypeMap {
             Type::TypeOperator { .. } => "i8*".to_string(), // Type operators as opaque pointers
             Type::Existential { .. } => "i8*".to_string(), // Existential types as opaque pointers
             Type::TypeApplication { .. } => "i8*".to_string(), // Type applications as opaque pointers
+            // NEON 128-bit vector types
+            Type::Vec128Int8 => "<16 x i8>".to_string(),
+            Type::Vec128Int16 => "<8 x i16>".to_string(),
+            Type::Vec128Int32 => "<4 x i32>".to_string(),
+            Type::Vec128Int64 => "<2 x i64>".to_string(),
+            Type::Vec128Float32 => "<4 x float>".to_string(),
+            Type::Vec128Bool => "<16 x i1>".to_string(),
+            // SVE scalable vector types
+            Type::VecInt8 => "<vscale x 16 x i8>".to_string(),
+            Type::VecInt16 => "<vscale x 8 x i16>".to_string(),
+            Type::VecInt32 => "<vscale x 4 x i32>".to_string(),
+            Type::VecInt64 => "<vscale x 2 x i64>".to_string(),
+            Type::VecFloat16 => "<vscale x 8 x half>".to_string(),
+            Type::VecFloat32 => "<vscale x 4 x float>".to_string(),
+            Type::VecFloat64 => "<vscale x 2 x double>".to_string(),
+            Type::VecBool => "<vscale x 16 x i1>".to_string(),
+            // SVE predicate type
+            Type::Pred => "<vscale x 16 x i1>".to_string(),
         }
     }
 }

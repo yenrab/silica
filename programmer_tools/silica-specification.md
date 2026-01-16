@@ -65,11 +65,14 @@ Silica source code is UTF-8 encoded. The language uses ASCII characters for keyw
 The following identifiers are reserved keywords:
 
 ```
-actor     atomic    bool      buf       case      char
-concurrency       device_io do        effect    end
-false     fn        int       mailbox   mem
-proc      recv      ref       region    return    self
-send      spawn     true      type      unit      use
+actor      actor_ref as        atomic    bool      buf       case      cast
+char       concurrency core_id  core_set device_io do        effect    efficiency_cores
+else       end        enum      export    false     float16   float32   float64
+fn         for        from      if        impl      import    includes  int8
+int16      int32      int64     mailbox  mem       module    normal    not
+of         performance_cores proc      pub       recv      ref       region    return
+self       send       spawn     string    struct    trait     true      type
+underscore unit       use       where
 ```
 
 #### 2.2.2 Identifiers
@@ -103,6 +106,17 @@ hex_digit      ::= digit | "a" | "b" | "c" | "d" | "e" | "f"
 Examples:
 - `42`, `0x2A`, `0b101010`
 
+##### Floating-Point Literals
+```
+float_literal ::= decimal_float | scientific_float
+
+decimal_float     ::= digit+ "." digit+
+scientific_float  ::= decimal_float ("e" | "E") ["+" | "-"] digit+
+```
+
+Examples:
+- `3.14`, `0.5`, `1.0e10`, `2.5E-3`
+
 ##### Boolean Literals
 ```
 boolean_literal ::= "true" | "false"
@@ -124,6 +138,17 @@ String literals are enclosed in double quotes:
 ```
 string_literal ::= "\"" {character | escape_sequence} "\""
 ```
+
+##### Floating-Point Literals
+```
+float_literal ::= decimal_float | scientific_float
+
+decimal_float     ::= digit+ "." digit+
+scientific_float  ::= decimal_float ("e" | "E") ["+" | "-"] digit+
+```
+
+Examples:
+- `3.14`, `0.5`, `1.0e10`, `2.5E-3`
 
 ##### Unit Literal
 The unit value is represented by empty parentheses:
@@ -205,9 +230,15 @@ program ::= {declaration}
 
 declaration ::= function_declaration
               | type_declaration
+              | type_alias_declaration
               | effect_declaration
               | import_declaration
               | export_declaration
+              | struct_declaration
+              | enum_declaration
+              | trait_declaration
+              | impl_declaration
+              | module_declaration
 ```
 
 ### 3.3 Expressions
@@ -218,13 +249,22 @@ expression ::= literal
              | expression binary_operator expression
              | unary_operator expression
              | function_call
+             | function_literal
              | case_expression
+             | if_expression
              | do_expression
+             | struct_literal
+             | field_access
+             | tuple_literal
+             | constructor_call
+             | cast_expression
+             | as_type_expression
 ```
 
 #### 3.3.1 Literals
 ```
 literal ::= integer_literal
+          | float_literal
           | boolean_literal
           | character_literal
           | string_literal
@@ -240,7 +280,18 @@ argument_list ::= expression {"," expression}
 #### 3.3.3 Case Expressions
 ```
 case_expression ::= "case" expression "of" "{" {case_branch} "}"
-case_branch    ::= pattern "->" expression ";"
+case_branch    ::= pattern ["if" expression] "->" expression ";"
+```
+
+Case expressions support optional guard expressions. A guard is evaluated after pattern matching succeeds, and the branch is only taken if the guard evaluates to `true`.
+
+Example:
+```silica
+case x of {
+    n: int if n > 0 -> n * 2;
+    n: int if n < 0 -> -n * 2;
+    _ -> 0
+}
 ```
 
 #### 3.3.4 Do Expressions
@@ -351,6 +402,131 @@ export_list ::= export_item {"," export_item}
 export_item ::= identifier "/" integer_literal
 ```
 
+#### 3.4.6 Struct Declarations
+```
+struct_declaration ::= "struct" identifier "{" struct_fields "}" ";"
+
+struct_fields ::= [struct_field {"," struct_field}]
+struct_field  ::= identifier ":" type
+```
+
+Example:
+```silica
+struct Point {
+    x: int,
+    y: int
+}
+```
+
+#### 3.4.7 Enum Declarations
+```
+enum_declaration ::= "enum" identifier "{" enum_variants "}" ";"
+
+enum_variants ::= enum_variant {"," enum_variant}
+enum_variant  ::= identifier [variant_payload]
+
+variant_payload ::= "(" [type {"," type}] ")"
+                  | "{" struct_fields "}"
+```
+
+Examples:
+```silica
+enum Option {
+    Some(int),
+    None
+}
+
+enum Result {
+    Ok(int),
+    Error(string)
+}
+
+enum Message {
+    Text { content: string },
+    Number(int)
+}
+```
+
+#### 3.4.8 Trait Declarations
+```
+trait_declaration ::= "trait" identifier [trait_includes] "{" trait_items "}" ";"
+
+trait_includes ::= "includes" identifier {"," identifier}
+
+trait_items ::= [trait_item]
+trait_item  ::= associated_type
+              | trait_method
+
+associated_type ::= "type" identifier [type_bounds] ";"
+type_bounds     ::= ":" identifier {"," identifier}
+
+trait_method ::= "fn" identifier parameter_list [":" type] ";"
+```
+
+Examples:
+```silica
+trait Display {
+    fn show(self) -> string;
+}
+
+trait Debug includes Display {
+    fn debug(self) -> string;
+}
+
+trait Comparable {
+    type Output;
+    fn compare(self, other: Self) -> Output;
+}
+```
+
+#### 3.4.9 Implementation Declarations
+```
+impl_declaration ::= "impl" [trait_name] "for" type "{" impl_items "}" ";"
+
+trait_name ::= identifier
+
+impl_items ::= [impl_item]
+impl_item  ::= associated_type_def
+             | method_implementation
+
+associated_type_def ::= "type" identifier "=" type ";"
+method_implementation ::= function_declaration
+```
+
+Examples:
+```silica
+impl Display for Point {
+    fn show(self) -> string {
+        "Point"
+    }
+}
+
+impl Comparable for Point {
+    type Output = int;
+    fn compare(self, other: Point) -> int {
+        0
+    }
+}
+```
+
+#### 3.4.10 Type Alias Declarations
+```
+type_alias_declaration ::= "type" identifier "=" type ";"
+```
+
+Example:
+```silica
+type IntPair = (int, int);
+type StringMap = { keys: list<string>, values: list<int> };
+```
+
+#### 3.4.11 Module Declarations
+```
+module_declaration ::= "module" identifier ";"
+```
+
+Note: Modules are typically inferred from filenames, but explicit module declarations are also supported.
+
 ### 3.5 Patterns
 ```
 pattern ::= literal_pattern
@@ -359,6 +535,7 @@ pattern ::= literal_pattern
           | tuple_pattern
           | record_pattern
           | variant_pattern
+          | pattern_alternative
 
 literal_pattern  ::= literal
 identifier_pattern ::= identifier ":" type
@@ -367,6 +544,97 @@ tuple_pattern     ::= "(" typed_pattern {"," typed_pattern} ")"
 typed_pattern     ::= identifier ":" type
 record_pattern    ::= "{" identifier ":" pattern {"," identifier ":" pattern} "}"
 variant_pattern   ::= identifier [pattern]
+pattern_alternative ::= pattern "|" pattern {"|" pattern}
+```
+
+#### 3.3.5 If Expressions
+```
+if_expression ::= "if" expression "then" expression "else" expression
+```
+
+Example:
+```silica
+if x > 0 then x else -x
+```
+
+#### 3.3.6 Function Literals
+```
+function_literal ::= "fn" parameter_list [":" type] ["proc" "[" effect_list "]"] "{" statement_list "}"
+```
+
+Example:
+```silica
+fn(x: int, y: int) -> int { x + y }
+fn(msg: Message) -> unit proc[DeviceIO] { print(msg) }
+```
+
+#### 3.3.7 Struct Literals
+```
+struct_literal ::= identifier "{" [field_initializer {"," field_initializer}] "}"
+
+field_initializer ::= identifier ":" expression
+```
+
+Example:
+```silica
+Point { x: 10, y: 20 }
+```
+
+#### 3.3.8 Field Access
+```
+field_access ::= expression "." identifier
+```
+
+Example:
+```silica
+point.x
+point.y
+```
+
+#### 3.3.9 Tuple Literals
+```
+tuple_literal ::= "(" expression {"," expression} ")"
+```
+
+Example:
+```silica
+(1, 2, 3)
+(42, "hello")
+```
+
+#### 3.3.10 Constructor Calls
+```
+constructor_call ::= identifier "::" identifier ["<" type_list ">"] ["(" expression ")"]
+
+type_list ::= type {"," type}
+```
+
+Example:
+```silica
+Option::Some<int>(42)
+Result::Ok(100)
+```
+
+#### 3.3.11 Cast Expressions
+```
+cast_expression ::= "cast" "(" expression "," expression ")"
+```
+
+Example:
+```silica
+cast(actor_ref, message)
+```
+
+#### 3.3.12 Type Cast Expressions
+```
+as_type_expression ::= expression "as" type
+```
+
+Example:
+```silica
+x as int
+value as string
+```
 ```
 
 ### 3.6 Pattern Matching Semantics
@@ -532,23 +800,42 @@ The `bool` type represents boolean values.
 type bool = true | false
 ```
 
-#### 4.1.3 Integer Type
-The `int` type represents signed 64-bit integers.
+#### 4.1.3 Integer Types
+Silica provides multiple integer types with different bit widths:
 
 ```
-type int
+type int8   -- 8-bit signed integer (-128 to 127)
+type int16  -- 16-bit signed integer (-32,768 to 32,767)
+type int32  -- 32-bit signed integer (-2,147,483,648 to 2,147,483,647)
+type int64  -- 64-bit signed integer (-9,223,372,036,854,775,808 to 9,223,372,036,854,775,807)
 ```
 
-Supported range: -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807
+The unqualified `int` type is an alias for `int64`.
 
-#### 4.1.4 Character Type
+#### 4.1.4 Floating-Point Types
+Silica provides multiple floating-point types with different precisions:
+
+```
+type float16  -- 16-bit half precision floating-point (IEEE 754 binary16)
+type float32  -- 32-bit single precision floating-point (IEEE 754 binary32)
+type float64  -- 64-bit double precision floating-point (IEEE 754 binary64)
+```
+
+#### 4.1.5 Character Type
 The `char` type represents Unicode scalar values.
 
 ```
 type char
 ```
 
-#### 4.1.5 Any Type
+#### 4.1.6 String Type
+The `string` type represents UTF-8 encoded strings.
+
+```
+type string
+```
+
+#### 4.1.7 Any Type
 The `any` type is a special type that can represent values of any other type. It is used for type matching and dynamic typing scenarios where the exact type is not known at compile time or needs to be determined at runtime.
 
 ```
@@ -651,7 +938,190 @@ actor_ref                            -- actor reference (primitive type)
 
 The `actor_ref` type is not parameterized by message type. It is a primitive type that represents a reference to an actor, created by the `spawn()` function.
 
-## 5. Language Features
+### 4.6 Core Affinity Types
+
+Silica provides types for specifying CPU core affinity for actor placement:
+
+```
+core_id                              -- Single CPU core identifier (primitive type)
+core_set                             -- Set of CPU cores (primitive type)
+performance_cores                     -- Built-in: high-performance cores
+efficiency_cores                      -- Built-in: low-power efficiency cores
+```
+
+These types are used with the `spawn()` function to control actor placement:
+
+```silica
+spawn(initial_state, behavior, performance_cores)
+spawn(initial_state, behavior, core_id(0))
+spawn(initial_state, behavior, core_set([0, 1, 2]))
+```
+
+### 4.7 SIMD Vector Types
+
+Silica provides first-class SIMD vector types for AArch64 architectures:
+
+#### 4.7.1 NEON 128-bit Vector Types
+Fixed-width 128-bit vectors using NEON instructions:
+
+```
+Vec128Int8    -- 16 × int8 elements
+Vec128Int16   -- 8 × int16 elements
+Vec128Int32   -- 4 × int32 elements
+Vec128Int64   -- 2 × int64 elements
+Vec128Float32 -- 4 × float32 elements
+Vec128Bool    -- Boolean vector for comparisons
+```
+
+#### 4.7.2 SVE Scalable Vector Types
+Scalable vectors using SVE/SVE2 instructions (size determined at runtime):
+
+```
+VecInt8       -- Scalable vector of int8
+VecInt16      -- Scalable vector of int16
+VecInt32      -- Scalable vector of int32
+VecInt64      -- Scalable vector of int64
+VecFloat16    -- Scalable vector of float16
+VecFloat32    -- Scalable vector of float32
+VecFloat64    -- Scalable vector of float64
+VecBool       -- Scalable boolean vector
+```
+
+#### 4.7.3 SVE Predicate Type
+```
+Pred          -- SVE predicate mask for conditional operations
+```
+
+The `Pred` type represents a predicate mask used for conditional vector operations in SVE.
+
+## 5. Built-in Functions and Primitives
+
+Silica provides a comprehensive set of built-in functions and language primitives for common operations. These are always available without requiring imports.
+
+### 5.1 Print Functions
+
+All print functions require the `DeviceIO` effect.
+
+#### 5.1.1 String Printing
+```
+print(value: string) -> unit proc[DeviceIO]
+println(value: string) -> unit proc[DeviceIO]
+```
+
+Print a string to stdout. `println` appends a newline.
+
+#### 5.1.2 Numeric Printing
+```
+print_int8(value: int8) -> unit proc[DeviceIO]
+print_int16(value: int16) -> unit proc[DeviceIO]
+print_int32(value: int32) -> unit proc[DeviceIO]
+print_int64(value: int64) -> unit proc[DeviceIO]
+```
+
+Print integer values to stdout.
+
+#### 5.1.3 Floating-Point Printing
+```
+print_float16(value: float16) -> unit proc[DeviceIO]
+print_float32(value: float32) -> unit proc[DeviceIO]
+print_float64(value: float64) -> unit proc[DeviceIO]
+```
+
+Print floating-point values to stdout.
+
+#### 5.1.4 Other Type Printing
+```
+print_bool(value: bool) -> unit proc[DeviceIO]
+print_char(value: char) -> unit proc[DeviceIO]
+```
+
+Print boolean and character values to stdout.
+
+### 5.2 File I/O Functions
+
+All file I/O functions require the `DeviceIO` effect.
+
+#### 5.2.1 File Reading
+```
+read_file(path: string) -> string proc[DeviceIO]
+read_lines(path: string) -> list<string> proc[DeviceIO]
+```
+
+Read entire file contents or lines from a file.
+
+#### 5.2.2 File Writing
+```
+write_file(path: string, content: string) -> unit proc[DeviceIO]
+append_file(path: string, content: string) -> unit proc[DeviceIO]
+```
+
+Write or append content to a file.
+
+#### 5.2.3 File Operations
+```
+file_exists(path: string) -> bool proc[DeviceIO]
+delete_file(path: string) -> unit proc[DeviceIO]
+get_file_size(path: string) -> int64 proc[DeviceIO]
+```
+
+Check file existence, delete files, and get file sizes.
+
+#### 5.2.4 Directory Operations
+```
+create_directory(path: string) -> unit proc[DeviceIO]
+remove_directory(path: string) -> unit proc[DeviceIO]
+list_directory(path: string) -> list<string> proc[DeviceIO]
+```
+
+Create, remove, and list directory contents.
+
+### 5.3 String Operations
+
+String operations are pure functions (no effects required).
+
+#### 5.3.1 String Length
+```
+len(s: string) -> int64
+len_chars(s: string) -> int64
+```
+
+Get byte length or character count of a string.
+
+#### 5.3.2 String Manipulation
+```
+concat(a: string, b: string) -> string
+substring(s: string, start: int64, end: int64) -> string
+substring_until_char(s: string, start: int64, char: char) -> string
+```
+
+Concatenate strings and extract substrings.
+
+#### 5.3.3 String Predicates
+```
+starts_with(s: string, prefix: string) -> bool
+ends_with(s: string, suffix: string) -> bool
+contains(s: string, substr: string) -> bool
+```
+
+Check string prefixes, suffixes, and containment.
+
+### 5.4 Process Execution
+
+```
+exec_command(command: string, args: list<string>) -> string proc[DeviceIO]
+```
+
+Execute a system command and return its output. Requires the `DeviceIO` effect.
+
+### 5.5 System Information
+
+```
+get_cpu_topology_info() -> string proc[DeviceIO]
+```
+
+Get CPU topology information as a JSON string. Requires the `DeviceIO` effect.
+
+## 6. Language Features
 
 ### 5.1 Advanced Pattern Matching
 
@@ -949,13 +1419,15 @@ These operations are not function calls but fundamental language primitives for 
 Processes compose through monadic binding:
 
 ```
-do
-    x <- alloc_region(normal)     -- proc[mem(normal)] region
-    y <- alloc_region(atomic)     -- proc[mem(atomic)] region
+-- Creates a process value (not executed)
+process_value: proc[mem(normal), mem(atomic)] (region(R1, normal), region(R2, atomic)) <- do
+    x: region(R1, normal) <- alloc_region(normal)     -- creates process value
+    y: region(R2, atomic) <- alloc_region(atomic)     -- creates process value
     return (x, y)
 end
 
--- Result type: proc[mem(normal), mem(atomic)] (region, region)
+-- Execute the process using spawn
+result: (region(R1, normal), region(R2, atomic)) <- spawn(process_value)
 ```
 
 #### 7.2.3 Effect Subeffecting
@@ -1124,11 +1596,12 @@ fn pure_add(x: int, y: int) -> int {
 
 fn allocate_pair(r: region(R, normal))
     : proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) {
-    x: ref(R, normal, int) <- alloc_ref(r, 1)
-    y: ref(R, normal, int) <- alloc_ref(r, 2)
-    return (x, y)
+    x: ref(R, normal, int) <- alloc_ref(r, 1)    -- creates process value
+    y: ref(R, normal, int) <- alloc_ref(r, 2)    -- creates process value
+    return (x, y)                                 -- returns composed process value
 }
 -- Effects properly declared: mem(normal)
+-- Returns a process value that must be spawned to execute
 
 fn bad_alloc(r: region(R, normal)) : proc[] ref(R, normal, int) {
     alloc_ref(r, 42)    -- ERROR: requires mem(normal) but declares []
@@ -1150,18 +1623,23 @@ Processes support monadic binding (`<-`) and return:
 
 ```
 return v     -- lift pure value into process monad
-p <- m; q    -- bind: execute m, bind result to p, then execute q
+p <- m; q    -- bind: create process m, bind to p, then create process q
 ```
+
+Note: Binding creates process values but does not execute them. Processes are executed using the `spawn()` function.
 
 #### 9.1.3 Sequential Execution
-Process execution is strictly sequential:
+When processes are executed via `spawn()`, execution is strictly sequential:
 
 ```
-do
-    x <- computation1    -- executes first
-    y <- computation2    -- executes after computation1 completes
-    return (x, y)        -- executes last
+computation: proc[] (int, int) <- do
+    x: int <- computation1    -- creates process for computation1
+    y: int <- computation2    -- creates process for computation2
+    return (x, y)
 end
+
+-- Execution happens when spawned
+result: (int, int) <- spawn(computation)
 ```
 
 ### 9.2 Effect Execution Model
@@ -1192,39 +1670,46 @@ Active Effects: [mem(normal), concurrency]
 ```
 
 #### 9.2.3 Effect Safety
-Runtime enforces effect capabilities:
+Runtime enforces effect capabilities when processes are executed via `spawn()`:
 
 ```
-proc[mem(normal)] ref = alloc_ref(region, value)
--- ✓ Allowed: mem(normal) capability active
+-- Creates process value (not executed yet)
+process: proc[mem(normal)] ref(R, normal, int) <- alloc_ref(region, value)
+-- ✓ Allowed: mem(normal) effect declared
 
-proc[] ref = alloc_ref(region, value)
--- ✗ Runtime Error: missing mem(normal) capability
+-- Execute the process
+ref: ref(R, normal, int) <- spawn(process)
+-- ✓ Allowed: mem(normal) capability active during execution
+
+-- Invalid process (missing required effect)
+bad_process: proc[] ref(R, normal, int) <- alloc_ref(region, value)
+-- ✗ Type Error: process requires mem(normal) but declares []
 ```
 
 ### 9.3 Process Lifecycle
 
 #### 9.3.1 Process Creation
-Processes are created but not executed until bound:
+Processes are created when bound but not executed:
 
 ```
-let p = alloc_ref(r, 42)    -- creates process, doesn't execute
-x <- p                      -- executes process, binds result
+p: proc[mem(normal)] ref(R, normal, int) <- alloc_ref(r, 42)    -- creates process value, does not execute
 ```
+
+Processes are executed using the built-in `spawn()` function. Binding creates a process value that can be passed around or executed later.
 
 #### 9.3.2 Process Execution
-Process execution is lazy - triggered by binding:
+Processes are executed using the `spawn()` function:
 
 ```
--- Process creation (no execution)
-let computation = do
-    x <- alloc_ref(region, 1)
-    y <- alloc_ref(region, 2)
+-- Process creation (not executed)
+computation: proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) <- do
+    x: ref(R, normal, int) <- alloc_ref(region, 1)
+    y: ref(R, normal, int) <- alloc_ref(region, 2)
     return (x, y)
 end
 
--- Process execution (triggered by binding)
-result <- computation    -- now executes allocations
+-- Process execution via spawn
+result: (ref(R, normal, int), ref(R, normal, int)) <- spawn(computation)
 ```
 
 #### 9.3.3 Process Composition
@@ -1233,17 +1718,21 @@ Processes compose through monadic binding:
 ```
 fn allocate_pair(r: region(R, normal))
     : proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) {
-    x <- alloc_ref(r, 1)
-    y <- alloc_ref(r, 2)
-    return (x, y)
+    x: ref(R, normal, int) <- alloc_ref(r, 1)    -- creates process value
+    y: ref(R, normal, int) <- alloc_ref(r, 2)    -- creates process value
+    return (x, y)                                 -- returns composed process value
 }
+
+-- Usage: the function returns a process value that must be spawned
+pair_process: proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) <- allocate_pair(region)
+result: (ref(R, normal, int), ref(R, normal, int)) <- spawn(pair_process)
 
 fn allocate_quad(r: region(R, normal))
     : proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int),
                          ref(R, normal, int), ref(R, normal, int)) {
-    (a: ref(R, normal, int), b: ref(R, normal, int)) <- allocate_pair(r)
-    (c: ref(R, normal, int), d: ref(R, normal, int)) <- allocate_pair(r)
-    return (a, b, c, d)
+    (a: ref(R, normal, int), b: ref(R, normal, int)) <- allocate_pair(r)    -- creates process value
+    (c: ref(R, normal, int), d: ref(R, normal, int)) <- allocate_pair(r)    -- creates process value
+    return (a, b, c, d)                                                      -- returns composed process value
 }
 ```
 
@@ -1263,8 +1752,8 @@ alloc_region(atomic) : proc[mem(atomic)] region(R, atomic)
 Regions exist until explicitly deallocated or process termination:
 
 ```
-r <- alloc_region(normal)    -- region created
-refs <- allocate_in_region(r) -- allocate references in region
+r: region(R, normal) <- alloc_region(normal)    -- region created
+refs: list<ref(R, normal, int)> <- allocate_in_region(r) -- allocate references in region
 -- implicit deallocation when r goes out of scope
 ```
 
@@ -1272,8 +1761,8 @@ refs <- allocate_in_region(r) -- allocate references in region
 Regions provide memory isolation:
 
 ```
-r1 <- alloc_region(normal)
-r2 <- alloc_region(normal)
+r1: region(R1, normal) <- alloc_region(normal)
+r2: region(R2, normal) <- alloc_region(normal)
 -- r1 and r2 are separate memory pools
 -- no aliasing between different regions
 ```
@@ -1299,8 +1788,8 @@ write_ref(reference, value) : proc[mem(Space)] unit
 References are identity-based:
 
 ```
-r1 <- alloc_ref(region, 42)
-r2 <- alloc_ref(region, 42)
+r1: ref(R, normal, int) <- alloc_ref(region, 42)
+r2: ref(R, normal, int) <- alloc_ref(region, 42)
 r1 ≠ r2    -- different references, even with same value
 ```
 
@@ -1325,9 +1814,9 @@ write_buf(buffer, index, value) : proc[mem(Space)] unit
 Buffer access is bounds-checked:
 
 ```
-let buf = alloc_buf(region, 10)  -- buffer of size 10
-x <- read_buf(buf, 5)           -- ✓ valid index
-y <- read_buf(buf, 15)          -- ✗ runtime bounds error
+buf: buf(R, normal, int, 10) <- alloc_buf(region, 10)  -- buffer of size 10
+x: int <- read_buf(buf, 5)           -- ✓ valid index
+y: int <- read_buf(buf, 15)          -- ✗ runtime bounds error
 ```
 
 ### 10.4 Memory Safety Guarantees
@@ -1336,9 +1825,9 @@ y <- read_buf(buf, 15)          -- ✗ runtime bounds error
 No cross-region references:
 
 ```
-r1 <- alloc_region(normal)
-r2 <- alloc_region(normal)
-ref1 <- alloc_ref(r1, 42)
+r1: region(R1, normal) <- alloc_region(normal)
+r2: region(R2, normal) <- alloc_region(normal)
+ref1: ref(R1, normal, int) <- alloc_ref(r1, 42)
 
 -- Cannot create reference in r2 pointing to r1's memory
 -- Type system prevents: ref(R2, normal, ref(R1, normal, int))
@@ -1349,8 +1838,8 @@ References cannot outlive their regions:
 
 ```
 {
-    r <- alloc_region(normal)
-    ref <- alloc_ref(r, 42)
+    r: region(R, normal) <- alloc_region(normal)
+    ref: ref(R, normal, int) <- alloc_ref(r, 42)
     -- ref is valid here
 }
 -- r deallocated here
@@ -1361,11 +1850,11 @@ References cannot outlive their regions:
 Memory operations preserve types:
 
 ```
-ref_int <- alloc_ref(r, 42)
-ref_str <- alloc_ref(r, "hello")
+ref_int: ref(R, normal, int) <- alloc_ref(r, 42)
+ref_str: ref(R, normal, string) <- alloc_ref(r, "hello")
 
-x <- read_ref(ref_int)    -- x : int
-y <- read_ref(ref_str)    -- y : string
+x: int <- read_ref(ref_int)    -- x : int
+y: string <- read_ref(ref_str)    -- y : string
 ```
 
 ## 12. Operational Semantics
@@ -1430,14 +1919,22 @@ Similar rules for `-`, `*`, `/`, `%`.
 ρ; σ; κ ⊢ proc { e } ⇓ <proc e ρ>; σ; κ
 ```
 
-#### 11.2.6 Process Execution (Binding)
+#### 11.2.6 Process Creation (Binding)
+Binding creates a process value but does not execute it:
+
+```
+────────────────────────────────────────────
+ρ; σ; κ ⊢ x: proc[ε] τ <- e_proc ⇓ <proc e_proc ρ>; σ; κ
+```
+
+#### 11.2.7 Process Execution (Spawn)
+Processes are executed using the `spawn()` function:
+
 ```
 ρ; σ; κ ⊢ e_proc ⇓ <proc e_body ρ_proc>; σ₁; κ₁
 ρ_proc; σ₁; κ₁ ⊢ e_body ⇓ v_result; σ₂; κ₂
 ────────────────────────────────────────────
-ρ; σ; κ ⊢ x <- e_proc; e_cont ⇓ v_cont; σ₃; κ₃
-
-Where ρ[x → v_result]; σ₂; κ₂ ⊢ e_cont ⇓ v_cont; σ₃; κ₃
+ρ; σ; κ ⊢ x: τ <- spawn(e_proc) ⇓ v_result; σ₂; κ₂
 ```
 
 ### 11.3 Memory Operation Semantics
@@ -1490,14 +1987,17 @@ pattern_match(v, p₁) = bindings₁
 
 ### 11.5 Do Expression Semantics
 
-The `do ... end` expression is syntactic sugar for monadic binding:
+The `do ... end` expression creates a process value through monadic binding:
 
 ```
 do
-    x <- e1
-    y <- e2
+    x <- e1    -- creates process e1, binds result to x
+    y <- e2    -- creates process e2, binds result to y
     return result
 end
+```
+
+This creates a process value that must be executed using `spawn()` to actually run the computations.
 
 ≡
 
@@ -1522,8 +2022,8 @@ Reference lifetimes are bounded by region lifetimes:
 
 ```
 {
-    r <- alloc_region(normal)
-    ref <- alloc_ref(r, 42)
+    r: region(R, normal) <- alloc_region(normal)
+    ref: ref(R, normal, int) <- alloc_ref(r, 42)
     -- ref is valid here
 }
 -- r and ref are deallocated together
@@ -1534,8 +2034,8 @@ Attempting to use a reference after its region is deallocated is a type error:
 
 ```
 fn bad_lifetime() {
-    r <- alloc_region(normal)
-    ref <- alloc_ref(r, 42)
+    r: region(R, normal) <- alloc_region(normal)
+    ref: ref(R, normal, int) <- alloc_ref(r, 42)
     return ref    -- ERROR: ref would outlive region r
 }
 ```
@@ -1603,8 +2103,8 @@ atomic_compare_exchange(ref, expected, new)
 Array/buffer access is bounds-checked:
 
 ```
-buf <- alloc_buf(r, 10)
-x <- read_buf(buf, 15)    -- Runtime error: index out of bounds
+buf: buf(R, normal, int, 10) <- alloc_buf(r, 10)
+x: int <- read_buf(buf, 15)    -- Runtime error: index out of bounds
 ```
 
 #### 12.4.2 Division by Zero
@@ -1689,7 +2189,7 @@ Actor state is private and can only be modified by the actor itself:
 
 ```
 -- External code cannot access or modify actor state
-actor_ref <- spawn(0, counter)
+actor_ref: actor_ref <- spawn(0, counter)
 -- No way to read or write the counter value directly
 ```
 
@@ -1714,8 +2214,8 @@ fn fragile_behavior(msg: string, state: unit) : proc[mailbox<string>] unit {
 Actor failures don't affect other actors:
 
 ```
-actor1 <- spawn((), fragile_behavior)
-actor2 <- spawn((), robust_behavior)
+actor1: actor_ref <- spawn((), fragile_behavior)
+actor2: actor_ref <- spawn((), robust_behavior)
 
 send(actor1, "quit")    -- actor1 terminates
 send(actor2, "ping")    -- actor2 continues normally
@@ -1837,7 +2337,7 @@ Messages must implement the `ActorMessage` trait:
 type Request = {data: int, reply_to: actor_ref};
 impl ActorMessage for Request;
 
-actor_ref <- spawn(0, handler)
+actor_ref: actor_ref <- spawn(0, handler)
 cast(actor_ref, Request {data: 42, reply_to: some_actor})  -- ✓ correct type
 cast(actor_ref, 42)  -- ✗ type error: int doesn't implement ActorMessage
 ```
@@ -1964,8 +2464,8 @@ type spsc_queue<R, T> = {
 }
 
 fn spsc_send(queue, item) : proc[mem(normal), atomic] bool {
-    tail <- atomic_load(queue.tail, acquire)
-    head <- atomic_load(queue.head, acquire)
+    tail: int <- atomic_load(queue.tail, acquire)
+    head: int <- atomic_load(queue.head, acquire)
 
     next_tail = (tail + 1) % queue.capacity
     if next_tail == head {
@@ -1978,14 +2478,14 @@ fn spsc_send(queue, item) : proc[mem(normal), atomic] bool {
 }
 
 fn spsc_recv(queue) : proc[mem(normal), atomic] option<T> {
-    head <- atomic_load(queue.head, acquire)
-    tail <- atomic_load(queue.tail, acquire)
+    head: int <- atomic_load(queue.head, acquire)
+    tail: int <- atomic_load(queue.tail, acquire)
 
     if head == tail {
         return None     -- queue empty
     }
 
-    item <- read_buf(queue.buf, head)
+    item: T <- read_buf(queue.buf, head)
     next_head = (head + 1) % queue.capacity
     atomic_store(queue.head, next_head, release)
     return Some(item)
@@ -2023,8 +2523,8 @@ Within a single actor, all operations appear sequentially consistent:
 
 ```
 -- Inside actor, this appears atomic to external observers
-x <- read_ref(ref1)
-y <- read_ref(ref2)
+x: int <- read_ref(ref1)
+y: int <- read_ref(ref2)
 write_ref(ref3, x + y)
 ```
 
@@ -2038,9 +2538,10 @@ send(actor2, data)
 
 -- Actor 2 behavior function
 fn process_message(msg: Data, state: unit) -> unit {
-    flag_value <- atomic_load(flag, acquire)
+    flag_value: bool <- atomic_load(flag, acquire)
     -- flag_value is guaranteed to be true
 }
+```
 ```
 
 ### 16.3 Race Condition Prevention
@@ -2049,7 +2550,7 @@ fn process_message(msg: Data, state: unit) -> unit {
 Atomic operations prevent data races:
 
 ```
-counter <- alloc_atomic(region, 0)
+counter: atomic_ref(R, normal, int) <- alloc_atomic(region, 0)
 
 -- Multiple actors can safely increment
 fn increment_counter() {
@@ -2622,20 +3123,20 @@ Silica's networking modules leverage AArch64 chip capabilities for optimal perfo
 Network buffers and processing can be NUMA-optimized:
 ```silica
 -- Place network buffers close to NIC for minimal latency
-nic_numa_node <- get_nic_numa_node(network_interface)
-region <- alloc_region_on_numa_node(nic_numa_node, normal)
-rx_buffers <- alloc_buf(region, buffer_count)
+nic_numa_node: int <- get_nic_numa_node(network_interface)
+region: region(R, normal) <- alloc_region_on_numa_node(nic_numa_node, normal)
+rx_buffers: buf(R, normal, packet, N) <- alloc_buf(region, buffer_count)
 ```
 
 #### 18.5.2 CPU Affinity for Network Processing
 Network actors can be pinned to optimal cores:
 ```silica
 -- Pin network processing to efficiency cores (continuous I/O)
-network_actor <- spawn_actor(network_state, packet_processor)
+network_actor: actor_ref <- spawn_actor(network_state, packet_processor)
 pin_actor_to_efficiency_core(network_actor)
 
 -- Pin application logic to performance cores (bursty processing)
-app_actor <- spawn_actor(app_state, app_logic)
+app_actor: actor_ref <- spawn_actor(app_state, app_logic)
 pin_actor_to_performance_core(app_actor)
 ```
 
@@ -2781,7 +3282,9 @@ module arch.apple.amx {
 
 ## 21. Built-in Functions
 
-### 20.1 Memory Management
+This section documents all built-in functions and primitives available in Silica. These are always available without requiring imports.
+
+### 21.1 Memory Management Primitives
 ```
 alloc_region(space: memory_space) -> proc[mem(space)] region(any, space)
 alloc_ref(region, initial_value) -> proc[mem(space)] ref(region, space, T)
@@ -2789,13 +3292,13 @@ alloc_buf(region, capacity) -> proc[mem(space)] buf(region, space, T, capacity)
 alloc_atomic(region, initial_value) -> proc[mem(space), atomic] atomic_ref(region, space, T)
 ```
 
-### 20.2 Reference Operations
+### 21.2 Reference Operations
 ```
 read_ref(reference) -> proc[mem(space)] T
 write_ref(reference, value) -> proc[mem(space)] unit
 ```
 
-### 20.3 Buffer Operations
+### 21.3 Buffer Operations
 ```
 read_buf(buffer, index) -> proc[mem(space)] T
 write_buf(buffer, index, value) -> proc[mem(space)] unit
@@ -2803,17 +3306,126 @@ buffer_length(buffer) -> int
 buffer_capacity(buffer) -> int
 ```
 
-### 20.4 Actor Operations
+### 21.4 Actor Operations
 ```
-spawn(initial_state, behavior) -> proc[concurrency] actor_ref<Msg>
+spawn(initial_state, behavior [, core_affinity]) -> proc[concurrency] actor_ref
 send(actor, message) -> proc[concurrency] unit
-recv() -> proc[mailbox<Msg>, concurrency] Msg          -- Runtime internal
-self() -> proc[mailbox<Msg>, concurrency] actor_ref<Msg>
+cast(actor, message) -> proc[concurrency] bool
+recv([actor]) -> proc[mailbox<Msg>, concurrency] Msg          -- Runtime internal
+self() -> proc[mailbox<Msg>, concurrency] actor_ref
 ```
 
 **Note**: `recv()` is a runtime internal function and cannot be called directly from user code.
 
-### 20.4.1 CPU Affinity Operations
+**Core Affinity Parameter:**
+The `spawn()` function accepts an optional third parameter for CPU core affinity:
+- `performance_cores` - Place actor on high-performance cores
+- `efficiency_cores` - Place actor on low-power efficiency cores
+- `core_id(n)` - Place actor on specific core ID
+- `core_set([id1, id2, ...])` - Place actor on any core in the set
+
+### 21.5 Print Functions
+
+All print functions require the `DeviceIO` effect.
+
+#### 21.5.1 String Printing
+```
+print(value: string) -> unit proc[DeviceIO]
+println(value: string) -> unit proc[DeviceIO]
+```
+
+#### 21.5.2 Numeric Printing
+```
+print_int8(value: int8) -> unit proc[DeviceIO]
+print_int16(value: int16) -> unit proc[DeviceIO]
+print_int32(value: int32) -> unit proc[DeviceIO]
+print_int64(value: int64) -> unit proc[DeviceIO]
+```
+
+#### 21.5.3 Floating-Point Printing
+```
+print_float16(value: float16) -> unit proc[DeviceIO]
+print_float32(value: float32) -> unit proc[DeviceIO]
+print_float64(value: float64) -> unit proc[DeviceIO]
+```
+
+#### 21.5.4 Other Type Printing
+```
+print_bool(value: bool) -> unit proc[DeviceIO]
+print_char(value: char) -> unit proc[DeviceIO]
+```
+
+### 21.6 File I/O Functions
+
+All file I/O functions require the `DeviceIO` effect.
+
+#### 21.6.1 File Reading
+```
+read_file(path: string) -> string proc[DeviceIO]
+read_lines(path: string) -> list<string> proc[DeviceIO]
+```
+
+#### 21.6.2 File Writing
+```
+write_file(path: string, content: string) -> unit proc[DeviceIO]
+append_file(path: string, content: string) -> unit proc[DeviceIO]
+```
+
+#### 21.6.3 File Operations
+```
+file_exists(path: string) -> bool proc[DeviceIO]
+delete_file(path: string) -> unit proc[DeviceIO]
+get_file_size(path: string) -> int64 proc[DeviceIO]
+```
+
+#### 21.6.4 Directory Operations
+```
+create_directory(path: string) -> unit proc[DeviceIO]
+remove_directory(path: string) -> unit proc[DeviceIO]
+list_directory(path: string) -> list<string> proc[DeviceIO]
+```
+
+### 21.7 String Operations
+
+String operations are pure functions (no effects required).
+
+#### 21.7.1 String Length
+```
+len(s: string) -> int64                    -- byte length
+len_chars(s: string) -> int64              -- character count
+```
+
+#### 21.7.2 String Manipulation
+```
+concat(a: string, b: string) -> string
+substring(s: string, start: int64, end: int64) -> string
+substring_until_char(s: string, start: int64, char: char) -> string
+```
+
+#### 21.7.3 String Predicates
+```
+starts_with(s: string, prefix: string) -> bool
+ends_with(s: string, suffix: string) -> bool
+contains(s: string, substr: string) -> bool
+```
+
+### 21.8 Process Execution
+
+```
+exec_command(command: string, args: list<string>) -> string proc[DeviceIO]
+```
+
+Execute a system command and return its output.
+
+### 21.9 System Information
+
+```
+get_cpu_topology_info() -> string proc[DeviceIO]
+```
+
+Get CPU topology information as a JSON string.
+
+### 21.10 CPU Affinity Operations
 
 **CPU Affinity Types:**
 ```
@@ -3041,7 +3653,7 @@ fn safe_divide(x: int, y: int) -> proc[] result<int, string> {
 
 -- Usage
 do
-    result <- safe_divide(10, 0)
+    result: Result<int, string> <- safe_divide(10, 0)
     case result of
         Ok(value) -> print(value)
         Error(msg) -> print("Error: " + msg)
@@ -3193,7 +3805,7 @@ fn supervisor(child_failure: down_message, state: supervisor_state)
 
     case child_failure of
         Down(child_ref, reason) ->
-            new_child <- spawn_actor(initial_state, child_behavior)
+            new_child: actor_ref <- spawn_actor(initial_state, child_behavior)
             -- restart failed child
             return updated_state
     end
@@ -3205,7 +3817,7 @@ Monadic error handling:
 
 ```
 do
-    x <- operation_that_might_fail()
+    x: Result<T, Error> <- operation_that_might_fail()
     case x of
         Ok(result) -> continue_with(result)
         Error(err) -> handle_error(err)
@@ -3634,7 +4246,7 @@ Navigate to symbol definitions across modules:
 
 ```
 fn main() {
-    result <- add(1, 2)  -- Ctrl+click on 'add' jumps to math.silica
+    result: int <- add(1, 2)  -- Ctrl+click on 'add' jumps to math.silica
 }
 ```
 
