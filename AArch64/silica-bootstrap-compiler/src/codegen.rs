@@ -242,6 +242,7 @@ impl CodeGenerator {
             Expression::CreateDirectory(create_dir) => Some(&create_dir.location),
             Expression::RemoveDirectory(remove_dir) => Some(&remove_dir.location),
             Expression::ListDirectory(list_dir) => Some(&list_dir.location),
+            Expression::AsType(as_type) => Some(&as_type.location),
             Expression::StringLen(string_len) => Some(&string_len.location),
             Expression::StringLenChars(string_len_chars) => Some(&string_len_chars.location),
             Expression::StringConcat(string_concat) => Some(&string_concat.location),
@@ -1013,12 +1014,20 @@ impl CodeGenerator {
                         // Extract type and register from result_val
                         let (result_type, result_reg) = if result_val.starts_with("i64 ") {
                             ("i64".to_string(), result_val.trim_start_matches("i64 ").to_string())
+                        } else if result_val.starts_with("i32 ") {
+                            ("i32".to_string(), result_val.trim_start_matches("i32 ").to_string())
+                        } else if result_val.starts_with("i16 ") {
+                            ("i16".to_string(), result_val.trim_start_matches("i16 ").to_string())
+                        } else if result_val.starts_with("i8 ") {
+                            ("i8".to_string(), result_val.trim_start_matches("i8 ").to_string())
                         } else if result_val.starts_with("i8* ") {
                             ("i8*".to_string(), result_val.trim_start_matches("i8* ").to_string())
                         } else if result_val.starts_with("i1 ") {
                             ("i1".to_string(), result_val.trim_start_matches("i1 ").to_string())
-                        } else if result_val.starts_with("i32 ") {
-                            ("i32".to_string(), result_val.trim_start_matches("i32 ").to_string())
+                        } else if result_val.starts_with("float ") {
+                            ("float".to_string(), result_val.trim_start_matches("float ").to_string())
+                        } else if result_val.starts_with("half ") {
+                            ("half".to_string(), result_val.trim_start_matches("half ").to_string())
                         } else {
                             // No type prefix - assume it matches the return type
                             (return_type_str.to_string(), result_val)
@@ -1037,7 +1046,59 @@ impl CodeGenerator {
                             self.instructions.push(format!("  ret i64 {}", int_reg));
                         } else {
                             // Types match or no conversion needed
-                            self.instructions.push(format!("  ret {} {}", return_type_str, result_reg));
+                            // Check if we need to truncate for smaller return types or convert float types
+                            // First, ensure result_reg doesn't have a type prefix (it should just be the register name)
+                            let clean_result_reg = result_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i16 ").trim_start_matches("i8 ").trim_start_matches("half ").trim_start_matches("float ").trim_start_matches("i1 ").to_string();
+                            
+                            let final_result = if return_type_str == "i8" && (result_type == "i64" || result_type == "i32" || result_type == "i16") {
+                                let trunc_reg = format!("%trunc_return_{}", self.instructions.len());
+                                self.instructions.push(format!("  {} = trunc {} {} to i8", trunc_reg, result_type, clean_result_reg));
+                                trunc_reg
+                            } else if return_type_str == "i16" && (result_type == "i64" || result_type == "i32") {
+                                let trunc_reg = format!("%trunc_return_{}", self.instructions.len());
+                                self.instructions.push(format!("  {} = trunc {} {} to i16", trunc_reg, result_type, clean_result_reg));
+                                trunc_reg
+                            } else if return_type_str == "i32" && result_type == "i64" {
+                                let trunc_reg = format!("%trunc_return_{}", self.instructions.len());
+                                self.instructions.push(format!("  {} = trunc i64 {} to i32", trunc_reg, clean_result_reg));
+                                trunc_reg
+                            } else if return_type_str == "half" && result_type == "float" {
+                                let trunc_reg = format!("%trunc_return_{}", self.instructions.len());
+                                // clean_result_reg should already be a register name (no type prefix)
+                                // If it's a float literal, create a constant first (fptrunc doesn't accept literals)
+                                if !clean_result_reg.starts_with('%') && clean_result_reg.parse::<f64>().is_ok() {
+                                    // Create float constant using bitcast from integer (most reliable method)
+                                    let float_const = format!("%float_const_return_{}", self.instructions.len());
+                                    let instruction = self.create_float_constant_instruction(&clean_result_reg, &float_const);
+                                    self.instructions.push(instruction);
+                                    self.instructions.push(format!("  {} = fptrunc float {} to half", trunc_reg, float_const));
+                                } else {
+                                    self.instructions.push(format!("  {} = fptrunc float {} to half", trunc_reg, clean_result_reg));
+                                }
+                                trunc_reg
+                            } else if return_type_str == "float" && result_type == "half" {
+                                let ext_reg = format!("%ext_return_{}", self.instructions.len());
+                                // Strip "half " prefix from result_reg if present
+                                let clean_half = clean_result_reg.trim_start_matches("half ").to_string();
+                                self.instructions.push(format!("  {} = fpext half {} to float", ext_reg, clean_half));
+                                ext_reg
+                            } else {
+                                // No conversion needed - use the cleaned register name
+                                clean_result_reg
+                            };
+                            
+                            // Check if final_result is a float literal that needs to be converted to a constant
+                            let ret_value = if return_type_str == "float" && !final_result.starts_with('%') && final_result.parse::<f64>().is_ok() {
+                                // Float literal - create a constant first
+                                let float_const = format!("%float_const_ret_{}", self.instructions.len());
+                                let instruction = self.create_float_constant_instruction(&final_result, &float_const);
+                                self.instructions.push(instruction);
+                                float_const
+                            } else {
+                                final_result
+                            };
+                            
+                            self.instructions.push(format!("  ret {} {}", return_type_str, ret_value));
                         }
                     }
                 } else {
@@ -1134,6 +1195,7 @@ impl CodeGenerator {
                     Err(CompilerError::codegen_error_with_metadata("Constructor calls not yet implemented".to_string(), None, metadata))
                 }
             }
+            Expression::AsType(as_type) => self.generate_as_type(as_type),
         }
     }
 
@@ -1198,6 +1260,22 @@ impl CodeGenerator {
     /// Generate LLVM IR for literal values
     fn generate_literal(&mut self, lit: &Literal) -> String {
         self.generate_literal_with_type(lit, None)
+    }
+
+    /// Create a float constant in LLVM IR using bitcast from integer
+    /// This is more reliable than using decimal or hex literals directly in instructions
+    fn create_float_constant_instruction(&mut self, float_str: &str, reg_name: &str) -> String {
+        if let Ok(value) = float_str.parse::<f64>() {
+            // Convert to f32 (since we're dealing with float type, not double)
+            let f32_value = value as f32;
+            // Get the IEEE 754 binary32 bits
+            let bits = f32_value.to_bits();
+            // Use bitcast from i32 constant to float - this is the most reliable way
+            format!("  {} = bitcast i32 {} to float", reg_name, bits)
+        } else {
+            // Fallback: try to use decimal (might fail for inexact values)
+            format!("  {} = fadd float 0.0, {}", reg_name, float_str)
+        }
     }
 
     /// Generate LLVM IR for literal values with optional type context
@@ -1282,16 +1360,48 @@ impl CodeGenerator {
                 BinaryOp::And | BinaryOp::Or => "i1",
                 _ => {
                     // For other operations, determine type based on operands
-                    let lhs_type = if lhs.starts_with("i8* ") {
+                    // Try to get type from expression first (for identifiers, use variable name)
+                    // First, try to get type from expression (prioritize variable/expression types over literal prefixes)
+                    let lhs_type_from_expr = if let Expression::Identifier(name) = &*binary.left {
+                        // Look up by variable name
+                        self.variable_types.get(name).cloned()
+                    } else {
+                        // Try to get from expression_types map
+                        Self::try_get_expression_location(&binary.left)
+                            .and_then(|loc| self.expression_types.get(loc).cloned())
+                    };
+                    
+                    let lhs_type = if let Some(var_type) = lhs_type_from_expr {
+                        // Use type from variable/expression (most accurate)
+                        match var_type {
+                            Type::Char => "i32",
+                            Type::Int8 => "i8",
+                            Type::Int16 => "i16",
+                            Type::Int32 => "i32",
+                            Type::Int64 => "i64",
+                            Type::Float16 => "half",
+                            Type::Float32 => "float",
+                            Type::Bool => "i1",
+                            _ => "i64", // fallback
+                        }
+                    } else if lhs.starts_with("i8* ") {
                         "i64" // loaded as i64
                     } else if lhs.starts_with("i64 ") {
                         "i64"
                     } else if lhs.starts_with("i32 ") {
                         "i32"
+                    } else if lhs.starts_with("i16 ") {
+                        "i16"
+                    } else if lhs.starts_with("i8 ") {
+                        "i8"
+                    } else if lhs.starts_with("half ") {
+                        "half"
+                    } else if lhs.starts_with("float ") {
+                        "float"
                     } else if lhs.starts_with("i1 ") {
                         "i1"
                     } else {
-                        // Check if this is a variable/register name that we know the type of
+                        // Fallback: try register name lookup
                         let clean_reg = lhs.trim_start_matches('%');
                         if let Some(var_type) = self.variable_types.get(clean_reg) {
                             match var_type {
@@ -1310,16 +1420,47 @@ impl CodeGenerator {
                         }
                     };
 
-                    let rhs_type = if rhs.starts_with("i8* ") {
+                    // First, try to get type from expression (prioritize variable/expression types over literal prefixes)
+                    let rhs_type_from_expr = if let Expression::Identifier(name) = &*binary.right {
+                        // Look up by variable name
+                        self.variable_types.get(name).cloned()
+                    } else {
+                        // Try to get from expression_types map
+                        Self::try_get_expression_location(&binary.right)
+                            .and_then(|loc| self.expression_types.get(loc).cloned())
+                    };
+                    
+                    let rhs_type = if let Some(var_type) = rhs_type_from_expr {
+                        // Use type from variable/expression (most accurate)
+                        match var_type {
+                            Type::Char => "i32",
+                            Type::Int8 => "i8",
+                            Type::Int16 => "i16",
+                            Type::Int32 => "i32",
+                            Type::Int64 => "i64",
+                            Type::Float16 => "half",
+                            Type::Float32 => "float",
+                            Type::Bool => "i1",
+                            _ => "i64", // fallback
+                        }
+                    } else if rhs.starts_with("i8* ") {
                         "i64" // loaded as i64
                     } else if rhs.starts_with("i64 ") {
                         "i64"
                     } else if rhs.starts_with("i32 ") {
                         "i32"
+                    } else if rhs.starts_with("i16 ") {
+                        "i16"
+                    } else if rhs.starts_with("i8 ") {
+                        "i8"
+                    } else if rhs.starts_with("half ") {
+                        "half"
+                    } else if rhs.starts_with("float ") {
+                        "float"
                     } else if rhs.starts_with("i1 ") {
                         "i1"
                     } else {
-                        // Check if this is a variable/register name that we know the type of
+                        // Fallback: try register name lookup
                         let clean_reg = rhs.trim_start_matches('%');
                         if let Some(var_type) = self.variable_types.get(clean_reg) {
                             match var_type {
@@ -1366,6 +1507,9 @@ impl CodeGenerator {
                 }
             };
 
+            // Determine if this is a float operation (needed for operand processing)
+            let is_float = op_type == "half" || op_type == "float";
+
             // Handle operands based on their actual types
             let clean_lhs = if lhs.starts_with("i8* ") {
                 // Left operand is an i8* register - load it
@@ -1375,12 +1519,63 @@ impl CodeGenerator {
                 self.instructions.push(format!("  {} = load i64, i64* {}_cast", load_reg, load_reg));
                 load_reg
             } else {
-                let trimmed = lhs.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+                let trimmed = lhs.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i16 ").trim_start_matches("i8 ").trim_start_matches("i1 ").trim_start_matches("half ").trim_start_matches("float ").trim_start_matches("i8* ").to_string();
+                // Check if this is a variable that needs type extension
+                let needs_extension = if let Expression::Identifier(name) = &*binary.left {
+                    // Look up variable type
+                    if let Some(var_type) = self.variable_types.get(name) {
+                        match var_type {
+                            Type::Int8 => op_type == "i64" || op_type == "i32" || op_type == "i16",
+                            Type::Int16 => op_type == "i64" || op_type == "i32",
+                            Type::Int32 => op_type == "i64",
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                
                 // Extend operands to match operation type if necessary
                 if lhs.starts_with("i32 ") && op_type == "i64" {
                     let extend_reg = format!("%extend_left_{}", self.instructions.len());
                     self.instructions.push(format!("  {} = sext i32 {} to i64", extend_reg, trimmed));
                     extend_reg
+                } else if lhs.starts_with("i16 ") && op_type == "i64" {
+                    let extend_reg = format!("%extend_left_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = sext i16 {} to i64", extend_reg, trimmed));
+                    extend_reg
+                } else if lhs.starts_with("i8 ") && op_type == "i64" {
+                    let extend_reg = format!("%extend_left_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = sext i8 {} to i64", extend_reg, trimmed));
+                    extend_reg
+                } else if needs_extension {
+                    // Variable needs extension - determine source type
+                    if let Expression::Identifier(name) = &*binary.left {
+                        if let Some(var_type) = self.variable_types.get(name) {
+                            let (source_type, target_type) = match (var_type, op_type) {
+                                (Type::Int8, "i16") => ("i8", "i16"),
+                                (Type::Int8, "i32") => ("i8", "i32"),
+                                (Type::Int8, "i64") => ("i8", "i64"),
+                                (Type::Int16, "i32") => ("i16", "i32"),
+                                (Type::Int16, "i64") => ("i16", "i64"),
+                                (Type::Int32, "i64") => ("i32", "i64"),
+                                _ => ("", ""),
+                            };
+                            if !source_type.is_empty() {
+                                let extend_reg = format!("%extend_left_{}", self.instructions.len());
+                                self.instructions.push(format!("  {} = sext {} {} to {}", extend_reg, source_type, trimmed, target_type));
+                                extend_reg
+                            } else {
+                                trimmed
+                            }
+                        } else {
+                            trimmed
+                        }
+                    } else {
+                        trimmed
+                    }
                 } else if lhs.starts_with("i1 ") && op_type != "i1" {
                     // Extend boolean to i32/i64 as needed
                     let extend_reg = format!("%extend_left_{}", self.instructions.len());
@@ -1389,16 +1584,56 @@ impl CodeGenerator {
                     extend_reg
                 } else {
                     // Check if this operand was originally a type-prefixed literal
-                    let is_literal_operand = lhs.starts_with("i64 ") || lhs.starts_with("i32 ") || lhs.starts_with("i1 ");
+                    let is_literal_operand = lhs.starts_with("i64 ") || lhs.starts_with("i32 ") || lhs.starts_with("i16 ") || lhs.starts_with("i8 ") || lhs.starts_with("i1 ") || lhs.starts_with("half ") || lhs.starts_with("float ");
                     if is_literal_operand {
-                        // Literal constants like "10" should be used as-is, not as registers
-                        trimmed
+                        // Literal constants like "10" or "3.14" should be used as-is, not as registers
+                        // For float operations, ensure integer literals are converted to float
+                        if is_float && !trimmed.contains('.') && !trimmed.starts_with('%') {
+                            // Integer literal in float operation - convert to float literal
+                            format!("{}.0", trimmed)
+                        } else {
+                            trimmed
+                        }
                     } else {
                         // Ensure register names have % prefix
-                        if trimmed.starts_with('%') {
-                            trimmed
+                        // Also check if this register corresponds to a variable that needs extension
+                        let reg_name = if trimmed.starts_with('%') {
+                            trimmed.clone()
                         } else {
                             format!("%{}", trimmed)
+                        };
+                        
+                        // Check if this register name (without %) corresponds to a variable that needs extension
+                        let reg_name_clean = reg_name.trim_start_matches('%');
+                        if let Some(var_type) = self.variable_types.get(reg_name_clean) {
+                            let needs_ext = match (var_type, op_type) {
+                                (Type::Int8, "i16") | (Type::Int8, "i32") | (Type::Int8, "i64") => true,
+                                (Type::Int16, "i32") | (Type::Int16, "i64") => true,
+                                (Type::Int32, "i64") => true,
+                                _ => false,
+                            };
+                            if needs_ext {
+                                let (source_type, target_type) = match (var_type, op_type) {
+                                    (Type::Int8, "i16") => ("i8", "i16"),
+                                    (Type::Int8, "i32") => ("i8", "i32"),
+                                    (Type::Int8, "i64") => ("i8", "i64"),
+                                    (Type::Int16, "i32") => ("i16", "i32"),
+                                    (Type::Int16, "i64") => ("i16", "i64"),
+                                    (Type::Int32, "i64") => ("i32", "i64"),
+                                    _ => ("", ""),
+                                };
+                                if !source_type.is_empty() {
+                                    let extend_reg = format!("%extend_left_{}", self.instructions.len());
+                                    self.instructions.push(format!("  {} = sext {} {} to {}", extend_reg, source_type, reg_name, target_type));
+                                    extend_reg
+                                } else {
+                                    reg_name
+                                }
+                            } else {
+                                reg_name
+                            }
+                        } else {
+                            reg_name
                         }
                     }
                 }
@@ -1412,12 +1647,63 @@ impl CodeGenerator {
                 self.instructions.push(format!("  {} = load i64, i64* {}_cast", load_reg, load_reg));
                 load_reg
             } else {
-                let trimmed = rhs.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+                let trimmed = rhs.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i16 ").trim_start_matches("i8 ").trim_start_matches("i1 ").trim_start_matches("half ").trim_start_matches("float ").trim_start_matches("i8* ").to_string();
+                // Check if this is a variable that needs type extension
+                let needs_extension = if let Expression::Identifier(name) = &*binary.right {
+                    // Look up variable type
+                    if let Some(var_type) = self.variable_types.get(name) {
+                        match var_type {
+                            Type::Int8 => op_type == "i64" || op_type == "i32" || op_type == "i16",
+                            Type::Int16 => op_type == "i64" || op_type == "i32",
+                            Type::Int32 => op_type == "i64",
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                
                 // Extend operands to match operation type if necessary
                 if rhs.starts_with("i32 ") && op_type == "i64" {
                     let extend_reg = format!("%extend_right_{}", self.instructions.len());
                     self.instructions.push(format!("  {} = sext i32 {} to i64", extend_reg, trimmed));
                     extend_reg
+                } else if rhs.starts_with("i16 ") && op_type == "i64" {
+                    let extend_reg = format!("%extend_right_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = sext i16 {} to i64", extend_reg, trimmed));
+                    extend_reg
+                } else if rhs.starts_with("i8 ") && op_type == "i64" {
+                    let extend_reg = format!("%extend_right_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = sext i8 {} to i64", extend_reg, trimmed));
+                    extend_reg
+                } else if needs_extension {
+                    // Variable needs extension - determine source type
+                    if let Expression::Identifier(name) = &*binary.right {
+                        if let Some(var_type) = self.variable_types.get(name) {
+                            let (source_type, target_type) = match (var_type, op_type) {
+                                (Type::Int8, "i16") => ("i8", "i16"),
+                                (Type::Int8, "i32") => ("i8", "i32"),
+                                (Type::Int8, "i64") => ("i8", "i64"),
+                                (Type::Int16, "i32") => ("i16", "i32"),
+                                (Type::Int16, "i64") => ("i16", "i64"),
+                                (Type::Int32, "i64") => ("i32", "i64"),
+                                _ => ("", ""),
+                            };
+                            if !source_type.is_empty() {
+                                let extend_reg = format!("%extend_right_{}", self.instructions.len());
+                                self.instructions.push(format!("  {} = sext {} {} to {}", extend_reg, source_type, trimmed, target_type));
+                                extend_reg
+                            } else {
+                                trimmed
+                            }
+                        } else {
+                            trimmed
+                        }
+                    } else {
+                        trimmed
+                    }
                 } else if rhs.starts_with("i1 ") && op_type != "i1" {
                     // Extend boolean to i32/i64 as needed
                     let extend_reg = format!("%extend_right_{}", self.instructions.len());
@@ -1426,16 +1712,56 @@ impl CodeGenerator {
                     extend_reg
                 } else {
                     // Check if this operand was originally a type-prefixed literal
-                    let is_literal_operand = rhs.starts_with("i64 ") || rhs.starts_with("i32 ") || rhs.starts_with("i1 ");
+                    let is_literal_operand = rhs.starts_with("i64 ") || rhs.starts_with("i32 ") || rhs.starts_with("i16 ") || rhs.starts_with("i8 ") || rhs.starts_with("i1 ") || rhs.starts_with("half ") || rhs.starts_with("float ");
                     if is_literal_operand {
-                        // Literal constants like "10" should be used as-is, not as registers
-                        trimmed
+                        // Literal constants like "10" or "3.14" should be used as-is, not as registers
+                        // For float operations, ensure integer literals are converted to float
+                        if is_float && !trimmed.contains('.') && !trimmed.starts_with('%') {
+                            // Integer literal in float operation - convert to float literal
+                            format!("{}.0", trimmed)
+                        } else {
+                            trimmed
+                        }
                     } else {
                         // Ensure register names have % prefix
-                        if trimmed.starts_with('%') {
-                            trimmed
+                        // Also check if this register corresponds to a variable that needs extension
+                        let reg_name = if trimmed.starts_with('%') {
+                            trimmed.clone()
                         } else {
                             format!("%{}", trimmed)
+                        };
+                        
+                        // Check if this register name (without %) corresponds to a variable that needs extension
+                        let reg_name_clean = reg_name.trim_start_matches('%');
+                        if let Some(var_type) = self.variable_types.get(reg_name_clean) {
+                            let needs_ext = match (var_type, op_type) {
+                                (Type::Int8, "i16") | (Type::Int8, "i32") | (Type::Int8, "i64") => true,
+                                (Type::Int16, "i32") | (Type::Int16, "i64") => true,
+                                (Type::Int32, "i64") => true,
+                                _ => false,
+                            };
+                            if needs_ext {
+                                let (source_type, target_type) = match (var_type, op_type) {
+                                    (Type::Int8, "i16") => ("i8", "i16"),
+                                    (Type::Int8, "i32") => ("i8", "i32"),
+                                    (Type::Int8, "i64") => ("i8", "i64"),
+                                    (Type::Int16, "i32") => ("i16", "i32"),
+                                    (Type::Int16, "i64") => ("i16", "i64"),
+                                    (Type::Int32, "i64") => ("i32", "i64"),
+                                    _ => ("", ""),
+                                };
+                                if !source_type.is_empty() {
+                                    let extend_reg = format!("%extend_right_{}", self.instructions.len());
+                                    self.instructions.push(format!("  {} = sext {} {} to {}", extend_reg, source_type, reg_name, target_type));
+                                    extend_reg
+                                } else {
+                                    reg_name
+                                }
+                            } else {
+                                reg_name
+                            }
+                        } else {
+                            reg_name
                         }
                     }
                 }
@@ -1443,33 +1769,111 @@ impl CodeGenerator {
 
             // Determine operation name based on type (int vs float)
             let is_float = op_type == "half" || op_type == "float";
+            
+            // For float operations, use literals directly where allowed
+            // Only create constants when converting to half type (fptrunc doesn't accept literals)
+            let format_lhs = if is_float && !clean_lhs.starts_with('%') && clean_lhs.parse::<f64>().is_ok() {
+                // Float literal
+                if op_type == "half" {
+                    // For half type, we need to create a float register first, then truncate
+                    // Create float constant using bitcast from integer (most reliable method)
+                    let float_const = format!("%float_const_lhs_{}", self.instructions.len());
+                    let instruction = self.create_float_constant_instruction(&clean_lhs, &float_const);
+                    self.instructions.push(instruction);
+                    let const_reg = format!("%const_lhs_{}", self.instructions.len());
+                    // Convert float constant to half
+                    self.instructions.push(format!("  {} = fptrunc float {} to half", const_reg, float_const));
+                    const_reg
+                } else {
+                    // For float type, we can use the literal directly in the instruction
+                    clean_lhs.clone()
+                }
+            } else {
+                clean_lhs.clone()
+            };
+            let format_rhs = if is_float && !clean_rhs.starts_with('%') && clean_rhs.parse::<f64>().is_ok() {
+                // Float literal
+                if op_type == "half" {
+                    // For half type, we need to create a float register first, then truncate
+                    // Create float constant using bitcast from integer (most reliable method)
+                    let float_const = format!("%float_const_rhs_{}", self.instructions.len());
+                    let instruction = self.create_float_constant_instruction(&clean_rhs, &float_const);
+                    self.instructions.push(instruction);
+                    let const_reg = format!("%const_rhs_{}", self.instructions.len());
+                    // Convert float constant to half
+                    self.instructions.push(format!("  {} = fptrunc float {} to half", const_reg, float_const));
+                    const_reg
+                } else {
+                    // For float type, we can use the literal directly in the instruction
+                    clean_rhs.clone()
+                }
+            } else {
+                clean_rhs.clone()
+            };
+            
             let op_instr = match binary.operator {
                 BinaryOp::Add => {
                     let op_name = if is_float { "fadd" } else { "add" };
-                    format!("  {} = {} {} {}, {}", temp_reg, op_name, op_type, clean_lhs, clean_rhs)
+                    format!("  {} = {} {} {}, {}", temp_reg, op_name, op_type, format_lhs, format_rhs)
                 },
                 BinaryOp::Subtract => {
                     let op_name = if is_float { "fsub" } else { "sub" };
-                    format!("  {} = {} {} {}, {}", temp_reg, op_name, op_type, clean_lhs, clean_rhs)
+                    format!("  {} = {} {} {}, {}", temp_reg, op_name, op_type, format_lhs, format_rhs)
                 },
                 BinaryOp::Multiply => {
                     let op_name = if is_float { "fmul" } else { "mul" };
-                    format!("  {} = {} {} {}, {}", temp_reg, op_name, op_type, clean_lhs, clean_rhs)
+                    format!("  {} = {} {} {}, {}", temp_reg, op_name, op_type, format_lhs, format_rhs)
                 },
                 BinaryOp::Divide => {
                     let op_name = if is_float { "fdiv" } else { "sdiv" };
-                    format!("  {} = {} {} {}, {}", temp_reg, op_name, op_type, clean_lhs, clean_rhs)
+                    format!("  {} = {} {} {}, {}", temp_reg, op_name, op_type, format_lhs, format_rhs)
                 },
                 BinaryOp::Modulo => {
                     // Modulo only for integers (already checked above)
                     format!("  {} = srem {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
                 },
-                BinaryOp::Equal => format!("  {} = icmp eq {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
-                BinaryOp::NotEqual => format!("  {} = icmp ne {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
-                BinaryOp::Less => format!("  {} = icmp slt {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
-                BinaryOp::LessEqual => format!("  {} = icmp sle {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
-                BinaryOp::Greater => format!("  {} = icmp sgt {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
-                BinaryOp::GreaterEqual => format!("  {} = icmp sge {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
+                BinaryOp::Equal => {
+                    if is_float {
+                        format!("  {} = fcmp oeq {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                    } else {
+                        format!("  {} = icmp eq {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                    }
+                },
+                BinaryOp::NotEqual => {
+                    if is_float {
+                        format!("  {} = fcmp one {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                    } else {
+                        format!("  {} = icmp ne {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                    }
+                },
+                BinaryOp::Less => {
+                    if is_float {
+                        format!("  {} = fcmp olt {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                    } else {
+                        format!("  {} = icmp slt {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                    }
+                },
+                BinaryOp::LessEqual => {
+                    if is_float {
+                        format!("  {} = fcmp ole {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                    } else {
+                        format!("  {} = icmp sle {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                    }
+                },
+                BinaryOp::Greater => {
+                    if is_float {
+                        format!("  {} = fcmp ogt {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                    } else {
+                        format!("  {} = icmp sgt {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                    }
+                },
+                BinaryOp::GreaterEqual => {
+                    if is_float {
+                        format!("  {} = fcmp oge {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                    } else {
+                        format!("  {} = icmp sge {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                    }
+                },
                 BinaryOp::And => format!("  {} = and {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
                 BinaryOp::Or => format!("  {} = or {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
             };
@@ -1478,6 +1882,91 @@ impl CodeGenerator {
             Ok(Some(temp_reg))
         } else {
             Err(CompilerError::codegen_error("Binary operation on invalid operands".to_string()))
+        }
+    }
+
+    /// Generate LLVM IR for type casting: expr as Type
+    fn generate_as_type(&mut self, as_type: &AsTypeExpr) -> Result<Option<String>> {
+        // Generate the expression first
+        let expr_val = self.generate_expression(&as_type.expression)?;
+        
+        if let Some(val) = expr_val {
+            // Get source type from expression_types map, or infer from value string
+            let source_type = self.get_expression_type(&as_type.expression)
+                .ok()
+                .or_else(|| {
+                    // Try to infer from the value string prefix
+                    if val.starts_with("i64 ") {
+                        Some(Type::Int64)
+                    } else if val.starts_with("i32 ") {
+                        Some(Type::Int32)
+                    } else if val.starts_with("i16 ") {
+                        Some(Type::Int16)
+                    } else if val.starts_with("i8 ") {
+                        Some(Type::Int8)
+                    } else if val.starts_with("half ") {
+                        Some(Type::Float16)
+                    } else if val.starts_with("float ") {
+                        Some(Type::Float32)
+                    } else if val.starts_with("i1 ") {
+                        Some(Type::Bool)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(Type::Int64);
+            
+            let source_type_str = Self::type_to_llvm_string(&source_type);
+            let target_type_str = Self::type_to_llvm_string(&as_type.target_type);
+            
+            // If types are the same, no conversion needed
+            if source_type_str == target_type_str {
+                return Ok(Some(val));
+            }
+            
+            // Generate type conversion instruction
+            let clean_val = val.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i16 ").trim_start_matches("i8 ").trim_start_matches("half ").trim_start_matches("float ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+            let cast_reg = format!("%cast_{}", self.instructions.len());
+            
+            // Handle different type conversions
+            match (source_type_str, target_type_str) {
+                ("i8", "i16") | ("i8", "i32") | ("i8", "i64") | ("i16", "i32") | ("i16", "i64") | ("i32", "i64") => {
+                    // Sign extension for integer widening
+                    self.instructions.push(format!("  {} = sext {} {} to {}", cast_reg, source_type_str, clean_val, target_type_str));
+                }
+                ("i16", "i8") | ("i32", "i8") | ("i32", "i16") | ("i64", "i8") | ("i64", "i16") | ("i64", "i32") => {
+                    // Truncation for integer narrowing
+                    self.instructions.push(format!("  {} = trunc {} {} to {}", cast_reg, source_type_str, clean_val, target_type_str));
+                }
+                ("half", "float") => {
+                    // Float widening: half to float
+                    self.instructions.push(format!("  {} = fpext half {} to float", cast_reg, clean_val));
+                }
+                ("float", "half") => {
+                    // Float narrowing: float to half
+                    self.instructions.push(format!("  {} = fptrunc float {} to half", cast_reg, clean_val));
+                }
+                ("i32", "i1") | ("i64", "i1") => {
+                    // Integer to boolean (truncate to i1)
+                    self.instructions.push(format!("  {} = trunc {} {} to i1", cast_reg, source_type_str, clean_val));
+                }
+                ("i1", "i32") | ("i1", "i64") => {
+                    // Boolean to integer (zero extend)
+                    self.instructions.push(format!("  {} = zext i1 {} to {}", cast_reg, clean_val, target_type_str));
+                }
+                _ => {
+                    // For now, assume same size or use bitcast for compatible types
+                    if source_type_str == "i64" && target_type_str == "i64" {
+                        return Ok(Some(val));
+                    }
+                    // Default: try bitcast (may not always be valid, but works for same-sized types)
+                    self.instructions.push(format!("  {} = bitcast {} {} to {}", cast_reg, source_type_str, clean_val, target_type_str));
+                }
+            }
+            
+            Ok(Some(format!("{} {}", target_type_str, cast_reg)))
+        } else {
+            Err(CompilerError::codegen_error("Cannot cast void expression".to_string()))
         }
     }
 
@@ -1516,7 +2005,17 @@ impl CodeGenerator {
                     
                     let temp_reg = format!("%t{}", self.instructions.len());
                     let clean_op = op.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i16 ").trim_start_matches("i8 ").trim_start_matches("half ").trim_start_matches("float ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
-                    let clean_op_reg = if clean_op.starts_with('%') { clean_op } else { format!("%{}", clean_op) };
+                    // Check if clean_op is a numeric literal (can be parsed as number)
+                    // If it's a literal, use it directly; otherwise add % prefix for register
+                    let clean_op_reg = if clean_op.starts_with('%') {
+                        clean_op
+                    } else if clean_op.parse::<i64>().is_ok() || clean_op.parse::<f64>().is_ok() {
+                        // It's a numeric literal - use directly without % prefix
+                        clean_op
+                    } else {
+                        // It's a register name - add % prefix
+                        format!("%{}", clean_op)
+                    };
                     
                     let is_float = operand_type == "half" || operand_type == "float";
                     let op_instr = if is_float {
@@ -1547,50 +2046,6 @@ impl CodeGenerator {
                     Ok(Some(temp_reg))
                 } else {
                     Err(CompilerError::codegen_error("Not operation on invalid operand".to_string()))
-                }
-            }
-            UnaryOp::Negate => {
-                // Negation works on all numeric types
-                if let Some(op) = operand {
-                    // Get operand type from expression_types if available
-                    let operand_type = Self::try_get_expression_location(&unary.operand)
-                        .and_then(|loc| self.expression_types.get(loc))
-                        .map(|ty| Self::type_to_llvm_string(ty))
-                        .unwrap_or_else(|| {
-                            // Fallback: determine from operand string
-                            if op.starts_with("i8* ") {
-                                "i64"
-                            } else if op.starts_with("i64 ") {
-                                "i64"
-                            } else if op.starts_with("i32 ") {
-                                "i32"
-                            } else if op.starts_with("i16 ") {
-                                "i16"
-                            } else if op.starts_with("i8 ") {
-                                "i8"
-                            } else if op.starts_with("half ") {
-                                "half"
-                            } else if op.starts_with("float ") {
-                                "float"
-                            } else {
-                                "i64" // fallback
-                            }
-                        });
-                    
-                    let temp_reg = format!("%t{}", self.instructions.len());
-                    let clean_op = op.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i16 ").trim_start_matches("i8 ").trim_start_matches("half ").trim_start_matches("float ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
-                    let clean_op_reg = if clean_op.starts_with('%') { clean_op } else { format!("%{}", clean_op) };
-                    
-                    let is_float = operand_type == "half" || operand_type == "float";
-                    let op_instr = if is_float {
-                        format!("  {} = fsub {} 0.0, {}", temp_reg, operand_type, clean_op_reg)
-                    } else {
-                        format!("  {} = sub {} 0, {}", temp_reg, operand_type, clean_op_reg)
-                    };
-                    self.instructions.push(op_instr);
-                    Ok(Some(temp_reg))
-                } else {
-                    Err(CompilerError::codegen_error("Negate operation on invalid operand".to_string()))
                 }
             }
         }
@@ -1639,8 +2094,14 @@ impl CodeGenerator {
                 let typed_args: Vec<String> = if self.functions.contains_key(func_name) {
                     // This is a known function - try to get parameter types
                     if let Some(param_types) = self.function_param_types.get(func_name) {
+                        // Clone param_types to avoid borrow checker issues in closure
+                        let param_types = param_types.clone();
+                        // Calculate base index for instruction numbering
+                        let base_instruction_count = self.instructions.len();
+                        // Collect instructions that need to be added during argument processing
+                        let mut temp_instructions = Vec::new();
                         // Use function signature to determine argument types
-                        arg_strs.iter().enumerate()
+                        let typed_args: Vec<String> = arg_strs.iter().enumerate()
                             .map(|(i, arg)| {
                                 if let Some(expected_type) = param_types.get(i) {
                                     // Extract actual type and register from argument
@@ -1648,8 +2109,16 @@ impl CodeGenerator {
                                         ("i64", arg.strip_prefix("i64 ").unwrap())
                                     } else if arg.starts_with("i32 ") {
                                         ("i32", arg.strip_prefix("i32 ").unwrap())
+                                    } else if arg.starts_with("i16 ") {
+                                        ("i16", arg.strip_prefix("i16 ").unwrap())
+                                    } else if arg.starts_with("i8 ") {
+                                        ("i8", arg.strip_prefix("i8 ").unwrap())
                                     } else if arg.starts_with("i1 ") {
                                         ("i1", arg.strip_prefix("i1 ").unwrap())
+                                    } else if arg.starts_with("float ") {
+                                        ("float", arg.strip_prefix("float ").unwrap())
+                                    } else if arg.starts_with("half ") {
+                                        ("half", arg.strip_prefix("half ").unwrap())
                                     } else if arg.starts_with("i8* ") {
                                         ("i8*", arg.strip_prefix("i8* ").unwrap())
                                     } else if arg.contains("getelementptr") {
@@ -1678,36 +2147,114 @@ impl CodeGenerator {
                                     // Check if type conversion is needed
                                     if expected_type == "i8*" && actual_type == "i64" {
                                         // Need to convert i64 to i8* (e.g., ActorRef parameter)
-                                        let conv_reg = format!("%arg_conv_{}", self.instructions.len());
-                                        self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", conv_reg, clean_arg));
+                                        let base_idx = base_instruction_count + temp_instructions.len();
+                                        let conv_reg = format!("%arg_conv_{}", base_idx);
+                                        temp_instructions.push(format!("  {} = inttoptr i64 {} to i8*", conv_reg, clean_arg));
                                         format!("i8* {}", conv_reg)
                                     } else if expected_type == "i64" && actual_type == "i8*" {
                                         // Need to convert i8* to i64
-                                        let conv_reg = format!("%arg_conv_{}", self.instructions.len());
-                                        self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", conv_reg, clean_arg));
+                                        let base_idx = base_instruction_count + temp_instructions.len();
+                                        let conv_reg = format!("%arg_conv_{}", base_idx);
+                                        temp_instructions.push(format!("  {} = ptrtoint i8* {} to i64", conv_reg, clean_arg));
                                         format!("i64 {}", conv_reg)
                                     } else {
                                         // Types match or no conversion needed
-                                        format!("{} {}", expected_type, clean_arg)
+                                        // For half type with float literals, we need to convert them
+                                        let base_idx = base_instruction_count + temp_instructions.len();
+                                        let final_arg = if expected_type == "half" && !clean_arg.starts_with('%') {
+                                            // For half type, convert literal to half
+                                            if !clean_arg.contains('.') && clean_arg.parse::<i64>().is_ok() {
+                                                // Integer literal - convert to float first, then to half
+                                                let const_reg = format!("%const_arg_{}", base_idx);
+                                                let float_lit = format!("{}.0", clean_arg);
+                                                temp_instructions.push(format!("  {} = fptrunc float {} to half", const_reg, float_lit));
+                                                const_reg
+                                            } else if clean_arg.parse::<f64>().is_ok() {
+                                                // Float literal - create float register first, then convert to half
+                                                // Create float constant using bitcast from integer (most reliable method)
+                                                let float_const = format!("%float_const_arg_{}", base_idx);
+                                                if let Ok(value) = clean_arg.parse::<f64>() {
+                                                    let f32_value = value as f32;
+                                                    let bits = f32_value.to_bits();
+                                                    temp_instructions.push(format!("  {} = bitcast i32 {} to float", float_const, bits));
+                                                } else {
+                                                    temp_instructions.push(format!("  {} = fadd float 0.0, {}", float_const, clean_arg));
+                                                }
+                                                let const_reg = format!("%const_arg_{}", base_idx + 1);
+                                                temp_instructions.push(format!("  {} = fptrunc float {} to half", const_reg, float_const));
+                                                const_reg
+                                            } else {
+                                                clean_arg.to_string()
+                                            }
+                                        } else if expected_type == "float" && !clean_arg.starts_with('%') && clean_arg.parse::<f64>().is_ok() {
+                                            // For float type, create a constant first (LLVM doesn't accept literals in function calls)
+                                            // Create float constant using bitcast from integer (most reliable method)
+                                            let float_const = format!("%float_const_arg_{}", base_idx);
+                                            if let Ok(value) = clean_arg.parse::<f64>() {
+                                                let f32_value = value as f32;
+                                                let bits = f32_value.to_bits();
+                                                temp_instructions.push(format!("  {} = bitcast i32 {} to float", float_const, bits));
+                                            } else {
+                                                temp_instructions.push(format!("  {} = fadd float 0.0, {}", float_const, clean_arg));
+                                            }
+                                            float_const
+                                        } else {
+                                            clean_arg.to_string()
+                                        };
+                                        format!("{} {}", expected_type, final_arg)
                                     }
                                 } else {
                                     // No expected type - use heuristic with prefix stripping
                                     let clean_arg = if arg.starts_with("i64 ") {
-                                        arg.strip_prefix("i64 ").unwrap()
+                                        arg.strip_prefix("i64 ").unwrap().to_string()
                                     } else if arg.starts_with("i32 ") {
-                                        arg.strip_prefix("i32 ").unwrap()
+                                        arg.strip_prefix("i32 ").unwrap().to_string()
+                                    } else if arg.starts_with("i16 ") {
+                                        arg.strip_prefix("i16 ").unwrap().to_string()
+                                    } else if arg.starts_with("i8 ") {
+                                        arg.strip_prefix("i8 ").unwrap().to_string()
+                                    } else if arg.starts_with("float ") {
+                                        arg.strip_prefix("float ").unwrap().to_string()
+                                    } else if arg.starts_with("half ") {
+                                        let cleaned = arg.strip_prefix("half ").unwrap();
+                                        // For half type, integer literals need to be converted to float first, then to half
+                                        let base_idx = base_instruction_count + temp_instructions.len();
+                                        let final_cleaned = if !cleaned.starts_with('%') && !cleaned.contains('.') && cleaned.parse::<i64>().is_ok() {
+                                            // Integer literal - convert to half via float
+                                            let const_reg = format!("%const_half_{}", base_idx);
+                                            let float_lit = format!("{}.0", cleaned);
+                                            temp_instructions.push(format!("  {} = fptrunc float {} to half", const_reg, float_lit));
+                                            const_reg
+                                        } else if !cleaned.starts_with('%') && cleaned.contains('.') && cleaned.parse::<f64>().is_ok() {
+                                            // Float literal - create float register first, then convert to half
+                                            // Create float constant using bitcast from integer (most reliable method)
+                                            let float_const = format!("%float_const_half_{}", base_idx);
+                                            if let Ok(value) = cleaned.parse::<f64>() {
+                                                let f32_value = value as f32;
+                                                let bits = f32_value.to_bits();
+                                                temp_instructions.push(format!("  {} = bitcast i32 {} to float", float_const, bits));
+                                            } else {
+                                                temp_instructions.push(format!("  {} = fadd float 0.0, {}", float_const, cleaned));
+                                            }
+                                            let const_reg = format!("%const_half_{}", base_idx + 1);
+                                            temp_instructions.push(format!("  {} = fptrunc float {} to half", const_reg, float_const));
+                                            const_reg
+                                        } else {
+                                            cleaned.to_string()
+                                        };
+                                        final_cleaned
                                     } else if arg.starts_with("i1 ") {
-                                        arg.strip_prefix("i1 ").unwrap()
+                                        arg.strip_prefix("i1 ").unwrap().to_string()
                                     } else if arg.starts_with("i8* ") {
-                                        arg.strip_prefix("i8* ").unwrap()
+                                        arg.strip_prefix("i8* ").unwrap().to_string()
                                     } else {
-                                        arg.as_str()
+                                        arg.to_string()
                                     };
 
                                     // Apply heuristic to determine type
                                     if clean_arg.starts_with('%') && clean_arg.contains("alloc") {
                                         format!("i8* {}", clean_arg)
-                                    } else if clean_arg.starts_with('%') && clean_arg.len() > 1 && clean_arg.chars().skip(1).all(|c| c.is_ascii_digit()) {
+                                    } else if clean_arg.starts_with('%') && clean_arg.len() > 1 && clean_arg.chars().skip(1).all(|c: char| c.is_ascii_digit()) {
                                         format!("i8* {}", clean_arg)
                                     } else if clean_arg.starts_with('%') {
                                         format!("i64 {}", clean_arg)
@@ -1716,7 +2263,7 @@ impl CodeGenerator {
                                     }
                                 }
                             })
-                            .map(|arg| {
+                            .map(|arg: String| {
                                 // Clean up duplicate type prefixes - more aggressive
                                 if arg.contains("i32 i32 ") {
                                     arg.replace("i32 i32 ", "i32 ")
@@ -1730,7 +2277,10 @@ impl CodeGenerator {
                                     arg
                                 }
                             })
-                            .collect()
+                            .collect();
+                        // Push all collected instructions
+                        self.instructions.extend(temp_instructions);
+                        typed_args
                     } else {
                         // Local function but no parameter types stored - use heuristic
                         arg_strs.iter()
@@ -2127,6 +2677,7 @@ impl CodeGenerator {
             Expression::FunctionLiteral(func_lit) => self.generate_function_literal_llvm(func_lit),
             Expression::GetCpuTopologyInfo(get_topology) => self.generate_get_cpu_topology_info_llvm(get_topology),
             Expression::PrintChar(print_char) => self.generate_print_char_llvm(print_char),
+            Expression::AsType(as_type) => self.generate_as_type_llvm(as_type),
             _ => Err(CompilerError::codegen_error(format!("Expression type not yet supported in LLVM backend: {:?}", expr))),
         }
     }
@@ -3012,6 +3563,65 @@ impl CodeGenerator {
             }
         } else {
             Err(CompilerError::codegen_error("Invalid operands for binary operation".to_string()))
+        }
+    }
+
+    /// Generate LLVM IR for type casting: expr as Type (LLVM backend)
+    #[cfg(feature = "llvm_backend")]
+    fn generate_as_type_llvm(&mut self, as_type: &AsTypeExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
+        // Generate the expression first
+        let expr_val = self.generate_expression_llvm(&as_type.expression)?;
+        
+        if let Some(val) = expr_val {
+            let source_type = self.get_expression_type(&as_type.expression).unwrap_or(Type::Int64);
+            let target_type = &as_type.target_type;
+            
+            // If types are the same, no conversion needed
+            if source_type == *target_type {
+                return Ok(Some(val));
+            }
+            
+            if let Some(builder) = &self.builder {
+                unsafe {
+                    let result = match (source_type, target_type) {
+                        // Integer widening (sign extension)
+                        (Type::Int8, Type::Int16) | (Type::Int8, Type::Int32) | (Type::Int8, Type::Int64) |
+                        (Type::Int16, Type::Int32) | (Type::Int16, Type::Int64) | (Type::Int32, Type::Int64) => {
+                            builder.build_int_s_extend(val.into_int_value(), self.silica_type_to_llvm_type(target_type).into_int_type(), "sext").unwrap().into()
+                        }
+                        // Integer narrowing (truncation)
+                        (Type::Int16, Type::Int8) | (Type::Int32, Type::Int8) | (Type::Int32, Type::Int16) |
+                        (Type::Int64, Type::Int8) | (Type::Int64, Type::Int16) | (Type::Int64, Type::Int32) => {
+                            builder.build_int_truncate(val.into_int_value(), self.silica_type_to_llvm_type(target_type).into_int_type(), "trunc").unwrap().into()
+                        }
+                        // Float conversions
+                        (Type::Float16, Type::Float32) => {
+                            builder.build_float_ext(val.into_float_value(), (*self.context).f32_type(), "fpext").unwrap().into()
+                        }
+                        (Type::Float32, Type::Float16) => {
+                            builder.build_float_trunc(val.into_float_value(), (*self.context).f16_type(), "fptrunc").unwrap().into()
+                        }
+                        // Integer to boolean
+                        (Type::Int32, Type::Bool) | (Type::Int64, Type::Bool) => {
+                            let zero = self.silica_type_to_llvm_type(&source_type).into_int_type().const_int(0, false);
+                            builder.build_int_compare(inkwell::IntPredicate::NE, val.into_int_value(), zero, "cmp").unwrap().into()
+                        }
+                        // Boolean to integer
+                        (Type::Bool, Type::Int32) | (Type::Bool, Type::Int64) => {
+                            builder.build_int_z_extend(val.into_int_value(), self.silica_type_to_llvm_type(target_type).into_int_type(), "zext").unwrap().into()
+                        }
+                        _ => {
+                            // For other conversions, try bitcast (may not always be valid)
+                            val // Return as-is for now, type checker should validate
+                        }
+                    };
+                    Ok(Some(result))
+                }
+            } else {
+                Err(CompilerError::codegen_error("LLVM builder not available".to_string()))
+            }
+        } else {
+            Err(CompilerError::codegen_error("Cannot cast void expression".to_string()))
         }
     }
 
@@ -4912,30 +5522,46 @@ impl CodeGenerator {
                             }
                             result = value;
                         }
-                        Pattern::TypedIdentifier { name, .. } => {
+                        Pattern::TypedIdentifier { name, type_ } => {
                             // Store the value in the current scope
                             if let Some(ref val) = value {
                                 // For text IR, we just track the variable name -> register mapping
                                 self.add_variable_text(name.clone(), val.clone());
 
-                                // Also store the variable type for method calls
-                                let var_type = if let Some(location) = Self::try_get_expression_location(expr) {
-                                    self.expression_types.get(location).cloned()
-                                } else {
-                                    // For expressions without location (like literals), infer the type directly
-                                    match **expr {
-                                        Expression::Literal(Literal::Int(_)) => Some(Type::Int64),
-                                        Expression::Literal(Literal::Bool(_)) => Some(Type::Bool),
-                                        Expression::Literal(Literal::Char(_)) => Some(Type::Char),
-                                        Expression::Literal(Literal::String(_)) => Some(Type::String),
-                                        Expression::Literal(Literal::Unit) => Some(Type::Unit),
-                                        _ => None,
+                                // Use the type from the pattern annotation (the declared type)
+                                // Convert ast::Type to internal Type representation
+                                let var_type = match type_ {
+                                    crate::ast::Type::Int8 => Type::Int8,
+                                    crate::ast::Type::Int16 => Type::Int16,
+                                    crate::ast::Type::Int32 => Type::Int32,
+                                    crate::ast::Type::Int64 => Type::Int64,
+                                    crate::ast::Type::Float16 => Type::Float16,
+                                    crate::ast::Type::Float32 => Type::Float32,
+                                    crate::ast::Type::Bool => Type::Bool,
+                                    crate::ast::Type::Char => Type::Char,
+                                    crate::ast::Type::String => Type::String,
+                                    crate::ast::Type::Unit => Type::Unit,
+                                    crate::ast::Type::Tuple(elem_types) => {
+                                        let converted: Vec<Type> = elem_types.iter().map(|t| match t {
+                                            crate::ast::Type::Int8 => Type::Int8,
+                                            crate::ast::Type::Int16 => Type::Int16,
+                                            crate::ast::Type::Int32 => Type::Int32,
+                                            crate::ast::Type::Int64 => Type::Int64,
+                                            crate::ast::Type::Float16 => Type::Float16,
+                                            crate::ast::Type::Float32 => Type::Float32,
+                                            crate::ast::Type::Bool => Type::Bool,
+                                            crate::ast::Type::Char => Type::Char,
+                                            crate::ast::Type::String => Type::String,
+                                            crate::ast::Type::Unit => Type::Unit,
+                                            crate::ast::Type::Named(name) => Type::Named(name.clone()),
+                                            _ => Type::Int64, // Fallback
+                                        }).collect();
+                                        Type::Tuple(converted)
                                     }
+                                    crate::ast::Type::Named(name) => Type::Named(name.clone()),
+                                    _ => Type::Int64, // Fallback for other types
                                 };
-
-                                if let Some(expr_type) = var_type {
-                                    self.variable_types.insert(name.clone(), expr_type);
-                                }
+                                self.variable_types.insert(name.clone(), var_type);
                             }
                             result = value;
                         }
@@ -5515,8 +6141,20 @@ impl CodeGenerator {
                 let zero_reg = self.next_register();
                 self.instructions.push(format!("  %{} = add i64 0, 0", zero_reg)); // Load 0
 
+                // Check if operand_val is a numeric literal or a register
+                // If it's a literal (can be parsed as number), use it directly; otherwise it's already a register
+                let operand_clean = if operand_val.starts_with('%') {
+                    operand_val.clone()
+                } else if operand_val.parse::<i64>().is_ok() || operand_val.parse::<f64>().is_ok() {
+                    // It's a numeric literal - use directly without % prefix
+                    operand_val.clone()
+                } else {
+                    // It's a register name without % prefix - add it
+                    format!("%{}", operand_val)
+                };
+
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = sub i64 %{}, {}", result_reg, zero_reg, operand_val));
+                self.instructions.push(format!("  %{} = sub i64 %{}, {}", result_reg, zero_reg, operand_clean));
 
                 Ok(format!("%{}", result_reg))
             }
@@ -5773,24 +6411,74 @@ impl CodeGenerator {
             self.instructions.push(format!("  {} = bitcast i8* {} to {}*", field_ptr_typed, field_ptr_reg, llvm_type_str));
 
             // Store the value with correct type - use the actual LLVM type
-            let store_instruction = if llvm_type_str == "i8*" && field_value.contains("getelementptr") {
-                // String literal - special case
-                format!("  store i8* {}, i8** {}", field_value, field_ptr_typed)
-            } else if let Some(space_pos) = field_value.find(' ') {
-                // Has type prefix like "i64 100"
-                format!("  store {}, {}* {}", field_value, llvm_type_str, field_ptr_typed)
-            } else if field_value.contains("getelementptr") {
-                // String literal getelementptr - it's i8*
-                format!("  store i8* {}, {}* {}", field_value, llvm_type_str, field_ptr_typed)
-            } else if field_value.contains('@') {
-                // Global constant (like string constant) - assume i8*
-                format!("  store i8* {}, {}* {}", field_value, llvm_type_str, field_ptr_typed)
-            } else if field_value.contains("alloc") {
-                // Any allocation register - it's i8*
-                format!("  store i8* {}, {}* {}", field_value, llvm_type_str, field_ptr_typed)
+            // Extract type from field_value if it has a type prefix, otherwise use llvm_type_str
+            let (value_type, clean_value) = if field_value.starts_with("float ") {
+                ("float", field_value.strip_prefix("float ").unwrap().to_string())
+            } else if field_value.starts_with("half ") {
+                ("half", field_value.strip_prefix("half ").unwrap().to_string())
+            } else if field_value.starts_with("i64 ") {
+                ("i64", field_value.strip_prefix("i64 ").unwrap().to_string())
+            } else if field_value.starts_with("i32 ") {
+                ("i32", field_value.strip_prefix("i32 ").unwrap().to_string())
+            } else if field_value.starts_with("i16 ") {
+                ("i16", field_value.strip_prefix("i16 ").unwrap().to_string())
+            } else if field_value.starts_with("i8 ") {
+                ("i8", field_value.strip_prefix("i8 ").unwrap().to_string())
+            } else if field_value.starts_with("i1 ") {
+                ("i1", field_value.strip_prefix("i1 ").unwrap().to_string())
+            } else if field_value.starts_with("i8* ") {
+                ("i8*", field_value.strip_prefix("i8* ").unwrap().to_string())
             } else {
-                // No type prefix, assume i64 for register names
-                format!("  store i64 {}, {}* {}", field_value, llvm_type_str, field_ptr_typed)
+                // No type prefix - use llvm_type_str
+                (llvm_type_str.as_str(), field_value.clone())
+            };
+            
+            // Cast pointer to the correct type if needed
+            let final_ptr_type = if value_type != llvm_type_str && llvm_type_str != "i8*" {
+                // Need to cast pointer to match value type
+                let cast_ptr = format!("%field_ptr_cast_{}_{}", self.instructions.len(), i);
+                self.instructions.push(format!("  {} = bitcast {}* {} to {}*", cast_ptr, llvm_type_str, field_ptr_typed, value_type));
+                cast_ptr
+            } else {
+                field_ptr_typed
+            };
+            
+            let store_instruction = if value_type == "i8*" && clean_value.contains("getelementptr") {
+                // String literal - special case
+                format!("  store i8* {}, i8** {}", clean_value, final_ptr_type)
+            } else if clean_value.contains("getelementptr") {
+                // String literal getelementptr - it's i8*
+                format!("  store i8* {}, {}* {}", clean_value, value_type, final_ptr_type)
+            } else if clean_value.contains('@') {
+                // Global constant (like string constant) - assume i8*
+                format!("  store i8* {}, {}* {}", clean_value, value_type, final_ptr_type)
+            } else if clean_value.contains("alloc") {
+                // Any allocation register - it's i8*
+                format!("  store i8* {}, {}* {}", clean_value, value_type, final_ptr_type)
+            } else {
+                // Use the extracted type
+                // LLVM doesn't accept float literals directly in store instructions - need to create constants first
+                let store_value = if value_type == "float" && !clean_value.starts_with('%') && clean_value.parse::<f64>().is_ok() {
+                    // Float literal - create a constant first
+                    // Convert decimal float literal to LLVM IR hexadecimal format
+                    let float_const = format!("%float_const_store_{}_{}", self.instructions.len(), i);
+                    let instruction = self.create_float_constant_instruction(&clean_value, &float_const);
+                    self.instructions.push(instruction);
+                    float_const
+                } else if value_type == "half" && !clean_value.starts_with('%') && clean_value.parse::<f64>().is_ok() {
+                    // Half literal - create float register first, then convert to half
+                    // Convert decimal float literal to LLVM IR hexadecimal format
+                    let float_const = format!("%float_const_store_{}_{}", self.instructions.len(), i);
+                    let instruction = self.create_float_constant_instruction(&clean_value, &float_const);
+                    self.instructions.push(instruction);
+                    let half_const = format!("%half_const_store_{}_{}", self.instructions.len(), i);
+                    self.instructions.push(format!("  {} = fptrunc float {} to half", half_const, float_const));
+                    half_const
+                } else {
+                    // For other types, use the value directly
+                    clean_value.clone()
+                };
+                format!("  store {} {}, {}* {}", value_type, store_value, value_type, final_ptr_type)
             };
             self.instructions.push(store_instruction);
         }
@@ -6170,7 +6858,15 @@ impl CodeGenerator {
         let result_reg = format!("%field_value_{}", self.instructions.len());
 
         // Get pointer to field location (clean register name for instruction)
-        let clean_object = self.clean_register_for_instruction(&object_value);
+        // If object_value is i64 (from function call returning pointer as i64), convert to i8*
+        let clean_object = if object_value.starts_with("i64 ") {
+            let i64_reg = object_value.strip_prefix("i64 ").unwrap();
+            let ptr_reg = format!("%field_obj_ptr_{}", self.instructions.len());
+            self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, i64_reg));
+            ptr_reg
+        } else {
+            self.clean_register_for_instruction(&object_value)
+        };
         self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", field_ptr_reg, clean_object, field_offset));
 
         // Cast to i64 pointer and load the value
@@ -6364,32 +7060,61 @@ impl CodeGenerator {
                                 // Simple identifier binding - just store the value
                                 self.add_variable_text(name.clone(), value_reg);
                             }
-                            Pattern::TypedIdentifier { name, .. } => {
-                                // Check if this is a function type and store signature information
-                                let expr_location = match &**expr {
-                                    Expression::Binary(binary) => &binary.location,
-                                    Expression::Unary(unary) => &unary.location,
-                                    Expression::Call(call) => &call.location,
-                                    Expression::If(if_expr) => &if_expr.location,
-                                    Expression::Case(case) => &case.location,
-                                    Expression::Do(do_expr) => &do_expr.location,
-                                    Expression::FunctionLiteral(func_lit) => &func_lit.location,
-                                    Expression::StructLiteral(struct_lit) => &struct_lit.location,
-                                    Expression::FieldAccess(field_access) => &field_access.location,
-                                    _ => {
-                                        self.add_variable_text(name.clone(), value_reg);
-                                        continue;
+                            Pattern::TypedIdentifier { name, type_ } => {
+                                // Use the type from the pattern annotation (the declared type)
+                                // Convert ast::Type to internal Type representation
+                                let var_type = match type_ {
+                                    crate::ast::Type::Int8 => Type::Int8,
+                                    crate::ast::Type::Int16 => Type::Int16,
+                                    crate::ast::Type::Int32 => Type::Int32,
+                                    crate::ast::Type::Int64 => Type::Int64,
+                                    crate::ast::Type::Float16 => Type::Float16,
+                                    crate::ast::Type::Float32 => Type::Float32,
+                                    crate::ast::Type::Bool => Type::Bool,
+                                    crate::ast::Type::Char => Type::Char,
+                                    crate::ast::Type::String => Type::String,
+                                    crate::ast::Type::Unit => Type::Unit,
+                                    crate::ast::Type::Tuple(elem_types) => {
+                                        let converted: Vec<Type> = elem_types.iter().map(|t| match t {
+                                            crate::ast::Type::Int8 => Type::Int8,
+                                            crate::ast::Type::Int16 => Type::Int16,
+                                            crate::ast::Type::Int32 => Type::Int32,
+                                            crate::ast::Type::Int64 => Type::Int64,
+                                            crate::ast::Type::Float16 => Type::Float16,
+                                            crate::ast::Type::Float32 => Type::Float32,
+                                            crate::ast::Type::Bool => Type::Bool,
+                                            crate::ast::Type::Char => Type::Char,
+                                            crate::ast::Type::String => Type::String,
+                                            crate::ast::Type::Unit => Type::Unit,
+                                            crate::ast::Type::Named(name) => Type::Named(name.clone()),
+                                            _ => Type::Int64, // Fallback
+                                        }).collect();
+                                        Type::Tuple(converted)
                                     }
+                                    crate::ast::Type::Named(name) => Type::Named(name.clone()),
+                                    crate::ast::Type::Function { .. } => {
+                                        // For function types, try to get from expression_types as fallback
+                                        let expr_location = match &**expr {
+                                            Expression::FunctionLiteral(func_lit) => &func_lit.location,
+                                            _ => {
+                                                self.add_variable_text(name.clone(), value_reg);
+                                                continue;
+                                            }
+                                        };
+                                        if let Some(expr_type) = self.expression_types.get(expr_location).cloned() {
+                                            if matches!(expr_type, Type::Function { .. }) {
+                                                self.add_function_variable(name.clone(), value_reg, &expr_type);
+                                                self.variable_types.insert(name.clone(), expr_type);
+                                                continue;
+                                            }
+                                        }
+                                        Type::Int64 // Fallback
+                                    }
+                                    _ => Type::Int64, // Fallback for other types
                                 };
-                                if let Some(expr_type) = self.expression_types.get(expr_location).cloned() {
-                                    if matches!(expr_type, Type::Function { .. }) {
-                                        self.add_function_variable(name.clone(), value_reg, &expr_type);
-                                    } else {
-                                        self.add_variable_text(name.clone(), value_reg);
-                                    }
-                                } else {
-                                    self.add_variable_text(name.clone(), value_reg);
-                                }
+                                
+                                self.add_variable_text(name.clone(), value_reg);
+                                self.variable_types.insert(name.clone(), var_type);
                             }
                             Pattern::Tuple(elements) => {
                                 // Handle tuple pattern destructuring in text IR

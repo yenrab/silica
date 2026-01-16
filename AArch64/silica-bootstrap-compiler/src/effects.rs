@@ -364,6 +364,10 @@ impl EffectChecker {
             Expression::FieldAccess(_) => Ok(vec![]),   // Field access has no effects
             Expression::ConstructorCall(_) => Ok(vec![]), // Constructor calls have no effects
             Expression::Tuple(_) => Ok(vec![]), // Tuple literals have no effects
+            Expression::AsType(as_type) => {
+                // Type casting inherits effects from the expression being cast
+                self.collect_expression_effects(&as_type.expression)
+            }
         }
     }
 
@@ -788,6 +792,7 @@ impl EffectAnalyzer {
             Expression::FieldAccess(access) => Some(&access.location),
             Expression::Tuple(_) => None, // Tuples don't have locations
             Expression::ConstructorCall(constructor) => Some(&constructor.location),
+            Expression::AsType(as_type) => Some(&as_type.location),
         }
     }
 

@@ -588,7 +588,16 @@ impl Parser {
 
     /// Parse expression with precedence
     fn expression(&mut self) -> Result<Expression> {
+        let current_token = self.peek();
+        eprintln!("DEBUG PARSER: expression() called at {}:{} (token: {:?} '{}')", 
+                 current_token.location.line, current_token.location.column, 
+                 current_token.kind, current_token.lexeme);
         let result = self.assignment();
+        if let Ok(ref expr) = result {
+            eprintln!("DEBUG PARSER: expression() succeeded, returning {:?}", std::mem::discriminant(expr));
+        } else if let Err(ref e) = result {
+            eprintln!("DEBUG PARSER: expression() failed: {:?}", e);
+        }
         result
     }
 
@@ -684,9 +693,14 @@ impl Parser {
 
     /// Parse additive expressions
     fn term(&mut self) -> Result<Expression> {
+        let current_token = self.peek();
+        eprintln!("DEBUG PARSER: term() called at {}:{} (token: {:?} '{}')", 
+                 current_token.location.line, current_token.location.column, 
+                 current_token.kind, current_token.lexeme);
         let mut expr = self.factor()?;
 
         while self.match_token(TokenKind::Plus) || self.match_token(TokenKind::Minus) {
+            eprintln!("DEBUG PARSER: term() matched operator {:?}", self.previous().kind);
             let operator = if self.previous().kind == TokenKind::Plus {
                 BinaryOp::Add
             } else {
@@ -747,7 +761,7 @@ impl Parser {
         }
     }
 
-    /// Parse function calls, field access, and primary expressions
+    /// Parse function calls, field access, type casting, and primary expressions
     fn call(&mut self) -> Result<Expression> {
         let mut expr = self.primary()?;
 
@@ -756,6 +770,15 @@ impl Parser {
                 expr = self.finish_call(expr)?;
             } else if self.match_token(TokenKind::Dot) {
                 expr = self.finish_field_access(expr)?;
+            } else if self.match_token(TokenKind::As) {
+                // Type casting: expr as Type
+                let as_location = self.previous().location.clone();
+                let target_type = self.parse_type()?;
+                expr = Expression::AsType(AsTypeExpr {
+                    expression: Box::new(expr),
+                    target_type,
+                    location: as_location,
+                });
             } else {
                 break;
             }
@@ -853,6 +876,10 @@ impl Parser {
 
     /// Parse primary expressions (literals, identifiers, groupings)
     fn primary(&mut self) -> Result<Expression> {
+        let current_token = self.peek();
+        eprintln!("DEBUG PARSER: primary() called at {}:{} (token: {:?} '{}')", 
+                 current_token.location.line, current_token.location.column, 
+                 current_token.kind, current_token.lexeme);
         // Handle core affinity keywords
         if self.match_token(TokenKind::EfficiencyCores) {
             return Ok(Expression::Identifier("efficiency_cores".to_string()));
@@ -919,6 +946,21 @@ impl Parser {
         } else if let TokenKind::Identifier(name) = &self.peek().kind {
             let name = name.clone();
             let start_location = self.peek().location.clone();
+            
+            // Check if this is the forbidden 'let' keyword
+            if name == "let" {
+                let metadata = self.build_parse_error_metadata("E1007", &start_location, Some("spec:§3.3"), None)
+                    .suggestion("Remove 'let' keyword. In Silica, bindings use pattern: Type <- value syntax without 'let'.".to_string())
+                    .suggestion_with_example("Use:".to_string(), "x: int64 <- 42;".to_string())
+                    .build();
+                return parse_error_with_metadata(
+                    start_location,
+                    "'let' is not a keyword in Silica. Use pattern: Type <- value syntax instead.".to_string(),
+                    metadata,
+                );
+            }
+            
+            eprintln!("DEBUG PARSER: primary() found identifier '{}' at {}:{}", name, start_location.line, start_location.column);
             self.advance(); // consume the identifier
 
             // Check for constructor syntax: TypeName::Constructor
@@ -2002,7 +2044,12 @@ impl Parser {
             }
 
             // Parse as regular expression statement
+            let current_token = self.peek();
+            eprintln!("DEBUG PARSER: parse_statements() parsing expression statement at {}:{} (token: {:?} '{}')", 
+                     current_token.location.line, current_token.location.column, 
+                     current_token.kind, current_token.lexeme);
             let expr = self.expression()?;
+            eprintln!("DEBUG PARSER: parse_statements() expression parsed successfully");
             // Semicolon is required for all statements except the last one
             if !self.check(TokenKind::RightBrace) {
                 // Try to consume semicolon, but provide better error recovery

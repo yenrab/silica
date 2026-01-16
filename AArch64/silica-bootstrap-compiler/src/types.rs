@@ -174,6 +174,49 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Convert ast::Type to internal Type representation
+    fn ast_type_to_silica_type(&self, ast_type: &crate::ast::Type) -> Result<Type> {
+        match ast_type {
+            crate::ast::Type::Int8 => Ok(Type::Int8),
+            crate::ast::Type::Int16 => Ok(Type::Int16),
+            crate::ast::Type::Int32 => Ok(Type::Int32),
+            crate::ast::Type::Int64 => Ok(Type::Int64),
+            crate::ast::Type::Float16 => Ok(Type::Float16),
+            crate::ast::Type::Float32 => Ok(Type::Float32),
+            crate::ast::Type::Bool => Ok(Type::Bool),
+            crate::ast::Type::Char => Ok(Type::Char),
+            crate::ast::Type::String => Ok(Type::String),
+            crate::ast::Type::Unit => Ok(Type::Unit),
+            crate::ast::Type::Named(name) => {
+                // Resolve the named type (could be a struct, alias, or built-in)
+                self.resolve_type_name_with_location(name, None)
+            }
+            crate::ast::Type::Tuple(elem_types) => {
+                let converted: Result<Vec<Type>> = elem_types.iter()
+                    .map(|t| self.ast_type_to_silica_type(t))
+                    .collect();
+                Ok(Type::Tuple(converted?))
+            }
+            crate::ast::Type::Function { parameters, return_type } => {
+                let converted_params: Result<Vec<Type>> = parameters.iter()
+                    .map(|t| self.ast_type_to_silica_type(t))
+                    .collect();
+                let converted_return = self.ast_type_to_silica_type(return_type)?;
+                Ok(Type::Function {
+                    parameters: converted_params?,
+                    return_type: Box::new(converted_return),
+                })
+            }
+            _ => {
+                // For other types, try to resolve as named type or return error
+                type_error(
+                    SourceLocation::unknown(),
+                    format!("Unsupported type in pattern: {:?}", ast_type)
+                )
+            }
+        }
+    }
+
     /// Find the alias name for a given expanded type (reverse lookup)
     pub fn find_alias_name_for_expanded_type(&self, expanded_type: &Type) -> Option<&str> {
         for (name, _) in &self.type_alias_decls {
@@ -288,6 +331,7 @@ impl<'a> TypeChecker<'a> {
             Expression::Tuple(_) => panic!("Tuple location should be handled specially"),
             Expression::ConstructorCall(ctor) => &ctor.location,
             Expression::FunctionLiteral(func) => &func.location,
+            Expression::AsType(as_type) => &as_type.location,
             Expression::ReadLines(read_lines) => &read_lines.location,
             Expression::AppendFile(append_file) => &append_file.location,
             Expression::FileExists(file_exists) => &file_exists.location,
@@ -637,10 +681,12 @@ impl<'a> TypeChecker<'a> {
         let saved_env = self.env.clone();
         self.env = local_env;
 
-        let body_type = self.infer_statements(&func.body)?;
         let expected_return = func.return_type.as_ref()
-            .map(|rt| rt.clone())
+            .map(|rt| self.expand_type_aliases(rt))
             .unwrap_or(Type::Unit);
+        
+        // Infer body with expected return type as context for the last expression
+        let body_type = self.infer_statements_with_context(&func.body, Some(&expected_return))?;
 
         // Restore environment
         self.env = saved_env;
@@ -797,6 +843,10 @@ impl<'a> TypeChecker<'a> {
                 // For nested function literals, recursively collect their used variables
                 self.collect_captured_variables_from_statements(&func_lit.body, &func_lit.parameters, used)?;
             }
+            Expression::AsType(as_type) => {
+                // Type casting doesn't introduce new variables, just recurse on the expression
+                self.collect_used_variables(&as_type.expression, used)?;
+            }
             // Other expression types don't introduce variable usage
             _ => {}
         }
@@ -867,13 +917,30 @@ impl<'a> TypeChecker<'a> {
             Expression::StringEndsWith(string_ends_with) => self.infer_string_ends_with(string_ends_with)?,
             Expression::StringContains(string_contains) => self.infer_string_contains(string_contains)?,
             Expression::ExecCommand(exec_cmd) => self.infer_exec_command(exec_cmd)?,
-            Expression::Tuple(exprs) => self.infer_tuple(exprs)?,
+            Expression::Tuple(exprs) => {
+                // Extract expected element types from expected_type if it's a tuple
+                let expected_element_types = if let Some(ty) = expected_type {
+                    if let Type::Tuple(element_types) = ty {
+                        Some(element_types)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                self.infer_tuple_with_context(exprs, expected_element_types)?
+            },
             Expression::StructLiteral(struct_lit) => {
                 // eprintln!("DEBUG INFER: StructLiteral case hit for type {}", struct_lit.type_name);
                 self.infer_struct_literal(struct_lit)?
             },
             Expression::FieldAccess(field_access) => self.infer_field_access(field_access)?,
             Expression::GetCpuTopologyInfo(_) => Type::String, // Returns string pointer
+            Expression::AsType(as_type) => {
+                // Type casting: the result type is the target type
+                // We should validate that the cast is valid, but for now just return the target type
+                as_type.target_type.clone()
+            }
             _ => return type_error(
                 SourceLocation::unknown(),
                 format!("Type inference not implemented for: {:?}", expr),
@@ -1104,6 +1171,7 @@ impl<'a> TypeChecker<'a> {
             Expression::FieldAccess(field_access) => Some(&field_access.location),
             Expression::ConstructorCall(ctor) => Some(&ctor.location),
             Expression::FunctionLiteral(func) => Some(&func.location),
+            Expression::AsType(as_type) => Some(&as_type.location),
             // Tuples don't have their own location, only elements do
             Expression::Tuple(_) => None,
             Expression::Identifier(_) => None, // Handled separately
@@ -3108,10 +3176,21 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for tuple expression
     fn infer_tuple(&mut self, exprs: &[Expression]) -> Result<Type> {
+        self.infer_tuple_with_context(exprs, None)
+    }
+
+    /// Infer type for tuple expression with optional expected element types
+    fn infer_tuple_with_context(&mut self, exprs: &[Expression], expected_element_types: Option<&Vec<Type>>) -> Result<Type> {
         // Infer types for all tuple elements
         let mut element_types = Vec::new();
-        for expr in exprs {
-            let element_type = self.infer_expression(expr)?;
+        for (idx, expr) in exprs.iter().enumerate() {
+            // Get expected type for this element if available
+            let expected_element_type = expected_element_types
+                .and_then(|types| types.get(idx))
+                .map(|ty| ty as &Type);
+            
+            // Infer element type with context
+            let element_type = self.infer_expression_with_context(expr, expected_element_type)?;
             element_types.push(element_type.clone());
 
             // Record the type for this element if it has a location
@@ -3371,15 +3450,24 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer types for a sequence of statements, returning the type of the last expression
     fn infer_statements(&mut self, statements: &[crate::ast::Statement]) -> Result<Type> {
+        self.infer_statements_with_context(statements, None)
+    }
+
+    /// Infer types for a sequence of statements with optional expected type for the last expression
+    fn infer_statements_with_context(&mut self, statements: &[crate::ast::Statement], expected_last_type: Option<&Type>) -> Result<Type> {
         let mut last_type = Type::Unit;
         let original_env = self.env.clone();
 
-        for statement in statements {
+        for (idx, statement) in statements.iter().enumerate() {
+            let is_last = idx == statements.len() - 1;
+            let expected_type = if is_last { expected_last_type } else { None };
+            
             match statement {
                 crate::ast::Statement::Bind { pattern, expr } => {
                     // Get expected type from pattern if it's a typed identifier
+                    // Convert ast::Type to internal Type representation
                     let expected_type = if let crate::ast::Pattern::TypedIdentifier { type_, .. } = pattern {
-                        Some(type_.clone())
+                        Some(self.ast_type_to_silica_type(type_)?)
                     } else {
                         None
                     };
@@ -3414,7 +3502,12 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 crate::ast::Statement::Expr(expr) => {
-                    last_type = self.infer_expression(expr)?;
+                    // Use expected type for the last expression (function return type)
+                    last_type = if let Some(expected_ty) = expected_type {
+                        self.infer_expression_with_context(expr, Some(expected_ty))?
+                    } else {
+                        self.infer_expression(expr)?
+                    };
                 }
             }
         }

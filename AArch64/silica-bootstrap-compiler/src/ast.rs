@@ -240,6 +240,9 @@ pub enum Expression {
     Tuple(Vec<Expression>), // Tuple literals: (expr1, expr2, ...)
 
     ConstructorCall(ConstructorCallExpr),
+
+    // Type casting
+    AsType(AsTypeExpr),
 }
 
 /// Literal values
@@ -622,6 +625,14 @@ pub struct FieldAccessExpr {
     pub location: SourceLocation,
 }
 
+
+/// Type casting expression: expr as Type
+#[derive(Debug, Clone)]
+pub struct AsTypeExpr {
+    pub expression: Box<Expression>,
+    pub target_type: Type,
+    pub location: SourceLocation,
+}
 
 /// Constructor call expression: TypeName::Constructor<Args>(payload)
 /// Creates a value using a constructor, e.g., Option::Some<int>(42)
