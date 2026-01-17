@@ -1,12 +1,11 @@
 # Master Makefile for Silica AArch64 Architecture
 # Builds the bootstrap compiler and all experiments
 
-# Compiler settings
-COMPILER_DIR := silica-bootstrap-compiler
-COMPILER_BINARY := $(COMPILER_DIR)/target/release/silica-boot
+# Compiler settings (we're now in the compiler directory)
+COMPILER_BINARY := target/release/silica-boot
 
-# Experiments directory
-EXPERIMENTS_DIR := experiments
+# Experiments directory (one level up)
+EXPERIMENTS_DIR := ../experiments
 
 .DEFAULT_GOAL := all
 .PHONY: all clean clean-compiler clean-experiments compiler experiments help
@@ -21,7 +20,7 @@ compiler: $(COMPILER_BINARY)
 
 $(COMPILER_BINARY):
 	@echo "🏗️  Building Silica bootstrap compiler..."
-	cd $(COMPILER_DIR) && cargo build --release --no-default-features
+	cargo build --release --no-default-features
 
 # Build all experiments
 experiments:
@@ -35,7 +34,7 @@ clean: clean-compiler clean-experiments
 # Clean just the compiler
 clean-compiler:
 	@echo "🧹 Cleaning Silica bootstrap compiler..."
-	cd $(COMPILER_DIR) && cargo clean
+	cargo clean
 
 # Clean just the experiments
 clean-experiments:
@@ -45,7 +44,7 @@ clean-experiments:
 # Force rebuild compiler
 rebuild-compiler:
 	@echo "🔨 Rebuilding Silica bootstrap compiler..."
-	cd $(COMPILER_DIR) && cargo clean && cargo build --release --no-default-features
+	cargo clean && cargo build --release --no-default-features
 
 # Rebuild everything from scratch
 rebuild-all: rebuild-compiler
@@ -93,6 +92,6 @@ help:
 	@echo "  help             - Show this help"
 	@echo ""
 	@echo "Directory structure:"
-	@echo "  silica-bootstrap-compiler/ - Rust compiler implementation"
-	@echo "  experiments/              - Language feature tests"
-	@echo "  stdlib/                   - Standard library modules"
+	@echo "  .                 - Rust compiler implementation (current directory)"
+	@echo "  ../experiments/   - Language feature tests"
+	@echo "  ../stdlib/        - Standard library modules"
