@@ -456,24 +456,19 @@ impl Parser {
             self.consume(TokenKind::RightParen, "Expected ')' after memory space")?;
             Ok(Type::Region { space })
         } else if self.match_token(TokenKind::Ref) {
-            // Reference type
+            // Reference type (suggestion_1: no explicit region)
             self.consume(TokenKind::LeftParen, "Expected '(' after 'ref'")?;
-            let region = self.parse_type()?;
-            self.consume(TokenKind::Comma, "Expected ',' after region")?;
             let space = self.memory_space()?;
             self.consume(TokenKind::Comma, "Expected ',' after memory space")?;
             let element_type = self.parse_type()?;
             self.consume(TokenKind::RightParen, "Expected ')' after reference type")?;
             Ok(Type::Reference {
-                region: Box::new(region),
                 space,
                 element_type: Box::new(element_type),
             })
         } else if self.match_token(TokenKind::Buf) {
-            // Buffer type
+            // Buffer type (suggestion_1: no explicit region)
             self.consume(TokenKind::LeftParen, "Expected '(' after 'buf'")?;
-            let region = self.parse_type()?;
-            self.consume(TokenKind::Comma, "Expected ',' after region")?;
             let space = self.memory_space()?;
             self.consume(TokenKind::Comma, "Expected ',' after memory space")?;
             let element_type = self.parse_type()?;
@@ -481,7 +476,6 @@ impl Parser {
             let capacity = self.consume_integer("Expected buffer capacity")?;
             self.consume(TokenKind::RightParen, "Expected ')' after buffer type")?;
             Ok(Type::Buffer {
-                region: Box::new(region),
                 space,
                 element_type: Box::new(element_type),
                 capacity: capacity as usize,
@@ -770,6 +764,8 @@ impl Parser {
         loop {
             if self.match_token(TokenKind::LeftParen) {
                 expr = self.finish_call(expr)?;
+            } else if self.match_token(TokenKind::LeftBrace) {
+                expr = self.finish_struct_literal(expr)?;
             } else if self.match_token(TokenKind::Dot) {
                 expr = self.finish_field_access(expr)?;
             } else if self.match_token(TokenKind::As) {
@@ -934,12 +930,14 @@ impl Parser {
         } else if self.match_token(TokenKind::Fn) {
             self.function_literal()
         } else if self.match_token(TokenKind::Region) {
-            // Handle region() built-in operation - creates a new region
+            // Handle region(value) built-in operation - creates a region with a value
             let location = self.previous().location.clone();
             self.consume(TokenKind::LeftParen, "Expected '(' after 'region'")?;
-            self.consume(TokenKind::RightParen, "Expected ')' after 'region('")?;
+            let value = Box::new(self.expression()?);
+            self.consume(TokenKind::RightParen, "Expected ')' after region value")?;
             Ok(Expression::Region(RegionExpr {
                 space: MemorySpace::Normal,
+                value,
                 location,
             }))
         } else if self.match_token(TokenKind::Self_) {
@@ -948,7 +946,7 @@ impl Parser {
         } else if let TokenKind::Identifier(name) = &self.peek().kind {
             let name = name.clone();
             let start_location = self.peek().location.clone();
-            
+
             // Check if this is the forbidden 'let' keyword
             if name == "let" {
                 let metadata = self.build_parse_error_metadata("E1007", &start_location, Some("spec:§3.3"), None)
@@ -961,109 +959,86 @@ impl Parser {
                     metadata,
                 );
             }
-            
-            // eprintln!("DEBUG PARSER: primary() found identifier '{}' at {}:{}", name, start_location.line, start_location.column);
+
             self.advance(); // consume the identifier
 
             // Check for constructor syntax: TypeName::Constructor
             if self.match_token(TokenKind::DoubleColon) {
-                self.parse_constructor_call(name, start_location)
+                return self.parse_constructor_call(name, start_location);
             }
             // Check for special built-in operations
-            else if name == "region" && self.match_token(TokenKind::LeftParen) {
-                self.parse_region()
-            } else if name == "alloc_ref" && self.match_token(TokenKind::LeftParen) {
-                self.parse_alloc_ref()
-            } else if name == "read_ref" && self.match_token(TokenKind::LeftParen) {
-                self.parse_read_ref()
+            else if name == "read_ref" && self.match_token(TokenKind::LeftParen) {
+                return self.parse_read_ref();
             } else if name == "core_id" && self.match_token(TokenKind::LeftParen) {
-                self.parse_core_id()
+                return self.parse_core_id();
             } else if name == "any_core" {
                 Ok(Expression::Identifier("any_core".to_string()))
-            } else if name == "write_ref" && self.match_token(TokenKind::LeftParen) {
-                self.parse_write_ref()
             } else if name == "exec_command" && self.match_token(TokenKind::LeftParen) {
-                self.parse_exec_command()
+                return self.parse_exec_command();
             } else if name == "read_file" && self.match_token(TokenKind::LeftParen) {
-                self.parse_read_file()
+                return self.parse_read_file();
             } else if name == "write_file" && self.match_token(TokenKind::LeftParen) {
-                self.parse_write_file()
+                return self.parse_write_file();
             } else if name == "print" && self.match_token(TokenKind::LeftParen) {
-                self.parse_print()
+                return self.parse_print();
             } else if name == "println" && self.match_token(TokenKind::LeftParen) {
-                self.parse_println()
+                return self.parse_println();
             } else if name == "print_int64" && self.match_token(TokenKind::LeftParen) {
-                self.parse_print_int64()
+                return self.parse_print_int64();
             } else if name == "print_int32" && self.match_token(TokenKind::LeftParen) {
-                self.parse_print_int32()
+                return self.parse_print_int32();
             } else if name == "print_int16" && self.match_token(TokenKind::LeftParen) {
-                self.parse_print_int16()
+                return self.parse_print_int16();
             } else if name == "print_int8" && self.match_token(TokenKind::LeftParen) {
-                self.parse_print_int8()
+                return self.parse_print_int8();
             } else if name == "print_bool" && self.match_token(TokenKind::LeftParen) {
-                self.parse_print_bool()
+                return self.parse_print_bool();
             } else if name == "print_char" && self.match_token(TokenKind::LeftParen) {
-                self.parse_print_char()
+                return self.parse_print_char();
             } else if name == "print_float16" && self.match_token(TokenKind::LeftParen) {
-                self.parse_print_float16()
+                return self.parse_print_float16();
             } else if name == "print_float32" && self.match_token(TokenKind::LeftParen) {
-                self.parse_print_float32()
+                return self.parse_print_float32();
             } else if name == "print_float64" && self.match_token(TokenKind::LeftParen) {
-                self.parse_print_float64()
+                return self.parse_print_float64();
             } else if name == "get_cpu_topology_info" && self.match_token(TokenKind::LeftParen) {
-                self.parse_get_cpu_topology_info()
+                return self.parse_get_cpu_topology_info();
             } else if name == "read_lines" && self.match_token(TokenKind::LeftParen) {
-                self.parse_read_lines()
+                return self.parse_read_lines();
             } else if name == "append_file" && self.match_token(TokenKind::LeftParen) {
-                self.parse_append_file()
+                return self.parse_append_file();
             } else if name == "file_exists" && self.match_token(TokenKind::LeftParen) {
-                self.parse_file_exists()
+                return self.parse_file_exists();
             } else if name == "delete_file" && self.match_token(TokenKind::LeftParen) {
-                self.parse_delete_file()
+                return self.parse_delete_file();
             } else if name == "get_file_size" && self.match_token(TokenKind::LeftParen) {
-                self.parse_get_file_size()
+                return self.parse_get_file_size();
             } else if name == "create_directory" && self.match_token(TokenKind::LeftParen) {
-                self.parse_create_directory()
+                return self.parse_create_directory();
             } else if name == "remove_directory" && self.match_token(TokenKind::LeftParen) {
-                self.parse_remove_directory()
+                return self.parse_remove_directory();
             } else if name == "list_directory" && self.match_token(TokenKind::LeftParen) {
-                self.parse_list_directory()
+                return self.parse_list_directory();
             } else if name == "len" && self.match_token(TokenKind::LeftParen) {
-                self.parse_string_len()
+                return self.parse_string_len();
             } else if name == "len_chars" && self.match_token(TokenKind::LeftParen) {
-                self.parse_string_len_chars()
+                return self.parse_string_len_chars();
             } else if name == "concat" && self.match_token(TokenKind::LeftParen) {
-                self.parse_string_concat()
+                return self.parse_string_concat();
             } else if name == "substring" && self.match_token(TokenKind::LeftParen) {
-                self.parse_string_substring()
+                return self.parse_string_substring();
             } else if name == "substring_until_char" && self.match_token(TokenKind::LeftParen) {
-                self.parse_string_substring_until_char()
+                return self.parse_string_substring_until_char();
             } else if name == "starts_with" && self.match_token(TokenKind::LeftParen) {
-                self.parse_string_starts_with()
+                return self.parse_string_starts_with();
             } else if name == "ends_with" && self.match_token(TokenKind::LeftParen) {
-                self.parse_string_ends_with()
+                return self.parse_string_ends_with();
             } else if name == "contains" && self.match_token(TokenKind::LeftParen) {
-                self.parse_string_contains()
-            } else if self.match_token(TokenKind::LeftBrace) {
-                // Parse struct literal: TypeName { field: value, ... }
-                let type_expr = Expression::Identifier(name);
-                self.finish_struct_literal(type_expr)
+                return self.parse_string_contains();
             } else {
-                // Just an identifier - < and ( will be handled by call() logic
+                // Regular identifier
                 Ok(Expression::Identifier(name))
             }
-        } else if self.match_token(TokenKind::Spawn) {
-            // Handle spawn(initial_state, behavior) expression
-            self.parse_spawn()
-        } else if self.match_token(TokenKind::Send) {
-            // Handle send(actor, message) expression
-            self.parse_send()
-        } else if self.match_token(TokenKind::Recv) {
-            // Handle recv() expression
-            self.parse_recv()
-        } else if self.match_token(TokenKind::Cast) {
-            // Handle cast(actor, message) expression
-            self.parse_cast()
         } else {
             let location = self.peek().location.clone();
             let metadata = self.build_parse_error_metadata("E1005", &location, Some("spec:§3.3"), None)
@@ -1077,30 +1052,7 @@ impl Parser {
     }
 
     /// Parse region() expression
-    fn parse_region(&mut self) -> Result<Expression> {
-        let location = self.previous().location.clone();
-        self.consume(TokenKind::RightParen, "Expected ')' after region")?;
 
-        Ok(Expression::Region(RegionExpr {
-            space: MemorySpace::Normal, // Default to normal memory space
-            location,
-        }))
-    }
-
-    /// Parse alloc_ref(region, initial_value) expression
-    fn parse_alloc_ref(&mut self) -> Result<Expression> {
-        let location = self.previous().location.clone();
-        let region = Box::new(self.expression()?);
-        self.consume(TokenKind::Comma, "Expected ',' after region in alloc_ref")?;
-        let initial_value = Box::new(self.expression()?);
-        self.consume(TokenKind::RightParen, "Expected ')' after alloc_ref arguments")?;
-
-        Ok(Expression::AllocRef(AllocRefExpr {
-            region,
-            initial_value,
-            location,
-        }))
-    }
 
     /// Parse read_ref(reference) expression
     fn parse_read_ref(&mut self) -> Result<Expression> {
@@ -1115,19 +1067,6 @@ impl Parser {
     }
 
     /// Parse write_ref(reference, value) expression
-    fn parse_write_ref(&mut self) -> Result<Expression> {
-        let location = self.previous().location.clone();
-        let reference = Box::new(self.expression()?);
-        self.consume(TokenKind::Comma, "Expected ',' after reference in write_ref")?;
-        let value = Box::new(self.expression()?);
-        self.consume(TokenKind::RightParen, "Expected ')' after write_ref arguments")?;
-
-        Ok(Expression::WriteRef(WriteRefExpr {
-            reference,
-            value,
-            location,
-        }))
-    }
 
     /// Parse read_file(path) expression
     fn parse_read_file(&mut self) -> Result<Expression> {
