@@ -242,9 +242,13 @@ impl EffectChecker {
             Expression::Case(case) => self.collect_case_effects(case),
             Expression::Do(do_expr) => self.collect_do_effects(do_expr),
             Expression::Region(_) => Ok(vec![]), // Region creation has no effects
-            Expression::AllocRef(alloc) => self.collect_alloc_ref_effects(alloc),
+            Expression::Region(region) => {
+                let mut effects = vec![Effect::Memory(region.space.clone())];
+                // Value expression may have effects
+                effects.extend(self.collect_expression_effects(&region.value)?);
+                Ok(effects)
+            }
             Expression::ReadRef(_) => Ok(vec![Effect::Memory(MemorySpace::Normal)]),
-            Expression::WriteRef(_) => Ok(vec![Effect::Memory(MemorySpace::Normal)]),
             Expression::Spawn(spawn) => {
                 // Spawn requires both concurrency and mailbox effects
                 // For EffectChecker version (no type info), use function literal fallback
@@ -479,18 +483,6 @@ impl EffectChecker {
         self.collect_statement_effects(&func.body)
     }
 
-    /// Collect effects for reference allocation
-    fn collect_alloc_ref_effects(&self, alloc: &AllocRefExpr) -> Result<Vec<Effect>> {
-        let mut effects = Vec::new();
-
-        // Region allocation requires memory effect
-        effects.push(Effect::Memory(MemorySpace::Normal));
-
-        // Initial value expression may have effects
-        effects.extend(self.collect_expression_effects(&alloc.initial_value)?);
-
-        Ok(effects)
-    }
 
     /// Push effect capabilities onto the context
     pub fn push_capabilities(&mut self, effects: &[Effect], location: &SourceLocation) {
@@ -762,9 +754,7 @@ impl EffectAnalyzer {
             Expression::Unary(unary) => Some(&unary.location),
             Expression::Binary(binary) => Some(&binary.location),
             Expression::Region(region) => Some(&region.location),
-            Expression::AllocRef(alloc) => Some(&alloc.location),
             Expression::ReadRef(read) => Some(&read.location),
-            Expression::WriteRef(write) => Some(&write.location),
             Expression::Spawn(spawn) => Some(&spawn.location),
             Expression::Send(send) => Some(&send.location),
             Expression::Recv(recv) => Some(&recv.location),

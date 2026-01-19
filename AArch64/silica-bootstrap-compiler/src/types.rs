@@ -337,9 +337,7 @@ impl<'a> TypeChecker<'a> {
             Expression::Case(case) => &case.location,
             Expression::Do(do_expr) => &do_expr.location,
             Expression::Region(region) => &region.location,
-            Expression::AllocRef(alloc) => &alloc.location,
             Expression::ReadRef(read) => &read.location,
-            Expression::WriteRef(write) => &write.location,
             Expression::Spawn(spawn) => &spawn.location,
             Expression::Send(send) => &send.location,
             Expression::Cast(cast) => &cast.location,
@@ -502,36 +500,16 @@ impl<'a> TypeChecker<'a> {
                 self.types_equal(ret1, ret2)
             }
             (Type::Region { space: ref space1 }, Type::Region { space: ref space2 }) => space1 == space2,
-            (Type::Reference { region: ref reg1, space: ref space1, element_type: ref elem1 },
-             Type::Reference { region: ref reg2, space: ref space2, element_type: ref elem2 }) => {
-                let regions_compatible = match (&**reg1, &**reg2) {
-                    (&Type::Named(ref name1), &Type::Region { space: ref space2 }) => {
-                        // Check if the named type refers to a region variable
-                        if let Some(scheme) = self.env.get(name1) {
-                            matches!(&scheme.ty, Type::Region { space } if space == space2)
-                        } else {
-                            false
-                        }
-                    },
-                    (&Type::Region { space: ref space1 }, &Type::Named(ref name2)) => {
-                        // Check if the named type refers to a region variable
-                        if let Some(scheme) = self.env.get(name2) {
-                            matches!(&scheme.ty, Type::Region { space } if space == space1)
-                        } else {
-                            false
-                        }
-                    },
-                    _ => self.types_equal(reg1, reg2)
-                };
-                space1 == space2 &&
-                regions_compatible &&
-                self.types_equal(elem1, elem2)
+            (Type::Reference { space: ref space1, element_type: ref elem1 },
+             Type::Reference { space: ref space2, element_type: ref elem2 }) => {
+                // For suggestion_1, references don't have explicit regions - they're implicit
+                space1 == space2 && self.types_equal(elem1, elem2)
             }
-            (Type::Buffer { region: reg1, space: space1, element_type: elem1, capacity: cap1 },
-             Type::Buffer { region: reg2, space: space2, element_type: elem2, capacity: cap2 }) => {
+            (Type::Buffer { space: space1, element_type: elem1, capacity: cap1 },
+             Type::Buffer { space: space2, element_type: elem2, capacity: cap2 }) => {
+                // For suggestion_1, buffers don't have explicit regions - they're implicit
                 space1 == space2 &&
                 cap1 == cap2 &&
-                self.types_equal(reg1, reg2) &&
                 self.types_equal(elem1, elem2)
             }
             _ => false, // Doesn't handle all complex types yet
@@ -1134,9 +1112,7 @@ impl<'a> TypeChecker<'a> {
                 }
             },
             Expression::Region(region) => self.infer_region(region)?,
-            Expression::AllocRef(alloc) => self.infer_alloc_ref(alloc)?,
             Expression::ReadRef(read) => self.infer_read_ref(read)?,
-            Expression::WriteRef(write) => self.infer_write_ref(write)?,
             Expression::Spawn(spawn) => self.infer_spawn(spawn)?,
             Expression::Send(send) => self.infer_send(send)?,
             Expression::Cast(cast) => self.infer_cast(cast)?,
@@ -1389,9 +1365,7 @@ impl<'a> TypeChecker<'a> {
             Expression::Case(case) => Some(&case.location),
             Expression::Do(do_expr) => Some(&do_expr.location),
             Expression::Region(region) => Some(&region.location),
-            Expression::AllocRef(alloc) => Some(&alloc.location),
             Expression::ReadRef(read) => Some(&read.location),
-            Expression::WriteRef(write) => Some(&write.location),
             Expression::Spawn(spawn) => Some(&spawn.location),
             Expression::Send(send) => Some(&send.location),
             Expression::Cast(cast) => Some(&cast.location),
@@ -2521,50 +2495,36 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for region expression
     fn infer_region(&mut self, region: &RegionExpr) -> Result<Type> {
-        // region() returns a region type
-        Ok(Type::Region { space: region.space.clone() })
-    }
-
-    /// Infer type for alloc_ref expression
-    fn infer_alloc_ref(&mut self, alloc: &AllocRefExpr) -> Result<Type> {
-        // alloc_ref(region, initial_value) returns a reference
-        let region_type = self.infer_expression(&alloc.region)?;
-        let element_type = self.infer_expression(&alloc.initial_value)?;
-
-        // For now, assume normal memory space
-        let space = MemorySpace::Normal;
-
-        // If the region is a named variable, look up its actual type from the environment
-        let resolved_region_type = if let Type::Named(name) = &region_type {
-            if let Some(scheme) = self.env.get(name) {
-                scheme.ty.clone()
-            } else {
-                region_type // Keep as Named if not found
-            }
-        } else {
-            region_type
-        };
+        // region(value) creates a region and returns a reference to the value
+        let element_type = self.infer_expression(&region.value)?;
 
         Ok(Type::Reference {
-            region: Box::new(resolved_region_type),
-            space,
+            space: region.space.clone(),
             element_type: Box::new(element_type),
         })
     }
 
+
     /// Infer type for read_ref expression
     fn infer_read_ref(&mut self, read: &ReadRefExpr) -> Result<Type> {
         // read_ref(reference) returns the element type
-        // For now, assume references contain integers
-        // In a full implementation, this would extract the element type from the reference
-        Ok(Type::Int64)
+        // Extract the element type from the reference type
+        let ref_type = self.infer_expression(&read.reference)?;
+
+        match ref_type {
+            Type::Reference { element_type, .. } => {
+                // Return the actual element type stored in the reference
+                Ok(*element_type)
+            }
+            _ => {
+                // If it's not a reference type, assume integer for backward compatibility
+                // This handles cases where type inference might not be complete
+                Ok(Type::Int64)
+            }
+        }
     }
 
     /// Infer type for write_ref expression
-    fn infer_write_ref(&mut self, write: &WriteRefExpr) -> Result<Type> {
-        // write_ref(reference, value) returns unit
-        Ok(Type::Unit)
-    }
 
     /// Check if an expression contains I/O operations (print, file I/O, etc.)
     fn contains_io_operations(&self, expr: &Expression) -> bool {

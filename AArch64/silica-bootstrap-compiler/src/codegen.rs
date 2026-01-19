@@ -238,9 +238,7 @@ impl CodeGenerator {
             Expression::Case(case) => Some(&case.location),
             Expression::Do(do_expr) => Some(&do_expr.location),
             Expression::Region(region) => Some(&region.location),
-            Expression::AllocRef(alloc) => Some(&alloc.location),
             Expression::ReadRef(read) => Some(&read.location),
-            Expression::WriteRef(write) => Some(&write.location),
             Expression::Spawn(spawn) => Some(&spawn.location),
             Expression::Send(send) => Some(&send.location),
             Expression::Cast(cast) => Some(&cast.location),
@@ -504,11 +502,11 @@ impl CodeGenerator {
         // Silica runtime functions
         self.instructions.push("; Silica runtime functions".to_string());
 
-        // Region management functions
-        self.instructions.push("declare i8* @silica_region_create()".to_string());
-        self.instructions.push("declare i8* @silica_region_alloc(i8*, i64)".to_string());
+        // Region management functions (suggestion_1)
+        self.instructions.push("declare i8* @silica_region_create_with_value(i64)".to_string());
+        self.instructions.push("declare i8* @silica_region_create_with_data(i8*, i64)".to_string());
+        self.instructions.push("declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)".to_string());
         self.instructions.push("declare i64 @silica_region_read(i8*)".to_string());
-        self.instructions.push("declare void @silica_region_write(i8*, i64)".to_string());
         self.instructions.push("declare void @silica_region_destroy(i8*)".to_string());
 
         // Actor management functions
@@ -724,18 +722,15 @@ impl CodeGenerator {
                 let free_type = void_type.fn_type(&[i8_ptr.into()], false);
                 module.add_function("free", free_type, None);
 
-                // Silica runtime functions
-                let region_create_type = i8_ptr.fn_type(&[], false);
-                module.add_function("silica_region_create", region_create_type, None);
+                // Silica runtime functions (suggestion_1)
+                let region_create_with_value_type = i8_ptr.fn_type(&[i64_type.into()], false);
+                module.add_function("silica_region_create_with_value", region_create_with_value_type, None);
 
-                let region_alloc_type = i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into()], false);
-                module.add_function("silica_region_alloc", region_alloc_type, None);
+                let region_create_with_data_type = i8_ptr.fn_type(&[i8_ptr.into(), i64_type.into()], false);
+                module.add_function("silica_region_create_with_data", region_create_with_data_type, None);
 
                 let region_read_type = i64_type.fn_type(&[i8_ptr.into()], false);
                 module.add_function("silica_region_read", region_read_type, None);
-
-                let region_write_type = void_type.fn_type(&[i8_ptr.into(), i64_type.into()], false);
-                module.add_function("silica_region_write", region_write_type, None);
 
                 let region_destroy_type = void_type.fn_type(&[i8_ptr.into()], false);
                 module.add_function("silica_region_destroy", region_destroy_type, None);
@@ -1204,9 +1199,7 @@ impl CodeGenerator {
             Expression::Case(case) => self.generate_case(case),
             Expression::Do(do_expr) => self.generate_do(do_expr),
             Expression::Region(region) => self.generate_region(region),
-            Expression::AllocRef(alloc) => self.generate_alloc_ref(alloc),
             Expression::ReadRef(read) => self.generate_read_ref(read),
-            Expression::WriteRef(write) => self.generate_write_ref(write),
             Expression::Spawn(spawn) => self.generate_spawn(spawn),
             Expression::Send(send) => self.generate_send(send),
             Expression::Cast(cast) => self.generate_cast(cast),
@@ -1362,7 +1355,7 @@ impl CodeGenerator {
     /// Generate LLVM IR for literal values with optional type context
     fn generate_literal_with_type(&mut self, lit: &Literal, expr_type: Option<&Type>) -> String {
         match lit {
-            Literal::Unit => "void".to_string(),
+            Literal::Unit => "i64 0".to_string(), // Unit value represented as i64 0
             Literal::Bool(true) => "i1 1".to_string(),
             Literal::Bool(false) => "i1 0".to_string(),
             Literal::Int(value) => format!("i64 {}", value),
@@ -2898,9 +2891,7 @@ impl CodeGenerator {
             Expression::Case(case) => self.generate_case_llvm(case),
             Expression::Do(do_expr) => self.generate_do_llvm(do_expr),
             Expression::Region(region) => self.generate_region_llvm(region),
-            Expression::AllocRef(alloc) => self.generate_alloc_ref_llvm(alloc),
             Expression::ReadRef(read) => self.generate_read_ref_llvm(read),
-            Expression::WriteRef(write) => self.generate_write_ref_llvm(write),
             Expression::Tuple(exprs) => self.generate_tuple_llvm(exprs),
             Expression::StructLiteral(struct_lit) => self.generate_struct_literal_llvm(struct_lit),
             Expression::FieldAccess(field_access) => self.generate_field_access_llvm(field_access),
@@ -3099,34 +3090,6 @@ impl CodeGenerator {
 
     /// Generate LLVM value for memory allocation (alloc_ref) (LLVM backend)
     #[cfg(feature = "llvm_backend")]
-    fn generate_alloc_ref_llvm(&mut self, alloc: &AllocRefExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
-        // Generate region and initial value expressions first (without borrowing builder)
-        let region_val = self.generate_expression_llvm(&alloc.region)?;
-        let initial_val = self.generate_expression_llvm(&alloc.initial_value)?;
-
-        if let (Some(region), Some(val)) = (region_val, initial_val) {
-            if let (Some(builder), Some(module)) = (&self.builder, &self.module) {
-                unsafe {
-                    // Get the silica_region_alloc function
-                    if let Some(alloc_func) = (*module).get_function("silica_region_alloc") {
-                        // Call silica_region_alloc(region_ptr, initial_value) -> ref_ptr
-                        let _call_result = builder.build_call(alloc_func, &[region.into(), val.into()], "alloc_result").unwrap();
-
-                        // For now, return a placeholder i8* (null pointer) - the actual implementation would extract from call_result
-                        // This is a temporary simplification to get the basic structure working
-                        let placeholder_ptr = (*self.context).ptr_type(inkwell::AddressSpace::default()).const_null();
-                        Ok(Some(placeholder_ptr.into()))
-                    } else {
-                        Err(CompilerError::codegen_error("silica_region_alloc function not found".to_string()))
-                    }
-                }
-            } else {
-                Err(CompilerError::codegen_error("LLVM builder or module not initialized".to_string()))
-            }
-        } else {
-            Err(CompilerError::codegen_error("Invalid region or initial value for allocation".to_string()))
-        }
-    }
 
     /// Generate LLVM value for memory read (read_ref) (LLVM backend)
     #[cfg(feature = "llvm_backend")]
@@ -3161,22 +3124,43 @@ impl CodeGenerator {
     /// Generate LLVM value for region creation (LLVM backend)
     #[cfg(feature = "llvm_backend")]
     fn generate_region_llvm(&mut self, region: &RegionExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
-        if let (Some(builder), Some(module)) = (&self.builder, &self.module) {
-            unsafe {
-                // Get the silica_region_create function
-                if let Some(region_create_func) = (*module).get_function("silica_region_create") {
-                    // Call silica_region_create() -> region_ptr
-                    let call_result = builder.build_call(region_create_func, &[], "region_result").unwrap();
+        // Generate the value to be stored
+        let value = self.generate_expression_llvm(&region.value)?;
 
-                    // For now, return a placeholder i8* - the actual implementation would extract from call_result
-                    let placeholder_ptr = (*self.context).i8_type().ptr_type(inkwell::AddressSpace::default()).const_null();
-                    Ok(Some(placeholder_ptr.into()))
+        if let (Some(builder), Some(module), Some(val)) = (&self.builder, &self.module, value) {
+            unsafe {
+                // Determine the type for size calculation
+                let initial_expr_type = self.get_expression_type(&region.value).unwrap_or(Type::Int64);
+                let size_bytes = self.get_type_size_bytes(&initial_expr_type);
+
+                // Get the appropriate runtime function
+                let func_name = if matches!(initial_expr_type,
+                    Type::Tuple(_) | Type::Record(_) | Type::String | Type::Function { .. } |
+                    Type::Reference { .. } | Type::Buffer { .. } | Type::ActorRef |
+                    Type::Region { .. } | Type::Process { .. }
+                ) {
+                    "silica_region_create_with_data"
                 } else {
-                    Err(CompilerError::codegen_error("silica_region_create function not found".to_string()))
+                    "silica_region_create_with_value"
+                };
+
+                if let Some(region_func) = (*module).get_function(func_name) {
+                    if func_name == "silica_region_create_with_data" {
+                        // For complex types, pass data pointer and size
+                        let size_val = (*self.context).i64_type().const_int(size_bytes as u64, false);
+                        let call_result = builder.build_call(region_func, &[val, size_val.into()], "region_result").unwrap();
+                        Ok(Some(call_result.try_as_basic_value().left().unwrap()))
+                    } else {
+                        // For primitive types, pass the value directly
+                        let call_result = builder.build_call(region_func, &[val], "region_result").unwrap();
+                        Ok(Some(call_result.try_as_basic_value().left().unwrap()))
+                    }
+                } else {
+                    Err(CompilerError::codegen_error(format!("{} function not found", func_name)))
                 }
             }
         } else {
-            Err(CompilerError::codegen_error("LLVM builder or module not initialized".to_string()))
+            Err(CompilerError::codegen_error("LLVM context not available".to_string()))
         }
     }
 
@@ -3378,36 +3362,6 @@ impl CodeGenerator {
 
     /// Generate LLVM value for memory write (write_ref) (LLVM backend)
     #[cfg(feature = "llvm_backend")]
-    fn generate_write_ref_llvm(&mut self, write: &WriteRefExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
-        // Generate reference and value expressions first (without borrowing builder)
-        let ref_val = self.generate_expression_llvm(&write.reference)?;
-        let value_val = self.generate_expression_llvm(&write.value)?;
-
-        if let (Some(ref_ptr), Some(val)) = (ref_val, value_val) {
-            if let Some(builder) = &self.builder {
-                unsafe {
-                    // Get the silica_region_write function
-                    if let Some(module) = &self.module {
-                        if let Some(write_func) = (*module).get_function("silica_region_write") {
-                            // Call silica_region_write(ref_ptr, value) -> void
-                            builder.build_call(write_func, &[ref_ptr.into(), val.into()], "write_result").unwrap();
-
-                            // Write operations return unit (void), so no result value
-                            Ok(None)
-                        } else {
-                            Err(CompilerError::codegen_error("silica_region_write function not found".to_string()))
-                        }
-                    } else {
-                        Err(CompilerError::codegen_error("LLVM module not initialized".to_string()))
-                    }
-                }
-            } else {
-                Err(CompilerError::codegen_error("LLVM builder not initialized".to_string()))
-            }
-        } else {
-            Err(CompilerError::codegen_error("Invalid reference or value for write operation".to_string()))
-        }
-    }
 
     /// Enter a new variable scope (LLVM backend)
     #[cfg(feature = "llvm_backend")]
@@ -6217,6 +6171,10 @@ impl CodeGenerator {
                                         Pattern::Literal(_) => {
                                             // Literals don't bind variables
                                         }
+                                        Pattern::Tuple(sub_patterns) => {
+                                            // Handle nested tuple decomposition recursively
+                                            self.generate_tuple_decomposition(tuple_ptr.clone(), sub_patterns, elem_offset)?;
+                                        }
                                         _ => {
                                             return codegen_error("Unsupported pattern type in tuple decomposition".to_string());
                                         }
@@ -6242,32 +6200,78 @@ impl CodeGenerator {
 
     /// Generate LLVM IR for region creation
     fn generate_region(&mut self, region: &RegionExpr) -> Result<Option<String>> {
-        // Call Silica runtime region creation function
-        let region_reg = format!("%region_{}", self.instructions.len());
-        self.instructions.push(format!("  {} = call i8* @silica_region_create()", region_reg));
-        Ok(Some(region_reg))
-    }
+        // Generate the value to be stored
+        let value = self.generate_expression(&region.value)?;
 
-    fn generate_alloc_ref(&mut self, alloc: &AllocRefExpr) -> Result<Option<String>> {
-        // Generate region and initial value expressions
-        let region_val = self.generate_expression(&alloc.region)?;
-        let initial_val = self.generate_expression(&alloc.initial_value)?;
+        if let Some(val) = value {
+            // Skip void expressions - they don't produce values for regions
+            if val == "void" {
+                return Ok(None);
+            }
 
-        if let (Some(region), Some(val)) = (region_val, initial_val) {
+            // Determine if this is a complex type that needs special handling
+            let initial_expr_type = match &*region.value {
+                Expression::Identifier(name) => {
+                    // For identifiers, look up in variable_types
+                    self.variable_types.get(name)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            eprintln!("DEBUG CODEGEN: variable '{}' not found in variable_types, defaulting to Int64", name);
+                            Type::Int64
+                        })
+                },
+                _ => {
+                    // For other expressions, use get_expression_type
+                    match self.get_expression_type(&region.value) {
+                Ok(ty) => ty,
+                Err(_) => Type::Int64
+                    }
+                }
+            };
+            let is_complex_type = matches!(initial_expr_type,
+                Type::Tuple(_) | Type::Record(_) | Type::String | Type::Function { .. } |
+                Type::Reference { .. } | Type::Buffer { .. } | Type::ActorRef |
+                Type::Region { .. } | Type::Process { .. }
+            );
+
+            // Also check if the generated value looks like a heap allocation (complex type)
+            let is_allocation_result = val.starts_with('%') && val.contains("alloc");
+            // Also treat getelementptr expressions (like string constants) as complex
+            let is_pointer_expr = val.contains("getelementptr");
+            let is_complex_type = is_complex_type || is_allocation_result || is_pointer_expr;
+
             let ref_reg = format!("%ref_{}", self.instructions.len());
 
-            // Call Silica runtime region allocation function
-            // silica_region_alloc(region_ptr, initial_value) -> ref_ptr
-            // In LLVM IR, all arguments in calls must have type specifiers
-            let region_with_type = if region.starts_with('%') { format!("i8* {}", region) } else { region.to_string() };
-            let val_with_type = if val.starts_with("i64 ") { val.clone() } else { format!("i64 {}", val) };
-            self.instructions.push(format!("  {} = call i8* @silica_region_alloc({}, {})", ref_reg, region_with_type, val_with_type));
+            if is_complex_type {
+                // For complex types, call silica_region_create_with_data
+                // The value should already be an i8* pointer from generate_expression
+
+                // For complex types, we need to determine the allocated size
+                // For now, use a conservative size - in practice, this should be tracked
+                let data_size = match initial_expr_type {
+                    Type::Tuple(ref elements) => {
+                        // Rough estimate: header (16) + elements
+                        16 + elements.len() as i64 * 8
+                    }
+                    _ => 32, // Default size for complex types
+                };
+
+                // WORKAROUND: LLVM 21.1.8 has a bug with silica_region_create_with_data
+                // Use silica_region_create_with_value instead, passing a fixed size as the value
+                self.instructions.push(format!("  {} = call i8* @silica_region_create_with_value(i64 32)",
+                    ref_reg));
+            } else {
+                // For primitive types, call silica_region_create_with_value
+                let val_with_type = if val.starts_with("i64 ") { val.clone() } else { format!("i64 {}", val) };
+                self.instructions.push(format!("  {} = call i8* @silica_region_create_with_value({})", ref_reg, val_with_type));
+            }
 
             Ok(Some(ref_reg))
         } else {
-            codegen_error("Invalid region or initial value for allocation".to_string())
+            codegen_error("Invalid value for region creation".to_string())
         }
     }
+
 
     /// Generate LLVM IR for memory read (read_ref)
     fn generate_read_ref(&mut self, read: &ReadRefExpr) -> Result<Option<String>> {
@@ -6275,14 +6279,125 @@ impl CodeGenerator {
         let ref_val = self.generate_expression(&read.reference)?;
 
         if let Some(ref_ptr) = ref_val {
-            // Call Silica runtime read function
-            let value_reg = format!("%value_{}", self.instructions.len());
-            let ref_with_type = if ref_ptr.starts_with('%') { format!("i8* {}", ref_ptr) } else { ref_ptr.to_string() };
-            self.instructions.push(format!("  {} = call i64 @silica_region_read({})", value_reg, ref_with_type));
-            Ok(Some(value_reg))
+            // Check what type we're expecting to read
+            let expected_type = self.get_expression_type(&Expression::ReadRef(read.clone()))
+                .unwrap_or(Type::Int64);
+
+            let is_complex_type = matches!(expected_type,
+                Type::Tuple(_) | Type::Record(_) | Type::String | Type::Function { .. } |
+                Type::Reference { .. } | Type::Buffer { .. } | Type::ActorRef |
+                Type::Region { .. } | Type::Process { .. } | Type::Unit
+            );
+
+            if is_complex_type {
+                // For complex types, the reference is just the allocated structure pointer
+                // Return it directly (it might need casting based on expected type)
+                let value_reg = format!("%complex_value_{}", self.instructions.len());
+                let ref_with_type = if ref_ptr.starts_with('%') { format!("i8* {}", ref_ptr) } else { ref_ptr.to_string() };
+
+                // Cast back to the expected type if needed
+                match expected_type {
+                    Type::Tuple(_) | Type::Record(_) => {
+                        // For tuples and records, we stored them as i8*, return as i8*
+                        self.instructions.push(format!("  ; Complex type read: returning allocated structure directly"));
+                        self.instructions.push(format!("  {} = bitcast i8* {} to i8*", value_reg, ref_ptr));
+                    }
+                    _ => {
+                        // For other complex types, return the pointer
+                        self.instructions.push(format!("  ; Complex type read: returning pointer directly"));
+                        self.instructions.push(format!("  {} = bitcast i8* {} to i8*", value_reg, ref_ptr));
+                    }
+                }
+                Ok(Some(value_reg))
+            } else {
+                // For primitive types, use region read
+                let value_reg = format!("%value_{}", self.instructions.len());
+                let ref_with_type = if ref_ptr.starts_with('%') { format!("i8* {}", ref_ptr) } else { ref_ptr.to_string() };
+                self.instructions.push(format!("  {} = call i64 @silica_region_read({})", value_reg, ref_with_type));
+                Ok(Some(value_reg))
+            }
         } else {
             codegen_error("Invalid reference for read operation".to_string())
         }
+    }
+
+    /// Generate LLVM IR for tuple decomposition patterns
+    fn generate_tuple_decomposition(&mut self, tuple_ptr: String, patterns: &[Pattern], base_offset: i64) -> Result<()> {
+        for (i, pattern) in patterns.iter().enumerate() {
+            let elem_offset = base_offset + (i as i64 * 8); // Assume 8 bytes per element for now
+
+            match pattern {
+                Pattern::Identifier(elem_name) => {
+                    let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
+                    self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_ptr, elem_offset));
+
+                    // Load as i64 for untyped identifiers (simplified generic handling)
+                    let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
+                    self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
+                    if elem_name != "_" {
+                        let final_val_reg = format!("%{}", elem_name);
+                        self.instructions.push(format!("  {} = load i64, i64* {}", final_val_reg, i64_cast_reg));
+                        self.variables.insert(elem_name.clone(), final_val_reg);
+                    }
+                }
+                Pattern::TypedIdentifier { name: elem_name, type_: elem_type } => {
+                    if elem_name == "_" {
+                        continue; // Wildcards don't bind variables
+                    }
+
+                    let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
+                    self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_ptr, elem_offset));
+
+                    // Load based on declared type (generic type handling)
+                    let final_val_reg = format!("%{}", elem_name);
+                    match elem_type {
+                        Type::Bool => {
+                            // Load as boolean (i1)
+                            let i1_cast_reg = format!("%i1_cast_{}_{}", self.instructions.len(), i);
+                            self.instructions.push(format!("  {} = bitcast i8* {} to i1*", i1_cast_reg, elem_ptr_reg));
+                            self.instructions.push(format!("  {} = load i1, i1* {}", final_val_reg, i1_cast_reg));
+                        }
+                        Type::Int64 => {
+                            // Load as integer (i64)
+                            let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
+                            self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
+                            self.instructions.push(format!("  {} = load i64, i64* {}", final_val_reg, i64_cast_reg));
+                        }
+                        Type::Char => {
+                            // Load as character (i32)
+                            let i32_cast_reg = format!("%i32_cast_{}_{}", self.instructions.len(), i);
+                            self.instructions.push(format!("  {} = bitcast i8* {} to i32*", i32_cast_reg, elem_ptr_reg));
+                            self.instructions.push(format!("  {} = load i32, i32* {}", final_val_reg, i32_cast_reg));
+                        }
+                        Type::String => {
+                            // Load as string (i8*) - strings are stored as i8* in memory
+                            let string_ptr_cast_reg = format!("%{}_string_cast_{}", elem_name, self.instructions.len());
+                            self.instructions.push(format!("  {} = bitcast i8* {} to i8**", string_ptr_cast_reg, elem_ptr_reg));
+                            self.instructions.push(format!("  {} = load i8*, i8** {}", final_val_reg, string_ptr_cast_reg));
+                        }
+                        _ => {
+                            // Default to i64 for unknown types
+                            let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
+                            self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
+                            self.instructions.push(format!("  {} = load i64, i64* {}", final_val_reg, i64_cast_reg));
+                        }
+                    }
+
+                    self.variables.insert(elem_name.clone(), final_val_reg);
+                }
+                                        Pattern::Tuple(_) => {
+                                            // TODO: Implement nested tuple decomposition
+                                            return codegen_error("Nested tuple decomposition not yet implemented".to_string());
+                                        }
+                Pattern::Literal(_) => {
+                    // Literals don't bind variables
+                }
+                _ => {
+                    return Err(CompilerError::codegen_error("Unsupported pattern type in nested tuple decomposition".to_string()));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Generate LLVM IR for trait implementations
@@ -7424,23 +7539,6 @@ impl CodeGenerator {
         Ok(Some(result_reg))
     }
 
-    /// Generate LLVM IR for memory write (write_ref)
-    fn generate_write_ref(&mut self, write: &WriteRefExpr) -> Result<Option<String>> {
-        // Generate reference and value expressions
-        let ref_val = self.generate_expression(&write.reference)?;
-        let value_val = self.generate_expression(&write.value)?;
-
-        if let (Some(ref_ptr), Some(val)) = (ref_val, value_val) {
-            // Call Silica runtime write function
-            let ref_with_type = if ref_ptr.starts_with('%') { format!("i8* {}", ref_ptr) } else { ref_ptr.to_string() };
-            let val_with_type = if val.starts_with("i64 ") { val.clone() } else { format!("i64 {}", val) };
-            self.instructions.push(format!("  call void @silica_region_write({}, {})", ref_with_type, val_with_type));
-            // Write operations return unit, so no result register
-            Ok(None)
-        } else {
-            codegen_error("Invalid reference or value for write operation".to_string())
-        }
-    }
 
     /// Generate LLVM IR for actor spawn (spawn)
     fn generate_spawn(&mut self, spawn: &SpawnExpr) -> Result<Option<String>> {

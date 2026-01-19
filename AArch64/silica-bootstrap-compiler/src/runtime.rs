@@ -785,12 +785,79 @@ pub extern "C" fn silica_region_alloc(region_ptr: *mut SilicaRegion, initial_val
 }
 
 #[no_mangle]
-pub extern "C" fn silica_region_read(ref_ptr: *mut i64) -> i64 {
+/// Create a region with a primitive value (suggestion_1)
+#[no_mangle]
+pub extern "C" fn silica_region_create_with_value(value: i64) -> *mut u8 {
+    // Allocate space for the i64 value
+    let layout = std::alloc::Layout::from_size_align(std::mem::size_of::<i64>(), 8).unwrap();
+    let data = unsafe { std::alloc::alloc(layout) };
+
+    if data.is_null() {
+        panic!("Failed to allocate memory for region");
+    }
+
+    // Store the value
+    unsafe {
+        *(data as *mut i64) = value;
+    }
+
+    // Create and store region metadata
+    let region = Box::new(SilicaRegion {
+        data,
+        size: std::mem::size_of::<i64>(),
+        capacity: std::mem::size_of::<i64>(),
+    });
+
+    Box::into_raw(region) as *mut u8
+}
+
+/// Create a region with complex data (suggestion_1)
+#[no_mangle]
+pub extern "C" fn silica_region_create_with_data(data_ptr: *const u8, size: usize) -> *mut u8 {
+    if data_ptr.is_null() || size == 0 {
+        panic!("Invalid data pointer or size");
+    }
+
+    // Allocate space for the data
+    let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
+    let data = unsafe { std::alloc::alloc(layout) };
+
+    if data.is_null() {
+        panic!("Failed to allocate memory for region");
+    }
+
+    // Copy the data
+    unsafe {
+        std::ptr::copy_nonoverlapping(data_ptr, data, size);
+    }
+
+    // Create and store region metadata
+    let region = Box::new(SilicaRegion {
+        data,
+        size,
+        capacity: size,
+    });
+
+    Box::into_raw(region) as *mut u8
+}
+
+/// Read from a region (suggestion_1) - returns the actual value for primitives
+#[no_mangle]
+pub extern "C" fn silica_region_read(ref_ptr: *mut u8) -> i64 {
     if ref_ptr.is_null() {
         panic!("Null reference pointer");
     }
 
-    unsafe { *ref_ptr }
+    // The ref_ptr is actually a SilicaRegion pointer cast to u8*
+    // For primitive values, return the actual i64 value
+    let region = ref_ptr as *mut SilicaRegion;
+    unsafe {
+        if (*region).data.is_null() {
+            panic!("Region has null data pointer");
+        }
+        // For now, assume all values are i64 primitives
+        *((*region).data as *mut i64)
+    }
 }
 
 #[no_mangle]
@@ -802,6 +869,7 @@ pub extern "C" fn silica_region_write(ref_ptr: *mut i64, value: i64) {
     unsafe { *ref_ptr = value };
 }
 
+/// Destroy a region (works with both old and new region formats)
 #[no_mangle]
 pub extern "C" fn silica_region_destroy(region_ptr: *mut SilicaRegion) {
     if region_ptr.is_null() {
@@ -811,10 +879,12 @@ pub extern "C" fn silica_region_destroy(region_ptr: *mut SilicaRegion) {
     let region = unsafe { Box::from_raw(region_ptr) };
 
     // Free the allocated data
-    let layout = unsafe {
-        std::alloc::Layout::from_size_align_unchecked(region.capacity, 8)
-    };
-    unsafe { std::alloc::dealloc(region.data, layout) };
+    if !region.data.is_null() {
+        let layout = unsafe {
+            std::alloc::Layout::from_size_align_unchecked(region.capacity, 8)
+        };
+        unsafe { std::alloc::dealloc(region.data, layout) };
+    }
 
     // The region box will be dropped automatically
 }

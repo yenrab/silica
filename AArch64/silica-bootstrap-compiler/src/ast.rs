@@ -189,9 +189,7 @@ pub enum Expression {
 
     // Memory operations
     Region(RegionExpr),
-    AllocRef(AllocRefExpr),
     ReadRef(ReadRefExpr),
-    WriteRef(WriteRefExpr),
 
     // Actor operations
     Spawn(SpawnExpr),
@@ -368,18 +366,11 @@ pub enum BinaryOp {
     Or,
 }
 
-/// Region creation expression
+/// Region creation and allocation expression
 #[derive(Debug, Clone)]
 pub struct RegionExpr {
     pub space: MemorySpace,
-    pub location: SourceLocation,
-}
-
-/// Memory allocation expression
-#[derive(Debug, Clone)]
-pub struct AllocRefExpr {
-    pub region: Box<Expression>,
-    pub initial_value: Box<Expression>,
+    pub value: Box<Expression>,
     pub location: SourceLocation,
 }
 
@@ -387,14 +378,6 @@ pub struct AllocRefExpr {
 #[derive(Debug, Clone)]
 pub struct ReadRefExpr {
     pub reference: Box<Expression>,
-    pub location: SourceLocation,
-}
-
-/// Reference write expression
-#[derive(Debug, Clone)]
-pub struct WriteRefExpr {
-    pub reference: Box<Expression>,
-    pub value: Box<Expression>,
     pub location: SourceLocation,
 }
 
@@ -751,12 +734,10 @@ pub enum Type {
         space: MemorySpace,
     },
     Reference {
-        region: Box<Type>,
         space: MemorySpace,
         element_type: Box<Type>,
     },
     Buffer {
-        region: Box<Type>,
         space: MemorySpace,
         element_type: Box<Type>,
         capacity: usize,
