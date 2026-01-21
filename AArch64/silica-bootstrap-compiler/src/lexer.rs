@@ -49,7 +49,7 @@ pub enum TokenKind {
     LeftParen, RightParen,                     // ( )
     LeftBrace, RightBrace,                     // { }
     LeftBracket, RightBracket,                 // [ ]
-    Comma, Semicolon, Dot, Pipe,               // , ; . |
+    Comma, Semicolon, Dot, Pipe, At,           // , ; . | @
 
     // Special
     EOF,
@@ -160,6 +160,7 @@ impl Lexer {
                 ';' => self.make_token(TokenKind::Semicolon, ";"),
                 '.' => self.make_token(TokenKind::Dot, "."),
                 '|' => self.make_token(TokenKind::Pipe, "|"),
+                '@' => self.make_token(TokenKind::At, "@"),
                 ':' => self.read_colon_or_double_colon(),
                 '=' => self.read_equal_or_double_equal(),
                 '!' => self.read_bang_or_bang_equal(),

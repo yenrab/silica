@@ -578,29 +578,75 @@ fn get_available_cores() -> i32 {
     }
 }
 
-/// Get detailed CPU topology information for debugging
-pub fn get_cpu_topology_info() -> String {
-    match topology::detect_core_types() {
-        Ok(cores) => {
-            let perf_cores: Vec<_> = cores.iter().filter(|c| c.core_type == topology::CoreType::Performance).collect();
-            let eff_cores: Vec<_> = cores.iter().filter(|c| c.core_type == topology::CoreType::Efficiency).collect();
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct CpuTopology {
+    pub total_cores: i64,
+    pub performance_core_count: i64,
+    pub efficiency_core_count: i64,
+    pub has_neon: bool,
+    pub neon_version: i64,  // 0=none, 1=NEON, 2=NEONv2, etc.
+    pub vector_size_bytes: i64,  // 16 for 128-bit NEON
+    pub has_sve: bool,
+    pub sve_vector_length: i64,  // SVE vector length in bytes (0 if no SVE)
+    pub max_simd_registers: i64,
+}
 
-            let capacity_info = cores.iter()
-                .filter_map(|c| c.capacity.map(|cap| format!("cpu{}:{}", c.id, cap)))
-                .collect::<Vec<_>>()
-                .join(", ");
 
-            format!(
-                "CPU Topology: {} total cores, {} performance cores ({:?}), {} efficiency cores ({:?}) [capacities: {}]",
-                cores.len(),
-                perf_cores.len(),
-                perf_cores.iter().map(|c| c.id).collect::<Vec<_>>(),
-                eff_cores.len(),
-                eff_cores.iter().map(|c| c.id).collect::<Vec<_>>(),
-                if capacity_info.is_empty() { "N/A".to_string() } else { capacity_info }
-            )
-        }
-        Err(e) => format!("CPU Topology detection failed: {}", e),
+/// Detect SIMD capabilities (NEON, SVE, etc.)
+fn detect_simd_capabilities() -> (bool, u32, usize, bool, usize, u32) {
+    // AArch64 always has NEON support
+    let has_neon = true;
+    let neon_version = 1; // Basic NEON support
+    let vector_size_bytes = 16; // 128-bit vectors
+    let max_simd_registers = 32; // 32 SIMD registers (v0-v31)
+
+    // Check for SVE support - this requires runtime detection
+    let (has_sve, sve_vector_length) = detect_sve_support();
+
+    (has_neon, neon_version, vector_size_bytes, has_sve, sve_vector_length, max_simd_registers)
+}
+
+/// Detect SVE (Scalable Vector Extension) support and vector length
+fn detect_sve_support() -> (bool, usize) {
+    // On AArch64, we can try to detect SVE support
+    // This is a simplified detection - in practice, this would use
+    // CPUID-style detection or runtime probing
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // Try to use getauxval or similar to detect SVE
+        // For now, return conservative defaults
+        // Most current AArch64 cores don't have SVE, but this may change
+        (false, 0)
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        // On non-AArch64 platforms, no SVE support
+        (false, 0)
+    }
+}
+
+/// Get CPU topology as structured data
+pub fn get_cpu_topology() -> CpuTopology {
+    let cores = topology::detect_core_types().unwrap_or_default();
+    let perf_cores: Vec<_> = cores.iter().filter(|c| c.core_type == topology::CoreType::Performance).collect();
+    let eff_cores: Vec<_> = cores.iter().filter(|c| c.core_type == topology::CoreType::Efficiency).collect();
+
+    // Detect SIMD capabilities
+    let (has_neon, neon_version, vector_size_bytes, has_sve, sve_vector_length, max_simd_registers) = detect_simd_capabilities();
+
+    CpuTopology {
+        total_cores: cores.len() as i64,
+        performance_core_count: perf_cores.len() as i64,
+        efficiency_core_count: eff_cores.len() as i64,
+        has_neon,
+        neon_version: neon_version as i64,
+        vector_size_bytes: vector_size_bytes as i64,
+        has_sve,
+        sve_vector_length: sve_vector_length as i64,
+        max_simd_registers: max_simd_registers as i64,
     }
 }
 
@@ -1261,18 +1307,10 @@ pub extern "C" fn silica_free_process_result(result_ptr: *mut ProcessResult) {
 }
 
 #[no_mangle]
-pub extern "C" fn silica_get_cpu_topology_info() -> *mut u8 {
-    let info_string = get_cpu_topology_info();
 
-    // Create a SilicaString with the topology info
-    let content_bytes = info_string.as_bytes();
-    let silica_string = Box::new(SilicaString {
-        data: content_bytes.as_ptr() as *mut u8,
-        length: content_bytes.len(),
-    });
-
-    // Return the boxed SilicaString as a raw pointer
-    Box::into_raw(silica_string) as *mut u8
+#[no_mangle]
+pub extern "C" fn silica_get_cpu_topology() -> CpuTopology {
+    get_cpu_topology()
 }
 
 #[cfg(test)]

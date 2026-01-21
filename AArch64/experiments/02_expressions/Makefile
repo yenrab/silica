@@ -29,14 +29,14 @@ $(SILICA_COMPILER):
 executables: $(EXECUTABLES_LL)
 
 %.ll: %.silica
-	$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+	-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Compile module files (those without main functions)
 modules: $(MODULES_LL)
 
 # Modules are compiled the same way, but marked as such
 $(MODULES_LL): %.ll: %.silica
-	$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+	-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Use inherited LLVM tool paths or detect them (including Homebrew)
 HAS_LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo ""))

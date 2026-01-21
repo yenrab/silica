@@ -237,6 +237,7 @@ impl EffectChecker {
             Expression::Binary(_) => Ok(vec![]),
             Expression::Unary(_) => Ok(vec![]),
             Expression::Call(call) => self.collect_call_effects(call),
+            Expression::ModuleCall(module_call) => self.collect_module_call_effects(module_call),
             Expression::FunctionLiteral(func) => self.collect_function_literal_effects(func),
             Expression::If(if_expr) => self.collect_if_effects(if_expr),
             Expression::Case(case) => self.collect_case_effects(case),
@@ -320,7 +321,7 @@ impl EffectChecker {
             Expression::PrintFloat16(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::PrintFloat32(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
             Expression::PrintFloat64(_) => Ok(vec![Effect::Named("DeviceIO".to_string())]),
-            Expression::GetCpuTopologyInfo(_) => Ok(vec![]), // Reading pre-detected topology info
+            Expression::GetCpuTopology(_) => Ok(vec![]), // Reading pre-detected topology info
             Expression::StringLen(string_len) => self.collect_expression_effects(&string_len.string),
             Expression::StringLenChars(string_len_chars) => self.collect_expression_effects(&string_len_chars.string),
             Expression::StringConcat(string_concat) => {
@@ -427,6 +428,20 @@ impl EffectChecker {
 
         // Add effects from function arguments
         for arg in &call.arguments {
+            effects.extend(self.collect_expression_effects(arg)?);
+        }
+
+        // TODO: Look up function effects from type information
+        // For now, assume pure functions
+
+        Ok(effects)
+    }
+
+    fn collect_module_call_effects(&self, module_call: &ModuleCallExpr) -> Result<Vec<Effect>> {
+        let mut effects = Vec::new();
+
+        // Add effects from function arguments
+        for arg in &module_call.arguments {
             effects.extend(self.collect_expression_effects(arg)?);
         }
 
@@ -750,6 +765,7 @@ impl EffectAnalyzer {
             Expression::Case(case) => Some(&case.location),
             Expression::Do(do_expr) => Some(&do_expr.location),
             Expression::Call(call) => Some(&call.location),
+            Expression::ModuleCall(module_call) => Some(&module_call.location),
             Expression::FunctionLiteral(func) => Some(&func.location),
             Expression::Unary(unary) => Some(&unary.location),
             Expression::Binary(binary) => Some(&binary.location),
@@ -772,7 +788,7 @@ impl EffectAnalyzer {
             Expression::PrintFloat16(print) => Some(&print.location),
             Expression::PrintFloat32(print) => Some(&print.location),
             Expression::PrintFloat64(print) => Some(&print.location),
-            Expression::GetCpuTopologyInfo(info) => Some(&info.location),
+            Expression::GetCpuTopology(get_topology) => Some(&get_topology.location),
             Expression::StringLen(string_len) => Some(&string_len.location),
             Expression::StringLenChars(string_len_chars) => Some(&string_len_chars.location),
             Expression::StringConcat(string_concat) => Some(&string_concat.location),

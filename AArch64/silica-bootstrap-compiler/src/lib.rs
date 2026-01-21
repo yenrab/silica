@@ -102,11 +102,16 @@ impl Compiler {
 
         // Phase 3: Type checking
         // println!("Phase 3: Type checking happening...");
-        let mut type_checker = TypeChecker::with_symbol_table(Some(&self.symbol_table));
+        // Clone symbol table for type checker to avoid borrowing issues
+        let symbol_table_clone = self.symbol_table.clone();
+        let mut type_checker = TypeChecker::with_symbol_table(Some(&symbol_table_clone));
         // eprintln!("DEBUG LIB: About to call check_program");
         type_checker.check_program(&combined_program)?;
         // println!("DEBUG LIB: check_program completed successfully");
         // println!("Type checking passed");
+
+        // Update symbol table with actual types from type checking
+        self.update_symbol_table_types(&type_checker)?;
 
         // Phase 4: Effect analysis
         // println!("Phase 4: Effect analysis...");
@@ -148,6 +153,25 @@ impl Compiler {
     }
 
     /// Resolve imports and load modules recursively, returning combined program with all declarations
+    /// Update symbol table with actual types after type checking completes
+    fn update_symbol_table_types(&mut self, type_checker: &TypeChecker) -> Result<()> {
+        // Update symbol table with actual computed types from the type checker
+        let env = type_checker.get_env();
+        for (_module_name, module_symbols) in &mut self.symbol_table.modules {
+            for (symbol_name, symbol_info) in module_symbols {
+                // Look up the function name in the type checker's environment
+                // Function names are stored without module prefixes
+                if let Some(type_scheme) = env.get(symbol_name) {
+                    // Update the symbol info with the actual computed type
+                    symbol_info.ty = type_scheme.ty.clone();
+                }
+                // If not found, leave the placeholder type (Type::Unit)
+                // This might happen for built-in functions or other special cases
+            }
+        }
+        Ok(())
+    }
+
     fn resolve_imports_and_combine(&mut self, program: &crate::ast::Program) -> Result<crate::ast::Program> {
         let mut all_declarations = Vec::new();
         let mut processed_modules = std::collections::HashSet::new();

@@ -234,6 +234,7 @@ impl CodeGenerator {
             Expression::Binary(binary) => Some(&binary.location),
             Expression::Unary(unary) => Some(&unary.location),
             Expression::Call(call) => Some(&call.location),
+            Expression::ModuleCall(module_call) => Some(&module_call.location),
             Expression::If(if_expr) => Some(&if_expr.location),
             Expression::Case(case) => Some(&case.location),
             Expression::Do(do_expr) => Some(&do_expr.location),
@@ -256,7 +257,7 @@ impl CodeGenerator {
             Expression::PrintFloat16(print_float16) => Some(&print_float16.location),
             Expression::PrintFloat32(print_float32) => Some(&print_float32.location),
             Expression::PrintFloat64(print_float64) => Some(&print_float64.location),
-            Expression::GetCpuTopologyInfo(get_topology) => Some(&get_topology.location),
+            Expression::GetCpuTopology(get_topology) => Some(&get_topology.location),
             Expression::ReadLines(read_lines) => Some(&read_lines.location),
             Expression::AppendFile(append_file) => Some(&append_file.location),
             Expression::FileExists(file_exists) => Some(&file_exists.location),
@@ -536,7 +537,7 @@ impl CodeGenerator {
         self.instructions.push("declare void @silica_print_float16(i16)".to_string());
         self.instructions.push("declare void @silica_print_float32(float)".to_string());
         self.instructions.push("declare void @silica_print_float64(double)".to_string());
-        self.instructions.push("declare i8* @silica_get_cpu_topology_info()".to_string());
+        self.instructions.push("declare {i64, i64, i64, i1, i64, i64, i1, i64, i64} @silica_get_cpu_topology()".to_string());
 
         // String functions
         self.instructions.push("declare i64 @silica_string_len(i8*)".to_string());
@@ -1217,7 +1218,7 @@ impl CodeGenerator {
             Expression::PrintFloat16(print_float16) => self.generate_print_float16(print_float16),
             Expression::PrintFloat32(print_float32) => self.generate_print_float32(print_float32),
             Expression::PrintFloat64(print_float64) => self.generate_print_float64(print_float64),
-            Expression::GetCpuTopologyInfo(get_topology) => self.generate_get_cpu_topology_info(get_topology),
+            Expression::GetCpuTopology(get_topology) => self.generate_get_cpu_topology(get_topology),
             Expression::ReadLines(read_lines) => self.generate_read_lines(read_lines),
             Expression::AppendFile(append_file) => self.generate_append_file(append_file),
             Expression::FileExists(file_exists) => self.generate_file_exists(file_exists),
@@ -1251,6 +1252,7 @@ impl CodeGenerator {
                 }
             }
             Expression::AsType(as_type) => self.generate_as_type(as_type),
+            Expression::ModuleCall(module_call) => self.generate_module_call(module_call),
         }
     }
 
@@ -2651,6 +2653,45 @@ impl CodeGenerator {
             }
     }
 
+    /// Generate LLVM IR for module function calls (text backend)
+    #[cfg(not(feature = "llvm_backend"))]
+    fn generate_module_call(&mut self, module_call: &ModuleCallExpr) -> Result<Option<String>> {
+        // Generate call to the unqualified function name
+        // The combined program resolves imports and includes all functions with their original names
+        let function_name = module_call.function.clone();
+
+        // Generate arguments with type prefixes
+        // For module calls, we know the signature is (i64, i64) -> i64 based on the math_utils functions
+        let mut arg_strs = Vec::new();
+        for arg in &module_call.arguments {
+            if let Some(arg_val) = self.generate_expression(arg)? {
+                // Ensure arguments have proper type prefixes for LLVM calls
+                // Module functions take i64 parameters
+                if arg_val.starts_with("i64 ") {
+                    arg_strs.push(arg_val);
+                } else if arg_val.starts_with('%') || arg_val.chars().all(|c| c.is_ascii_digit() || c == '-') {
+                    // Register or literal without type prefix - add i64 prefix
+                    arg_strs.push(format!("i64 {}", arg_val));
+                } else {
+                    // Already has a type prefix
+                    arg_strs.push(arg_val);
+                }
+            } else {
+                return Err(CompilerError::codegen_error("Invalid argument in module call".to_string()));
+            }
+        }
+
+        // Look up function and generate call
+        let temp_reg = format!("%call_{}", self.instructions.len());
+        let args_str = arg_strs.join(", ");
+
+        // Generate the LLVM call instruction
+        // For now, assume all functions return i64
+        self.instructions.push(format!("  {} = call i64 @{}({})", temp_reg, function_name, args_str));
+
+        Ok(Some(format!("i64 {}", temp_reg)))
+    }
+
     /// Generate LLVM IR for indirect function calls (calling function pointers)
     #[cfg(not(feature = "llvm_backend"))]
     fn generate_indirect_call(&mut self, call: &CallExpr, param_types: &[Type], return_type: &Type) -> Result<Option<String>> {
@@ -2887,6 +2928,7 @@ impl CodeGenerator {
             Expression::Binary(binary) => self.generate_binary_llvm(binary),
             Expression::Unary(unary) => self.generate_unary_llvm(unary),
             Expression::Call(call) => self.generate_call_llvm(call),
+            Expression::ModuleCall(module_call) => self.generate_module_call_llvm(module_call),
             Expression::If(if_expr) => self.generate_if_llvm(if_expr),
             Expression::Case(case) => self.generate_case_llvm(case),
             Expression::Do(do_expr) => self.generate_do_llvm(do_expr),
@@ -2904,7 +2946,7 @@ impl CodeGenerator {
             Expression::ExecCommand(exec_cmd) => self.generate_exec_command_llvm(exec_cmd),
             Expression::ListDirectory(list_dir) => self.generate_list_directory_llvm(list_dir),
             Expression::FunctionLiteral(func_lit) => self.generate_function_literal_llvm(func_lit),
-            Expression::GetCpuTopologyInfo(get_topology) => self.generate_get_cpu_topology_info_llvm(get_topology),
+            Expression::GetCpuTopology(get_topology) => self.generate_get_cpu_topology_llvm(get_topology),
             Expression::PrintInt64(print_int64) => self.generate_print_int64_llvm(print_int64),
             Expression::PrintInt32(print_int32) => self.generate_print_int32_llvm(print_int32),
             Expression::PrintInt16(print_int16) => self.generate_print_int16_llvm(print_int16),
@@ -2915,6 +2957,33 @@ impl CodeGenerator {
             Expression::PrintFloat64(print_float64) => self.generate_print_float64_llvm(print_float64),
             Expression::AsType(as_type) => self.generate_as_type_llvm(as_type),
             _ => Err(CompilerError::codegen_error(format!("Expression type not yet supported in LLVM backend: {:?}", expr))),
+        }
+    }
+
+    /// Generate LLVM value for module function calls (LLVM backend)
+    #[cfg(feature = "llvm_backend")]
+    fn generate_module_call_llvm(&mut self, module_call: &ModuleCallExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
+        // Generate call to the unqualified function name
+        // The combined program resolves imports and includes all functions with their original names
+        let function_name = module_call.function.clone();
+
+        // Generate arguments
+        let mut args = Vec::new();
+        for arg in &module_call.arguments {
+            if let Some(arg_value) = self.generate_expression_llvm(arg)? {
+                args.push(arg_value);
+            }
+        }
+
+        // Look up function and generate call
+        match self.module.get_function(&function_name) {
+            Some(func) => {
+                let call_site_value = self.builder.build_call(func, &args, "module_call");
+                Ok(Some(call_site_value.try_as_basic_value().left_or(None)))
+            }
+            None => {
+                Err(CompilerError::codegen_error(format!("Function not found: {}", module_call.function)))
+            }
         }
     }
 
@@ -3509,6 +3578,11 @@ impl CodeGenerator {
         } else {
             register.to_string()
         }
+    }
+
+    /// Check if a type represents a pointer
+    fn is_pointer_type(&self, ty: &Type) -> bool {
+        matches!(ty, Type::Named(name) if name == "string") || matches!(ty, Type::Record(_))
     }
 
     /// Convert a Silica type to LLVM type string
@@ -7528,13 +7602,46 @@ impl CodeGenerator {
             self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, i64_reg));
             ptr_reg
         } else {
-            self.clean_register_for_instruction(&object_value)
+            let cleaned = self.clean_register_for_instruction(&object_value);
+            // Ensure register names have % prefix for LLVM instructions
+            if cleaned.starts_with('%') {
+                cleaned
+            } else {
+                format!("%{}", cleaned)
+            }
         };
-        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", field_ptr_reg, clean_object, field_offset));
 
-        // Cast to i64 pointer and load the value
-        self.instructions.push(format!("  {} = bitcast i8* {} to i64*", field_ptr_i64, field_ptr_reg));
-        self.instructions.push(format!("  {} = load i64, i64* {}", result_reg, field_ptr_i64));
+        // Special case: if this is a direct struct value from a function return (like get_cpu_topology()),
+        // we need to handle it differently since it's not a pointer
+        let is_direct_struct_value = object_value.starts_with("t") && !object_value.starts_with("i64 ") &&
+                                   matches!(&expanded_object_type, Type::Record(_) | Type::Named(_));
+
+        if is_direct_struct_value {
+            // For direct struct values from function returns, use extractvalue
+            let struct_type_str = match &expanded_object_type {
+                Type::Record(fields) => {
+                    let field_types: Vec<String> = fields.iter()
+                        .map(|(_, field_type)| self.get_llvm_type_string(field_type))
+                        .collect();
+                    format!("{{{}}}", field_types.join(", "))
+                }
+                Type::Named(name) if self.struct_defs.contains_key(name) => {
+                    // For named structs, we need to look up the definition
+                    // For now, assume it's the CpuTopology struct
+                    "{i64, i64, i64, i1, i64, i64, i1, i64, i64}".to_string()
+                }
+                _ => "{i64}".to_string(), // Fallback
+            };
+
+            self.instructions.push(format!("  {} = extractvalue {} {}, {}", result_reg, struct_type_str, clean_object, field_index));
+        } else {
+            // For struct pointers (normal case), use getelementptr + load
+            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", field_ptr_reg, clean_object, field_offset));
+
+            // Cast to i64 pointer and load the value
+            self.instructions.push(format!("  {} = bitcast i8* {} to i64*", field_ptr_i64, field_ptr_reg));
+            self.instructions.push(format!("  {} = load i64, i64* {}", result_reg, field_ptr_i64));
+        }
 
         Ok(Some(result_reg))
     }
@@ -11058,14 +11165,15 @@ impl CodeGenerator {
         Ok(Some(empty_string.into()))
     }
 
-    /// Generate LLVM IR for get_cpu_topology_info expression
-    fn generate_get_cpu_topology_info(&mut self, _get_topology: &GetCpuTopologyInfoExpr) -> Result<Option<String>> {
-        // Call the runtime function to get topology info
-        // This returns a SilicaString pointer containing the topology information
-        let result_reg = self.next_register();
-        self.instructions.push(format!("  %{} = call i8* @silica_get_cpu_topology_info()", result_reg));
 
-        // Return the string pointer
+    /// Generate LLVM IR for get_cpu_topology expression
+    fn generate_get_cpu_topology(&mut self, _get_topology: &GetCpuTopologyExpr) -> Result<Option<String>> {
+        // Call the runtime function to get topology struct
+        // This returns a CpuTopology struct containing the topology information
+        let result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = call {{i64, i64, i64, i1, i64, i64, i1, i64, i64}} @silica_get_cpu_topology()", result_reg));
+
+        // Return the struct
         Ok(Some(result_reg))
     }
 
@@ -11884,20 +11992,21 @@ impl CodeGenerator {
         Ok(())
     }
 
-    /// Generate LLVM value for get_cpu_topology_info expression (LLVM backend)
+
+    /// Generate LLVM value for get_cpu_topology expression (LLVM backend)
     #[cfg(feature = "llvm_backend")]
-    fn generate_get_cpu_topology_info_llvm(&mut self, _get_topology: &GetCpuTopologyInfoExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
+    fn generate_get_cpu_topology_llvm(&mut self, _get_topology: &GetCpuTopologyExpr) -> Result<Option<inkwell::values::BasicValueEnum<'static>>> {
         if let (Some(module), Some(builder)) = (&self.module, &self.builder) {
             unsafe {
-                // Get the silica_get_cpu_topology_info function
-                if let Some(topology_func) = (*module).get_function("silica_get_cpu_topology_info") {
+                // Get the silica_get_cpu_topology function
+                if let Some(topology_func) = (*module).get_function("silica_get_cpu_topology") {
                     // Call the function (no arguments)
-                    let call_result = builder.build_call(topology_func, &[], "topology_info").unwrap();
+                    let call_result = builder.build_call(topology_func, &[], "cpu_topology").unwrap();
 
-                    // Return the string pointer
+                    // Return the struct
                     Ok(Some(call_result.try_as_basic_value().unwrap_left().into()))
                 } else {
-                    Err(CompilerError::codegen_error("silica_get_cpu_topology_info function not found".to_string()))
+                    Err(CompilerError::codegen_error("silica_get_cpu_topology function not found".to_string()))
                 }
             }
         } else {

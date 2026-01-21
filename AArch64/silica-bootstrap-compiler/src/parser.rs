@@ -762,7 +762,9 @@ impl Parser {
         let mut expr = self.primary()?;
 
         loop {
-            if self.match_token(TokenKind::LeftParen) {
+            if self.match_token(TokenKind::At) {
+                expr = self.finish_module_call(expr)?;
+            } else if self.match_token(TokenKind::LeftParen) {
                 expr = self.finish_call(expr)?;
             } else if self.match_token(TokenKind::LeftBrace) {
                 expr = self.finish_struct_literal(expr)?;
@@ -783,6 +785,48 @@ impl Parser {
         }
 
         Ok(expr)
+    }
+
+    /// Finish parsing a module function call: module@function(args...)
+    fn finish_module_call(&mut self, module: Expression) -> Result<Expression> {
+        let module_name = match module {
+            Expression::Identifier(name) => name,
+            _ => {
+                let location = self.previous().location.clone();
+                let metadata = self.build_parse_error_metadata("E1001", &location, Some("spec:§3"), None)
+                    .build();
+                return parse_error_with_metadata(
+                    location,
+                    "Expected module name before '@'".to_string(),
+                    metadata,
+                );
+            }
+        };
+
+        let function_name = self.consume_identifier("Expected function name after '@'")?;
+        self.consume(TokenKind::LeftParen, "Expected '(' after function name")?;
+
+        let mut arguments = Vec::new();
+        let location = self.previous().location.clone();
+
+        // Parse arguments
+        if !self.check(TokenKind::RightParen) {
+            loop {
+                arguments.push(self.expression()?);
+                if !self.match_token(TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.consume(TokenKind::RightParen, "Expected ')' after arguments")?;
+
+        Ok(Expression::ModuleCall(ModuleCallExpr {
+            module: module_name,
+            function: function_name,
+            arguments,
+            location,
+        }))
     }
 
     /// Finish parsing a function call
@@ -1001,8 +1045,8 @@ impl Parser {
                 return self.parse_print_float32();
             } else if name == "print_float64" && self.match_token(TokenKind::LeftParen) {
                 return self.parse_print_float64();
-            } else if name == "get_cpu_topology_info" && self.match_token(TokenKind::LeftParen) {
-                return self.parse_get_cpu_topology_info();
+            } else if name == "get_cpu_topology" && self.match_token(TokenKind::LeftParen) {
+                return self.parse_get_cpu_topology();
             } else if name == "read_lines" && self.match_token(TokenKind::LeftParen) {
                 return self.parse_read_lines();
             } else if name == "append_file" && self.match_token(TokenKind::LeftParen) {
@@ -1227,12 +1271,13 @@ impl Parser {
         }))
     }
 
-    /// Parse get_cpu_topology_info() expression
-    fn parse_get_cpu_topology_info(&mut self) -> Result<Expression> {
-        let location = self.previous().location.clone();
-        self.consume(TokenKind::RightParen, "Expected ')' after get_cpu_topology_info")?;
 
-        Ok(Expression::GetCpuTopologyInfo(GetCpuTopologyInfoExpr {
+    /// Parse get_cpu_topology() expression
+    fn parse_get_cpu_topology(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        self.consume(TokenKind::RightParen, "Expected ')' after get_cpu_topology")?;
+
+        Ok(Expression::GetCpuTopology(GetCpuTopologyExpr {
             location,
         }))
     }
@@ -2429,6 +2474,13 @@ impl Parser {
             Expression::Call(call) => {
                 self.collect_identifiers(&call.function, identifiers);
                 for arg in &call.arguments {
+                    self.collect_identifiers(arg, identifiers);
+                }
+            }
+            Expression::ModuleCall(module_call) => {
+                identifiers.insert(module_call.module.clone());
+                identifiers.insert(module_call.function.clone());
+                for arg in &module_call.arguments {
                     self.collect_identifiers(arg, identifiers);
                 }
             }

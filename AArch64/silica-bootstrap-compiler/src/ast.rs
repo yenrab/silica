@@ -181,6 +181,7 @@ pub enum Expression {
 
     // Function calls and applications
     Call(CallExpr),
+    ModuleCall(ModuleCallExpr),
     FunctionLiteral(FunctionLiteralExpr),
 
     // Operators
@@ -213,7 +214,7 @@ pub enum Expression {
     PrintFloat16(PrintFloat16Expr),
     PrintFloat32(PrintFloat32Expr),
     PrintFloat64(PrintFloat64Expr),
-    GetCpuTopologyInfo(GetCpuTopologyInfoExpr),
+    GetCpuTopology(GetCpuTopologyExpr),
 
     // I/O operations
     ReadLines(ReadLinesExpr),
@@ -304,6 +305,15 @@ pub enum Statement {
 #[derive(Debug, Clone)]
 pub struct CallExpr {
     pub function: Box<Expression>,
+    pub arguments: Vec<Expression>,
+    pub location: SourceLocation,
+}
+
+/// Module function call expression: module@function(args...)
+#[derive(Debug, Clone)]
+pub struct ModuleCallExpr {
+    pub module: String,
+    pub function: String,
     pub arguments: Vec<Expression>,
     pub location: SourceLocation,
 }
@@ -505,9 +515,10 @@ pub struct PrintFloat64Expr {
     pub location: SourceLocation,
 }
 
-/// Get CPU topology info expression: get_cpu_topology_info()
+
+/// Get CPU topology expression: get_cpu_topology()
 #[derive(Debug, Clone)]
-pub struct GetCpuTopologyInfoExpr {
+pub struct GetCpuTopologyExpr {
     pub location: SourceLocation,
 }
 

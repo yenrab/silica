@@ -333,6 +333,7 @@ impl<'a> TypeChecker<'a> {
             Expression::Binary(binary) => &binary.location,
             Expression::Unary(unary) => &unary.location,
             Expression::Call(call) => &call.location,
+            Expression::ModuleCall(module_call) => &module_call.location,
             Expression::If(if_expr) => &if_expr.location,
             Expression::Case(case) => &case.location,
             Expression::Do(do_expr) => &do_expr.location,
@@ -355,7 +356,7 @@ impl<'a> TypeChecker<'a> {
             Expression::PrintFloat16(print_float16) => &print_float16.location,
             Expression::PrintFloat32(print_float32) => &print_float32.location,
             Expression::PrintFloat64(print_float64) => &print_float64.location,
-            Expression::GetCpuTopologyInfo(get_topology) => &get_topology.location,
+            Expression::GetCpuTopology(get_topology) => &get_topology.location,
             Expression::StringLen(string_len) => &string_len.location,
             Expression::StringLenChars(string_len_chars) => &string_len_chars.location,
             Expression::StringConcat(string_concat) => &string_concat.location,
@@ -1094,6 +1095,7 @@ impl<'a> TypeChecker<'a> {
             Expression::Binary(binary) => self.infer_binary_with_context(binary, expected_type)?,
             Expression::Unary(unary) => self.infer_unary_with_context(unary, expected_type)?,
             Expression::Call(call) => self.infer_call(call)?,
+            Expression::ModuleCall(module_call) => self.infer_module_call(module_call)?,
             Expression::FunctionLiteral(func) => self.infer_function_literal(func)?,
             Expression::If(if_expr) => self.infer_if(if_expr)?,
             Expression::Case(case) => self.infer_case(case)?,
@@ -1165,7 +1167,17 @@ impl<'a> TypeChecker<'a> {
                 self.infer_struct_literal(struct_lit)?
             },
             Expression::FieldAccess(field_access) => self.infer_field_access(field_access)?,
-            Expression::GetCpuTopologyInfo(_) => Type::String, // Returns string pointer
+            Expression::GetCpuTopology(_) => Type::Record(vec![
+                ("total_cores".to_string(), Type::Int64),
+                ("performance_core_count".to_string(), Type::Int64),
+                ("efficiency_core_count".to_string(), Type::Int64),
+                ("has_neon".to_string(), Type::Bool),
+                ("neon_version".to_string(), Type::Int64),
+                ("vector_size_bytes".to_string(), Type::Int64),
+                ("has_sve".to_string(), Type::Bool),
+                ("sve_vector_length".to_string(), Type::Int64),
+                ("max_simd_registers".to_string(), Type::Int64),
+            ]),
             Expression::AsType(as_type) => {
                 // Type casting: the result type is the target type
                 // We should validate that the cast is valid, but for now just return the target type
@@ -1361,6 +1373,7 @@ impl<'a> TypeChecker<'a> {
             Expression::Binary(binary) => Some(&binary.location),
             Expression::Unary(unary) => Some(&unary.location),
             Expression::Call(call) => Some(&call.location),
+            Expression::ModuleCall(module_call) => Some(&module_call.location),
             Expression::If(if_expr) => Some(&if_expr.location),
             Expression::Case(case) => Some(&case.location),
             Expression::Do(do_expr) => Some(&do_expr.location),
@@ -1383,7 +1396,7 @@ impl<'a> TypeChecker<'a> {
             Expression::PrintFloat16(print_float16) => Some(&print_float16.location),
             Expression::PrintFloat32(print_float32) => Some(&print_float32.location),
             Expression::PrintFloat64(print_float64) => Some(&print_float64.location),
-            Expression::GetCpuTopologyInfo(get_topology) => Some(&get_topology.location),
+            Expression::GetCpuTopology(get_topology) => Some(&get_topology.location),
             Expression::ReadLines(read_lines) => Some(&read_lines.location),
             Expression::AppendFile(append_file) => Some(&append_file.location),
             Expression::FileExists(file_exists) => Some(&file_exists.location),
@@ -1504,15 +1517,15 @@ impl<'a> TypeChecker<'a> {
             // Check imported symbols from all modules
             for (_module_name, module_symbols) in &symbol_table.modules {
                 if let Some(symbol_info) = module_symbols.get(name) {
-                    // Found imported symbol - convert to appropriate function type
-                    let mut parameters = Vec::new();
-                    for _ in 0..symbol_info.arity {
-                        parameters.push(Type::Int64); // Assume all parameters are int for now
+                    // Found imported symbol - use the actual computed type
+                    // The type should have been updated after type checking
+                    if let Type::Function { parameters, return_type } = &symbol_info.ty {
+                        // Return the actual function type (parameters and return type are already resolved)
+                        return Ok(symbol_info.ty.clone());
+                    } else {
+                        // If it's not a function type, return it as-is (could be a variable or other type)
+                        return Ok(symbol_info.ty.clone());
                     }
-                    return Ok(Type::Function {
-                        parameters,
-                        return_type: Box::new(Type::Int64), // Assume all functions return int for now
-                    });
                 }
             }
             // If we get here, symbol wasn't found in any module
@@ -1750,6 +1763,49 @@ impl<'a> TypeChecker<'a> {
         }
 
         Ok(return_type)
+    }
+
+    fn infer_module_call(&mut self, module_call: &ModuleCallExpr) -> Result<Type> {
+        // Look up the function directly in the type checker's environment
+        // Since we're in the middle of type checking the combined program,
+        // all imported functions should be available in the environment
+        match self.infer_identifier(&module_call.function) {
+            Ok(func_type) => {
+                // Check if we have a function type
+                if let Type::Function { parameters, return_type } = &func_type {
+                    // Direct function type - check arguments match
+                    if parameters.len() != module_call.arguments.len() {
+                        return type_error(
+                            module_call.location.clone(),
+                            format!("Function {}.{} expects {} arguments, got {}",
+                                   module_call.module, module_call.function,
+                                   parameters.len(), module_call.arguments.len()),
+                        );
+                    }
+
+                    // Check argument types - pass expected parameter types as context for literals
+                    for (arg_expr, expected_type) in module_call.arguments.iter().zip(parameters) {
+                        let actual_type = self.infer_expression_with_context(arg_expr, Some(expected_type))?;
+                        self.add_constraint(actual_type, expected_type.clone());
+                    }
+
+                    Ok(*return_type.clone())
+                } else {
+                    // If it's not a function type, something is wrong
+                    type_error(
+                        module_call.location.clone(),
+                        format!("Symbol {}.{} is not a function type", module_call.module, module_call.function),
+                    )
+                }
+            }
+            Err(_) => {
+                // Function not found in environment
+                type_error(
+                    module_call.location.clone(),
+                    format!("Function '{}' not found in module '{}'", module_call.function, module_call.module),
+                )
+            }
+        }
     }
 
     /// Infer type for method calls (receiver.method(args))
@@ -3735,6 +3791,11 @@ impl<'a> TypeChecker<'a> {
     /// Get the type aliases for code generation
     pub fn get_type_aliases(&self) -> &HashMap<String, Type> {
         &self.type_aliases
+    }
+
+    /// Get the type environment for symbol table updates
+    pub fn get_env(&self) -> &TypeEnv {
+        &self.env
     }
 
     /// Infer types for a sequence of statements, returning the type of the last expression

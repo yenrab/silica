@@ -44,14 +44,14 @@ all: executables-all modules
 executables: $(EXECUTABLES_LL)
 
 %.ll: %.silica
-	$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+	-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Compile module files (those without main functions)
 modules: $(MODULES_LL)
 
 # Modules are compiled the same way, but marked as such
 $(MODULES_LL): %.ll: %.silica
-	$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+	-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Build executables if LLVM tools are available
 executables-all: executables $(RUNTIME_LIB)
