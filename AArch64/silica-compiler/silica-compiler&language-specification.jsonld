@@ -279,7 +279,8 @@
         {"@id": "silica:Section2_3", "title": "Comments"},
         {"@id": "silica:Section2_4", "title": "Whitespace"},
         {"@id": "silica:Section2_5", "title": "Lexical Errors"}
-      ]
+      ],
+      "references": [{"@id": "silica:ListLiterals"}]
     },
     {
       "@id": "silica:Section2_1",
@@ -461,6 +462,7 @@
       "subsections": [
         {"@id": "silica:FunctionCalls", "title": "Function Calls"},
         {"@id": "silica:CaseExpressions", "title": "Case Expressions"},
+        {"@id": "silica:ListPatternMatching", "title": "List Pattern Matching"},
         {"@id": "silica:DoExpressions", "title": "Do Expressions"},
         {"@id": "silica:IfExpressions", "title": "If Expressions"},
         {"@id": "silica:FunctionLiterals", "title": "Function Literals"}
@@ -507,7 +509,8 @@
       "sectionNumber": 4,
       "subsections": [
         {"@id": "silica:Section4_1", "title": "Primitive Types"},
-        {"@id": "silica:Section4_2", "title": "Compound Types"}
+        {"@id": "silica:Section4_2", "title": "Compound Types"},
+        {"@id": "silica:Section4_3", "title": "List Type"}
       ]
     },
     {
@@ -525,8 +528,7 @@
         {"name": "float32", "description": "32-bit floating-point"},
         {"name": "float64", "description": "64-bit floating-point"},
         {"name": "char", "description": "Character type"},
-        {"name": "string", "description": "String type"},
-        {"name": "any", "description": "Any type (top type)"}
+        {"name": "string", "description": "String type"}
       ]
     },
     {
@@ -536,8 +538,17 @@
       "types": [
         {"name": "Function Types", "syntax": "T1 -> T2"},
         {"name": "Tuple Types", "syntax": "(T1, T2, ...)"},
-        {"name": "Record Types", "syntax": "{field1: T1, field2: T2}"}
+        {"name": "Record Types", "syntax": "{field1: T1, field2: T2}"},
+        {"name": "List Types", "syntax": "List[ElementType]", "reference": {"@id": "silica:ListType"}}
       ]
+    },
+    {
+      "@id": "silica:Section4_3",
+      "@type": "Concept",
+      "rdfs:label": "4.3 List Type",
+      "sectionNumber": 4.3,
+      "description": "List type parameterized by element type",
+      "references": [{"@id": "silica:ListType"}]
     },
     {
       "@id": "silica:Section8",
@@ -548,7 +559,8 @@
       "keyConcepts": [
         {"@id": "silica:TypeEquivalence", "name": "Type Equivalence"},
         {"@id": "silica:SubtypingRules", "name": "Subtyping Rules"},
-        {"@id": "silica:TraitBasedPolymorphism", "name": "Trait-Based Polymorphism"}
+        {"@id": "silica:TraitBasedPolymorphism", "name": "Trait-Based Polymorphism"},
+        {"@id": "silica:CollectableTrait", "name": "Collectable Trait"}
       ]
     },
     {
@@ -776,6 +788,135 @@
         {"name": "ActorState", "description": "Marker trait for types used as actor initial state"},
         {"name": "ActorMessage", "description": "Marker trait for types used as messages"}
       ]
+    },
+    {
+      "@id": "silica:CollectableTrait",
+      "@type": "Concept",
+      "rdfs:label": "Collectable Trait",
+      "description": "Marker trait indicating that a type can be collected in lists",
+      "traitDefinition": "trait Collectable { }",
+      "automaticImplementation": {
+        "description": "The following types automatically implement Collectable without requiring explicit impl declarations",
+        "primitiveTypes": ["unit", "bool", "int8", "int16", "int32", "int64", "float16", "float32", "float64", "char", "string"],
+        "functionTypes": "All function types of the form (T1 -> T2) where T1 and T2 are concrete types",
+        "tupleTypes": "All tuple types of the form (T1, T2, ...) where all Ti are concrete types",
+        "structTypes": "All struct types automatically implement Collectable",
+        "enumTypes": "All enum types automatically implement Collectable",
+        "typeAliases": "Type aliases inherit Collectable from their underlying type",
+        "listType": "List[ElementType] automatically implements Collectable for any ElementType"
+      },
+      "languageRule": "These automatic implementations are language rules, not explicit code. The compiler treats these types as Collectable by default. No explicit impl Collectable for ... declarations are needed or allowed for these built-in cases."
+    },
+    {
+      "@id": "silica:ListType",
+      "@type": "Concept",
+      "rdfs:label": "List Type",
+      "description": "Parameterized list type List[ElementType] where ElementType must implement Collectable",
+      "syntax": "List[ElementType: Collectable]",
+      "characteristics": [
+        "Immutable - all operations return new lists",
+        "Uses structural sharing for efficient head operations",
+        "Element type must always be explicitly specified",
+        "No type inference for lists",
+        "Composed of sets of buffers sized to match vector processing units",
+        "Non-primitive types stored as region references in buffers"
+      ],
+      "typeAnnotationRequirement": "All list variables and expressions must explicitly specify the element type using List[ElementType] syntax. The type List alone (without element type) is not valid.",
+      "immutability": "Lists in Silica are immutable. All list operations return new lists rather than modifying existing lists. The language implementation uses structural sharing to make these operations efficient.",
+      "headOperationsOnly": "All list modification operations work only on the head of the list. There are no operations to remove elements from the middle or end of a list.",
+      "internalRepresentation": {
+        "description": "Lists are composed of sets of buffers. The buffers are sized to match the vector processing units found on the target chip architecture (e.g., 128-bit or 256-bit buffers for NEON/SVE on AArch64).",
+        "primitiveTypes": "Primitive types are stored directly in buffers",
+        "nonPrimitiveTypes": "When a non-primitive type is stored in a list, a reference to a Silica region is placed in the buffer at the correct location relative to existing region references",
+        "benefits": [
+          "Enables efficient vectorized operations on list elements",
+          "Aligns with AArch64 vector processing capabilities",
+          "Optimizes memory layout for SIMD operations"
+        ]
+      },
+      "typeCheckingRules": [
+        "All elements in a list literal must have exactly the same type",
+        "The explicit type annotation List[ElementType] must match the types of all elements exactly",
+        "Mixing different types in a list literal is a compile-time error, even if both types implement Collectable",
+        "The element type must implement Collectable"
+      ]
+    },
+    {
+      "@id": "silica:ListOperations",
+      "@type": "Concept",
+      "rdfs:label": "List Operations",
+      "description": "Built-in operations for working with List[ElementType]",
+      "operations": [
+        {
+          "name": "empty",
+          "signature": "fn empty[ElementType: Collectable]() -> List[ElementType]",
+          "description": "Create empty list with explicit element type"
+        },
+        {
+          "name": "prepend",
+          "signature": "fn prepend[ElementType: Collectable](item: ElementType, list: List[ElementType]) -> List[ElementType]",
+          "description": "Prepend an element to the front of a list (returns new list). Uses structural sharing, does not copy existing elements."
+        },
+        {
+          "name": "remove_head",
+          "signature": "fn remove_head[ElementType: Collectable](list: List[ElementType]) -> List[ElementType]",
+          "description": "Remove the head element from a list (returns new list). Uses structural sharing, does not copy remaining elements. Returns empty list if input list is empty."
+        },
+        {
+          "name": "head",
+          "signature": "fn head[ElementType: Collectable](list: List[ElementType]) -> ElementType",
+          "description": "Get the head element of a list. Runtime error if list is empty."
+        },
+        {
+          "name": "tail",
+          "signature": "fn tail[ElementType: Collectable](list: List[ElementType]) -> List[ElementType]",
+          "description": "Get the tail of a list (all elements except the head). Returns empty list if input list has 0 or 1 elements."
+        },
+        {
+          "name": "reverse",
+          "signature": "fn reverse[ElementType: Collectable](list: List[ElementType]) -> List[ElementType]",
+          "description": "Reverse a list (returns new list with elements in reverse order)"
+        },
+        {
+          "name": "length",
+          "signature": "fn length[ElementType: Collectable](list: List[ElementType]) -> int64",
+          "description": "Get list length"
+        },
+        {
+          "name": "is_empty",
+          "signature": "fn is_empty[ElementType: Collectable](list: List[ElementType]) -> bool",
+          "description": "Check if list is empty"
+        }
+      ]
+    },
+    {
+      "@id": "silica:ListPatternMatching",
+      "@type": "Concept",
+      "rdfs:label": "List Pattern Matching",
+      "description": "Pattern matching syntax for lists",
+      "syntax": "case list_expression of { []: List[ElementType] -> expression; [head: ElementType, tail: List[ElementType]] -> expression; _: List[ElementType] -> expression; }",
+      "rules": [
+        "The ElementType in the pattern must match the list's element type exactly",
+        "Pattern matching is exhaustive - all cases must be covered",
+        "The head variable has type ElementType (the list's element type)",
+        "The tail variable has type List[ElementType] with the same element type",
+        "All patterns must explicitly specify List[ElementType] - List alone is not valid",
+        "The non-empty pattern matches a list with at least one element, binding the first element to head and the remaining elements to tail"
+      ]
+    },
+    {
+      "@id": "silica:ListLiterals",
+      "@type": "SyntaxElement",
+      "rdfs:label": "List Literals",
+      "description": "List literal syntax with explicit type annotation",
+      "grammar": "list_literal ::= \"[\" [element_list] \"]\" \":\" \"List\" \"[\" element_type \"]\"",
+      "examples": [
+        "[]: List[string]",
+        "[\"hello\", \"world\"]: List[string]",
+        "[1, 2, 3]: List[int64]",
+        "[fn(x: int64) -> int64 { x * 2 }]: List[(int64 -> int64)]"
+      ],
+      "typeChecking": "All elements in a list literal must have exactly the same type. The explicit type annotation List[ElementType] must match the types of all elements. Mixing different types in a list literal is a compile-time error."
     }
   ]
 }

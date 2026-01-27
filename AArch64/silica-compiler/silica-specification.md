@@ -273,6 +273,22 @@ The unit value is represented by empty parentheses:
 unit_literal ::= "(" ")"
 ```
 
+##### List Literals
+List literals are enclosed in square brackets and require an explicit type annotation:
+```
+list_literal ::= "[" [element_list] "]" ":" "List" "[" element_type "]"
+
+element_list ::= expression {"," expression}
+```
+
+Examples:
+- `[]: List[string]` - empty list of strings
+- `["hello", "world"]: List[string]` - list with two string elements
+- `[1, 2, 3]: List[int64]` - list with three integer elements
+- `[fn(x: int64) -> int64 { x * 2 }]: List[(int64 -> int64)]` - list with function elements
+
+**Type Checking**: All elements in a list literal must have exactly the same type. The explicit type annotation `List[ElementType]` must match the types of all elements. Mixing different types in a list literal is a compile-time error, even if both types implement `Collectable`.
+
 #### 2.2.4 Operators and Punctuation
 
 ##### Arithmetic Operators
@@ -1301,6 +1317,66 @@ This judgment holds when:
 - For each value `v` of type `T`:
   - Either `v` matches some `pi` and `gi` evaluates to `true` for `v`
   - Or `v` matches no `pi`, or all matching `pi` have `gi` evaluating to `false`, and the catch-all pattern exists
+
+#### 3.3.4 List Pattern Matching
+
+Lists support pattern matching with explicit element type annotations. The pattern matching syntax for lists is:
+
+```silica
+case list_expression of {
+    []: List[ElementType] -> expression;                    -- Empty list pattern
+    [head: ElementType, tail: List[ElementType]] -> expression;  -- Non-empty pattern
+    _: List[ElementType] -> expression;                     -- Catch-all pattern
+}
+```
+
+**Pattern Matching Rules:**
+
+1. The `ElementType` in the pattern must match the list's element type exactly
+2. Pattern matching is exhaustive - all cases must be covered
+3. The `head` variable has type `ElementType` (the list's element type)
+4. The `tail` variable has type `List[ElementType]` with the same element type
+5. All patterns must explicitly specify `List[ElementType]` - `List` alone is not valid
+6. The non-empty pattern matches a list with at least one element, binding the first element to `head` and the remaining elements to `tail`
+
+**Examples:**
+
+```silica
+-- Pattern matching on list of strings
+case my_strings: List[string] of {
+    []: List[string] -> "empty";
+    [first: string, rest: List[string]] -> first;
+    _: List[string] -> "other";
+}
+
+-- Pattern matching on list of functions
+case my_functions: List[(int64 -> int64)] of {
+    []: List[(int64 -> int64)] -> fn(x: int64) -> int64 { 0 };
+    [f: (int64 -> int64), rest: List[(int64 -> int64)]] -> f;
+    _: List[(int64 -> int64)] -> fn(x: int64) -> int64 { x };
+}
+
+-- Recursive list processing
+fn sum_list(list: List[int64]) -> int64 {
+    case list of {
+        []: List[int64] -> 0;
+        [head: int64, tail: List[int64]] -> head + sum_list(tail);
+        _: List[int64] -> 0;
+    }
+}
+
+-- Building lists recursively
+fn build_list(count: int64) -> List[int64] {
+    case count of {
+        0: int64 -> empty[int64]();
+        n: int64 -> {
+            rest: List[int64] <- build_list(n - 1);
+            prepend[int64](n, rest)
+        };
+        _: int64 -> empty[int64]();
+    }
+}
+```
 
 #### 3.3.4 Do Expressions
 ```
@@ -2510,19 +2586,6 @@ The `string` type represents UTF-8 encoded strings.
 type string
 ```
 
-#### 4.1.7 Any Type
-The `any` type is a special type that can represent values of any other type. It is used for type matching and dynamic typing scenarios where the exact type is not known at compile time or needs to be determined at runtime.
-
-```
-type any
-```
-
-The `any` type supports:
-- Assignment from any other type
-- Type matching with any other type
-- Runtime type introspection capabilities
-- Explicit casting to concrete types
-
 ### 4.2 Compound Types
 
 #### 4.2.1 Function Types
@@ -2553,7 +2616,30 @@ Example:
 { name: string, age: int, active: bool }
 ```
 
-#### 4.2.4 Variant Types
+#### 4.2.4 List Types
+List types are parameterized by their element type and have the form `List[ElementType]` where `ElementType` must implement the `Collectable` trait.
+
+```
+List[ElementType: Collectable]
+```
+
+Lists are immutable - all operations return new lists rather than modifying existing lists. The language implementation uses structural sharing to make head operations (prepend, remove_head) efficient without copying all elements.
+
+Examples:
+- `List[string]` - list of strings
+- `List[int64]` - list of integers
+- `List[(int64 -> int64)]` - list of functions
+- `List[List[int64]]` - nested list (list of lists of integers)
+
+**Type Annotation Requirement**: All list variables and expressions must explicitly specify the element type using `List[ElementType]` syntax. Type inference is not performed for lists - the element type must always be explicitly provided. The type `List` alone (without element type) is not valid.
+
+**Immutability**: Lists in Silica are immutable. All list operations return new lists rather than modifying existing lists. The language implementation uses structural sharing to make these operations efficient - when prepending an element or removing the head, the original list structure is reused rather than copying all elements.
+
+**Head Operations Only**: All list modification operations work only on the head of the list. There are no operations to remove elements from the middle or end of a list.
+
+**Internal Representation**: Lists are composed of sets of buffers. The buffers are sized to match the vector processing units found on the target chip architecture (e.g., 128-bit or 256-bit buffers for NEON/SVE on AArch64). When a non-primitive type is stored in a list, a reference to a Silica region is placed in the buffer at the correct location relative to existing region references. This design enables efficient vectorized operations on list elements and aligns with AArch64 vector processing capabilities.
+
+#### 4.2.5 Variant Types
 Variant types represent sum types with the form `Constructor1 [Type1] | Constructor2 [Type2] | ...`.
 
 Examples:
@@ -2846,6 +2932,97 @@ exec_command(command: string, args: list<string>) -> string proc[device_io]
 ```
 
 Execute a system command and return its output. Requires the `device_io` effect.
+
+### 5.5 System Information
+
+```
+get_cpu_topology_info() -> string proc[device_io]
+```
+
+Get CPU topology information as a JSON string. Requires the `device_io` effect.
+
+### 5.6 List Operations
+
+All list operations work with the `List[ElementType]` type where `ElementType` must implement `Collectable`. Lists are immutable - all operations return new lists rather than modifying existing lists.
+
+#### 5.6.1 List Construction
+
+```silica
+-- Create empty list with explicit element type
+fn empty[ElementType: Collectable]() -> List[ElementType]
+```
+
+#### 5.6.2 Head Operations
+
+```silica
+-- Prepend an element to the front of a list (returns new list)
+-- Efficient: uses structural sharing, does not copy existing elements
+fn prepend[ElementType: Collectable](item: ElementType, list: List[ElementType]) -> List[ElementType]
+
+-- Remove the head element from a list (returns new list)
+-- Efficient: uses structural sharing, does not copy remaining elements
+-- Returns empty list if input list is empty
+fn remove_head[ElementType: Collectable](list: List[ElementType]) -> List[ElementType]
+
+-- Get the head element of a list
+-- Returns the first element
+fn head[ElementType: Collectable](list: List[ElementType]) -> ElementType
+-- Runtime error if list is empty
+
+-- Get the tail of a list (all elements except the head)
+-- Returns a new list containing all elements except the first
+fn tail[ElementType: Collectable](list: List[ElementType]) -> List[ElementType]
+-- Returns empty list if input list has 0 or 1 elements
+```
+
+#### 5.6.3 List Utilities
+
+```silica
+-- Reverse a list (returns new list with elements in reverse order)
+fn reverse[ElementType: Collectable](list: List[ElementType]) -> List[ElementType]
+
+-- Get list length
+fn length[ElementType: Collectable](list: List[ElementType]) -> int64
+
+-- Check if list is empty
+fn is_empty[ElementType: Collectable](list: List[ElementType]) -> bool
+```
+
+**Operation Notes:**
+- **Head operations only**: All list modification operations work only on the head of the list. There are no operations to remove elements from the middle or end of a list.
+- **Immutability**: All operations return new lists; they never modify existing lists.
+- **Structural sharing**: When prepending or removing the head, Silica uses structural sharing to avoid copying all elements. The original list structure is reused efficiently.
+
+**Examples:**
+
+```silica
+-- Create a list
+my_list: List[string] <- ["hello", "world"]: List[string];
+
+-- Prepend an element (returns new list)
+new_list: List[string] <- prepend[string]("new", my_list);
+-- my_list is unchanged, new_list is ["new", "hello", "world"]
+
+-- Remove head element (returns new list)
+shorter_list: List[string] <- remove_head[string](my_list);
+-- my_list is unchanged, shorter_list is ["world"]
+
+-- Get head element
+first: string <- head[string](my_list);  -- "hello"
+
+-- Get tail
+rest: List[string] <- tail[string](my_list);  -- ["world"]
+
+-- Reverse list
+reversed: List[string] <- reverse[string](my_list);  -- ["world", "hello"]
+
+-- Check properties
+len: int64 <- length[string](my_list);  -- 2
+empty_flag: bool <- is_empty[string](my_list);  -- false
+
+-- Create empty list
+empty_list: List[string] <- empty[string]();
+```
 
 ### 5.5 System Information
 
@@ -3320,6 +3497,90 @@ impl Display for string;
 fn print_value(x: Display) -> unit { ... }
 -- int64 and string can both be passed to print_value
 ```
+
+#### 8.2.4 Collectable Trait
+
+The `Collectable` trait is a marker trait indicating that a type can be collected in lists. This trait has no methods; it serves as a type-level marker.
+
+```silica
+trait Collectable {
+    -- Marker trait indicating that a type can be collected in lists
+    -- This trait has no methods; it serves as a type-level marker
+}
+```
+
+**Automatic Collectable Implementation**
+
+The following types automatically implement `Collectable` without requiring explicit `impl` declarations. These automatic implementations are language rules, not explicit code. The compiler treats these types as `Collectable` by default. No explicit `impl Collectable for ...` declarations are needed or allowed for these built-in cases.
+
+**Primitive Types (Automatic Collectable):**
+- `unit`
+- `bool`
+- `int8`
+- `int16`
+- `int32`
+- `int64`
+- `float16`
+- `float32`
+- `float64`
+- `char`
+- `string`
+
+**Function Types (Automatic Collectable):**
+All function types of the form `(T1 -> T2)` where `T1` and `T2` are concrete types automatically implement `Collectable`. This includes:
+- Simple function types: `(int64 -> int64)`, `(string -> bool)`, etc.
+- Higher-order function types: `((int64 -> int64) -> string)`, `((string -> bool) -> (int64 -> int64))`, etc.
+- Functions with any arity: `(int64, string -> bool)`, `(int64, int64, int64 -> int64)`, etc.
+
+**Tuple Types (Automatic Collectable):**
+All tuple types of the form `(T1, T2, ...)` where all `Ti` are concrete types automatically implement `Collectable`. This includes:
+- `(int64, string)`
+- `(bool, int64, string)`
+- `((int64 -> int64), string)` (tuples containing functions)
+- Any combination of concrete types
+
+**Struct Types (Automatic Collectable):**
+All struct types automatically implement `Collectable`:
+```silica
+struct Point {
+    x: int64,
+    y: int64
+}
+-- Point automatically implements Collectable
+```
+
+**Enum Types (Automatic Collectable):**
+All enum types automatically implement `Collectable`:
+```silica
+enum OptionInt {
+    None,
+    Some(int64)
+}
+-- OptionInt automatically implements Collectable
+```
+
+**Type Aliases (Automatic Collectable):**
+Type aliases inherit `Collectable` from their underlying type:
+```silica
+type MyInt = int64;
+-- MyInt automatically implements Collectable (inherited from int64)
+```
+
+**List Type (Automatic Collectable):**
+The `List` type itself automatically implements `Collectable`, enabling nested lists:
+```silica
+-- List[ElementType] automatically implements Collectable for any ElementType
+-- This allows: List[List[string]], List[List[List[int64]]], etc.
+```
+
+**Type Checking Rules for Lists:**
+- All elements in a list literal must have exactly the same type
+- The explicit type annotation `List[ElementType]` must match the types of all elements exactly
+- Mixing different types in a list literal is a compile-time error, even if both types implement `Collectable`
+- The element type must implement `Collectable`
+- All list variables must have an explicit element type - `List` alone is not a valid type
+
+**Note**: While many types implement `Collectable`, a list can only contain elements of a single, specific type. For example, a `List[string]` cannot contain `int64` values, even though both `string` and `int64` implement `Collectable`.
 
 **Trait-Based Polymorphism Examples:**
 
@@ -9752,7 +10013,7 @@ fn broadcast(actors: list<actor_ref<Msg>>, message: Msg) -> proc[concurrency] un
 
 #### 20.3.3 Actor Monitoring
 ```
-fn monitor(target: actor_ref<any>, monitor: actor_ref<down_msg>)
+fn monitor(target: actor_ref, monitor: actor_ref<down_msg>)
     -> proc[concurrency] unit
 ```
 
@@ -12141,11 +12402,11 @@ This section documents all built-in functions and primitives available in Silica
 
 ### 22.1 Memory Management Primitives
 ```
-alloc_region(space: memory_space) -> proc[mem(space)] region(any, space)
+alloc_region(space: memory_space) -> proc[mem(space)] region(R, space)
 alloc_ref(region, initial_value) -> proc[mem(space)] ref(region, space, T)
 alloc_buf(region, capacity) -> proc[mem(space)] buf(region, space, T, capacity)
 alloc_atomic(region, initial_value) -> proc[mem(space), atomic] atomic_ref(region, space, T)
-alloc_region_on_numa_node(numa_node: int, space: memory_space) -> proc[mem(space)] region(any, space)
+alloc_region_on_numa_node(numa_node: int, space: memory_space) -> proc[mem(space)] region(R, space)
 ```
 
 **Memory Space Types:**
@@ -12730,7 +12991,7 @@ fn panic(message: string) -> ! {
 Actors can fail and notify monitors:
 
 ```
-type down_message = Down(actor_ref<any>, exit_reason)
+type down_message = Down(actor_ref, exit_reason)
 
 fn failing_actor(msg: unit, state: unit) : proc[mailbox] unit {
     case msg of
