@@ -62,24 +62,38 @@ impl EffectChecker {
             self.collect_expression_effects(expr)?
         };
 
+        // Expand effect aliases in both active effects and required effects for comparison
+        let expanded_active_effects = if let Some(analyzer) = analyzer {
+            analyzer.expand_effect_aliases(&self.context.active_effects)
+        } else {
+            self.context.active_effects.clone()
+        };
+        
+        let expanded_required_effects = if let Some(analyzer) = analyzer {
+            analyzer.expand_effect_aliases(required_effects)
+        } else {
+            required_effects.to_vec()
+        };
+
         // Check that all required effects are active (with subeffecting)
-        for required in required_effects {
+        // Compare expanded required effects against expanded active effects
+        for required in &expanded_required_effects {
             let mut found_compatible = false;
-            for active in &self.context.active_effects {
+            for active in &expanded_active_effects {
                 if self.is_subeffect(required, active) {
                     found_compatible = true;
                     break;
                 }
             }
             if !found_compatible {
-                let metadata = ErrorMetadataBuilder::new("E3002".to_string())
+                let metadata = ErrorMetadataBuilder::new("E3001".to_string())
                     .severity(ErrorSeverity::Error)
                     .specification("§8".to_string(), None)
                     .suggestion(format!("Add effect {:?} to function's proc[...] declaration", required))
                     .build();
                 return effect_error_with_metadata(
                     SourceLocation::unknown(),
-                    format!("Effect not active: {:?} (available: {:?})", required, self.context.active_effects),
+                    format!("Expression requires effect not covered by active capabilities: {:?} (active: {:?}, expanded active: {:?})", required, self.context.active_effects, expanded_active_effects),
                     metadata,
                 );
             }
@@ -132,9 +146,16 @@ impl EffectChecker {
             return Ok(());
         }
         
-        for expr_effect in &expr_effects {
+        // Expand expression effects before checking coverage
+        let expanded_expr_effects = if let Some(analyzer) = analyzer {
+            analyzer.expand_effect_aliases(&expr_effects)
+        } else {
+            expr_effects.clone()
+        };
+        
+        for expr_effect in &expanded_expr_effects {
             let mut covered = false;
-            for active in &self.context.active_effects {
+            for active in &expanded_active_effects {
                 if self.is_subeffect(expr_effect, active) {
                     covered = true;
                     break;
@@ -147,7 +168,7 @@ impl EffectChecker {
             if !covered {
                 if let Effect::Mailbox(_) = expr_effect {
                     // Check if Concurrency is active - if so, mailbox is allowed
-                    if self.context.active_effects.iter().any(|e| matches!(e, Effect::Concurrency)) {
+                    if expanded_active_effects.iter().any(|e| matches!(e, Effect::Concurrency)) {
                         continue; // Mailbox effect is allowed when Concurrency is active
                     }
                 }
@@ -169,8 +190,8 @@ impl EffectChecker {
                     .build();
                 return effect_error_with_metadata(
                     SourceLocation::unknown(),
-                    format!("Expression requires effect not covered by active capabilities: {:?} (active: {:?})",
-                           expr_effect, self.context.active_effects),
+                    format!("Expression requires effect not covered by active capabilities: {:?} (active: {:?}, expanded active: {:?}, expanded expr: {:?})",
+                           expr_effect, self.context.active_effects, expanded_active_effects, expanded_expr_effects),
                     metadata,
                 );
             }
@@ -603,6 +624,8 @@ pub struct EffectAnalyzer {
     expression_types: std::collections::HashMap<SourceLocation, Type>,
     /// Map from spawn expression locations to their message types (tracked during type checking)
     actor_mailbox_types: std::collections::HashMap<SourceLocation, Type>,
+    /// Map from effect alias names to their expanded effects
+    effect_aliases: std::collections::HashMap<String, Vec<Effect>>,
 }
 
 impl EffectAnalyzer {
@@ -611,6 +634,7 @@ impl EffectAnalyzer {
             checker: EffectChecker::new(),
             expression_types: std::collections::HashMap::new(),
             actor_mailbox_types: std::collections::HashMap::new(),
+            effect_aliases: std::collections::HashMap::new(),
         };
         // Set up checker with analyzer reference
         let checker = EffectChecker::with_analyzer(&analyzer as *const EffectAnalyzer);
@@ -624,16 +648,46 @@ impl EffectAnalyzer {
         expression_types: std::collections::HashMap<SourceLocation, Type>,
         actor_mailbox_types: std::collections::HashMap<SourceLocation, Type>,
     ) -> Self {
+        Self::with_types_and_effect_aliases(expression_types, actor_mailbox_types, std::collections::HashMap::new())
+    }
+
+    /// Create effect analyzer with type information and effect aliases from type checker
+    pub fn with_types_and_effect_aliases(
+        expression_types: std::collections::HashMap<SourceLocation, Type>,
+        actor_mailbox_types: std::collections::HashMap<SourceLocation, Type>,
+        effect_aliases: std::collections::HashMap<String, Vec<Effect>>,
+    ) -> Self {
         let analyzer = EffectAnalyzer {
             checker: EffectChecker::new(),
             expression_types,
             actor_mailbox_types,
+            effect_aliases,
         };
         // Set up checker with analyzer reference
         let checker = EffectChecker::with_analyzer(&analyzer as *const EffectAnalyzer);
         // Note: We can't directly set checker.analyzer after creation, so we'll need to restructure
         // For now, we'll access types directly in collect_expression_effects
         analyzer
+    }
+
+    /// Expand effect aliases in an effect list
+    pub fn expand_effect_aliases(&self, effects: &[Effect]) -> Vec<Effect> {
+        let mut expanded = Vec::new();
+        for effect in effects {
+            if let Effect::Named(name) = effect {
+                if let Some(aliased_effects) = self.effect_aliases.get(name) {
+                    // Recursively expand aliased effects
+                    expanded.extend(self.expand_effect_aliases(aliased_effects));
+                } else {
+                    // Not an alias, keep as is
+                    expanded.push(effect.clone());
+                }
+            } else {
+                // Not a named effect, keep as is
+                expanded.push(effect.clone());
+            }
+        }
+        expanded
     }
 
     /// Get the type of an expression from the type checker's results
@@ -733,6 +787,26 @@ impl EffectAnalyzer {
                 effects.extend(self.collect_expression_effects(&cast.message)?);
                 Ok(effects)
             },
+            Expression::ModuleCall(module_call) => {
+                // Look up the function type from the expression type
+                // The type checker should have computed the return type of the module call
+                let mut effects = Vec::new();
+                
+                // Add effects from function arguments
+                for arg in &module_call.arguments {
+                    effects.extend(self.collect_expression_effects(arg)?);
+                }
+                
+                // Get the return type of the module call expression
+                // If it's a Process type, extract the effects from it
+                if let Some(return_type) = self.get_expression_type(&Expression::ModuleCall(module_call.clone())) {
+                    if let Type::Process { effects: process_effects, .. } = return_type {
+                        effects.extend(process_effects);
+                    }
+                }
+                
+                Ok(effects)
+            },
             _ => {
                 // For all other expressions, delegate to checker's version
                 self.checker.collect_expression_effects(expr)
@@ -825,8 +899,10 @@ impl EffectAnalyzer {
         let declared_count = func.effects.len();
         let declared_effects = func.effects.clone(); // Clone for error messages
         
+        // Expand effect aliases before pushing capabilities
+        let expanded_effects = self.expand_effect_aliases(&func.effects);
         // Push capabilities - this populates active_effects
-        self.checker.push_capabilities(&func.effects, &func.location);
+        self.checker.push_capabilities(&expanded_effects, &func.location);
         
         // Verify effects were pushed correctly
         // After push_capabilities, active_effects should contain func.effects

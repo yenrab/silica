@@ -115,10 +115,11 @@ impl Compiler {
 
         // Phase 4: Effect analysis
         // println!("Phase 4: Effect analysis...");
-        // Pass type information from type checker to effect analyzer
-        let mut effect_analyzer = EffectAnalyzer::with_types(
+        // Pass type information and effect aliases from type checker to effect analyzer
+        let mut effect_analyzer = EffectAnalyzer::with_types_and_effect_aliases(
             type_checker.expression_types.clone(),
             type_checker.actor_mailbox_types.clone(),
+            type_checker.get_effect_aliases().clone(),
         );
         effect_analyzer.analyze_program(&combined_program)?;
         // println!("Effect analysis passed");
@@ -193,18 +194,21 @@ impl Compiler {
         }
 
         // First pass: collect ALL modules that need to be loaded (recursive dependencies)
+        // Build a dependency graph to ensure proper ordering
+        let mut module_dependencies: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
         let mut i = 0;
         while i < modules_to_process.len() {
-            let module_name = &modules_to_process[i];
+            let module_name = modules_to_process[i].clone(); // Clone to avoid borrowing issues
 
             // Load the module to check its dependencies
-            self.module_resolver.load_module(module_name)?;
-            let module = self.module_resolver.get_module(module_name).unwrap();
+            self.module_resolver.load_module(&module_name)?;
+            let module = self.module_resolver.get_module(&module_name).unwrap();
 
             // Add symbols to type checker
             self.symbol_table.add_module_symbols(module)?;
 
-            // Check this module's imports and add any new dependencies
+            // Collect this module's dependencies
+            let mut deps = Vec::new();
             for decl in &module.ast {
                 if let crate::ast::Declaration::Import(import_decl) = decl {
                     for dep_module_name in &import_decl.modules {
@@ -212,35 +216,121 @@ impl Compiler {
                             modules_to_process.push(dep_module_name.clone());
                             processed_modules.insert(dep_module_name.clone());
                         }
+                        deps.push(dep_module_name.clone());
                     }
                 }
             }
+            module_dependencies.insert(module_name.clone(), deps);
 
             i += 1;
         }
 
+        // Ensure all modules are in the dependency graph (even if they have no dependencies)
+        for module_name in &modules_to_process {
+            module_dependencies.entry(module_name.clone()).or_insert_with(Vec::new);
+        }
+        
+        eprintln!("[DEBUG MODULE_COMBINE] Dependency graph:");
+        for (module, deps) in &module_dependencies {
+            eprintln!("[DEBUG MODULE_COMBINE]   {} -> {:?}", module, deps);
+        }
+        
+        // Topological sort to ensure dependencies come before dependents
+        let mut sorted_modules = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        let mut temp_visited = std::collections::HashSet::new();
+        
+        fn visit_module(
+            module: &str,
+            dependencies: &std::collections::HashMap<String, Vec<String>>,
+            visited: &mut std::collections::HashSet<String>,
+            temp_visited: &mut std::collections::HashSet<String>,
+            result: &mut Vec<String>,
+        ) -> Result<()> {
+            if temp_visited.contains(module) {
+                return Err(CompilerError::codegen_error(
+                    format!("Circular dependency detected involving module '{}'", module)
+                ));
+            }
+            if visited.contains(module) {
+                return Ok(());
+            }
+            
+            temp_visited.insert(module.to_string());
+            if let Some(deps) = dependencies.get(module) {
+                for dep in deps {
+                    visit_module(dep, dependencies, visited, temp_visited, result)?;
+                }
+            }
+            temp_visited.remove(module);
+            visited.insert(module.to_string());
+            result.push(module.to_string());
+            Ok(())
+        }
+        
+        for module_name in &modules_to_process {
+            if !visited.contains(module_name) {
+                visit_module(module_name, &module_dependencies, &mut visited, &mut temp_visited, &mut sorted_modules)?;
+            }
+        }
+        
+        modules_to_process = sorted_modules;
+
         // Second pass: add all declarations in dependency order
-        // Process modules in reverse order (dependencies first)
-        for module_name in modules_to_process.iter().rev() {
+        // Process modules in topological order (dependencies before dependents)
+        eprintln!("[DEBUG MODULE_COMBINE] Processing {} modules in dependency order", modules_to_process.len());
+        eprintln!("[DEBUG MODULE_COMBINE] Module order: {:?}", modules_to_process);
+        for (idx, module_name) in modules_to_process.iter().enumerate() {
             let module = self.module_resolver.get_module(module_name).unwrap();
-            // println!("Loading module: {}", module_name);
-            // println!("Loaded module '{}' with {} exports", module.name, module.exports.len());
+            eprintln!("[DEBUG MODULE_COMBINE] Module {}: '{}' ({} declarations)", 
+                      idx, module_name, module.ast.len());
 
             // Add all non-import declarations from this module
+            let mut type_aliases_in_module = Vec::new();
             for decl in &module.ast {
                 if !matches!(decl, crate::ast::Declaration::Import(_)) {
+                    if let crate::ast::Declaration::TypeAlias(alias) = decl {
+                        type_aliases_in_module.push(alias.name.clone());
+                    }
                     all_declarations.push(decl.clone());
                 }
+            }
+            if !type_aliases_in_module.is_empty() {
+                eprintln!("[DEBUG MODULE_COMBINE]   Type aliases in '{}': {:?}", 
+                          module_name, type_aliases_in_module);
             }
         }
 
 
         // Add main program declarations (preserving original order)
         // Functions must be defined before they're used
+        eprintln!("[DEBUG MODULE_COMBINE] Adding {} main program declarations", main_declarations.len());
+        let mut main_type_aliases = Vec::new();
+        for decl in &main_declarations {
+            if let crate::ast::Declaration::TypeAlias(alias) = decl {
+                main_type_aliases.push(alias.name.clone());
+            }
+        }
+        if !main_type_aliases.is_empty() {
+            eprintln!("[DEBUG MODULE_COMBINE]   Type aliases in main: {:?}", main_type_aliases);
+        }
         all_declarations.extend(main_declarations);
 
-        // println!("Module resolution completed - combined {} declarations from {} modules",
-        //          all_declarations.len(), processed_modules.len());
+        eprintln!("[DEBUG MODULE_COMBINE] Combined program: {} total declarations", all_declarations.len());
+        
+        // Count type aliases in combined program
+        let mut combined_type_aliases = Vec::new();
+        for decl in &all_declarations {
+            if let crate::ast::Declaration::TypeAlias(alias) = decl {
+                combined_type_aliases.push(alias.name.clone());
+            }
+        }
+        eprintln!("[DEBUG MODULE_COMBINE] Total type aliases in combined program: {:?}", combined_type_aliases);
+        if combined_type_aliases.contains(&"Rectangle".to_string()) {
+            eprintln!("[DEBUG MODULE_COMBINE] ✓ Rectangle is in combined program!");
+        } else {
+            eprintln!("[DEBUG MODULE_COMBINE] ✗ Rectangle NOT in combined program!");
+        }
 
         // Create combined program
         Ok(crate::ast::Program {

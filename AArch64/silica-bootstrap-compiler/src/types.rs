@@ -56,6 +56,7 @@ pub struct TypeChecker<'a> {
     trait_defs: HashMap<String, TraitDecl>, // Trait definitions
     type_aliases: HashMap<String, Type>, // Type alias definitions (expanded)
     type_alias_decls: HashMap<String, TypeAliasDecl>, // Complete type alias declarations
+    effect_aliases: HashMap<String, Vec<Effect>>, // Effect alias definitions
     pub expression_types: HashMap<SourceLocation, Type>, // Types of expressions for code generation
     pub actor_mailbox_types: HashMap<SourceLocation, Type>, // Map from spawn locations to message types
 }
@@ -797,6 +798,7 @@ impl<'a> TypeChecker<'a> {
             trait_defs,
             type_aliases: HashMap::new(),
             type_alias_decls: HashMap::new(),
+            effect_aliases: HashMap::new(),
             symbol_table,
             expression_types: HashMap::new(),
             actor_mailbox_types: HashMap::new(),
@@ -805,17 +807,57 @@ impl<'a> TypeChecker<'a> {
 
     /// Type check a program
     pub fn check_program(&mut self, program: &Program) -> Result<()> {
-        // eprintln!("DEBUG TYPECHECK: check_program called!");
-        // eprintln!("DEBUG TYPECHECK: Starting check_program with {} declarations", program.declarations.len());
-        for decl in &program.declarations {
+        eprintln!("[DEBUG CHECK_PROGRAM] Starting type checking with {} declarations", program.declarations.len());
+        eprintln!("[DEBUG CHECK_PROGRAM] Initial env size: {}, env keys: {:?}", 
+                  self.env.len(), self.env.keys().collect::<Vec<_>>());
+        
+        for (idx, decl) in program.declarations.iter().enumerate() {
+            let decl_type = match decl {
+                Declaration::Function(_) => "Function",
+                Declaration::TypeAlias(_) => "TypeAlias",
+                Declaration::Struct(_) => "Struct",
+                Declaration::Enum(_) => "Enum",
+                Declaration::Trait(_) => "Trait",
+                Declaration::Impl(_) => "Impl",
+                Declaration::Effect(_) => "Effect",
+                Declaration::Import(_) => "Import",
+                Declaration::Export(_) => "Export",
+                Declaration::Type(_) => "Type",
+            };
+            eprintln!("[DEBUG CHECK_PROGRAM] Processing declaration {}: {} (env size: {})", 
+                      idx, decl_type, self.env.len());
+            
+            // Track if Rectangle is in env before processing this declaration
+            let has_rectangle_before = self.env.contains_key("Rectangle");
+            
             self.check_declaration(decl)?;
+            
+            // Track if Rectangle is in env after processing
+            let has_rectangle_after = self.env.contains_key("Rectangle");
+            if has_rectangle_after && !has_rectangle_before {
+                eprintln!("[DEBUG CHECK_PROGRAM] ✓ Rectangle added during declaration {} ({})", idx, decl_type);
+            }
         }
+        
+        eprintln!("[DEBUG CHECK_PROGRAM] Finished type checking. Final env size: {}", self.env.len());
+        eprintln!("[DEBUG CHECK_PROGRAM] Final env contains 'Rectangle': {}", self.env.contains_key("Rectangle"));
+        if self.env.contains_key("Rectangle") {
+            eprintln!("[DEBUG CHECK_PROGRAM] ✓ Rectangle is in env!");
+        } else {
+            eprintln!("[DEBUG CHECK_PROGRAM] ✗ Rectangle NOT in env! Available types: {:?}", 
+                      self.env.keys().filter(|k| k.len() > 3).collect::<Vec<_>>());
+        }
+        
         self.solve_constraints()?;
         Ok(())
     }
 
     /// Check a declaration
     fn check_declaration(&mut self, decl: &Declaration) -> Result<()> {
+        // DEBUG: Track TypeAlias declarations specifically
+        if let Declaration::TypeAlias(alias_decl) = decl {
+            eprintln!("[DEBUG CHECK_DECLARATION] About to process TypeAlias: {}", alias_decl.name);
+        }
         
         match decl {
             Declaration::Function(func) => self.check_function_declaration(func),
@@ -830,7 +872,10 @@ impl<'a> TypeChecker<'a> {
                 
                 self.check_impl_declaration(impl_decl)
             }
-            Declaration::TypeAlias(alias_decl) => self.check_type_alias_declaration(alias_decl),
+            Declaration::TypeAlias(alias_decl) => {
+                eprintln!("[DEBUG CHECK_DECLARATION] Calling check_type_alias_declaration for: {}", alias_decl.name);
+                self.check_type_alias_declaration(alias_decl)
+            },
         }
     }
 
@@ -1075,9 +1120,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Check effect declaration
-    fn check_effect_declaration(&mut self, _effect: &EffectDecl) -> Result<()> {
-        // Effect declarations are currently just declarations
-        // TODO: Add effect checking for effect declarations
+    fn check_effect_declaration(&mut self, effect: &EffectDecl) -> Result<()> {
+        // Store effect alias mapping
+        self.effect_aliases.insert(effect.name.clone(), effect.effects.clone());
         Ok(())
     }
 
@@ -1766,9 +1811,34 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn infer_module_call(&mut self, module_call: &ModuleCallExpr) -> Result<Type> {
-        // Look up the function directly in the type checker's environment
+        // First, validate that the module exists (if symbol table is available)
+        // This helps catch errors early and ensures we're accessing functions from the correct module
+        if let Some(symbol_table) = self.symbol_table {
+            // Check if the module exists in the symbol table
+            if !symbol_table.modules.contains_key(&module_call.module) {
+                return type_error(
+                    module_call.location.clone(),
+                    format!("Module '{}' is not available. It may not be imported or may not exist.", module_call.module),
+                );
+            }
+
+            // Check if the function is exported from that module (if symbol table has it)
+            // Note: The symbol table only contains exported functions, but all functions
+            // from combined modules are available in the environment. So we check the
+            // symbol table for validation, but don't fail if it's not there - we'll
+            // check the environment next.
+            if let Some(symbol_info) = symbol_table.lookup_symbol(&module_call.module, &module_call.function) {
+                // Function is exported - good, continue to type checking
+                // Note: symbol_info.arity might be 0 for functions not yet type-checked
+                // We'll validate the actual function type and arity below
+            }
+            // If not found in symbol table, it might still be available if it's in the
+            // combined program (non-exported functions are still accessible within the combined program)
+        }
+
+        // Now look up the function in the type checker's environment
         // Since we're in the middle of type checking the combined program,
-        // all imported functions should be available in the environment
+        // all functions from all modules should be available in the environment by their unqualified names
         match self.infer_identifier(&module_call.function) {
             Ok(func_type) => {
                 // Check if we have a function type
@@ -1792,18 +1862,51 @@ impl<'a> TypeChecker<'a> {
                     Ok(*return_type.clone())
                 } else {
                     // If it's not a function type, something is wrong
-                    type_error(
-                        module_call.location.clone(),
-                        format!("Symbol {}.{} is not a function type", module_call.module, module_call.function),
-                    )
+                    // Check if the function exists in the symbol table - if so, it might not have been processed yet
+                    let symbol_exists = self.symbol_table
+                        .and_then(|st| st.lookup_symbol(&module_call.module, &module_call.function))
+                        .is_some();
+                    
+                    if symbol_exists && func_type == Type::Unit {
+                        // Function exists in symbol table but has Unit type - likely not processed yet
+                        // This can happen due to module ordering issues
+                        type_error(
+                            module_call.location.clone(),
+                            format!("Function '{}' from module '{}' has not been processed yet. This may be due to module dependency ordering - ensure dependencies are processed before dependents.", 
+                                   module_call.function, module_call.module),
+                        )
+                    } else {
+                        // This can happen if there's a name collision (e.g., a variable named "multiply")
+                        // or if the symbol exists but isn't a function
+                        type_error(
+                            module_call.location.clone(),
+                            format!("Symbol {}.{} is not a function type (found type: {:?}). There may be a name collision or the symbol may not be a function.", 
+                                   module_call.module, module_call.function, func_type),
+                        )
+                    }
                 }
             }
             Err(_) => {
                 // Function not found in environment
-                type_error(
-                    module_call.location.clone(),
-                    format!("Function '{}' not found in module '{}'", module_call.function, module_call.module),
-                )
+                // Check if it exists in symbol table - if so, it might not have been processed yet
+                let symbol_exists = self.symbol_table
+                    .and_then(|st| st.lookup_symbol(&module_call.module, &module_call.function))
+                    .is_some();
+                
+                if symbol_exists {
+                    type_error(
+                        module_call.location.clone(),
+                        format!("Function '{}' from module '{}' exists but has not been processed yet. This may be due to module dependency ordering - ensure dependencies are processed before dependents.", 
+                               module_call.function, module_call.module),
+                    )
+                } else {
+                    // Function doesn't exist at all
+                    type_error(
+                        module_call.location.clone(),
+                        format!("Function '{}' not found in module '{}'. It may not be exported, may not exist, or the module may not be imported.", 
+                               module_call.function, module_call.module),
+                    )
+                }
             }
         }
     }
@@ -3299,6 +3402,11 @@ impl<'a> TypeChecker<'a> {
 
     /// Check type alias declaration
     fn check_type_alias_declaration(&mut self, alias_decl: &TypeAliasDecl) -> Result<()> {
+        // DEBUG: Track type alias processing
+        eprintln!("[DEBUG TYPE_ALIAS] Processing type alias: {} at {:?}", alias_decl.name, alias_decl.location);
+        eprintln!("[DEBUG TYPE_ALIAS] Current env size: {}, contains '{}': {}", 
+                  self.env.len(), alias_decl.name, self.env.contains_key(&alias_decl.name));
+        
         // Validate the aliased type - use alias declaration location
         self.validate_type_with_location(&alias_decl.aliased_type, Some(alias_decl.location.clone()))?;
 
@@ -3314,6 +3422,15 @@ impl<'a> TypeChecker<'a> {
         // Add the alias to the environment as a named type
         let alias_type = Type::Named(alias_decl.name.clone());
         self.env.insert(alias_decl.name.clone(), TypeScheme { vars: Vec::new(), ty: alias_type });
+        
+        // DEBUG: Verify it was added
+        eprintln!("[DEBUG TYPE_ALIAS] After insert - env size: {}, contains '{}': {}", 
+                  self.env.len(), alias_decl.name, self.env.contains_key(&alias_decl.name));
+        if alias_decl.name == "Rectangle" {
+            eprintln!("[DEBUG TYPE_ALIAS] ✓ Rectangle successfully added to env!");
+            eprintln!("[DEBUG TYPE_ALIAS] Env keys containing 'Rect': {:?}", 
+                      self.env.keys().filter(|k| k.contains("Rect")).collect::<Vec<_>>());
+        }
 
         Ok(())
     }
@@ -3387,6 +3504,25 @@ impl<'a> TypeChecker<'a> {
                 if name == "Self" {
                     return Ok(());
                 }
+                
+                // DEBUG: Track validation calls for Rectangle
+                if name == "Rectangle" {
+                    let loc_str = location.as_ref()
+                        .map(|l| format!("{}:{}:{}", l.file, l.line, l.column))
+                        .unwrap_or_else(|| "unknown".to_string());
+                    eprintln!("[DEBUG VALIDATE_TYPE] Validating type '{}' at {}", name, loc_str);
+                    eprintln!("[DEBUG VALIDATE_TYPE] Env size: {}, contains '{}': {}", 
+                              self.env.len(), name, self.env.contains_key(name));
+                    eprintln!("[DEBUG VALIDATE_TYPE] Type aliases contains '{}': {}", 
+                              name, self.type_aliases.contains_key(name));
+                    if !self.env.contains_key(name) {
+                        eprintln!("[DEBUG VALIDATE_TYPE] ✗ '{}' NOT in env! Available types: {:?}", 
+                                  name, self.env.keys().filter(|k| k.len() > 3).take(20).collect::<Vec<_>>());
+                    } else {
+                        eprintln!("[DEBUG VALIDATE_TYPE] ✓ '{}' found in env!", name);
+                    }
+                }
+                
                 // Check if the named type exists in the environment
                 if !self.env.contains_key(name) {
                     let error_location = location.unwrap_or_else(|| SourceLocation::unknown());
@@ -3791,6 +3927,31 @@ impl<'a> TypeChecker<'a> {
     /// Get the type aliases for code generation
     pub fn get_type_aliases(&self) -> &HashMap<String, Type> {
         &self.type_aliases
+    }
+
+    /// Get the effect aliases for effect checking
+    pub fn get_effect_aliases(&self) -> &HashMap<String, Vec<Effect>> {
+        &self.effect_aliases
+    }
+
+    /// Expand effect aliases in an effect list
+    pub fn expand_effect_aliases(&self, effects: &[Effect]) -> Vec<Effect> {
+        let mut expanded = Vec::new();
+        for effect in effects {
+            if let Effect::Named(name) = effect {
+                if let Some(aliased_effects) = self.effect_aliases.get(name) {
+                    // Recursively expand aliased effects
+                    expanded.extend(self.expand_effect_aliases(aliased_effects));
+                } else {
+                    // Not an alias, keep as is
+                    expanded.push(effect.clone());
+                }
+            } else {
+                // Not a named effect, keep as is
+                expanded.push(effect.clone());
+            }
+        }
+        expanded
     }
 
     /// Get the type environment for symbol table updates
