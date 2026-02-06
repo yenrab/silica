@@ -59,6 +59,7 @@ pub struct TypeChecker<'a> {
     effect_aliases: HashMap<String, Vec<Effect>>, // Effect alias definitions
     pub expression_types: HashMap<SourceLocation, Type>, // Types of expressions for code generation
     pub actor_mailbox_types: HashMap<SourceLocation, Type>, // Map from spawn locations to message types
+    trait_method_cache: HashMap<String, FunctionDecl>, // Cache for trait method signatures (key: "TraitName::method_name")
 }
 
 impl<'a> TypeChecker<'a> {
@@ -394,7 +395,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Resolve a method call on a type
-    pub fn resolve_method(&self, receiver_type: &Type, method_name: &str) -> Option<&FunctionDecl> {
+    pub fn resolve_method(&mut self, receiver_type: &Type, method_name: &str) -> Option<&FunctionDecl> {
         // eprintln!("DEBUG RESOLVE: Called with method {} on type {:?}", method_name, receiver_type);
         // eprintln!("DEBUG RESOLVE: We have {} trait impls", self.trait_impls.len());
 
@@ -432,6 +433,40 @@ impl<'a> TypeChecker<'a> {
             }
         } else {
             // eprintln!("DEBUG RESOLVE: No alias found for type {:?}", receiver_type);
+        }
+
+        // Check if receiver_type is a trait type (trait used as type parameter)
+        if let Type::Named(trait_name) = receiver_type {
+            // Check if this is a trait definition (not a concrete type)
+            if let Some(trait_decl) = self.trait_defs.get(trait_name) {
+                eprintln!("[DEBUG RESOLVE] Found trait type '{}', looking for method '{}'", trait_name, method_name);
+                // Look for the method in the trait definition
+                if let Some(trait_method) = trait_decl.methods.iter().find(|m| m.name == method_name) {
+                    eprintln!("[DEBUG RESOLVE] Found trait method '{}' in trait '{}'", method_name, trait_name);
+                    // Convert TraitMethod to FunctionDecl and cache it
+                    let cache_key = format!("{}::{}", trait_name, method_name);
+                    
+                    // Use entry API to get or insert the cached method signature
+                    let method_decl = self.trait_method_cache.entry(cache_key).or_insert_with(|| {
+                        eprintln!("[DEBUG RESOLVE] Caching trait method signature for '{}::{}'", trait_name, method_name);
+                        // Convert TraitMethod to FunctionDecl
+                        FunctionDecl {
+                            name: trait_method.name.clone(),
+                            parameters: trait_method.params.clone(),
+                            return_type: trait_method.return_type.clone(),
+                            body: Vec::new(), // Trait methods have no body
+                            effects: Vec::new(), // Trait methods don't have effects in their signature
+                            location: trait_method.location.clone(),
+                        }
+                    });
+                    eprintln!("[DEBUG RESOLVE] Returning trait method signature for '{}::{}'", trait_name, method_name);
+                    return Some(method_decl);
+                } else {
+                    eprintln!("[DEBUG RESOLVE] Method '{}' not found in trait '{}'", method_name, trait_name);
+                }
+            } else {
+                eprintln!("[DEBUG RESOLVE] '{}' is not a trait definition", trait_name);
+            }
         }
 
         // eprintln!("DEBUG RESOLVE: Method {} not found on type {:?}", method_name, receiver_type);
@@ -802,6 +837,7 @@ impl<'a> TypeChecker<'a> {
             symbol_table,
             expression_types: HashMap::new(),
             actor_mailbox_types: HashMap::new(),
+            trait_method_cache: HashMap::new(),
         }
     }
 
@@ -881,9 +917,12 @@ impl<'a> TypeChecker<'a> {
 
     /// Check function declaration
     fn check_function_declaration(&mut self, func: &FunctionDecl) -> Result<()> {
+        eprintln!("[DEBUG FUNCTION] Checking function '{}'", func.name);
         // Validate parameter types with location BEFORE expanding aliases
         for param in &func.parameters {
+            eprintln!("[DEBUG FUNCTION] Validating parameter '{}' with type {:?}", param.name, param.type_);
             self.validate_type_with_location(&param.type_, Some(param.location.clone()))?;
+            eprintln!("[DEBUG FUNCTION] Parameter '{}' validated successfully", param.name);
         }
 
         // Validate return type with location BEFORE expanding aliases
@@ -1914,11 +1953,13 @@ impl<'a> TypeChecker<'a> {
     /// Infer type for method calls (receiver.method(args))
     fn infer_method_call(&mut self, field_access: &FieldAccessExpr, call: &CallExpr) -> Result<Type> {
         // Infer the receiver type
-        // eprintln!("DEBUG METHOD_CALL: infer_method_call called for {}.{}", "receiver", field_access.field);
+        eprintln!("[DEBUG METHOD_CALL] infer_method_call called for method '{}'", field_access.field);
         let receiver_type = self.infer_expression(&field_access.object)?;
-        // eprintln!("DEBUG METHOD_CALL: receiver_type = {:?}", receiver_type);
+        eprintln!("[DEBUG METHOD_CALL] receiver_type = {:?}", receiver_type);
         // Try to resolve the method
+        eprintln!("[DEBUG METHOD_CALL] Calling resolve_method for type {:?}, method '{}'", receiver_type, field_access.field);
         if let Some(method) = self.resolve_method(&receiver_type, &field_access.field) {
+            eprintln!("[DEBUG METHOD_CALL] Method resolved successfully");
             // Extract method info before doing mutable operations
             let expected_param_count = method.parameters.len();
             let return_type = method.return_type.clone();
