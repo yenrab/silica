@@ -7,7 +7,7 @@ SEARCH_PATHS := -I ../stdlib
 # Ensure compiler is built without LLVM backend features for consistent text-based generation
 $(SILICA_COMPILER):
 	@echo "Building Silica bootstrap compiler..."
-	cd ../silica-bootstrap-compiler && cargo build --release --no-default-features
+	cd ../../silica-bootstrap-compiler && cargo build --release --no-default-features
 
 # Find all .silica files in lexer directory (modules)
 LEXER_FILES := $(wildcard lexer/*.silica)
