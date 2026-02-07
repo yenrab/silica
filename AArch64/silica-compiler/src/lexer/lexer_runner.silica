@@ -1,0 +1,90 @@
+// Main lexer runner - tokenizes an entire source file
+// Returns a list of tokens from the file
+
+// Import lexer modules
+use lexer_core;
+use lexer_token_kind;
+use lexer_keywords;
+use lexer_literals;
+use lexer_operators;
+use lexer_comments;
+
+// List of tokens type
+type ListToken = { is_nil: bool, head: Token, tail: ListToken };
+
+// Main tokenization function - processes entire source
+fn tokenize(lexer: Lexer, tokens: ListToken) -> ListToken {
+    // Skip whitespace and comments
+    skipped: Lexer <- lexer_core@skip_whitespace(lexer);
+    after_comments: Lexer <- case lexer_comments@is_line_comment_start(skipped) of {
+        true -> lexer_comments@skip_line_comment(lexer_core@advance(lexer_core@advance(skipped)));
+        false -> skipped
+    };
+    
+    current: string <- lexer_core@peek_char(after_comments);
+    
+    // Check for EOF
+    case current of {
+        "" -> do
+            kinds: TokenKinds <- lexer_token_kind@token_kinds();
+            eof_location: SourceLocation <- lexer_core@current_location(after_comments);
+            eof_token: Token <- lexer_core@make_token(kinds.eof, "", eof_location);
+            ListToken { is_nil: false, head: eof_token, tail: tokens }
+        end;
+        _: string -> do
+            // Determine token type and read it
+            token_and_lexer: (Token, Lexer) <- case lexer_keywords@is_identifier_start(current) of {
+                true -> lexer_keywords@read_identifier(after_comments);
+                false -> case lexer_literals@is_decimal_digit_char(current) of {
+                    true -> lexer_literals@read_integer_literal(after_comments);
+                    false -> case current of {
+                        "-" -> lexer_operators@read_arrow(after_comments);
+                        "(" -> lexer_operators@read_grouping_operator(after_comments, "(");
+                        ")" -> lexer_operators@read_grouping_operator(after_comments, ")");
+                        "{" -> lexer_operators@read_grouping_operator(after_comments, "{");
+                        "}" -> lexer_operators@read_grouping_operator(after_comments, "}");
+                        _: string -> do
+                            // Unknown character - skip it
+                            kinds: TokenKinds <- lexer_token_kind@token_kinds();
+                            error_location: SourceLocation <- lexer_core@current_location(after_comments);
+                            error_token: Token <- lexer_core@make_token(kinds.eof, current, error_location);
+                            error_token, lexer_core@advance(after_comments)
+                        end
+                    }
+                }
+            };
+            (token: Token, next_lexer: Lexer) <- token_and_lexer;
+            new_tokens: ListToken <- ListToken { is_nil: false, head: token, tail: tokens };
+            tokenize(next_lexer, new_tokens)
+        end
+    }
+}
+
+// Export lexer_runner function
+export lexer_runner/1;
+
+// Create empty token list
+fn empty_token_list() -> ListToken {
+    dummy_token: Token <- Token { kind: 0, lexeme: "", location: SourceLocation { file: "", line: 0, column: 0, offset: 0 } };
+    // For empty list, tail is never accessed (is_nil is true), so we can use a placeholder
+    // Well create a self-referential structure by creating the list first, then updating
+    nil_placeholder: ListToken <- ListToken { is_nil: true, head: dummy_token, tail: nil_placeholder };
+    nil_placeholder
+}
+
+// Main lexer runner function - reads file and returns list of tokens
+fn lexer_runner(filename: string) -> ListToken proc[DeviceIO] {
+    do
+        // Read file content
+        source: string <- read_lines(filename);
+        
+        // Create lexer
+        lexer: Lexer <- lexer_core@new_lexer(source, filename);
+        
+        // Start with empty token list
+        empty_list: ListToken <- empty_token_list();
+        
+        // Tokenize entire source
+        tokenize(lexer, empty_list)
+    end
+}

@@ -307,7 +307,7 @@ impl CodeGenerator {
                     // Expand the aliased type recursively
                     self.expand_type_aliases_codegen(aliased_type)
                 } else {
-                    // Check if it's a built-in type
+                    // Check if it's a built-in type (including common aliases like "boolean" for bool)
                     match name.as_str() {
                         "int8" => Type::Int8,
                         "int16" => Type::Int16,
@@ -316,7 +316,7 @@ impl CodeGenerator {
                         "float16" => Type::Float16,
                         "float32" => Type::Float32,
                         "float64" => Type::Float64,
-                        "bool" => Type::Bool,
+                        "bool" | "boolean" => Type::Bool,
                         "char" => Type::Char,
                         "string" => Type::String,
                         "unit" => Type::Unit,
@@ -548,6 +548,7 @@ impl CodeGenerator {
         self.instructions.push("declare i1 @silica_string_starts_with(i8*, i8*)".to_string());
         self.instructions.push("declare i1 @silica_string_ends_with(i8*, i8*)".to_string());
         self.instructions.push("declare i1 @silica_string_contains(i8*, i8*)".to_string());
+        self.instructions.push("declare i1 @silica_string_equals(i8*, i8*)".to_string());
 
         // Generate all declarations first to collect all string constants
         for decl in &program.declarations {
@@ -888,10 +889,13 @@ impl CodeGenerator {
             })
             .collect();
 
-        let return_type = func.return_type.as_ref().unwrap_or(&Type::Unit);
-        let return_type_str = match return_type {
+        // Expand return type (e.g. Named("boolean") -> Bool) so we get correct LLVM type (i1 for bool)
+        let return_type = func.return_type.as_ref()
+            .map(|t| self.expand_type_aliases_codegen(t))
+            .unwrap_or(Type::Unit);
+        let return_type_str = match &return_type {
             Type::Tuple(_) => "i8*".to_string(), // Tuple returns are pointers
-            _ => self.type_map.silica_to_llvm_str(return_type),
+            _ => self.type_map.silica_to_llvm_str(&return_type),
         };
 
         let param_strs: Vec<String> = param_types.iter()
@@ -5402,39 +5406,34 @@ impl CodeGenerator {
         }
     }
 
-    /// Analyze case branches to determine the LLVM result type
+    /// Analyze case branches to determine the LLVM result type.
+    /// Case expressions return whatever type the branches produce; all branches must have the same type.
     fn analyze_case_result_type(&self, case: &CaseExpr) -> Result<String> {
-        // Analyze the first branch to determine the result type
-        // All branches should have consistent types in a valid Silica program
         if let Some(first_branch) = case.branches.first() {
-            // For now, use a simple heuristic based on the expression type
-            // This can be improved with proper type checking integration
+            // Prefer type from type checker (expression_types) when available
+            if let Some(loc) = Self::try_get_expression_location(&*first_branch.body) {
+                if let Some(silica_type) = self.expression_types.get(&loc) {
+                    return Ok(self.type_map.silica_to_llvm_str(silica_type));
+                }
+            }
+            // Fallback: heuristic from first branch body
             match &*first_branch.body {
                 Expression::FunctionLiteral(_) => Ok("i8*".to_string()),
                 Expression::Literal(Literal::String(_)) => Ok("i8*".to_string()),
                 Expression::Literal(Literal::Int(_)) => Ok("i64".to_string()),
                 Expression::Literal(Literal::Float(_)) => {
-                    // Get the type from expression_types if available (for float16 vs float32 vs float64)
-                    // If type information is missing, this indicates missing type annotation
                     let expr_type = Self::try_get_expression_location(&*first_branch.body)
                         .and_then(|loc| self.expression_types.get(loc));
                     match expr_type {
                         Some(Type::Float16) => Ok("half".to_string()),
                         Some(Type::Float32) => Ok("float".to_string()),
                         Some(Type::Float64) => Ok("double".to_string()),
-                        Some(ty) => {
-                            // Non-float type stored - this is unexpected for a Float literal
-                            panic!("Float literal has non-float type in expression_types: {:?}", ty)
-                        },
-                        None => {
-                            // Type information missing - indicates missing type annotation
-                            panic!("Float literal type information missing - type annotation required for float16 vs float32 vs float64 distinction")
-                        }
+                        Some(ty) => panic!("Float literal has non-float type in expression_types: {:?}", ty),
+                        None => panic!("Float literal type information missing - type annotation required for float16 vs float32 vs float64 distinction"),
                     }
                 },
                 Expression::Literal(Literal::Bool(_)) => Ok("i1".to_string()),
                 Expression::Literal(Literal::Char(_)) => Ok("i32".to_string()),
-                // Default to i64 for other expressions (binary ops, calls, etc.)
                 _ => Ok("i64".to_string()),
             }
         } else {
@@ -5583,7 +5582,8 @@ impl CodeGenerator {
         // Exit the case scope
         self.exit_scope_text();
 
-        Ok(Some(final_reg))
+        // Return with type prefix so callers (e.g. return statement) know the case result type
+        Ok(Some(format!("{} {}", result_llvm_type, final_reg)))
     }
 
     /// Generate runtime pattern matching check that returns an i1 result
@@ -5591,6 +5591,15 @@ impl CodeGenerator {
         let mut bound_vars = HashMap::new();
 
         match pattern {
+            // Wildcard patterns: no binding needed
+            Pattern::Identifier(name) if name == "_" => {
+                // Wildcard: no binding
+                return Ok(bound_vars);
+            }
+            Pattern::TypedIdentifier { name, .. } if name == "_" => {
+                // Wildcard with type: no binding
+                return Ok(bound_vars);
+            }
             Pattern::Identifier(name) => {
                 // Bind the scrutinee value to the variable
                 let bind_reg = format!("%bind_{}_{}", name, self.instructions.len());
@@ -5618,7 +5627,11 @@ impl CodeGenerator {
 
                 bound_vars.insert(name.clone(), bind_reg);
             }
-            Pattern::TypedIdentifier { name, .. } => {
+            Pattern::TypedIdentifier { name, type_: pattern_type, .. } => {
+                // Wildcard: never bind (safety in case guard didn't match)
+                if name == "_" {
+                    return Ok(bound_vars);
+                }
                 // Bind the scrutinee value to the variable
                 let bind_reg = format!("%bind_{}_{}", name, self.instructions.len());
 
@@ -5633,14 +5646,24 @@ impl CodeGenerator {
                     let extended_reg = format!("%{}_ext_{}", name, self.instructions.len());
                     self.instructions.push(format!("  {} = zext i1 {} to i64", extended_reg, reg_name));
                     self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, extended_reg)); // Copy the value
+                } else if scrutinee_reg.starts_with("i8* ") {
+                    // Pointer (string, etc.) - copy via bitcast
+                    let reg_name = &scrutinee_reg[4..];
+                    self.instructions.push(format!("  {} = bitcast i8* {} to i8*", bind_reg, reg_name));
                 } else if scrutinee_reg.contains("tuple_alloc") {
                     // Tuple pointer - convert to integer value
                     let int_reg = format!("%{}_int_{}", name, self.instructions.len());
                     self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", int_reg, scrutinee_reg));
                     self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, int_reg)); // Copy the value
                 } else {
-                    // Default fallback - assume i64
-                    self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, scrutinee_reg)); // Copy the value
+                    // No type prefix: use pattern type to decide (e.g. string param -> %aString)
+                    let llvm_ty = self.type_map.silica_to_llvm_str(pattern_type);
+                    if llvm_ty == "i8*" {
+                        let reg = if scrutinee_reg.starts_with('%') { scrutinee_reg.to_string() } else { format!("%{}", scrutinee_reg) };
+                        self.instructions.push(format!("  {} = bitcast i8* {} to i8*", bind_reg, reg));
+                    } else {
+                        self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, scrutinee_reg));
+                    }
                 }
 
                 // Strip type prefixes before storing in global map
@@ -5766,6 +5789,30 @@ impl CodeGenerator {
                         self.instructions.push(format!("  {} = icmp eq i1 {}, {}", cmp_reg, reg_name, bool_val));
                         Ok(cmp_reg)
                     }
+                    Literal::String(s) => {
+                        // String literal: when no type is given for the literal, compare as string (scrutinee type).
+                        // Ensure the string constant is registered so we can reference it.
+                        if !self.string_constants.contains_key(s) {
+                            let const_name = format!("@str_const_{}", self.string_constants.len());
+                            let length = s.len() + 1;
+                            self.string_constants.insert(s.clone(), (const_name.clone(), length));
+                        }
+                        let (const_name, length) = self.string_constants.get(s).unwrap();
+                        let literal_ptr_reg = format!("%literal_ptr_{}", self.instructions.len());
+                        // Use i8, ptr form for compatibility with LLVM opaque pointer mode; ptr is the address of the global
+                        self.instructions.push(format!(
+                            "  {} = getelementptr inbounds i8, ptr {}, i32 0",
+                            literal_ptr_reg, const_name
+                        ));
+                        let scrutinee_reg_clean = scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+                        let scrutinee_for_call = if scrutinee_reg.starts_with("i8* ") { scrutinee_reg[4..].to_string() } else if scrutinee_reg_clean.starts_with('%') { scrutinee_reg_clean } else { format!("%{}", scrutinee_reg_clean) };
+                        let cmp_reg = format!("%cmp_str_{}", self.instructions.len());
+                        self.instructions.push(format!(
+                            "  {} = call i1 @silica_string_equals(i8* {}, i8* {})",
+                            cmp_reg, scrutinee_for_call, literal_ptr_reg
+                        ));
+                        Ok(cmp_reg)
+                    }
                     _ => {
                         // For unsupported literals, always return false
                         let false_reg = format!("%pattern_false_{}", self.instructions.len());
@@ -5780,11 +5827,60 @@ impl CodeGenerator {
                 self.instructions.push(format!("  {} = add i1 0, 1", true_reg));
                 Ok(true_reg)
             }
-            Pattern::Tuple(_) => {
-                // For now, tuple patterns always match (simplified)
-                let true_reg = format!("%pattern_true_{}", self.instructions.len());
-                self.instructions.push(format!("  {} = add i1 0, 1", true_reg));
-                Ok(true_reg)
+            Pattern::Tuple(patterns) => {
+                // Tuple pattern: load each element and check against subpattern; combine with and
+                let clean_scrutinee = scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+                if patterns.is_empty() {
+                    let true_reg = format!("%pattern_true_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = add i1 0, 1", true_reg));
+                    return Ok(true_reg);
+                }
+                let mut match_results = Vec::new();
+                for (i, elem_pattern) in patterns.iter().enumerate() {
+                    let elem_offset = 16 + (i as i64 * 8);
+                    let elem_ptr_reg = format!("%tuple_elem_ptr_{}_{}", i, self.instructions.len());
+                    self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, clean_scrutinee, elem_offset));
+                    let elem_match = match elem_pattern {
+                        Pattern::Literal(Literal::String(s)) => {
+                            let elem_cast_reg = format!("%tuple_elem_cast_{}_{}", i, self.instructions.len());
+                            self.instructions.push(format!("  {} = bitcast i8* {} to i8**", elem_cast_reg, elem_ptr_reg));
+                            let elem_load_reg = format!("%tuple_elem_str_{}_{}", i, self.instructions.len());
+                            self.instructions.push(format!("  {} = load i8*, i8** {}", elem_load_reg, elem_cast_reg));
+                            self.generate_runtime_pattern_check(&Pattern::Literal(Literal::String(s.clone())), &elem_load_reg)?
+                        }
+                        Pattern::Literal(Literal::Int(n)) => {
+                            let elem_cast_reg = format!("%tuple_elem_cast_{}_{}", i, self.instructions.len());
+                            self.instructions.push(format!("  {} = bitcast i8* {} to i64*", elem_cast_reg, elem_ptr_reg));
+                            let elem_load_reg = format!("%tuple_elem_i64_{}_{}", i, self.instructions.len());
+                            self.instructions.push(format!("  {} = load i64, i64* {}", elem_load_reg, elem_cast_reg));
+                            self.generate_runtime_pattern_check(&Pattern::Literal(Literal::Int(*n)), &elem_load_reg)?
+                        }
+                        Pattern::Literal(Literal::Bool(b)) => {
+                            let elem_cast_reg = format!("%tuple_elem_cast_{}_{}", i, self.instructions.len());
+                            self.instructions.push(format!("  {} = bitcast i8* {} to i1*", elem_cast_reg, elem_ptr_reg));
+                            let elem_load_reg = format!("%tuple_elem_i1_{}_{}", i, self.instructions.len());
+                            self.instructions.push(format!("  {} = load i1, i1* {}", elem_load_reg, elem_cast_reg));
+                            self.generate_runtime_pattern_check(&Pattern::Literal(Literal::Bool(*b)), &elem_load_reg)?
+                        }
+                        Pattern::TypedIdentifier { .. } | Pattern::Identifier(_) => {
+                            let true_reg = format!("%tuple_elem_true_{}_{}", i, self.instructions.len());
+                            self.instructions.push(format!("  {} = add i1 0, 1", true_reg));
+                            true_reg
+                        }
+                        _ => {
+                            return Err(CompilerError::codegen_error(format!("Unsupported tuple element pattern in case match: {:?}", elem_pattern)));
+                        }
+                    };
+                    match_results.push(elem_match);
+                }
+                // Combine all element match results with and
+                let mut combined = match_results.remove(0);
+                for r in match_results {
+                    let and_reg = format!("%tuple_and_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = and i1 {}, {}", and_reg, combined, r));
+                    combined = and_reg;
+                }
+                Ok(combined)
             }
             _ => {
                 // Unsupported patterns don't match
@@ -6051,40 +6147,47 @@ impl CodeGenerator {
             content_parts.push("".to_string());
         }
 
-        // Reorganize instructions to put string constants before functions
-        // Find where string constants are defined and move them earlier
-        let mut before_constants = Vec::new();
+        // Reorganize: put string constants after declarations but before function definitions,
+        // so globals like @str_const_0 are defined before any "define" that references them.
+        let mut declarations = Vec::new();
         let mut constants_section = Vec::new();
-        let mut after_constants = Vec::new();
+        let mut definitions = Vec::new();
         let mut in_constants_section = false;
+        let mut seen_constants_section = false;
 
         for instruction in &self.instructions {
             if instruction.starts_with("; String constants") {
                 in_constants_section = true;
+                seen_constants_section = true;
                 constants_section.push(instruction.clone());
             } else if in_constants_section && (instruction.starts_with("@str_const_") || instruction.is_empty()) {
                 constants_section.push(instruction.clone());
             } else if in_constants_section && !instruction.starts_with("@str_const_") && !instruction.is_empty() {
-                // End of constants section
                 in_constants_section = false;
-                after_constants.push(instruction.clone());
+                definitions.push(instruction.clone());
             } else if in_constants_section {
                 constants_section.push(instruction.clone());
-            } else if !in_constants_section {
-                if constants_section.is_empty() {
-                    before_constants.push(instruction.clone());
+            } else if !seen_constants_section {
+                // Before we've seen "; String constants": declarations (declare, comments, blank) then definitions (define)
+                let is_declaration = instruction.starts_with("declare ") || instruction.starts_with(";") || instruction.is_empty();
+                if is_declaration && definitions.is_empty() {
+                    declarations.push(instruction.clone());
                 } else {
-                    after_constants.push(instruction.clone());
+                    definitions.push(instruction.clone());
                 }
+            } else {
+                definitions.push(instruction.clone());
             }
         }
 
-        // Reconstruct with constants moved before functions
-        content_parts.extend(before_constants);
+        // Output order: declarations, string constants (so @str_const_* exist), then function definitions
+        content_parts.extend(declarations);
         if !constants_section.is_empty() {
+            content_parts.push("".to_string());
             content_parts.extend(constants_section);
+            content_parts.push("".to_string());
         }
-        content_parts.extend(after_constants);
+        content_parts.extend(definitions);
 
         let content = content_parts.join("\n");
         std::fs::write(filename, content)
@@ -6647,10 +6750,7 @@ impl CodeGenerator {
                     // For identifiers, look up in variable_types
                     self.variable_types.get(name)
                         .cloned()
-                        .unwrap_or_else(|| {
-                            eprintln!("DEBUG CODEGEN: variable '{}' not found in variable_types, defaulting to Int64", name);
-                            Type::Int64
-                        })
+                        .unwrap_or(Type::Int64)
                 },
                 _ => {
                     // For other expressions, use get_expression_type
@@ -8044,11 +8144,16 @@ impl CodeGenerator {
                     value.to_string()
                 };
 
-                // Valid pointer values: null, registers (%name), globals (@name)
-                if clean_value == "null" ||
-                   clean_value.starts_with('%') ||
-                   clean_value.starts_with('@') {
+                // Valid pointer values: null, registers (%name or bare name like t0), globals (@name)
+                if clean_value == "null" {
                     clean_value
+                } else if clean_value.starts_with('%') || clean_value.starts_with('@') {
+                    clean_value
+                } else if clean_value.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false)
+                    && clean_value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    // Bare register name (e.g. t0 from next_register()) - use as pointer register
+                    format!("%{}", clean_value)
                 } else {
                     // Invalid pointer value, default to null
                     "null".to_string()

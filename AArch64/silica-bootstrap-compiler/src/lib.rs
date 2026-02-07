@@ -230,11 +230,6 @@ impl Compiler {
             module_dependencies.entry(module_name.clone()).or_insert_with(Vec::new);
         }
         
-        eprintln!("[DEBUG MODULE_COMBINE] Dependency graph:");
-        for (module, deps) in &module_dependencies {
-            eprintln!("[DEBUG MODULE_COMBINE]   {} -> {:?}", module, deps);
-        }
-        
         // Topological sort to ensure dependencies come before dependents
         let mut sorted_modules = Vec::new();
         let mut visited = std::collections::HashSet::new();
@@ -278,12 +273,8 @@ impl Compiler {
 
         // Second pass: add all declarations in dependency order
         // Process modules in topological order (dependencies before dependents)
-        eprintln!("[DEBUG MODULE_COMBINE] Processing {} modules in dependency order", modules_to_process.len());
-        eprintln!("[DEBUG MODULE_COMBINE] Module order: {:?}", modules_to_process);
         for (idx, module_name) in modules_to_process.iter().enumerate() {
             let module = self.module_resolver.get_module(module_name).unwrap();
-            eprintln!("[DEBUG MODULE_COMBINE] Module {}: '{}' ({} declarations)", 
-                      idx, module_name, module.ast.len());
 
             // Add all non-import declarations from this module
             let mut type_aliases_in_module = Vec::new();
@@ -295,42 +286,12 @@ impl Compiler {
                     all_declarations.push(decl.clone());
                 }
             }
-            if !type_aliases_in_module.is_empty() {
-                eprintln!("[DEBUG MODULE_COMBINE]   Type aliases in '{}': {:?}", 
-                          module_name, type_aliases_in_module);
-            }
         }
 
 
         // Add main program declarations (preserving original order)
         // Functions must be defined before they're used
-        eprintln!("[DEBUG MODULE_COMBINE] Adding {} main program declarations", main_declarations.len());
-        let mut main_type_aliases = Vec::new();
-        for decl in &main_declarations {
-            if let crate::ast::Declaration::TypeAlias(alias) = decl {
-                main_type_aliases.push(alias.name.clone());
-            }
-        }
-        if !main_type_aliases.is_empty() {
-            eprintln!("[DEBUG MODULE_COMBINE]   Type aliases in main: {:?}", main_type_aliases);
-        }
         all_declarations.extend(main_declarations);
-
-        eprintln!("[DEBUG MODULE_COMBINE] Combined program: {} total declarations", all_declarations.len());
-        
-        // Count type aliases in combined program
-        let mut combined_type_aliases = Vec::new();
-        for decl in &all_declarations {
-            if let crate::ast::Declaration::TypeAlias(alias) = decl {
-                combined_type_aliases.push(alias.name.clone());
-            }
-        }
-        eprintln!("[DEBUG MODULE_COMBINE] Total type aliases in combined program: {:?}", combined_type_aliases);
-        if combined_type_aliases.contains(&"Rectangle".to_string()) {
-            eprintln!("[DEBUG MODULE_COMBINE] ✓ Rectangle is in combined program!");
-        } else {
-            eprintln!("[DEBUG MODULE_COMBINE] ✗ Rectangle NOT in combined program!");
-        }
 
         // Create combined program
         Ok(crate::ast::Program {

@@ -439,16 +439,11 @@ impl<'a> TypeChecker<'a> {
         if let Type::Named(trait_name) = receiver_type {
             // Check if this is a trait definition (not a concrete type)
             if let Some(trait_decl) = self.trait_defs.get(trait_name) {
-                eprintln!("[DEBUG RESOLVE] Found trait type '{}', looking for method '{}'", trait_name, method_name);
                 // Look for the method in the trait definition
                 if let Some(trait_method) = trait_decl.methods.iter().find(|m| m.name == method_name) {
-                    eprintln!("[DEBUG RESOLVE] Found trait method '{}' in trait '{}'", method_name, trait_name);
                     // Convert TraitMethod to FunctionDecl and cache it
                     let cache_key = format!("{}::{}", trait_name, method_name);
-                    
-                    // Use entry API to get or insert the cached method signature
                     let method_decl = self.trait_method_cache.entry(cache_key).or_insert_with(|| {
-                        eprintln!("[DEBUG RESOLVE] Caching trait method signature for '{}::{}'", trait_name, method_name);
                         // Convert TraitMethod to FunctionDecl
                         FunctionDecl {
                             name: trait_method.name.clone(),
@@ -459,13 +454,8 @@ impl<'a> TypeChecker<'a> {
                             location: trait_method.location.clone(),
                         }
                     });
-                    eprintln!("[DEBUG RESOLVE] Returning trait method signature for '{}::{}'", trait_name, method_name);
                     return Some(method_decl);
-                } else {
-                    eprintln!("[DEBUG RESOLVE] Method '{}' not found in trait '{}'", method_name, trait_name);
                 }
-            } else {
-                eprintln!("[DEBUG RESOLVE] '{}' is not a trait definition", trait_name);
             }
         }
 
@@ -843,10 +833,6 @@ impl<'a> TypeChecker<'a> {
 
     /// Type check a program
     pub fn check_program(&mut self, program: &Program) -> Result<()> {
-        eprintln!("[DEBUG CHECK_PROGRAM] Starting type checking with {} declarations", program.declarations.len());
-        eprintln!("[DEBUG CHECK_PROGRAM] Initial env size: {}, env keys: {:?}", 
-                  self.env.len(), self.env.keys().collect::<Vec<_>>());
-        
         for (idx, decl) in program.declarations.iter().enumerate() {
             let decl_type = match decl {
                 Declaration::Function(_) => "Function",
@@ -860,41 +846,16 @@ impl<'a> TypeChecker<'a> {
                 Declaration::Export(_) => "Export",
                 Declaration::Type(_) => "Type",
             };
-            eprintln!("[DEBUG CHECK_PROGRAM] Processing declaration {}: {} (env size: {})", 
-                      idx, decl_type, self.env.len());
-            
-            // Track if Rectangle is in env before processing this declaration
-            let has_rectangle_before = self.env.contains_key("Rectangle");
-            
+
             self.check_declaration(decl)?;
-            
-            // Track if Rectangle is in env after processing
-            let has_rectangle_after = self.env.contains_key("Rectangle");
-            if has_rectangle_after && !has_rectangle_before {
-                eprintln!("[DEBUG CHECK_PROGRAM] ✓ Rectangle added during declaration {} ({})", idx, decl_type);
-            }
         }
-        
-        eprintln!("[DEBUG CHECK_PROGRAM] Finished type checking. Final env size: {}", self.env.len());
-        eprintln!("[DEBUG CHECK_PROGRAM] Final env contains 'Rectangle': {}", self.env.contains_key("Rectangle"));
-        if self.env.contains_key("Rectangle") {
-            eprintln!("[DEBUG CHECK_PROGRAM] ✓ Rectangle is in env!");
-        } else {
-            eprintln!("[DEBUG CHECK_PROGRAM] ✗ Rectangle NOT in env! Available types: {:?}", 
-                      self.env.keys().filter(|k| k.len() > 3).collect::<Vec<_>>());
-        }
-        
+
         self.solve_constraints()?;
         Ok(())
     }
 
     /// Check a declaration
     fn check_declaration(&mut self, decl: &Declaration) -> Result<()> {
-        // DEBUG: Track TypeAlias declarations specifically
-        if let Declaration::TypeAlias(alias_decl) = decl {
-            eprintln!("[DEBUG CHECK_DECLARATION] About to process TypeAlias: {}", alias_decl.name);
-        }
-        
         match decl {
             Declaration::Function(func) => self.check_function_declaration(func),
             Declaration::Type(ty) => self.check_type_declaration(ty),
@@ -908,21 +869,15 @@ impl<'a> TypeChecker<'a> {
                 
                 self.check_impl_declaration(impl_decl)
             }
-            Declaration::TypeAlias(alias_decl) => {
-                eprintln!("[DEBUG CHECK_DECLARATION] Calling check_type_alias_declaration for: {}", alias_decl.name);
-                self.check_type_alias_declaration(alias_decl)
-            },
+            Declaration::TypeAlias(alias_decl) => self.check_type_alias_declaration(alias_decl),
         }
     }
 
     /// Check function declaration
     fn check_function_declaration(&mut self, func: &FunctionDecl) -> Result<()> {
-        eprintln!("[DEBUG FUNCTION] Checking function '{}'", func.name);
         // Validate parameter types with location BEFORE expanding aliases
         for param in &func.parameters {
-            eprintln!("[DEBUG FUNCTION] Validating parameter '{}' with type {:?}", param.name, param.type_);
             self.validate_type_with_location(&param.type_, Some(param.location.clone()))?;
-            eprintln!("[DEBUG FUNCTION] Parameter '{}' validated successfully", param.name);
         }
 
         // Validate return type with location BEFORE expanding aliases
@@ -1952,14 +1907,8 @@ impl<'a> TypeChecker<'a> {
 
     /// Infer type for method calls (receiver.method(args))
     fn infer_method_call(&mut self, field_access: &FieldAccessExpr, call: &CallExpr) -> Result<Type> {
-        // Infer the receiver type
-        eprintln!("[DEBUG METHOD_CALL] infer_method_call called for method '{}'", field_access.field);
         let receiver_type = self.infer_expression(&field_access.object)?;
-        eprintln!("[DEBUG METHOD_CALL] receiver_type = {:?}", receiver_type);
-        // Try to resolve the method
-        eprintln!("[DEBUG METHOD_CALL] Calling resolve_method for type {:?}, method '{}'", receiver_type, field_access.field);
         if let Some(method) = self.resolve_method(&receiver_type, &field_access.field) {
-            eprintln!("[DEBUG METHOD_CALL] Method resolved successfully");
             // Extract method info before doing mutable operations
             let expected_param_count = method.parameters.len();
             let return_type = method.return_type.clone();
@@ -3443,11 +3392,6 @@ impl<'a> TypeChecker<'a> {
 
     /// Check type alias declaration
     fn check_type_alias_declaration(&mut self, alias_decl: &TypeAliasDecl) -> Result<()> {
-        // DEBUG: Track type alias processing
-        eprintln!("[DEBUG TYPE_ALIAS] Processing type alias: {} at {:?}", alias_decl.name, alias_decl.location);
-        eprintln!("[DEBUG TYPE_ALIAS] Current env size: {}, contains '{}': {}", 
-                  self.env.len(), alias_decl.name, self.env.contains_key(&alias_decl.name));
-        
         // Validate the aliased type - use alias declaration location
         self.validate_type_with_location(&alias_decl.aliased_type, Some(alias_decl.location.clone()))?;
 
@@ -3463,15 +3407,6 @@ impl<'a> TypeChecker<'a> {
         // Add the alias to the environment as a named type
         let alias_type = Type::Named(alias_decl.name.clone());
         self.env.insert(alias_decl.name.clone(), TypeScheme { vars: Vec::new(), ty: alias_type });
-        
-        // DEBUG: Verify it was added
-        eprintln!("[DEBUG TYPE_ALIAS] After insert - env size: {}, contains '{}': {}", 
-                  self.env.len(), alias_decl.name, self.env.contains_key(&alias_decl.name));
-        if alias_decl.name == "Rectangle" {
-            eprintln!("[DEBUG TYPE_ALIAS] ✓ Rectangle successfully added to env!");
-            eprintln!("[DEBUG TYPE_ALIAS] Env keys containing 'Rect': {:?}", 
-                      self.env.keys().filter(|k| k.contains("Rect")).collect::<Vec<_>>());
-        }
 
         Ok(())
     }
@@ -3545,25 +3480,7 @@ impl<'a> TypeChecker<'a> {
                 if name == "Self" {
                     return Ok(());
                 }
-                
-                // DEBUG: Track validation calls for Rectangle
-                if name == "Rectangle" {
-                    let loc_str = location.as_ref()
-                        .map(|l| format!("{}:{}:{}", l.file, l.line, l.column))
-                        .unwrap_or_else(|| "unknown".to_string());
-                    eprintln!("[DEBUG VALIDATE_TYPE] Validating type '{}' at {}", name, loc_str);
-                    eprintln!("[DEBUG VALIDATE_TYPE] Env size: {}, contains '{}': {}", 
-                              self.env.len(), name, self.env.contains_key(name));
-                    eprintln!("[DEBUG VALIDATE_TYPE] Type aliases contains '{}': {}", 
-                              name, self.type_aliases.contains_key(name));
-                    if !self.env.contains_key(name) {
-                        eprintln!("[DEBUG VALIDATE_TYPE] ✗ '{}' NOT in env! Available types: {:?}", 
-                                  name, self.env.keys().filter(|k| k.len() > 3).take(20).collect::<Vec<_>>());
-                    } else {
-                        eprintln!("[DEBUG VALIDATE_TYPE] ✓ '{}' found in env!", name);
-                    }
-                }
-                
+
                 // Check if the named type exists in the environment
                 if !self.env.contains_key(name) {
                     let error_location = location.unwrap_or_else(|| SourceLocation::unknown());

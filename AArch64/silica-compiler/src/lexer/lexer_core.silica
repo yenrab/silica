@@ -1,0 +1,135 @@
+// Core token types, source location, and basic tokenization infrastructure
+// This file provides the foundation for lexical analysis in Silica
+
+// Import token kind types and functions
+use lexer_token_kind;
+
+// Export functions used by other lexer modules
+export current_location/1;
+export make_token/3;
+export peek_char/1;
+export peek_next_char/1;
+export advance/1;
+export extract_lexeme/2;
+export new_lexer/2;
+export is_whitespace/1;
+export skip_whitespace/1;
+
+// SourceLocation represents a position in source code
+struct SourceLocation {
+    file: string,
+    line: int64,
+    column: int64,
+    offset: int64
+}
+
+// Token represents a lexical token in Silica source code
+struct Token {
+    kind: int64,  // Token kind code (from lexer_token_kind)
+    lexeme: string,
+    location: SourceLocation
+}
+
+// Lexer performs lexical analysis on Silica source code
+struct Lexer {
+    source: string,
+    position: int64,
+    line: int64,
+    column: int64,
+    file: string
+}
+
+// Create a new lexer for the given source code
+fn new_lexer(source: string, file: string) -> Lexer {
+    Lexer {
+        source: source,
+        position: 0,
+        line: 1,
+        column: 1,
+        file: file
+    }
+}
+
+// Get current source location
+fn current_location(lexer: Lexer) -> SourceLocation {
+    SourceLocation {
+        file: lexer.file,
+        line: lexer.line,
+        column: lexer.column,
+        offset: lexer.position
+    }
+}
+
+// Create a token with the given kind and lexeme
+fn make_token(kind: int64, lexeme: string, location: SourceLocation) -> Token {
+    Token {
+        kind: kind,
+        lexeme: lexeme,
+        location: location
+    }
+}
+
+// Peek at character at current position (returns empty string if EOF)
+fn peek_char(lexer: Lexer) -> string {
+    // Use substring to get single character at position
+    // Returns empty string if position is beyond source length
+    substring(lexer.source, lexer.position, lexer.position + 1)
+}
+
+// Peek at next character after current position
+fn peek_next_char(lexer: Lexer) -> string {
+    substring(lexer.source, lexer.position + 1, lexer.position + 2)
+}
+
+// Advance lexer position by one character
+fn advance(lexer: Lexer) -> Lexer {
+    // Get current character to check if its newline
+    current: string <- peek_char(lexer);
+    
+    // Check if current character is newline
+    is_newline: bool <- current == "\n";
+    new_line: int64 <- case is_newline of {
+        true -> lexer.line + 1;
+        false -> lexer.line
+    };
+    new_column: int64 <- case is_newline of {
+        true -> 1;
+        false -> lexer.column + 1
+    };
+    
+    Lexer {
+        source: lexer.source,
+        position: lexer.position + 1,
+        line: new_line,
+        column: new_column,
+        file: lexer.file
+    }
+}
+
+// Extract lexeme substring from start to current position
+fn extract_lexeme(lexer: Lexer, start_pos: int64) -> string {
+    substring(lexer.source, start_pos, lexer.position)
+}
+
+// Check if a character is whitespace
+fn is_whitespace(c: string) -> bool {
+    case c of {
+        " " -> true;
+        "\t" -> true;
+        "\n" -> true;
+        "\r" -> true;
+        _: string -> false
+    }
+}
+
+// Skip whitespace characters
+fn skip_whitespace(lexer: Lexer) -> Lexer {
+    current: string <- peek_char(lexer);
+    case current of {
+        "" -> lexer;
+        _: string -> case is_whitespace(current) of {
+            true -> skip_whitespace(advance(lexer));
+            false -> lexer
+        }
+    }
+}

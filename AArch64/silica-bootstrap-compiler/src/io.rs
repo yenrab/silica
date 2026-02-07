@@ -637,3 +637,32 @@ pub extern "C" fn silica_string_contains(str_ptr: *const u8, substr_ptr: *const 
         false
     }
 }
+
+/// Check if two strings are equal.
+/// Accepts either string constant pointers (i8* to string data) or SilicaString pointers (i8* to SilicaString struct).
+/// Returns true if both strings have the same length and same bytes, false otherwise.
+#[no_mangle]
+pub extern "C" fn silica_string_equals(a_ptr: *const u8, b_ptr: *const u8) -> bool {
+    if a_ptr.is_null() && b_ptr.is_null() {
+        return true;
+    }
+    if a_ptr.is_null() || b_ptr.is_null() {
+        return false;
+    }
+
+    let (a_data, a_len) = unsafe { get_string_data_and_length(a_ptr).unwrap_or((std::ptr::null(), 0)) };
+    let (b_data, b_len) = unsafe { get_string_data_and_length(b_ptr).unwrap_or((std::ptr::null(), 0)) };
+
+    if a_len != b_len {
+        return false;
+    }
+    if a_len == 0 {
+        return true;
+    }
+
+    unsafe {
+        let a_slice = std::slice::from_raw_parts(a_data, a_len);
+        let b_slice = std::slice::from_raw_parts(b_data, b_len);
+        a_slice == b_slice
+    }
+}
