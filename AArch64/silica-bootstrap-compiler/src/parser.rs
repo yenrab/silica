@@ -2362,12 +2362,13 @@ impl Parser {
             self.consume(TokenKind::RightParen, "Expected ')' after tuple pattern")?;
             Ok(Pattern::Tuple(patterns))
         } else {
-            let location = self.peek().location.clone();
-            let metadata = self.build_parse_error_metadata("E1001", &location, Some("spec:§3"), None)
+            let token = self.peek();
+            let full_message = format!("Expected pattern (found token: {:?} '{}')", token.kind, token.lexeme);
+            let metadata = self.build_parse_error_metadata("E1001", &token.location, Some("spec:§3"), None)
                 .build();
             parse_error_with_metadata(
-                location,
-                "Expected pattern".to_string(),
+                token.location.clone(),
+                full_message,
                 metadata,
             )
         }
@@ -2591,7 +2592,9 @@ impl Parser {
             self.advance();
             Ok(name)
         } else {
-            parse_error(self.peek().location.clone(), message.to_string())
+            let token = self.peek();
+            let full_message = format!("{} (found token: {:?} '{}')", message, token.kind, token.lexeme);
+            parse_error(token.location.clone(), full_message)
         }
     }
 

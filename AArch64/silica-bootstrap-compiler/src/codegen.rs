@@ -67,6 +67,8 @@ pub struct CodeGenerator {
     type_aliases: HashMap<String, Type>, // Type alias definitions
     struct_defs: HashMap<String, Vec<crate::ast::StructField>>, // Struct definitions
     trait_impls: Vec<crate::types::TraitImpl>, // Trait implementations
+    trait_forwarders_emitted: std::collections::HashSet<(String, String)>, // (trait_name, method_name) already emitted
+    trait_forwarder_ir: Vec<String>, // IR lines for trait method forwarders (define Trait_method -> call Concrete_method)
     variable_scopes: Vec<HashMap<String, String>>, // Scope stack for text IR variables
     function_variable_scopes: Vec<HashMap<String, (Vec<Type>, Type)>>, // Function signatures for variables
     register_counter: u32, // Counter for generating unique register names
@@ -114,6 +116,8 @@ impl CodeGenerator {
             type_aliases: HashMap::new(),
             struct_defs: HashMap::new(),
             trait_impls: Vec::new(),
+            trait_forwarders_emitted: std::collections::HashSet::new(),
+            trait_forwarder_ir: Vec::new(),
             variable_scopes: vec![HashMap::new()], // Start with global scope
             function_variable_scopes: vec![HashMap::new()], // Start with global scope
             register_counter: 0,
@@ -884,7 +888,13 @@ impl CodeGenerator {
                 } else {
                     // Expand type aliases before converting to LLVM string
                     let expanded_type = self.expand_type_aliases_codegen(&param.type_);
-                    self.type_map.silica_to_llvm_str(&expanded_type)
+                    // Trait-typed parameters must be i8* so calls to trait methods (self: i8*) match
+                    let is_trait_param = matches!(&expanded_type, Type::Named(name) if self.trait_impls.iter().any(|impl_| &impl_.trait_name == name));
+                    if is_trait_param {
+                        "i8*".to_string()
+                    } else {
+                        self.type_map.silica_to_llvm_str(&expanded_type)
+                    }
                 }
             })
             .collect();
@@ -3145,6 +3155,17 @@ impl CodeGenerator {
                 return Err(CompilerError::codegen_error(format!("Method calls not supported on type {:?}", receiver_type)));
             }
         };
+
+        // When receiver type is a trait (no concrete impl matched), ensure a forwarder exists
+        if let Type::Named(type_name) = &receiver_type {
+            let is_trait = self.trait_impls.iter().any(|i| &i.trait_name == type_name);
+            let has_concrete_impl = self.trait_impls.iter().any(|i| {
+                i.methods.contains_key(&field_access.field) && self.types_equal_codegen(&i.for_type, &receiver_type)
+            });
+            if is_trait && !has_concrete_impl {
+                self.ensure_trait_method_forwarder(type_name, &field_access.field, &return_type_str)?;
+            }
+        }
 
         // Generate arguments (receiver first, then call arguments)
         let mut arg_strs = vec![receiver_val];
@@ -6180,11 +6201,16 @@ impl CodeGenerator {
             }
         }
 
-        // Output order: declarations, string constants (so @str_const_* exist), then function definitions
+        // Output order: declarations, string constants (so @str_const_* exist), trait forwarders, then function definitions
         content_parts.extend(declarations);
         if !constants_section.is_empty() {
             content_parts.push("".to_string());
             content_parts.extend(constants_section);
+            content_parts.push("".to_string());
+        }
+        if !self.trait_forwarder_ir.is_empty() {
+            content_parts.push("; Trait method forwarders (trait-typed receiver dispatch)".to_string());
+            content_parts.extend(self.trait_forwarder_ir.clone());
             content_parts.push("".to_string());
         }
         content_parts.extend(definitions);
@@ -7003,6 +7029,40 @@ impl CodeGenerator {
         self.instructions.push("}".to_string());
         self.instructions.push("".to_string());
 
+        Ok(())
+    }
+
+    /// Ensure a forwarder for a trait method (e.g. Shape_area) exists, forwarding to one concrete impl.
+    /// Used when the receiver type is the trait (Shape) so we have a single symbol to call.
+    fn ensure_trait_method_forwarder(&mut self, trait_name: &str, method_name: &str, return_type_str: &str) -> Result<()> {
+        let key = (trait_name.to_string(), method_name.to_string());
+        if self.trait_forwarders_emitted.contains(&key) {
+            return Ok(());
+        }
+        let concrete_type_name = self.trait_impls
+            .iter()
+            .find(|i| i.trait_name == trait_name && i.methods.contains_key(method_name))
+            .and_then(|i| match &i.for_type {
+                Type::Named(name) => Some(name.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| CompilerError::codegen_error(
+                format!("No concrete implementation of trait {} for method {} to forward to", trait_name, method_name)
+            ))?;
+        let forwarder_name = format!("{}_{}", trait_name, method_name);
+        let concrete_method_name = format!("{}_{}", concrete_type_name, method_name);
+        if return_type_str == "void" {
+            self.trait_forwarder_ir.push(format!("define void @{}(i8* %self) {{", forwarder_name));
+            self.trait_forwarder_ir.push(format!("  call void @{}(i8* %self)", concrete_method_name));
+            self.trait_forwarder_ir.push("  ret void".to_string());
+        } else {
+            self.trait_forwarder_ir.push(format!("define {} @{}(i8* %self) {{", return_type_str, forwarder_name));
+            self.trait_forwarder_ir.push(format!("  %r = call {} @{}(i8* %self)", return_type_str, concrete_method_name));
+            self.trait_forwarder_ir.push(format!("  ret {} %r", return_type_str));
+        }
+        self.trait_forwarder_ir.push("}".to_string());
+        self.trait_forwarder_ir.push("".to_string());
+        self.trait_forwarders_emitted.insert(key);
         Ok(())
     }
 

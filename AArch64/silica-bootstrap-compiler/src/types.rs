@@ -1775,7 +1775,11 @@ impl<'a> TypeChecker<'a> {
             // Check argument types - pass expected parameter types as context for literals
             for (arg_expr, expected_type) in call.arguments.iter().zip(parameters) {
                 let actual_type = self.infer_expression_with_context(arg_expr, Some(expected_type))?;
-                self.add_constraint(actual_type, expected_type.clone());
+                // Skip constraint when parameter is trait type and argument implements it
+                let skip_trait_arg = matches!(expected_type, Type::Named(trait_name) if self.trait_defs.contains_key(trait_name) && self.type_implements_trait(&actual_type, trait_name));
+                if !skip_trait_arg {
+                    self.add_constraint(actual_type, expected_type.clone());
+                }
             }
 
             return Ok(*return_type.clone());
@@ -1850,7 +1854,11 @@ impl<'a> TypeChecker<'a> {
                     // Check argument types - pass expected parameter types as context for literals
                     for (arg_expr, expected_type) in module_call.arguments.iter().zip(parameters) {
                         let actual_type = self.infer_expression_with_context(arg_expr, Some(expected_type))?;
-                        self.add_constraint(actual_type, expected_type.clone());
+                        // Skip constraint when parameter is trait type and argument implements it
+                        let skip_trait_arg = matches!(expected_type, Type::Named(trait_name) if self.trait_defs.contains_key(trait_name) && self.type_implements_trait(&actual_type, trait_name));
+                        if !skip_trait_arg {
+                            self.add_constraint(actual_type, expected_type.clone());
+                        }
                     }
 
                     Ok(*return_type.clone())
@@ -1923,8 +1931,13 @@ impl<'a> TypeChecker<'a> {
                     format!("Method expects {} arguments (including self), got {}", expected_param_count, actual_arg_count)
                 );
             }
-            // Check receiver type matches method's self parameter
-            self.add_constraint(receiver_type.clone(), self_param_type);
+            // Check receiver type matches method's self parameter. Skip when receiver is a trait
+            // type and method's self param is Self (trait method from trait_defs); call is valid.
+            let skip_self_constraint = matches!((&receiver_type, &self_param_type),
+                (Type::Named(trait_name), Type::Named(self_ty)) if self_ty == "Self" && self.trait_defs.contains_key(trait_name));
+            if !skip_self_constraint {
+                self.add_constraint(receiver_type.clone(), self_param_type);
+            }
             // Check call arguments against method parameters (skip self) - pass expected types as context
             for (arg_expr, expected_type) in call.arguments.iter().zip(method_params) {
                 let actual_type = self.infer_expression_with_context(arg_expr, Some(&expected_type))?;
@@ -3424,7 +3437,14 @@ impl<'a> TypeChecker<'a> {
                         struct_def.iter().map(|f| (f.name.clone(), f.ty.clone())).collect()
                     )
                 } else if let Some(scheme) = self.env.get(name) {
-                    // Check if it's a variable in the environment
+                    // Check if it's a variable in the environment. If the env entry is
+                    // Type::Named(same_name), this is a trait (or self-ref); do not recurse
+                    // or we get infinite recursion (trait names are stored as Type::Named(name)).
+                    if let Type::Named(env_name) = &scheme.ty {
+                        if env_name == name {
+                            return ty.clone();
+                        }
+                    }
                     self.expand_type_aliases(&scheme.ty)
                 } else {
                     // Check if it's a built-in type
