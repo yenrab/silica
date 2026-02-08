@@ -1,5 +1,8 @@
 use crate::errors::{Result, SourceLocation, lexer_error, lexer_error_with_metadata};
 
+/// Maximum line number considered sane; used for position-tracking diagnostics.
+const MAX_SANE_LINE: usize = 10_000_000;
+
 /// Token represents a lexical token in Silica source code
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
@@ -199,8 +202,8 @@ impl Lexer {
                     self.advance();
                 }
                 Some('\n') => {
-                    self.line += 1;
-                    self.column = 1;
+                    // Only advance(); it updates line/column. Do not update line/column here
+                    // or we double-count newlines and corrupt position tracking.
                     self.advance();
                 }
                 Some('/') => {
@@ -267,6 +270,11 @@ impl Lexer {
                     self.line += 1;
                     self.column = 1;
                     self.advance();
+                    debug_assert!(
+                        self.line <= MAX_SANE_LINE,
+                        "lexer position tracking: line overflow in block comment line={}",
+                        self.line
+                    );
                 }
                 (Some(_), _) => {
                     self.advance();
@@ -740,72 +748,103 @@ impl Lexer {
 
     // Operator reading methods
     fn read_colon_or_double_colon(&mut self) -> Result<Option<Token>> {
+        let start_location = SourceLocation::new(
+            self.file.clone(),
+            self.line,
+            self.column,
+            self.position,
+        );
         self.advance(); // skip first :
         if self.peek_char() == Some(':') {
             self.advance();
-            self.make_token_at_current_pos(TokenKind::DoubleColon, "::")
+            self.make_token_at_current_pos(TokenKind::DoubleColon, "::", start_location)
         } else {
-            self.make_token_at_current_pos(TokenKind::Colon, ":")
+            self.make_token_at_current_pos(TokenKind::Colon, ":", start_location)
         }
     }
 
     fn read_equal_or_double_equal(&mut self) -> Result<Option<Token>> {
-        let start_pos = self.position;
+        let start_location = SourceLocation::new(
+            self.file.clone(),
+            self.line,
+            self.column,
+            self.position,
+        );
         self.advance(); // skip first =
         if self.peek_char() == Some('=') {
             self.advance();
-            self.make_token_at_current_pos(TokenKind::EqualEqual, "==")
+            self.make_token_at_current_pos(TokenKind::EqualEqual, "==", start_location)
         } else {
-            self.make_token_at_current_pos(TokenKind::Equal, "=")
+            self.make_token_at_current_pos(TokenKind::Equal, "=", start_location)
         }
     }
 
     fn read_bang_or_bang_equal(&mut self) -> Result<Option<Token>> {
-        let start_pos = self.position;
+        let start_location = SourceLocation::new(
+            self.file.clone(),
+            self.line,
+            self.column,
+            self.position,
+        );
         self.advance(); // skip !
         if self.peek_char() == Some('=') {
             self.advance();
-            self.make_token_at_current_pos(TokenKind::BangEqual, "!=")
+            self.make_token_at_current_pos(TokenKind::BangEqual, "!=", start_location)
         } else {
-            self.make_token_at_current_pos(TokenKind::Bang, "!")
+            self.make_token_at_current_pos(TokenKind::Bang, "!", start_location)
         }
     }
 
     fn read_less_or_less_equal_or_left_arrow(&mut self) -> Result<Option<Token>> {
-        let start_pos = self.position;
+        let start_location = SourceLocation::new(
+            self.file.clone(),
+            self.line,
+            self.column,
+            self.position,
+        );
         self.advance(); // skip <
         match self.peek_char() {
             Some('=') => {
                 self.advance();
-                self.make_token_at_current_pos(TokenKind::LessEqual, "<=")
+                self.make_token_at_current_pos(TokenKind::LessEqual, "<=", start_location)
             }
             Some('-') => {
                 self.advance();
-                self.make_token_at_current_pos(TokenKind::LeftArrow, "<-")
+                self.make_token_at_current_pos(TokenKind::LeftArrow, "<-", start_location)
             }
-            _ => self.make_token_at_current_pos(TokenKind::Less, "<"),
+            _ => self.make_token_at_current_pos(TokenKind::Less, "<", start_location),
         }
     }
 
     fn read_greater_or_greater_equal(&mut self) -> Result<Option<Token>> {
-        let start_pos = self.position;
+        let start_location = SourceLocation::new(
+            self.file.clone(),
+            self.line,
+            self.column,
+            self.position,
+        );
         self.advance(); // skip >
         if self.peek_char() == Some('=') {
             self.advance();
-            self.make_token_at_current_pos(TokenKind::GreaterEqual, ">=")
+            self.make_token_at_current_pos(TokenKind::GreaterEqual, ">=", start_location)
         } else {
-            self.make_token_at_current_pos(TokenKind::Greater, ">")
+            self.make_token_at_current_pos(TokenKind::Greater, ">", start_location)
         }
     }
 
     fn read_minus_or_arrow(&mut self) -> Result<Option<Token>> {
-        let start_pos = self.position;
+        let start_location = SourceLocation::new(
+            self.file.clone(),
+            self.line,
+            self.column,
+            self.position,
+        );
         self.advance(); // skip -
         if self.peek_char() == Some('>') {
             self.advance();
-            self.make_token_at_current_pos(TokenKind::RightArrow, "->")
+            self.make_token_at_current_pos(TokenKind::RightArrow, "->", start_location)
         } else {
-            self.make_token_at_current_pos(TokenKind::Minus, "-")
+            self.make_token_at_current_pos(TokenKind::Minus, "-", start_location)
         }
     }
 
@@ -835,12 +874,32 @@ impl Lexer {
             if *c == '\n' {
                 self.line += 1;
                 self.column = 1;
+                debug_assert!(
+                    self.line <= MAX_SANE_LINE,
+                    "lexer position tracking: line overflow line={}",
+                    self.line
+                );
             }
             self.current_char_index += 1;
             Some(*c)
         } else {
             None
         }
+    }
+
+    /// Diagnostic: log when position is out of expected range (indicates position-tracking bug).
+    fn check_position_sanity(&self, location: &SourceLocation) {
+        if location.line < 1 || location.line > 10000 {
+            eprintln!(
+                "[lexer] position tracking: line out of range file={} line={} column={} (expected 1..=10000)",
+                location.file, location.line, location.column
+            );
+        }
+        debug_assert!(
+            location.line >= 1 && location.line <= MAX_SANE_LINE,
+            "lexer token position out of range: file={} line={} column={}",
+            location.file, location.line, location.column
+        );
     }
 
     fn make_token(&mut self, kind: TokenKind, lexeme: &str) -> Result<Option<Token>> {
@@ -850,19 +909,17 @@ impl Lexer {
             self.column,
             self.position,
         );
+        self.check_position_sanity(&location);
         self.advance();
         Ok(Some(Token::new(kind, lexeme.to_string(), location)))
     }
 
-    fn make_token_at_current_pos(&mut self, kind: TokenKind, lexeme: &str) -> Result<Option<Token>> {
-        let location = SourceLocation::new(
-            self.file.clone(),
-            self.line,
-            self.column,
-            self.position - lexeme.len(),
-        );
+    /// Create a token using the start location (captured before consuming the lexeme).
+    /// Callers must pass the SourceLocation from before any advance() that consumed this token.
+    fn make_token_at_current_pos(&mut self, kind: TokenKind, lexeme: &str, start_location: SourceLocation) -> Result<Option<Token>> {
+        self.check_position_sanity(&start_location);
         // Don't advance - characters already consumed
-        Ok(Some(Token::new(kind, lexeme.to_string(), location)))
+        Ok(Some(Token::new(kind, lexeme.to_string(), start_location)))
     }
 
     /// Create error metadata builder with surrounding code context

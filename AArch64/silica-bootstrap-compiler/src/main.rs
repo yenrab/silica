@@ -104,6 +104,10 @@ fn main() {
                         eprintln!("❌ Compilation error: Parse error (position tracking corrupted)");
                         eprintln!("  Error: {}", message);
                         eprintln!("  Note: Position information is unreliable due to internal bug");
+                        eprintln!(
+                            "  [diagnostic] position tracking: location.line={}, source_lines={}, file={}",
+                            location.line, source_lines, location.file
+                        );
                     } else {
                         // Check for common syntax errors and provide better messages
                         if message.contains("Expected ';' after statement") {
