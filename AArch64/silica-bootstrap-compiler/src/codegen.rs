@@ -1426,9 +1426,16 @@ impl CodeGenerator {
             // eprintln!("DEBUG generate_identifier: found '{}' -> '{}'", name, var_reg);
             Ok(Some(var_reg))
         }
-        // Then check the global variables map
+        // Then check the global variables map (e.g. function parameters in text backend)
+        // Parameters must be returned with type prefix so getelementptr etc. get correct base type
         else if let Some(var_reg) = self.variables.get(name) {
-            Ok(Some(var_reg.clone()))
+            let result = if let Some(silica_type) = self.variable_types.get(name) {
+                let llvm_type = self.type_map.silica_to_llvm_str(silica_type);
+                format!("{} {}", llvm_type, var_reg)
+            } else {
+                var_reg.clone()
+            };
+            Ok(Some(result))
         }
         // Then check if it's a function
         else if self.functions.contains_key(name) {
@@ -1934,6 +1941,24 @@ impl CodeGenerator {
                 clean_rhs.clone()
             };
             
+            // For comparison ops, getelementptr operands must be in registers (LLVM doesn't allow inline GEP in icmp/fcmp)
+            let mut cmp_lhs = self.ensure_gep_in_register(&format_lhs, "lhs");
+            let mut cmp_rhs = self.ensure_gep_in_register(&format_rhs, "rhs");
+            // When comparing as i64 (e.g. pointer-as-integer), ptrtoint any GEP register to i64
+            let is_cmp = matches!(binary.operator, BinaryOp::Equal | BinaryOp::NotEqual | BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual);
+            if is_cmp && op_type == "i64" {
+                if cmp_lhs.starts_with("%gep_") {
+                    let ptrtoint_reg = format!("%ptrtoint_lhs_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", ptrtoint_reg, cmp_lhs));
+                    cmp_lhs = ptrtoint_reg;
+                }
+                if cmp_rhs.starts_with("%gep_") {
+                    let ptrtoint_reg = format!("%ptrtoint_rhs_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", ptrtoint_reg, cmp_rhs));
+                    cmp_rhs = ptrtoint_reg;
+                }
+            }
+
             let op_instr = match binary.operator {
                 BinaryOp::Add => {
                     let op_name = if is_float { "fadd" } else { "add" };
@@ -1953,52 +1978,52 @@ impl CodeGenerator {
                 },
                 BinaryOp::Modulo => {
                     // Modulo only for integers (already checked above)
-                    format!("  {} = srem {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                    format!("  {} = srem {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs)
                 },
                 BinaryOp::Equal => {
                     if is_float {
-                        format!("  {} = fcmp oeq {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                        format!("  {} = fcmp oeq {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs)
                     } else {
-                        format!("  {} = icmp eq {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                        format!("  {} = icmp eq {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs)
                     }
                 },
                 BinaryOp::NotEqual => {
                     if is_float {
-                        format!("  {} = fcmp one {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                        format!("  {} = fcmp one {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs)
                     } else {
-                        format!("  {} = icmp ne {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                        format!("  {} = icmp ne {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs)
                     }
                 },
                 BinaryOp::Less => {
                     if is_float {
-                        format!("  {} = fcmp olt {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                        format!("  {} = fcmp olt {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs)
                     } else {
-                        format!("  {} = icmp slt {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                        format!("  {} = icmp slt {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs)
                     }
                 },
                 BinaryOp::LessEqual => {
                     if is_float {
-                        format!("  {} = fcmp ole {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                        format!("  {} = fcmp ole {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs)
                     } else {
-                        format!("  {} = icmp sle {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                        format!("  {} = icmp sle {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs)
                     }
                 },
                 BinaryOp::Greater => {
                     if is_float {
-                        format!("  {} = fcmp ogt {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                        format!("  {} = fcmp ogt {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs)
                     } else {
-                        format!("  {} = icmp sgt {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                        format!("  {} = icmp sgt {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs)
                     }
                 },
                 BinaryOp::GreaterEqual => {
                     if is_float {
-                        format!("  {} = fcmp oge {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                        format!("  {} = fcmp oge {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs)
                     } else {
-                        format!("  {} = icmp sge {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs)
+                        format!("  {} = icmp sge {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs)
                     }
                 },
-                BinaryOp::And => format!("  {} = and {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
-                BinaryOp::Or => format!("  {} = or {} {}, {}", temp_reg, op_type, clean_lhs, clean_rhs),
+                BinaryOp::And => format!("  {} = and {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs),
+                BinaryOp::Or => format!("  {} = or {} {}, {}", temp_reg, op_type, cmp_lhs, cmp_rhs),
             };
 
             self.instructions.push(op_instr);
@@ -3963,6 +3988,22 @@ impl CodeGenerator {
         }
     }
 
+    /// If the value is a getelementptr expression (inline), assign it to a register first; return register or value for use in instructions.
+    fn ensure_gep_in_register(&mut self, value: &str, side: &str) -> String {
+        let trimmed = value.trim_start_matches('%');
+        if !trimmed.contains("getelementptr") {
+            return value.to_string();
+        }
+        let gep_reg = format!("%gep_{}_{}", side, self.instructions.len());
+        let gep_instr = if trimmed.starts_with("getelementptr inbounds (") {
+            self.convert_gep_to_instruction_format(trimmed)
+        } else {
+            trimmed.to_string()
+        };
+        self.instructions.push(format!("  {} = {}", gep_reg, gep_instr));
+        gep_reg
+    }
+
     /// Check if a type represents a pointer
     fn is_pointer_type(&self, ty: &Type) -> bool {
         matches!(ty, Type::Named(name) if name == "string") || matches!(ty, Type::Record(_))
@@ -5566,15 +5607,33 @@ impl CodeGenerator {
 
             let body_val = match self.generate_expression(&branch.body)? {
                 Some(val) => {
-                    // Extract just the value part, handling different types
+                    // Extract value and ensure type matches result_llvm_type for store
                     if val.starts_with(&format!("{} ", result_llvm_type)) {
                         val[result_llvm_type.len() + 1..].to_string()
                     } else if result_llvm_type == "i8*" && val.starts_with("i64 ") {
-                        // Function literals are generated as i8*, but might be prefixed as i64 in some cases
-                        // Extract the register name
-                        val.trim_start_matches("i64 ").trim_start_matches("i8* ").to_string()
+                        // Branch returned i64 (e.g. pointer as integer from field load); convert before store into i8* slot
+                        let i64_reg = val.trim_start_matches("i64 ").trim_start_matches("i8* ").to_string();
+                        let ptr_reg = format!("%case_inttoptr_{}_{}", self.instructions.len(), branch_idx);
+                        self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, i64_reg));
+                        ptr_reg
+                    } else if result_llvm_type == "i64" && val.starts_with("i8* ") {
+                        // Branch returned i8* but case result is i64 (e.g. pointer-as-integer); convert before store
+                        let ptr_reg = val.trim_start_matches("i8* ").to_string();
+                        let i64_reg = format!("%case_ptrtoint_{}_{}", self.instructions.len(), branch_idx);
+                        self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", i64_reg, ptr_reg));
+                        i64_reg
+                    } else if result_llvm_type == "i8*" && val.starts_with("i8* ") {
+                        val.trim_start_matches("i8* ").to_string()
                     } else {
-                        val.trim_start_matches("i64 ").trim_start_matches("i8* ").trim_start_matches("i1 ").trim_start_matches("i32 ").to_string()
+                        let trimmed = val.trim_start_matches("i64 ").trim_start_matches("i8* ").trim_start_matches("i1 ").trim_start_matches("i32 ").to_string();
+                        // No type prefix: if result is i64 and value looks like a ptr register (e.g. case_final from nested i8* case), ptrtoint
+                        if result_llvm_type == "i64" && trimmed.starts_with('%') && trimmed.contains("case_final") {
+                            let i64_reg = format!("%case_ptrtoint_{}_{}", self.instructions.len(), branch_idx);
+                            self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", i64_reg, trimmed));
+                            i64_reg
+                        } else {
+                            trimmed
+                        }
                     }
                 },
                 None => return codegen_error("Case branch body must produce a value".to_string()),
@@ -7076,8 +7135,12 @@ impl CodeGenerator {
                 // Generate the expression result
                 let result_val = self.generate_expression_in_method(type_name, method, expr.as_ref())?;
 
+                // Strip type prefix so ret gets "ret i8* %reg" not "ret i8* i8* %reg"
+                let ret_value = self.clean_register_for_instruction(&result_val);
+                let ret_value = if ret_value.starts_with('%') { ret_value } else { format!("%{}", ret_value) };
+
                 // Return the result with the actual return type
-                self.instructions.push(format!("  ret {} {}", return_type_str, result_val));
+                self.instructions.push(format!("  ret {} {}", return_type_str, ret_value));
             } else {
                 return Err(CompilerError::codegen_error("Trait methods must have expression bodies".to_string()));
             }
@@ -7841,7 +7904,12 @@ impl CodeGenerator {
                 field_ptr_typed
             };
             
-            let store_instruction = if value_type == "i8*" && clean_value.contains("getelementptr") {
+            let store_instruction = if llvm_type_str == "i8*" && value_type == "i64" {
+                // Target field is pointer but value was loaded as i64 (pointer stored as integer); convert before store
+                let ptr_reg = format!("%field_inttoptr_{}_{}", self.instructions.len(), i);
+                self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, clean_value));
+                format!("  store i8* {}, i8** {}", ptr_reg, final_ptr_type)
+            } else if value_type == "i8*" && clean_value.contains("getelementptr") {
                 // String literal - special case
                 format!("  store i8* {}, i8** {}", clean_value, final_ptr_type)
             } else if clean_value.contains("getelementptr") {
@@ -8043,6 +8111,11 @@ impl CodeGenerator {
                 let cast_reg = format!("%ptr_cast_{}", self.instructions.len());
                 self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", cast_reg, clean_element_value));
                 cast_reg
+            } else if llvm_type == "i8*" && element_value.starts_with("i64 ") {
+                // Value was generated as i64 (e.g. call i64) but slot expects i8* - cast to pointer
+                let inttoptr_reg = format!("%inttoptr_{}_{}", self.instructions.len(), i);
+                self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", inttoptr_reg, clean_element_value));
+                inttoptr_reg
             } else {
                 self.convert_to_llvm_type_value(&clean_element_value, llvm_type)
             };
@@ -8343,9 +8416,11 @@ impl CodeGenerator {
             // For struct pointers (normal case), use getelementptr + load
             self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", field_ptr_reg, clean_object, field_offset));
 
-            // Cast to i64 pointer and load the value
+            // Cast to i64 pointer and load the value (struct fields stored as i64 for uniform layout)
             self.instructions.push(format!("  {} = bitcast i8* {} to i64*", field_ptr_i64, field_ptr_reg));
             self.instructions.push(format!("  {} = load i64, i64* {}", result_reg, field_ptr_i64));
+            // Return with i64 prefix so consumers (e.g. record literal store into i8* slot) know to inttoptr
+            return Ok(Some(format!("i64 {}", result_reg)));
         }
 
         Ok(Some(result_reg))
@@ -12203,8 +12278,15 @@ impl CodeGenerator {
         let end_val = self.generate_expression(&string_substring.end)?
             .ok_or_else(|| CompilerError::codegen_error("Invalid end index in substring".to_string()))?;
 
-        // Format string argument
-        let string_arg = if string_val.starts_with('%') {
+        // Format string argument (call expects i8*; value may be i64 from field load)
+        let string_arg = if string_val.starts_with("i64 ") {
+            let i64_reg = string_val.strip_prefix("i64 ").unwrap();
+            let ptr_reg = self.next_register();
+            self.instructions.push(format!("  %{} = inttoptr i64 {} to i8*", ptr_reg, i64_reg));
+            format!("i8* %{}", ptr_reg.trim_start_matches('%'))
+        } else if string_val.starts_with("i8* ") {
+            string_val.clone()
+        } else if string_val.starts_with('%') {
             format!("i8* {}", string_val)
         } else if string_val.starts_with("getelementptr") {
             // String constant - evaluate getelementptr first
@@ -12240,7 +12322,7 @@ impl CodeGenerator {
         let result_reg = self.next_register();
         self.instructions.push(format!("  %{} = call i8* @silica_string_substring({}, {}, {})", result_reg, string_arg, start_arg, end_arg));
         
-        Ok(Some(result_reg))
+        Ok(Some(format!("i8* %{}", result_reg)))
     }
 
     /// Generate LLVM IR for string substring until character expression
