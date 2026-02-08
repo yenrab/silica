@@ -471,11 +471,24 @@ impl<'a> TypeChecker<'a> {
             (Type::Named(name), Type::Record(fields)) |
             (Type::Record(fields), Type::Named(name)) => {
                 if let Some(struct_def) = self.struct_defs.get(name) {
-                    // Check if the record fields match the struct definition
+                    // Check if the record fields match the struct definition.
+                    // For recursive structs, do not recurse on self-referential fields or we get
+                    // types_equal(Named, Record) -> types_equal(Named, Record) -> ...
                     struct_def.len() == fields.len() &&
-                    struct_def.iter().zip(fields.iter()).all(|(struct_field, (record_name, record_type))|
-                        struct_field.name == *record_name && self.types_equal(&struct_field.ty, record_type)
-                    )
+                    struct_def.iter().zip(fields.iter()).all(|(struct_field, (record_name, record_type))| {
+                        struct_field.name == *record_name && match &struct_field.ty {
+                            Type::Named(n) if n == name => {
+                                // Self-referential field: accept Named(name) or Record with same shape; do not recurse
+                                match record_type {
+                                    Type::Named(m) if m == name => true,
+                                    Type::Record(fs) => fs.len() == struct_def.len()
+                                        && fs.iter().zip(struct_def.iter()).all(|((rn, _), sf)| rn == &sf.name),
+                                    _ => false,
+                                }
+                            }
+                            _ => self.types_equal(&struct_field.ty, record_type),
+                        }
+                    })
                 } else {
                     false
                 }
@@ -925,7 +938,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 local_env.insert(param.name.clone(), TypeScheme {
                     vars: vec![],
-                    ty: self.expand_type_aliases(&param.type_),
+                    ty: param.type_.clone(),
                 });
             }
         }
@@ -2212,22 +2225,6 @@ impl<'a> TypeChecker<'a> {
             
             match statement {
                 Statement::Bind { pattern, expr } => {
-                    // Get expected type from pattern if it's a typed identifier
-                    let pattern_expected_type = if let crate::ast::Pattern::TypedIdentifier { type_, .. } = pattern {
-                        Some(type_.clone())
-                    } else {
-                        None
-                    };
-                    
-                    // Infer the type of the expression (with context for float literals)
-                    let expr_type = if let Some(expected_ty) = &pattern_expected_type {
-                        // For float literals, use expected type if it's a float type
-                        self.infer_expression_with_context(expr, Some(expected_ty))?
-                    } else {
-                        self.infer_expression(expr)?
-                    };
-                    // eprintln!("DEBUG BIND: expr_type = {:?}", expr_type);
-
                     // Require explicit type annotations for ALL bindings
                     if let crate::ast::Pattern::Identifier(_) = pattern {
                         let metadata = ErrorMetadataBuilder::new("E2000".to_string())
@@ -2242,8 +2239,34 @@ impl<'a> TypeChecker<'a> {
                         });
                     }
 
-                    // Bind pattern variables to the type environment (keep named types for method dispatch)
-                    self.bind_pattern_variables(pattern, &expr_type, &do_expr.location)?;
+                    // For typed identifier bindings (x: T <- expr): add x to env with type T *before*
+                    // inferring expr so self-referential bindings (e.g. tail: nil_placeholder in a
+                    // recursive struct literal) see the variable in scope.
+                    if let crate::ast::Pattern::TypedIdentifier { name, type_ } = pattern {
+                        if name != "_" {
+                            self.check_variable_shadowing(name, &do_expr.location)?;
+                            self.env.insert(name.clone(), TypeScheme { vars: vec![], ty: type_.clone() });
+                            let expr_type = self.infer_expression_with_context(expr, Some(type_))?;
+                            let expanded_declared = self.expand_type_aliases(type_);
+                            let expanded_actual = self.expand_type_aliases(&expr_type);
+                            if !self.types_equal(&expanded_actual, &expanded_declared) {
+                                self.env.remove(name);
+                                return type_error(
+                                    do_expr.location.clone(),
+                                    format!("BIND: Pattern declares type {:?} (expanded: {:?}) but value has type {:?}",
+                                        type_, expanded_declared, expanded_actual),
+                                );
+                            }
+                            // Binding already in env; skip bind_pattern_variables
+                        } else {
+                            let expr_type = self.infer_expression_with_context(expr, Some(type_))?;
+                            self.bind_pattern_variables(pattern, &expr_type, &do_expr.location)?;
+                        }
+                    } else {
+                        // Non-typed pattern (shouldn't reach here after Identifier check above)
+                        let expr_type = self.infer_expression(expr)?;
+                        self.bind_pattern_variables(pattern, &expr_type, &do_expr.location)?;
+                    }
 
                     // Bind statements don't contribute to the return type - they just bind variables
                     // The return type comes from the final expression, or Unit if there is none
@@ -2369,6 +2392,15 @@ impl<'a> TypeChecker<'a> {
 
     /// Unify two types with location for error reporting
     fn unify_with_location(&mut self, t1: &Type, t2: &Type, location: Option<SourceLocation>) -> Result<()> {
+        // Short-circuit when both are the same Named type (e.g. recursive struct like ListToken).
+        // If we expanded first, we'd get (Record, Record) and recurse on fields, then unify
+        // Named("ListToken") with Named("ListToken") again -> infinite recursion.
+        if let (Type::Named(n1), Type::Named(n2)) = (t1, t2) {
+            if n1 == n2 {
+                return Ok(());
+            }
+        }
+
         // Try to expand Named types to their underlying types before unification
         // This handles type aliases and struct names
         let expanded_t1 = self.expand_type_aliases(t1);
@@ -3230,17 +3262,16 @@ impl<'a> TypeChecker<'a> {
 
     /// Check struct declaration
     fn check_struct_declaration(&mut self, struct_decl: &StructDecl) -> Result<()> {
-        // Check that all field types are valid
+        // Add the struct type to the environment and struct_defs *before* validating field types,
+        // so that recursively defined structs (e.g. tail: ListToken) can reference their own name.
+        let struct_type = Type::Named(struct_decl.name.clone());
+        self.env.insert(struct_decl.name.clone(), TypeScheme { vars: Vec::new(), ty: struct_type });
+        self.struct_defs.insert(struct_decl.name.clone(), struct_decl.fields.clone());
+
+        // Now check that all field types are valid (self-reference is already in scope)
         for field in &struct_decl.fields {
             self.validate_type_with_location(&field.ty, Some(field.location.clone()))?;
         }
-
-        // Add the struct type to the environment
-        let struct_type = Type::Named(struct_decl.name.clone());
-        self.env.insert(struct_decl.name.clone(), TypeScheme { vars: Vec::new(), ty: struct_type });
-
-        // Store the struct definition for struct literal checking
-        self.struct_defs.insert(struct_decl.name.clone(), struct_decl.fields.clone());
 
         Ok(())
     }
@@ -3432,9 +3463,22 @@ impl<'a> TypeChecker<'a> {
                     // Expand the aliased type recursively
                     self.expand_type_aliases(aliased_type)
                 } else if let Some(struct_def) = self.struct_defs.get(name) {
-                    // Expand struct names to their record representations
+                    // Expand struct names to their record representations.
+                    // For recursive structs, leave self-referential field types as Type::Named
+                    // to avoid infinite expansion.
                     Type::Record(
-                        struct_def.iter().map(|f| (f.name.clone(), f.ty.clone())).collect()
+                        struct_def.iter().map(|f| {
+                            let expanded_ty = if let Type::Named(ref n) = f.ty {
+                                if n == name {
+                                    f.ty.clone() // self-reference: do not expand
+                                } else {
+                                    self.expand_type_aliases(&f.ty)
+                                }
+                            } else {
+                                self.expand_type_aliases(&f.ty)
+                            };
+                            (f.name.clone(), expanded_ty)
+                        }).collect()
                     )
                 } else if let Some(scheme) = self.env.get(name) {
                     // Check if it's a variable in the environment. If the env entry is
@@ -3468,7 +3512,23 @@ impl<'a> TypeChecker<'a> {
                 Type::Tuple(elements.iter().map(|elem| self.expand_type_aliases(elem)).collect())
             }
             Type::Record(fields) => {
-                Type::Record(fields.iter().map(|(name, ty)| (name.clone(), self.expand_type_aliases(ty))).collect())
+                // When expanding a Record's field that is Named and refers to a recursive struct,
+                // leave it as Named. Otherwise we'd expand Named("ListToken") -> Record(..., tail: Named)
+                // and then when this Record is expanded again we'd expand tail again -> unbounded depth.
+                Type::Record(
+                    fields
+                        .iter()
+                        .map(|(name, ty)| {
+                            let expanded_ty = match ty {
+                                Type::Named(n) if self.struct_defs.get(n).map(|def| {
+                                    def.iter().any(|f| matches!(&f.ty, Type::Named(m) if m == n))
+                                }).unwrap_or(false) => ty.clone(), // recursive struct: do not expand
+                                _ => self.expand_type_aliases(ty),
+                            };
+                            (name.clone(), expanded_ty)
+                        })
+                        .collect(),
+                )
             }
             Type::Function { parameters, return_type } => {
                 Type::Function {
@@ -3953,22 +4013,6 @@ impl<'a> TypeChecker<'a> {
             
             match statement {
                 crate::ast::Statement::Bind { pattern, expr } => {
-                    // Get expected type from pattern if it's a typed identifier
-                    // Convert ast::Type to internal Type representation
-                    let expected_type = if let crate::ast::Pattern::TypedIdentifier { type_, .. } = pattern {
-                        Some(self.ast_type_to_silica_type(type_)?)
-                    } else {
-                        None
-                    };
-                    
-                    // Infer the type of the expression (with context for float literals)
-                    let expr_type = if let Some(expected_ty) = &expected_type {
-                        // For float literals, use expected type if it's a float type
-                        self.infer_expression_with_context(expr, Some(expected_ty))?
-                    } else {
-                        self.infer_expression(expr)?
-                    };
-                    
                     // Require explicit type annotations for ALL bindings
                     if let crate::ast::Pattern::Identifier(_) = pattern {
                         let metadata = ErrorMetadataBuilder::new("E2000".to_string())
@@ -3982,12 +4026,53 @@ impl<'a> TypeChecker<'a> {
                             metadata,
                         });
                     }
-                    // Check pattern against expression type and bind variables
-                    let mut pattern_env = HashMap::new();
-                    self.check_pattern(pattern, &expr_type, &SourceLocation::unknown(), &mut pattern_env)?;
-                    // Merge the pattern bindings into the main environment
-                    for (name, scheme) in pattern_env {
-                        self.env.insert(name, scheme);
+
+                    // For typed identifier bindings (x: T <- expr): add x to env with type T *before*
+                    // inferring expr so self-referential bindings (e.g. tail: nil_placeholder in a
+                    // recursive struct literal) see the variable in scope.
+                    if let crate::ast::Pattern::TypedIdentifier { name, type_ } = pattern {
+                        if name != "_" {
+                            let declared_ty = self.ast_type_to_silica_type(type_)?;
+                            self.check_variable_shadowing(name, &SourceLocation::unknown())?;
+                            self.env.insert(name.clone(), TypeScheme { vars: vec![], ty: declared_ty.clone() });
+                            let expr_type = self.infer_expression_with_context(expr, Some(&declared_ty))?;
+                            let expanded_declared = self.expand_type_aliases(&declared_ty);
+                            let expanded_actual = self.expand_type_aliases(&expr_type);
+                            if !self.types_equal(&expanded_actual, &expanded_declared) {
+                                self.env.remove(name);
+                                return type_error(
+                                    SourceLocation::unknown(),
+                                    format!("BIND: Pattern declares type {:?} (expanded: {:?}) but value has type {:?}",
+                                        type_, expanded_declared, expanded_actual),
+                                );
+                            }
+                            // Binding already in env; skip check_pattern/merge
+                        } else {
+                            let expected_type = Some(self.ast_type_to_silica_type(type_)?);
+                            let expr_type = self.infer_expression_with_context(expr, expected_type.as_ref())?;
+                            let mut pattern_env = HashMap::new();
+                            self.check_pattern(pattern, &expr_type, &SourceLocation::unknown(), &mut pattern_env)?;
+                            for (n, scheme) in pattern_env {
+                                self.env.insert(n, scheme);
+                            }
+                        }
+                    } else {
+                        // Other pattern (e.g. Tuple): get expected type and infer
+                        let expected_type = if let crate::ast::Pattern::TypedIdentifier { type_, .. } = pattern {
+                            Some(self.ast_type_to_silica_type(type_)?)
+                        } else {
+                            None
+                        };
+                        let expr_type = if let Some(expected_ty) = &expected_type {
+                            self.infer_expression_with_context(expr, Some(expected_ty))?
+                        } else {
+                            self.infer_expression(expr)?
+                        };
+                        let mut pattern_env = HashMap::new();
+                        self.check_pattern(pattern, &expr_type, &SourceLocation::unknown(), &mut pattern_env)?;
+                        for (name, scheme) in pattern_env {
+                            self.env.insert(name, scheme);
+                        }
                     }
                 }
                 crate::ast::Statement::Expr(expr) => {
