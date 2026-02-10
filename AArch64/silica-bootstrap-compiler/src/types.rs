@@ -844,26 +844,63 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Type check a program
+    /// Type check a program (two-pass: collect signatures then check bodies)
+    /// Pass 1: Check all non-function declarations (structs, type aliases, etc.) then collect
+    ///         all function signatures into env so functions can be defined in any order.
+    /// Pass 2: Type-check each function body (and impl/trait details that need full env).
     pub fn check_program(&mut self, program: &Program) -> Result<()> {
-        for (idx, decl) in program.declarations.iter().enumerate() {
-            let decl_type = match decl {
-                Declaration::Function(_) => "Function",
-                Declaration::TypeAlias(_) => "TypeAlias",
-                Declaration::Struct(_) => "Struct",
-                Declaration::Enum(_) => "Enum",
-                Declaration::Trait(_) => "Trait",
-                Declaration::Impl(_) => "Impl",
-                Declaration::Effect(_) => "Effect",
-                Declaration::Import(_) => "Import",
-                Declaration::Export(_) => "Export",
-                Declaration::Type(_) => "Type",
-            };
-
-            self.check_declaration(decl)?;
+        // Pass 1a: Check all declarations except functions (populates struct_defs, type_aliases, etc.)
+        for decl in &program.declarations {
+            if !matches!(decl, Declaration::Function(_)) {
+                self.check_declaration(decl)?;
+            }
+        }
+        // Pass 1b: Collect all function signatures into env (no body check) so any function
+        //          can be called from any other regardless of definition order.
+        for decl in &program.declarations {
+            if let Declaration::Function(ref func) = decl {
+                self.collect_function_signature(func)?;
+            }
+        }
+        // Pass 2: Type-check each function body (and re-check impl/trait if needed)
+        for decl in &program.declarations {
+            if let Declaration::Function(ref func) = decl {
+                self.check_function_declaration(func)?;
+            }
         }
 
         self.solve_constraints()?;
+        Ok(())
+    }
+
+    /// Collect function signature into env without checking the body.
+    /// Used by pass 1b so that later declarations can call this function.
+    fn collect_function_signature(&mut self, func: &FunctionDecl) -> Result<()> {
+        // Validate parameter types with location BEFORE expanding aliases
+        for param in &func.parameters {
+            self.validate_type_with_location(&param.type_, Some(param.location.clone()))?;
+        }
+        if let Some(ref rt) = func.return_type {
+            self.validate_type_with_location(rt, Some(func.location.clone()))?;
+        }
+
+        let param_types: Vec<Type> = func.parameters.iter()
+            .map(|param| self.expand_type_aliases(&param.type_))
+            .collect();
+        let return_type = func.return_type.as_ref()
+            .map(|rt| self.expand_type_aliases(rt))
+            .unwrap_or(Type::Unit);
+
+        let func_type = Type::Function {
+            parameters: param_types,
+            return_type: Box::new(return_type),
+        };
+        let scheme = TypeScheme {
+            vars: vec![],
+            ty: func_type,
+        };
+        // Insert directly; no shadowing check (we're pre-populating for forward reference).
+        self.env.insert(func.name.clone(), scheme);
         Ok(())
     }
 
@@ -915,12 +952,14 @@ impl<'a> TypeChecker<'a> {
             return_type: Box::new(return_type),
         };
 
-        // Add function to environment
+        // Add function to environment only if not already present (pass 1b already added signature)
         let scheme = TypeScheme {
             vars: vec![],
             ty: func_type,
         };
-        self.add_variable_to_env(func.name.clone(), scheme, &func.location)?;
+        if !self.env.contains_key(&func.name) {
+            self.add_variable_to_env(func.name.clone(), scheme, &func.location)?;
+        }
 
         // Create local environment with parameters
         let mut local_env = self.env.clone();

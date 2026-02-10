@@ -1,0 +1,205 @@
+// Parser core - token stream and support for all lexer token variations
+// First implementation: sufficient to consume and classify every token kind
+// produced by the lexer in src/lexer (identifier, type keywords, fn, literals, operators, eof).
+
+use lexer_core;
+use lexer_token_kind;
+use lexer_runner;
+
+// Empty token list used as accumulator in reverse and as "past end" stream
+fn empty_list() -> ListToken {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    eof_token: Token <- lexer_core@make_token(kinds.eof, "", SourceLocation { file: "", line: 0, column: 0, offset: 0 });
+    placeholder: ListToken <- ListToken { is_nil: true, head: eof_token, tail: placeholder };
+    placeholder
+}
+
+// Reverse lexer output so first token is at head (parse order)
+fn reverse_acc(acc: ListToken, list: ListToken) -> ListToken {
+    case list.is_nil of {
+        true -> acc;
+        false -> do
+            new_acc: ListToken <- ListToken { is_nil: false, head: list.head, tail: acc };
+            reverse_acc(new_acc, list.tail)
+        end
+    }
+}
+
+fn reverse_token_list(list: ListToken) -> ListToken {
+    empty: ListToken <- empty_list();
+    reverse_acc(empty, list)
+}
+
+// Current token (head of stream, or eof token if stream is empty)
+fn current_token(stream: ListToken) -> Token {
+    case stream.is_nil of {
+        true -> stream.head;
+        false -> stream.head
+    }
+}
+
+// Advance stream by one token
+fn advance_by_one(stream: ListToken) -> ListToken {
+    case stream.is_nil of {
+        true -> stream;
+        false -> stream.tail
+    }
+}
+
+// Token kind at current position
+fn peek_kind(stream: ListToken) -> int64 {
+    current_token(stream).kind
+}
+
+// Expect current token to have given kind; return (matched, new_stream)
+fn expect_kind(stream: ListToken, expected_kind: int64) -> (bool, ListToken) {
+    k: int64 <- peek_kind(stream);
+    case k == expected_kind of {
+        true -> (true, advance_by_one(stream));
+        false -> (false, stream)
+    }
+}
+
+// --- Predicates for every token variation from lexer_token_kind ---
+
+fn is_eof(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.eof
+}
+
+fn is_identifier(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.identifier
+}
+
+fn is_int8_keyword(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.int8_keyword
+}
+
+fn is_int16_keyword(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.int16_keyword
+}
+
+fn is_int32_keyword(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.int32_keyword
+}
+
+fn is_int64_keyword(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.int64_keyword
+}
+
+fn is_float16_keyword(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.float16_keyword
+}
+
+fn is_float32_keyword(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.float32_keyword
+}
+
+fn is_float64_keyword(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.float64_keyword
+}
+
+fn is_bool_keyword(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.bool_keyword
+}
+
+fn is_char_keyword(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.char_keyword
+}
+
+fn is_string_keyword(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.string_keyword
+}
+
+fn is_unit_keyword(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.unit_keyword
+}
+
+fn peek_is_fn_keyword(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.fn_keyword
+}
+
+fn is_integer_literal(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.integer_literal
+}
+
+fn is_right_arrow(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.right_arrow
+}
+
+fn is_left_paren(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.left_paren
+}
+
+fn is_right_paren(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.right_paren
+}
+
+fn is_left_brace(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.left_brace
+}
+
+fn is_right_brace(stream: ListToken) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    peek_kind(stream) == kinds.right_brace
+}
+
+// Minimal parse: consume tokens until eof (validates stream is usable)
+fn parse_until_eof(stream: ListToken) -> bool {
+    case is_eof(stream) of {
+        true -> true;
+        false -> parse_until_eof(advance_by_one(stream))
+    }
+}
+
+// Build parse-order stream from lexer output and run minimal parse
+fn parse_from_tokens(tokens: ListToken) -> bool {
+    stream: ListToken <- reverse_token_list(tokens);
+    parse_until_eof(stream)
+}
+
+export reverse_token_list/1;
+export current_token/1;
+export advance_by_one/1;
+export peek_kind/1;
+export expect_kind/2;
+export parse_from_tokens/1;
+export parse_until_eof/1;
+export is_eof/1;
+export is_identifier/1;
+export is_int8_keyword/1;
+export is_int16_keyword/1;
+export is_int32_keyword/1;
+export is_int64_keyword/1;
+export is_float16_keyword/1;
+export is_float32_keyword/1;
+export is_float64_keyword/1;
+export is_bool_keyword/1;
+export is_char_keyword/1;
+export is_string_keyword/1;
+export is_unit_keyword/1;
+export peek_is_fn_keyword/1;
+export is_integer_literal/1;
+export is_right_arrow/1;
+export is_left_paren/1;
+export is_right_paren/1;
+export is_left_brace/1;
+export is_right_brace/1;

@@ -1,0 +1,73 @@
+// Function declarations - parse minimal fn id ( ) -> type { }.
+// Returns (ok, declaration, rest_stream, error_message, error_location).
+
+use lexer_core;
+use lexer_token_kind;
+use parser_core;
+use parser_ast;
+use parser_types_primitives;
+
+// Parse minimal function declaration: fn id ( ) -> type_name { }
+fn parse_function_decl(stream: ListToken) -> (bool, Declaration, ListToken, string, SourceLocation) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    start_tok: Token <- parser_core@current_token(stream);
+    case parser_core@expect_kind(stream, kinds.fn_keyword) of {
+        (false, _: ListToken) -> do
+            tok: Token <- parser_core@current_token(stream);
+            (false, parser_ast@dummy_declaration(), stream, "expected 'fn'", tok.location)
+        end;
+        (true, after_fn) -> case parser_core@is_identifier(after_fn) of {
+            false -> do
+                tok: Token <- parser_core@current_token(after_fn);
+                (false, parser_ast@dummy_declaration(), stream, "expected function name", tok.location)
+            end;
+            true -> do
+                name_tok: Token <- parser_core@current_token(after_fn);
+                after_name: ListToken <- parser_core@advance_by_one(after_fn);
+                (ok_lp, after_lp) <- parser_core@expect_kind(after_name, kinds.left_paren);
+                case ok_lp of {
+                    false -> do
+                        tok: Token <- parser_core@current_token(after_name);
+                        (false, parser_ast@dummy_declaration(), stream, "expected '('", tok.location)
+                    end;
+                    true -> case parser_core@expect_kind(after_lp, kinds.right_paren) of {
+                        (false, _: ListToken) -> do
+                            tok: Token <- parser_core@current_token(after_lp);
+                            (false, parser_ast@dummy_declaration(), stream, "expected ')'", tok.location)
+                        end;
+                        (true, after_rp) -> case parser_core@expect_kind(after_rp, kinds.right_arrow) of {
+                            (false, _: ListToken) -> do
+                                tok: Token <- parser_core@current_token(after_rp);
+                                (false, parser_ast@dummy_declaration(), stream, "expected '->'", tok.location)
+                            end;
+                            (true, after_arrow) -> do
+                                (type_ok, type_name, after_type, type_err, type_loc) <- parser_types_primitives@parse_type_name(after_arrow);
+                                case type_ok of {
+                                    false -> (false, parser_ast@dummy_declaration(), stream, type_err, type_loc);
+                                    true -> case parser_core@expect_kind(after_type, kinds.left_brace) of {
+                                        (false, _: ListToken) -> do
+                                            tok: Token <- parser_core@current_token(after_type);
+                                            (false, parser_ast@dummy_declaration(), stream, "expected '{'", tok.location)
+                                        end;
+                                        (true, after_lb) -> case parser_core@expect_kind(after_lb, kinds.right_brace) of {
+                                            (false, _: ListToken) -> do
+                                                tok: Token <- parser_core@current_token(after_lb);
+                                                (false, parser_ast@dummy_declaration(), stream, "expected '}'", tok.location)
+                                            end;
+                                            (true, after_rb) -> do
+                                                decl: Declaration <- Declaration { tag: 0, name: name_tok.lexeme, return_type_name: type_name.name, return_type_location: type_name.location, location: start_tok.location };
+                                                (true, decl, after_rb, "", parser_ast@zero_location())
+                                            end
+                                        }
+                                    }
+                                }
+                            end
+                        }
+                    }
+                }
+            end
+        }
+    }
+}
+
+export parse_function_decl/1;

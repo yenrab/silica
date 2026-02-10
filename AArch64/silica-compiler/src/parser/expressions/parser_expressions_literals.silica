@@ -1,0 +1,90 @@
+// Literal and identifier expressions - parse integer literal, identifier, parenthesized expr.
+// Returns (ok, expr, rest_stream, error_message, error_location).
+
+use lexer_core;
+use lexer_token_kind;
+use parser_core;
+use parser_ast;
+
+// Parse integer literal: one integer_literal token -> Expr kind 0.
+fn parse_integer_literal(stream: ListToken) -> (bool, Expr, ListToken, string, SourceLocation) {
+    case parser_core@is_integer_literal(stream) of {
+        false -> do
+            tok: Token <- parser_core@current_token(stream);
+            (false, parser_ast@dummy_expr(), stream, "expected integer literal", tok.location)
+        end;
+        true -> do
+            tok: Token <- parser_core@current_token(stream);
+            rest: ListToken <- parser_core@advance_by_one(stream);
+            expr: Expr <- Expr { kind: 0, value: tok.lexeme, name: "", location: tok.location, inner: parser_ast@dummy_expr() };
+            (true, expr, rest, "", parser_ast@zero_location())
+        end
+    }
+}
+
+// Parse identifier: one identifier token -> Expr kind 1.
+fn parse_identifier(stream: ListToken) -> (bool, Expr, ListToken, string, SourceLocation) {
+    case parser_core@is_identifier(stream) of {
+        false -> do
+            tok: Token <- parser_core@current_token(stream);
+            (false, parser_ast@dummy_expr(), stream, "expected identifier", tok.location)
+        end;
+        true -> do
+            tok: Token <- parser_core@current_token(stream);
+            rest: ListToken <- parser_core@advance_by_one(stream);
+            expr: Expr <- Expr { kind: 1, value: "", name: tok.lexeme, location: tok.location, inner: parser_ast@dummy_expr() };
+            (true, expr, rest, "", parser_ast@zero_location())
+        end
+    }
+}
+
+// Parse one expression: integer literal, identifier, or parenthesized expression.
+fn parse_expression(stream: ListToken) -> (bool, Expr, ListToken, string, SourceLocation) {
+    case parser_core@is_left_paren(stream) of {
+        true -> parse_paren_expr(stream);
+        false -> do
+            (int_ok: bool, int_expr: Expr, int_rest: ListToken, _: string, _: SourceLocation) <- parse_integer_literal(stream);
+            case int_ok of {
+                true -> (true, int_expr, int_rest, "", parser_ast@zero_location());
+                false -> parse_identifier(stream)
+            }
+        end
+    }
+}
+
+// Parse parenthesized expression: left_paren expr right_paren -> Expr kind 2.
+fn parse_paren_expr(stream: ListToken) -> (bool, Expr, ListToken, string, SourceLocation) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case parser_core@expect_kind(stream, kinds.left_paren) of {
+        (false, _: ListToken) -> do
+            tok: Token <- parser_core@current_token(stream);
+            (false, parser_ast@dummy_expr(), stream, "expected '('", tok.location)
+        end;
+        (true, after_lparen) -> do
+            (inner_ok: bool, inner_expr: Expr, rest_after_inner: ListToken, err_msg: string, err_loc: SourceLocation) <- parse_expression(after_lparen);
+            case inner_ok of {
+                false -> (false, parser_ast@dummy_expr(), stream, err_msg, err_loc);
+                true -> case parser_core@expect_kind(rest_after_inner, kinds.right_paren) of {
+                    (false, _: ListToken) -> do
+                        tok2: Token <- parser_core@current_token(rest_after_inner);
+                        (false, parser_ast@dummy_expr(), stream, "expected ')'", tok2.location)
+                    end;
+                    (true, after_rparen) -> do
+                        start_tok: Token <- parser_core@current_token(stream);
+                        expr: Expr <- Expr { kind: 2, value: "", name: "", location: start_tok.location, inner: inner_expr };
+                        (true, expr, after_rparen, "", parser_ast@zero_location())
+                    end
+                }
+            }
+        end
+    }
+}
+
+
+
+
+
+export parse_integer_literal/1;
+export parse_identifier/1;
+export parse_expression/1;
+export parse_paren_expr/1;

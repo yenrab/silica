@@ -1,21 +1,20 @@
-# Makefile for Silica lexer modules
-# Compiles lexer .silica files to object files (.o) using the bootstrap compiler and LLVM toolchain
+# Makefile for Silica parser modules
+# Compiles parser .silica files to object files (.o) using the bootstrap compiler and LLVM toolchain
+# Parser depends on lexer (token types); build lexer first from ../lexer if needed.
 
 SILICA_COMPILER := ../../../silica-bootstrap-compiler/target/release/silica-boot
-SEARCH_PATHS := -I . -I ..
+SEARCH_PATHS := -I . -I .. -I ../lexer -I declarations -I expressions -I patterns -I types -I effects -I ../../stdlib
 
 # Find LLVM tools (including Homebrew paths)
 LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "llvm-as"))
 LLC := $(or $(LLVM_LLC), $(shell command -v llc 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llc && echo "/opt/homebrew/opt/llvm/bin/llc") || echo "llc"))
 
-# Find all .silica files in current directory
-SILICA_FILES := $(wildcard *.silica)
+# All .silica files in this directory and subdirectories
+SILICA_FILES := $(wildcard *.silica) $(wildcard */*.silica)
 
-# Intermediate files
+# Intermediate and output files (same path with different extension)
 LL_FILES := $(SILICA_FILES:.silica=.ll)
 BC_FILES := $(SILICA_FILES:.silica=.bc)
-
-# Final output files (.o object files)
 OBJ_FILES := $(SILICA_FILES:.silica=.o)
 
 # Keep .ll and .bc files; otherwise make removes them as "intermediate" and echoes rm
@@ -26,35 +25,45 @@ OBJ_FILES := $(SILICA_FILES:.silica=.o)
 
 # Default target - compile all .silica files to object files
 all: $(OBJ_FILES)
-	@echo "✅ Lexer modules compiled to object files"
+	@echo "✅ Parser modules compiled to object files"
 
-# Step 1: Compile .silica to .ll (LLVM IR) using bootstrap compiler
+# Step 1: .silica -> .ll (LLVM IR) using bootstrap compiler
 %.ll: %.silica
 	@echo "Compiling: $< -> $@"
 	@-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
-# Step 2: Convert .ll to .bc (LLVM bitcode)
+# Step 2: .ll -> .bc (LLVM bitcode)
 %.bc: %.ll
 	@echo "Assembling: $< -> $@"
 	@-$(LLVM_AS) $< -o $@
 
-# Step 3: Convert .bc to .o (object file)
+# Step 3: .bc -> .o (object file)
 %.o: %.bc
 	@echo "Linking: $< -> $@"
 	@-$(LLC) -filetype=obj $< -o $@
 
-# Clean all generated files
+# Clean all generated files (current dir and subdirs)
 clean:
 	@echo "Cleaning generated files..."
 	@rm -f *.ll *.bc *.o
+	@rm -f */*.ll */*.bc */*.o
 	@echo "✅ Clean complete"
 
 # Show help
 help:
-	@echo "Silica Lexer Makefile"
-	@echo "===================="
+	@echo "Silica Parser Makefile"
+	@echo "======================"
 	@echo ""
-	@echo "This Makefile compiles lexer .silica files to object files (.o) using the bootstrap compiler."
+	@echo "This Makefile compiles parser .silica files to object files (.o) using the bootstrap compiler."
+	@echo "Parser modules depend on the lexer (../lexer); ensure lexer is built first if needed."
+	@echo ""
+	@echo "Directories:"
+	@echo "  .                 - parser_core.silica"
+	@echo "  declarations/     - Function, type, struct, enum, trait, impl, module, effect declarations"
+	@echo "  expressions/      - Literals, calls, case, if, do, structs, tuples, operators, lists, etc."
+	@echo "  patterns/         - Basic, struct, tuple, enum, list patterns"
+	@echo "  types/            - Primitive, function, tuple, record, variant, process, region, actor, list types"
+	@echo "  effects/          - Effect parsing"
 	@echo ""
 	@echo "Compilation pipeline:"
 	@echo "  1. .silica -> .ll  (LLVM IR via bootstrap compiler)"
