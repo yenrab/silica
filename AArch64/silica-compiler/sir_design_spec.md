@@ -23,6 +23,15 @@ SIR (Silica Intermediate Representation) is the intermediate representation used
 
 SIR is a custom IR designed for Silica's semantics and for human and LLM comprehension. LLVM is not used in the pipeline except possibly as the assembler for emitted assembly.
 
+### 1.1.1 AArch64 Orientation
+
+SIR is not cross-platform; it targets AArch64 and its derivatives. Key AArch64 alignments:
+
+- **Memory spaces** map to MAIR_EL1 attributes (write-back, write-through, non-cacheable, atomic, device).
+- **Vector types** (Vec128T, VecT) map to NEON and SVE instructions.
+- **Region-based memory** reflects AArch64's memory model (regions, not a flat address space).
+- **Effects** (mem, atomic, device_io) correspond to concrete hardware semantics applied during lowering.
+
 ### 1.2 Design Principles
 
 1. **Explicit types on every term**: Every binder and every term carries its type. No inference in the IR.
@@ -38,6 +47,12 @@ SIR is a custom IR designed for Silica's semantics and for human and LLM compreh
 - **Input**: Type-checked, trait-checked, and effect-checked Silica AST.
 - **Output**: Optimized SIR suitable for lowering to AArch64 assembly.
 - **Out of scope**: Direct parsing of SIR from source (SIR is compiler-internal); binary format; debugging symbols.
+
+### 1.4 Non-Goals
+
+- **Cross-platform or generic backend abstraction**: SIR is AArch64-specific; there is no design for other targets.
+- **Flat memory model**: SIR uses region-based memory (regions, spaces), not a PDP-11-style uniform address space.
+- **CFG as primary representation**: Basic blocks and control-flow graphs appear only in the AArch64 lowering phase, not in SIR itself.
 
 ---
 
@@ -150,6 +165,14 @@ In SIR, function types are stored as:
 
 For example, a function `(int64, int64) -> int64 proc[]` is represented as params `(int64, int64)`, return `int64`, effects `[]`.
 
+### 3.4 Representation and Lowering to AArch64
+
+Language-level data types (string, list, tuple, record, variant) are expressed in SIR; during lowering they map to AArch64 regions, buffers, and layout:
+
+- **String**: UTF-8 bytes in a region buffer. `string_concat`, `string_length`, and `string_eq` lower to region/buffer operations.
+- **List**: Per the Silica specification, lists use region buffers sized for vector processing units. List primitives (`list_nil`, `list_cons`, `list_head`, `list_tail`, etc.) lower to region/buffer/vector operations on AArch64.
+- **Tuple, record, variant**: Layout and alignment follow AArch64 rules. `tuple_proj`, `record_proj`, `variant_tag`, and `variant_payload` lower to loads at computed offsets.
+
 ---
 
 ## 4. SIR Effects
@@ -183,6 +206,8 @@ Effects are unordered within a set. Duplicates are not allowed. Subeffecting is 
 - `[e1] <: [e1, e2]` — subset relation
 - `mem(normal_writeback) <: mem(normal)` (and similarly for other normal variants)
 - `mem(normal) <: mem(atomic)` — atomic subsumes normal
+
+At lowering time, memory operations receive AArch64-specific ordering (acquire, release, barriers) based on the effect set. See the Silica specification for MAIR attribute mapping and memory barrier placement.
 
 ### 4.3 Effect Annotation
 
@@ -365,6 +390,8 @@ The guard term must have type `bool`. If the pattern matches, the guard is evalu
 | variant_payload | T | (variant) | [] |
 | variant_make | VariantName | (tag, payload?) | [] |
 
+**Note**: The SIR type of `variant_tag` is `int64`. For sum types with few constructors, lowering may use smaller tag representations (e.g. `int8` or `int32`) when safe and efficient on AArch64.
+
 ### 7.8 List
 
 | PrimOp | SIRType | Args | Effect |
@@ -522,7 +549,7 @@ fn main.option_demo(%opt: OptionInt) -> int64 effects [] {
 
 ### 9.3 A-Normal Form (Optional)
 
-For optimization passes that benefit from a flat structure, SIR can be converted to A-normal form: every non-trivial subterm is let-bound. For example:
+For optimization passes that benefit from a flat structure, SIR can be converted to A-normal form: every non-trivial subterm is let-bound. A-normal form is an optimization convenience, not a step toward a generic CFG; lowering to AArch64 does not require it. For example:
 
 ```
 prim int64 add (prim int64 mul (%a, %b), const int64 1)
@@ -540,15 +567,15 @@ var %t2
 
 ## 10. IR Lowering
 
-### 10.1 Lowering to Machine Code
+### 10.1 Lowering to AArch64
 
-SIR is lowered to AArch64 assembly in the following conceptual phases:
+SIR is lowered to AArch64 assembly in the following conceptual phases. The intermediate form produced after phase 2 is **AArch64-specific** (not a generic backend IR): it is a control-flow graph whose structure and terminology reflect AArch64 instructions and conventions.
 
-1. **Case to decision tree**: Compile `case` terms to a sequence of tag tests, field tests, and branches. Dense integer/enum variants may use jump tables.
-2. **Let to basic blocks**: Flatten let bindings into basic blocks; each block has a sequence of assignments and a terminator (branch, jump, return, tail call).
-3. **Recursion handling**: Tail calls emit jumps; non-tail recursion uses fold lowering or explicit-stack lowering. See [sir_recursion_strategy.md](sir_recursion_strategy.md).
-4. **Register allocation**: Assign SIR variables to physical registers or stack slots.
-5. **Instruction selection**: Map `prim` operations to target instructions (e.g. AArch64 ADD, LDR, STR).
+1. **Case to decision tree**: Compile `case` terms to a sequence of tag tests, field tests, and branches. Dense integer or variant discriminator ranges may use jump tables.
+2. **Let to AArch64 CFG**: Flatten let bindings into basic blocks; each block has a sequence of assignments and a terminator. Terminators correspond to AArch64 control flow: `B` (branch), `CBZ`/`TBZ` (conditional branch), `RET` (return), or `B` to callee (tail call). This intermediate form is machine-specific.
+3. **Recursion handling**: Tail calls emit `B` to callee; non-tail recursion uses fold lowering or explicit-stack lowering. See [sir_recursion_strategy.md](sir_recursion_strategy.md).
+4. **Register allocation**: Assign SIR variables to AArch64 registers (X0–X30, etc.) or stack slots.
+5. **Instruction selection**: Map `prim` operations to AArch64 instructions (e.g. ADD, LDR, STR).
 6. **Emission**: Emit AArch64 assembly. An external assembler (e.g. LLVM's assembler or GNU as) may be used to produce object files.
 
 ---
@@ -624,3 +651,4 @@ SIR text files use the extension `.sir` for disambiguation from Silica source (`
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2025-02-10 | Initial design specification |
+| 1.1 | 2025-02-11 | AArch64 orientation; non-goals; representation/lowering §3.4; effect ordering; A-normal form clarification; variant_tag note; lowering reframe (§10.1) |

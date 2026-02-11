@@ -10,7 +10,7 @@ This document is the **single source of truth** for how the Silica compiler hand
 |----------|---------|
 | [silica-compiler-creation-order.md](../silica-compiler-creation-order.md) | Pipeline overview; entry point for the compiler |
 | [sir_design_spec.md](sir_design_spec.md) | SIR structure, terms, types, primitives, lowering |
-| [sir_optimization_spec.md](sir_optimization_spec.md) | Optimization passes and effect-aware rules |
+| [sir_optimization_spec.md](sir_optimization_spec.md) | Optimization phases, passes, and effect-aware rules |
 
 ---
 
@@ -66,7 +66,7 @@ For recursions that do not fit folds (e.g. nested recursion, or when fold recogn
 ### 4.1 Approach
 
 1. Analyze the recursion pattern from SIR `call` and `tail_call` terms.
-2. Emit a loop that:
+2. Emit iterative code (a loop in the AArch64 CFG) that:
    - Pushes pending work (arguments, return address) onto a heap-allocated stack
    - Pops work, computes, and pushes new work until the stack is empty
 3. The call stack stays bounded; recursion is converted to iteration + explicit stack.
@@ -92,3 +92,4 @@ Works for any recursion: tree-shaped, nested, mutual. The cost is heap allocatio
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2025-02-10 | Initial specification |
+| 1.1 | 2025-02-11 | Related Documents update; explicit-stack lowering AArch64 CFG clarification |
