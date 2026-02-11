@@ -6,7 +6,18 @@ use parser_core;
 use parser_ast;
 use parser_declarations_functions;
 
-// Parse result: is_ok true => program and rest valid; false => error_message and error_location valid.
+export parse_program/1;
+export parse_declarations/2;
+
+{-
+- Parse result: is_ok true => program and rest valid; false => error_message and error_location valid.
+- Used by the parser to return the result of the parse: parse_program, parse_declarations, and other functions return ParseResult. Fits into the design as the standard result type for parse operations.
+- Example: parse_program returns ParseResult { is_ok: true, program: program, rest: rest_tokens, error_message: "", error_location: parser_ast@zero_location() } when the parse succeeded.
+- Example: parse_program returns ParseResult { is_ok: false, program: program, rest: stream, error_message: "expected end of file", error_location: tok.location } when the parse failed.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One ParseResult allocation; no recursion or allocation.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 struct ParseResult {
     is_ok: bool,
     program: Program,
@@ -15,7 +26,16 @@ struct ParseResult {
     error_location: SourceLocation
 }
 
-// Parse declarations until eof; acc is accumulated list (reverse order). Returns (ok, decls, rest, err_msg, err_loc).
+{-
+- Parses top-level declarations from the token stream until EOF: at each step, if the stream is at EOF returns success with the accumulated list; if the current token is fn, parses one function declaration and recurses with the new decl consed onto acc; otherwise returns failure with "expected declaration (e.g. fn)". Returns (ok, list_declarations, rest_stream, error_message, error_location); declarations are in reverse of parse order (first parsed is at the end of the list).
+- Used by parse_program: call with the reversed token stream and empty_list_declaration() as acc; parse_declarations consumes all declarations and returns the list (and rest tokens). On failure the stream is unchanged and the error location is reported. Fits into the design as the loop that parses zero or more declarations.
+- Example: stream at EOF with acc = nil — returns (true, acc, stream, "", zero_location); no more declarations.
+- Example: stream starting with fn foo ( ) -> int64 { } then EOF — parses one function, recurses with stream at EOF; returns (true, ListDeclaration { head: foo_decl, tail: acc }, rest, "", zero_location).
+- Example: stream starting with identifier "x" (not fn) — returns (false, acc, stream, "expected declaration (e.g. fn)", location of "x").
+- Time: O(n), Ω(1), Θ(n) where n is the number of declaration tokens (one recursion per declaration). Space: O(d), Ω(1), Θ(d) for the ListDeclaration chain (d = number of declarations) plus recursion depth.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn parse_declarations(stream: ListToken, acc: ListDeclaration) -> (bool, ListDeclaration, ListToken, string, SourceLocation) {
     case parser_core@is_eof(stream) of {
         true -> (true, acc, stream, "", parser_ast@zero_location());
@@ -39,7 +59,16 @@ fn parse_declarations(stream: ListToken, acc: ListDeclaration) -> (bool, ListDec
     }
 }
 
-// Parse program: token list -> ParseResult. On success program has declarations; on failure error has location.
+{-
+- Parses a full program from a list of tokens: reverses the token list (so order matches source), parses declarations via parse_declarations, then if parsing succeeded checks that the rest is EOF; if so returns ParseResult with is_ok true and the Program; if declarations parsed but rest is not EOF returns is_ok false with "expected end of file"; if parse_declarations failed returns is_ok false with its error message and location.
+- Top-level entry point for the parser: call with the token list from the lexer; returns a ParseResult so the caller can branch on is_ok and use program or error_message/error_location. Fits into the design as the single function that turns a token list into a Program or a parse error.
+- Example: tokens from "fn foo ( ) -> int64 { }" then EOF — reverse, parse_declarations yields one declaration and rest at EOF; returns ParseResult { is_ok: true, program: Program { declarations: ... }, rest: ..., error_message: "", error_location: zero_location }.
+- Example: tokens from "fn foo ( ) -> int64 { } x" — declarations parse but rest has "x"; returns ParseResult { is_ok: false, ..., error_message: "expected end of file", error_location: location of "x" }.
+- Example: tokens from "x" (no fn) — parse_declarations fails; returns ParseResult { is_ok: false, program: dummy_program(), rest: stream, error_message: "expected declaration (e.g. fn)", error_location: location of "x" }.
+- Time: O(n), Ω(n), Θ(n) where n is the number of tokens (reverse + parse_declarations). Space: O(n + d), Ω(1), Θ(n + d) for reversed list and declaration list (d = number of declarations).
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn parse_program(tokens: ListToken) -> ParseResult {
     stream: ListToken <- parser_core@reverse_token_list(tokens);
     first_tok: Token <- parser_core@current_token(stream);
@@ -67,6 +96,3 @@ fn parse_program(tokens: ListToken) -> ParseResult {
     }
 }
 
-
-export parse_program/1;
-export parse_declarations/2;

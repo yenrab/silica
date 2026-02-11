@@ -14,7 +14,17 @@ export is_identifier_char/1;
 export read_identifier/1;
 export read_identifier_chars/2;
 
-// Check if a string is a type keyword
+
+{-
+- Returns true if the string is one of the Silica type keywords (int8, int16, int32, int64, float16, float32, float64, bool, char, string), and false otherwise.
+- Used after reading an identifier so the lexer can decide whether to emit a type-keyword token or an identifier token. Fits into the design as the predicate that distinguishes type keywords from ordinary identifiers.
+- Example: is_type_keyword("int32") returns true; the lexeme is recognized as a type keyword.
+- Example: is_type_keyword("string") and is_type_keyword("char") return true; both are type keywords.
+- Example: is_type_keyword("foo") and is_type_keyword("int") return false; "foo" is an identifier, "int" is not a valid type keyword (int8/int16/etc. are).
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single case match over the string; no recursion or allocation.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn is_type_keyword(s: string) -> bool {
     case s of {
         "int8" -> true;
@@ -27,12 +37,21 @@ fn is_type_keyword(s: string) -> bool {
         "bool" -> true;
         "char" -> true;
         "string" -> true;
-        "unit" -> true;
         _: string -> false
     }
 }
 
-// Check if a string is the fn keyword
+
+{-
+- Returns true if the string is exactly "fn", and false otherwise.
+- Used after reading an identifier so the lexer can decide whether to emit the fn keyword token (function definition) or an identifier token. Fits into the design as the predicate that recognizes the function-introducer keyword.
+- Example: is_fn_keyword("fn") returns true; the lexeme is the function keyword.
+- Example: is_fn_keyword("foo") and is_fn_keyword("function") return false; they are identifiers, not the fn keyword.
+- Example: is_fn_keyword("Fn") returns false; matching is exact, so only lowercase "fn" is recognized.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single case match over the string; no recursion or allocation.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn is_fn_keyword(s: string) -> bool {
     case s of {
         "fn" -> true;
@@ -40,8 +59,17 @@ fn is_fn_keyword(s: string) -> bool {
     }
 }
 
-// Convert a string to a keyword token kind
-// Returns Identifier code if not a keyword
+
+{-
+- Maps a lexeme string to its token kind code: type keywords, unit, and fn map to their keyword kinds; any other string maps to the identifier kind.
+- Used after reading an identifier so the lexer can build a token with the correct kind (e.g. make_token(keyword_token_kind(lexeme), lexeme, location)). Single place to centralize keyword-to-kind mapping; non-keywords get identifier. Fits into the design as the bridge from identifier lexemes to token kinds.
+- Example: keyword_token_kind("int32") returns kinds.int32_keyword; the lexeme is a type keyword.
+- Example: keyword_token_kind("fn") returns kinds.fn_keyword; the lexeme is the function keyword.
+- Example: keyword_token_kind("foo") returns kinds.identifier; the lexeme is not a keyword so it is treated as an identifier.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single token_kinds() and case match; no recursion or allocation.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn keyword_token_kind(s: string) -> int64 {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     case s of {
@@ -55,13 +83,22 @@ fn keyword_token_kind(s: string) -> int64 {
         "bool" -> kinds.bool_keyword;
         "char" -> kinds.char_keyword;
         "string" -> kinds.string_keyword;
-        "unit" -> kinds.unit_keyword;
         "fn" -> kinds.fn_keyword;
         _: string -> kinds.identifier
     }
 }
 
-// Check if character is valid identifier start
+
+{-
+- Returns true if the single-character string is a valid start of a Silica identifier: a letter (a–z, A–Z) or underscore; returns false otherwise (e.g. digits or symbols).
+- Used by the lexer to detect when the current character can begin an identifier or keyword (e.g. before calling read_identifier). Digits cannot start an identifier; they are used for integer literals. Fits into the design as the predicate that gates identifier/keyword tokenization.
+- Example: is_identifier_start("a") and is_identifier_start("Z") return true; letters can start identifiers.
+- Example: is_identifier_start("_") returns true; underscore can start an identifier (e.g. "_private").
+- Example: is_identifier_start("0") and is_identifier_start("+") return false; digits and operators do not start identifiers.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single case match over one character; no recursion or allocation.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn is_identifier_start(c: string) -> bool {
     case c of {
         "a" -> true;
@@ -121,7 +158,17 @@ fn is_identifier_start(c: string) -> bool {
     }
 }
 
-// Check if character is valid identifier character
+
+{-
+- Returns true if the single-character string is valid inside a Silica identifier: a letter (a–z, A–Z), underscore, or digit (0–9); returns false otherwise.
+- Used when scanning the body of an identifier (e.g. in read_identifier_chars): after the first character (which must satisfy is_identifier_start), subsequent characters may be letters, underscores, or digits. Fits into the design as the predicate for continuing to consume identifier characters.
+- Example: is_identifier_char("a") and is_identifier_char("_") return true; letters and underscore are allowed anywhere in an identifier.
+- Example: is_identifier_char("9") returns true; digits are allowed after the first character (e.g. "x9", "var2").
+- Example: is_identifier_char("+") and is_identifier_char(" ") return false; operators and spaces end the identifier.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One is_identifier_start and one digit case match; no recursion or allocation.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn is_identifier_char(c: string) -> bool {
     is_start: bool <- is_identifier_start(c);
     is_digit: bool <- case c of {
@@ -140,7 +187,17 @@ fn is_identifier_char(c: string) -> bool {
     is_start or is_digit
 }
 
-// Read identifier characters recursively
+
+{-
+- Advances the lexer past zero or more consecutive identifier characters (letters, digits, underscore) and returns the resulting lexer; stops at EOF or the first character that is not an identifier character.
+- Used by read_identifier: the caller passes the lexer and the token start position; read_identifier_chars consumes the full identifier run, then the caller uses extract_lexeme(updated_lexer, start_pos) to get the lexeme and keyword_token_kind to get the token kind. start_pos is passed through for use by the caller. Does not build the token itself.
+- Example: lexer at "foo123" — consumes "f","o","o","1","2","3", returns lexer past "3"; the next peek_char would be the character after the identifier.
+- Example: lexer at "x" — consumes "x", then next character (e.g. space or EOF) is not identifier char so returns lexer past "x".
+- Example: lexer at "" (EOF) or at "+" — no identifier characters consumed, returns lexer unchanged.
+- Time: O(k), Ω(1), Θ(k) where k is the number of identifier characters consumed. Space: O(k), Ω(1), Θ(k) for recursion depth (or Θ(1) if tail-call optimized).
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn read_identifier_chars(lexer: Lexer, start_pos: int64) -> Lexer {
     current: string <- lexer_core@peek_char(lexer);
     case current of {
@@ -152,7 +209,17 @@ fn read_identifier_chars(lexer: Lexer, start_pos: int64) -> Lexer {
     }
 }
 
-// Read an identifier or keyword
+
+{-
+- Reads one identifier or keyword from the current lexer position: consumes the run of identifier characters, extracts the lexeme, maps it to a token kind (keyword or identifier via keyword_token_kind), and returns the token and updated lexer.
+- Entry point for identifier/keyword tokenization: the lexer calls this when is_identifier_start(peek_char(lexer)) is true. Uses read_identifier_chars to advance, extract_lexeme to get the source text, and keyword_token_kind so that "fn", type names, etc. get the correct kind. Fits into the design as the single function that produces an identifier or keyword token.
+- Example: lexer at "foo" — read_identifier_chars advances past "foo", lexeme is "foo", keyword_token_kind yields identifier; result is (Token identifier "foo", lexer past "foo").
+- Example: lexer at "fn" — lexeme "fn", kind is fn_keyword; result is (Token fn_keyword "fn", lexer past "fn").
+- Example: lexer at "int32" — lexeme "int32", kind is int32_keyword; result is (Token int32_keyword "int32", lexer past "int32").
+- Time: O(k), Ω(1), Θ(k) where k is the length of the identifier/keyword. Space: O(k), Ω(1), Θ(k) for read_identifier_chars and lexeme extraction.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn read_identifier(lexer: Lexer) -> (Token, Lexer) {
     start_location: SourceLocation <- lexer_core@current_location(lexer);
     start_pos: int64 <- lexer.position;

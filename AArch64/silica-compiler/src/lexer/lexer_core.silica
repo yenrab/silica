@@ -15,7 +15,15 @@ export new_lexer/2;
 export is_whitespace/1;
 export skip_whitespace/1;
 
-// SourceLocation represents a position in source code
+{-
+- Represents a position in source code by file name, line, column, and byte offset.
+- Used by the lexer and parser to record where tokens and syntax nodes originate, so errors and tooling can point to the exact place in the source. Fits into the design as the shared location type for tokens (e.g. Token.location) and for reporting.
+- Example: at start of "main.silica", location might be { file: "main.silica", line: 1, column: 0, offset: 0 }.
+- Example: after consuming "foo " on line 1, location might be { file: "main.silica", line: 1, column: 4, offset: 4 }.
+- Example: when building a Token, the lexer sets location to the SourceLocation where the token started, so later phases can use it for diagnostics or IDE highlights.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 struct SourceLocation {
     file: string,
     line: int64,
@@ -23,14 +31,32 @@ struct SourceLocation {
     offset: int64
 }
 
-// Token represents a lexical token in Silica source code
+
+{-
+- Represents a single lexical token: its kind code, the source text (lexeme), and where it occurred.
+- Used by the lexer to pass recognized tokens to the parser; the parser then builds syntax from the token stream. The location field supports error reporting and tooling. Fits into the design as the unit of output from the lexer and input to the parser.
+- Example: for the identifier "foo" at line 2 column 1 of "main.silica", a Token might have kind set to the identifier code, lexeme "foo", and location with file "main.silica", line 2, column 1, and the corresponding offset.
+- Example: for the operator "+", kind is the plus token code, lexeme "+", and location points to the position of "+" in the source.
+- Example: for a string literal "\"hi\"", kind is the string-literal code, lexeme "\"hi\"", and location is where the opening quote started.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 struct Token {
     kind: int64,  // Token kind code (from lexer_token_kind)
     lexeme: string,
     location: SourceLocation
 }
 
-// Lexer performs lexical analysis on Silica source code
+
+{-
+- Holds the source text and current position (byte offset, line, column) for incremental tokenization.
+- Used as the state passed through the lexer: new_lexer creates it, advance/peek_char/peek_next_char update or read it, and make_token uses it to build Token values with correct locations. Fits into the design as the single mutable (conceptually) cursor over the source string.
+- Example: right after new_lexer("fn x() {}", "main.silica"), the Lexer has source that string, position 0, line 1, column 1, file "main.silica".
+- Example: after advancing past "fn ", position is 3, line still 1, column 4; the next peek_char would return "x".
+- Example: after advancing past a newline, line is incremented and column resets to 1 so that subsequent tokens get the correct SourceLocation.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 struct Lexer {
     source: string,
     position: int64,
@@ -39,7 +65,16 @@ struct Lexer {
     file: string
 }
 
-// Create a new lexer for the given source code
+{-
+- Builds a Lexer for the given source string and file name, with position at the start (offset 0, line 1, column 1).
+- Used to initialize lexical analysis: call this once per file or input string, then pass the returned Lexer to the tokenizer. The resulting Lexer is ready for peek_char, advance, and token production.
+- Example: new_lexer("fn x() {}", "main.silica") returns a Lexer with that source, position 0, line 1, column 1, file "main.silica"; the next character is "f".
+- Example: new_lexer("", "empty.silica") returns a Lexer with empty source and position 0; peek_char will yield "".
+- Example: new_lexer("a\nb", "f.silica") returns a Lexer at the first character "a"; after advancing past the newline, line becomes 2 and column 1.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single struct construction; source and file are not copied, only referenced.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn new_lexer(source: string, file: string) -> Lexer {
     Lexer {
         source: source,
@@ -50,7 +85,16 @@ fn new_lexer(source: string, file: string) -> Lexer {
     }
 }
 
-// Get current source location
+{-
+- Returns a SourceLocation reflecting the lexer’s current position (file, line, column, and byte offset).
+- Used when building tokens or reporting errors so that each token or message can record where it came from. The result is built from the Lexer’s file, line, column, and position fields.
+- Example: for a lexer just returned by new_lexer("fn", "x.silica"), current_location returns SourceLocation { file: "x.silica", line: 1, column: 1, offset: 0 }.
+- Example: after advancing 5 characters on line 1, current_location returns column 6 and offset 5 (line still 1).
+- Example: after advancing past a newline, current_location returns line 2, column 1, and offset equal to the new position.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One SourceLocation struct built from four field reads.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn current_location(lexer: Lexer) -> SourceLocation {
     SourceLocation {
         file: lexer.file,
@@ -60,7 +104,16 @@ fn current_location(lexer: Lexer) -> SourceLocation {
     }
 }
 
-// Create a token with the given kind and lexeme
+{-
+- Builds a Token with the given kind code, lexeme string, and source location.
+- Used by the lexer when it has recognized a token: call current_location to get the start position, then make_token to produce the Token for the parser. Fits into the design as the single constructor for Token values.
+- Example: make_token(lexer_token_kind@identifier(), "foo", current_location(lexer)) returns a Token for the identifier "foo" at the lexer’s current position.
+- Example: make_token(lexer_token_kind@plus(), "+", loc) returns a Token for the "+" operator at location loc.
+- Example: make_token(lexer_token_kind@string_literal(), "\"hi\"", loc) returns a Token for the string literal with lexeme "\"hi\"" at loc.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single Token struct construction; arguments are not copied beyond normal passing.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn make_token(kind: int64, lexeme: string, location: SourceLocation) -> Token {
     Token {
         kind: kind,
@@ -69,19 +122,47 @@ fn make_token(kind: int64, lexeme: string, location: SourceLocation) -> Token {
     }
 }
 
-// Peek at character at current position (returns empty string if EOF)
+{-
+- Returns the single character at the lexer’s current position, or the empty string if the position is past the end of the source.
+- Used to decide what token to recognize or whether to skip whitespace/comments without advancing. Does not change the lexer; advance moves the position. Implemented as substring(source, position, position+1).
+- Example: for a lexer at the start of "fn x", peek_char returns "f"; position is unchanged.
+- Example: when position equals source length (e.g. after consuming all of "fn"), peek_char returns "" (EOF).
+- Example: for a lexer at the "x" in "fn x", peek_char returns "x"; the lexer can then advance after building the identifier token.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single substring of length 0 or 1; no recursion.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn peek_char(lexer: Lexer) -> string {
     // Use substring to get single character at position
     // Returns empty string if position is beyond source length
     substring(lexer.source, lexer.position, lexer.position + 1)
 }
 
-// Peek at next character after current position
+{-
+- Returns the single character immediately after the lexer’s current position, or the empty string if that position is past the end of the source.
+- Used when the lexer needs one character of lookahead (e.g. to detect "//" by checking peek_char and peek_next_char together). Does not change the lexer. Implemented as substring(source, position+1, position+2).
+- Example: for a lexer at the first character of "fn", peek_char is "f" and peek_next_char is "n".
+- Example: when position is at the last character of the source, peek_next_char returns "" (no character after current).
+- Example: for a lexer at the first "/" of "// comment", peek_char is "/" and peek_next_char is "/", so the lexer can recognize a line comment.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single substring of length 0 or 1; no recursion.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn peek_next_char(lexer: Lexer) -> string {
     substring(lexer.source, lexer.position + 1, lexer.position + 2)
 }
 
-// Advance lexer position by one character
+
+{-
+- Returns a Lexer with position advanced by one character; line and column are updated (column resets to 1 after a newline, otherwise column increments).
+- Used after consuming a character so the next peek_char or token start reflects the new position. Does not mutate the original lexer; returns a new Lexer. Newline handling keeps line/column correct for source locations.
+- Example: for a lexer at the "f" of "fn", advance returns a Lexer with position 1, line 1, column 2; peek_char on the result returns "n".
+- Example: for a lexer at the newline in "a\nb", advance returns a Lexer with position past the newline, line 2, column 1; the next character is "b".
+- Example: for a lexer already at EOF (position at source length), advance still returns a Lexer with position+1; line and column are updated as if the current character were non-newline (peek_char is "").
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One peek_char, comparisons, and one new Lexer struct; no recursion or unbounded allocation.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn advance(lexer: Lexer) -> Lexer {
     // Get current character to check if its newline
     current: string <- peek_char(lexer);
@@ -106,12 +187,32 @@ fn advance(lexer: Lexer) -> Lexer {
     }
 }
 
-// Extract lexeme substring from start to current position
+
+{-
+- Returns the substring of the lexer’s source from start_pos (inclusive) to the lexer’s current position (exclusive).
+- Used after recognizing a token: save the position at token start, advance until the token ends, then extract_lexeme(lexer, start_pos) gives the exact source text for the token. That string can be stored in Token.lexeme or used for keyword/identifier distinction.
+- Example: after advancing from position 0 to 3 over "foo", extract_lexeme(lexer, 0) returns "foo".
+- Example: for a single-character token "+" that started at position 5, after advance the lexer has position 6; extract_lexeme(lexer, 5) returns "+".
+- Example: when start_pos equals lexer.position (e.g. no characters consumed yet), extract_lexeme returns "".
+- Time: O(k), Ω(k), Θ(k) where k = position - start_pos. Space: O(k), Ω(k), Θ(k) for the returned substring.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn extract_lexeme(lexer: Lexer, start_pos: int64) -> string {
     substring(lexer.source, start_pos, lexer.position)
 }
 
-// Check if a character is whitespace
+
+{-
+- Returns true if the given single-character string is a whitespace character (space, tab, newline, or carriage return), and false otherwise.
+- Used by the lexer to decide whether to skip characters (e.g. via skip_whitespace) before recognizing the next token. Only the four characters " ", "\t", "\n", and "\r" are considered whitespace.
+- Example: is_whitespace(" ") returns true; space is skipped between tokens.
+- Example: is_whitespace("a") returns false; the lexer does not skip letters.
+- Example: is_whitespace("\n") and is_whitespace("\t") return true; newlines and tabs are skipped as whitespace.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single case match over the character; no recursion or allocation.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn is_whitespace(c: string) -> bool {
     case c of {
         " " -> true;
@@ -122,7 +223,17 @@ fn is_whitespace(c: string) -> bool {
     }
 }
 
-// Skip whitespace characters
+
+{-
+- Advances the lexer past zero or more consecutive whitespace characters (space, tab, newline, carriage return) and returns the resulting lexer; stops at EOF or the first non-whitespace character.
+- Used at the start of tokenization or between tokens so that the lexer only considers meaningful characters. Does not consume non-whitespace; if the current character is not whitespace, returns the lexer unchanged.
+- Example: for a lexer at the start of "  \tfoo", skip_whitespace returns a lexer with position past the spaces and tab, so the next peek_char is "f".
+- Example: when the lexer is already on a non-whitespace character (e.g. "x"), skip_whitespace returns the lexer unchanged.
+- Example: when the lexer is at EOF (peek_char ""), skip_whitespace returns the lexer unchanged.
+- Time: O(k), Ω(1), Θ(k) where k is the number of whitespace characters skipped. Space: O(k), Ω(1), Θ(k) for recursion depth (or Θ(1) if tail-call optimized).
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn skip_whitespace(lexer: Lexer) -> Lexer {
     current: string <- peek_char(lexer);
     case current of {

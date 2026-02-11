@@ -5,12 +5,34 @@ use lexer_core;
 use parser_core;
 use parser_ast;
 
-// True if current token is a type keyword or identifier (can start a type name).
+
+export parse_type_name/1;
+export is_type_name/1;
+
+{-
+- Returns true if the current token of the stream is a type name: an identifier or one of the type keywords (int8, int16, int32, int64, float16, float32, float64, bool, char, string, unit); returns false otherwise.
+- Used before parsing a type (e.g. in parse_type_name or in function/declaration parsers) to check whether the current token can start a type. Allows both built-in type keywords and user-defined type names (identifiers). Fits into the design as the predicate that gates type-name parsing.
+- Example: stream current token identifier "MyType" — returns true; user-defined types are type names.
+- Example: stream current token int64_keyword — returns true; primitive type keywords are type names.
+- Example: stream current token integer_literal or left_paren — returns false; literals and punctuation are not type names.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One current-token check and a fixed number of keyword checks; no recursion or allocation.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn is_type_name(stream: ListToken) -> bool {
     parser_core@is_identifier(stream) or parser_core@is_int8_keyword(stream) or parser_core@is_int16_keyword(stream) or parser_core@is_int32_keyword(stream) or parser_core@is_int64_keyword(stream) or parser_core@is_float16_keyword(stream) or parser_core@is_float32_keyword(stream) or parser_core@is_float64_keyword(stream) or parser_core@is_bool_keyword(stream) or parser_core@is_char_keyword(stream) or parser_core@is_string_keyword(stream) or parser_core@is_unit_keyword(stream)
 }
 
-// Parse type name: one token that is type keyword or identifier -> TypeName.
+{-
+- Parses a single type name from the stream: if the current token is a type keyword or identifier (per is_type_name), consumes it and returns a TypeName with name = token lexeme and location = token location; otherwise returns (false, TypeName with empty name, stream, "expected type name", current token location).
+- Used wherever a type is expected (e.g. return type in parse_function_decl): call parse_type_name to consume one type-name token and get a TypeName for the AST. On failure the stream is unchanged. Fits into the design as the parser for primitive or user-defined type names (one token).
+- Example: stream starting with int64_keyword — returns (true, TypeName { name: "int64", location: ... }, rest, "", zero_location).
+- Example: stream starting with identifier "MyStruct" — returns (true, TypeName { name: "MyStruct", ... }, rest, "", zero_location).
+- Example: stream starting with left_paren — is_type_name false; returns (false, TypeName { name: "", ... }, stream, "expected type name", location of "(").
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One is_type_name check, one advance, one TypeName; no recursion.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn parse_type_name(stream: ListToken) -> (bool, TypeName, ListToken, string, SourceLocation) {
     case is_type_name(stream) of {
         false -> do
@@ -25,6 +47,3 @@ fn parse_type_name(stream: ListToken) -> (bool, TypeName, ListToken, string, Sou
         end
     }
 }
-
-export parse_type_name/1;
-export is_type_name/1;

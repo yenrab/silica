@@ -3,17 +3,40 @@
 
 use lexer_core;
 
+
+
+export zero_location/0;
+export dummy_expr/0;
+export dummy_program/0;
+export dummy_declaration/0;
+export empty_list_declaration/0;
+
 // --- Parse error and result ---
 
-// Parse error with location so type checker / compiler can report accurate errors
+{-
+- Holds a parse error with a message and a source location so the type checker or compiler can report where the error occurred.
+- Used when parsing fails: the parser returns or accumulates ParseError values (message plus location) so that diagnostics can point to the exact file/line/column. Fits into the design as the standard error payload for parse failures.
+- Example: ParseError { message: "expected 'fn'", location: loc } when the parser expected a function declaration but saw something else at loc.
+- Example: ParseError { message: "expected type name", location: tok.location } when parse_type_name fails at the current token.
+- Example: A list of ParseError can be collected during a parse run and then printed with file:line:column for each error.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 struct ParseError {
     message: string,
     location: SourceLocation
 }
 
-// --- Program and declarations ---
 
-// Declaration: tag 0 = function. For minimal parser only function declarations.
+{-
+- Represents a top-level declaration in the AST: tag discriminates kind (tag 0 = function); name is the declaration name; for functions, return_type_name and return_type_location describe the return type; location is the source span of the declaration.
+- Used by the parser to build the program AST: parse_function_decl produces a Declaration with tag 0. Downstream phases (type checker, codegen) traverse declarations and use name, return type, and location for diagnostics and emission. Fits into the design as the AST node for a single declaration (currently only functions).
+- Example: Declaration { tag: 0, name: "foo", return_type_name: "int64", return_type_location: loc, location: start } for "fn foo ( ) -> int64 { }".
+- Example: The type checker can resolve return_type_name to a type and use return_type_location for error messages if the return type is invalid.
+- Example: ListDeclaration chains Declaration values so a program is a list of declarations (functions, and later traits/structs/etc. when tags are added).
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 struct Declaration {
     tag: int64,
     name: string,
@@ -22,7 +45,15 @@ struct Declaration {
     location: SourceLocation
 }
 
-// List of top-level declarations (linked list, same shape as ListToken)
+{-
+- Represents a list of top-level declarations as a linked structure: either nil (is_nil true, empty list) or a cons cell (is_nil false, head is one Declaration, tail is the rest).
+- Used by the parser to hold the program AST: after parsing, the result is a ListDeclaration of function (and later other) declarations. Downstream phases traverse the list to type-check or compile each declaration. Fits into the design as the concrete type for "list of Declaration" in the parser output.
+- Example: an empty program is a ListDeclaration with is_nil true (nil list of declarations).
+- Example: a program with one function fn foo ( ) -> int64 { } is a cons with head that Declaration and tail nil.
+- Example: traversing the list: if not is_nil, process head then recurse on tail to handle all declarations in order.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 struct ListDeclaration {
     is_nil: bool,
     head: Declaration,
@@ -31,15 +62,30 @@ struct ListDeclaration {
 
 
 
-// --- Type names (keyword or identifier) ---
 
+{-
+- Holds a type name (string) and its source location for use in the AST and error reporting.
+- Used when the parser consumes a type keyword or identifier: parse_type_name produces a TypeName with the token’s lexeme and location. Declaration and other nodes store return type or parameter types as TypeName so the type checker can resolve names and report errors at the right place. Fits into the design as the AST representation of a type name.
+- Example: TypeName { name: "int64", location: loc } for the return type in "fn foo ( ) -> int64 { }".
+- Example: TypeName { name: "MyStruct", location: loc } when the user writes a custom type name.
+- Example: The type checker looks up name in the environment and uses location for "unknown type MyStruct" if not found.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 struct TypeName {
     name: string,
     location: SourceLocation
 }
 
-// --- Expressions: kind 0 = LiteralInt, 1 = Identifier, 2 = Paren. inner used when kind = 2. ---
-
+{-
+- Represents an expression node in the AST: kind discriminates (0 = integer literal, 1 = identifier, 2 = parenthesized); value holds the literal string for kind 0; name holds the identifier for kind 1; location is source span; inner holds the nested expression for kind 2 (parenthesized).
+- Used by the expression parser: parse_integer_literal, parse_identifier, and parse_paren_expr build Expr nodes. Downstream phases (type checker, codegen) interpret kind and use value/name/inner accordingly. Fits into the design as the AST node for expressions in the minimal grammar.
+- Example: Expr { kind: 0, value: "42", name: "", ... } for the integer literal 42.
+- Example: Expr { kind: 1, value: "", name: "x", ... } for the identifier x.
+- Example: Expr { kind: 2, value: "", name: "", inner: Expr { kind: 0, value: "42", ... }, ... } for ( 42 ).
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 struct Expr {
     kind: int64,
     value: string,
@@ -48,26 +94,61 @@ struct Expr {
     inner: Expr
 }
 
-// --- Program (top-level) ---
 
+{-
+- Root AST node for a parsed program: a list of top-level declarations (functions, etc.) and a source location for the whole program.
+- Used as the result of parsing a file: the parser builds a Program whose declarations field is the ListDeclaration of all parsed declarations. The type checker and codegen take a Program and traverse declarations. Fits into the design as the top-level node of the AST.
+- Example: Program { declarations: list_of_one_fn_foo, location: file_start } for a file containing "fn foo ( ) -> int64 { }".
+- Example: An empty file parses to Program { declarations: nil_list, location: ... }.
+- Example: A multi-declaration file has Program.declarations as a ListDeclaration chain of two or more Declaration nodes.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 struct Program {
     declarations: ListDeclaration,
     location: SourceLocation
 }
 
-// Shared zero source location for parse results when no error location is needed.
+{-
+- Returns a canonical "no location" SourceLocation with empty file and zero line, column, and offset.
+- Used when a parse succeeds and the result tuple includes an error location field that is not needed (e.g. the fifth element of (true, expr, rest, "", parser_ast@zero_location())). Callers can test for this sentinel instead of a real location. Fits into the design as the shared placeholder when no error occurred.
+- Example: (true, decl, after_rb, "", parser_ast@zero_location()) — success case; error location is zero_location so no error is implied.
+- Example: Comparing err_loc to zero_location() to decide whether to emit a diagnostic; if equal, skip reporting.
+- Example: dummy_expr and other dummy/placeholder nodes may use zero_location() for their location field when no real span applies.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). Single SourceLocation struct with literal fields.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn zero_location() -> SourceLocation {
     SourceLocation { file: "", line: 0, column: 0, offset: 0 }
 }
 
-// Dummy Expr for "no inner" (e.g. when kind is 0 or 1). kind = -1. Self-referential for inner.
+{-
+- Returns a sentinel Expr with kind -1, empty value/name, zero location, and inner pointing to itself; used when an Expr is required but no real expression (e.g. on parse failure or when the Expr has no inner child).
+- Used by the expression parser on failure: return (false, parser_ast@dummy_expr(), stream, ...) so callers receive a valid Expr shape. Also used when building Expr nodes for kind 0 or 1, where inner is unused but must be filled — dummy_expr() provides a safe placeholder. Fits into the design as the canonical "no expression" Expr.
+- Example: parse_integer_literal returns (false, parser_ast@dummy_expr(), stream, "expected integer literal", tok.location) when the current token is not an integer literal.
+- Example: Expr { kind: 0, value: "42", name: "", location: tok.location, inner: parser_ast@dummy_expr() } — literal nodes use dummy_expr for inner since they have no child.
+- Example: Callers can detect dummy by checking kind == -1 if they need to distinguish placeholder from real Expr.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One Expr node with self-referential inner; no recursion.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn dummy_expr() -> Expr {
     placeholder: Expr <- Expr { kind: -1, value: "", name: "", location: SourceLocation { file: "", line: 0, column: 0, offset: 0 }, inner: placeholder };
     placeholder
 }
 
 
-
+{-
+- Returns a sentinel Declaration with tag -1, empty name and return_type_name, and zero locations; used when a Declaration is required but no real declaration (e.g. on parse failure).
+- Used by the declaration parser on failure: return (false, parser_ast@dummy_declaration(), stream, ...) so callers receive a valid Declaration shape. Also used as the head placeholder in nil ListDeclaration nodes (empty_list_declaration, dummy_program). Fits into the design as the canonical "no declaration" Declaration.
+- Example: parse_function_decl returns (false, parser_ast@dummy_declaration(), stream, "expected 'fn'", tok.location) when the current token is not fn.
+- Example: empty_list_declaration() builds a nil ListDeclaration whose head is dummy_declaration() (is_nil true so head is not traversed).
+- Example: Callers can detect dummy by checking tag == -1 if they need to distinguish placeholder from real Declaration.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One Declaration struct with literal fields; no recursion.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn dummy_declaration() -> Declaration {
     Declaration {
         tag: -1,
@@ -78,7 +159,16 @@ fn dummy_declaration() -> Declaration {
     }
 }
 
-// Dummy Program for parse result when is_ok is false
+{-
+- Returns a sentinel Program with a nil ListDeclaration (is_nil true, head/tail placeholder) and zero location; used when a Program is required but parsing failed.
+- Used by the top-level parser on failure: return (false, parser_ast@dummy_program(), ...) so callers receive a valid Program shape. The declarations list is nil so downstream phases can treat it as "no declarations." Fits into the design as the canonical "no program" Program.
+- Example: parse_program returns (false, parser_ast@dummy_program(), ...) when the first declaration fails to parse.
+- Example: Callers check the parse ok flag; when false, they may ignore the Program or use it only to avoid a missing value — dummy_program() ensures the type is valid.
+- Example: Traversing Program.declarations: if dummy, declarations.is_nil is true so the list is effectively empty.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One ListDeclaration node plus one Program struct; self-referential list, no unbounded allocation.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn dummy_program() -> Program {
     decl_placeholder: ListDeclaration <- ListDeclaration { is_nil: true, head: dummy_declaration(), tail: decl_placeholder };
     Program {
@@ -87,14 +177,17 @@ fn dummy_program() -> Program {
     }
 }
 
-// Empty list of declarations (for parse_program accumulator).
+{-
+- Returns a sentinel ListDeclaration with is_nil true, head dummy_declaration(), and tail pointing to itself; used when a ListDeclaration is required but parsing failed.
+- Used by the parser on failure: return (false, parser_ast@empty_list_declaration(), ...) so callers receive a valid ListDeclaration shape. The head is dummy so downstream phases can treat it as "no declarations." Fits into the design as the canonical "empty list of declarations."
+- Example: parse_declarations returns (false, parser_ast@empty_list_declaration(), stream, "expected declaration", tok.location) when the first declaration fails to parse.
+- Example: Callers check the parse ok flag; when false, they may ignore the ListDeclaration or use it only to avoid a missing value — empty_list_declaration() ensures the type is valid.
+- Example: Traversing ListDeclaration: if dummy, is_nil is true so the list is effectively empty.
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One ListDeclaration node plus one dummy_declaration; self-referential list, no unbounded allocation.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn empty_list_declaration() -> ListDeclaration {
     decl_placeholder: ListDeclaration <- ListDeclaration { is_nil: true, head: dummy_declaration(), tail: decl_placeholder };
     decl_placeholder
 }
-
-export zero_location/0;
-export dummy_expr/0;
-export dummy_program/0;
-export dummy_declaration/0;
-export empty_list_declaration/0;

@@ -6,7 +6,22 @@ use lexer_token_kind;
 use parser_core;
 use parser_ast;
 
-// Parse integer literal: one integer_literal token -> Expr kind 0.
+
+export parse_integer_literal/1;
+export parse_identifier/1;
+export parse_expression/1;
+export parse_paren_expr/1;
+
+{-
+- Parses a single integer_literal token from the stream into an Expr of kind 0 (integer literal): value is the token’s lexeme, name "", location from the token. Returns (ok, expr, rest_stream, error_message, error_location); on failure the stream is unchanged.
+- Used by the expression parser when an integer literal is expected: if the current token is integer_literal, consume it and build the Expr; otherwise return false and "expected integer literal". Fits into the design as the parser for integer literal expressions (e.g. "42", "0xFF").
+- Example: stream starting with integer_literal "42" — returns (true, Expr { kind: 0, value: "42", ... }, stream_after_token, "", zero_location).
+- Example: stream starting with identifier "x" — is_integer_literal false; returns (false, dummy_expr(), stream, "expected integer literal", location of "x").
+- Example: stream starting with integer_literal "0b10" — returns (true, Expr { kind: 0, value: "0b10", ... }, rest, "", zero_location).
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One kind check, one advance, one Expr; no recursion.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn parse_integer_literal(stream: ListToken) -> (bool, Expr, ListToken, string, SourceLocation) {
     case parser_core@is_integer_literal(stream) of {
         false -> do
@@ -22,7 +37,17 @@ fn parse_integer_literal(stream: ListToken) -> (bool, Expr, ListToken, string, S
     }
 }
 
-// Parse identifier: one identifier token -> Expr kind 1.
+
+{-
+- Parses a single identifier token from the stream into an Expr of kind 1 (identifier): name is the token’s lexeme, value "", location from the token. Returns (ok, expr, rest_stream, error_message, error_location); on failure the stream is unchanged.
+- Used by the expression parser when an identifier (variable or name) is expected: if the current token is an identifier, consume it and build the Expr; otherwise return false and "expected identifier". Fits into the design as the parser for identifier expressions (e.g. variable references, function names in calls).
+- Example: stream starting with identifier "x" — returns (true, Expr { kind: 1, name: "x", ... }, stream_after_token, "", zero_location).
+- Example: stream starting with integer_literal "42" — is_identifier false; returns (false, dummy_expr(), stream, "expected identifier", location of "42").
+- Example: stream starting with identifier "foo" — returns (true, Expr { kind: 1, name: "foo", ... }, rest, "", zero_location).
+- Time: O(1), Ω(1), Θ(1). Space: O(1), Ω(1), Θ(1). One kind check, one advance, one Expr; no recursion.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn parse_identifier(stream: ListToken) -> (bool, Expr, ListToken, string, SourceLocation) {
     case parser_core@is_identifier(stream) of {
         false -> do
@@ -38,7 +63,16 @@ fn parse_identifier(stream: ListToken) -> (bool, Expr, ListToken, string, Source
     }
 }
 
-// Parse one expression: integer literal, identifier, or parenthesized expression.
+{-
+- Parses a single expression from the stream: if the current token is left_paren, parses a parenthesized expression via parse_paren_expr; otherwise tries parse_integer_literal, and if that fails tries parse_identifier. Returns (ok, expr, rest_stream, error_message, error_location).
+- Used as the entry point for parsing an expression in this module: ( expr ) is handled by parse_paren_expr, a bare integer or identifier by the two literal parsers. Fits into the design as the dispatcher for the minimal expression grammar (integer, identifier, ( expr )).
+- Example: stream starting with ( 42 ) — is_left_paren true; parse_paren_expr consumes ( 42 ) and returns (true, Expr kind 2 with inner integer 42, rest, "", zero_location).
+- Example: stream starting with 99 — integer literal parses; returns (true, Expr kind 0 value "99", rest, "", zero_location).
+- Example: stream starting with foo — integer fails, identifier parses; returns (true, Expr kind 1 name "foo", rest, "", zero_location).
+- Time: O(1), Ω(1), Θ(1) when the expression is a single token (literal or identifier); Θ(k) when parenthesized and inner expression consumes k tokens. Space: O(1) or O(d) for recursion depth d in paren case.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
 fn parse_expression(stream: ListToken) -> (bool, Expr, ListToken, string, SourceLocation) {
     case parser_core@is_left_paren(stream) of {
         true -> parse_paren_expr(stream);
@@ -52,8 +86,17 @@ fn parse_expression(stream: ListToken) -> (bool, Expr, ListToken, string, Source
     }
 }
 
-// Parse parenthesized expression: left_paren expr right_paren -> Expr kind 2.
-fn parse_paren_expr(stream: ListToken) -> (bool, Expr, ListToken, string, SourceLocation) {
+{-
+- Parses a parenthesized expression: expects left_paren, then one expression via parse_expression, then right_paren; builds an Expr of kind 2 with the inner expression in inner and location at the opening paren. Returns (ok, expr, rest_stream, error_message, error_location); on failure returns the original stream and an appropriate error.
+- Used by parse_expression when the current token is left_paren: consumes ( expr ) and wraps the inner Expr in a kind-2 node so the AST preserves grouping. Fits into the design as the parser for ( ... ) expressions.
+- Example: stream starting with ( 42 ) — expect (, parse_expression yields integer 42, expect ); returns (true, Expr { kind: 2, inner: Expr kind 0 value "42", ... }, stream_after_rparen, "", zero_location).
+- Example: stream starting with ( x — inner parses "x", then missing ); returns (false, dummy_expr(), stream, "expected ')'", location of next token).
+- Example: stream starting with 42 — expect ( fails; returns (false, dummy_expr(), stream, "expected '('", location of 42).
+- Time: O(k), Ω(1), Θ(k) where k is the number of tokens in the parenthesized expression (one left_paren, parse_expression, one right_paren). Space: O(d), Ω(1), Θ(d) for recursion in parse_expression.
+- Last-date-modified: 2025-02-10
+- Last-modified-by: Lee S. Barney
+-}
+fn parse_paren_expr(stream: ListToken) -> (bool, Expr, ListToken, string, SourceLocation) {// this function is too deeply nested and needs to be refactored
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     case parser_core@expect_kind(stream, kinds.left_paren) of {
         (false, _: ListToken) -> do
@@ -79,12 +122,3 @@ fn parse_paren_expr(stream: ListToken) -> (bool, Expr, ListToken, string, Source
         end
     }
 }
-
-
-
-
-
-export parse_integer_literal/1;
-export parse_identifier/1;
-export parse_expression/1;
-export parse_paren_expr/1;
