@@ -177,16 +177,19 @@ impl CodeGenerator {
         reg
     }
 
-    /// Format a value for use in LLVM IR: register names need % prefix, constants do not.
+    /// Format a value for use in LLVM IR: register names need % prefix, constants and globals do not.
     fn format_llvm_value_ref(value: &str) -> String {
         let s = value.trim();
-        if s.starts_with('%') {
-            s.to_string()
-        } else if s.parse::<i64>().is_ok() {
-            s.to_string()
-        } else {
-            format!("%{}", s)
+        if s.starts_with('%') || s.starts_with('@') {
+            return s.to_string();
         }
+        if s == "null" || s.parse::<i64>().is_ok() || s.parse::<f64>().is_ok() {
+            return s.to_string();
+        }
+        if s.contains(' ') {
+            return s.to_string();
+        }
+        format!("%{}", s)
     }
 
     /// Normalize a typed call argument for LLVM: "i8* t6" -> "i8* %t6". Ensures value has % if it's a register.
@@ -7836,36 +7839,28 @@ impl CodeGenerator {
                 field_ptr_typed
             };
             
-            // Generate store instruction
+            // Generate store instruction (value must be valid LLVM token, e.g. %t4 not t4)
             let store_instruction = if value_type == "i8*" && clean_value.contains("getelementptr") {
-                // String literal - special case
-                format!("  store i8* {}, i8** {}", clean_value, final_ptr_type)
+                format!("  store i8* {}, i8** {}", Self::format_llvm_value_ref(&clean_value), final_ptr_type)
             } else if clean_value.contains("getelementptr") {
-                // String literal getelementptr - it's i8*
-                format!("  store i8* {}, {}* {}", clean_value, value_type, final_ptr_type)
+                format!("  store i8* {}, {}* {}", Self::format_llvm_value_ref(&clean_value), value_type, final_ptr_type)
             } else if clean_value.contains('@') {
-                // Global constant (like string constant) - assume i8*
-                format!("  store i8* {}, {}* {}", clean_value, value_type, final_ptr_type)
+                format!("  store i8* {}, {}* {}", Self::format_llvm_value_ref(&clean_value), value_type, final_ptr_type)
             } else if clean_value.contains("alloc") {
-                // Any allocation register - it's i8*
-                format!("  store i8* {}, {}* {}", clean_value, value_type, final_ptr_type)
+                format!("  store i8* {}, {}* {}", Self::format_llvm_value_ref(&clean_value), value_type, final_ptr_type)
             } else {
                 // Use the extracted type
-                // LLVM doesn't accept float literals directly in store instructions - need to create constants first
                 let store_value = if value_type == "float" && !clean_value.starts_with('%') && clean_value.parse::<f64>().is_ok() {
-                    // Float literal - create a constant first
                     let float_const = format!("%float_const_store_{}_{}", self.instructions.len(), i);
                     let instruction = self.create_float_constant_instruction(&clean_value, &float_const, "float");
                     self.instructions.push(instruction);
                     float_const
                 } else if value_type == "double" && !clean_value.starts_with('%') && clean_value.parse::<f64>().is_ok() {
-                    // Double literal - create double constant
                     let double_const = format!("%double_const_store_{}_{}", self.instructions.len(), i);
                     let instruction = self.create_float_constant_instruction(&clean_value, &double_const, "double");
                     self.instructions.push(instruction);
                     double_const
                 } else if value_type == "half" && !clean_value.starts_with('%') && clean_value.parse::<f64>().is_ok() {
-                    // Half literal - create float register first, then convert to half
                     let float_const = format!("%float_const_store_{}_{}", self.instructions.len(), i);
                     let instruction = self.create_float_constant_instruction(&clean_value, &float_const, "float");
                     self.instructions.push(instruction);
@@ -7873,8 +7868,8 @@ impl CodeGenerator {
                 } else {
                     clean_value.clone()
                 };
-                
-                format!("  store {} {}, {}* {}", value_type, store_value, value_type, final_ptr_type)
+                let store_value_ref = Self::format_llvm_value_ref(&store_value);
+                format!("  store {} {}, {}* {}", value_type, store_value_ref, value_type, final_ptr_type)
             };
             
             self.instructions.push(store_instruction);
@@ -8292,41 +8287,29 @@ impl CodeGenerator {
             };
             
             let store_instruction = if llvm_type_str == "i8*" && value_type == "i64" {
-                // Target field is pointer but value was loaded as i64 (pointer stored as integer); convert before store
                 let ptr_reg = format!("%field_inttoptr_{}_{}", self.instructions.len(), i);
-                self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, clean_value));
+                self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, Self::format_llvm_value_ref(&clean_value)));
                 format!("  store i8* {}, i8** {}", ptr_reg, final_ptr_type)
             } else if value_type == "i8*" && clean_value.contains("getelementptr") {
-                // String literal - special case
-                format!("  store i8* {}, i8** {}", clean_value, final_ptr_type)
+                format!("  store i8* {}, i8** {}", Self::format_llvm_value_ref(&clean_value), final_ptr_type)
             } else if clean_value.contains("getelementptr") {
-                // String literal getelementptr - it's i8*
-                format!("  store i8* {}, {}* {}", clean_value, value_type, final_ptr_type)
+                format!("  store i8* {}, {}* {}", Self::format_llvm_value_ref(&clean_value), value_type, final_ptr_type)
             } else if clean_value.contains('@') {
-                // Global constant (like string constant) - assume i8*
-                format!("  store i8* {}, {}* {}", clean_value, value_type, final_ptr_type)
+                format!("  store i8* {}, {}* {}", Self::format_llvm_value_ref(&clean_value), value_type, final_ptr_type)
             } else if clean_value.contains("alloc") {
-                // Any allocation register - it's i8*
-                format!("  store i8* {}, {}* {}", clean_value, value_type, final_ptr_type)
+                format!("  store i8* {}, {}* {}", Self::format_llvm_value_ref(&clean_value), value_type, final_ptr_type)
             } else {
-                // Use the extracted type
-                // LLVM doesn't accept float literals directly in store instructions - need to create constants first
                 let store_value = if value_type == "float" && !clean_value.starts_with('%') && clean_value.parse::<f64>().is_ok() {
-                    // Float literal - create a constant first
-                    // Convert decimal float literal to LLVM IR hexadecimal format
                     let float_const = format!("%float_const_store_{}_{}", self.instructions.len(), i);
                     let instruction = self.create_float_constant_instruction(&clean_value, &float_const, "float");
                     self.instructions.push(instruction);
                     float_const
                 } else if value_type == "double" && !clean_value.starts_with('%') && clean_value.parse::<f64>().is_ok() {
-                    // Double literal - create double constant using bitcast
                     let double_const = format!("%double_const_store_{}_{}", self.instructions.len(), i);
                     let instruction = self.create_float_constant_instruction(&clean_value, &double_const, "double");
                     self.instructions.push(instruction);
                     double_const
                 } else if value_type == "half" && !clean_value.starts_with('%') && clean_value.parse::<f64>().is_ok() {
-                    // Half literal - create float register first, then convert to half
-                    // Convert decimal float literal to LLVM IR hexadecimal format
                     let float_const = format!("%float_const_store_{}_{}", self.instructions.len(), i);
                     let instruction = self.create_float_constant_instruction(&clean_value, &float_const, "float");
                     self.instructions.push(instruction);
@@ -8334,10 +8317,10 @@ impl CodeGenerator {
                     self.instructions.push(format!("  {} = fptrunc float {} to half", half_const, float_const));
                     half_const
                 } else {
-                    // For other types, use the value directly
                     clean_value.clone()
                 };
-                format!("  store {} {}, {}* {}", value_type, store_value, value_type, final_ptr_type)
+                let store_value_ref = Self::format_llvm_value_ref(&store_value);
+                format!("  store {} {}, {}* {}", value_type, store_value_ref, value_type, final_ptr_type)
             };
             self.instructions.push(store_instruction);
         }
@@ -8582,6 +8565,32 @@ impl CodeGenerator {
             }
             Expression::If(_) => Type::Int64, // If expressions default to Int
             Expression::Tuple(_) => Type::Int64, // Nested tuples as Int (simplified)
+            Expression::FieldAccess(field_access) => {
+                // Use type from type checker when available (so nested x.y.z gets correct type)
+                if let Some(ty) = Self::try_get_expression_location(expr).and_then(|loc| self.expression_types.get(loc)) {
+                    return ty.clone();
+                }
+                // Otherwise infer from object type and struct/record definition
+                let object_type = self.infer_expression_type(&field_access.object);
+                let expanded = self.expand_type_aliases_codegen(&object_type);
+                match &expanded {
+                    Type::Named(name) => {
+                        if let Some(struct_def) = self.struct_defs.get(name.as_str()) {
+                            if let Some(field) = struct_def.iter().find(|f| f.name == field_access.field) {
+                                return field.ty.clone();
+                            }
+                        }
+                        Type::Int64
+                    }
+                    Type::Record(fields) => {
+                        fields.iter()
+                            .find(|(fn_, _)| fn_ == &field_access.field)
+                            .map(|(_, ft)| ft.clone())
+                            .unwrap_or(Type::Int64)
+                    }
+                    _ => Type::Int64,
+                }
+            }
             // Other expression types default to Int for now
             _ => Type::Int64,
         }
@@ -9053,7 +9062,7 @@ impl CodeGenerator {
                                                 self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", patch_ptr, clean, tail_offset));
                                                 let patch_ptr_i8ptr = format!("%patch_ptr_i8ptr_{}", self.instructions.len());
                                                 self.instructions.push(format!("  {} = bitcast i8* {} to i8**", patch_ptr_i8ptr, patch_ptr));
-                                                self.instructions.push(format!("  store i8* {}, i8** {}", clean, patch_ptr_i8ptr));
+                                                self.instructions.push(format!("  store i8* {}, i8** {}", Self::format_llvm_value_ref(&clean), patch_ptr_i8ptr));
                                             }
                                         }
                                     }
