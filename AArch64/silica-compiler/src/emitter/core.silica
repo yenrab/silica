@@ -1,0 +1,39 @@
+// Emitter core: SIRModule -> AArch64 assembly
+// Entry point: orchestrates emission of SIR to assembly text
+
+use sir_ast;
+use terms;
+use control;
+
+export emit_module/1;
+
+// Emit AArch64 assembly for a SIR module.
+// Input: SIRModule (from sir_generator, post-optimization)
+// Output: Assembly text as string
+fn emit_module(sir_module: SIRModule) -> string {
+    header: string <- asm_header(sir_module.module_name);
+    funcs: string <- emit_functions(sir_module.functions);
+    concat(concat(header, "\n"), funcs)
+}
+
+fn asm_header(module_name: string) -> string {
+    concat(".text\n", concat(concat(".global ", module_name), "\n"))
+}
+
+fn emit_functions(fns: ListSIRFunction) -> string {
+    case fns.is_nil of {
+        true -> "";
+        false -> do
+            fn_asm: string <- emit_function(fns.head);
+            rest_asm: string <- emit_functions(fns.tail);
+            concat(concat(fn_asm, "\n"), rest_asm)
+        end
+    }
+}
+
+fn emit_function(fn_val: SIRFunction) -> string {
+    prologue: string <- control@function_prologue(fn_val.name);
+    body: string <- terms@term_to_asm(fn_val.body, "%v0");
+    epilogue: string <- control@function_epilogue();
+    concat(concat(concat(prologue, "\n"), concat(body, "\n")), epilogue)
+}

@@ -1690,7 +1690,7 @@ impl CodeGenerator {
                     };
 
                     // For arithmetic operations, types must match exactly (no promotion)
-                    // For comparisons, types must also match
+                    // For comparisons, types must match (but allow i1 vs i64 by extending i1 to i64)
                     if lhs_type != rhs_type {
                         match binary.operator {
                             BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo => {
@@ -1699,7 +1699,12 @@ impl CodeGenerator {
                                 ));
                             }
                             _ => {
-                                return Err(CompilerError::codegen_error(format!("Cannot compare {} and {}", lhs_type, rhs_type)));
+                                // Allow i1 vs i64 for comparisons: extend i1 to i64 (treats true=1, false=0)
+                                if (lhs_type == "i1" && rhs_type == "i64") || (lhs_type == "i64" && rhs_type == "i1") {
+                                    // Will handle below by extending i1 operand to i64
+                                } else {
+                                    return Err(CompilerError::codegen_error(format!("Cannot compare {} and {}", lhs_type, rhs_type)));
+                                }
                             }
                         }
                     }
@@ -1713,7 +1718,12 @@ impl CodeGenerator {
                         }
                     }
                     
-                    lhs_type // Both types are the same, use either one
+                    // For i1 vs i64 comparison, use i64 (i1 operand will be extended via zext)
+                    if (lhs_type == "i1" && rhs_type == "i64") || (lhs_type == "i64" && rhs_type == "i1") {
+                        "i64"
+                    } else {
+                        lhs_type // Both types are the same, use either one
+                    }
                 }
             };
 
@@ -5841,7 +5851,7 @@ impl CodeGenerator {
                 self.add_variable_text(var_name.clone(), var_reg.clone());
             }
 
-            let body_val = match self.generate_expression(&branch.body)? {
+            let body_val_raw = match self.generate_expression(&branch.body)? {
                 Some(val) => {
                     // Extract value and ensure type matches result_llvm_type for store
                     if val.starts_with(&format!("{} ", result_llvm_type)) {
@@ -5877,6 +5887,7 @@ impl CodeGenerator {
                 },
                 None => return codegen_error("Case branch body must produce a value".to_string()),
             };
+            let body_val = Self::format_llvm_value_ref(&body_val_raw);
             self.instructions.push(format!("  store {} {}, {}* {}", result_llvm_type, body_val, result_llvm_type, result_reg));
             self.instructions.push(format!("  br label %{}", case_end));
         }
