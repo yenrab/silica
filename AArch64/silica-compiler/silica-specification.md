@@ -1,5 +1,13 @@
 # The Silica Programming Language Specification
 
+## Related Documents
+
+| Document | Purpose |
+|----------|---------|
+| [silica-specification-additional.md](silica-specification-additional.md) | Compiler failure rules: anti-patterns that must fail at compile time |
+
+---
+
 ## 1. Introduction
 
 ### 1.1 Overview

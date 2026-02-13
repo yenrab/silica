@@ -1,0 +1,36 @@
+// Core sir_generator infrastructure
+// Entry point: Program + TypeContext -> SIRModule (internal representation)
+
+use parser_ast;
+use type_checker_core;
+use sir_ast;
+use functions;
+
+export emit_program/2;
+
+// Default module name until module support exists
+fn module_name() -> string {
+    "main"
+}
+
+// Build SIR for a Program. Returns SIRModule (internal representation).
+// Precondition: type checking has succeeded; AST has no dummy nodes in traversed paths.
+fn emit_program(program: Program, context: TypeContext) -> SIRModule proc[mem(normal)] {
+    fns: ListSIRFunction <- emit_declarations(program.declarations, context);
+    SIRModule { module_name: module_name(), functions: fns }
+}
+
+// Traverse ListDeclaration and build ListSIRFunction for each Declaration (tag 0)
+fn emit_declarations(decls: ListDeclaration, context: TypeContext) -> ListSIRFunction proc[mem(normal)] {
+    case decls.is_nil of {
+        true -> sir_ast@nil_sir_functions();
+        false -> do
+            head_fn: SIRFunction <- functions@emit_function(decls.head, context);
+            tail_fns: ListSIRFunction <- emit_declarations(decls.tail, context);
+            case decls.head.tag of {
+                0 -> sir_ast@cons_sir_functions(head_fn, tail_fns);
+                _: int64 -> tail_fns
+            }
+        end
+    }
+}

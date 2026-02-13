@@ -78,6 +78,8 @@ pub struct CodeGenerator {
     in_behavior_function: bool, // Whether we're currently generating code for a behavior function
     /// Variable names that are currently bound to a self-referential placeholder (undefined until patch); use null when generating.
     self_ref_placeholders: std::collections::HashSet<String>,
+    /// Module of the function currently being generated (for resolving unqualified calls)
+    current_module: Option<String>,
 
     // Real LLVM backend fields (when feature enabled)
     #[cfg(feature = "llvm_backend")]
@@ -129,6 +131,7 @@ impl CodeGenerator {
             string_constants: HashMap::new(),
             in_behavior_function: false,
             self_ref_placeholders: std::collections::HashSet::new(),
+            current_module: None,
 
             // LLVM backend fields will be initialized in generate_program
             #[cfg(feature = "llvm_backend")]
@@ -588,10 +591,11 @@ impl CodeGenerator {
         self.instructions.push("declare i1 @silica_string_equals(i8*, i8*)".to_string());
 
         // Pass 1: Register all function signatures so bodies can call functions defined later
-        for decl in &program.declarations {
+        for (i, decl) in program.declarations.iter().enumerate() {
+            let module = program.declaration_modules.get(i).map(|s| s.as_str()).unwrap_or("main");
             match decl {
                 Declaration::Function(func) => {
-                    self.register_function_signature_text(func)?;
+                    self.register_function_signature_text(module, func)?;
                 }
                 Declaration::Type(_) => {
                     // Type declarations don't generate code in LLVM
@@ -634,9 +638,10 @@ impl CodeGenerator {
         }
 
         // Pass 2: Generate each function body (signatures already registered so calls to later functions resolve)
-        for decl in &program.declarations {
+        for (i, decl) in program.declarations.iter().enumerate() {
+            let module = program.declaration_modules.get(i).map(|s| s.as_str()).unwrap_or("main");
             if let Declaration::Function(func) = decl {
-                self.generate_function_body_text(func)?;
+                self.generate_function_body_text(module, func)?;
             }
         }
 
@@ -867,7 +872,8 @@ impl CodeGenerator {
     /// Register function signature only (text backend). All functions are registered before any body
     /// is generated so that bodies can call functions defined later in the file.
     #[cfg(not(feature = "llvm_backend"))]
-    fn register_function_signature_text(&mut self, func: &FunctionDecl) -> Result<()> {
+    fn register_function_signature_text(&mut self, module: &str, func: &FunctionDecl) -> Result<()> {
+        let qualified_name = format!("{}.{}", module, func.name);
         let param_types: Vec<String> = func.parameters.iter()
             .map(|param| {
                 if param.pattern.is_some() {
@@ -906,15 +912,15 @@ impl CodeGenerator {
 
         let signature = format!("define {} @{}({}) {{",
             return_type_str,
-            func.name,
+            qualified_name,
             param_strs.join(", ")
         );
 
         // Only register in maps so call sites can resolve; do NOT push to instructions yet.
         // Each function's "define ... {" and body are pushed in pass 2 (generate_function_body_text).
-        self.functions.insert(func.name.clone(), signature);
-        self.function_return_types.insert(func.name.clone(), return_type_str.clone());
-        self.function_param_types.insert(func.name.clone(), param_types);
+        self.functions.insert(qualified_name.clone(), signature);
+        self.function_return_types.insert(qualified_name.clone(), return_type_str.clone());
+        self.function_param_types.insert(qualified_name, param_types);
         Ok(())
     }
 
@@ -973,8 +979,8 @@ impl CodeGenerator {
         // Text-based generation (fallback)
         #[cfg(not(feature = "llvm_backend"))]
         {
-        self.register_function_signature_text(func)?;
-        self.generate_function_body_text(func)?;
+        self.register_function_signature_text("main", func)?;
+        self.generate_function_body_text("main", func)?;
         return Ok(());
         }
 
@@ -983,18 +989,22 @@ impl CodeGenerator {
 
     /// Generate function body only (text backend). Signature must already be registered.
     #[cfg(not(feature = "llvm_backend"))]
-    fn generate_function_body_text(&mut self, func: &FunctionDecl) -> Result<()> {
-        let param_types = self.function_param_types.get(&func.name).cloned()
-            .ok_or_else(|| CompilerError::codegen_error(format!("Function '{}' not registered (internal error)", func.name)))?;
-        let return_type_str = self.function_return_types.get(&func.name).cloned()
-            .ok_or_else(|| CompilerError::codegen_error(format!("Function '{}' not registered (internal error)", func.name)))?;
+    fn generate_function_body_text(&mut self, module: &str, func: &FunctionDecl) -> Result<()> {
+        let qualified_name = format!("{}.{}", module, func.name);
+        let param_types = self.function_param_types.get(&qualified_name).cloned()
+            .ok_or_else(|| CompilerError::codegen_error(format!("Function '{}' not registered (internal error)", qualified_name)))?;
+        let return_type_str = self.function_return_types.get(&qualified_name).cloned()
+            .ok_or_else(|| CompilerError::codegen_error(format!("Function '{}' not registered (internal error)", qualified_name)))?;
         let return_type = func.return_type.as_ref()
             .map(|t| self.expand_type_aliases_codegen(t))
             .unwrap_or(Type::Unit);
 
+        // Set current module for resolving unqualified calls (e.g. recursive calls)
+        let prev_module = self.current_module.replace(module.to_string());
+
         // Emit "define ... @name(...) {" so this function's IR is contiguous
-        let signature = self.functions.get(&func.name).cloned()
-            .ok_or_else(|| CompilerError::codegen_error(format!("Function '{}' not registered (internal error)", func.name)))?;
+        let signature = self.functions.get(&qualified_name).cloned()
+            .ok_or_else(|| CompilerError::codegen_error(format!("Function '{}' not registered (internal error)", qualified_name)))?;
         self.instructions.push(signature);
 
         // Add function parameters to variable scope
@@ -1238,7 +1248,9 @@ impl CodeGenerator {
                                 final_result
                             };
                             
-                            self.instructions.push(format!("  ret {} {}", return_type_str, ret_value));
+                            // Ensure register names have % prefix (e.g. t6 -> %t6); literals stay as-is
+                            let ret_operand = Self::format_llvm_value_ref(&ret_value);
+                            self.instructions.push(format!("  ret {} {}", return_type_str, ret_operand));
                         }
                     }
                 } else {
@@ -1249,6 +1261,10 @@ impl CodeGenerator {
         }
 
         self.instructions.push("}".to_string());
+
+        // Restore previous module
+        self.current_module = prev_module;
+
         Ok(())
     }
 
@@ -2432,8 +2448,13 @@ impl CodeGenerator {
                 return self.generate_indirect_call(call, &param_types, &return_type);
             }
 
+            // Resolve qualified name for unqualified calls (same-module; e.g. recursive calls)
+            let qualified_func_name = self.current_module.as_ref()
+                .map(|m| format!("{}.{}", m, func_name))
+                .unwrap_or_else(|| func_name.clone());
+
             // Check if it's a local function
-            if self.functions.contains_key(func_name) {
+            if self.functions.contains_key(&qualified_func_name) {
                 // Generate arguments
                 let mut arg_strs = Vec::new();
                 for arg in &call.arguments {
@@ -2446,9 +2467,9 @@ impl CodeGenerator {
 
                 // For LLVM IR function calls, arguments should have type prefixes
                 // e.g., call i64 @func(i64 %arg1, i8* %arg2)
-                let typed_args: Vec<String> = if self.functions.contains_key(func_name) {
+                let typed_args: Vec<String> = if self.functions.contains_key(&qualified_func_name) {
                     // This is a known function - try to get parameter types
-                    if let Some(param_types) = self.function_param_types.get(func_name) {
+                    if let Some(param_types) = self.function_param_types.get(&qualified_func_name) {
                         // Clone param_types to avoid borrow checker issues in closure
                         let param_types = param_types.clone();
                         // Calculate base index for instruction numbering
@@ -2728,14 +2749,14 @@ impl CodeGenerator {
                 let temp_reg = format!("%t{}", self.instructions.len());
 
                 // Determine the return type of the function
-                let return_type = self.function_return_types.get(func_name)
+                let return_type = self.function_return_types.get(&qualified_func_name)
                     .cloned()
                     .ok_or_else(|| CompilerError::codegen_error(
-                        format!("Unknown function '{}'. Function must be declared before it can be called.", func_name)
+                        format!("Unknown function '{}'. Function must be declared before it can be called.", qualified_func_name)
                     ))?;
 
                 let fixed_args_str = args_str.replace("i64 %tuple_alloc_", "i8* %tuple_alloc_");
-                let call_instr = format!("  {} = call {} @{}({})", temp_reg, return_type, func_name, fixed_args_str);
+                let call_instr = format!("  {} = call {} @{}({})", temp_reg, return_type, qualified_func_name, fixed_args_str);
                 self.instructions.push(call_instr);
 
                 Ok(Some(format!("{} {}", return_type, temp_reg)))
@@ -2743,9 +2764,10 @@ impl CodeGenerator {
             // Check if it's an imported function
             else if let Some(symbol_table) = &self.symbol_table {
                 let mut found = false;
-                for (_module_name, module_symbols) in &symbol_table.modules {
+                for (imported_module_name, module_symbols) in &symbol_table.modules {
                     if let Some(_symbol_info) = module_symbols.get(func_name) {
-                        // Found imported function - generate the call
+                        // Found imported function - use module-qualified name for call
+                        let imported_qualified = format!("{}.{}", imported_module_name, func_name);
                         let mut arg_strs = Vec::new();
                         for arg in &call.arguments {
                             if let Some(arg_val) = self.generate_expression(arg)? {
@@ -2790,7 +2812,7 @@ impl CodeGenerator {
                             .collect::<Vec<_>>()
                             .join(", ");
                         let temp_reg = format!("%t{}", self.instructions.len());
-                        let call_instr = format!("  {} = call i64 @{}({})", temp_reg, func_name, args_str);
+                        let call_instr = format!("  {} = call i64 @{}({})", temp_reg, imported_qualified, args_str);
                         self.instructions.push(call_instr);
 
                         found = true;
@@ -2813,9 +2835,8 @@ impl CodeGenerator {
     /// Generate LLVM IR for module function calls (text backend)
     #[cfg(not(feature = "llvm_backend"))]
     fn generate_module_call(&mut self, module_call: &ModuleCallExpr) -> Result<Option<String>> {
-        // Generate call to the unqualified function name
-        // The combined program resolves imports and includes all functions with their original names
-        let function_name = module_call.function.clone();
+        // Module-qualified function name (e.g. literals.expr_to_sir)
+        let qualified_name = format!("{}.{}", module_call.module, module_call.function);
 
         // Generate arguments
         let mut arg_strs = Vec::new();
@@ -2828,9 +2849,9 @@ impl CodeGenerator {
         }
 
         // Use function signature to determine argument types (same logic as regular function calls)
-        let typed_args: Vec<String> = if self.functions.contains_key(&function_name) {
+        let typed_args: Vec<String> = if self.functions.contains_key(&qualified_name) {
             // This is a known function - try to get parameter types
-            if let Some(param_types) = self.function_param_types.get(&function_name) {
+            if let Some(param_types) = self.function_param_types.get(&qualified_name) {
                 // Clone param_types to avoid borrow checker issues in closure
                 let param_types = param_types.clone();
                 // Calculate base index for instruction numbering
@@ -3075,7 +3096,7 @@ impl CodeGenerator {
         };
 
         // Get return type
-        let return_type_str = self.function_return_types.get(&function_name)
+        let return_type_str = self.function_return_types.get(&qualified_name)
             .cloned()
             .unwrap_or_else(|| "i64".to_string());
 
@@ -3087,7 +3108,7 @@ impl CodeGenerator {
             .join(", ");
 
         // Generate the LLVM call instruction
-        self.instructions.push(format!("  {} = call {} @{}({})", temp_reg, return_type_str, function_name, args_str));
+        self.instructions.push(format!("  {} = call {} @{}({})", temp_reg, return_type_str, qualified_name, args_str));
 
         Ok(Some(format!("{} {}", return_type_str, temp_reg)))
     }
@@ -9902,7 +9923,8 @@ impl CodeGenerator {
                 } else {
                     result_value
                 };
-                body_instructions.push(format!("    ret i8* {}", clean_result));
+                let ret_operand = Self::format_llvm_value_ref(&clean_result);
+                body_instructions.push(format!("    ret i8* {}", ret_operand));
             } else {
                 // Need to box the result
             let alloc_reg = format!("%return_alloc_{}", body_instructions.len());
@@ -9954,7 +9976,8 @@ impl CodeGenerator {
                     .to_string();
                 (return_type_str.to_string(), clean_result)
             };
-            body_instructions.push(format!("    ret {} {}", final_result_type, final_result_reg));
+            let ret_operand = Self::format_llvm_value_ref(&final_result_reg);
+            body_instructions.push(format!("    ret {} {}", final_result_type, ret_operand));
         }
 
         // Restore the original instructions

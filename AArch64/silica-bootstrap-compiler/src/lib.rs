@@ -94,7 +94,7 @@ impl Compiler {
 
         // Phase 2.5: Module resolution and combination
         // println!("Phase 2.5: Module resolution...");
-        let combined_program = self.resolve_imports_and_combine(&program)?;
+        let combined_program = self.resolve_imports_and_combine(&program, input_file)?;
 
         // Set symbol table in code generator
         let symbol_table_clone = Box::new(self.symbol_table.clone());
@@ -173,10 +173,18 @@ impl Compiler {
         Ok(())
     }
 
-    fn resolve_imports_and_combine(&mut self, program: &crate::ast::Program) -> Result<crate::ast::Program> {
+    fn resolve_imports_and_combine(&mut self, program: &crate::ast::Program, input_file: &str) -> Result<crate::ast::Program> {
         let mut all_declarations = Vec::new();
+        let mut all_declaration_modules = Vec::new();
         let mut processed_modules = std::collections::HashSet::new();
         let mut modules_to_process = Vec::new();
+
+        // Main module name from input file path (e.g. "terms/terms.silica" -> "terms")
+        let main_module_name = std::path::Path::new(input_file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("main")
+            .to_string();
 
         // Collect main program declarations (in original order, excluding imports)
         let mut main_declarations = Vec::new();
@@ -284,6 +292,7 @@ impl Compiler {
                         type_aliases_in_module.push(alias.name.clone());
                     }
                     all_declarations.push(decl.clone());
+                    all_declaration_modules.push(module_name.clone());
                 }
             }
         }
@@ -291,11 +300,15 @@ impl Compiler {
 
         // Add main program declarations (preserving original order)
         // Functions must be defined before they're used
+        for _ in &main_declarations {
+            all_declaration_modules.push(main_module_name.clone());
+        }
         all_declarations.extend(main_declarations);
 
         // Create combined program
         Ok(crate::ast::Program {
             declarations: all_declarations,
+            declaration_modules: all_declaration_modules,
             location: program.location.clone(),
         })
     }

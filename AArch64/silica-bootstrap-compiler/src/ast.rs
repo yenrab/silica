@@ -4,6 +4,8 @@ use crate::errors::SourceLocation;
 #[derive(Debug, Clone)]
 pub struct Program {
     pub declarations: Vec<Declaration>,
+    /// Module name for each declaration (parallel to declarations). Used for LLVM symbol mangling.
+    pub declaration_modules: Vec<String>,
     pub location: SourceLocation,
 }
 

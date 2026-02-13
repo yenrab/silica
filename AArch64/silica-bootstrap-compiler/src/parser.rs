@@ -31,6 +31,7 @@ impl Parser {
 
         Ok(Program {
             declarations,
+            declaration_modules: Vec::new(), // Filled by resolve_imports_and_combine
             location,
         })
     }
