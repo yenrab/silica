@@ -1096,6 +1096,22 @@ pub struct ProcessResult {
     pub stderr: *mut SilicaString,  // Captured stderr
 }
 
+/// Read file using path that may be either SilicaString or raw string constant.
+/// Handles both representations (e.g. when path is a function parameter passed a literal).
+#[no_mangle]
+pub extern "C" fn silica_read_file_path(path_ptr: *const u8) -> SilicaResult {
+    let (path, path_len) = unsafe {
+        crate::io::get_string_data_and_length(path_ptr).unwrap_or((std::ptr::null(), 0))
+    };
+    if path.is_null() || path_len == 0 {
+        return SilicaResult {
+            success: false,
+            data: create_error_string("Invalid or empty path"),
+        };
+    }
+    silica_read_file(path, path_len)
+}
+
 // LLVM-compatible external function (not C API)
 #[no_mangle]
 pub extern "C" fn silica_read_file(path: *const u8, path_len: usize) -> SilicaResult {
@@ -1132,6 +1148,24 @@ pub extern "C" fn silica_read_file(path: *const u8, path_len: usize) -> SilicaRe
             data: create_error_string(&format!("Failed to read file: {}", e)),
         },
     }
+}
+
+/// Write/append file using path and content that may be either SilicaString or raw string constant.
+#[no_mangle]
+pub extern "C" fn silica_write_file_path(path_ptr: *const u8, content_ptr: *const u8) -> SilicaResult {
+    let (path, path_len) = unsafe {
+        crate::io::get_string_data_and_length(path_ptr).unwrap_or((std::ptr::null(), 0))
+    };
+    let (content, content_len) = unsafe {
+        crate::io::get_string_data_and_length(content_ptr).unwrap_or((std::ptr::null(), 0))
+    };
+    if path.is_null() || path_len == 0 {
+        return SilicaResult {
+            success: false,
+            data: create_error_string("Invalid or empty path"),
+        };
+    }
+    silica_write_file(path, path_len, content, content_len)
 }
 
 // LLVM-compatible external function (not C API)

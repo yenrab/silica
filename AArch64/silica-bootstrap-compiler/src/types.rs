@@ -885,10 +885,10 @@ impl<'a> TypeChecker<'a> {
         }
 
         let param_types: Vec<Type> = func.parameters.iter()
-            .map(|param| self.expand_type_aliases(&param.type_))
+            .map(|param| self.expand_type_aliases_for_function_signature(&param.type_))
             .collect();
         let return_type = func.return_type.as_ref()
-            .map(|rt| self.expand_type_aliases(rt))
+            .map(|rt| self.expand_type_aliases_for_function_signature(rt))
             .unwrap_or(Type::Unit);
 
         let func_type = Type::Function {
@@ -936,14 +936,14 @@ impl<'a> TypeChecker<'a> {
             self.validate_type_with_location(rt, Some(func.location.clone()))?;
         }
 
-        // Convert parameter types, expanding aliases first
+        // Convert parameter types, expanding aliases only (keep struct names as Named per spec §6)
         let param_types: Vec<Type> = func.parameters.iter()
-            .map(|param| self.expand_type_aliases(&param.type_))
+            .map(|param| self.expand_type_aliases_for_function_signature(&param.type_))
             .collect();
 
-        // Convert return type, expanding aliases first
+        // Convert return type, expanding aliases only (keep struct names as Named per spec §6)
         let return_type = func.return_type.as_ref()
-            .map(|rt| self.expand_type_aliases(rt))
+            .map(|rt| self.expand_type_aliases_for_function_signature(rt))
             .unwrap_or(Type::Unit);
 
         // Create function type
@@ -3492,6 +3492,68 @@ impl<'a> TypeChecker<'a> {
         self.env.insert(alias_decl.name.clone(), TypeScheme { vars: Vec::new(), ty: alias_type });
 
         Ok(())
+    }
+
+    /// Expand type aliases only (not structs). Use when building function types so that
+    /// struct names remain as Named instead of being expanded to Record. Per spec §6:
+    /// "When building function types, keep struct names as Named instead of expanding them to Record."
+    fn expand_type_aliases_for_function_signature(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Named(name) => {
+                if let Some(aliased_type) = self.type_aliases.get(name) {
+                    self.expand_type_aliases_for_function_signature(aliased_type)
+                } else if self.struct_defs.contains_key(name) {
+                    // Keep struct names as Named - do not expand to Record
+                    ty.clone()
+                } else if let Some(scheme) = self.env.get(name) {
+                    if let Type::Named(env_name) = &scheme.ty {
+                        if env_name == name {
+                            return ty.clone();
+                        }
+                    }
+                    self.expand_type_aliases_for_function_signature(&scheme.ty)
+                } else {
+                    match name.as_str() {
+                        "int8" => Type::Int8,
+                        "int16" => Type::Int16,
+                        "int32" => Type::Int32,
+                        "int64" => Type::Int64,
+                        "float16" => Type::Float16,
+                        "float32" => Type::Float32,
+                        "float64" => Type::Float64,
+                        "bool" => Type::Bool,
+                        "char" => Type::Char,
+                        "string" => Type::String,
+                        "unit" => Type::Unit,
+                        _ => ty.clone(),
+                    }
+                }
+            }
+            Type::Tuple(elements) => Type::Tuple(
+                elements
+                    .iter()
+                    .map(|elem| self.expand_type_aliases_for_function_signature(elem))
+                    .collect(),
+            ),
+            Type::Record(fields) => Type::Record(
+                fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.expand_type_aliases_for_function_signature(ty)))
+                    .collect(),
+            ),
+            Type::Function { parameters, return_type } => Type::Function {
+                parameters: parameters
+                    .iter()
+                    .map(|param| self.expand_type_aliases_for_function_signature(param))
+                    .collect(),
+                return_type: Box::new(self.expand_type_aliases_for_function_signature(return_type)),
+            },
+            Type::Process { effects, result_type } => Type::Process {
+                effects: effects.clone(),
+                result_type: Box::new(self.expand_type_aliases_for_function_signature(result_type)),
+            },
+            _ => ty.clone(),
+        }
     }
 
     /// Expand type aliases in a type

@@ -1,0 +1,61 @@
+// Module: Parser-like logic for deep tuple decomp stress test
+// Mimics parser_core + parser_runner - uses BOTH lexer nil and parser nil
+// Parser nil (kind 50) used as accumulator; builds list that mixes with lexer-origin data
+// Returns 5-tuple from recursive function - cross-module tuple decomposition stress
+
+use deep_tuple_decomp_ast;
+use deep_tuple_decomp_lexer;
+
+// Parser nil: eof token kind 50 (mimics parser_core empty_list)
+// Second of TWO different ListToken nil implementations
+fn empty_list() -> ListToken {
+    eof_tok: Token <- Token { kind: 50, lexeme: "", loc: deep_tuple_decomp_ast@zero_loc() };
+    placeholder: ListToken <- ListToken { is_nil: true, head: eof_tok, tail: placeholder };
+    placeholder
+}
+
+// Mimics reverse_token_list - builds list with parser nil at end
+fn reverse_acc(acc: ListToken, list: ListToken) -> ListToken {
+    case list.is_nil of {
+        true -> acc;
+        false -> do
+            new_acc: ListToken <- ListToken { is_nil: false, head: list.head, tail: acc };
+            reverse_acc(new_acc, list.tail)
+        end
+    }
+}
+
+fn reverse_token_list(list: ListToken) -> ListToken {
+    empty: ListToken <- empty_list();
+    reverse_acc(empty, list)
+}
+
+// Returns (bool, ListDecl, ListToken, string, Loc) - matches parse_declarations
+// rest uses parser nil (from reverse/build) - tests mixing two nil implementations
+fn make_result() -> (bool, ListDecl, ListToken, string, Loc) {
+    body_expr: Expr <- Expr { kind: 0, value: "42", name: "", loc: deep_tuple_decomp_ast@zero_loc(), inner: deep_tuple_decomp_ast@dummy_expr() };
+    one_decl: Decl <- Decl { tag: 0, name: "main", ret_type: "int64", loc: deep_tuple_decomp_ast@zero_loc(), body: body_expr };
+    empty_decl: ListDecl <- deep_tuple_decomp_ast@empty_list_decl();
+    decls: ListDecl <- ListDecl { is_nil: false, head: one_decl, tail: empty_decl };
+    rest: ListToken <- empty_list();
+    (true, decls, rest, "", deep_tuple_decomp_ast@zero_loc())
+}
+
+// Recursive - mimics parse_declarations recursion across module boundary
+fn make_result_rec(depth: int64) -> (bool, ListDecl, ListToken, string, Loc) {
+    case depth <= 0 of {
+        true -> make_result();
+        false -> make_result_rec(depth - 1)
+    }
+}
+
+// Build list from lexer (lexer nil at tail), reverse with parser nil - mimics real parser flow
+fn make_result_with_reversed_list() -> (bool, ListDecl, ListToken, string, Loc) {
+    body_expr: Expr <- Expr { kind: 0, value: "42", name: "", loc: deep_tuple_decomp_ast@zero_loc(), inner: deep_tuple_decomp_ast@dummy_expr() };
+    one_decl: Decl <- Decl { tag: 0, name: "main", ret_type: "int64", loc: deep_tuple_decomp_ast@zero_loc(), body: body_expr };
+    empty_decl: ListDecl <- deep_tuple_decomp_ast@empty_list_decl();
+    decls: ListDecl <- ListDecl { is_nil: false, head: one_decl, tail: empty_decl };
+    lexer_list: ListToken <- deep_tuple_decomp_lexer@build_simple_list();
+    rest: ListToken <- reverse_token_list(lexer_list);
+    (true, decls, rest, "", deep_tuple_decomp_ast@zero_loc())
+}

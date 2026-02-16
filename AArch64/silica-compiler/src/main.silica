@@ -5,21 +5,110 @@
 use lexer_runner;
 use lexer_core;
 use parser_core;
+use parser_runner;
+use type_checker_core;
+use type_checker_runner;
+use sir_generator_core;
+use emitter_core;
+use diagnostics_core;
 
 // Redefine ListToken type (types arent directly exported)
-type ListToken = { is_nil: bool, head: Token, tail: ListToken };
+//type ListToken = { is_nil: bool, head: Token, tail: ListToken };
+
+// Count tokens in a ListToken (for debug)
+fn count_tokens(tokens: ListToken) -> int64 {
+    case tokens.is_nil of {
+        true -> 0;
+        false -> 1 + count_tokens(tokens.tail)
+    }
+}
+
+// Recursively print each token in a ListToken (kind, lexeme, location)
+fn print_tokens(tokens: ListToken) -> int64 proc[DeviceIO] {
+    case tokens.is_nil of {
+        true -> 0;
+        false -> do
+            tok: Token <- tokens.head;
+            println("---");
+            print_int64(tok.kind);
+            println("");
+            println(tok.lexeme);
+            println(tok.location.file);
+            print_int64(tok.location.line);
+            println("");
+            print_int64(tok.location.column);
+            println("");
+            print_int64(tok.location.offset);
+            println("");
+            print_tokens(tokens.tail)
+        end
+    };
+    0
+}
 
 // Main function - tokenizes a file, runs minimal parse, returns success code
 fn main() -> int64 proc[DeviceIO] {
-    do
-        // Tokenize the test file
-        tokens: ListToken <- lexer_runner@lexer_runner("AArch64/experiments/01_basic/min.silica");
-        // Minimal parse: consume token stream until eof (validates parser supports all token variations)
-        ok: bool <- parser_core@parse_from_tokens(tokens);
-        // Return success (0) if parse succeeded
-        case ok of {
-            true -> 0;
-            false -> 1
-        }
-    end
+    println("Reading file...");
+    content:string <- read_lines("test.silica");
+    print(content);
+    println("");
+    // Tokenize the test file
+    println("Tokenizing file...");
+    tokens: ListToken <- lexer_runner@lexer_runner("test.silica");
+    token_count: int64 <- count_tokens(tokens);
+    println("DEBUG: token count = ");
+    print_int64(token_count);
+    println("");
+    println("Tokens:");
+    print_tokens(tokens);
+    println("Parsing file...");
+    parse_result: ParseResult <- parser_runner@parse_program(tokens);
+    println("Parse completed");
+    print_bool(parse_result.is_ok);
+    println("");
+    case parse_result.is_ok of {
+        true -> do
+            println("parsing successful");
+            context: TypeContext <- type_checker_core@create_type_context();
+            println("Type checking file...");
+            (type_check_result: TypeCheckResult, checked_context: TypeContext) <- type_checker_runner@type_check_program(parse_result.program, context);
+            println("type checking completed");
+            case type_check_result.is_ok of {
+                true -> do
+                    println("Generating SIR...");
+                    sir_module: SIRModule <- sir_generator_core@emit_program(parse_result.program, checked_context);
+                    println("Emitting module...");
+                    emitter_core@emit_module(sir_module);
+                    println("emitting completed");
+                    0
+                end;
+                false -> do
+                    println("type checking failed");
+                    error_code: string <- case type_check_result.error_code == "" of {
+                        true -> "E2000";
+                        false -> type_check_result.error_code
+                    };
+                    spec_section: string <- case type_check_result.spec_section == "" of {
+                        true -> "sect6";
+                        false -> type_check_result.spec_section
+                    };
+                    diagnostics_core@print_compiler_error("TypeError", error_code, type_check_result.error_location, type_check_result.error_message, spec_section);
+                    1
+                end
+            }
+            end;
+        false -> do
+            println("parsing failed");
+            error_code: string <- case parse_result.error_code == "" of {
+                true -> "E1001";
+                false -> parse_result.error_code
+            };
+            spec_section: string <- case parse_result.spec_section == "" of {
+                true -> "sect3";
+                false -> parse_result.spec_section
+            };
+            diagnostics_core@print_compiler_error("ParseError", error_code, parse_result.error_location, parse_result.error_message, spec_section);
+            1
+        end
+    }
 }

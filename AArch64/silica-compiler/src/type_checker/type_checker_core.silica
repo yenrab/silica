@@ -1,162 +1,85 @@
-// Core type checking infrastructure
-// Provides type environment, type context, and basic type checking utilities
+// Type checker core - TypeContext, TypeCheckResult, symbol table
+// Shared by type checker capabilities and runner
 
-use lexer_core;
 use parser_ast;
+use lexer_core;
 
-export TypeError/0;
-export TypeEnv/0;
 export TypeContext/0;
-export ResultStringTypeError/0;
-export ResultBoolTypeError/0;
-export result_string_ok/1;
-export result_string_err/1;
-export result_bool_ok/1;
-export result_bool_err/1;
-export create_type_env/0;
+export TypeCheckResult/0;
+export SymbolEntry/0;
+export ListSymbolEntry/0;
 export create_type_context/0;
 export add_symbol/3;
-export add_symbol_to_context/3;
 export lookup_symbol/2;
-export resolve_type_name/2;
-export is_known_type/1;
+export lookup_symbol_found/2;
+export type_check_ok/0;
+export type_check_err/5;
+export empty_symbol_table/0;
 
-// --- Semantic error ---
-
-{-
-- Holds a type-checking error with a message and source location for diagnostics.
-- Used when semantic analysis fails: unknown type, undeclared identifier, type mismatch.
-- Example: TypeError { message: "unknown type: MyType", location: loc }
-- Example: TypeError { message: "undeclared identifier: x", location: loc }
--}
-struct TypeError {
-    message: string,
-    location: SourceLocation
-}
-
-// --- Symbol table ---
-
-struct SymbolBinding {
+// Symbol table: name -> type_name
+struct SymbolEntry {
     name: string,
     type_name: string
 }
 
-struct ListSymbolBinding {
+struct ListSymbolEntry {
     is_nil: bool,
-    head: SymbolBinding,
-    tail: ListSymbolBinding
+    head: SymbolEntry,
+    tail: ListSymbolEntry
 }
 
-// --- Result types (no unit type; struct-based for compatibility) ---
-
-struct ResultStringTypeError {
-    is_ok: bool,
-    value: string,
-    error: TypeError
-}
-
-struct ResultBoolTypeError {
-    is_ok: bool,
-    value: bool,
-    error: TypeError
-}
-
-// --- Type environment ---
-
-{-
-- Type environment: symbol table (function/variable names -> type names) for name resolution.
--}
-struct TypeEnv {
-    symbols: ListSymbolBinding
-}
-
-// --- Type context ---
-
-{-
-- Type context passed during type checking: holds the type environment.
--}
 struct TypeContext {
-    env: TypeEnv
+    env: ListSymbolEntry
 }
 
-// --- Symbol table operations ---
-
-fn nil_symbol_binding() -> ListSymbolBinding {
-    placeholder: ListSymbolBinding <- ListSymbolBinding { is_nil: true, head: SymbolBinding { name: "", type_name: "" }, tail: placeholder };
-    placeholder
+struct TypeCheckResult {
+    is_ok: bool,
+    error_code: string,
+    error_location: SourceLocation,
+    error_message: string,
+    spec_section: string
 }
 
-fn add_symbol(env: TypeEnv, name: string, type_name: string) -> TypeEnv proc[mem(normal)] {
-    new_binding: SymbolBinding <- SymbolBinding { name: name, type_name: type_name };
-    rest: ListSymbolBinding <- env.symbols;
-    new_tail: ListSymbolBinding <- ListSymbolBinding { is_nil: false, head: new_binding, tail: rest };
-    TypeEnv { symbols: new_tail }
+fn empty_symbol_table() -> ListSymbolEntry {
+    dummy: SymbolEntry <- SymbolEntry { name: "", type_name: "" };
+    nil_placeholder: ListSymbolEntry <- ListSymbolEntry { is_nil: true, head: dummy, tail: nil_placeholder };
+    nil_placeholder
 }
 
-fn add_symbol_to_context(context: TypeContext, name: string, type_name: string) -> TypeContext proc[mem(normal)] {
-    updated_env: TypeEnv <- add_symbol(context.env, name, type_name);
-    TypeContext { env: updated_env }
+fn create_type_context() -> TypeContext {
+    TypeContext { env: empty_symbol_table() }
 }
 
-fn lookup_symbol_rec(bindings: ListSymbolBinding, name: string) -> string {
-    case bindings.is_nil of {
+fn add_symbol(env: ListSymbolEntry, name: string, type_name: string) -> ListSymbolEntry {
+    entry: SymbolEntry <- SymbolEntry { name: name, type_name: type_name };
+    ListSymbolEntry { is_nil: false, head: entry, tail: env }
+}
+
+fn lookup_symbol(env: ListSymbolEntry, name: string) -> string {
+    case env.is_nil of {
         true -> "";
-        false -> case bindings.head.name == name of {
-            true -> bindings.head.type_name;
-            false -> lookup_symbol_rec(bindings.tail, name)
+        false -> case env.head.name == name of {
+            true -> env.head.type_name;
+            false -> lookup_symbol(env.tail, name)
         }
     }
 }
 
-fn lookup_symbol(env: TypeEnv, name: string) -> string {
-    lookup_symbol_rec(env.symbols, name)
-}
-
-fn symbol_exists(env: TypeEnv, name: string) -> bool {
-    found: string <- lookup_symbol(env, name);
-    found != ""
-}
-
-// --- Type resolution (known types for minimal AST) ---
-
-fn is_known_type(name: string) -> bool {
-    name == "int64" or name == "int32" or name == "int16" or name == "int8" or
-    name == "bool" or name == "boolean" or
-    name == "string" or
-    name == "float32" or name == "float64"
-}
-
-fn result_string_ok(value: string) -> ResultStringTypeError {
-    ResultStringTypeError { is_ok: true, value: value, error: TypeError { message: "", location: SourceLocation { file: "", line: 0, column: 0, offset: 0 } } }
-}
-
-fn result_string_err(error: TypeError) -> ResultStringTypeError {
-    ResultStringTypeError { is_ok: false, value: "", error: error }
-}
-
-fn result_bool_ok(value: bool) -> ResultBoolTypeError {
-    ResultBoolTypeError { is_ok: true, value: value, error: TypeError { message: "", location: SourceLocation { file: "", line: 0, column: 0, offset: 0 } } }
-}
-
-fn result_bool_err(error: TypeError) -> ResultBoolTypeError {
-    ResultBoolTypeError { is_ok: false, value: false, error: error }
-}
-
-fn resolve_type_name(type_name: string, location: SourceLocation) -> ResultStringTypeError {
-    case is_known_type(type_name) of {
-        true -> result_string_ok(type_name);
-        false -> result_string_err(TypeError { message: concat("unknown type: ", type_name), location: location })
+// Returns (found, type_name). Use when string comparison for "" is unreliable.
+fn lookup_symbol_found(env: ListSymbolEntry, name: string) -> (bool, string) {
+    case env.is_nil of {
+        true -> (false, "");
+        false -> case env.head.name == name of {
+            true -> (true, env.head.type_name);
+            false -> lookup_symbol_found(env.tail, name)
+        }
     }
 }
 
-// --- Create type environment and context ---
-
-fn create_type_env() -> TypeEnv proc[mem(normal)] {
-    syms: ListSymbolBinding <- nil_symbol_binding();
-    TypeEnv { symbols: syms }
+fn type_check_ok() -> TypeCheckResult {
+    TypeCheckResult { is_ok: true, error_code: "", error_location: parser_ast@zero_location(), error_message: "", spec_section: "" }
 }
 
-fn create_type_context() -> TypeContext proc[mem(normal)] {
-    e: TypeEnv <- create_type_env();
-    TypeContext { env: e }
+fn type_check_err(error_code: string, error_location: SourceLocation, error_message: string, spec_section: string) -> TypeCheckResult {
+    TypeCheckResult { is_ok: false, error_code: error_code, error_location: error_location, error_message: error_message, spec_section: spec_section }
 }

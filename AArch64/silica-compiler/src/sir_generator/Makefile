@@ -9,6 +9,13 @@ SEARCH_PATHS := -I . -I .. -I ../lexer -I ../parser -I ../parser/declarations -I
 LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "llvm-as"))
 LLC := $(or $(LLVM_LLC), $(shell command -v llc 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llc && echo "/opt/homebrew/opt/llvm/bin/llc") || echo "llc"))
 
+# When QUIET=1 (from parent make), suppress progress messages
+ifdef QUIET
+  ECHO := @true
+else
+  ECHO := @echo
+endif
+
 # All .silica files in this directory and subdirectories
 SILICA_FILES := $(wildcard *.silica) $(wildcard */*.silica)
 
@@ -29,17 +36,17 @@ all: $(OBJ_FILES)
 
 # Step 1: .silica -> .ll (LLVM IR) using bootstrap compiler
 %.ll: %.silica
-	@echo "Compiling: $< -> $@"
+	$(ECHO) "Compiling: $< -> $@"
 	@-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Step 2: .ll -> .bc (LLVM bitcode)
 %.bc: %.ll
-	@echo "Assembling: $< -> $@"
+	$(ECHO) "Assembling: $< -> $@"
 	@-$(LLVM_AS) $< -o $@
 
 # Step 3: .bc -> .o (object file)
 %.o: %.bc
-	@echo "Linking: $< -> $@"
+	$(ECHO) "Linking: $< -> $@"
 	@-$(LLC) -filetype=obj $< -o $@
 
 # Clean all generated files (current dir and subdirs)

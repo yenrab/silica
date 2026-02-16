@@ -1,0 +1,67 @@
+// Constraint runner - parse_program, all_constraints, orchestration
+
+use lexer_core;
+use lexer_token_kind;
+use lexer_runner;
+use constraint_core;
+use constraint_extract;
+use parser_core;
+use parser_ast;
+use capability_fn_decl;
+use capability_expr_literal;
+
+export parse_program/1;
+
+fn all_constraints() -> ListConstraint {
+    base: ListConstraint <- capability_fn_decl@constraints();
+    with_expr: ListConstraint <- append_constraints(base, capability_expr_literal@constraints());
+    with_expr
+}
+
+fn append_constraints(a: ListConstraint, b: ListConstraint) -> ListConstraint {
+    case a.is_nil of {
+        true -> b;
+        false -> constraint_core@cons_constraint(a.head, append_constraints(a.tail, b))
+    }
+}
+
+fn merge_roles(a: ListInt, b: ListInt) -> ListInt {
+    case a.is_nil of {
+        true -> b;
+        false -> constraint_core@cons_int(a.head, merge_roles(a.tail, b))
+    }
+}
+
+fn initial_roles_for_token(token_kind: int64) -> ListInt {
+    fd: ListInt <- capability_fn_decl@initial_roles(token_kind);
+    el: ListInt <- capability_expr_literal@initial_roles(token_kind);
+    merge_roles(fd, el)
+}
+
+fn reverse_tokens(acc: ListToken, list: ListToken) -> ListToken {
+    case list.is_nil of {
+        true -> acc;
+        false -> reverse_tokens(ListToken { is_nil: false, head: list.head, tail: acc }, list.tail)
+    }
+}
+
+fn tokens_to_slots(tokens: ListToken) -> ListTokenSlot {
+    case tokens.is_nil of {
+        true -> constraint_core@empty_list_slot();
+        false -> do
+            roles: ListInt <- initial_roles_for_token(tokens.head.kind);
+            slot: TokenSlot <- constraint_core@make_token_slot(tokens.head, roles);
+            rest: ListTokenSlot <- tokens_to_slots(tokens.tail);
+            constraint_core@cons_slot(slot, rest)
+        end
+    }
+}
+
+fn parse_program(tokens: ListToken) -> ParseResult {
+    reversed: ListToken <- reverse_tokens(lexer_runner@empty_token_list(), tokens);
+    slots: ListTokenSlot <- tokens_to_slots(reversed);
+    all_c: ListConstraint <- all_constraints();
+    propagated: ListTokenSlot <- constraint_core@propagate_until_fixed(slots, all_c);
+    program: Program <- constraint_extract@slots_to_program(propagated);
+    parser_core@parse_ok(program)
+}

@@ -1,15 +1,25 @@
 # Makefile for Silica Phase 2 Compiler
 # Compiles the compiler source code in src/, lexer/, and parser/ using the Silica bootstrap compiler
 
-SILICA_COMPILER := ../silica-bootstrap-compiler/target/release/silica-boot
-SEARCH_PATHS := -I lexer -I parser -I parser/declarations -I parser/expressions -I parser/patterns -I parser/types -I parser/effects -I type_checker -I type_checker/declarations -I type_checker/expressions -I type_checker/traits -I ../stdlib
+SILICA_COMPILER := ../../silica-bootstrap-compiler/target/release/silica-boot
+RUNTIME_LIB := ../../silica-bootstrap-compiler/target/release/libsilica_compiler.a
+SEARCH_PATHS := -I lexer -I parser -I parser/capabilities -I parser/declarations -I parser/expressions -I parser/patterns -I parser/types -I parser/effects -I type_checker -I type_checker/declarations -I type_checker/expressions -I type_checker/traits -I sir_generator -I sir_generator/declarations -I sir_generator/terms -I sir_generator/types -I sir_generator/patterns -I emitter -I emitter/constraints -I emitter/terms -I emitter/control -I emitter/aarch64 -I diagnostics -I ../stdlib
+
+# LLVM toolchain (for .ll -> .o and linking)
+LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "llvm-as"))
+LLC := $(or $(LLVM_LLC), $(shell command -v llc 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llc && echo "/opt/homebrew/opt/llvm/bin/llc") || echo "llc"))
+LINKER_CLANG := $(or $(LINKER_CLANG), $(shell test -x /opt/homebrew/opt/llvm/bin/clang && echo "/opt/homebrew/opt/llvm/bin/clang" || echo "clang"))
 
 # Ensure compiler is built without LLVM backend features for consistent text-based generation
 $(SILICA_COMPILER):
 	@echo "Building Silica bootstrap compiler..."
 	cd ../../silica-bootstrap-compiler && cargo build --release --no-default-features
 
-# Find all .silica files in lexer, parser, and type_checker directories (including subdirs)
+# Runtime library is built together with silica-boot
+$(RUNTIME_LIB): $(SILICA_COMPILER)
+	@true
+
+# Find all .silica files in lexer, parser, type_checker, sir_generator, emitter (including subdirs)
 LEXER_FILES := $(wildcard lexer/*.silica)
 LEXER_MODULES := $(LEXER_FILES:lexer/%.silica=lexer/%)
 PARSER_FILES := $(wildcard parser/*.silica parser/*/*.silica)
@@ -20,49 +30,77 @@ TYPE_CHECKER_MODULES := $(patsubst %.silica,%,$(TYPE_CHECKER_FILES))
 # Main executable file
 MAIN_FILE := main.silica
 MAIN_LL := main.ll
+MAIN_BC := main.bc
+MAIN_OBJ := main.o
+EXECUTABLE := silica-compiler
 
 # Output files for lexer, parser, and type_checker modules
 LEXER_LL := $(addsuffix .ll, $(LEXER_MODULES))
 PARSER_LL := $(addsuffix .ll, $(PARSER_MODULES))
 TYPE_CHECKER_LL := $(addsuffix .ll, $(TYPE_CHECKER_MODULES))
 
-.PHONY: all clean executables modules help
+# Subdirectories with Makefiles (build order respects dependencies)
+SUBDIRS := lexer parser type_checker sir_generator emitter
+
+.PHONY: all clean executables modules subdirs help $(SUBDIRS)
 
 .DEFAULT_GOAL := all
 
-# Default target - compile all files
-all: modules executables
+# Default target - ensure bootstrap compiler exists, then compile subdirs, modules, and main
+all: $(SILICA_COMPILER) subdirs modules executables
+
+# Build all subdirectories with Makefiles (before compiling main.silica)
+# subdirs requires bootstrap compiler to exist first
+subdirs: $(SILICA_COMPILER) $(SUBDIRS)
+
+$(SUBDIRS):
+	@echo "Building $@..."
+	@$(MAKE) -C $@ QUIET=1
 
 # Compile lexer, parser, and type_checker modules
 modules: $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL)
 
 # Compile lexer module files
 lexer/%.ll: lexer/%.silica $(SILICA_COMPILER)
-	@echo "Compiling module: $<"
-	-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+	@$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Compile parser module files (depend on lexer for token types; parser/%.ll covers subdirs)
 parser/%.ll: parser/%.silica $(LEXER_LL) $(SILICA_COMPILER)
-	@echo "Compiling module: $<"
-	-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+	@$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # Compile type_checker module files (type_checker/%.ll covers subdirs)
 type_checker/%.ll: type_checker/%.silica $(LEXER_LL) $(PARSER_LL) $(SILICA_COMPILER)
-	@echo "Compiling module: $<"
-	-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+	@$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
-# Compile main executable
-executables: $(MAIN_LL)
+# Compile main executable (LLVM IR -> object -> linked binary)
+executables: $(EXECUTABLE)
 
-# Main executable depends on lexer and parser modules
-$(MAIN_LL): $(MAIN_FILE) $(LEXER_LL) $(PARSER_LL) $(SILICA_COMPILER)
-	@echo "Compiling main executable: $<"
-	-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+# Main LLVM IR depends on subdirs, lexer and parser modules
+$(MAIN_LL): $(MAIN_FILE) subdirs $(LEXER_LL) $(PARSER_LL) $(SILICA_COMPILER)
+	@$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
-# Clean generated files
+# main.ll -> main.bc (bitcode)
+$(MAIN_BC): $(MAIN_LL)
+	@echo "Assembling: $< -> $@"
+	@-$(LLVM_AS) $< -o $@
+
+# main.bc -> main.o (object file)
+$(MAIN_OBJ): $(MAIN_BC)
+	@echo "Compiling: $< -> $@"
+	@-$(LLC) -filetype=obj $< -o $@
+
+# Link main.o + runtime into silica-compiler executable
+# (main.silica is compiled as a single unit with all imports, so main.o contains everything)
+$(EXECUTABLE): $(MAIN_OBJ) $(RUNTIME_LIB)
+	@echo "Linking: $(EXECUTABLE)"
+	@-$(LINKER_CLANG) $(MAIN_OBJ) $(RUNTIME_LIB) -o $@
+	@echo "✅ Built $(EXECUTABLE)"
+
+# Clean generated files (including subdirectories)
 clean:
 	@echo "Cleaning generated files..."
-	rm -f *.ll
+	@for d in $(SUBDIRS); do $(MAKE) -C $$d clean 2>/dev/null || true; done
+	rm -f *.ll *.bc *.o $(EXECUTABLE)
 	rm -f lexer/*.ll
 	rm -f parser/*.ll parser/*/*.ll
 	rm -f type_checker/*.ll type_checker/*/*.ll
@@ -77,6 +115,7 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  all              - Compile all files (default)"
+	@echo "  subdirs          - Build lexer, parser, type_checker, sir_generator, emitter"
 	@echo "  executables      - Compile main.silica to LLVM IR"
 	@echo "  modules          - Compile lexer and parser module files to LLVM IR"
 	@echo "  clean            - Remove all generated .ll files"
@@ -90,6 +129,8 @@ help:
 	@echo ""
 	@echo "Output:"
 	@echo "  main.ll          - Main executable LLVM IR"
+	@echo "  main.o           - Main object file"
+	@echo "  silica-compiler  - Linked executable (requires llvm-as, llc, clang)"
 	@echo "  lexer/*.ll       - Lexer module LLVM IR files"
 	@echo "  parser/*.ll      - Parser module LLVM IR files (including subdirectories)"
 	@echo "  type_checker/*.ll - Type checker module LLVM IR files (including subdirectories)"

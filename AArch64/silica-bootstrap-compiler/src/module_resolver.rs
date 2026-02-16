@@ -71,7 +71,7 @@ impl ModuleResolver {
             ))?;
 
         // Parse the module (we'll need to integrate with the parser)
-        let ast = self.parse_module_source(&source)?;
+        let ast = self.parse_module_source(&source, module_name)?;
 
         // Extract exports
         let exports = self.extract_exports(&ast)?;
@@ -100,12 +100,13 @@ impl ModuleResolver {
     }
 
     /// Parse module source code using the compiler's parser
-    fn parse_module_source(&self, source: &str) -> Result<Vec<Declaration>> {
+    fn parse_module_source(&self, source: &str, module_name: &str) -> Result<Vec<Declaration>> {
         use crate::lexer::Lexer;
         use crate::parser::Parser;
 
-        // Lexical analysis
-        let mut lexer = Lexer::new(source.to_string(), "module".to_string());
+        // Lexical analysis - use module:name format for clearer error messages when parsing fails
+        let file_id = format!("module:{}", module_name);
+        let mut lexer = Lexer::new(source.to_string(), file_id);
         let tokens = lexer.tokenize()?;
 
         // Parsing

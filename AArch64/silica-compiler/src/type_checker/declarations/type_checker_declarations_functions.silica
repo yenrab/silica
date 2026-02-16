@@ -1,23 +1,31 @@
-// Function declaration type checking
-// Validates function declarations (Declaration tag 0)
+// Capability: check function declaration (Declaration tag 0)
+// Adds function to symbol table, checks body expression
 
 use parser_ast;
 use type_checker_core;
+use type_checker_expressions_literals;
+use type_checker_expressions_identifiers;
 
-export check_function_declaration/2;
+export add_function/2;
+export check_body/2;
 
-// Check type of a function declaration (Declaration tag 0)
-// Resolves return_type_name, adds to symbol table. Returns Ok(true) on success, Err on failure.
-fn check_function_declaration(context: TypeContext, decl: Declaration) -> (ResultBoolTypeError, TypeContext) proc[mem(normal)] {
-    case decl.tag of {
-        0 -> do
-            // Resolve return type name
-            resolved: ResultStringTypeError <- resolve_type_name(decl.return_type_name, decl.return_type_location);
-            case resolved.is_ok of {
-                true -> (result_bool_ok(true), add_symbol_to_context(context, decl.name, resolved.value));
-                false -> (result_bool_err(resolved.error), context)
-            }
-        end;
-        _: int64 -> (result_bool_err(TypeError { message: "expected function declaration (tag 0)", location: decl.location }), context)
+// Add function name->return_type to context. Used for first pass (all decls).
+fn add_function(decl: Declaration, context: TypeContext) -> TypeContext {
+    new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, decl.name, decl.return_type_name);
+    TypeContext { env: new_env }
+}
+
+// Check function body. Context must already include all declarations (for mutual recursion).
+fn check_body(decl: Declaration, context: TypeContext) -> TypeCheckResult {
+    check_expr(decl.body, decl.return_type_name, context)
+}
+
+// Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse)
+fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+    case expr.kind of {
+        0 -> type_checker_expressions_literals@check_expr(expr, expected_type, context);
+        1 -> type_checker_expressions_identifiers@check_expr(expr, expected_type, context);
+        2 -> check_expr(expr.inner, expected_type, context);
+        _: int64 -> type_checker_core@type_check_ok()
     }
 }

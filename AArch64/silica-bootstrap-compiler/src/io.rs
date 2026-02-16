@@ -31,6 +31,50 @@ pub extern "C" fn silica_print(str_ptr: *const u8, len: usize) {
     }
 }
 
+/// Print a string to stdout (null-safe).
+/// Accepts EITHER a SilicaString struct pointer OR a raw string constant pointer (i8* to char data).
+/// Uses the same heuristic as get_string_data_and_length to handle both representations.
+#[no_mangle]
+pub extern "C" fn silica_print_string(ptr: *const u8) {
+    if ptr.is_null() {
+        return;
+    }
+    let (data_ptr, len) = unsafe { get_string_data_and_length(ptr).unwrap_or((std::ptr::null(), 0)) };
+    if data_ptr.is_null() || len == 0 {
+        return;
+    }
+    unsafe {
+        let slice = std::slice::from_raw_parts(data_ptr, len);
+        if let Ok(s) = std::str::from_utf8(slice) {
+            print!("{}", s);
+            let _ = std::io::stdout().flush();
+        }
+    }
+}
+
+/// Print a string to stdout followed by newline (null-safe).
+/// Accepts EITHER a SilicaString struct pointer OR a raw string constant pointer (i8* to char data).
+#[no_mangle]
+pub extern "C" fn silica_println_string(ptr: *const u8) {
+    if ptr.is_null() {
+        println!();
+        return;
+    }
+    let (data_ptr, len) = unsafe { get_string_data_and_length(ptr).unwrap_or((std::ptr::null(), 0)) };
+    if data_ptr.is_null() || len == 0 {
+        println!();
+        return;
+    }
+    unsafe {
+        let slice = std::slice::from_raw_parts(data_ptr, len);
+        if let Ok(s) = std::str::from_utf8(slice) {
+            println!("{}", s);
+        } else {
+            println!();
+        }
+    }
+}
+
 /// Print a string followed by a newline to stdout
 #[no_mangle]
 pub extern "C" fn silica_println(str_ptr: *const u8, len: usize) {
@@ -78,9 +122,10 @@ pub extern "C" fn silica_print_int32(n: i32) {
 }
 
 /// Print a boolean value to stdout
+/// Receives i8 (0 or 1) for C ABI compatibility; i1 causes segfault when passed from LLVM
 #[no_mangle]
-pub extern "C" fn silica_print_bool(b: bool) {
-    print!("{}", if b { "true" } else { "false" });
+pub extern "C" fn silica_print_bool(b: u8) {
+    print!("{}", if b != 0 { "true" } else { "false" });
     let _ = std::io::stdout().flush();
 }
 
@@ -252,8 +297,9 @@ pub extern "C" fn silica_string_len_chars(silica_string_ptr: *const u8) -> usize
     }
 }
 
-/// Helper to extract string data and length from either a string constant pointer or SilicaString pointer
-unsafe fn get_string_data_and_length(ptr: *const u8) -> Option<(*const u8, usize)> {
+/// Helper to extract string data and length from either a string constant pointer or SilicaString pointer.
+/// Public for use by runtime.rs silica_read_file_path.
+pub unsafe fn get_string_data_and_length(ptr: *const u8) -> Option<(*const u8, usize)> {
     // eprintln!("[DEBUG] get_string_data_and_length: ptr = {:p}", ptr);
     
     if ptr.is_null() {

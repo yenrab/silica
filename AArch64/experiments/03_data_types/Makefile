@@ -2,7 +2,7 @@
 # Automatically detects executable files (with main) vs modules (without main)
 
 SILICA_COMPILER := ../../silica-bootstrap-compiler/target/release/silica-boot
-SEARCH_PATHS := -I ../../stdlib
+SEARCH_PATHS := -I . -I ../../stdlib
 
 # Ensure compiler is built without LLVM backend features for consistent text-based generation
 $(SILICA_COMPILER):

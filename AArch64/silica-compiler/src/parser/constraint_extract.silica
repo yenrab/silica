@@ -1,0 +1,71 @@
+// Structure extraction: ListTokenSlot -> Program
+// Builds AST from final role sequence
+
+use lexer_core;
+use lexer_token_kind;
+use constraint_core;
+use parser_ast;
+use capability_fn_decl;
+use capability_expr_literal;
+
+export slots_to_program/1;
+
+// Role codes (must match capabilities)
+fn role_fn_keyword() -> int64 { 1 }
+fn role_fn_name() -> int64 { 2 }
+fn role_left_paren() -> int64 { 3 }
+fn role_right_paren() -> int64 { 4 }
+fn role_right_arrow() -> int64 { 5 }
+fn role_type_name() -> int64 { 6 }
+fn role_left_brace() -> int64 { 7 }
+fn role_right_brace() -> int64 { 8 }
+fn role_body_expr() -> int64 { 9 }
+fn role_integer_literal() -> int64 { 10 }
+fn role_identifier() -> int64 { 11 }
+
+fn extract_function(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) {
+    // Expect: fn_keyword, fn_name, left_paren, right_paren, right_arrow, type_name, left_brace, body_expr, right_brace
+    rest0: ListTokenSlot <- slots;
+    rest1: ListTokenSlot <- rest0.tail;
+    fn_name: string <- rest1.head.token.lexeme;
+    fn_loc: SourceLocation <- rest1.head.token.location;
+    rest2: ListTokenSlot <- rest1.tail;
+    rest3: ListTokenSlot <- rest2.tail;
+    rest4: ListTokenSlot <- rest3.tail;
+    rest5: ListTokenSlot <- rest4.tail;
+    ret_type: string <- rest5.head.token.lexeme;
+    ret_type_loc: SourceLocation <- rest5.head.token.location;
+    rest6: ListTokenSlot <- rest5.tail;
+    rest7: ListTokenSlot <- rest6.tail;
+    body: Expr <- extract_body_expr(rest7.head);
+    rest8: ListTokenSlot <- rest7.tail;
+    rest9: ListTokenSlot <- rest8.tail;
+    decl: Declaration <- Declaration { tag: 0, name: fn_name, return_type_name: ret_type, return_type_location: ret_type_loc, location: fn_loc, body: body };
+    (decl, rest9)
+}
+
+fn extract_body_expr(slot: TokenSlot) -> Expr {
+    role: int64 <- constraint_core@slot_role(slot);
+    case role == role_integer_literal() of {
+        true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: parser_ast@dummy_expr() };
+        false -> case role == role_identifier() of {
+            true -> Expr { kind: 1, value: "", name: slot.token.lexeme, location: slot.token.location, inner: parser_ast@dummy_expr() };
+            false -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: parser_ast@dummy_expr() }
+        }
+    }
+}
+
+fn slots_to_program(slots: ListTokenSlot) -> Program {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> Program { declarations: parser_ast@empty_list_decl(), location: parser_ast@zero_location() };
+        false -> case slots.tail.is_nil of {
+            true -> Program { declarations: parser_ast@empty_list_decl(), location: parser_ast@zero_location() };
+            false -> do
+                (decl: Declaration, rest: ListTokenSlot) <- extract_function(slots);
+                decls: ListDeclaration <- ListDeclaration { is_nil: false, head: decl, tail: parser_ast@empty_list_decl() };
+                Program { declarations: decls, location: decl.location }
+            end
+        }
+    }
+}

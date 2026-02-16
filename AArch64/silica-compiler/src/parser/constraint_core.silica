@@ -1,0 +1,188 @@
+// Constraint propagation parser core
+// TokenSlot, Constraint, ListTokenSlot, propagation engine
+
+use lexer_core;
+use lexer_token_kind;
+
+export TokenSlot/0;
+export Constraint/0;
+export ListTokenSlot/0;
+export ListConstraint/0;
+export ListInt/0;
+export empty_list_int/0;
+export cons_int/2;
+export empty_list_constraint/0;
+export cons_constraint/2;
+export empty_list_slot/0;
+export cons_slot/2;
+export make_token_slot/3;
+export propagate_until_fixed/2;
+export slot_has_single_role/1;
+export slot_role/1;
+
+struct ListInt {
+    is_nil: bool,
+    head: int64,
+    tail: ListInt
+}
+
+// TokenSlot: token with set of possible syntactic roles
+struct TokenSlot {
+    token: Token,
+    possible_roles: ListInt
+}
+
+struct ListTokenSlot {
+    is_nil: bool,
+    head: TokenSlot,
+    tail: ListTokenSlot
+}
+
+// Constraint: when token has role X, next token must have role in [Y, Z, ...]
+struct Constraint {
+    trigger_role: int64,
+    next_token_roles: ListInt,
+    constraint_id: int64
+}
+
+struct ListConstraint {
+    is_nil: bool,
+    head: Constraint,
+    tail: ListConstraint
+}
+
+fn empty_list_int() -> ListInt {
+    nil_placeholder: ListInt <- ListInt { is_nil: true, head: 0, tail: nil_placeholder };
+    nil_placeholder
+}
+
+fn cons_int(x: int64, xs: ListInt) -> ListInt {
+    ListInt { is_nil: false, head: x, tail: xs }
+}
+
+fn empty_list_constraint() -> ListConstraint {
+    dummy: Constraint <- Constraint { trigger_role: 0, next_token_roles: empty_list_int(), constraint_id: 0 };
+    nil_placeholder: ListConstraint <- ListConstraint { is_nil: true, head: dummy, tail: nil_placeholder };
+    nil_placeholder
+}
+
+fn cons_constraint(c: Constraint, cs: ListConstraint) -> ListConstraint {
+    ListConstraint { is_nil: false, head: c, tail: cs }
+}
+
+fn empty_list_slot() -> ListTokenSlot {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    dummy_tok: Token <- lexer_core@make_token(kinds.eof, "", lexer_core@current_location(lexer_core@new_lexer("", "")));
+    nil_placeholder: ListTokenSlot <- ListTokenSlot { is_nil: true, head: TokenSlot { token: dummy_tok, possible_roles: empty_list_int() }, tail: nil_placeholder };
+    nil_placeholder
+}
+
+fn cons_slot(s: TokenSlot, ss: ListTokenSlot) -> ListTokenSlot {
+    ListTokenSlot { is_nil: false, head: s, tail: ss }
+}
+
+fn make_token_slot(token: Token, roles: ListInt) -> TokenSlot {
+    TokenSlot { token: token, possible_roles: roles }
+}
+
+// Intersect two sorted lists of role codes (assumes no duplicates; result unordered)
+fn intersect_roles(a: ListInt, b: ListInt) -> ListInt {
+    case a.is_nil of {
+        true -> empty_list_int();
+        false -> case member_int(a.head, b) of {
+            true -> cons_int(a.head, intersect_roles(a.tail, b));
+            false -> intersect_roles(a.tail, b)
+        }
+    }
+}
+
+fn member_int(x: int64, xs: ListInt) -> bool {
+    case xs.is_nil of {
+        true -> false;
+        false -> case x == xs.head of {
+            true -> true;
+            false -> member_int(x, xs.tail)
+        }
+    }
+}
+
+fn slot_has_single_role(slot: TokenSlot) -> bool {
+    case slot.possible_roles.is_nil of {
+        true -> false;
+        false -> slot.possible_roles.tail.is_nil
+    }
+}
+
+fn slot_role(slot: TokenSlot) -> int64 {
+    slot.possible_roles.head
+}
+
+// Find constraints where trigger_role matches; collect their next_token_roles
+fn constraints_for_role(role: int64, constraint_list: ListConstraint) -> ListInt {
+    case constraint_list.is_nil of {
+        true -> empty_list_int();
+        false -> case constraint_list.head.trigger_role == role of {
+            true -> merge_roles(constraint_list.head.next_token_roles, constraints_for_role(role, constraint_list.tail));
+            false -> constraints_for_role(role, constraint_list.tail)
+        }
+    }
+}
+
+fn merge_roles(a: ListInt, b: ListInt) -> ListInt {
+    case a.is_nil of {
+        true -> b;
+        false -> cons_int(a.head, merge_roles(a.tail, b))
+    }
+}
+
+fn narrow_slot(slot_i: TokenSlot, slot_next: TokenSlot, constraint_list: ListConstraint) -> TokenSlot {
+    case slot_has_single_role(slot_i) of {
+        true -> do
+            allowed: ListInt <- constraints_for_role(slot_role(slot_i), constraint_list);
+            new_roles: ListInt <- intersect_roles(slot_next.possible_roles, allowed);
+            TokenSlot { token: slot_next.token, possible_roles: new_roles }
+        end;
+        false -> slot_next
+    }
+}
+
+fn propagate_pass(slots: ListTokenSlot, constraint_list: ListConstraint) -> (ListTokenSlot, bool) {
+    case slots.is_nil of {
+        true -> (slots, false);
+        false -> case slots.tail.is_nil of {
+            true -> (slots, false);
+            false -> do
+                slot_i: TokenSlot <- slots.head;
+                slot_next: TokenSlot <- slots.tail.head;
+                rest: ListTokenSlot <- slots.tail.tail;
+                new_slot_next: TokenSlot <- narrow_slot(slot_i, slot_next, constraint_list);
+                changed_here: bool <- case list_int_equal(slot_next.possible_roles, new_slot_next.possible_roles) of { true -> false; false -> true };
+                (rest_result: ListTokenSlot, changed_rest: bool) <- propagate_pass(cons_slot(new_slot_next, rest), constraint_list);
+                result: (ListTokenSlot, bool) <- (cons_slot(slot_i, rest_result), case changed_here of { true -> true; false -> changed_rest });
+                result
+            end
+        }
+    }
+}
+
+fn list_int_equal(a: ListInt, b: ListInt) -> bool {
+    case a.is_nil of {
+        true -> b.is_nil;
+        false -> case b.is_nil of {
+            true -> false;
+            false -> case a.head == b.head of {
+                true -> list_int_equal(a.tail, b.tail);
+                false -> false
+            }
+        }
+    }
+}
+
+fn propagate_until_fixed(slots: ListTokenSlot, constraint_list: ListConstraint) -> ListTokenSlot {
+    (new_slots: ListTokenSlot, changed: bool) <- propagate_pass(slots, constraint_list);
+    case changed of {
+        true -> propagate_until_fixed(new_slots, constraint_list);
+        false -> new_slots
+    }
+}
+

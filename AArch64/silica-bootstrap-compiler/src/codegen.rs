@@ -558,7 +558,9 @@ impl CodeGenerator {
 
         // File I/O functions
         self.instructions.push("declare { i1, i8* } @silica_read_file(i8*, i64)".to_string());
+        self.instructions.push("declare { i1, i8* } @silica_read_file_path(i8*)".to_string());
         self.instructions.push("declare { i1, i8* } @silica_write_file(i8*, i64, i8*, i64)".to_string());
+        self.instructions.push("declare { i1, i8* } @silica_write_file_path(i8*, i8*)".to_string());
         self.instructions.push("declare void @silica_free_string(i8*)".to_string());
 
         // Process execution functions
@@ -568,11 +570,14 @@ impl CodeGenerator {
         // Print functions
         self.instructions.push("declare void @silica_print(i8*, i64)".to_string());
         self.instructions.push("declare void @silica_println(i8*, i64)".to_string());
+        self.instructions.push("declare void @silica_print_string(i8*)".to_string());
+        self.instructions.push("declare void @silica_println_string(i8*)".to_string());
         self.instructions.push("declare void @silica_print_int64(i64)".to_string());
         self.instructions.push("declare void @silica_print_int32(i32)".to_string());
         self.instructions.push("declare void @silica_print_int16(i16)".to_string());
         self.instructions.push("declare void @silica_print_int8(i8)".to_string());
-        self.instructions.push("declare void @silica_print_bool(i1)".to_string());
+        // C ABI: bool is i8 (1 byte); i1 causes ABI mismatch and segfault when passed to C
+        self.instructions.push("declare void @silica_print_bool(i8)".to_string());
         self.instructions.push("declare void @silica_print_char(i32)".to_string());
         self.instructions.push("declare void @silica_print_float16(i16)".to_string());
         self.instructions.push("declare void @silica_print_float32(float)".to_string());
@@ -643,6 +648,12 @@ impl CodeGenerator {
             if let Declaration::Function(func) = decl {
                 self.generate_function_body_text(module, func)?;
             }
+        }
+
+        // Emit C entry point wrapper when program has main (text-based codegen produces module.main, not main)
+        #[cfg(not(feature = "llvm_backend"))]
+        {
+            self.generate_main_wrapper_text(program)?;
         }
 
         // Now generate string constants at the end (they will be moved to the top during write)
@@ -895,32 +906,57 @@ impl CodeGenerator {
             .unwrap_or(Type::Unit);
         let return_type_str = match &return_type {
             Type::Tuple(_) => "i8*".to_string(),
+            Type::Record(_) => "i8*".to_string(),
+            Type::Named(name) if self.struct_defs.contains_key(name) || self.type_aliases.contains_key(name) => "i8*".to_string(), // Struct types
             _ => self.type_map.silica_to_llvm_str(&return_type),
         };
 
-        let param_strs: Vec<String> = param_types.iter()
-            .enumerate()
-            .map(|(i, ty)| {
-                let param_name = if func.parameters[i].pattern.is_some() {
-                    format!("param_{}", i)
-                } else {
-                    func.parameters[i].name.clone()
-                };
-                format!("{} %{}", ty, param_name)
-            })
-            .collect();
+        // Use sret (struct return) for i8* returns to fix return-value propagation bug
+        // with recursive functions (e.g. parse_declarations). Caller allocates slot, callee stores.
+        let use_sret = return_type_str == "i8*";
+        let (effective_return_type, mut effective_param_types, param_strs) = if use_sret {
+            let sret_param = "i8* noalias sret(i8*) %sret".to_string();
+            let mut all_param_types = vec!["i8*".to_string()];
+            all_param_types.extend(param_types.clone());
+            let other_params: Vec<String> = param_types.iter()
+                .enumerate()
+                .map(|(i, ty)| {
+                    let param_name = if func.parameters[i].pattern.is_some() {
+                        format!("param_{}", i)
+                    } else {
+                        func.parameters[i].name.clone()
+                    };
+                    format!("{} %{}", ty, param_name)
+                })
+                .collect();
+            let all_params = std::iter::once(sret_param).chain(other_params.into_iter()).collect::<Vec<_>>().join(", ");
+            ("void".to_string(), all_param_types, all_params)
+        } else {
+            let param_strs: Vec<String> = param_types.iter()
+                .enumerate()
+                .map(|(i, ty)| {
+                    let param_name = if func.parameters[i].pattern.is_some() {
+                        format!("param_{}", i)
+                    } else {
+                        func.parameters[i].name.clone()
+                    };
+                    format!("{} %{}", ty, param_name)
+                })
+                .collect();
+            (return_type_str.clone(), param_types.clone(), param_strs.join(", "))
+        };
 
         let signature = format!("define {} @{}({}) {{",
-            return_type_str,
+            effective_return_type,
             qualified_name,
-            param_strs.join(", ")
+            param_strs
         );
 
         // Only register in maps so call sites can resolve; do NOT push to instructions yet.
         // Each function's "define ... {" and body are pushed in pass 2 (generate_function_body_text).
         self.functions.insert(qualified_name.clone(), signature);
         self.function_return_types.insert(qualified_name.clone(), return_type_str.clone());
-        self.function_param_types.insert(qualified_name, param_types);
+        self.function_param_types.insert(qualified_name, effective_param_types);
         Ok(())
     }
 
@@ -1126,7 +1162,9 @@ impl CodeGenerator {
                 let param_reg = format!("%{}", param.name);
                 self.variables.insert(param.name.clone(), param_reg.clone());
                 self.variable_types.insert(param.name.clone(), param.type_.clone());
-                if let Some(llvm_ty) = param_types.get(i) {
+                // When sret is used, param_types[0] is sret; use param_types[i+1] for the i-th func param
+                let param_type_idx = if param_types.len() > func.parameters.len() { i + 1 } else { i };
+                if let Some(llvm_ty) = param_types.get(param_type_idx) {
                     self.variable_llvm_types.insert(param.name.clone(), llvm_ty.clone());
                 }
                 param_reg
@@ -1145,6 +1183,7 @@ impl CodeGenerator {
 
 
         // Generate return
+        let use_sret = return_type_str == "i8*";
         match return_type {
             Type::Unit => {
                 self.instructions.push("  ret void".to_string());
@@ -1152,6 +1191,21 @@ impl CodeGenerator {
             _ => {
                 // Return the result of the function body
                 if let Some(result_val) = body_result {
+                    // sret: store result in caller-provided slot and return void (fixes recursive struct return bug)
+                    if use_sret {
+                        let result_reg = if result_val.starts_with("i8* ") {
+                            result_val.trim_start_matches("i8* ").to_string()
+                        } else if result_val.starts_with("i64 ") {
+                            let ptr_reg = format!("%sret_inttoptr_{}", self.instructions.len());
+                            self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, result_val.trim_start_matches("i64 ")));
+                            ptr_reg
+                        } else {
+                            result_val
+                        };
+                        let clean = Self::format_llvm_value_ref(&result_reg);
+                        self.instructions.push(format!("  store i8* {}, i8* * %sret", clean));
+                        self.instructions.push("  ret void".to_string());
+                    } else {
                     // Handle type conversions if needed (e.g., i64 to i8* for ActorRef)
                     // Check if result_val has type prefix or is just a register name
                     // Special case: actor reference registers from spawn are i64 but function returns i8*
@@ -1253,9 +1307,15 @@ impl CodeGenerator {
                             self.instructions.push(format!("  ret {} {}", return_type_str, ret_operand));
                         }
                     }
+                    }
                 } else {
                     // Fallback to dummy value if no result
-                    self.instructions.push(format!("  ret {} 0", return_type_str));
+                    if use_sret {
+                        self.instructions.push("  store i8* null, i8* * %sret".to_string());
+                        self.instructions.push("  ret void".to_string());
+                    } else {
+                        self.instructions.push(format!("  ret {} 0", return_type_str));
+                    }
                 }
             }
         }
@@ -1264,6 +1324,41 @@ impl CodeGenerator {
 
         // Restore previous module
         self.current_module = prev_module;
+
+        Ok(())
+    }
+
+    /// Emit C entry point wrapper: define i32 @main() that calls Silica main and truncates i64 -> i32.
+    /// The text-based codegen produces module.main (e.g. main.main), not main; the C runtime expects main.
+    #[cfg(not(feature = "llvm_backend"))]
+    fn generate_main_wrapper_text(&mut self, program: &Program) -> Result<()> {
+        let silica_main = program
+            .declarations
+            .iter()
+            .enumerate()
+            .find_map(|(i, decl)| {
+                if let Declaration::Function(func) = decl {
+                    if func.name == "main" {
+                        let module = program
+                            .declaration_modules
+                            .get(i)
+                            .map(|s| s.as_str())
+                            .unwrap_or("main");
+                        return Some(format!("{}.main", module));
+                    }
+                }
+                None
+            });
+
+        if let Some(qualified_main) = silica_main {
+            self.instructions.push("".to_string());
+            self.instructions.push("; C entry point: calls Silica main, truncates i64 -> i32".to_string());
+            self.instructions.push(format!("define i32 @main() {{"));
+            self.instructions.push(format!("  %1 = call i64 @{}()", qualified_main));
+            self.instructions.push(format!("  %2 = trunc i64 %1 to i32"));
+            self.instructions.push(format!("  ret i32 %2"));
+            self.instructions.push("}".to_string());
+        }
 
         Ok(())
     }
@@ -2505,9 +2600,11 @@ impl CodeGenerator {
                             })
                             .collect();
                         // Use function signature to determine argument types
+                        // When sret is used, param_types[0] is sret; use param_types[i+1] for the i-th call arg
+                        let param_offset = if param_types.len() > processed_args.len() { 1 } else { 0 };
                         let typed_args: Vec<String> = processed_args.iter().enumerate()
                             .map(|(i, arg)| {
-                                if let Some(expected_type) = param_types.get(i) {
+                                if let Some(expected_type) = param_types.get(i + param_offset) {
                                     // Extract actual type and register from argument
                                     let (actual_type, clean_arg) = if arg.starts_with("i64 ") {
                                         ("i64", arg.strip_prefix("i64 ").unwrap())
@@ -2766,10 +2863,24 @@ impl CodeGenerator {
                     ))?;
 
                 let fixed_args_str = args_str.replace("i64 %tuple_alloc_", "i8* %tuple_alloc_");
-                let call_instr = format!("  {} = call {} @{}({})", temp_reg, return_type, qualified_func_name, fixed_args_str);
-                self.instructions.push(call_instr);
-
-                Ok(Some(format!("{} {}", return_type, temp_reg)))
+                // sret: allocate slot, pass as first arg, call void, load result
+                if return_type == "i8*" {
+                    let sret_slot = format!("%sret_slot_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = alloca i8*", sret_slot));
+                    let sret_args = if fixed_args_str.is_empty() {
+                        format!("i8* {}", sret_slot)
+                    } else {
+                        format!("i8* {}, {}", sret_slot, fixed_args_str)
+                    };
+                    self.instructions.push(format!("  call void @{}({})", qualified_func_name, sret_args));
+                    let load_reg = format!("%call_{}", self.instructions.len());
+                    self.instructions.push(format!("  {} = load i8*, i8* * {}", load_reg, sret_slot));
+                    Ok(Some(format!("i8* {}", load_reg)))
+                } else {
+                    let call_instr = format!("  {} = call {} @{}({})", temp_reg, return_type, qualified_func_name, fixed_args_str);
+                    self.instructions.push(call_instr);
+                    Ok(Some(format!("{} {}", return_type, temp_reg)))
+                }
             }
             // Check if it's an imported function
             else if let Some(symbol_table) = &self.symbol_table {
@@ -2792,6 +2903,9 @@ impl CodeGenerator {
                             .map(|arg| {
                                 if arg.starts_with("i64 ") || arg.starts_with("i32 ") || arg.starts_with("i1 ") || arg.starts_with("i8* ") {
                                     arg.clone() // Already has type prefix
+                                } else if arg.contains("getelementptr") {
+                                    // getelementptr produces a pointer (i8* or ptr); string literals use this
+                                    format!("i8* {}", arg)
                                 } else if arg.starts_with('%') && arg.contains("alloc") {
                                     // Allocation results are pointers (i8*)
                                     format!("i8* {}", arg)
@@ -2887,9 +3001,11 @@ impl CodeGenerator {
                     })
                     .collect();
                 // Use function signature to determine argument types
+                // When sret is used, param_types[0] is sret; use param_types[i+1] for the i-th call arg
+                let param_offset = if param_types.len() > processed_args.len() { 1 } else { 0 };
                 let typed_args: Vec<String> = processed_args.iter().enumerate()
                     .map(|(i, arg)| {
-                        if let Some(expected_type) = param_types.get(i) {
+                        if let Some(expected_type) = param_types.get(i + param_offset) {
                             // Extract actual type and register from argument
                             let (actual_type, clean_arg) = if arg.starts_with("i64 ") {
                                 ("i64", arg.strip_prefix("i64 ").unwrap())
@@ -3111,16 +3227,29 @@ impl CodeGenerator {
             .unwrap_or_else(|| "i64".to_string());
 
         // Look up function and generate call
-        let temp_reg = format!("%call_{}", self.instructions.len());
         let args_str = typed_args.iter()
             .map(|a| Self::normalize_typed_call_arg(a))
             .collect::<Vec<_>>()
             .join(", ");
 
-        // Generate the LLVM call instruction
-        self.instructions.push(format!("  {} = call {} @{}({})", temp_reg, return_type_str, qualified_name, args_str));
-
-        Ok(Some(format!("{} {}", return_type_str, temp_reg)))
+        // sret: allocate slot, pass as first arg, call void, load result (fixes recursive struct return bug)
+        if return_type_str == "i8*" {
+            let sret_slot = format!("%sret_slot_{}", self.instructions.len());
+            self.instructions.push(format!("  {} = alloca i8*", sret_slot));
+            let sret_args = if args_str.is_empty() {
+                format!("i8* {}", sret_slot)
+            } else {
+                format!("i8* {}, {}", sret_slot, args_str)
+            };
+            self.instructions.push(format!("  call void @{}({})", qualified_name, sret_args));
+            let load_reg = format!("%call_{}", self.instructions.len());
+            self.instructions.push(format!("  {} = load i8*, i8* * {}", load_reg, sret_slot));
+            Ok(Some(format!("i8* {}", load_reg)))
+        } else {
+            let temp_reg = format!("%call_{}", self.instructions.len());
+            self.instructions.push(format!("  {} = call {} @{}({})", temp_reg, return_type_str, qualified_name, args_str));
+            Ok(Some(format!("{} {}", return_type_str, temp_reg)))
+        }
     }
 
     /// Generate LLVM IR for indirect function calls (calling function pointers)
@@ -4215,6 +4344,17 @@ impl CodeGenerator {
             }
         }
         None
+    }
+
+    /// Check if a value string is a plain integer literal (e.g. "0", "1", "42", "-123").
+    /// Used to avoid emitting %0/%1 for literals, which LLVM interprets as labels.
+    fn is_integer_literal(value: &str) -> bool {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        let rest = trimmed.strip_prefix('-').unwrap_or(trimmed);
+        rest.chars().all(|c| c.is_ascii_digit())
     }
 
     /// Clean a register name for use in LLVM instructions (strip type prefixes)
@@ -5719,7 +5859,13 @@ impl CodeGenerator {
             // Prefer type from type checker (expression_types) when available
             if let Some(loc) = Self::try_get_expression_location(&*first_branch.body) {
                 if let Some(silica_type) = self.expression_types.get(&loc) {
-                    return Ok(self.type_map.silica_to_llvm_str(silica_type));
+                    // Struct types (Named in struct_defs/type_aliases, Record, Tuple) use i8* for case result
+                    let llvm_ty = match silica_type {
+                        Type::Record(_) | Type::Tuple(_) => "i8*".to_string(),
+                        Type::Named(name) if self.struct_defs.contains_key(name) || self.type_aliases.contains_key(name) => "i8*".to_string(),
+                        _ => self.type_map.silica_to_llvm_str(silica_type),
+                    };
+                    return Ok(llvm_ty);
                 }
             }
             // Fallback: heuristic from first branch body
@@ -5741,6 +5887,7 @@ impl CodeGenerator {
                 },
                 Expression::Literal(Literal::Bool(_)) => Ok("i1".to_string()),
                 Expression::Literal(Literal::Char(_)) => Ok("i32".to_string()),
+                Expression::StructLiteral(_) => Ok("i8*".to_string()),
                 _ => Ok("i64".to_string()),
             }
         } else {
@@ -6013,16 +6160,34 @@ impl CodeGenerator {
                 // Tuple destructuring with proper type-aware element access
                 // Uses the same layout calculation as tuple creation for consistency
 
-                // For each element, calculate its offset based on the tuple's stored type information
-                // This mirrors the generate_tuple logic but in reverse for destructuring
+                // Pre-calculate element offsets from pattern types to match tuple creation layout
+                let element_types: Vec<Type> = elements.iter().filter_map(|p| {
+                    match p {
+                        Pattern::TypedIdentifier { type_, .. } => Some(self.expand_type_aliases_codegen(type_)),
+                        _ => None,
+                    }
+                }).collect();
 
-                // For simplicity, pre-calculate offsets assuming all elements are i64 (most common case)
-                // Start after count (i64) and type IDs, aligned to 8 bytes
-                let base_offset = 8 + elements.len() as i64;
-                let aligned_base = if base_offset % 8 == 0 { base_offset } else { ((base_offset + 7) / 8) * 8 };
-                let mut current_offset = aligned_base;
+                let element_count = elements.len() as i64;
+                let mut current_offset = 8 + element_count; // After count and type IDs
+                let mut element_offsets = Vec::new();
+                if element_types.len() == elements.len() {
+                    for silica_type in &element_types {
+                        let elem_size = self.get_type_size_bytes(silica_type);
+                        let elem_alignment = self.get_type_alignment_bytes(silica_type);
+                        current_offset = ((current_offset + elem_alignment - 1) / elem_alignment) * elem_alignment;
+                        element_offsets.push(current_offset);
+                        current_offset += elem_size;
+                    }
+                } else {
+                    // Fallback: fixed layout 16 + i*8
+                    for i in 0..elements.len() {
+                        element_offsets.push(16 + (i as i64 * 8));
+                    }
+                }
 
                 for (i, elem_pattern) in elements.iter().enumerate() {
+                    let elem_offset = element_offsets.get(i).copied().unwrap_or(16 + (i as i64 * 8));
                     match elem_pattern {
                         Pattern::TypedIdentifier { name: elem_name, type_: elem_type, .. } => {
                         // Strip any type prefixes from scrutinee_reg
@@ -6035,10 +6200,9 @@ impl CodeGenerator {
                         let type_id_reg = format!("%type_id_{}_{}", elem_name, self.instructions.len());
                         self.instructions.push(format!("  {} = load i8, i8* {}", type_id_reg, type_ptr_reg));
 
-                        // Generate pointer to element at fixed offset (16 + i*8)
-                        let fixed_offset = 16 + (i as i64 * 8);
+                        // Generate pointer to element at type-aware offset (matches tuple creation layout)
                         let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
-                        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, clean_scrutinee, fixed_offset));
+                        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, clean_scrutinee, elem_offset));
 
                         // Load element with type-aware casting
                         // Use unique register for wildcard '_' to avoid "multiple definition of local value named '_'"
@@ -6073,9 +6237,6 @@ impl CodeGenerator {
                         // Select the correct result based on type
                         self.instructions.push(format!("  {} = select i1 {}, i64 {}, i64 {}", elem_reg, is_i1_check, extended_bool_reg, i64_val_reg));
 
-                        // Advance to next element (assume 8-byte alignment for all elements)
-                        current_offset += 8;
-
                         bound_vars.insert(elem_name.clone(), elem_reg);
                         self.variable_types.insert(elem_name.clone(), elem_type.clone());
                         }
@@ -6087,9 +6248,8 @@ impl CodeGenerator {
                             self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", type_ptr_reg, clean_scrutinee, type_id_offset));
                             let type_id_reg = format!("%type_id_{}_{}", elem_name, self.instructions.len());
                             self.instructions.push(format!("  {} = load i8, i8* {}", type_id_reg, type_ptr_reg));
-                            let fixed_offset = 16 + (i as i64 * 8);
                             let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
-                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, clean_scrutinee, fixed_offset));
+                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, clean_scrutinee, elem_offset));
                             // Use unique register for wildcard '_' to avoid "multiple definition of local value named '_'"
                             let elem_reg = if elem_name == "_" {
                                 format!("%_discard_{}", self.instructions.len())
@@ -6121,9 +6281,8 @@ impl CodeGenerator {
                         Pattern::Tuple(sub_patterns) => {
                             // Nested tuple: delegate to same layout as do-block path (load nested ptr, recurse)
                             let clean_scrutinee = scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
-                            let fixed_offset = 16 + (i as i64 * 8);
                             let elem_ptr_reg = format!("%nested_ptr_{}_{}", i, self.instructions.len());
-                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, clean_scrutinee, fixed_offset));
+                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, clean_scrutinee, elem_offset));
                             let i8pp_cast = format!("%nested_cast_{}_{}", i, self.instructions.len());
                             self.instructions.push(format!("  {} = bitcast i8* {} to i8**", i8pp_cast, elem_ptr_reg));
                             let nested_ptr_reg = format!("%nested_tuple_{}_{}", i, self.instructions.len());
@@ -7062,15 +7221,18 @@ impl CodeGenerator {
 
                                 // Get the element types from the tuple type
                                 // Try from expression type first, then fall back to pattern types
-                                let element_types = if let Some(expr_type) = expr_type_opt {
-                                    self.extract_tuple_element_types(&expr_type)
+                                let element_types_from_expr = expr_type_opt
+                                    .as_ref()
+                                    .and_then(|t| self.extract_tuple_element_types(t));
+                                let element_types = if element_types_from_expr.is_some() {
+                                    element_types_from_expr
                                 } else {
-                                    // Try to infer from the pattern types
+                                    // Fall back to pattern types when expr type isn't Tuple or is missing
                                     let mut pattern_types = Vec::new();
                                     for elem_pattern in elements {
                                         match elem_pattern {
                                             Pattern::TypedIdentifier { type_, .. } => {
-                                                pattern_types.push(type_.clone());
+                                                pattern_types.push(self.expand_type_aliases_codegen(type_));
                                             }
                                             Pattern::Identifier(_) => {
                                                 // For untyped patterns, assume i64
@@ -7086,17 +7248,12 @@ impl CodeGenerator {
                                     }
                                 };
 
-                                // Calculate offsets for each element based on types
+                                // Calculate offsets for each element based on types (must match generate_tuple layout)
                                 let mut element_offsets = Vec::new();
                                 if let Some(ref types) = element_types {
-                                    for (i, silica_type) in types.iter().enumerate() {
-                                        let (size, alignment) = match silica_type {
-                                            Type::Bool => (1, 1),
-                                            Type::Char => (4, 4),
-                                            Type::Int64 => (8, 8),
-                                            Type::String => (8, 8),
-                                            _ => (8, 8), // Default
-                                        };
+                                    for silica_type in types.iter() {
+                                        let size = self.get_type_size_bytes(silica_type);
+                                        let alignment = self.get_type_alignment_bytes(silica_type);
 
                                         // Align offset to element alignment
                                         current_offset = ((current_offset + alignment - 1) / alignment) * alignment;
@@ -7119,14 +7276,41 @@ impl CodeGenerator {
                                             let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
                                             self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_ptr, elem_offset));
 
-                                            // Load as i64 for untyped identifiers (simplified generic handling)
-                                            let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
-                                            self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
+                                            // Use element type from element_types when available (for correct bool/i1/string load)
+                                            let llvm_ty = if elem_name == "_" {
+                                                "i64".to_string()
+                                            } else if let Some(ref types) = element_types {
+                                                let elem_type = types.get(i).map(|t| self.expand_type_aliases_codegen(t));
+                                                match elem_type.as_ref() {
+                                                    Some(Type::Bool) => {
+                                                        let i1_cast_reg = format!("%i1_cast_{}_{}", self.instructions.len(), i);
+                                                        self.instructions.push(format!("  {} = bitcast i8* {} to i1*", i1_cast_reg, elem_ptr_reg));
+                                                        self.instructions.push(format!("  %{} = load i1, i1* {}", elem_name, i1_cast_reg));
+                                                        "i1".to_string()
+                                                    }
+                                                    Some(Type::String) => {
+                                                        let i8pp_cast_reg = format!("%i8pp_cast_{}_{}", self.instructions.len(), i);
+                                                        self.instructions.push(format!("  {} = bitcast i8* {} to i8**", i8pp_cast_reg, elem_ptr_reg));
+                                                        self.instructions.push(format!("  %{} = load i8*, i8** {}", elem_name, i8pp_cast_reg));
+                                                        "i8*".to_string()
+                                                    }
+                                                    _ => {
+                                                        let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
+                                                        self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
+                                                        self.instructions.push(format!("  %{} = load i64, i64* {}", elem_name, i64_cast_reg));
+                                                        "i64".to_string()
+                                                    }
+                                                }
+                                            } else {
+                                                let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
+                                                self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
+                                                self.instructions.push(format!("  %{} = load i64, i64* {}", elem_name, i64_cast_reg));
+                                                "i64".to_string()
+                                            };
                                             if elem_name != "_" {
                                                 let final_val_reg = format!("%{}", elem_name);
-                                                self.instructions.push(format!("  {} = load i64, i64* {}", final_val_reg, i64_cast_reg));
                                                 self.variables.insert(elem_name.clone(), final_val_reg);
-                                                self.variable_llvm_types.insert(elem_name.clone(), "i64".to_string());
+                                                self.variable_llvm_types.insert(elem_name.clone(), llvm_ty);
                                             }
                                         }
                                         Pattern::TypedIdentifier { name: elem_name, type_: elem_type } => {
@@ -7137,9 +7321,10 @@ impl CodeGenerator {
                                             let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
                                             self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_ptr, elem_offset));
 
-                                            // Load based on declared type (generic type handling)
+                                            // Load based on declared type (expand aliases e.g. boolean -> Bool for correct i1 load)
+                                            let expanded_type = self.expand_type_aliases_codegen(elem_type);
                                             let final_val_reg = format!("%{}", elem_name);
-                                            let llvm_ty = match elem_type {
+                                            let llvm_ty = match &expanded_type {
                                                 Type::Bool => {
                                                     // Load as boolean (i1)
                                                     let i1_cast_reg = format!("%i1_cast_{}_{}", self.instructions.len(), i);
@@ -7810,11 +7995,13 @@ impl CodeGenerator {
         }
 
         // Calculate proper memory layout based on actual field types
+        // Expand type aliases so e.g. Named("boolean") -> Bool and we get i1, not i8*
         let mut total_size = 0;
         let mut field_layout = Vec::new();
 
         for field_type in &field_types {
-            let (llvm_type_str, size, alignment) = self.get_llvm_type_info(field_type);
+            let expanded = self.expand_type_aliases_codegen(field_type);
+            let (llvm_type_str, size, alignment) = self.get_llvm_type_info(&expanded);
             // Simple alignment: align to type size (could be more sophisticated)
             let aligned_offset = ((total_size + alignment - 1) / alignment) * alignment;
             field_layout.push((aligned_offset, llvm_type_str, size));
@@ -7833,7 +8020,7 @@ impl CodeGenerator {
             let clean_malloc_reg = self.clean_register_for_instruction(&malloc_reg);
             self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", field_ptr_reg, clean_malloc_reg, offset));
 
-            // Cast to appropriate pointer type
+            // Cast to appropriate pointer type (use expanded type so bool -> i1*, not i8**)
             let field_ptr_typed = format!("%field_ptr_typed_{}_{}", self.instructions.len(), i);
             self.instructions.push(format!("  {} = bitcast i8* {} to {}*", field_ptr_typed, field_ptr_reg, llvm_type_str));
 
@@ -8256,11 +8443,13 @@ impl CodeGenerator {
         }
 
         // Calculate proper memory layout based on actual field types
+        // Expand type aliases so e.g. Named("boolean") -> Bool and we get i1, not i8*
         let mut total_size = 0;
         let mut field_layout = Vec::new();
 
         for field_type in &field_types {
-            let (llvm_type_str, size, alignment) = self.get_llvm_type_info(field_type);
+            let expanded = self.expand_type_aliases_codegen(field_type);
+            let (llvm_type_str, size, alignment) = self.get_llvm_type_info(&expanded);
             // Simple alignment: align to type size (could be more sophisticated)
             let aligned_offset = ((total_size + alignment - 1) / alignment) * alignment;
             field_layout.push((aligned_offset, llvm_type_str, size));
@@ -8279,7 +8468,7 @@ impl CodeGenerator {
             let clean_malloc_reg = self.clean_register_for_instruction(&malloc_reg);
             self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", field_ptr_reg, clean_malloc_reg, offset));
 
-            // Cast to appropriate pointer type
+            // Cast to appropriate pointer type (use expanded type so bool -> i1*, not i8**)
             let field_ptr_typed = format!("%field_ptr_typed_{}_{}", self.instructions.len(), i);
             self.instructions.push(format!("  {} = bitcast i8* {} to {}*", field_ptr_typed, field_ptr_reg, llvm_type_str));
 
@@ -9418,13 +9607,17 @@ impl CodeGenerator {
 
                                 // Calculate offsets to match tuple creation exactly
                                 // Tuple structure: [count: i64][type_ids: i8*][element_data: ...]
+                                // Expand type aliases (e.g. Named("boolean") -> Bool) so we get correct sizes
+                                let element_types_expanded: Vec<Type> = element_types.iter()
+                                    .map(|t| self.expand_type_aliases_codegen(t))
+                                    .collect();
                                 let element_count = elements.len() as i64;
                                 let mut current_offset = 8; // Start after count
                                 current_offset += element_count; // After type IDs
 
                                 // Calculate element data layout with proper alignment
                                 let mut element_offsets = Vec::new();
-                                for elem_type in &element_types {
+                                for elem_type in &element_types_expanded {
                                     let elem_size = self.get_type_size_bytes(elem_type);
                                     let elem_alignment = self.get_type_alignment_bytes(elem_type);
 
@@ -9436,7 +9629,7 @@ impl CodeGenerator {
                                 }
 
                                 for (i, elem_pattern) in elements.iter().enumerate() {
-                                    let elem_type = &element_types[i];
+                                    let elem_type = &element_types_expanded[i];
                                     let elem_size = self.get_type_size_bytes(elem_type);
                                     let current_offset = element_offsets[i];
 
@@ -11807,21 +12000,14 @@ impl CodeGenerator {
         let path_val = self.generate_expression(&call.arguments[0])?
             .ok_or_else(|| CompilerError::codegen_error("Invalid path argument in read_file".to_string()))?;
 
-        // Format the path argument: use as-is if already type-prefixed (e.g. "i8* %reg"), else add i8* prefix
-        let path_arg = if path_val.starts_with("i8* ") || path_val.starts_with("i64 ") {
-            path_val.clone()
-        } else if path_val.starts_with("getelementptr") {
-            format!("i8* {}", path_val)  // Constant expression needs type prefix
-        } else if path_val.starts_with('%') {
-            format!("i8* {}", path_val)
-        } else {
-            format!("i8* {}", path_val)
-        };
+        let (path_arg, path_length_opt) = self.get_path_arg_and_length(&path_val)?;
 
-        // Generate call to silica_read_file
         let result_reg = format!("%read_result_{}", self.instructions.len());
-        self.instructions.push(format!("  ; Call silica_read_file({}, 0)", path_arg));
-        self.instructions.push(format!("  {} = call {{ i1, i8* }} @silica_read_file({}, i64 0)", result_reg, path_arg));
+        if let Some(path_length_reg) = path_length_opt {
+            self.instructions.push(format!("  {} = call {{ i1, i8* }} @silica_read_file({}, {})", result_reg, path_arg, path_length_reg));
+        } else {
+            self.instructions.push(format!("  {} = call {{ i1, i8* }} @silica_read_file_path({})", result_reg, path_arg));
+        }
 
         Ok(Some(result_reg))
     }
@@ -11837,14 +12023,15 @@ impl CodeGenerator {
         let content_val = self.generate_expression(&call.arguments[1])?
             .ok_or_else(|| CompilerError::codegen_error("Invalid content argument in write_file".to_string()))?;
 
-        // Use as-is if already type-prefixed, else add i8* prefix
-        let path_arg = if path_val.starts_with("i8* ") || path_val.starts_with("i64 ") { path_val.clone() } else if path_val.starts_with("getelementptr") || path_val.starts_with('%') { format!("i8* {}", path_val) } else { format!("i8* {}", path_val) };
-        let content_arg = if content_val.starts_with("i8* ") || content_val.starts_with("i64 ") { content_val.clone() } else if content_val.starts_with("getelementptr") || content_val.starts_with('%') { format!("i8* {}", content_val) } else { format!("i8* {}", content_val) };
+        let (path_arg, path_len_opt) = self.get_path_arg_and_length(&path_val)?;
+        let (content_arg, content_len_opt) = self.get_path_arg_and_length(&content_val)?;
 
-        // Generate call to silica_write_file
         let result_reg = format!("%write_result_{}", self.instructions.len());
-        self.instructions.push(format!("  ; Call silica_write_file({}, 0, {}, 0)", path_val, content_val));
-        self.instructions.push(format!("  {} = call {{ i1, i8* }} @silica_write_file({}, i64 0, {}, i64 0)", result_reg, path_arg, content_arg));
+        if path_len_opt.is_some() && content_len_opt.is_some() {
+            self.instructions.push(format!("  {} = call {{ i1, i8* }} @silica_write_file({}, {}, {}, {})", result_reg, path_arg, path_len_opt.as_ref().unwrap(), content_arg, content_len_opt.as_ref().unwrap()));
+        } else {
+            self.instructions.push(format!("  {} = call {{ i1, i8* }} @silica_write_file_path({}, {})", result_reg, path_arg, content_arg));
+        }
 
         Ok(Some(result_reg))
     }
@@ -11856,8 +12043,14 @@ impl CodeGenerator {
 
         // Format the argument: getelementptr constant expressions need i8* type prefix in function calls
         // For registers, add i8* type prefix and ensure % prefix is present
+        // Never add % prefix to globals (starts with @)
         let arg = if value_val.starts_with("getelementptr") {
             format!("i8* {}", value_val)  // Constant expression needs type prefix
+        } else if value_val.starts_with('@') {
+            // Bare global constant (e.g. from list_directory) - build getelementptr
+            let len = self.find_string_constant_length(&value_val).unwrap_or(0);
+            let array_len = len + 1;
+            format!("i8* getelementptr inbounds ([{} x i8], [{} x i8]* {}, i64 0, i64 0)", array_len, array_len, value_val)
         } else if value_val.starts_with('%') {
             format!("i8* {}", value_val)
         } else {
@@ -11873,25 +12066,11 @@ impl CodeGenerator {
             // Call silica_print with the string value and length (literal)
             self.instructions.push(format!("  call void @silica_print({}, i64 {})", arg, length));
         } else {
-            // Runtime string: value_val is an i8* pointer to a SilicaString struct
-            // SilicaString struct: { data: *mut u8, length: usize }
-            // We need to extract the data pointer (first field) from the struct
-            // Strip type prefix (e.g. "i8* ") so we don't emit "bitcast i8* %i8* %s"
+            // Runtime string: value_val is an i8* pointer to a SilicaString struct.
+            // Use silica_print_string which safely handles null and invalid pointers
+            // (avoids segfault when printing error messages with uninitialized/empty strings).
             let string_ptr_reg = self.clean_register_for_instruction(&value_val).trim_start_matches('%').to_string();
-            
-            // Extract the data pointer from SilicaString struct (first field at offset 0)
-            // Cast struct pointer to i8** (pointer to i8*), then load the i8* value
-            let data_ptr_typed_reg = self.next_register();
-            let data_reg = self.next_register();
-            self.instructions.push(format!("  %{} = bitcast i8* %{} to i8**", data_ptr_typed_reg, string_ptr_reg));
-            self.instructions.push(format!("  %{} = load i8*, i8** %{}", data_reg, data_ptr_typed_reg));
-            
-            // Call silica_string_len runtime function to get length
-            let length_reg = self.next_register();
-            self.instructions.push(format!("  %{} = call i64 @silica_string_len(i8* %{})", length_reg, string_ptr_reg));
-            
-            // Call silica_print with the data pointer (not the struct pointer) and length
-            self.instructions.push(format!("  call void @silica_print(i8* %{}, i64 %{})", data_reg, length_reg));
+            self.instructions.push(format!("  call void @silica_print_string(i8* %{})", string_ptr_reg));
         }
 
         Ok(None) // print returns unit
@@ -11902,21 +12081,27 @@ impl CodeGenerator {
         let value_val = self.generate_expression(&println.value)?
             .ok_or_else(|| CompilerError::codegen_error("Invalid value in println".to_string()))?;
 
-        // Format the argument: getelementptr constant expressions need i8* type prefix in function calls
-        // For registers, strip type prefix so we don't emit "i8* %i8* %message"
-        let arg = if value_val.starts_with("getelementptr") {
-            format!("i8* {}", value_val)  // Constant expression needs type prefix
+        // Check if this is a string constant or runtime string (same logic as generate_print)
+        if value_val.contains("@str_const_") || value_val.starts_with("getelementptr") {
+            let arg = if value_val.starts_with("getelementptr") {
+                format!("i8* {}", value_val)
+            } else if value_val.starts_with('@') {
+                // Bare global constant (e.g. from list_directory) - build getelementptr, never add % prefix
+                let len = self.find_string_constant_length(&value_val).unwrap_or(0);
+                let array_len = len + 1;
+                format!("i8* getelementptr inbounds ([{} x i8], [{} x i8]* {}, i64 0, i64 0)", array_len, array_len, value_val)
+            } else {
+                let reg = self.clean_register_for_instruction(&value_val);
+                let reg = if reg.starts_with('%') || reg.starts_with('@') { reg } else { format!("%{}", reg) };
+                format!("i8* {}", reg)
+            };
+            let length = self.find_string_constant_length(&value_val).unwrap_or(0);
+            self.instructions.push(format!("  call void @silica_println({}, i64 {})", arg, length));
         } else {
-            let reg = self.clean_register_for_instruction(&value_val);
-            let reg = if reg.starts_with('%') { reg } else { format!("%{}", reg) };
-            format!("i8* {}", reg)
-        };
-
-        // Determine the string length - extract from value_val before formatting
-        let length = self.find_string_constant_length(&value_val).unwrap_or(0);
-
-        // Call silica_println with the string value and length
-        self.instructions.push(format!("  call void @silica_println({}, i64 {})", arg, length));
+            // Runtime string: use silica_println_string for null-safe handling
+            let string_ptr_reg = self.clean_register_for_instruction(&value_val).trim_start_matches('%').to_string();
+            self.instructions.push(format!("  call void @silica_println_string(i8* %{})", string_ptr_reg));
+        }
 
         Ok(None) // println returns unit
     }
@@ -11972,8 +12157,11 @@ impl CodeGenerator {
         // silica_print_int64 expects i64
         let arg = if value_val.starts_with("i64 ") {
             value_val
+        } else if Self::is_integer_literal(&value_val) {
+            // Literal from placeholder (e.g. get_file_size returns "0") - use as i64 constant, not %0
+            format!("i64 {}", value_val)
         } else {
-            // If it's a register name (starts with 't' or is numeric), add % prefix
+            // Register name - add % prefix
             let reg_val = if value_val.starts_with('%') {
                 value_val
             } else {
@@ -12103,19 +12291,35 @@ impl CodeGenerator {
             .ok_or_else(|| CompilerError::codegen_error("Invalid value in print_bool".to_string()))?;
 
         // Call silica_print_bool with the bool value
-        // silica_print_bool expects i1
-        let arg = if value_val.starts_with("i1 ") {
-            value_val
+        // C ABI: silica_print_bool expects i8 (not i1); i1 causes segfault when passed to C
+        let i8_arg = if value_val == "0" || value_val == "1" {
+            // Literal from placeholder (e.g. delete_file returns "1") - use as i8 constant, not %0/%1
+            format!("i8 {}", value_val)
+        } else if value_val.starts_with("i1 ") {
+            let i1_val = value_val.trim_start_matches("i1 ");
+            let i8_reg = format!("%bool_to_i8_{}", self.instructions.len());
+            self.instructions.push(format!("  {} = zext i1 {} to i8", i8_reg, i1_val));
+            format!("i8 {}", i8_reg)
+        } else if value_val.starts_with("i64 ") {
+            // Bool stored as i64 (tuple element, variable from pattern binding) - truncate to i1, zext to i8
+            let reg_val = value_val.trim_start_matches("i64 ");
+            let trunc_reg = format!("%trunc_to_i1_{}", self.instructions.len());
+            self.instructions.push(format!("  {} = trunc i64 {} to i1", trunc_reg, reg_val));
+            let i8_reg = format!("%bool_to_i8_{}", self.instructions.len());
+            self.instructions.push(format!("  {} = zext i1 {} to i8", i8_reg, trunc_reg));
+            format!("i8 {}", i8_reg)
         } else {
-            // If it's a register name (starts with 't' or is numeric), add % prefix
+            // Bare register - ensure % prefix, then zext i1 to i8
             let reg_val = if value_val.starts_with('%') {
                 value_val
             } else {
                 format!("%{}", value_val)
             };
-            format!("i1 {}", reg_val)
+            let i8_reg = format!("%bool_to_i8_{}", self.instructions.len());
+            self.instructions.push(format!("  {} = zext i1 {} to i8", i8_reg, reg_val));
+            format!("i8 {}", i8_reg)
         };
-        self.instructions.push(format!("  call void @silica_print_bool({})", arg));
+        self.instructions.push(format!("  call void @silica_print_bool({})", i8_arg));
 
         Ok(None) // print_bool returns unit
     }
@@ -12524,35 +12728,64 @@ impl CodeGenerator {
         Ok(Some(result_reg))
     }
 
+    /// Helper: get (path_arg, path_length) for silica_read_file when path is a string constant.
+    /// Returns None for path_length when path is a variable - use silica_read_file_path instead.
+    fn get_path_arg_and_length(&mut self, path_val: &str) -> Result<(String, Option<String>)> {
+        if let Some(path_length) = self.find_string_constant_length(path_val) {
+            // String constant: use getelementptr/constant and compile-time length
+            let path_arg = if path_val.starts_with("i8* ") || path_val.starts_with("i64 ") {
+                path_val.to_string()
+            } else if path_val.starts_with("getelementptr") {
+                format!("i8* {}", path_val)
+            } else if path_val.starts_with('%') {
+                format!("i8* {}", path_val)
+            } else if path_val.starts_with('@') {
+                let len = path_length + 1;
+                format!("i8* getelementptr inbounds ([{} x i8], [{} x i8]* {}, i64 0, i64 0)", len, len, path_val)
+            } else {
+                format!("i8* {}", path_val)
+            };
+            Ok((path_arg, Some(format!("i64 {}", path_length))))
+        } else {
+            // Variable: use path for silica_read_file_path (handles both SilicaString and raw constant)
+            // Must produce i8* - cast i64 to i8* when stored as ptr-as-int
+            let path_arg = if path_val.starts_with("i8* ") {
+                path_val.to_string()
+            } else if path_val.starts_with("i64 ") {
+                let cast_reg = self.next_register();
+                self.instructions.push(format!("  %{} = inttoptr {} to i8*", cast_reg, path_val.trim_start_matches("i64 ")));
+                format!("i8* %{}", cast_reg.trim_start_matches('%'))
+            } else if path_val.starts_with("getelementptr") {
+                format!("i8* {}", path_val)
+            } else if path_val.starts_with('%') {
+                format!("i8* {}", path_val)
+            } else {
+                format!("i8* %{}", self.clean_register_for_instruction(path_val).trim_start_matches('%'))
+            };
+            Ok((path_arg, None))
+        }
+    }
+
     /// Generate LLVM IR for read_lines expression
     fn generate_read_lines(&mut self, read_lines: &ReadLinesExpr) -> Result<Option<String>> {
         let path_val = self.generate_expression(&read_lines.path)?
             .ok_or_else(|| CompilerError::codegen_error("Invalid path in read_lines".to_string()))?;
 
-        // Determine the path length
-        let path_length = self.find_string_constant_length(&path_val).unwrap_or(0);
+        let (path_arg, path_length_opt) = self.get_path_arg_and_length(&path_val)?;
 
-        // Format the path argument: use as-is if already type-prefixed, else add i8* prefix
-        let path_arg = if path_val.starts_with("i8* ") || path_val.starts_with("i64 ") {
-            path_val.clone()
-        } else if path_val.starts_with("getelementptr") {
-            format!("i8* {}", path_val)
-        } else if path_val.starts_with('%') {
-            format!("i8* {}", path_val)
-        } else {
-            format!("i8* {}", path_val)
-        };
-
-        // Call silica_read_file and extract the string content
+        // Call silica_read_file (constant) or silica_read_file_path (variable - handles both representations)
         let result_reg = self.next_register();
-        self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_read_file({}, i64 {})", result_reg, path_arg, path_length));
+        if let Some(path_length_reg) = path_length_opt {
+            self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_read_file({}, {})", result_reg, path_arg, path_length_reg));
+        } else {
+            self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_read_file_path({})", result_reg, path_arg));
+        }
 
         // Extract SilicaString pointer (contains actual file content)
         let silica_string_ptr_reg = self.next_register();
         self.instructions.push(format!("  %{} = extractvalue {{ i1, i8* }} %{}, 1", silica_string_ptr_reg, result_reg));
 
         // For bootstrap compiler: return the SilicaString pointer as our "string"
-        // This allows the file content to be passed around, though limited processing is possible
         Ok(Some(silica_string_ptr_reg))
     }
 
@@ -12563,17 +12796,15 @@ impl CodeGenerator {
         let content_val = self.generate_expression(&append_file.content)?
             .ok_or_else(|| CompilerError::codegen_error("Invalid content in append_file".to_string()))?;
 
-        // Use as-is if already type-prefixed, else add i8* prefix
-        let path_arg = if path_val.starts_with("i8* ") || path_val.starts_with("i64 ") { path_val.clone() } else if path_val.starts_with("getelementptr") || path_val.starts_with('%') { format!("i8* {}", path_val) } else { format!("i8* {}", path_val) };
-        let content_arg = if content_val.starts_with("i8* ") || content_val.starts_with("i64 ") { content_val.clone() } else if content_val.starts_with("getelementptr") || content_val.starts_with('%') { format!("i8* {}", content_val) } else { format!("i8* {}", content_val) };
+        let (path_arg, path_len_opt) = self.get_path_arg_and_length(&path_val)?;
+        let (content_arg, content_len_opt) = self.get_path_arg_and_length(&content_val)?;
 
-        // Determine the string lengths
-        let path_length = self.find_string_constant_length(&path_val).unwrap_or(0);
-        let content_length = self.find_string_constant_length(&content_val).unwrap_or(0);
-
-        // Call silica_write_file and extract the success flag
         let result_reg = self.next_register();
-        self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_write_file({}, i64 {}, {}, i64 {})", result_reg, path_arg, path_length, content_arg, content_length));
+        if path_len_opt.is_some() && content_len_opt.is_some() {
+            self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_write_file({}, {}, {}, {})", result_reg, path_arg, path_len_opt.as_ref().unwrap(), content_arg, content_len_opt.as_ref().unwrap()));
+        } else {
+            self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_write_file_path({}, {})", result_reg, path_arg, content_arg));
+        }
 
         // Extract the success flag from the result struct
         let success_reg = self.next_register();
@@ -12587,20 +12818,14 @@ impl CodeGenerator {
         let path_val = self.generate_expression(&file_exists.path)?
             .ok_or_else(|| CompilerError::codegen_error("Invalid path in file_exists".to_string()))?;
 
-        // Format the path argument: use as-is if already type-prefixed, else add i8* prefix
-        let path_arg = if path_val.starts_with("i8* ") || path_val.starts_with("i64 ") {
-            path_val.clone()
-        } else if path_val.starts_with("getelementptr") {
-            format!("i8* {}", path_val)
-        } else if path_val.starts_with('%') {
-            format!("i8* {}", path_val)
-        } else {
-            format!("i8* {}", path_val)
-        };
+        let (path_arg, path_length_opt) = self.get_path_arg_and_length(&path_val)?;
 
-        // For now, just call silica_read_file and check if it succeeds
         let result_reg = self.next_register();
-        self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_read_file({}, i64 0)", result_reg, path_arg));
+        if let Some(path_length_reg) = path_length_opt {
+            self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_read_file({}, {})", result_reg, path_arg, path_length_reg));
+        } else {
+            self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_read_file_path({})", result_reg, path_arg));
+        }
 
         // Extract the success flag
         let success_reg = self.next_register();
@@ -12671,20 +12896,9 @@ impl CodeGenerator {
             Ok(Some(result_reg))
         } else {
             // string_val is an i8* pointer to a SilicaString struct (for runtime strings)
-            // Call runtime function to get the length
-            // First, ensure we have a register for the string pointer
-            let string_ptr_reg = if string_val.starts_with('%') {
-                string_val.trim_start_matches('%').to_string()
-            } else if string_val.starts_with("getelementptr") {
-                // Need to evaluate the getelementptr first - convert from constant expression to instruction format
-                let temp_reg = self.next_register();
-                let gep_instruction = self.convert_gep_to_instruction_format(&string_val);
-                self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
-                temp_reg.trim_start_matches('%').to_string()
-            } else {
-                // Assume it's already a register name
-                string_val.trim_start_matches('%').to_string()
-            };
+            // Strip type prefix (e.g. "i8* %call_3504" -> "call_3504") to avoid "i8* %i8* %call_3504"
+            let string_ptr_reg = self.clean_register_for_instruction(&string_val).trim_start_matches('%').to_string();
+            let string_ptr_reg = if string_ptr_reg.is_empty() { string_val.trim_start_matches('%').to_string() } else { string_ptr_reg };
             
             // Call silica_string_len runtime function
             let result_reg = self.next_register();
@@ -12717,19 +12931,9 @@ impl CodeGenerator {
             Ok(Some(result_reg))
         } else {
             // string_val is an i8* pointer to a SilicaString struct (for runtime strings)
-            // Call runtime function to get the character count
-            let string_ptr_reg = if string_val.starts_with('%') {
-                string_val.trim_start_matches('%').to_string()
-            } else if string_val.starts_with("getelementptr") {
-                // Need to evaluate the getelementptr first - convert from constant expression to instruction format
-                let temp_reg = self.next_register();
-                let gep_instruction = self.convert_gep_to_instruction_format(&string_val);
-                self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
-                temp_reg.trim_start_matches('%').to_string()
-            } else {
-                // Assume it's already a register name
-                string_val.trim_start_matches('%').to_string()
-            };
+            // Strip type prefix (e.g. "i8* %call_3504" -> "call_3504") to avoid "i8* %i8* %call_3504"
+            let string_ptr_reg = self.clean_register_for_instruction(&string_val).trim_start_matches('%').to_string();
+            let string_ptr_reg = if string_ptr_reg.is_empty() { string_val.trim_start_matches('%').to_string() } else { string_ptr_reg };
             
             // Call silica_string_len_chars runtime function
             let result_reg = self.next_register();

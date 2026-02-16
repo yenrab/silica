@@ -1,0 +1,46 @@
+// Type checker runner - type_check_program, orchestration
+// Two-pass: add all declarations to symbol table, then check all bodies
+
+use parser_ast;
+use type_checker_core;
+use type_checker_declarations_functions;
+
+export type_check_program/2;
+
+// First pass: add all function declarations (tag 0) to context
+fn add_all_declarations(decls: ListDeclaration, context: TypeContext) -> TypeContext {
+    case decls.is_nil of {
+        true -> context;
+        false -> case decls.head.tag of {
+            0 -> do
+                ctx: TypeContext <- type_checker_declarations_functions@add_function(decls.head, context);
+                add_all_declarations(decls.tail, ctx)
+            end;
+            _: int64 -> add_all_declarations(decls.tail, context)
+        }
+    }
+}
+
+// Second pass: check all function bodies, stop on first error
+fn check_all_declarations(decls: ListDeclaration, context: TypeContext) -> TypeCheckResult {
+    case decls.is_nil of {
+        true -> type_checker_core@type_check_ok();
+        false -> case decls.head.tag of {
+            0 -> do
+                result: TypeCheckResult <- type_checker_declarations_functions@check_body(decls.head, context);
+                case result.is_ok of {
+                    true -> check_all_declarations(decls.tail, context);
+                    false -> result
+                }
+            end;
+            _: int64 -> check_all_declarations(decls.tail, context)
+        }
+    }
+}
+
+// Type-check program. Returns (result, updated_context). Use updated_context for SIR generation.
+fn type_check_program(program: Program, context: TypeContext) -> (TypeCheckResult, TypeContext) {
+    ctx_with_decls: TypeContext <- add_all_declarations(program.declarations, context);
+    result: TypeCheckResult <- check_all_declarations(program.declarations, ctx_with_decls);
+    (result, ctx_with_decls)
+}

@@ -99,8 +99,11 @@ fn main() {
             // Provide helpful error messages for common issues
             match &err {
                 CompilerError::ParseError { location, message, metadata: _ } => {
+                    // Only validate position tracking when error is from the main input file.
+                    // Errors from imported modules have different source, so this check doesn't apply.
+                    let is_main_file = !location.file.starts_with("module:") && location.file != "module";
                     let source_lines = source.lines().count();
-                    if location.line > source_lines || location.line > 10000 {
+                    if is_main_file && (location.line > source_lines || location.line > 10000) {
                         eprintln!("❌ Compilation error: Parse error (position tracking corrupted)");
                         eprintln!("  Error: {}", message);
                         eprintln!("  Note: Position information is unreliable due to internal bug");
