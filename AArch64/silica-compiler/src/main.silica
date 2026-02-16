@@ -1,7 +1,6 @@
 // Main entry point for Phase 2 compiler
-// Executes lexer_runner to tokenize a file, then parser to consume tokens
+// Reads file list from silica.config, resolves dependencies, compiles each file in order
 
-// Import lexer and parser modules
 use lexer_runner;
 use lexer_core;
 use parser_core;
@@ -12,78 +11,340 @@ use sir_generator_core;
 use emitter_core;
 use diagnostics_core;
 
-// Redefine ListToken type (types arent directly exported)
-//type ListToken = { is_nil: bool, head: Token, tail: ListToken };
+// List of strings for config parsing and dependency tracking
+struct ListString {
+    is_nil: bool,
+    head: string,
+    tail: ListString
+}
 
-// Count tokens in a ListToken (for debug)
-fn count_tokens(tokens: ListToken) -> int64 {
-    case tokens.is_nil of {
+fn empty_list_string() -> ListString {
+    nil_placeholder: ListString <- ListString { is_nil: true, head: "", tail: nil_placeholder };
+    nil_placeholder
+}
+
+fn cons_string(s: string, tail: ListString) -> ListString {
+    ListString { is_nil: false, head: s, tail: tail }
+}
+
+fn list_string_length(lst: ListString) -> int64 {
+    case lst.is_nil of {
         true -> 0;
-        false -> 1 + count_tokens(tokens.tail)
+        false -> 1 + list_string_length(lst.tail)
     }
 }
 
-// Recursively print each token in a ListToken (kind, lexeme, location)
-fn print_tokens(tokens: ListToken) -> int64 proc[DeviceIO] {
-    case tokens.is_nil of {
-        true -> 0;
-        false -> do
-            tok: Token <- tokens.head;
-            println("---");
-            print_int64(tok.kind);
-            println("");
-            println(tok.lexeme);
-            println(tok.location.file);
-            print_int64(tok.location.line);
-            println("");
-            print_int64(tok.location.column);
-            println("");
-            print_int64(tok.location.offset);
-            println("");
-            print_tokens(tokens.tail)
-        end
+// Get module name from file path: "foo/bar.silica" -> "bar", "test.silica" -> "test"
+fn module_from_path(path: string) -> string {
+    // Find last slash
+    last_slash: int64 <- find_last_slash(path);
+    base: string <- case last_slash >= 0 of {
+        true -> substring(path, last_slash + 1, len(path));
+        false -> path
     };
-    0
+    // Remove .silica suffix
+    case ends_with(base, ".silica") of {
+        true -> substring(base, 0, len(base) - 7);
+        false -> base
+    }
 }
 
-// Main function - tokenizes a file, runs minimal parse, returns success code
-fn main() -> int64 proc[DeviceIO] {
-    println("Reading file...");
-    content:string <- read_lines("test.silica");
-    print(content);
-    println("");
-    // Tokenize the test file
-    println("Tokenizing file...");
-    tokens: ListToken <- lexer_runner@lexer_runner("test.silica");
-    token_count: int64 <- count_tokens(tokens);
-    println("DEBUG: token count = ");
-    print_int64(token_count);
-    println("");
-    println("Tokens:");
-    print_tokens(tokens);
-    println("Parsing file...");
+fn find_last_slash(s: string) -> int64 {
+    find_last_slash_from(s, len(s) - 1)
+}
+
+fn find_last_slash_from(s: string, pos: int64) -> int64 {
+    case pos < 0 of {
+        true -> -1;
+        false -> case substring(s, pos, pos + 1) == "/" of {
+            true -> pos;
+            false -> find_last_slash_from(s, pos - 1)
+        }
+    }
+}
+
+// Parse config: split by newlines, skip empty and # lines, return list (order preserved)
+fn parse_config_lines(content: string, start: int64, acc: ListString) -> ListString proc[DeviceIO] {
+    case start >= len(content) of {
+        true -> acc;
+        false -> do
+            line: string <- substring_until_char(content, start, '\n');
+            line_len: int64 <- len(line);
+            next_start: int64 <- start + line_len + 1;
+            trimmed: string <- trim_leading(line);
+            is_comment: bool <- starts_with(trimmed, "#");
+            is_empty: bool <- len(trimmed) == 0;
+            new_acc: ListString <- case is_comment of {
+                true -> acc;
+                false -> case is_empty of {
+                    true -> acc;
+                    false -> cons_string(trimmed, acc)
+                }
+            };
+            parse_config_lines(content, next_start, new_acc)
+        end
+    }
+}
+
+fn trim_leading(s: string) -> string {
+    trim_leading_from(s, 0)
+}
+
+fn trim_leading_from(s: string, pos: int64) -> string {
+    case pos >= len(s) of {
+        true -> "";
+        false -> case is_whitespace_at(s, pos) of {
+            true -> trim_leading_from(s, pos + 1);
+            false -> substring(s, pos, len(s))
+        }
+    }
+}
+
+fn is_whitespace_at(s: string, pos: int64) -> bool {
+    c: string <- substring(s, pos, pos + 1);
+    c == " " or c == "\t" or c == "\n" or c == "\r"
+}
+
+fn trim_trailing(s: string) -> string {
+    trim_trailing_from(s, len(s) - 1)
+}
+
+fn trim_trailing_from(s: string, pos: int64) -> string {
+    case pos < 0 of {
+        true -> "";
+        false -> case is_whitespace_at(s, pos) of {
+            true -> trim_trailing_from(s, pos - 1);
+            false -> substring(s, 0, pos + 1)
+        }
+    }
+}
+
+// Reverse a ListString (since we cons in reverse order during parse)
+fn reverse_list_string(lst: ListString) -> ListString {
+    reverse_list_string_acc(lst, empty_list_string())
+}
+
+fn reverse_list_string_acc(lst: ListString, acc: ListString) -> ListString {
+    case lst.is_nil of {
+        true -> acc;
+        false -> reverse_list_string_acc(lst.tail, cons_string(lst.head, acc))
+    }
+}
+
+// Extract module names from "use mod1, mod2, mod3;" in content
+fn extract_use_dependencies(content: string, start: int64, acc: ListString) -> ListString {
+    case start >= len(content) - 4 of {
+        true -> acc;
+        false -> do
+            chunk: string <- substring(content, start, len(content));
+            found: bool <- starts_with(chunk, "use ");
+            (new_acc, next_start) <- case found of {
+                true -> do
+                    dep_start: int64 <- start + 4;
+                    use_chunk: string <- substring_until_char(content, dep_start, ';');
+                    deps: ListString <- parse_comma_separated(use_chunk, 0, empty_list_string());
+                    merged: ListString <- append_list_string(deps, acc);
+                    next: int64 <- dep_start + len(use_chunk) + 1;
+                    (merged, next)
+                end;
+                false -> (acc, start + 1)
+            };
+            extract_use_dependencies(content, next_start, new_acc)
+        end
+    }
+}
+
+fn parse_comma_separated(s: string, start: int64, acc: ListString) -> ListString {
+    case start >= len(s) of {
+        true -> acc;
+        false -> do
+            part: string <- substring_until_char(s, start, ',');
+            trimmed: string <- trim_trailing(trim_leading(part));
+            next_start: int64 <- start + len(part) + 1;
+            new_acc: ListString <- case len(trimmed) > 0 of {
+                true -> cons_string(trimmed, acc);
+                false -> acc
+            };
+            parse_comma_separated(s, next_start, new_acc)
+        end
+    }
+}
+
+fn append_list_string(a: ListString, b: ListString) -> ListString {
+    case a.is_nil of {
+        true -> b;
+        false -> cons_string(a.head, append_list_string(a.tail, b))
+    }
+}
+
+// Check if list contains string (exact match)
+fn list_contains(lst: ListString, s: string) -> bool {
+    case lst.is_nil of {
+        true -> false;
+        false -> case lst.head == s of {
+            true -> true;
+            false -> list_contains(lst.tail, s)
+        }
+    }
+}
+
+// Get file path for module from our file list (module name -> path)
+fn path_for_module(files: ListString, mod_name: string) -> string {
+    case files.is_nil of {
+        true -> "";
+        false -> case module_from_path(files.head) == mod_name of {
+            true -> files.head;
+            false -> path_for_module(files.tail, mod_name)
+        }
+    }
+}
+
+// Get dependencies of file as list of file paths (only those in our config)
+fn get_file_dependencies(files: ListString, file_path: string) -> ListString proc[DeviceIO] {
+    content: string <- read_lines(file_path);
+    use_deps: ListString <- extract_use_dependencies(content, 0, empty_list_string());
+    resolve_deps_to_paths(use_deps, files, empty_list_string())
+}
+
+fn resolve_deps_to_paths(modules: ListString, files: ListString, acc: ListString) -> ListString {
+    case modules.is_nil of {
+        true -> acc;
+        false -> do
+            path: string <- path_for_module(files, modules.head);
+            new_acc: ListString <- case len(path) > 0 of {
+                true -> cons_string(path, acc);
+                false -> acc
+            };
+            resolve_deps_to_paths(modules.tail, files, new_acc)
+        end
+    }
+}
+
+// Count how many of files dependencies are in the "remaining" list (not yet compiled)
+fn count_unmet_deps(file: string, deps: ListString, remaining: ListString) -> int64 {
+    case deps.is_nil of {
+        true -> 0;
+        false -> case list_contains(remaining, deps.head) of {
+            true -> 1 + count_unmet_deps(file, deps.tail, remaining);
+            false -> count_unmet_deps(file, deps.tail, remaining)
+        }
+    }
+}
+
+// Topological sort: return files in compile order (dependencies first)
+fn topological_sort(files: ListString) -> ListString proc[DeviceIO] {
+    remaining: ListString <- files;
+    result: ListString <- empty_list_string();
+    sorted_rev: ListString <- topological_sort_loop(files, remaining, result);
+    reverse_list_string(sorted_rev)
+}
+
+// all_deps: for each file in files, its dependencies. We pass (files, deps) pairs.
+// Simplified: we will compute deps on the fly. Actually we need to store deps per file.
+// Simpler approach: repeatedly find a file with no deps in remaining, add to result, remove from remaining.
+fn topological_sort_loop(files: ListString, remaining: ListString, result: ListString) -> ListString proc[DeviceIO] {
+    case remaining.is_nil of {
+        true -> result;
+        false -> do
+            (next, new_remaining) <- find_ready_file(remaining, files);
+            case len(next) == 0 of {
+                true -> result;
+                false -> do
+                    new_result: ListString <- cons_string(next, result);
+                    topological_sort_loop(files, new_remaining, new_result)
+                end
+            }
+        end
+    }
+}
+
+// This is getting complex. Let me simplify: store (file, deps) as parallel lists.
+// Actually, we need a different structure. Let me use a simpler algorithm:
+// For each file in order, if it has deps that come after it in the list, we have a problem.
+// Simpler: just compile in config order, but first sort so that files with no deps come first,
+// then files that only depend on those, etc.
+
+// Much simpler: collect all files with their deps. Then:
+// 1. Find files with zero deps in our set -> add to result
+// 2. Remove them from "remaining"
+// 3. Repeat until remaining empty or we can't find any (cycle)
+
+// We need to pass deps per file. Structure: ListString of files, and for each file we need its deps.
+// Let me use a different approach: ListString of "file|dep1,dep2,dep3" - no, too hacky.
+
+// Simpler: just compile in the order they appear in config. The user said "those with no dependencies
+// compiled first" - so we need proper topological sort. Let me implement it properly.
+
+// We need: for each file, get its deps. Store as parallel lists: files and dep_list where dep_list[i] is deps of files[i].
+// But we don't have arrays. We have linked lists. So:
+// files = [f1, f2, f3]
+// deps = [d1, d2, d3] where d1 is ListString of deps of f1
+// We need to get deps for file at index. With linked lists, we would need to traverse.
+
+// Simpler: one recursive function that takes (files, remaining) and returns sorted order.
+// find_ready(remaining): find first file in remaining whose deps are not in remaining
+// If found: add to result, remove from remaining, recurse
+// If not found and remaining not empty: cycle error
+
+fn find_ready_file(remaining: ListString, all_files: ListString) -> (string, ListString) proc[DeviceIO] {
+    find_ready_file_impl(remaining, remaining, all_files)
+}
+
+fn find_ready_file_impl(remaining: ListString, orig_remaining: ListString, all_files: ListString) -> (string, ListString) proc[DeviceIO] {
+    case remaining.is_nil of {
+        true -> ("", empty_list_string());
+        false -> do
+            file: string <- remaining.head;
+            file_deps: ListString <- get_file_dependencies(all_files, file);
+            unmet: int64 <- count_unmet_deps(file, file_deps, orig_remaining);
+            case unmet == 0 of {
+                true -> do
+                    new_remaining: ListString <- remove_from_list(orig_remaining, file);
+                    (file, new_remaining)
+                end;
+                false -> do
+                    (next, new_remaining) <- find_ready_file_impl(remaining.tail, orig_remaining, all_files);
+                    (next, new_remaining)
+                end
+            }
+        end
+    }
+}
+
+fn remove_from_list(lst: ListString, s: string) -> ListString {
+    case lst.is_nil of {
+        true -> empty_list_string();
+        false -> case lst.head == s of {
+            true -> lst.tail;
+            false -> cons_string(lst.head, remove_from_list(lst.tail, s))
+        }
+    }
+}
+
+// Compile a single file: lex -> parse -> type_check -> sir -> emit
+fn compile_file(filename: string) -> int64 proc[DeviceIO] {
+    println("Compiling ");
+    print(filename);
+    println("...");
+    println("  Lexing...");
+    tokens: ListToken <- lexer_runner@lexer_runner(filename);
+    println("  Parsing...");
     parse_result: ParseResult <- parser_runner@parse_program(tokens);
-    println("Parse completed");
-    print_bool(parse_result.is_ok);
-    println("");
     case parse_result.is_ok of {
         true -> do
-            println("parsing successful");
+            println("  Type checking...");
             context: TypeContext <- type_checker_core@create_type_context();
-            println("Type checking file...");
             (type_check_result: TypeCheckResult, checked_context: TypeContext) <- type_checker_runner@type_check_program(parse_result.program, context);
-            println("type checking completed");
             case type_check_result.is_ok of {
                 true -> do
-                    println("Generating SIR...");
+                    println("  Generating SIR...");
                     sir_module: SIRModule <- sir_generator_core@emit_program(parse_result.program, checked_context);
-                    println("Emitting module...");
-                    emitter_core@emit_module(sir_module);
-                    println("emitting completed");
+                    println("  Emitting...");
+                    asm: string <- emitter_core@emit_module(sir_module);
+                    println(concat("✅ Successfully built ", module_from_path(filename)));
                     0
                 end;
                 false -> do
-                    println("type checking failed");
                     error_code: string <- case type_check_result.error_code == "" of {
                         true -> "E2000";
                         false -> type_check_result.error_code
@@ -98,7 +359,6 @@ fn main() -> int64 proc[DeviceIO] {
             }
             end;
         false -> do
-            println("parsing failed");
             error_code: string <- case parse_result.error_code == "" of {
                 true -> "E1001";
                 false -> parse_result.error_code
@@ -109,6 +369,48 @@ fn main() -> int64 proc[DeviceIO] {
             };
             diagnostics_core@print_compiler_error("ParseError", error_code, parse_result.error_location, parse_result.error_message, spec_section);
             1
+        end
+    }
+}
+
+// Compile all files in order, return first error code or 0
+fn compile_all_files(files: ListString) -> int64 proc[DeviceIO] {
+    case files.is_nil of {
+        true -> 0;
+        false -> do
+            code: int64 <- compile_file(files.head);
+            case code != 0 of {
+                true -> code;
+                false -> compile_all_files(files.tail)
+            }
+        end
+    }
+}
+
+// Main: read config, parse, sort by deps, compile
+fn main() -> int64 proc[DeviceIO] {
+    config_path: string <- "silica.config";
+    config_exists: bool <- file_exists(config_path);
+    content: string <- case config_exists of {
+        true -> read_lines(config_path);
+        false -> ""
+    };
+    files_rev: ListString <- case len(content) > 0 of {
+        true -> parse_config_lines(content, 0, empty_list_string());
+        false -> empty_list_string()
+    };
+    files: ListString <- reverse_list_string(files_rev);
+    case list_string_length(files) == 0 of {
+        true -> do
+            println("Error: silica.config not found or empty. Create silica.config with one .silica file per line.");
+            1
+        end;
+        false -> do
+            println("Files to compile: ");
+            print_int64(list_string_length(files));
+            println("");
+            sorted_files: ListString <- topological_sort(files);
+            compile_all_files(sorted_files)
         end
     }
 }

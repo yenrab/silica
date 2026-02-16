@@ -39,9 +39,11 @@ struct ListTokenSlot {
 }
 
 // Constraint: when token has role X, next token must have role in [Y, Z, ...]
+// Bidirectional: when token has role X, prev token must have role in prev_token_roles (empty = no backward rule)
 struct Constraint {
     trigger_role: int64,
     next_token_roles: ListInt,
+    prev_token_roles: ListInt,
     constraint_id: int64
 }
 
@@ -61,7 +63,7 @@ fn cons_int(x: int64, xs: ListInt) -> ListInt {
 }
 
 fn empty_list_constraint() -> ListConstraint {
-    dummy: Constraint <- Constraint { trigger_role: 0, next_token_roles: empty_list_int(), constraint_id: 0 };
+    dummy: Constraint <- Constraint { trigger_role: 0, next_token_roles: empty_list_int(), prev_token_roles: empty_list_int(), constraint_id: 0 };
     nil_placeholder: ListConstraint <- ListConstraint { is_nil: true, head: dummy, tail: nil_placeholder };
     nil_placeholder
 }
@@ -117,13 +119,30 @@ fn slot_role(slot: TokenSlot) -> int64 {
     slot.possible_roles.head
 }
 
-// Find constraints where trigger_role matches; collect their next_token_roles
+// Find constraints where trigger_role matches; collect their next_token_roles (skip empty)
 fn constraints_for_role(role: int64, constraint_list: ListConstraint) -> ListInt {
     case constraint_list.is_nil of {
         true -> empty_list_int();
         false -> case constraint_list.head.trigger_role == role of {
-            true -> merge_roles(constraint_list.head.next_token_roles, constraints_for_role(role, constraint_list.tail));
+            true -> case constraint_list.head.next_token_roles.is_nil of {
+                true -> constraints_for_role(role, constraint_list.tail);
+                false -> merge_roles(constraint_list.head.next_token_roles, constraints_for_role(role, constraint_list.tail))
+            };
             false -> constraints_for_role(role, constraint_list.tail)
+        }
+    }
+}
+
+// Find constraints where trigger_role matches; collect their prev_token_roles (only non-empty)
+fn constraints_for_prev_role(role: int64, constraint_list: ListConstraint) -> ListInt {
+    case constraint_list.is_nil of {
+        true -> empty_list_int();
+        false -> case constraint_list.head.trigger_role == role of {
+            true -> case constraint_list.head.prev_token_roles.is_nil of {
+                true -> constraints_for_prev_role(role, constraint_list.tail);
+                false -> merge_roles(constraint_list.head.prev_token_roles, constraints_for_prev_role(role, constraint_list.tail))
+            };
+            false -> constraints_for_prev_role(role, constraint_list.tail)
         }
     }
 }
@@ -139,10 +158,32 @@ fn narrow_slot(slot_i: TokenSlot, slot_next: TokenSlot, constraint_list: ListCon
     case slot_has_single_role(slot_i) of {
         true -> do
             allowed: ListInt <- constraints_for_role(slot_role(slot_i), constraint_list);
-            new_roles: ListInt <- intersect_roles(slot_next.possible_roles, allowed);
-            TokenSlot { token: slot_next.token, possible_roles: new_roles }
+            case allowed.is_nil of {
+                true -> slot_next;
+                false -> do
+                    new_roles: ListInt <- intersect_roles(slot_next.possible_roles, allowed);
+                    TokenSlot { token: slot_next.token, possible_roles: new_roles }
+                end
+            }
         end;
         false -> slot_next
+    }
+}
+
+// Backward: when slot_next has single role, narrow slot_prev to allowed prev_token_roles
+fn narrow_slot_backward(slot_prev: TokenSlot, slot_next: TokenSlot, constraint_list: ListConstraint) -> TokenSlot {
+    case slot_has_single_role(slot_next) of {
+        true -> do
+            allowed: ListInt <- constraints_for_prev_role(slot_role(slot_next), constraint_list);
+            case allowed.is_nil of {
+                true -> slot_prev;
+                false -> do
+                    new_roles: ListInt <- intersect_roles(slot_prev.possible_roles, allowed);
+                    TokenSlot { token: slot_prev.token, possible_roles: new_roles }
+                end
+            }
+        end;
+        false -> slot_prev
     }
 }
 
@@ -156,9 +197,12 @@ fn propagate_pass(slots: ListTokenSlot, constraint_list: ListConstraint) -> (Lis
                 slot_next: TokenSlot <- slots.tail.head;
                 rest: ListTokenSlot <- slots.tail.tail;
                 new_slot_next: TokenSlot <- narrow_slot(slot_i, slot_next, constraint_list);
-                changed_here: bool <- case list_int_equal(slot_next.possible_roles, new_slot_next.possible_roles) of { true -> false; false -> true };
+                new_slot_i: TokenSlot <- narrow_slot_backward(slot_i, slot_next, constraint_list);
+                changed_next: bool <- case list_int_equal(slot_next.possible_roles, new_slot_next.possible_roles) of { true -> false; false -> true };
+                changed_prev: bool <- case list_int_equal(slot_i.possible_roles, new_slot_i.possible_roles) of { true -> false; false -> true };
+                changed_here: bool <- case changed_next of { true -> true; false -> changed_prev };
                 (rest_result: ListTokenSlot, changed_rest: bool) <- propagate_pass(cons_slot(new_slot_next, rest), constraint_list);
-                result: (ListTokenSlot, bool) <- (cons_slot(slot_i, rest_result), case changed_here of { true -> true; false -> changed_rest });
+                result: (ListTokenSlot, bool) <- (cons_slot(new_slot_i, rest_result), case changed_here of { true -> true; false -> changed_rest });
                 result
             end
         }

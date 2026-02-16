@@ -195,6 +195,16 @@ impl CodeGenerator {
         format!("%{}", s)
     }
 
+    /// Extract the value part from a typed arg: "i64 t87" -> "t87", "t87" -> "t87", "42" -> "42".
+    fn extract_value_from_typed_arg(typed_arg: &str) -> &str {
+        let s = typed_arg.trim();
+        if let Some(space) = s.find(' ') {
+            s[space..].trim_start()
+        } else {
+            s
+        }
+    }
+
     /// Normalize a typed call argument for LLVM: "i8* t6" -> "i8* %t6". Ensures value has % if it's a register.
     fn normalize_typed_call_arg(typed_arg: &str) -> String {
         if let Some(space) = typed_arg.find(' ') {
@@ -6084,22 +6094,26 @@ impl CodeGenerator {
                 // Handle different types based on the scrutinee register type
                 if scrutinee_reg.starts_with("i64 ") {
                     // i64 integer
-                    let reg_name = &scrutinee_reg[4..];
-                self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, reg_name)); // Copy the value
+                    let reg_name = scrutinee_reg[4..].trim();
+                    let reg_ref = Self::format_llvm_value_ref(reg_name);
+                    self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, reg_ref)); // Copy the value
                 } else if scrutinee_reg.starts_with("i1 ") {
                     // i1 boolean - extend to i64 for consistency
-                    let reg_name = &scrutinee_reg[3..];
+                    let reg_name = scrutinee_reg[3..].trim();
+                    let reg_ref = Self::format_llvm_value_ref(reg_name);
                     let extended_reg = format!("%{}_ext_{}", name, self.instructions.len());
-                    self.instructions.push(format!("  {} = zext i1 {} to i64", extended_reg, reg_name));
+                    self.instructions.push(format!("  {} = zext i1 {} to i64", extended_reg, reg_ref));
                     self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, extended_reg)); // Copy the value
                 } else if scrutinee_reg.starts_with("i8* ") {
                     // Pointer
-                    let reg_name = &scrutinee_reg[4..];
-                    self.instructions.push(format!("  {} = bitcast i8* {} to i8*", bind_reg, reg_name)); // Copy the pointer
+                    let reg_name = scrutinee_reg[4..].trim();
+                    let reg_ref = Self::format_llvm_value_ref(reg_name);
+                    self.instructions.push(format!("  {} = bitcast i8* {} to i8*", bind_reg, reg_ref)); // Copy the pointer
                 } else {
                     // Default to i64
-                    let reg_name = &scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
-                    self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, reg_name));
+                    let reg_name = scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").trim();
+                    let reg_ref = Self::format_llvm_value_ref(reg_name);
+                    self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, reg_ref));
                 }
 
                 bound_vars.insert(name.clone(), bind_reg);
@@ -6116,36 +6130,41 @@ impl CodeGenerator {
                 // Handle different types based on the scrutinee register type
                 if scrutinee_reg.starts_with("i64 ") {
                     // i64 integer
-                    let reg_name = &scrutinee_reg[4..];
-                    self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, reg_name)); // Copy the value
+                    let reg_name = scrutinee_reg[4..].trim();
+                    let reg_ref = Self::format_llvm_value_ref(reg_name);
+                    self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, reg_ref)); // Copy the value
                     bind_llvm_ty = "i64".to_string();
                 } else if scrutinee_reg.starts_with("i1 ") {
                     // i1 boolean - extend to i64 for consistency
-                    let reg_name = &scrutinee_reg[3..];
+                    let reg_name = scrutinee_reg[3..].trim();
+                    let reg_ref = Self::format_llvm_value_ref(reg_name);
                     let extended_reg = format!("%{}_ext_{}", name, self.instructions.len());
-                    self.instructions.push(format!("  {} = zext i1 {} to i64", extended_reg, reg_name));
+                    self.instructions.push(format!("  {} = zext i1 {} to i64", extended_reg, reg_ref));
                     self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, extended_reg)); // Copy the value
                     bind_llvm_ty = "i64".to_string();
                 } else if scrutinee_reg.starts_with("i8* ") {
                     // Pointer (string, etc.) - copy via bitcast
-                    let reg_name = &scrutinee_reg[4..];
-                    self.instructions.push(format!("  {} = bitcast i8* {} to i8*", bind_reg, reg_name));
+                    let reg_name = scrutinee_reg[4..].trim();
+                    let reg_ref = Self::format_llvm_value_ref(reg_name);
+                    self.instructions.push(format!("  {} = bitcast i8* {} to i8*", bind_reg, reg_ref));
                     bind_llvm_ty = "i8*".to_string();
                 } else if scrutinee_reg.contains("tuple_alloc") {
                     // Tuple pointer - convert to integer value
+                    let scrutinee_ref = Self::format_llvm_value_ref(scrutinee_reg.trim());
                     let int_reg = format!("%{}_int_{}", name, self.instructions.len());
-                    self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", int_reg, scrutinee_reg));
+                    self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", int_reg, scrutinee_ref));
                     self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, int_reg)); // Copy the value
                     bind_llvm_ty = "i64".to_string();
                 } else {
                     // No type prefix: use pattern type to decide (e.g. string param -> %aString)
                     let llvm_ty = self.type_map.silica_to_llvm_str(pattern_type);
                     if llvm_ty == "i8*" {
-                        let reg = if scrutinee_reg.starts_with('%') { scrutinee_reg.to_string() } else { format!("%{}", scrutinee_reg) };
+                        let reg = Self::format_llvm_value_ref(scrutinee_reg.trim());
                         self.instructions.push(format!("  {} = bitcast i8* {} to i8*", bind_reg, reg));
                         bind_llvm_ty = "i8*".to_string();
                     } else {
-                        self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, scrutinee_reg));
+                        let reg_ref = Self::format_llvm_value_ref(scrutinee_reg.trim());
+                        self.instructions.push(format!("  {} = add i64 {}, 0", bind_reg, reg_ref));
                         bind_llvm_ty = "i64".to_string();
                     }
                 }
@@ -6191,18 +6210,19 @@ impl CodeGenerator {
                     match elem_pattern {
                         Pattern::TypedIdentifier { name: elem_name, type_: elem_type, .. } => {
                         // Strip any type prefixes from scrutinee_reg
-                        let clean_scrutinee = scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+                        let clean_scrutinee = scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").trim().to_string();
+                        let scrutinee_ref = Self::format_llvm_value_ref(&clean_scrutinee);
 
                         // Read the type ID for this element
                         let type_id_offset = 8 + i as i64;
                         let type_ptr_reg = format!("%type_ptr_{}_{}", elem_name, self.instructions.len());
-                        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", type_ptr_reg, clean_scrutinee, type_id_offset));
+                        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", type_ptr_reg, scrutinee_ref, type_id_offset));
                         let type_id_reg = format!("%type_id_{}_{}", elem_name, self.instructions.len());
                         self.instructions.push(format!("  {} = load i8, i8* {}", type_id_reg, type_ptr_reg));
 
                         // Generate pointer to element at type-aware offset (matches tuple creation layout)
                         let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
-                        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, clean_scrutinee, elem_offset));
+                        self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, scrutinee_ref, elem_offset));
 
                         // Load element with type-aware casting
                         // Use unique register for wildcard '_' to avoid "multiple definition of local value named '_'"
@@ -6242,14 +6262,15 @@ impl CodeGenerator {
                         }
                         Pattern::Identifier(elem_name) => {
                             // Untyped tuple element: bind with same layout as TypedIdentifier (i64 / type-select)
-                            let clean_scrutinee = scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+                            let clean_scrutinee = scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").trim().to_string();
+                            let scrutinee_ref = Self::format_llvm_value_ref(&clean_scrutinee);
                             let type_id_offset = 8 + i as i64;
                             let type_ptr_reg = format!("%type_ptr_{}_{}", elem_name, self.instructions.len());
-                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", type_ptr_reg, clean_scrutinee, type_id_offset));
+                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", type_ptr_reg, scrutinee_ref, type_id_offset));
                             let type_id_reg = format!("%type_id_{}_{}", elem_name, self.instructions.len());
                             self.instructions.push(format!("  {} = load i8, i8* {}", type_id_reg, type_ptr_reg));
                             let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
-                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, clean_scrutinee, elem_offset));
+                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, scrutinee_ref, elem_offset));
                             // Use unique register for wildcard '_' to avoid "multiple definition of local value named '_'"
                             let elem_reg = if elem_name == "_" {
                                 format!("%_discard_{}", self.instructions.len())
@@ -6280,9 +6301,10 @@ impl CodeGenerator {
                         }
                         Pattern::Tuple(sub_patterns) => {
                             // Nested tuple: delegate to same layout as do-block path (load nested ptr, recurse)
-                            let clean_scrutinee = scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+                            let clean_scrutinee = scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").trim().to_string();
+                            let scrutinee_ref = Self::format_llvm_value_ref(&clean_scrutinee);
                             let elem_ptr_reg = format!("%nested_ptr_{}_{}", i, self.instructions.len());
-                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, clean_scrutinee, elem_offset));
+                            self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, scrutinee_ref, elem_offset));
                             let i8pp_cast = format!("%nested_cast_{}_{}", i, self.instructions.len());
                             self.instructions.push(format!("  {} = bitcast i8* {} to i8**", i8pp_cast, elem_ptr_reg));
                             let nested_ptr_reg = format!("%nested_tuple_{}_{}", i, self.instructions.len());
@@ -6331,18 +6353,19 @@ impl CodeGenerator {
                         let cmp_reg = format!("%cmp_int_{}", self.instructions.len());
                         // Extract just the register name, not the type prefix
                         let reg_name = if scrutinee_reg.starts_with("i64 ") {
-                            &scrutinee_reg[4..]
+                            scrutinee_reg[4..].trim().to_string()
                         } else {
-                            scrutinee_reg
+                            scrutinee_reg.trim().to_string()
                         };
+                        let reg_ref = Self::format_llvm_value_ref(&reg_name);
                         // If the register is a boxed value, load it first
                         if reg_name.contains("box_result") || reg_name.contains("param") || reg_name.starts_with("%box_") || reg_name.starts_with("%param_") {
                             let load_reg = format!("%scrutinee_load_{}", self.instructions.len());
-                            self.instructions.push(format!("  {} = bitcast i8* {} to i64*", load_reg.clone() + "_cast", reg_name));
+                            self.instructions.push(format!("  {} = bitcast i8* {} to i64*", load_reg.clone() + "_cast", reg_ref));
                             self.instructions.push(format!("  {} = load i64, i64* {}_cast", load_reg, load_reg));
                             self.instructions.push(format!("  {} = icmp eq i64 {}, {}", cmp_reg, load_reg, n));
                         } else {
-                            self.instructions.push(format!("  {} = icmp eq i64 {}, {}", cmp_reg, reg_name, n));
+                            self.instructions.push(format!("  {} = icmp eq i64 {}, {}", cmp_reg, reg_ref, n));
                         }
                         Ok(cmp_reg)
                     }
@@ -6353,14 +6376,15 @@ impl CodeGenerator {
                         let has_i1 = scrutinee_reg.starts_with("i1 ");
                         let has_i64 = scrutinee_reg.starts_with("i64 ");
                         let (cmp_type, reg_name) = if has_i1 {
-                            ("i1", scrutinee_reg[3..].to_string())
+                            ("i1", scrutinee_reg[3..].trim().to_string())
                         } else if has_i64 {
-                            ("i64", scrutinee_reg[4..].to_string())
+                            ("i64", scrutinee_reg[4..].trim().to_string())
                         } else {
-                            // No prefix: assume i64 (bool-as-int from tuple/variable)
-                            ("i64", scrutinee_reg.to_string())
+                            // No prefix: assume i1 (e.g. from call returning bool like string_ends_with)
+                            ("i1", scrutinee_reg.trim().to_string())
                         };
-                        self.instructions.push(format!("  {} = icmp eq {} {}, {}", cmp_reg, cmp_type, reg_name, bool_val));
+                        let reg_ref = Self::format_llvm_value_ref(&reg_name);
+                        self.instructions.push(format!("  {} = icmp eq {} {}, {}", cmp_reg, cmp_type, reg_ref, bool_val));
                         Ok(cmp_reg)
                     }
                     Literal::String(s) => {
@@ -6403,7 +6427,8 @@ impl CodeGenerator {
             }
             Pattern::Tuple(patterns) => {
                 // Tuple pattern: load each element and check against subpattern; combine with and
-                let clean_scrutinee = scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+                let clean_scrutinee = scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").trim().to_string();
+                let scrutinee_ref = Self::format_llvm_value_ref(&clean_scrutinee);
                 if patterns.is_empty() {
                     let true_reg = format!("%pattern_true_{}", self.instructions.len());
                     self.instructions.push(format!("  {} = add i1 0, 1", true_reg));
@@ -6413,7 +6438,7 @@ impl CodeGenerator {
                 for (i, elem_pattern) in patterns.iter().enumerate() {
                     let elem_offset = 16 + (i as i64 * 8);
                     let elem_ptr_reg = format!("%tuple_elem_ptr_{}_{}", i, self.instructions.len());
-                    self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, clean_scrutinee, elem_offset));
+                    self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, scrutinee_ref, elem_offset));
                     let elem_match = match elem_pattern {
                         Pattern::Literal(Literal::String(s)) => {
                             let elem_cast_reg = format!("%tuple_elem_cast_{}_{}", i, self.instructions.len());
@@ -8102,38 +8127,41 @@ impl CodeGenerator {
     fn generate_nested_binary_in_method(&mut self, type_name: &str, method: &crate::ast::FunctionDecl, binary: &crate::ast::BinaryExpr) -> Result<String> {
         let left_val = self.generate_expression_in_method(type_name, method, &binary.left)?;
         let right_val = self.generate_expression_in_method(type_name, method, &binary.right)?;
+        // Ensure value operands have % prefix for LLVM IR (e.g. t87 -> %t87)
+        let left_ref = Self::format_llvm_value_ref(Self::extract_value_from_typed_arg(&left_val));
+        let right_ref = Self::format_llvm_value_ref(Self::extract_value_from_typed_arg(&right_val));
 
         match binary.operator {
             // Arithmetic operators
             crate::ast::BinaryOp::Add => {
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = add i64 {}, {}", result_reg, left_val, right_val));
+                self.instructions.push(format!("  %{} = add i64 {}, {}", result_reg, left_ref, right_ref));
                 Ok(format!("%{}", result_reg))
             }
             crate::ast::BinaryOp::Subtract => {
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = sub i64 {}, {}", result_reg, left_val, right_val));
+                self.instructions.push(format!("  %{} = sub i64 {}, {}", result_reg, left_ref, right_ref));
                 Ok(format!("%{}", result_reg))
             }
             crate::ast::BinaryOp::Multiply => {
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = mul i64 {}, {}", result_reg, left_val, right_val));
+                self.instructions.push(format!("  %{} = mul i64 {}, {}", result_reg, left_ref, right_ref));
                 Ok(format!("%{}", result_reg))
             }
             crate::ast::BinaryOp::Divide => {
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = sdiv i64 {}, {}", result_reg, left_val, right_val));
+                self.instructions.push(format!("  %{} = sdiv i64 {}, {}", result_reg, left_ref, right_ref));
                 Ok(format!("%{}", result_reg))
             }
             crate::ast::BinaryOp::Modulo => {
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = srem i64 {}, {}", result_reg, left_val, right_val));
+                self.instructions.push(format!("  %{} = srem i64 {}, {}", result_reg, left_ref, right_ref));
                 Ok(format!("%{}", result_reg))
             }
             // Comparison operators
             crate::ast::BinaryOp::Equal => {
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = icmp eq i64 {}, {}", result_reg, left_val, right_val));
+                self.instructions.push(format!("  %{} = icmp eq i64 {}, {}", result_reg, left_ref, right_ref));
                 // Convert i1 to i64 (true=1, false=0)
                 let ext_reg = self.next_register();
                 self.instructions.push(format!("  %{} = zext i1 %{} to i64", ext_reg, result_reg));
@@ -8141,35 +8169,35 @@ impl CodeGenerator {
             }
             crate::ast::BinaryOp::NotEqual => {
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = icmp ne i64 {}, {}", result_reg, left_val, right_val));
+                self.instructions.push(format!("  %{} = icmp ne i64 {}, {}", result_reg, left_ref, right_ref));
                 let ext_reg = self.next_register();
                 self.instructions.push(format!("  %{} = zext i1 %{} to i64", ext_reg, result_reg));
                 Ok(format!("%{}", ext_reg))
             }
             crate::ast::BinaryOp::Less => {
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = icmp slt i64 {}, {}", result_reg, left_val, right_val));
+                self.instructions.push(format!("  %{} = icmp slt i64 {}, {}", result_reg, left_ref, right_ref));
                 let ext_reg = self.next_register();
                 self.instructions.push(format!("  %{} = zext i1 %{} to i64", ext_reg, result_reg));
                 Ok(format!("%{}", ext_reg))
             }
             crate::ast::BinaryOp::LessEqual => {
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = icmp sle i64 {}, {}", result_reg, left_val, right_val));
+                self.instructions.push(format!("  %{} = icmp sle i64 {}, {}", result_reg, left_ref, right_ref));
                 let ext_reg = self.next_register();
                 self.instructions.push(format!("  %{} = zext i1 %{} to i64", ext_reg, result_reg));
                 Ok(format!("%{}", ext_reg))
             }
             crate::ast::BinaryOp::Greater => {
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = icmp sgt i64 {}, {}", result_reg, left_val, right_val));
+                self.instructions.push(format!("  %{} = icmp sgt i64 {}, {}", result_reg, left_ref, right_ref));
                 let ext_reg = self.next_register();
                 self.instructions.push(format!("  %{} = zext i1 %{} to i64", ext_reg, result_reg));
                 Ok(format!("%{}", ext_reg))
             }
             crate::ast::BinaryOp::GreaterEqual => {
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = icmp sge i64 {}, {}", result_reg, left_val, right_val));
+                self.instructions.push(format!("  %{} = icmp sge i64 {}, {}", result_reg, left_ref, right_ref));
                 let ext_reg = self.next_register();
                 self.instructions.push(format!("  %{} = zext i1 %{} to i64", ext_reg, result_reg));
                 Ok(format!("%{}", ext_reg))
@@ -8177,12 +8205,12 @@ impl CodeGenerator {
             // Logical operators
             crate::ast::BinaryOp::And => {
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = and i64 {}, {}", result_reg, left_val, right_val));
+                self.instructions.push(format!("  %{} = and i64 {}, {}", result_reg, left_ref, right_ref));
                 Ok(format!("%{}", result_reg))
             }
             crate::ast::BinaryOp::Or => {
                 let result_reg = self.next_register();
-                self.instructions.push(format!("  %{} = or i64 {}, {}", result_reg, left_val, right_val));
+                self.instructions.push(format!("  %{} = or i64 {}, {}", result_reg, left_ref, right_ref));
                 Ok(format!("%{}", result_reg))
             }
             _ => {
@@ -13117,37 +13145,28 @@ impl CodeGenerator {
         let char_val = self.generate_expression(&string_substring_until_char.char)?
             .ok_or_else(|| CompilerError::codegen_error("Invalid character in substring_until_char".to_string()))?;
 
-        // Format string argument
-        let string_arg = if string_val.starts_with('%') {
-            format!("i8* {}", string_val)
-        } else if string_val.starts_with("getelementptr") {
+        // Format string argument (strip type prefix to avoid "i8* %i8* %content")
+        let string_arg = if string_val.starts_with("getelementptr") {
             // String constant - evaluate getelementptr first
             let temp_reg = self.next_register();
             let gep_instruction = self.convert_gep_to_instruction_format(&string_val);
             self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
             format!("i8* %{}", temp_reg.trim_start_matches('%'))
         } else {
-            format!("i8* %{}", string_val)
+            let val = Self::extract_value_from_typed_arg(&string_val);
+            format!("i8* {}", Self::format_llvm_value_ref(val))
         };
 
-        // Format start index (should be i64 integer)
-        let start_arg = if start_val.starts_with('%') {
-            format!("i64 {}", start_val)
-        } else if start_val.starts_with("i64 ") {
-            start_val.clone()
-        } else {
-            // Assume it's a literal or register name
-            format!("i64 %{}", start_val.trim_start_matches('%'))
+        // Format start index (strip type prefix to avoid "i64 %i64 %start")
+        let start_arg = {
+            let val = Self::extract_value_from_typed_arg(&start_val);
+            format!("i64 {}", Self::format_llvm_value_ref(val))
         };
 
-        // Format character argument (should be i32)
-        let char_arg = if char_val.starts_with('%') {
-            format!("i32 {}", char_val)
-        } else if char_val.starts_with("i32 ") {
-            char_val.clone()
-        } else {
-            // Assume it's a literal or register name
-            format!("i32 %{}", char_val.trim_start_matches('%'))
+        // Format character argument (strip type prefix to avoid "i32 %i32 %char")
+        let char_arg = {
+            let val = Self::extract_value_from_typed_arg(&char_val);
+            format!("i32 {}", Self::format_llvm_value_ref(val))
         };
 
         // Call silica_string_substring_until_char runtime function

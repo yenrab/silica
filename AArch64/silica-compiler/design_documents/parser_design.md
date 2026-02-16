@@ -113,12 +113,13 @@ struct ListTokenSlot {
 
 ### 3.2 Constraint
 
-A rule: "when token A has role X, token B (immediately following) must have role in [Y, Z, ...]".
+Bidirectional rules: **forward**—when token A has role X, token B (immediately following) must have role in [Y, Z, ...]; **backward**—when token B has role X, token A (immediately preceding) must have role in [Y, Z, ...]. Empty list means no constraint in that direction.
 
 ```silica
 struct Constraint {
-    trigger_role: int64,      // when a token is fixed to this role
-    next_token_roles: ListInt, // allowed roles for the following token
+    trigger_role: int64,       // when a token is fixed to this role
+    next_token_roles: ListInt, // allowed roles for the following token (empty = no forward constraint)
+    prev_token_roles: ListInt, // allowed roles for the preceding token (empty = no backward constraint)
     constraint_id: int64       // for debugging and error reporting
 }
 
@@ -167,10 +168,16 @@ Each capability contributes its role initializations via `initial_roles_for_toke
 ```
 propagate_pass(slots, constraints):
   for each adjacent pair (slot_i, slot_{i+1}):
+    # Forward: when slot_i has one role, narrow slot_{i+1}
     if slot_i has exactly one role R:
-      find constraints where trigger_role = R
-      new_roles = intersect(slot_{i+1}.possible_roles, constraint.next_token_roles)
-      slot_{i+1} = TokenSlot{token, new_roles}
+      allowed = merge next_token_roles from constraints where trigger_role = R
+      if allowed non-empty:
+        slot_{i+1} = TokenSlot{token, intersect(slot_{i+1}.possible_roles, allowed)}
+    # Backward: when slot_{i+1} has one role, narrow slot_i
+    if slot_{i+1} has exactly one role R:
+      allowed = merge prev_token_roles from constraints where trigger_role = R
+      if allowed non-empty:
+        slot_i = TokenSlot{token, intersect(slot_i.possible_roles, allowed)}
   return (new_slots, changed)
 
 propagate_until_fixed(slots, constraints):
@@ -179,7 +186,7 @@ propagate_until_fixed(slots, constraints):
   else: return new_slots
 ```
 
-Propagation is recursive and immutable: each pass builds a new `ListTokenSlot`.
+Propagation is recursive and immutable: each pass builds a new `ListTokenSlot`. Bidirectional constraints enable stronger propagation (e.g., right_paren must be preceded by left_paren).
 
 ### 4.3 Success and Failure
 
@@ -304,9 +311,9 @@ Error format follows `silica-specification.md` §1.6: structured message with lo
 
 ## 9. Future Considerations
 
-### 9.1 Bidirectional Constraints
+### 9.1 Bidirectional Constraints (Implemented)
 
-Constraints can be extended to "previous token" rules for stronger propagation (e.g., right_paren must be preceded by left_paren or argument).
+Constraints support "previous token" rules via `prev_token_roles` for stronger propagation (e.g., right_paren must be preceded by left_paren or body_expr). See §3.2 and §4.2.
 
 ### 9.2 Sparse Matrix Output
 
