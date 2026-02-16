@@ -1,10 +1,11 @@
-// Core sir_generator infrastructure
+// Core sir_generator infrastructure (base)
 // Entry point: Program + TypeContext -> SIRModule (internal representation)
+// Core+extensions pattern: orchestrates via dispatchers; no AST construct knowledge
 
 use parser_ast;
 use type_checker_core;
 use sir_ast;
-use functions;
+use dispatcher;
 
 export emit_program/2;
 
@@ -20,16 +21,17 @@ fn emit_program(program: Program, context: TypeContext) -> SIRModule proc[mem(no
     SIRModule { module_name: module_name(), functions: fns }
 }
 
-// Traverse ListDeclaration and build ListSIRFunction for each Declaration (tag 0)
+// Traverse ListDeclaration; dispatcher delegates per Declaration.tag.
+// Dummy results (name == "") are skipped (e.g. non-function declarations).
 fn emit_declarations(decls: ListDeclaration, context: TypeContext) -> ListSIRFunction proc[mem(normal)] {
     case decls.is_nil of {
         true -> sir_ast@nil_sir_functions();
         false -> do
-            head_fn: SIRFunction <- functions@emit_function(decls.head, context);
+            head_fn: SIRFunction <- dispatcher@emit_declaration(decls.head, context);
             tail_fns: ListSIRFunction <- emit_declarations(decls.tail, context);
-            case decls.head.tag of {
-                0 -> sir_ast@cons_sir_functions(head_fn, tail_fns);
-                _: int64 -> tail_fns
+            case len(head_fn.name) > 0 of {
+                true -> sir_ast@cons_sir_functions(head_fn, tail_fns);
+                false -> tail_fns
             }
         end
     }
