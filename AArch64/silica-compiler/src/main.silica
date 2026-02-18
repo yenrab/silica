@@ -8,6 +8,8 @@ use parser_runner;
 use parser_ast;
 use type_checker_core;
 use type_checker_runner;
+use effect_checker_core;
+use effect_checker_capabilities;
 use sir_generator_core;
 use sir_ast;
 use emitter_core;
@@ -342,7 +344,7 @@ fn validate_config_files(files: ListString) -> int64 proc[DeviceIO] {
     }
 }
 
-// Compile a single file: lex -> parse -> type_check -> sir -> emit
+// Compile a single file: lex -> parse -> type_check -> effect_check -> sir -> emit
 fn compile_file(filename: string) -> int64 proc[DeviceIO] {
     println("Compiling ");
     print(filename);
@@ -358,13 +360,31 @@ fn compile_file(filename: string) -> int64 proc[DeviceIO] {
             (type_check_result: TypeCheckResult, checked_context: TypeContext) <- type_checker_runner@type_check_program(parse_result.program, context);
             case type_check_result.is_ok of {
                 true -> do
-                    println("  Generating SIR...");
-                    sir_module: SIRModule <- sir_generator_core@emit_program(parse_result.program, checked_context);
-                    println("  Emitting...");
-                    asm: string <- emitter_core@emit_module(sir_module);
-                    build_output@write_assembly(filename, asm);
-                    println(concat("✅ Successfully built ", module_from_path(filename)));
-                    0
+                    println("  Effect checking...");
+                    effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(parse_result.program);
+                    case effect_result.is_ok of {
+                        true -> do
+                            println("  Generating SIR...");
+                            sir_module: SIRModule <- sir_generator_core@emit_program(parse_result.program, checked_context);
+                            println("  Emitting...");
+                            asm: string <- emitter_core@emit_module(sir_module);
+                            build_output@write_assembly(filename, asm);
+                            println(concat("✅ Successfully built ", module_from_path(filename)));
+                            0
+                        end;
+                        false -> do
+                            effect_error_code: string <- case effect_result.error_code == "" of {
+                                true -> "E3000";
+                                false -> effect_result.error_code
+                            };
+                            effect_spec_section: string <- case effect_result.spec_section == "" of {
+                                true -> "sect9";
+                                false -> effect_result.spec_section
+                            };
+                            diagnostics_core@print_compiler_error("EffectError", effect_error_code, effect_result.error_location, effect_result.error_message, effect_spec_section);
+                            1
+                        end
+                    }
                 end;
                 false -> do
                     error_code: string <- case type_check_result.error_code == "" of {

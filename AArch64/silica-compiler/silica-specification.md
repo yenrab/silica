@@ -204,7 +204,7 @@ The following identifiers are reserved keywords:
 actor      actor_ref as        atomic    bool      buf       case      cast
 char       concurrency core_id  core_set device_io do        effect    efficiency_cores
 else       end        enum      export    false     float16   float32   float64
-fn         for        from      if        impl      import    includes  int8
+fn         for        from      if        impl      import    int8
 int16      int32      int64     mailbox  mem       module    normal    not
 of         performance_cores proc      pub       recv      ref       region    return
 self       send       spawn     string    struct    trait     true      type
@@ -1606,9 +1606,7 @@ enum Message {
 
 #### 3.4.8 Trait Declarations
 ```
-trait_declaration ::= "trait" identifier [trait_includes] "{" trait_items "}" ";"
-
-trait_includes ::= "includes" identifier {"," identifier}
+trait_declaration ::= "trait" identifier "{" trait_items "}" ";"
 
 trait_items ::= [trait_item]
 trait_item  ::= associated_type
@@ -1626,7 +1624,7 @@ trait Display {
     fn show(self) -> string;
 }
 
-trait Debug includes Display {
+trait Debug {
     fn debug(self) -> string;
 }
 
@@ -3783,21 +3781,19 @@ Trait-based polymorphism enables powerful design patterns through trait composit
 
 **Trait Composition Patterns:**
 
-Traits can be composed to create rich interfaces:
+Types can implement multiple traits to create rich interfaces:
 
-**Example 1: Trait Inheritance and Composition**
+**Example 1: Multiple Trait Implementation**
 ```silica
--- Base trait
 trait Display {
     fn show(self: Self) -> string;
 }
 
--- Extended trait (includes Display)
-trait Debug includes Display {
+trait Debug {
     fn debug(self: Self) -> string;
 }
 
--- Type implementing extended trait
+-- Type implementing multiple traits
 type Point2D = {x: int64, y: int64};
 
 impl Display for Point2D {
@@ -3812,12 +3808,9 @@ impl Debug for Point2D {
     }
 }
 
--- Function using composed trait
+-- Function requiring a specific trait
 fn print_debug(value: Debug) -> unit proc[device_io] {
-    -- Can use both Display and Debug methods
-    display_str: string <- value.show();
     debug_str: string <- value.debug();
-    print_string(display_str);
     print_string(debug_str)
 }
 ```
@@ -5094,8 +5087,6 @@ The type checking rule is:
 The type checker looks up trait implementations using the following algorithm:
 
 1. **Direct Implementation**: Check if `impl TraitName for τ_e` exists
-2. **Inherited Implementation**: Check if `τ_e` implements a trait that includes `TraitName`
-3. **Transitive Implementation**: Check if `τ_e` implements traits transitively included through trait composition
 
 **Trait Constraint Examples:**
 
@@ -14013,24 +14004,19 @@ trait Comparable {
 }
 ```
 
-#### 30.1.2 Trait Inheritance and Sub-traits
-Traits can be created using other traits as sub-traits. Sub-traits are independent traits that can be implemented separately, and traits can accumulate functionality by including multiple sub-traits.
+#### 30.1.2 Multiple Trait Implementation
+Types can implement any number of independent traits. Traits do not inherit from or include other traits. Instead, types compose behavior by implementing multiple traits directly.
 
-**Sub-trait Inheritance:**
+**Independent Traits:**
 ```silica
 trait Printable {
     fn to_string(self) -> string
 }
 
-trait Debug includes Printable {
+trait Debug {
     fn debug_string(self) -> string
 }
 
-// Debug automatically includes Printable's methods
-```
-
-**Trait Composition through Accumulation:**
-```silica
 trait Serializable {
     fn serialize(self) -> bytes
 }
@@ -14038,76 +14024,41 @@ trait Serializable {
 trait Comparable {
     fn equals(self, other) -> bool
 }
+```
 
-// A trait that accumulates multiple sub-traits
-trait FullFeatured includes Printable, Serializable, Comparable {
-    fn version(self) -> int
+**Implementing Multiple Traits on a Type:**
+```silica
+struct Widget {
+    name: string,
+    version: int
 }
 
-// FullFeatured includes methods from all three sub-traits:
-// - to_string() from Printable
-// - serialize() from Serializable
-// - equals() from Comparable
-// - version() (its own method)
+impl Printable for Widget {
+    fn to_string(self) = format("{} v{}", self.name, self.version)
+}
+
+impl Debug for Widget {
+    fn debug_string(self) = format("Widget {{ name: {}, version: {} }}", self.name, self.version)
+}
+
+impl Serializable for Widget {
+    fn serialize(self) = encode(self.name, self.version)
+}
+
+impl Comparable for Widget {
+    fn equals(self, other) = self.name == other.name && self.version == other.version
+}
 ```
 
 **Important Notes:**
-- Sub-traits remain independent and can be implemented separately
-- When implementing a trait that includes others, you must implement all methods from the trait and its sub-traits
-- Sub-traits can be used independently of their extending traits
+- Each trait is independent and self-contained
+- Types implement each trait separately via `impl`
+- A type can implement as many traits as needed
+- Trait implementations are independent of each other
 
-**Diamond Inheritance and Trait Deduplication:**
+**Method Name Disambiguation:**
 
-Silica supports diamond inheritance patterns where a trait is included multiple times through different paths. The language handles this through automatic deduplication and explicit disambiguation.
-
-**Rule 1: Trait Deduplication**
-
-When a trait is included multiple times through different inheritance paths, it is automatically deduplicated - the trait is included only once:
-
-```silica
-trait Loggable {
-    fn log(self: Self, level: int64) -> int64;
-}
-
-trait Persistent includes Loggable, Serializable {
-    fn save(self: Self) -> int64;
-}
-
-trait Secure includes Loggable, Validatable {
-    fn authenticate(self: Self, token: int64) -> int64;
-}
-
--- EnterpriseService includes Loggable through both Persistent and Secure
--- Loggable is deduplicated: included only once
-trait EnterpriseService includes Persistent, Secure {
-    fn process_request(self: Self, request: int64) -> int64;
-}
-```
-
-**Deduplication Process:**
-
-1. **Trait Inclusion Graph**: Build a directed graph of trait inclusions
-2. **Transitive Closure**: Compute transitive closure of included traits
-3. **Deduplication**: Remove duplicate trait occurrences (same trait included multiple times)
-4. **Result**: Each trait appears only once in the final trait set
-
-**Example:**
-```
-EnterpriseService includes:
-  - Persistent (includes Loggable, Serializable)
-  - Secure (includes Loggable, Validatable)
-
-After deduplication:
-  - Loggable (included once, not twice)
-  - Serializable
-  - Validatable
-  - Persistent
-  - Secure
-```
-
-**Rule 2: Method Name Disambiguation**
-
-When multiple included traits define methods with the same name, use qualified method names (`traitname.functionname`) to disambiguate:
+When a type implements multiple traits that define methods with the same name, use qualified method names (`traitname.functionname`) to disambiguate:
 
 ```silica
 trait Reader {
@@ -14118,18 +14069,22 @@ trait Writer {
     fn read(self: Self) -> int64;  -- Same method name as Reader
 }
 
-trait IO includes Reader, Writer {
-    fn process(self: Self) -> int64;
+-- A type implementing both traits
+struct MyType { data: int64 }
+
+impl Reader for MyType {
+    fn read(self: MyType) -> int64 { self.data }
 }
 
--- Implementation must disambiguate which read() method to call
-impl IO for MyType {
-    fn process(self: MyType) -> int64 {
-        -- Use qualified names to disambiguate
-        reader_result: int64 <- Reader.read(self);
-        writer_result: int64 <- Writer.read(self);
-        reader_result + writer_result
-    }
+impl Writer for MyType {
+    fn read(self: MyType) -> int64 { self.data + 1 }
+}
+
+fn process(value: MyType) -> int64 {
+    -- Use qualified names to disambiguate
+    reader_result: int64 <- Reader.read(value);
+    writer_result: int64 <- Writer.read(value);
+    reader_result + writer_result
 }
 ```
 
@@ -14141,7 +14096,7 @@ qualified_method_call ::= trait_name "." method_name "(" [arguments] ")"
 
 **Disambiguation Rules:**
 
-1. **Unique Method Names**: If method names are unique across included traits, no disambiguation needed
+1. **Unique Method Names**: If method names are unique across all implemented traits, no disambiguation needed
 2. **Ambiguous Method Names**: If multiple traits define the same method name, must use qualified name
 3. **Trait Method Access**: Use `TraitName.method_name()` to call methods from specific traits
 4. **Self Parameter**: Qualified method calls still pass `self` as the first parameter
@@ -14154,28 +14109,24 @@ This section clarifies when trait method disambiguation is required versus optio
 
 Disambiguation is **required** when:
 
-1. **Multiple Traits Define Same Method**: Two or more included traits define methods with identical names and signatures
-2. **Diamond Inheritance Conflicts**: A trait included through multiple paths defines the same method
-3. **Explicit Trait Selection**: The programmer wants to explicitly call a method from a specific trait
+1. **Multiple Traits Define Same Method**: Two or more implemented traits define methods with identical names and signatures
+2. **Explicit Trait Selection**: The programmer wants to explicitly call a method from a specific trait
 
 **When Disambiguation is Optional:**
 
 Disambiguation is **optional** when:
 
-1. **Unique Method Names**: Method names are unique across all included traits
-2. **Single Implementation Path**: A method is defined in only one trait in the inclusion hierarchy
-3. **No Ambiguity**: The compiler can unambiguously determine which method to call
+1. **Unique Method Names**: Method names are unique across all implemented traits
+2. **No Ambiguity**: The compiler can unambiguously determine which method to call
 
 **Disambiguation Decision Tree:**
 
 ```
-Is method name unique across all included traits?
+Is method name unique across all implemented traits?
 ├─ Yes → No disambiguation needed
 └─ No → Is method defined in multiple traits?
     ├─ Yes → Disambiguation required
-    └─ No → Check trait inclusion hierarchy
-        ├─ Single path → No disambiguation needed
-        └─ Multiple paths → Disambiguation required
+    └─ No → No disambiguation needed
 ```
 
 **Examples: Unambiguous Cases (No Disambiguation Needed)**
@@ -14189,16 +14140,20 @@ trait Writer {
     fn write(self: Self, data: int64) -> int64;  -- Different name
 }
 
-trait IO includes Reader, Writer {
-    fn process(self: Self) -> int64;
+struct MyType { data: int64 }
+
+impl Reader for MyType {
+    fn read(self: MyType) -> int64 { self.data }
+}
+
+impl Writer for MyType {
+    fn write(self: MyType, data: int64) -> int64 { data }
 }
 
 -- No disambiguation needed: method names are unique
-impl IO for MyType {
-    fn process(self: MyType) -> int64 {
-        value: int64 <- self.read();        -- Unambiguous: only Reader.read()
-        self.write(value)                   -- Unambiguous: only Writer.write()
-    }
+fn process(value: MyType) -> int64 {
+    value2: int64 <- value.read();        -- Unambiguous: only Reader.read()
+    value.write(value2)                   -- Unambiguous: only Writer.write()
 }
 ```
 
@@ -14213,16 +14168,20 @@ trait Debugger {
     fn log(self: Self, msg: string) -> unit;  -- Same name and signature
 }
 
-trait Tool includes Logger, Debugger {
-    fn run(self: Self) -> unit;
+struct MyTool { name: string }
+
+impl Logger for MyTool {
+    fn log(self: MyTool, msg: string) -> unit { print_string(msg) }
+}
+
+impl Debugger for MyTool {
+    fn log(self: MyTool, msg: string) -> unit { print_string("DEBUG: " + msg) }
 }
 
 -- Disambiguation required: both Logger and Debugger define log()
-impl Tool for MyTool {
-    fn run(self: MyTool) -> unit {
-        Logger.log(self, "info");      -- Required: specify Logger.log()
-        Debugger.log(self, "debug");    -- Required: specify Debugger.log()
-    }
+fn run(tool: MyTool) -> unit {
+    Logger.log(tool, "info");      -- Required: specify Logger.log()
+    Debugger.log(tool, "debug");   -- Required: specify Debugger.log()
 }
 ```
 
@@ -14231,7 +14190,7 @@ impl Tool for MyTool {
 To avoid disambiguation requirements:
 
 1. **Use Descriptive Method Names**: Prefer `read_from_file()` over `read()` when multiple traits might define `read()`
-2. **Namespace Methods**: Use trait-specific prefixes: `Logger.log()`, `Debugger.debug_log()`
+2. **Namespace Methods**: Use trait-specific prefixes: `logger_log()`, `debug_log()`
 3. **Avoid Common Names**: Avoid generic method names like `get()`, `set()`, `process()` in multiple traits
 4. **Document Ambiguity**: If ambiguity is intentional, document which trait's method should be used
 
@@ -14239,24 +14198,28 @@ To avoid disambiguation requirements:
 
 ```silica
 trait FileReader {
-    fn read_file(self: Self, path: string) -> string;  -- Specific name
+    fn read_file(self: Self, path: string) -> string;
 }
 
 trait NetworkReader {
-    fn read_socket(self: Self, sock: socket) -> string;  -- Different name
+    fn read_socket(self: Self, sock: socket) -> string;
 }
 
-trait DataReader includes FileReader, NetworkReader {
-    fn read_all(self: Self) -> string;
+struct MyReader { base_path: string }
+
+impl FileReader for MyReader {
+    fn read_file(self: MyReader, path: string) -> string { ... }
+}
+
+impl NetworkReader for MyReader {
+    fn read_socket(self: MyReader, sock: socket) -> string { ... }
 }
 
 -- No disambiguation needed: method names are distinct
-impl DataReader for MyReader {
-    fn read_all(self: MyReader) -> string {
-        file_data: string <- self.read_file("data.txt");      -- Unambiguous
-        socket_data: string <- self.read_socket(sock);        -- Unambiguous
-        file_data + socket_data
-    }
+fn read_all(reader: MyReader) -> string {
+    file_data: string <- reader.read_file("data.txt");      -- Unambiguous
+    socket_data: string <- reader.read_socket(sock);        -- Unambiguous
+    file_data + socket_data
 }
 ```
 
@@ -14274,160 +14237,10 @@ See specification: spec:§30.1.3
 ```
 
 **Cross-References:**
-- See Section 30.1.2 (Trait Inheritance and Sub-traits) for trait inclusion semantics
+- See Section 30.1.2 (Multiple Trait Implementation) for trait composition semantics
 - See Section 3.3.2 (Function Calls) for qualified method call syntax
 
-**Example: Diamond Inheritance with Method Disambiguation**
-
-```silica
-trait Loggable {
-    fn log(self: Self, level: int64) -> int64;
-}
-
-trait Persistent includes Loggable {
-    fn log(self: Self, level: int64) -> int64;  -- Overrides Loggable.log
-    fn save(self: Self) -> int64;
-}
-
-trait Secure includes Loggable {
-    fn log(self: Self, level: int64) -> int64;  -- Overrides Loggable.log
-    fn authenticate(self: Self, token: int64) -> int64;
-}
-
-trait EnterpriseService includes Persistent, Secure {
-    fn process_request(self: Self, request: int64) -> int64;
-}
-
--- Implementation must disambiguate log() calls
-impl EnterpriseService for DatabaseService {
-    fn process_request(self: DatabaseService, request: int64) -> int64 {
-        -- Use qualified names to specify which log() to call
-        Persistent.log(self, 1);      -- Call Persistent's log()
-        Secure.log(self, 2);          -- Call Secure's log()
-        -- Or call the base Loggable.log() if needed
-        Loggable.log(self, 0);
-        
-        -- Other methods don't need disambiguation (unique names)
-        self.save() + self.authenticate(request)
-    }
-}
-```
-
-**Rule 3: Single Implementation Requirement**
-
-When implementing a trait that includes other traits (including diamond inheritance scenarios), methods from included traits need to be implemented only once:
-
-```silica
-trait Loggable {
-    fn log(self: Self, level: int64) -> int64;
-}
-
-trait Persistent includes Loggable {
-    fn save(self: Self) -> int64;
-}
-
-trait Secure includes Loggable {
-    fn authenticate(self: Self, token: int64) -> int64;
-}
-
-trait EnterpriseService includes Persistent, Secure {
-    fn process_request(self: Self, request: int64) -> int64;
-}
-
--- Implementation: Loggable.log() implemented only once
--- (even though Loggable is included through both Persistent and Secure)
-impl EnterpriseService for DatabaseService {
-    -- Implement Loggable.log() once (deduplicated)
-    fn log(self: DatabaseService, level: int64) -> int64 {
-        -- Implementation
-    }
-    
-    -- Implement Persistent.save()
-    fn save(self: DatabaseService) -> int64 {
-        -- Implementation
-    }
-    
-    -- Implement Secure.authenticate()
-    fn authenticate(self: DatabaseService, token: int64) -> int64 {
-        -- Implementation
-    }
-    
-    -- Implement EnterpriseService.process_request()
-    fn process_request(self: DatabaseService, request: int64) -> int64 {
-        -- Implementation
-    }
-}
-```
-
-**Implementation Requirements:**
-
-1. **Deduplicated Methods**: Methods from deduplicated traits are implemented once
-2. **All Methods Required**: Must implement all methods from the trait and all included traits (after deduplication)
-3. **No Duplicate Implementations**: Cannot implement the same method multiple times for the same trait
-
-**Complete Diamond Inheritance Example:**
-
-```silica
--- Base trait
-trait Loggable {
-    fn log(self: Self, level: int64) -> int64;
-}
-
--- Intermediate traits
-trait Persistent includes Loggable, Serializable {
-    fn save(self: Self) -> int64;
-}
-
-trait Secure includes Loggable, Validatable {
-    fn authenticate(self: Self, token: int64) -> int64;
-}
-
--- Diamond inheritance: EnterpriseService includes Loggable through both paths
-trait EnterpriseService includes Persistent, Secure {
-    fn process_request(self: Self, request: int64) -> int64;
-}
-
--- Implementation
-struct DatabaseService {
-    connections: int64,
-    security_level: int64,
-    log_level: int64
-}
-
--- Implement Loggable once (deduplicated from diamond inheritance)
-impl Loggable for DatabaseService {
-    fn log(self: DatabaseService, level: int64) -> int64 {
-        self.log_level + level
-    }
-}
-
--- Implement other traits
-impl Serializable for DatabaseService { ... }
-impl Validatable for DatabaseService { ... }
-impl Persistent for DatabaseService { ... }
-impl Secure for DatabaseService { ... }
-impl EnterpriseService for DatabaseService {
-    fn process_request(self: DatabaseService, request: int64) -> int64 {
-        -- Can call log() without qualification (only one Loggable implementation)
-        self.log(1);
-        
-        -- Or use qualified name if multiple traits define same method
-        -- Persistent.save(self) + Secure.authenticate(self, request)
-        self.save() + self.authenticate(request)
-    }
-}
-```
-
-**Diamond Inheritance Summary:**
-
-| Aspect | Behavior |
-|--------|----------|
-| **Trait Deduplication** | Traits included multiple times through different paths are included only once |
-| **Method Disambiguation** | Use `TraitName.method_name()` to disambiguate when multiple traits define the same method |
-| **Implementation** | Methods from deduplicated traits are implemented only once |
-| **Method Resolution** | Unqualified method names resolve to the most specific implementation; qualified names resolve to specific trait |
-
-#### 30.1.3 Implementation Requirements for Inherited Traits
+#### 30.1.4 Implementation Requirements
 Types implement traits with concrete methods:
 
 ```silica
@@ -14444,7 +14257,7 @@ impl Comparable for int {
 }
 ```
 
-#### 30.1.4 Actor System Traits
+#### 30.1.5 Actor System Traits
 Silica provides two marker traits for the actor system:
 
 **ActorState Trait:**
@@ -14479,7 +14292,7 @@ impl ActorMessage for Response;
 cast(actor_ref, message: ActorMessage) : proc[concurrency] bool
 ```
 
-#### 30.1.5 Trait Bounds
+#### 30.1.6 Trait Bounds
 Functions can require trait implementations:
 
 ```silica
@@ -14488,25 +14301,26 @@ fn print_value(x) where Display {
 }
 ```
 
-#### 30.1.6 Implementing Inherited Traits
-When implementing a trait that includes other traits, you must implement all methods from the trait and its sub-traits:
+#### 30.1.7 Implementing Multiple Traits
+Each trait is implemented independently for a type. A type can implement as many traits as needed:
 
 ```silica
 trait Printable {
     fn to_string(self) -> string
 }
 
-trait Debug includes Printable {
+trait Debug {
     fn debug_string(self) -> string
 }
 
-// Implementation must provide both methods
-impl Debug for int {
-    fn to_string(self) = int_to_string(self)        // From Printable sub-trait
-    fn debug_string(self) = format("int: {}", self) // From Debug trait
+impl Printable for int {
+    fn to_string(self) = int_to_string(self)
 }
 
-// Sub-traits can be implemented independently
+impl Debug for int {
+    fn debug_string(self) = format("int: {}", self)
+}
+
 impl Printable for bool {
     fn to_string(self) = if self { "true" } else { "false" }
 }

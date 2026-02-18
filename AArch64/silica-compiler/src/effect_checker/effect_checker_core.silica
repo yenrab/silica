@@ -1,35 +1,248 @@
-// Core effect checking infrastructure
-// Provides effect context, capability stack, and basic effect checking utilities
+{- Core effect checking infrastructure.
+   Provides EffectCheckResult, EffectEntry environment, and helper functions
+   for effect comparison, validation, and built-in effect recognition.
+   Implements spec §9.1 (Effect Types), §9.1.2 (Effect Aliases).
+-}
 
-// Effect context for tracking active effects and capabilities
+use parser_ast;
+use lexer_core;
+
+export EffectCheckResult/0;
+export EffectEntry/0;
+export ListEffectEntry/0;
+export EffectContext/0;
+export effect_check_ok/0;
+export effect_check_err/4;
+export effects_equal/2;
+export effect_list_contains/2;
+export effect_list_length/1;
+export effect_name_to_string/1;
+export normalize_effect/1;
+export empty_effect_entry_list/0;
+export add_effect_entry/3;
+export lookup_fn_effects/2;
+export create_effect_context/2;
+export is_builtin_effect/1;
+export is_valid_mem_parameter/1;
+export is_builtin_alias_name/1;
+export is_builtin_fn/1;
+export expand_builtin_alias/1;
+export builtin_fn_effects/1;
+
+// --- Structs ---
+
+struct EffectCheckResult {
+    is_ok: bool,
+    error_code: string,
+    error_location: SourceLocation,
+    error_message: string,
+    spec_section: string
+}
+
+struct EffectEntry {
+    name: string,
+    effects: ListEffectName
+}
+
+struct ListEffectEntry {
+    is_nil: bool,
+    head: EffectEntry,
+    tail: ListEffectEntry
+}
+
 struct EffectContext {
-    // TODO: Define effect context structure
-    active_effects: ListEffect,
-    capability_stack: ListCapability,
+    fn_env: ListEffectEntry,
+    alias_env: ListEffectEntry
 }
 
-// Capability for effect checking
-struct Capability {
-    // TODO: Define capability structure
-    effect: Effect,
-    location: SourceLocation,
-}
+// --- Result constructors ---
 
-// Create a new effect context
-fn create_effect_context() -> EffectContext proc[mem(normal)] {
-    // TODO: Implement effect context creation
-    EffectContext {
-        active_effects: empty_effect_list(),
-        capability_stack: empty_capability_list()
+fn effect_check_ok() -> EffectCheckResult {
+    EffectCheckResult {
+        is_ok: true,
+        error_code: "",
+        error_location: parser_ast@zero_location(),
+        error_message: "",
+        spec_section: ""
     }
 }
 
-// Create empty effect list helper
-fn empty_effect_list() -> ListEffect {
-    // TODO: Implement empty effect list
+fn effect_check_err(error_code: string, error_location: SourceLocation, error_message: string, spec_section: string) -> EffectCheckResult {
+    EffectCheckResult {
+        is_ok: false,
+        error_code: error_code,
+        error_location: error_location,
+        error_message: error_message,
+        spec_section: spec_section
+    }
 }
 
-// Create empty capability list helper
-fn empty_capability_list() -> ListCapability {
-    // TODO: Implement empty capability list
+// --- Environment helpers ---
+
+fn dummy_effect_entry() -> EffectEntry {
+    EffectEntry { name: "", effects: parser_ast@empty_effect_name_list() }
+}
+
+fn empty_effect_entry_list() -> ListEffectEntry {
+    nil_placeholder: ListEffectEntry <- ListEffectEntry {
+        is_nil: true,
+        head: dummy_effect_entry(),
+        tail: nil_placeholder
+    };
+    nil_placeholder
+}
+
+fn add_effect_entry(env: ListEffectEntry, name: string, effects: ListEffectName) -> ListEffectEntry {
+    entry: EffectEntry <- EffectEntry { name: name, effects: effects };
+    ListEffectEntry { is_nil: false, head: entry, tail: env }
+}
+
+fn lookup_fn_effects(env: ListEffectEntry, name: string) -> (bool, ListEffectName) {
+    case env.is_nil of {
+        true -> (false, parser_ast@empty_effect_name_list());
+        false -> case env.head.name == name of {
+            true -> (true, env.head.effects);
+            false -> lookup_fn_effects(env.tail, name)
+        }
+    }
+}
+
+fn create_effect_context(fn_env: ListEffectEntry, alias_env: ListEffectEntry) -> EffectContext {
+    EffectContext { fn_env: fn_env, alias_env: alias_env }
+}
+
+// --- Effect comparison ---
+
+fn effects_equal(a: EffectName, b: EffectName) -> bool {
+    case a.name == b.name of {
+        true -> a.parameter == b.parameter;
+        false -> false
+    }
+}
+
+fn effect_list_contains(list: ListEffectName, eff: EffectName) -> bool {
+    case list.is_nil of {
+        true -> false;
+        false -> case effects_equal(list.head, eff) of {
+            true -> true;
+            false -> effect_list_contains(list.tail, eff)
+        }
+    }
+}
+
+fn effect_list_length(list: ListEffectName) -> int64 {
+    case list.is_nil of {
+        true -> 0;
+        false -> 1 + effect_list_length(list.tail)
+    }
+}
+
+// --- Display ---
+
+fn effect_name_to_string(eff: EffectName) -> string {
+    case len(eff.parameter) == 0 of {
+        true -> eff.name;
+        false -> concat(eff.name, concat("(", concat(eff.parameter, ")")))
+    }
+}
+
+{- Normalize legacy effect names to spec-standard forms.
+   DeviceIO -> device_io per spec §9.1.1. -}
+fn normalize_effect(eff: EffectName) -> EffectName {
+    case eff.name of {
+        "DeviceIO" -> EffectName { name: "device_io", parameter: "", location: eff.location };
+        _: string -> eff
+    }
+}
+
+// --- Built-in effect validation (§9.1.1) ---
+
+fn is_builtin_effect(eff: EffectName) -> bool {
+    norm: EffectName <- normalize_effect(eff);
+    case norm.name of {
+        "mem" -> is_valid_mem_parameter(norm.parameter);
+        "mailbox" -> len(norm.parameter) == 0;
+        "concurrency" -> len(norm.parameter) == 0;
+        "atomic" -> len(norm.parameter) == 0;
+        "device_io" -> len(norm.parameter) == 0;
+        _: string -> false
+    }
+}
+
+fn is_valid_mem_parameter(param: string) -> bool {
+    case param of {
+        "normal" -> true;
+        "normal_writeback" -> true;
+        "normal_writethrough" -> true;
+        "normal_noncacheable" -> true;
+        "atomic" -> true;
+        "device" -> true;
+        _: string -> false
+    }
+}
+
+// --- Built-in alias checks (§9.1.2) ---
+
+fn is_builtin_alias_name(name: string) -> bool {
+    case name of {
+        "actor_eff" -> true;
+        "io_eff" -> true;
+        "atomic_eff" -> true;
+        _: string -> false
+    }
+}
+
+{- Expand a built-in alias to its constituent effects.
+   actor_eff = [mailbox, concurrency]
+   io_eff = [mem(normal), device_io]
+   atomic_eff = [mem(atomic), atomic]  -}
+fn expand_builtin_alias(name: string) -> (bool, ListEffectName) {
+    zero: SourceLocation <- parser_ast@zero_location();
+    case name of {
+        "actor_eff" -> do
+            e1: EffectName <- EffectName { name: "mailbox", parameter: "", location: zero };
+            e2: EffectName <- EffectName { name: "concurrency", parameter: "", location: zero };
+            (true, parser_ast@cons_effect_name(e1, parser_ast@cons_effect_name(e2, parser_ast@empty_effect_name_list())))
+        end;
+        "io_eff" -> do
+            e1: EffectName <- EffectName { name: "mem", parameter: "normal", location: zero };
+            e2: EffectName <- EffectName { name: "device_io", parameter: "", location: zero };
+            (true, parser_ast@cons_effect_name(e1, parser_ast@cons_effect_name(e2, parser_ast@empty_effect_name_list())))
+        end;
+        "atomic_eff" -> do
+            e1: EffectName <- EffectName { name: "mem", parameter: "atomic", location: zero };
+            e2: EffectName <- EffectName { name: "atomic", parameter: "", location: zero };
+            (true, parser_ast@cons_effect_name(e1, parser_ast@cons_effect_name(e2, parser_ast@empty_effect_name_list())))
+        end;
+        _: string -> (false, parser_ast@empty_effect_name_list())
+    }
+}
+
+// --- Built-in function effect knowledge ---
+
+fn is_builtin_fn(name: string) -> bool {
+    case name of {
+        "println" -> true;
+        "print" -> true;
+        "print_int64" -> true;
+        "read_lines" -> true;
+        "file_exists" -> true;
+        _: string -> false
+    }
+}
+
+{- Returns the effects required by known built-in functions.
+   I/O built-ins require device_io per spec §9.1.1. -}
+fn builtin_fn_effects(name: string) -> (bool, ListEffectName) {
+    zero: SourceLocation <- parser_ast@zero_location();
+    dev_io: EffectName <- EffectName { name: "device_io", parameter: "", location: zero };
+    dev_io_list: ListEffectName <- parser_ast@cons_effect_name(dev_io, parser_ast@empty_effect_name_list());
+    case name of {
+        "println" -> (true, dev_io_list);
+        "print" -> (true, dev_io_list);
+        "print_int64" -> (true, dev_io_list);
+        "read_lines" -> (true, dev_io_list);
+        "file_exists" -> (true, dev_io_list);
+        _: string -> (false, parser_ast@empty_effect_name_list())
+    }
 }

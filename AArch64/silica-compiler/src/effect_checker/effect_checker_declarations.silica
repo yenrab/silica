@@ -1,17 +1,131 @@
-// Effect declaration validation
-// Validates that all effects are explicitly declared
+{- Effect declaration validation.
+   Builds effect environments from parsed declarations and validates that
+   all declared effect names are recognized built-in, alias, or user-defined effects.
+   Implements spec §9.1 (valid effect names), §9.3.1 (explicit declaration requirement).
+-}
 
-// Validate effect declaration in function signature
-fn validate_effect_declaration(effects: ListEffect, function_body: ListStatement) -> ResultUnitEffectError proc[mem(normal)] {
-    // TODO: Implement effect declaration validation
+use parser_ast;
+use lexer_core;
+use effect_checker_core;
+
+export build_fn_env/1;
+export build_alias_env/1;
+export validate_effect_name/2;
+export validate_declared_effects/2;
+export validate_all_fn_declarations/2;
+
+// --- Environment construction ---
+
+{- Scan ListDeclaration to build function name -> declared effects mapping.
+   Only processes function declarations (tag 0). -}
+fn build_fn_env(decls: ListDeclaration) -> ListEffectEntry {
+    build_fn_env_acc(decls, effect_checker_core@empty_effect_entry_list())
 }
 
-// Check if all effects are explicitly declared
-fn check_explicit_effects(context: ref(R, normal, EffectContext), function: FunctionDecl) -> ResultUnitEffectError proc[mem(normal)] {
-    // TODO: Implement explicit effect checking
+fn build_fn_env_acc(decls: ListDeclaration, acc: ListEffectEntry) -> ListEffectEntry {
+    case decls.is_nil of {
+        true -> acc;
+        false -> do
+            new_acc: ListEffectEntry <- case decls.head.tag == 0 of {
+                true -> effect_checker_core@add_effect_entry(acc, decls.head.name, decls.head.declared_effects);
+                false -> acc
+            };
+            build_fn_env_acc(decls.tail, new_acc)
+        end
+    }
 }
 
-// Collect effects from function body
-fn collect_body_effects(context: ref(R, normal, EffectContext), body: ListStatement) -> ListEffect proc[mem(normal)] {
-    // TODO: Implement effect collection from function body
+{- Scan ListDeclaration to build effect alias name -> effects mapping.
+   Only processes effect declarations (tag 1). -}
+fn build_alias_env(decls: ListDeclaration) -> ListEffectEntry {
+    build_alias_env_acc(decls, effect_checker_core@empty_effect_entry_list())
+}
+
+fn build_alias_env_acc(decls: ListDeclaration, acc: ListEffectEntry) -> ListEffectEntry {
+    case decls.is_nil of {
+        true -> acc;
+        false -> do
+            new_acc: ListEffectEntry <- case decls.head.tag == 1 of {
+                true -> effect_checker_core@add_effect_entry(acc, decls.head.name, decls.head.declared_effects);
+                false -> acc
+            };
+            build_alias_env_acc(decls.tail, new_acc)
+        end
+    }
+}
+
+// --- Effect name validation ---
+
+{- Validate that a single effect name is a recognized built-in effect,
+   a built-in alias, or a user-defined effect/alias in the alias environment.
+   Returns effect_check_ok if valid, E3005 if unrecognized, E3007 if invalid parameter. -}
+fn validate_effect_name(eff: EffectName, alias_env: ListEffectEntry) -> EffectCheckResult {
+    norm: EffectName <- effect_checker_core@normalize_effect(eff);
+    case effect_checker_core@is_builtin_effect(norm) of {
+        true -> effect_checker_core@effect_check_ok();
+        false -> case effect_checker_core@is_builtin_alias_name(norm.name) of {
+            true -> case len(norm.parameter) == 0 of {
+                true -> effect_checker_core@effect_check_ok();
+                false -> effect_checker_core@effect_check_err(
+                    "E3007",
+                    eff.location,
+                    concat("Invalid parameter on effect alias: ", effect_checker_core@effect_name_to_string(eff)),
+                    "sect9.1.2"
+                )
+            };
+            false -> do
+                (found_user: bool, user_effects: ListEffectName) <- effect_checker_core@lookup_fn_effects(alias_env, norm.name);
+                case found_user of {
+                    true -> case len(norm.parameter) == 0 of {
+                        true -> effect_checker_core@effect_check_ok();
+                        false -> effect_checker_core@effect_check_err(
+                            "E3007",
+                            eff.location,
+                            concat("Invalid parameter on user-defined effect: ", effect_checker_core@effect_name_to_string(eff)),
+                            "sect9.1.3"
+                        )
+                    };
+                    false -> effect_checker_core@effect_check_err(
+                        "E3005",
+                        eff.location,
+                        concat("Undeclared effect: ", effect_checker_core@effect_name_to_string(eff)),
+                        "sect9.1"
+                    )
+                }
+            end
+        }
+    }
+}
+
+{- Validate all effects in a function's declared_effects list.
+   Returns the first error found, or effect_check_ok if all are valid. -}
+fn validate_declared_effects(effects: ListEffectName, alias_env: ListEffectEntry) -> EffectCheckResult {
+    case effects.is_nil of {
+        true -> effect_checker_core@effect_check_ok();
+        false -> do
+            result: EffectCheckResult <- validate_effect_name(effects.head, alias_env);
+            case result.is_ok of {
+                true -> validate_declared_effects(effects.tail, alias_env);
+                false -> result
+            }
+        end
+    }
+}
+
+{- Validate declared effects across all function declarations (tag 0) in the program.
+   Returns the first error found, or effect_check_ok if all are valid. -}
+fn validate_all_fn_declarations(decls: ListDeclaration, alias_env: ListEffectEntry) -> EffectCheckResult {
+    case decls.is_nil of {
+        true -> effect_checker_core@effect_check_ok();
+        false -> case decls.head.tag == 0 of {
+            true -> do
+                result: EffectCheckResult <- validate_declared_effects(decls.head.declared_effects, alias_env);
+                case result.is_ok of {
+                    true -> validate_all_fn_declarations(decls.tail, alias_env);
+                    false -> result
+                }
+            end;
+            false -> validate_all_fn_declarations(decls.tail, alias_env)
+        }
+    }
 }

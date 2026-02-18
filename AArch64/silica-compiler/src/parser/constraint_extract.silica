@@ -32,10 +32,76 @@ fn extract_function(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) {
     r1: ListTokenSlot <- slots.tail;
     fn_name: string <- r1.head.token.lexeme;
     fn_loc: SourceLocation <- r1.head.token.location;
-    (ret_type: string, ret_type_loc: SourceLocation, body_slots: ListTokenSlot) <- find_type_and_body(r1.tail);
+    (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(r1.tail);
     (body: Expr, rest_after_body: ListTokenSlot) <- extract_body(body_slots);
-    decl: Declaration <- Declaration { tag: 0, name: fn_name, return_type_name: ret_type, return_type_location: ret_type_loc, location: fn_loc, body: body };
+    decl: Declaration <- Declaration { tag: 0, name: fn_name, return_type_name: ret_type, return_type_location: ret_type_loc, location: fn_loc, body: body, declared_effects: effects };
     (decl, rest_after_body)
+}
+
+fn extract_effect_declaration(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> do
+            empty: ListTokenSlot <- constraint_core@empty_list_slot();
+            (parser_ast@dummy_decl(), empty)
+        end;
+        false -> case slots.tail.is_nil of {
+            true -> (parser_ast@dummy_decl(), slots.tail);
+            false -> do
+                kw_slot: TokenSlot <- slots.head;
+                name_slot: TokenSlot <- slots.tail.head;
+                rest_after_name: ListTokenSlot <- slots.tail.tail;
+                case rest_after_name.is_nil of {
+                    true -> (parser_ast@dummy_decl(), rest_after_name);
+                    false -> do
+                        after_equal: ListTokenSlot <- rest_after_name.tail;
+                        case after_equal.is_nil of {
+                            true -> (parser_ast@dummy_decl(), after_equal);
+                            false -> case after_equal.head.token.kind == kinds.left_bracket of {
+                                true -> do
+                                    (effects: ListEffectName, rest_after_effects: ListTokenSlot) <- collect_effects_until_right_bracket(after_equal.tail, parser_ast@empty_effect_name_list());
+                                    dummy: Expr <- parser_ast@dummy_expr();
+                                    zero_loc: SourceLocation <- parser_ast@zero_location();
+                                    decl: Declaration <- Declaration { tag: 1, name: name_slot.token.lexeme, return_type_name: "", return_type_location: zero_loc, location: kw_slot.token.location, body: dummy, declared_effects: effects };
+                                    (decl, rest_after_effects)
+                                end;
+                                false -> (parser_ast@dummy_decl(), after_equal)
+                            }
+                        }
+                    end
+                }
+            end
+        }
+    }
+}
+
+fn is_effect_decl_start(slots: ListTokenSlot) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> false;
+        false -> case slots.tail.is_nil of {
+            true -> false;
+            false -> case slots.tail.tail.is_nil of {
+                true -> false;
+                false -> case slots.tail.tail.tail.is_nil of {
+                    true -> false;
+                    false -> case slots.head.token.kind == kinds.identifier of {
+                        true -> case slots.head.token.lexeme == "effect" of {
+                            true -> case slots.tail.head.token.kind == kinds.identifier of {
+                                true -> case slots.tail.tail.head.token.kind == kinds.equal of {
+                                    true -> slots.tail.tail.tail.head.token.kind == kinds.left_bracket;
+                                    false -> false
+                                };
+                                false -> false
+                            };
+                            false -> false
+                        };
+                        false -> false
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn is_type_keyword(kinds: TokenKinds, token_kind: int64) -> bool {
@@ -50,13 +116,97 @@ fn is_operand_token(kinds: TokenKinds, token_kind: int64) -> bool {
     token_kind == kinds.integer_literal or token_kind == kinds.identifier
 }
 
-fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListTokenSlot) {
+fn collect_effects_until_right_bracket(slots: ListTokenSlot, acc: ListEffectName) -> (ListEffectName, ListTokenSlot) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (acc, slots);
+        false -> case slots.head.token.kind == kinds.right_bracket of {
+            true -> (acc, slots.tail);
+            false -> case slots.head.token.kind == kinds.comma of {
+                true -> collect_effects_until_right_bracket(slots.tail, acc);
+                false -> case slots.head.token.kind == kinds.identifier of {
+                    true -> do
+                        rest1: ListTokenSlot <- slots.tail;
+                        case rest1.is_nil of {
+                            true -> do
+                                eff: EffectName <- EffectName { name: slots.head.token.lexeme, parameter: "", location: slots.head.token.location };
+                                next_acc: ListEffectName <- parser_ast@cons_effect_name(eff, acc);
+                                collect_effects_until_right_bracket(rest1, next_acc)
+                            end;
+                            false -> case rest1.head.token.kind == kinds.left_paren of {
+                                true -> case rest1.tail.is_nil of {
+                                    true -> do
+                                        eff_no_param: EffectName <- EffectName { name: slots.head.token.lexeme, parameter: "", location: slots.head.token.location };
+                                        next_acc_no_param: ListEffectName <- parser_ast@cons_effect_name(eff_no_param, acc);
+                                        collect_effects_until_right_bracket(rest1, next_acc_no_param)
+                                    end;
+                                    false -> case rest1.tail.head.token.kind == kinds.identifier of {
+                                        true -> case rest1.tail.tail.is_nil of {
+                                            true -> do
+                                                eff_no_param: EffectName <- EffectName { name: slots.head.token.lexeme, parameter: "", location: slots.head.token.location };
+                                                next_acc_no_param: ListEffectName <- parser_ast@cons_effect_name(eff_no_param, acc);
+                                                collect_effects_until_right_bracket(rest1, next_acc_no_param)
+                                            end;
+                                            false -> case rest1.tail.tail.head.token.kind == kinds.right_paren of {
+                                                true -> do
+                                                    eff: EffectName <- EffectName { name: slots.head.token.lexeme, parameter: rest1.tail.head.token.lexeme, location: slots.head.token.location };
+                                                    next_acc: ListEffectName <- parser_ast@cons_effect_name(eff, acc);
+                                                    collect_effects_until_right_bracket(rest1.tail.tail.tail, next_acc)
+                                                end;
+                                                false -> do
+                                                    eff_no_param: EffectName <- EffectName { name: slots.head.token.lexeme, parameter: "", location: slots.head.token.location };
+                                                    next_acc_no_param: ListEffectName <- parser_ast@cons_effect_name(eff_no_param, acc);
+                                                    collect_effects_until_right_bracket(rest1, next_acc_no_param)
+                                                end
+                                            }
+                                        };
+                                        false -> do
+                                            eff_no_param: EffectName <- EffectName { name: slots.head.token.lexeme, parameter: "", location: slots.head.token.location };
+                                            next_acc_no_param: ListEffectName <- parser_ast@cons_effect_name(eff_no_param, acc);
+                                            collect_effects_until_right_bracket(rest1, next_acc_no_param)
+                                        end
+                                    }
+                                };
+                                false -> do
+                                    eff: EffectName <- EffectName { name: slots.head.token.lexeme, parameter: "", location: slots.head.token.location };
+                                    next_acc: ListEffectName <- parser_ast@cons_effect_name(eff, acc);
+                                    collect_effects_until_right_bracket(rest1, next_acc)
+                                end
+                            }
+                        }
+                    end;
+                    false -> collect_effects_until_right_bracket(slots.tail, acc)
+                }
+            }
+        }
+    }
+}
+
+fn collect_optional_proc_effects(slots: ListTokenSlot) -> (ListEffectName, ListTokenSlot) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (parser_ast@empty_effect_name_list(), slots);
+        false -> case slots.head.token.kind == kinds.proc_keyword of {
+            true -> case slots.tail.is_nil of {
+                true -> (parser_ast@empty_effect_name_list(), slots);
+                false -> case slots.tail.head.token.kind == kinds.left_bracket of {
+                    true -> collect_effects_until_right_bracket(slots.tail.tail, parser_ast@empty_effect_name_list());
+                    false -> (parser_ast@empty_effect_name_list(), slots)
+                }
+            };
+            false -> (parser_ast@empty_effect_name_list(), slots)
+        }
+    }
+}
+
+fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListEffectName, ListTokenSlot) {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     case slots.is_nil of {
         true -> do
             zero_loc: SourceLocation <- parser_ast@zero_location();
+            empty_effects: ListEffectName <- parser_ast@empty_effect_name_list();
             empty: ListTokenSlot <- constraint_core@empty_list_slot();
-            ("", zero_loc, empty)
+            ("", zero_loc, empty_effects, empty)
         end;
         false -> do
             first: TokenSlot <- slots.head;
@@ -66,13 +216,14 @@ fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListToke
                     ret_type: string <- first.token.lexeme;
                     ret_type_loc: SourceLocation <- first.token.location;
                     rest_after_type: ListTokenSlot <- rest;
-                    rest_after_lbrace: ListTokenSlot <- rest_after_type.tail;
+                    (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(rest_after_type);
+                    rest_after_lbrace: ListTokenSlot <- after_effects.tail;
                     body_slots: ListTokenSlot <- rest_after_lbrace;
-                    (ret_type, ret_type_loc, body_slots)
+                    (ret_type, ret_type_loc, effects, body_slots)
                 end;
                 false -> do
-                    (ret_type: string, ret_type_loc: SourceLocation, body_slots: ListTokenSlot) <- find_type_and_body(rest);
-                    (ret_type, ret_type_loc, body_slots)
+                    (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(rest);
+                    (ret_type, ret_type_loc, effects, body_slots)
                 end
             }
         end
@@ -163,17 +314,40 @@ fn extract_body_expr(slot: TokenSlot) -> Expr {
     }
 }
 
-fn slots_to_program(slots: ListTokenSlot) -> Program {
-    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+fn extract_one_declaration(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) {
+    case is_effect_decl_start(slots) of {
+        true -> extract_effect_declaration(slots);
+        false -> extract_function(slots)
+    }
+}
+
+fn declarations_from_slots(slots: ListTokenSlot) -> ListDeclaration {
     case slots.is_nil of {
-        true -> Program { declarations: parser_ast@empty_list_decl(), location: parser_ast@zero_location() };
+        true -> parser_ast@empty_list_decl();
         false -> case slots.tail.is_nil of {
-            true -> Program { declarations: parser_ast@empty_list_decl(), location: parser_ast@zero_location() };
+            true -> parser_ast@empty_list_decl();
             false -> do
-                (decl: Declaration, rest: ListTokenSlot) <- extract_function(slots);
-                decls: ListDeclaration <- ListDeclaration { is_nil: false, head: decl, tail: parser_ast@empty_list_decl() };
-                Program { declarations: decls, location: decl.location }
+                (decl: Declaration, rest: ListTokenSlot) <- extract_one_declaration(slots);
+                case decl.tag >= 0 of {
+                    true -> do
+                        tail_decls: ListDeclaration <- declarations_from_slots(rest);
+                        ListDeclaration { is_nil: false, head: decl, tail: tail_decls }
+                    end;
+                    false -> declarations_from_slots(slots.tail)
+                }
             end
         }
     }
+}
+
+fn program_location_from_decls(decls: ListDeclaration) -> SourceLocation {
+    case decls.is_nil of {
+        true -> parser_ast@zero_location();
+        false -> decls.head.location
+    }
+}
+
+fn slots_to_program(slots: ListTokenSlot) -> Program {
+    decls: ListDeclaration <- declarations_from_slots(slots);
+    Program { declarations: decls, location: program_location_from_decls(decls) }
 }

@@ -1,22 +1,127 @@
-// Effect propagation
-// Tracks effect propagation through function calls and bindings
+{- Effect propagation.
+   Traverses Expr trees to collect effects from function calls,
+   computes effect set unions, and expands effect aliases.
+   Implements spec §9.3.1 (Effect Propagation, Effect Set Union Algorithm).
+-}
 
-// Collect effects from an expression
-fn collect_expression_effects(context: ref(R, normal, EffectContext), expr: Expression) -> ListEffect proc[mem(normal)] {
-    // TODO: Implement expression effect collection
+use parser_ast;
+use lexer_core;
+use effect_checker_core;
+
+export collect_expr_effects/2;
+export resolve_call_effects/2;
+export union_effect_lists/2;
+export add_effect_if_absent/2;
+export expand_effect_list/2;
+export expand_single_effect/2;
+
+// --- Effect collection from expressions ---
+
+{- Traverse an Expr tree and collect the union of all effects from function calls.
+   Expr kinds: 0=literal, 1=identifier, 2=parenthesized, 3=binary_op, 4=call, -1=dummy.
+   For calls (kind 4): resolve callee effects, union with effects from argument subtree.
+   For binary ops (kind 3): union effects from both operands.
+   Pure expressions (literal, identifier) contribute no effects. -}
+fn collect_expr_effects(expr: Expr, ctx: EffectContext) -> ListEffectName {
+    case expr.kind == 4 of {
+        true -> do
+            callee_effects: ListEffectName <- resolve_call_effects(expr.name, ctx);
+            arg_effects: ListEffectName <- collect_expr_effects(expr.inner, ctx);
+            union_effect_lists(callee_effects, arg_effects)
+        end;
+        false -> case expr.kind == 3 of {
+            true -> do
+                left_effects: ListEffectName <- collect_expr_effects(expr.inner, ctx);
+                right_effects: ListEffectName <- collect_expr_effects(expr.right_expr, ctx);
+                union_effect_lists(left_effects, right_effects)
+            end;
+            false -> case expr.kind == 2 of {
+                true -> collect_expr_effects(expr.inner, ctx);
+                false -> parser_ast@empty_effect_name_list()
+            }
+        }
+    }
 }
 
-// Compute union of effect sets
-fn union_effects(effects1: ListEffect, effects2: ListEffect) -> ListEffect proc[mem(normal)] {
-    // TODO: Implement effect union
+{- Resolve the effects of a called function by name.
+   Lookup order: user-defined function env, then built-in functions.
+   Unknown functions are treated as pure (empty effects). -}
+fn resolve_call_effects(fn_name: string, ctx: EffectContext) -> ListEffectName {
+    (found_user: bool, user_effects: ListEffectName) <- effect_checker_core@lookup_fn_effects(ctx.fn_env, fn_name);
+    case found_user of {
+        true -> expand_effect_list(user_effects, ctx.alias_env);
+        false -> do
+            (found_builtin: bool, builtin_effects: ListEffectName) <- effect_checker_core@builtin_fn_effects(fn_name);
+            case found_builtin of {
+                true -> builtin_effects;
+                false -> parser_ast@empty_effect_name_list()
+            }
+        end
+    }
 }
 
-// Propagate effects through function call
-fn propagate_call_effects(context: ref(R, normal, EffectContext), call: CallExpr) -> ListEffect proc[mem(normal)] {
-    // TODO: Implement effect propagation through function calls
+// --- Effect set union ---
+
+{- Compute the union of two effect lists (no duplicates).
+   For each effect in list_a, add to list_b if not already present.
+   Normalizes effects before comparison. -}
+fn union_effect_lists(list_a: ListEffectName, list_b: ListEffectName) -> ListEffectName {
+    case list_a.is_nil of {
+        true -> list_b;
+        false -> do
+            merged: ListEffectName <- add_effect_if_absent(list_b, effect_checker_core@normalize_effect(list_a.head));
+            union_effect_lists(list_a.tail, merged)
+        end
+    }
 }
 
-// Propagate effects through binding
-fn propagate_binding_effects(context: ref(R, normal, EffectContext), binding: Binding) -> ListEffect proc[mem(normal)] {
-    // TODO: Implement effect propagation through bindings
+{- Add an effect to the list if it is not already present (by equality after normalization). -}
+fn add_effect_if_absent(list: ListEffectName, eff: EffectName) -> ListEffectName {
+    case effect_checker_core@effect_list_contains(list, eff) of {
+        true -> list;
+        false -> parser_ast@cons_effect_name(eff, list)
+    }
+}
+
+// --- Alias expansion ---
+
+{- Expand all aliases in an effect list.
+   Each effect that is a built-in alias or user-defined alias is replaced
+   by its expansion. Built-in effects pass through unchanged. -}
+fn expand_effect_list(effects: ListEffectName, alias_env: ListEffectEntry) -> ListEffectName {
+    case effects.is_nil of {
+        true -> parser_ast@empty_effect_name_list();
+        false -> do
+            expanded_head: ListEffectName <- expand_single_effect(effects.head, alias_env);
+            expanded_tail: ListEffectName <- expand_effect_list(effects.tail, alias_env);
+            union_effect_lists(expanded_head, expanded_tail)
+        end
+    }
+}
+
+{- Expand a single effect. If it is a built-in effect, return as singleton list.
+   If it is a built-in alias, return its expansion.
+   If it is a user-defined alias, return its expansion.
+   Otherwise, return as singleton list (will be caught by validation). -}
+fn expand_single_effect(eff: EffectName, alias_env: ListEffectEntry) -> ListEffectName {
+    norm: EffectName <- effect_checker_core@normalize_effect(eff);
+    case effect_checker_core@is_builtin_effect(norm) of {
+        true -> parser_ast@cons_effect_name(norm, parser_ast@empty_effect_name_list());
+        false -> case effect_checker_core@is_builtin_alias_name(norm.name) of {
+            true -> do
+                (found_alias: bool, alias_effects: ListEffectName) <- effect_checker_core@expand_builtin_alias(norm.name);
+                case found_alias of {
+                    true -> alias_effects;
+                    false -> parser_ast@cons_effect_name(norm, parser_ast@empty_effect_name_list())
+                }
+            end;
+            false -> do
+                (found_user: bool, user_effects: ListEffectName) <- effect_checker_core@lookup_fn_effects(alias_env, norm.name);
+                case found_user of {
+                    true -> user_effects;
+                    false -> parser_ast@cons_effect_name(norm, parser_ast@empty_effect_name_list())
+                }
+            end
+        }
+    }
 }
