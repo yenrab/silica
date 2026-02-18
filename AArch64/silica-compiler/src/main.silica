@@ -5,9 +5,11 @@ use lexer_runner;
 use lexer_core;
 use parser_core;
 use parser_runner;
+use parser_ast;
 use type_checker_core;
 use type_checker_runner;
 use sir_generator_core;
+use sir_ast;
 use emitter_core;
 use build_output;
 use diagnostics_core;
@@ -322,6 +324,24 @@ fn remove_from_list(lst: ListString, s: string) -> ListString {
     }
 }
 
+// Validate that all files listed in config exist; return 0 if ok, 1 if any missing
+fn validate_config_files(files: ListString) -> int64 proc[DeviceIO] {
+    case files.is_nil of {
+        true -> 0;
+        false -> do
+            exists: bool <- file_exists(files.head);
+            case exists of {
+                true -> validate_config_files(files.tail);
+                false -> do
+                    println(concat("Error: File not found: ", files.head));
+                    println("Check silica.config - the file listed does not exist.");
+                    1
+                end
+            }
+        end
+    }
+}
+
 // Compile a single file: lex -> parse -> type_check -> sir -> emit
 fn compile_file(filename: string) -> int64 proc[DeviceIO] {
     println("Compiling ");
@@ -408,11 +428,17 @@ fn main() -> int64 proc[DeviceIO] {
             1
         end;
         false -> do
-            println("Files to compile: ");
-            print_int64(list_string_length(files));
-            println("");
-            sorted_files: ListString <- topological_sort(files);
-            compile_all_files(sorted_files)
+            validation: int64 <- validate_config_files(files);
+            case validation != 0 of {
+                true -> 1;
+                false -> do
+                    println("Files to compile: ");
+                    print_int64(list_string_length(files));
+                    println("");
+                    sorted_files: ListString <- topological_sort(files);
+                    compile_all_files(sorted_files)
+                end
+            }
         end
     }
 }

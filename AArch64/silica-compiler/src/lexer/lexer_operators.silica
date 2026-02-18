@@ -26,6 +26,13 @@ fn is_operator_char(c: char) -> bool {
         ')' -> true;
         '{' -> true;
         '}' -> true;
+        '+' -> true;
+        '*' -> true;
+        '/' -> true;
+        '%' -> true;
+        '<' -> true;
+        '=' -> true;
+        '!' -> true;
         _: char -> false
     }
 }
@@ -70,11 +77,119 @@ fn read_arrow(lexer: Lexer) -> (Token, Lexer) {
     case first of {
         "-" -> do
             after_minus: Lexer <- lexer_core@advance(lexer);
-            // Read '>' character
+            // Read '>' character - if "->" return arrow, else return minus token
             second: string <- lexer_core@peek_char(after_minus);
             case second of {
                 ">" -> (lexer_core@make_token(kinds.right_arrow, "->", start_location), lexer_core@advance(after_minus));
-                _: string -> (lexer_core@make_token(kinds.eof, "", start_location), lexer)
+                _: string -> (lexer_core@make_token(kinds.minus, "-", start_location), after_minus)
+            }
+        end;
+        _: string -> (lexer_core@make_token(kinds.eof, "", start_location), lexer)
+    }
+}
+
+
+{-
+- Consumes a single-character arithmetic operator (+, *, /, %) and returns the corresponding token with lexeme and the advanced lexer.
+- Used when the lexer has peeked one of these characters; advances once and returns the token.
+- Time: O(1), Ω(1), Θ(1).
+-}
+fn read_single_char_arithmetic(lexer: Lexer, c: string) -> (Token, Lexer) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    start_location: SourceLocation <- lexer_core@current_location(lexer);
+    updated_lexer: Lexer <- lexer_core@advance(lexer);
+    
+    case c of {
+        "+" -> (lexer_core@make_token(kinds.plus, "+", start_location), updated_lexer);
+        "*" -> (lexer_core@make_token(kinds.star, "*", start_location), updated_lexer);
+        "/" -> (lexer_core@make_token(kinds.slash, "/", start_location), updated_lexer);
+        "%" -> (lexer_core@make_token(kinds.percent, "%", start_location), updated_lexer);
+        _: string -> (lexer_core@make_token(kinds.eof, "", start_location), lexer)
+    }
+}
+
+
+{-
+- If the lexer is at "<" followed by "=", consumes both and returns less_equal; if at "<" alone, consumes it and returns less_than.
+- Time: O(1), Ω(1), Θ(1).
+-}
+fn read_less_than(lexer: Lexer) -> (Token, Lexer) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    start_location: SourceLocation <- lexer_core@current_location(lexer);
+    first: string <- lexer_core@peek_char(lexer);
+    case first of {
+        "<" -> do
+            after_less: Lexer <- lexer_core@advance(lexer);
+            second: string <- lexer_core@peek_char(after_less);
+            case second of {
+                "=" -> (lexer_core@make_token(kinds.less_equal, "<=", start_location), lexer_core@advance(after_less));
+                _: string -> (lexer_core@make_token(kinds.less_than, "<", start_location), after_less)
+            }
+        end;
+        _: string -> (lexer_core@make_token(kinds.eof, "", start_location), lexer)
+    }
+}
+
+
+{-
+- If the lexer is at ">" followed by "=", consumes both and returns greater_equal; if at ">" alone, consumes it and returns greater_than.
+- Time: O(1), Ω(1), Θ(1).
+-}
+fn read_greater_than(lexer: Lexer) -> (Token, Lexer) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    start_location: SourceLocation <- lexer_core@current_location(lexer);
+    first: string <- lexer_core@peek_char(lexer);
+    case first of {
+        ">" -> do
+            after_greater: Lexer <- lexer_core@advance(lexer);
+            second: string <- lexer_core@peek_char(after_greater);
+            case second of {
+                "=" -> (lexer_core@make_token(kinds.greater_equal, ">=", start_location), lexer_core@advance(after_greater));
+                _: string -> (lexer_core@make_token(kinds.greater_than, ">", start_location), after_greater)
+            }
+        end;
+        _: string -> (lexer_core@make_token(kinds.eof, "", start_location), lexer)
+    }
+}
+
+
+{-
+- If the lexer is at "=" followed by "=", consumes both and returns equal_equal; if at "=" alone, consumes it and returns equal.
+- Time: O(1), Ω(1), Θ(1).
+-}
+fn read_equal(lexer: Lexer) -> (Token, Lexer) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    start_location: SourceLocation <- lexer_core@current_location(lexer);
+    first: string <- lexer_core@peek_char(lexer);
+    case first of {
+        "=" -> do
+            after_equal: Lexer <- lexer_core@advance(lexer);
+            second: string <- lexer_core@peek_char(after_equal);
+            case second of {
+                "=" -> (lexer_core@make_token(kinds.equal_equal, "==", start_location), lexer_core@advance(after_equal));
+                _: string -> (lexer_core@make_token(kinds.equal, "=", start_location), after_equal)
+            }
+        end;
+        _: string -> (lexer_core@make_token(kinds.eof, "", start_location), lexer)
+    }
+}
+
+
+{-
+- If the lexer is at "!" followed by "=", consumes both and returns bang_equal; if at "!" alone, consumes it and returns unknown_char.
+- Time: O(1), Ω(1), Θ(1).
+-}
+fn read_bang_equal(lexer: Lexer) -> (Token, Lexer) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    start_location: SourceLocation <- lexer_core@current_location(lexer);
+    first: string <- lexer_core@peek_char(lexer);
+    case first of {
+        "!" -> do
+            after_bang: Lexer <- lexer_core@advance(lexer);
+            second: string <- lexer_core@peek_char(after_bang);
+            case second of {
+                "=" -> (lexer_core@make_token(kinds.bang_equal, "!=", start_location), lexer_core@advance(after_bang));
+                _: string -> (lexer_core@make_token(kinds.unknown_char, "!", start_location), after_bang)
             }
         end;
         _: string -> (lexer_core@make_token(kinds.eof, "", start_location), lexer)

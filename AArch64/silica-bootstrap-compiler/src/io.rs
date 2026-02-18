@@ -339,26 +339,19 @@ pub unsafe fn get_string_data_and_length(ptr: *const u8) -> Option<(*const u8, u
         && data_ptr_value > 0x1000;  // Reasonable lower bound (avoid null page)
     
     if looks_like_valid_pointer && length < 1024 * 1024 * 1024 {
-        // eprintln!("[DEBUG] get_string_data_and_length: Detected as SilicaString (valid pointer), returning (data_ptr={:p}, length={})", data_ptr, length);
         return Some((data_ptr, length));
-    } else {
-        // eprintln!("[DEBUG] get_string_data_and_length: Failed SilicaString heuristic (looks_like_valid_pointer={}, data_ptr={:p}, length={}), treating as C string", looks_like_valid_pointer, data_ptr, length);
     }
 
     // Otherwise, treat as a null-terminated C string
-    // eprintln!("[DEBUG] get_string_data_and_length: Treating as null-terminated C string, scanning for null terminator...");
     let mut len = 0;
     let mut p = ptr;
     while *p != 0 {
         len += 1;
         p = p.add(1);
         if len > 1024 * 1024 {
-            // Safety limit
-            // eprintln!("[DEBUG] get_string_data_and_length: Hit safety limit (1MB), stopping scan");
             break;
         }
     }
-    // eprintln!("[DEBUG] get_string_data_and_length: C string length = {}, returning (ptr={:p}, len={})", len, ptr, len);
     Some((ptr, len))
 }
 
@@ -706,9 +699,11 @@ pub extern "C" fn silica_string_equals(a_ptr: *const u8, b_ptr: *const u8) -> bo
         return true;
     }
 
-    unsafe {
+    let result = unsafe {
         let a_slice = std::slice::from_raw_parts(a_data, a_len);
         let b_slice = std::slice::from_raw_parts(b_data, b_len);
         a_slice == b_slice
-    }
+    };
+
+    result
 }

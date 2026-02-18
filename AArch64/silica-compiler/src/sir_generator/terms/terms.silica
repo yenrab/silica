@@ -7,6 +7,8 @@ use type_checker_core;
 use sir_ast;
 use literals;
 use identifiers;
+use int64_binary_ops;
+use int64_calls;
 
 export expr_to_sir/2;
 
@@ -14,11 +16,22 @@ export expr_to_sir/2;
 // Kind 0: literal -> const(type, value)
 // Kind 1: identifier -> var(%name)
 // Kind 2: parenthesized -> recurse on inner
+// Kind 3: binary op -> prim(add/sub/etc)
+// Kind 4: call -> call(callee, arg)
 fn expr_to_sir(context: TypeContext, expr: Expr) -> SIRTerm {
     case expr.kind of {
         0 -> literals@expr_to_sir(context, expr);
         1 -> identifiers@expr_to_sir(context, expr);
         2 -> expr_to_sir(context, expr.inner);
+        3 -> do
+            left: SIRTerm <- expr_to_sir(context, expr.inner);
+            right: SIRTerm <- expr_to_sir(context, expr.right_expr);
+            int64_binary_ops@build_prim_from_sir(expr.value, left, right)
+        end;
+        4 -> do
+            arg: SIRTerm <- expr_to_sir(context, expr.inner);
+            int64_calls@build_call_from_sir(expr.name, arg)
+        end;
         _: int64 -> sir_ast@dummy_sir_term()
     }
 }

@@ -3,7 +3,7 @@
 # Emitter: SIR -> AArch64 assembly
 
 SILICA_COMPILER := ../../../silica-bootstrap-compiler/target/release/silica-boot
-SEARCH_PATHS := -I . -I .. -I ../sir_generator -I constraints -I terms -I control -I aarch64 -I ../../stdlib
+SEARCH_PATHS := -I . -I .. -I ../sir_generator -I constraints -I terms -I terms/prims -I control -I aarch64 -I ../../stdlib
 
 # Find LLVM tools
 LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "llvm-as"))
@@ -16,7 +16,7 @@ else
   ECHO := @echo
 endif
 
-SILICA_FILES := $(wildcard *.silica) $(wildcard */*.silica)
+SILICA_FILES := $(wildcard *.silica) $(wildcard */*.silica) $(wildcard */*/*.silica)
 LL_FILES := $(SILICA_FILES:.silica=.ll)
 BC_FILES := $(SILICA_FILES:.silica=.bc)
 OBJ_FILES := $(SILICA_FILES:.silica=.o)

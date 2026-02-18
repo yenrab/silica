@@ -1,0 +1,91 @@
+// Expression type-check dispatcher: Expr kind 0-4
+// Delegates to literals, identifiers; handles binary ops and calls inline (recursive)
+
+use parser_ast;
+use type_checker_core;
+use type_checker_expressions_literals;
+use type_checker_expressions_identifiers;
+
+export check_expr/3;
+
+// Arithmetic: +, -, *, /, % (mod) - operands int64, result int64
+fn is_arithmetic_op_lexeme(op: string) -> bool {
+    op == "+" or op == "-" or op == "*" or op == "/" or op == "%"
+}
+
+// Comparison: <, >, <=, >=, ==, != - operands int64, result bool
+fn is_comparison_op_lexeme(op: string) -> bool {
+    op == "<" or op == ">" or op == "<=" or op == ">=" or op == "==" or op == "!="
+}
+
+fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+    op: string <- expr.value;
+    case is_arithmetic_op_lexeme(op) of {
+        true -> do
+            left_result: TypeCheckResult <- check_expr(expr.inner, "int64", context);
+            case left_result.is_ok of {
+                false -> left_result;
+                true -> do
+                    right_result: TypeCheckResult <- check_expr(expr.right_expr, "int64", context);
+                    case right_result.is_ok of {
+                        false -> right_result;
+                        true -> case expected_type of {
+                            "int64" -> type_checker_core@type_check_ok();
+                            _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("arithmetic op expects int64 result, got ", expected_type), "sect6")
+                        }
+                    }
+                end
+            }
+        end;
+        false -> case is_comparison_op_lexeme(op) of {
+            true -> do
+                left_result: TypeCheckResult <- check_expr(expr.inner, "int64", context);
+                case left_result.is_ok of {
+                    false -> left_result;
+                    true -> do
+                        right_result: TypeCheckResult <- check_expr(expr.right_expr, "int64", context);
+                        case right_result.is_ok of {
+                            false -> right_result;
+                            true -> case expected_type of {
+                                "bool" -> type_checker_core@type_check_ok();
+                                "boolean" -> type_checker_core@type_check_ok();
+                                _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects bool result, got ", expected_type), "sect6")
+                            }
+                        }
+                    end
+                }
+            end;
+            false -> type_checker_core@type_check_err("E2004", expr.location, concat("unknown operator: ", op), "sect6")
+        }
+    }
+}
+
+// Built-in: print_int64(int64:x) - arg int64, returns bool/boolean
+fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+    case expr.name == "print_int64" of {
+        true -> do
+            arg_result: TypeCheckResult <- check_expr(expr.inner, "int64", context);
+            case arg_result.is_ok of {
+                false -> arg_result;
+                true -> case expected_type of {
+                    "bool" -> type_checker_core@type_check_ok();
+                    "boolean" -> type_checker_core@type_check_ok();
+                    _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("print_int64 expects bool result, got ", expected_type), "sect6")
+                }
+            }
+        end;
+        false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown or unsupported function: ", expr.name), "sect6")
+    }
+}
+
+// Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call
+fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+    case expr.kind of {
+        0 -> type_checker_expressions_literals@check_expr(expr, expected_type, context);
+        1 -> type_checker_expressions_identifiers@check_expr(expr, expected_type, context);
+        2 -> check_expr(expr.inner, expected_type, context);
+        3 -> check_binary_op(expr, expected_type, context);
+        4 -> check_call(expr, expected_type, context);
+        _: int64 -> type_checker_core@type_check_ok()
+    }
+}

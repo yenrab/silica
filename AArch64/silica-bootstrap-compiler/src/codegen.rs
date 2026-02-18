@@ -1659,6 +1659,83 @@ impl CodeGenerator {
         let right = self.generate_expression(&binary.right)?;
 
         if let (Some(lhs), Some(rhs)) = (left, right) {
+            // String equality/inequality: use silica_string_equals for content comparison, not pointer comparison
+            let lhs_is_string = {
+                let ty = if let Expression::Identifier(name) = &*binary.left {
+                    self.variable_types.get(name).cloned()
+                } else if let Expression::Literal(Literal::String(_)) = &*binary.left {
+                    Some(Type::String)
+                } else {
+                    Self::try_get_expression_location(&binary.left)
+                        .and_then(|loc| self.expression_types.get(loc).cloned())
+                };
+                ty == Some(Type::String)
+                    || lhs.starts_with("i8* ")
+                    || (lhs.contains("getelementptr") && lhs.contains("@str_const_"))
+            };
+            let rhs_is_string = {
+                let ty = if let Expression::Identifier(name) = &*binary.right {
+                    self.variable_types.get(name).cloned()
+                } else if let Expression::Literal(Literal::String(_)) = &*binary.right {
+                    Some(Type::String)
+                } else {
+                    Self::try_get_expression_location(&binary.right)
+                        .and_then(|loc| self.expression_types.get(loc).cloned())
+                };
+                ty == Some(Type::String)
+                    || rhs.starts_with("i8* ")
+                    || (rhs.contains("getelementptr") && rhs.contains("@str_const_"))
+            };
+
+            if lhs_is_string && rhs_is_string && matches!(binary.operator, BinaryOp::Equal | BinaryOp::NotEqual) {
+                // Ensure string literal constant is registered (for rhs if it's a literal)
+                if let Expression::Literal(Literal::String(s)) = &*binary.right {
+                    if !self.string_constants.contains_key(s) {
+                        let const_name = format!("@str_const_{}", self.string_constants.len());
+                        let length = s.len() + 1;
+                        self.string_constants.insert(s.clone(), (const_name.clone(), length));
+                    }
+                }
+                if let Expression::Literal(Literal::String(s)) = &*binary.left {
+                    if !self.string_constants.contains_key(s) {
+                        let const_name = format!("@str_const_{}", self.string_constants.len());
+                        let length = s.len() + 1;
+                        self.string_constants.insert(s.clone(), (const_name.clone(), length));
+                    }
+                }
+
+                let left_val = self.ensure_gep_in_register(&lhs, "lhs");
+                let right_val = self.ensure_gep_in_register(&rhs, "rhs");
+
+                let left_arg = if left_val.starts_with("i8* ") {
+                    Self::format_llvm_value_ref(left_val[4..].trim())
+                } else {
+                    Self::format_llvm_value_ref(&left_val)
+                };
+                let right_arg = if right_val.starts_with("i8* ") {
+                    Self::format_llvm_value_ref(right_val[4..].trim())
+                } else {
+                    Self::format_llvm_value_ref(&right_val)
+                };
+
+                let cmp_reg = format!("%cmp_str_{}", self.instructions.len());
+                self.instructions.push(format!(
+                    "  {} = call i1 @silica_string_equals(i8* {}, i8* {})",
+                    cmp_reg, left_arg, right_arg
+                ));
+
+                let result = match binary.operator {
+                    BinaryOp::Equal => format!("i1 {}", cmp_reg),
+                    BinaryOp::NotEqual => {
+                        let not_reg = format!("%str_ne_{}", self.instructions.len());
+                        self.instructions.push(format!("  {} = xor i1 {}, 1", not_reg, cmp_reg));
+                        format!("i1 {}", not_reg)
+                    }
+                    _ => unreachable!(),
+                };
+                return Ok(Some(result));
+            }
+
             let temp_reg = format!("%t{}", self.instructions.len());
 
             // Determine the LLVM type to use for the operation
@@ -5919,6 +5996,13 @@ impl CodeGenerator {
             None => return codegen_error("Case scrutinee must produce a value".to_string()),
         };
 
+        // DEBUG: Trace case scrutinee handling (string_case_in_func defect)
+        let scrutinee_name = if let Expression::Identifier(name) = &*case.scrutinee {
+            Some(name.as_str())
+        } else {
+            None
+        };
+
         // Unbox the scrutinee if it's boxed; preserve type prefix for pattern check (i1 vs i64)
         let clean_scrutinee_reg = boxed_scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
         let scrutinee_reg = if clean_scrutinee_reg == "%0" || clean_scrutinee_reg == "%1" {
@@ -8735,6 +8819,21 @@ impl CodeGenerator {
                 let inttoptr_reg = format!("%inttoptr_{}_{}", self.instructions.len(), i);
                 self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", inttoptr_reg, clean_element_value));
                 inttoptr_reg
+            } else if llvm_type == "i8*" && (element_value.contains("getelementptr") || element_value.contains("@str_const")) {
+                // String literal: getelementptr expression must be emitted as instruction first
+                let gep_expr = clean_element_value.trim();
+                let gep_reg = format!("%tuple_gep_{}_{}", self.instructions.len(), i);
+                let gep_instr = if gep_expr.starts_with("getelementptr inbounds (") {
+                    self.convert_gep_to_instruction_format(gep_expr)
+                } else if gep_expr.contains("getelementptr") {
+                    gep_expr.to_string()
+                } else if gep_expr.starts_with('@') {
+                    format!("getelementptr inbounds i8, ptr {}, i32 0", gep_expr)
+                } else {
+                    gep_expr.to_string()
+                };
+                self.instructions.push(format!("  {} = {}", gep_reg, gep_instr));
+                gep_reg
             } else {
                 self.convert_to_llvm_type_value(&clean_element_value, llvm_type)
             };

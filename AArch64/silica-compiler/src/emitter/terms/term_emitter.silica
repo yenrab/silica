@@ -1,19 +1,34 @@
 // Term dispatcher: SIRTerm.kind -> emit function
-// Delegates to const, var per sir_emitter_pattern_spec §4.3
+// Delegates to const, var, call, prims per sir_emitter_pattern_spec §4.3
 
 use sir_ast;
 use const;
 use var;
+use call;
+use prims;
 
 export term_to_asm/2;
 
 // Emit AArch64 assembly for a SIR term. dest is the virtual register for the result.
 // Kind 0: const -> MOV dest, #value (or literal pool)
 // Kind 1: var -> MOV dest, name (variable already in register)
+// Kind 4: call -> BLR callee; result in X0
+// Kind 6: prim -> emit left to X1, right to X2, then op (avoids circular dep)
 fn term_to_asm(term: SIRTerm, dest: string) -> string {
     case term.kind of {
         0 -> const@emit_const(term, dest);
         1 -> var@emit_var(term, dest);
-        _: int64 -> concat("; unsupported term kind ", "?")
+        4 -> do
+            arg_asm: string <- term_to_asm(term.inner, "X0");
+            call_asm: string <- call@emit_call_body(term, dest);
+            concat(concat(arg_asm, "\n"), call_asm)
+        end;
+        6 -> do
+            left_asm: string <- term_to_asm(term.inner, "X1");
+            right_asm: string <- term_to_asm(term.right_expr, concat("X", "2"));
+            op_asm: string <- prims@emit_prim_op(term, dest);
+            concat(concat(concat(left_asm, "\n"), concat(right_asm, "\n")), op_asm)
+        end;
+        _: int64 -> concat("    ; unsupported term kind ", "?")
     }
 }
