@@ -20,8 +20,10 @@ ASSEMBLER := clang
 
 # macOS: linker flags for minimal executable (when using rust-lld)
 MACOS_SDK := $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
-LDFLAGS_rust-lld := -arch arm64 -platform_version macos 10.15 10.15 -syslibroot $(MACOS_SDK) -lSystem -e main
-LDFLAGS_clang := -Wl,-e,main
+MACOS_MIN_VERSION ?= 26.0
+ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
+LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
+LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
 .DEFAULT_GOAL := all
 .PHONY: all clean assembly objects executables help
@@ -40,7 +42,7 @@ objects: assembly
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
 		echo "Assembling: $$sams -> $$base.o"; \
-		$(ASSEMBLER) -c -x assembler $$sams -o $$base.o; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o; \
 	done
 
 # Stage 3: Link .o -> executable (rust-lld or clang)
@@ -49,7 +51,7 @@ executables: objects
 		[ -f "$$o" ] || continue; \
 		base=$${o%.o}; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -o $$base $$o $(LDFLAGS_rust-lld) && echo "  ✅ Built $$base (rust-lld)"; \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) && echo "  ✅ Built $$base (rust-lld)"; \
 		else \
 			$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) && echo "  ✅ Built $$base (clang)"; \
 		fi; \
