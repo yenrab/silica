@@ -105,12 +105,13 @@ integrate:
 	done; \
 	exit $$failed
 
-# clean: remove executables, .sams, .o (not .scout, .ascomp)
+# clean: remove executables, .sams, .o, .sout (not .scout, .ascomp)
 clean:
 	@for dir in $(SUBDIRS); do \
 		dir=$${dir%/}; \
 		echo "Cleaning $$dir..."; \
 		cd $$dir && \
+		rm -f *.sout && \
 		for f in *.sams; do \
 			[ -f "$$f" ] || continue; \
 			base=$${f%.sams}; \
@@ -127,7 +128,7 @@ help:
 	@echo "Targets:"
 	@echo "  integrate  - Compile all .silica in subdirs, diff .sams vs .ascomp,"
 	@echo "               run each binary, diff .sout vs .scout (report failures)"
-	@echo "  clean      - Remove executables, .sams, .o (keeps .scout, .ascomp)"
+	@echo "  clean      - Remove executables, .sams, .o, .sout (keeps .scout, .ascomp)"
 	@echo "  help       - Show this help"
 	@echo ""
 	@echo "Subdirs: $(SUBDIRS)"
