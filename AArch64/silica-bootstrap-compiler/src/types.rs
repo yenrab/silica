@@ -3853,7 +3853,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     env.insert(name.clone(), TypeScheme {
                         vars: vec![],
-                        ty: expanded_declared_type,
+                        ty: type_.clone(),
                     });
                 } else {
                     // For wildcards, just check type compatibility but don't bind

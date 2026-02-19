@@ -1,5 +1,6 @@
 // Type checker runner - type_check_program, orchestration
 // Two-pass: add all declarations to symbol table, then check all bodies
+// Handles tag 0 (function declarations) and tag 1 (effect declarations)
 
 use parser_ast;
 use type_checker_core;
@@ -7,13 +8,20 @@ use type_checker_declarations_functions;
 
 export type_check_program/2;
 
-// First pass: add all function declarations (tag 0) to context
+// First pass: add all declarations to context
+// tag 0 = function declaration (name, return type, declared effects)
+// tag 1 = effect alias declaration (name, constituent effects)
 fn add_all_declarations(decls: ListDeclaration, context: TypeContext) -> TypeContext {
     case decls.is_nil of {
         true -> context;
         false -> case decls.head.tag of {
             0 -> do
                 ctx: TypeContext <- type_checker_declarations_functions@add_function(decls.head, context);
+                add_all_declarations(decls.tail, ctx)
+            end;
+            1 -> do
+                new_env: ListSymbolEntry <- type_checker_core@add_effect_alias_symbol(context.env, decls.head.name, decls.head.declared_effects);
+                ctx: TypeContext <- TypeContext { env: new_env };
                 add_all_declarations(decls.tail, ctx)
             end;
             _: int64 -> add_all_declarations(decls.tail, context)

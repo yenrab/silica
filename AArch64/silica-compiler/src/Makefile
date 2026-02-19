@@ -3,7 +3,7 @@
 
 SILICA_COMPILER := ../../silica-bootstrap-compiler/target/release/silica-boot
 RUNTIME_LIB := ../../silica-bootstrap-compiler/target/release/libsilica_compiler.a
-SEARCH_PATHS := -I lexer -I parser -I parser/capabilities -I parser/declarations -I parser/expressions -I parser/patterns -I parser/types -I parser/effects -I type_checker -I type_checker/declarations -I type_checker/expressions -I type_checker/traits -I sir_generator -I sir_generator/declarations -I sir_generator/terms -I sir_generator/types -I sir_generator/patterns -I emitter -I emitter/constraints -I emitter/terms -I emitter/terms/prims -I emitter/control -I emitter/aarch64 -I build_output -I diagnostics -I ../stdlib
+SEARCH_PATHS := -I lexer -I parser -I parser/capabilities -I parser/declarations -I parser/expressions -I parser/patterns -I parser/types -I parser/effects -I type_checker -I type_checker/declarations -I type_checker/expressions -I type_checker/traits -I effect_checker -I sir_generator -I sir_generator/declarations -I sir_generator/terms -I sir_generator/types -I sir_generator/patterns -I sir_generator/effects -I emitter -I emitter/constraints -I emitter/terms -I emitter/terms/prims -I emitter/control -I emitter/aarch64 -I emitter/effects -I build_output -I diagnostics -I ../stdlib
 
 # LLVM toolchain (for .ll -> .o and linking)
 LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "llvm-as"))
@@ -19,13 +19,15 @@ $(SILICA_COMPILER):
 $(RUNTIME_LIB): $(SILICA_COMPILER)
 	@true
 
-# Find all .silica files in lexer, parser, type_checker, sir_generator, emitter (including subdirs)
+# Find all .silica files in lexer, parser, type_checker, effect_checker, sir_generator, emitter (including subdirs)
 LEXER_FILES := $(wildcard lexer/*.silica)
 LEXER_MODULES := $(LEXER_FILES:lexer/%.silica=lexer/%)
 PARSER_FILES := $(wildcard parser/*.silica parser/*/*.silica)
 PARSER_MODULES := $(patsubst %.silica,%,$(PARSER_FILES))
 TYPE_CHECKER_FILES := $(wildcard type_checker/*.silica type_checker/*/*.silica)
 TYPE_CHECKER_MODULES := $(patsubst %.silica,%,$(TYPE_CHECKER_FILES))
+EFFECT_CHECKER_FILES := $(wildcard effect_checker/*.silica)
+EFFECT_CHECKER_MODULES := $(patsubst %.silica,%,$(EFFECT_CHECKER_FILES))
 
 # Main executable file
 MAIN_FILE := main.silica
@@ -34,13 +36,14 @@ MAIN_BC := main.bc
 MAIN_OBJ := main.o
 EXECUTABLE := silica-compiler
 
-# Output files for lexer, parser, and type_checker modules
+# Output files for lexer, parser, type_checker, and effect_checker modules
 LEXER_LL := $(addsuffix .ll, $(LEXER_MODULES))
 PARSER_LL := $(addsuffix .ll, $(PARSER_MODULES))
 TYPE_CHECKER_LL := $(addsuffix .ll, $(TYPE_CHECKER_MODULES))
+EFFECT_CHECKER_LL := $(addsuffix .ll, $(EFFECT_CHECKER_MODULES))
 
 # Subdirectories with Makefiles (build order respects dependencies)
-SUBDIRS := lexer parser type_checker sir_generator emitter
+SUBDIRS := lexer parser type_checker effect_checker sir_generator emitter
 
 .PHONY: all clean executables modules subdirs help $(SUBDIRS)
 
@@ -57,8 +60,8 @@ $(SUBDIRS):
 	@echo "Building $@..."
 	@$(MAKE) -C $@ QUIET=1
 
-# Compile lexer, parser, and type_checker modules
-modules: $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL)
+# Compile lexer, parser, type_checker, and effect_checker modules
+modules: $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(EFFECT_CHECKER_LL)
 
 # Compile lexer module files
 lexer/%.ll: lexer/%.silica $(SILICA_COMPILER)
@@ -75,8 +78,8 @@ type_checker/%.ll: type_checker/%.silica $(LEXER_LL) $(PARSER_LL) $(SILICA_COMPI
 # Compile main executable (LLVM IR -> object -> linked binary)
 executables: $(EXECUTABLE)
 
-# Main LLVM IR depends on subdirs, lexer and parser modules
-$(MAIN_LL): $(MAIN_FILE) subdirs $(LEXER_LL) $(PARSER_LL) $(SILICA_COMPILER)
+# Main LLVM IR depends on subdirs, lexer, parser, type_checker, and effect_checker modules
+$(MAIN_LL): $(MAIN_FILE) subdirs $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(EFFECT_CHECKER_LL) $(SILICA_COMPILER)
 	@$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # main.ll -> main.bc (bitcode)
@@ -104,6 +107,7 @@ clean:
 	rm -f lexer/*.ll
 	rm -f parser/*.ll parser/*/*.ll
 	rm -f type_checker/*.ll type_checker/*/*.ll
+	rm -f effect_checker/*.ll
 	@echo "✅ Clean complete"
 
 # Help target

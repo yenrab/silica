@@ -3,7 +3,7 @@
 # Emitter: SIR -> AArch64 assembly
 
 SILICA_COMPILER := ../../../silica-bootstrap-compiler/target/release/silica-boot
-SEARCH_PATHS := -I . -I .. -I ../sir_generator -I constraints -I terms -I terms/prims -I control -I aarch64 -I ../../stdlib
+SEARCH_PATHS := -I . -I .. -I ../sir_generator -I constraints -I terms -I terms/prims -I control -I aarch64 -I effects -I ../../stdlib
 
 # Find LLVM tools
 LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "llvm-as"))

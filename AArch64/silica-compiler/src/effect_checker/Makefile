@@ -1,9 +1,9 @@
-# Makefile for Silica sir_generator modules
-# Compiles sir_generator .silica files to object files (.o) using the bootstrap compiler and LLVM toolchain
+# Makefile for Silica effect checker modules
+# Compiles effect_checker .silica files to object files (.o) using the bootstrap compiler and LLVM toolchain
 # Depends on lexer, parser, type_checker; build those first if needed.
 
 SILICA_COMPILER := ../../../silica-bootstrap-compiler/target/release/silica-boot
-SEARCH_PATHS := -I . -I .. -I ../lexer -I ../parser -I ../parser/declarations -I ../parser/expressions -I ../parser/patterns -I ../parser/types -I ../parser/effects -I ../type_checker -I declarations -I terms -I types -I patterns -I effects -I ../../stdlib
+SEARCH_PATHS := -I . -I .. -I ../lexer -I ../parser -I ../parser/capabilities -I ../parser/declarations -I ../parser/expressions -I ../parser/patterns -I ../parser/types -I ../parser/effects -I ../type_checker -I ../type_checker/declarations -I ../type_checker/expressions -I ../type_checker/traits -I ../diagnostics -I ../../stdlib
 
 # Find LLVM tools (including Homebrew paths)
 LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "llvm-as"))
@@ -16,10 +16,10 @@ else
   ECHO := @echo
 endif
 
-# All .silica files in this directory and subdirectories
-SILICA_FILES := $(wildcard *.silica) $(wildcard */*.silica)
+# All .silica files in this directory
+SILICA_FILES := $(wildcard *.silica)
 
-# Intermediate and output files (same path with different extension)
+# Intermediate and output files
 LL_FILES := $(SILICA_FILES:.silica=.ll)
 BC_FILES := $(SILICA_FILES:.silica=.bc)
 OBJ_FILES := $(SILICA_FILES:.silica=.o)
@@ -32,7 +32,7 @@ OBJ_FILES := $(SILICA_FILES:.silica=.o)
 
 # Default target - compile all .silica files to object files
 all: $(OBJ_FILES)
-	@echo "✅ sir_generator modules compiled to object files"
+	@echo "✅ effect_checker modules compiled to object files"
 
 # Step 1: .silica -> .ll (LLVM IR) using bootstrap compiler
 %.ll: %.silica
@@ -49,27 +49,19 @@ all: $(OBJ_FILES)
 	$(ECHO) "Linking: $< -> $@"
 	@-$(LLC) -filetype=obj $< -o $@
 
-# Clean all generated files (current dir and subdirs)
+# Clean all generated files
 clean:
 	@echo "Cleaning generated files..."
 	@rm -f *.ll *.bc *.o
-	@rm -f */*.ll */*.bc */*.o
 	@echo "✅ Clean complete"
 
 # Show help
 help:
-	@echo "Silica sir_generator Makefile"
-	@echo "============================="
+	@echo "Silica effect_checker Makefile"
+	@echo "=============================="
 	@echo ""
-	@echo "This Makefile compiles sir_generator .silica files to object files (.o) using the bootstrap compiler."
-	@echo "sir_generator depends on lexer, parser, type_checker; ensure they are built first if needed."
-	@echo ""
-	@echo "Directories (core+extensions pattern, aligned with parser):"
-	@echo "  .            - sir_generator_core.silica (base: orchestration), sir_ast.silica (SIR types)"
-	@echo "  declarations/ - dispatcher.silica (Declaration.tag registry), functions.silica (tag 0)"
-	@echo "  terms/       - terms.silica (Expr.kind dispatcher), literals.silica, identifiers.silica"
-	@echo "  types/       - Type name to SIR type mapping"
-	@echo "  patterns/    - Placeholder for case/pattern support"
+	@echo "This Makefile compiles effect_checker .silica files to object files (.o) using the bootstrap compiler."
+	@echo "effect_checker depends on lexer, parser, type_checker; ensure they are built first if needed."
 	@echo ""
 	@echo "Compilation pipeline:"
 	@echo "  1. .silica -> .ll  (LLVM IR via bootstrap compiler)"

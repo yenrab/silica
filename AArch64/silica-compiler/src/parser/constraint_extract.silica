@@ -28,7 +28,7 @@ fn role_call_name() -> int64 { 14 }
 fn role_call_lparen() -> int64 { 15 }
 fn role_call_rparen() -> int64 { 16 }
 
-fn extract_function(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) {
+fn extract_function(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) proc[DeviceIO] {
     r1: ListTokenSlot <- slots.tail;
     fn_name: string <- r1.head.token.lexeme;
     fn_loc: SourceLocation <- r1.head.token.location;
@@ -38,7 +38,8 @@ fn extract_function(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) {
     (decl, rest_after_body)
 }
 
-fn extract_effect_declaration(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) {
+fn extract_effect_declaration(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) proc[DeviceIO] {
+    do
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     case slots.is_nil of {
         true -> do
@@ -71,6 +72,18 @@ fn extract_effect_declaration(slots: ListTokenSlot) -> (Declaration, ListTokenSl
                     end
                 }
             end
+        }
+    }
+    end
+}
+
+fn is_fn_decl_start(slots: ListTokenSlot) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> false;
+        false -> case slots.tail.is_nil of {
+            true -> false;
+            false -> slots.head.token.kind == kinds.fn_keyword
         }
     }
 }
@@ -106,6 +119,38 @@ fn is_effect_decl_start(slots: ListTokenSlot) -> bool {
 
 fn is_type_keyword(kinds: TokenKinds, token_kind: int64) -> bool {
     token_kind == kinds.int8_keyword or token_kind == kinds.int16_keyword or token_kind == kinds.int32_keyword or token_kind == kinds.int64_keyword or token_kind == kinds.float16_keyword or token_kind == kinds.float32_keyword or token_kind == kinds.float64_keyword or token_kind == kinds.bool_keyword or token_kind == kinds.char_keyword or token_kind == kinds.string_keyword or token_kind == kinds.unit_keyword
+}
+
+fn kind_to_type_name(token_kind: int64) -> string {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case token_kind == kinds.int64_keyword of {
+        true -> "int64";
+        false -> case token_kind == kinds.int32_keyword of {
+            true -> "int32";
+            false -> case token_kind == kinds.int16_keyword of {
+                true -> "int16";
+                false -> case token_kind == kinds.int8_keyword of {
+                    true -> "int8";
+                    false -> case token_kind == kinds.float64_keyword of {
+                        true -> "float64";
+                        false -> case token_kind == kinds.float32_keyword of {
+                            true -> "float32";
+                            false -> case token_kind == kinds.float16_keyword of {
+                                true -> "float16";
+                                false -> case token_kind == kinds.bool_keyword of {
+                                    true -> "bool";
+                                    false -> case token_kind == kinds.unit_keyword of {
+                                        true -> "unit";
+                                        false -> ""
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn is_op_token(kinds: TokenKinds, token_kind: int64) -> bool {
@@ -199,7 +244,10 @@ fn collect_optional_proc_effects(slots: ListTokenSlot) -> (ListEffectName, ListT
     }
 }
 
-fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListEffectName, ListTokenSlot) {
+// Return type and effects are separate: -> int64 proc[device_io] means return_type=int64, effects=[device_io].
+// When proc effects follow, token.lexeme may be empty; derive type from token.kind for type keywords.
+fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListEffectName, ListTokenSlot) proc[DeviceIO] {
+    do
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     case slots.is_nil of {
         true -> do
@@ -219,7 +267,13 @@ fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListEffe
                     (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(rest_after_type);
                     rest_after_lbrace: ListTokenSlot <- after_effects.tail;
                     body_slots: ListTokenSlot <- rest_after_lbrace;
-                    (ret_type, ret_type_loc, effects, body_slots)
+                    from_kind: string <- kind_to_type_name(first.token.kind);
+                    use_type: string <- case effects.is_nil of { true -> ret_type; false -> case from_kind of { "" -> ret_type; _: string -> from_kind } };
+                    // Instrumentation: when use_type is empty, return debug string so E2001 shows which of ret_type/from_kind was empty
+                    ret_empty: string <- case ret_type of { "" -> "ret_empty"; _: string -> "ret_ok" };
+                    from_empty: string <- case from_kind of { "" -> "from_empty"; _: string -> "from_ok" };
+                    use_type_instrumented: string <- case use_type of { "" -> concat("DEBUG:", concat(ret_empty, concat(",", from_empty))); _: string -> use_type };
+                    (use_type_instrumented, ret_type_loc, effects, body_slots)
                 end;
                 false -> do
                     (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(rest);
@@ -228,6 +282,7 @@ fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListEffe
             }
         end
     }
+    end
 }
 
 fn extract_body(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
@@ -314,14 +369,19 @@ fn extract_body_expr(slot: TokenSlot) -> Expr {
     }
 }
 
-fn extract_one_declaration(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) {
+fn extract_one_declaration(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) proc[DeviceIO] {
     case is_effect_decl_start(slots) of {
         true -> extract_effect_declaration(slots);
-        false -> extract_function(slots)
+        false -> case is_fn_decl_start(slots) of {
+            true -> extract_function(slots);
+            false -> do
+                (parser_ast@dummy_decl(), slots.tail)
+            end
+        }
     }
 }
 
-fn declarations_from_slots(slots: ListTokenSlot) -> ListDeclaration {
+fn declarations_from_slots(slots: ListTokenSlot) -> ListDeclaration proc[DeviceIO] {
     case slots.is_nil of {
         true -> parser_ast@empty_list_decl();
         false -> case slots.tail.is_nil of {
@@ -347,7 +407,7 @@ fn program_location_from_decls(decls: ListDeclaration) -> SourceLocation {
     }
 }
 
-fn slots_to_program(slots: ListTokenSlot) -> Program {
+fn slots_to_program(slots: ListTokenSlot) -> Program proc[DeviceIO] {
     decls: ListDeclaration <- declarations_from_slots(slots);
     Program { declarations: decls, location: program_location_from_decls(decls) }
 }

@@ -6005,7 +6005,10 @@ impl CodeGenerator {
 
         // Unbox the scrutinee if it's boxed; preserve type prefix for pattern check (i1 vs i64)
         let clean_scrutinee_reg = boxed_scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
-        let scrutinee_reg = if clean_scrutinee_reg == "%0" || clean_scrutinee_reg == "%1" {
+        let scrutinee_reg = if boxed_scrutinee_reg.starts_with("i8* ") {
+            // Already a pointer type (string parameter) - use directly, do NOT load through i64*
+            boxed_scrutinee_reg.clone()
+        } else if clean_scrutinee_reg == "%0" || clean_scrutinee_reg == "%1" {
             // Parameter register - assume it's i8* containing boxed i64, bitcast and load
             let load_reg = format!("%scrutinee_load_{}", self.instructions.len());
             self.instructions.push(format!("  {} = bitcast i8* {} to i64*", load_reg.clone() + "_cast", clean_scrutinee_reg));
@@ -6310,14 +6313,16 @@ impl CodeGenerator {
 
                         // Load element with type-aware casting
                         // Use unique register for wildcard '_' to avoid "multiple definition of local value named '_'"
+                        // Use unique name for all bindings to avoid "multiple definition of local value named 'X'"
+                        // when same field name (e.g. effects) appears in multiple case branches
+                        let unique_id = self.instructions.len();
                         let elem_reg = if elem_name == "_" {
-                            format!("%_discard_{}", self.instructions.len())
+                            format!("%_discard_{}", unique_id)
                         } else {
-                            format!("%{}", elem_name)
+                            format!("%{}_{}", elem_name, unique_id)
                         };
 
                         // Load both possible types and select
-                        let unique_id = self.instructions.len();
 
                         // Cast to both i1* and i64*
                         let i1_cast_reg = format!("%{}_i1_cast_{}", elem_name, unique_id);
@@ -6356,12 +6361,13 @@ impl CodeGenerator {
                             let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
                             self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, scrutinee_ref, elem_offset));
                             // Use unique register for wildcard '_' to avoid "multiple definition of local value named '_'"
-                            let elem_reg = if elem_name == "_" {
-                                format!("%_discard_{}", self.instructions.len())
-                            } else {
-                                format!("%{}", elem_name)
-                            };
+                            // Use unique name for all bindings to avoid "multiple definition of local value named 'X'"
                             let unique_id = self.instructions.len();
+                            let elem_reg = if elem_name == "_" {
+                                format!("%_discard_{}", unique_id)
+                            } else {
+                                format!("%{}_{}", elem_name, unique_id)
+                            };
                             let i1_cast_reg = format!("%{}_i1_cast_{}", elem_name, unique_id);
                             let i64_cast_reg = format!("%{}_i64_cast_{}", elem_name, unique_id);
                             self.instructions.push(format!("  {} = bitcast i8* {} to i1*", i1_cast_reg, elem_ptr_reg));
@@ -6487,7 +6493,19 @@ impl CodeGenerator {
                             literal_ptr_reg, const_name
                         ));
                         let scrutinee_reg_clean = scrutinee_reg.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
-                        let scrutinee_for_call = if scrutinee_reg.starts_with("i8* ") { scrutinee_reg[4..].to_string() } else if scrutinee_reg_clean.starts_with('%') { scrutinee_reg_clean } else { format!("%{}", scrutinee_reg_clean) };
+                        let scrutinee_for_call = if scrutinee_reg.starts_with("i8* ") {
+                            scrutinee_reg[4..].trim().to_string()
+                        } else if scrutinee_reg.starts_with("i64 ") {
+                            // Scrutinee is i64 (boxed pointer from preceding case) - convert to i8* for string comparison
+                            let reg_name = scrutinee_reg[4..].trim();
+                            let ptr_reg = format!("%str_scrutinee_ptr_{}", self.instructions.len());
+                            self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, Self::format_llvm_value_ref(reg_name)));
+                            ptr_reg
+                        } else if scrutinee_reg_clean.starts_with('%') {
+                            scrutinee_reg_clean
+                        } else {
+                            format!("%{}", scrutinee_reg_clean)
+                        };
                         let cmp_reg = format!("%cmp_str_{}", self.instructions.len());
                         self.instructions.push(format!(
                             "  {} = call i1 @silica_string_equals(i8* {}, i8* {})",
@@ -7385,6 +7403,9 @@ impl CodeGenerator {
                                             let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
                                             self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_ptr, elem_offset));
 
+                                            // Use unique register name to avoid "multiple definition of local value named 'X'"
+                                            let unique_load_reg = format!("%{}_{}", elem_name, self.instructions.len());
+
                                             // Use element type from element_types when available (for correct bool/i1/string load)
                                             let llvm_ty = if elem_name == "_" {
                                                 "i64".to_string()
@@ -7394,31 +7415,30 @@ impl CodeGenerator {
                                                     Some(Type::Bool) => {
                                                         let i1_cast_reg = format!("%i1_cast_{}_{}", self.instructions.len(), i);
                                                         self.instructions.push(format!("  {} = bitcast i8* {} to i1*", i1_cast_reg, elem_ptr_reg));
-                                                        self.instructions.push(format!("  %{} = load i1, i1* {}", elem_name, i1_cast_reg));
+                                                        self.instructions.push(format!("  {} = load i1, i1* {}", unique_load_reg, i1_cast_reg));
                                                         "i1".to_string()
                                                     }
                                                     Some(Type::String) => {
                                                         let i8pp_cast_reg = format!("%i8pp_cast_{}_{}", self.instructions.len(), i);
                                                         self.instructions.push(format!("  {} = bitcast i8* {} to i8**", i8pp_cast_reg, elem_ptr_reg));
-                                                        self.instructions.push(format!("  %{} = load i8*, i8** {}", elem_name, i8pp_cast_reg));
+                                                        self.instructions.push(format!("  {} = load i8*, i8** {}", unique_load_reg, i8pp_cast_reg));
                                                         "i8*".to_string()
                                                     }
                                                     _ => {
                                                         let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
                                                         self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
-                                                        self.instructions.push(format!("  %{} = load i64, i64* {}", elem_name, i64_cast_reg));
+                                                        self.instructions.push(format!("  {} = load i64, i64* {}", unique_load_reg, i64_cast_reg));
                                                         "i64".to_string()
                                                     }
                                                 }
                                             } else {
                                                 let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
                                                 self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
-                                                self.instructions.push(format!("  %{} = load i64, i64* {}", elem_name, i64_cast_reg));
+                                                self.instructions.push(format!("  {} = load i64, i64* {}", unique_load_reg, i64_cast_reg));
                                                 "i64".to_string()
                                             };
                                             if elem_name != "_" {
-                                                let final_val_reg = format!("%{}", elem_name);
-                                                self.variables.insert(elem_name.clone(), final_val_reg);
+                                                self.variables.insert(elem_name.clone(), unique_load_reg.clone());
                                                 self.variable_llvm_types.insert(elem_name.clone(), llvm_ty);
                                             }
                                         }
@@ -7430,9 +7450,11 @@ impl CodeGenerator {
                                             let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
                                             self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_ptr, elem_offset));
 
+                                            // Use unique register name to avoid "multiple definition of local value named 'X'"
+                                            let final_val_reg = format!("%{}_{}", elem_name, self.instructions.len());
+
                                             // Load based on declared type (expand aliases e.g. boolean -> Bool for correct i1 load)
                                             let expanded_type = self.expand_type_aliases_codegen(elem_type);
-                                            let final_val_reg = format!("%{}", elem_name);
                                             let llvm_ty = match &expanded_type {
                                                 Type::Bool => {
                                                     // Load as boolean (i1)
@@ -7640,10 +7662,11 @@ impl CodeGenerator {
                     self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_ptr, elem_offset));
 
                     // Load as i64 for untyped identifiers (simplified generic handling)
+                    // Use unique register name to avoid "multiple definition of local value named 'X'"
                     let i64_cast_reg = format!("%i64_cast_{}_{}", self.instructions.len(), i);
                     self.instructions.push(format!("  {} = bitcast i8* {} to i64*", i64_cast_reg, elem_ptr_reg));
                     if elem_name != "_" {
-                        let final_val_reg = format!("%{}", elem_name);
+                        let final_val_reg = format!("%{}_{}", elem_name, self.instructions.len());
                         self.instructions.push(format!("  {} = load i64, i64* {}", final_val_reg, i64_cast_reg));
                         self.variables.insert(elem_name.clone(), final_val_reg);
                         self.variable_llvm_types.insert(elem_name.clone(), "i64".to_string());
@@ -7657,8 +7680,10 @@ impl CodeGenerator {
                     let elem_ptr_reg = format!("%{}_ptr_{}", elem_name, self.instructions.len());
                     self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}", elem_ptr_reg, tuple_ptr, elem_offset));
 
+                    // Use unique register name to avoid "multiple definition of local value named 'X'"
+                    let final_val_reg = format!("%{}_{}", elem_name, self.instructions.len());
+
                     // Load based on declared type (generic type handling)
-                    let final_val_reg = format!("%{}", elem_name);
                     let llvm_ty = match elem_type {
                         Type::Bool => {
                             // Load as boolean (i1)
@@ -10801,17 +10826,13 @@ impl CodeGenerator {
         let scrutinee_expr = self.generate_function_literal_expr(&case_expr.scrutinee, func_lit, body_instructions)?;
         body_instructions.push(format!("  ; DEBUG: scrutinee_expr='{}', params={}", scrutinee_expr, func_lit.parameters.len()));
 
-        // For behavior functions, if scrutinee is a parameter register, we need to bitcast and load it
-        let scrutinee_val = if scrutinee_expr == "i8* %0" || scrutinee_expr == "i8* %1" {
-            // Parameter with i8* prefix - bitcast and load
-            let param_reg = scrutinee_expr.trim_start_matches("i8* ");
-            let bitcast_reg = format!("%scrutinee_bitcast_{}", body_instructions.len());
-            let load_reg = format!("%scrutinee_load_{}", body_instructions.len());
-            body_instructions.push(format!("  {} = bitcast i8* {} to i64*", bitcast_reg, param_reg));
-            body_instructions.push(format!("  {} = load i64, i64* {}", load_reg, bitcast_reg));
-            load_reg
+        // For behavior functions, if scrutinee is a parameter register, we need to bitcast and load it.
+        // String parameters are already i8* pointers - use directly without loading through i64*.
+        let scrutinee_val = if scrutinee_expr.starts_with("i8* ") {
+            // Already a pointer type (string parameter) - use directly, do NOT load through i64*
+            scrutinee_expr.clone()
         } else if scrutinee_expr == "%0" || scrutinee_expr == "%1" {
-            // Direct parameter register - bitcast and load
+            // Direct parameter register - assume boxed i64, bitcast and load
             let bitcast_reg = format!("%scrutinee_bitcast_{}", body_instructions.len());
             let load_reg = format!("%scrutinee_load_{}", body_instructions.len());
             body_instructions.push(format!("  {} = bitcast i8* {} to i64*", bitcast_reg, scrutinee_expr));

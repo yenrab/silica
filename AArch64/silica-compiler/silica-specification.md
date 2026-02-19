@@ -201,14 +201,14 @@ Silica source code is UTF-8 encoded. The language uses ASCII characters for keyw
 The following identifiers are reserved keywords:
 
 ```
-actor      actor_ref as        atomic    bool      buf       case      cast
-char       concurrency core_id  core_set device_io do        effect    efficiency_cores
-else       end        enum      export    false     float16   float32   float64
-fn         for        from      if        impl      import    int8
-int16      int32      int64     mailbox  mem       module    normal    not
+actor      actor_ref  as        atom      atomic    bool      buf       case
+cast       char       concurrency core_id  core_set device_io do        effect
+efficiency_cores else end        enum      export    false     float16   float32
+float64    fn         for        from      if        impl      import    int8
+int16      int32      int64      mailbox  mem       module    normal    not
 of         performance_cores proc      pub       recv      ref       region    return
-self       send       spawn     string    struct    trait     true      type
-underscore unit       use       where
+self       send       spawn      string    struct    trait     true      type
+underscore unit       use        where
 ```
 
 #### 2.2.2 Identifiers
@@ -280,6 +280,21 @@ The unit value is represented by empty parentheses:
 ```
 unit_literal ::= "(" ")"
 ```
+
+##### Atom Literals
+Atom literals are symbolic constants prefixed with a colon (`:`). They evaluate to themselves and are compared by identity. Atoms follow the same naming rules as identifiers but must begin with a lowercase letter:
+```
+atom_literal ::= ":" atom_name
+atom_name    ::= lower_letter (letter | digit | "_")*
+lower_letter ::= "a" | "b" | ... | "z"
+```
+
+Examples:
+- `:ok`, `:error`, `:not_found`
+- `:ready`, `:pending`, `:done`
+- `:red`, `:green`, `:blue`
+
+Atoms are compile-time constants stored in an atom table. They require no runtime allocation and are compared by identity rather than by value, making equality checks constant-time. The colon prefix distinguishes atoms from identifiers and keywords in all contexts.
 
 ##### List Literals
 List literals are enclosed in square brackets and require an explicit type annotation:
@@ -386,6 +401,7 @@ declaration ::= function_declaration
 ```
 expression ::= literal
              | identifier
+             | atom_literal
              | "(" expression ")"
              | expression binary_operator expression
              | unary_operator expression
@@ -410,6 +426,7 @@ literal ::= integer_literal
           | character_literal
           | string_literal
           | unit_literal
+          | atom_literal
 ```
 
 #### 3.3.2 Function Calls
@@ -1685,6 +1702,7 @@ Note: Modules are typically inferred from filenames, but explicit module declara
 ### 3.5 Patterns
 ```
 pattern ::= literal_pattern
+          | atom_pattern
           | identifier_pattern
           | wildcard_pattern
           | tuple_pattern
@@ -1693,6 +1711,7 @@ pattern ::= literal_pattern
           | pattern_alternative
 
 literal_pattern  ::= literal
+atom_pattern     ::= atom_literal
 identifier_pattern ::= identifier ":" type
 wildcard_pattern  ::= "_" ":" type
 tuple_pattern     ::= "(" typed_pattern {"," typed_pattern} ")"
@@ -1720,7 +1739,7 @@ function_literal ::= "fn" parameter_list [":" type] ["proc" "[" effect_list "]"]
 Example:
 ```silica
 fn(x: int, y: int) -> int { x + y }
-fn(msg: Message) -> unit proc[device_io] { print(msg) }
+fn(msg: Message) -> atom proc[device_io] { print(msg) }
 ```
 
 #### 3.3.7 Struct Literals
@@ -2592,6 +2611,81 @@ The `string` type represents UTF-8 encoded strings.
 type string
 ```
 
+#### 4.1.7 Atom Type
+The `atom` type represents symbolic constants that evaluate to themselves. Atoms are prefixed with a colon (`:`) and follow snake_case naming conventions starting with a lowercase letter.
+
+```
+type atom
+```
+
+Atoms are interned at compile time into a global atom table. Each unique atom name maps to a fixed integer index, so atom equality is a single integer comparison rather than a string comparison. Atoms require no runtime heap allocation.
+
+**Atom Literal Syntax:**
+```silica
+:ok                -- atom representing success
+:error             -- atom representing failure
+:not_found         -- atom representing absence
+:pending           -- atom representing a waiting state
+```
+
+**Usage in Variable Bindings:**
+```silica
+status: atom <- :ok
+reason: atom <- :not_found
+```
+
+**Usage in Case Expressions:**
+```silica
+fn describe_status(s: atom) -> string {
+    case s of {
+        :ok -> "success";
+        :error -> "failure";
+        :pending -> "waiting";
+        _: atom -> "unknown"
+    }
+}
+```
+
+**Usage as Function Parameters and Return Types:**
+```silica
+fn validate(input: int64) -> atom {
+    case input > 0 of {
+        true -> :valid;
+        false -> :invalid
+    }
+}
+```
+
+**Usage in Tuples (Tagged Values):**
+Atoms combine naturally with tuples to create tagged values, providing a lightweight alternative to defining variant types:
+```silica
+fn safe_divide(x: int64, y: int64) -> (atom, int64) {
+    case y == 0 of {
+        true -> (:error, 0);
+        false -> (:ok, x / y)
+    }
+}
+
+fn handle_result(result: (atom, int64)) -> string {
+    case result of {
+        (:ok, v: int64) -> "result: " + int_to_string(v);
+        (:error, _: int64) -> "division by zero"
+    }
+}
+```
+
+**Atom Identity Semantics:**
+Two atoms are equal if and only if they have the same name. Atom comparison is O(1) since the compiler maps each atom to a unique integer index at compile time.
+
+```silica
+:ok == :ok           -- true
+:ok == :error        -- false
+:ok != :error        -- true
+```
+
+**AArch64 Representation:**
+Atoms are represented as 64-bit integer indices into the atom table. The atom table is generated at compile time and stored in a read-only data section. Atom comparison compiles to a single `CMP` instruction on the integer index.
+
 ### 4.2 Compound Types
 
 #### 4.2.1 Function Types
@@ -2600,8 +2694,8 @@ Function types have the form `(ParamTypes...) -> ReturnType`.
 Examples:
 ```
 (int, int) -> int                    -- binary function
-() -> unit                           -- nullary function returning unit
-(string) -> proc[mem(normal)] int    -- function returning a process
+() -> atom                           -- nullary function returning atom
+(string) -> int proc[mem(normal)]    -- function returning a process
 ```
 
 #### 4.2.2 Tuple Types
@@ -2830,38 +2924,38 @@ All print functions require the `device_io` effect.
 
 #### 5.1.1 String Printing
 ```
-print(value: string) -> unit proc[device_io]
-println(value: string) -> unit proc[device_io]
+print(value: string) -> atom proc[device_io]
+println(value: string) -> atom proc[device_io]
 ```
 
-Print a string to stdout. `println` appends a newline.
+Print a string to stdout. `println` appends a newline. Returns `:ok` on success.
 
 #### 5.1.2 Numeric Printing
 ```
-print_int8(value: int8) -> unit proc[device_io]
-print_int16(value: int16) -> unit proc[device_io]
-print_int32(value: int32) -> unit proc[device_io]
-print_int64(value: int64) -> unit proc[device_io]
+print_int8(value: int8) -> atom proc[device_io]
+print_int16(value: int16) -> atom proc[device_io]
+print_int32(value: int32) -> atom proc[device_io]
+print_int64(value: int64) -> atom proc[device_io]
 ```
 
-Print integer values to stdout.
+Print integer values to stdout. Returns `:ok` on success.
 
 #### 5.1.3 Floating-Point Printing
 ```
-print_float16(value: float16) -> unit proc[device_io]
-print_float32(value: float32) -> unit proc[device_io]
-print_float64(value: float64) -> unit proc[device_io]
+print_float16(value: float16) -> atom proc[device_io]
+print_float32(value: float32) -> atom proc[device_io]
+print_float64(value: float64) -> atom proc[device_io]
 ```
 
-Print floating-point values to stdout.
+Print floating-point values to stdout. Returns `:ok` on success.
 
 #### 5.1.4 Other Type Printing
 ```
-print_bool(value: bool) -> unit proc[device_io]
-print_char(value: char) -> unit proc[device_io]
+print_bool(value: bool) -> atom proc[device_io]
+print_char(value: char) -> atom proc[device_io]
 ```
 
-Print boolean and character values to stdout.
+Print boolean and character values to stdout. Returns `:ok` on success.
 
 ### 5.2 File I/O Functions
 
@@ -2877,8 +2971,8 @@ Read entire file contents or lines from a file.
 
 #### 5.2.2 File Writing
 ```
-write_file(path: string, content: string) -> unit proc[device_io]
-append_file(path: string, content: string) -> unit proc[device_io]
+write_file(path: string, content: string) -> atom proc[device_io]
+append_file(path: string, content: string) -> atom proc[device_io]
 ```
 
 Write or append content to a file.
@@ -2886,7 +2980,7 @@ Write or append content to a file.
 #### 5.2.3 File Operations
 ```
 file_exists(path: string) -> bool proc[device_io]
-delete_file(path: string) -> unit proc[device_io]
+delete_file(path: string) -> atom proc[device_io]
 get_file_size(path: string) -> int64 proc[device_io]
 ```
 
@@ -2894,8 +2988,8 @@ Check file existence, delete files, and get file sizes.
 
 #### 5.2.4 Directory Operations
 ```
-create_directory(path: string) -> unit proc[device_io]
-remove_directory(path: string) -> unit proc[device_io]
+create_directory(path: string) -> atom proc[device_io]
+remove_directory(path: string) -> atom proc[device_io]
 list_directory(path: string) -> list<string> proc[device_io]
 ```
 
@@ -3180,7 +3274,7 @@ impl ActorMessage for Request;
 impl ActorMessage for Response;
 
 -- Actor behavior with exception handling
-fn safe_calculator(msg: Request, state: int64) -> proc[mailbox, concurrency] int64 {
+fn safe_calculator(msg: Request, state: int64) -> int64 proc[mailbox, concurrency] {
     case msg.command of {
         "divide" -> {
             -- Division with error handling
@@ -3269,7 +3363,7 @@ Actors handle exceptions independently, providing isolation:
 
 ```silica
 -- Actor with robust error handling
-fn robust_actor(msg: Request, state: State) -> proc[mailbox, concurrency] State {
+fn robust_actor(msg: Request, state: State) -> State proc[mailbox, concurrency] {
     do
         -- Attempt operation with error handling
         result: ResultInt64String <- process_with_errors(msg.value1, msg.value2);
@@ -3360,21 +3454,12 @@ Effects can be combined:
 ```silica
 effect io_and_mem = [device_io, mem(normal)]
 
-fn combined_operation() : proc[io_and_mem] int {
+fn combined_operation() -> int proc[io_and_mem] {
     do
         // Operations that require both I/O and memory effects
         42
     end
 }
-```
-
-#### 6.3.2 Effect Inheritance
-Effects can extend other effects:
-
-```silica
-effect basic_io = [device_io]
-effect network_io extends basic_io = [networking]
-effect file_io extends basic_io = [mem(normal)]
 ```
 
 ## 7. Basic Expressions
@@ -3388,6 +3473,7 @@ true        -- evaluates to boolean true
 'a'         -- evaluates to character 'a'
 "hello"     -- evaluates to string "hello"
 ()          -- evaluates to unit value
+:ok         -- evaluates to atom :ok
 ```
 
 ### 7.2 Identifiers
@@ -3500,7 +3586,7 @@ impl Display for int64;
 impl Display for string;
 
 -- Types implementing Display can be used where Display is required
-fn print_value(x: Display) -> unit { ... }
+fn print_value(x: Display) -> atom { ... }
 -- int64 and string can both be passed to print_value
 ```
 
@@ -3531,6 +3617,7 @@ The following types automatically implement `Collectable` without requiring expl
 - `float64`
 - `char`
 - `string`
+- `atom`
 
 **Function Types (Automatic Collectable):**
 All function types of the form `(T1 -> T2)` where `T1` and `T2` are concrete types automatically implement `Collectable`. This includes:
@@ -3618,13 +3705,13 @@ impl Display for Rectangle {
 }
 
 -- Function using trait constraint
-fn print_display(value: Display) -> unit proc[device_io] {
+fn print_display(value: Display) -> atom proc[device_io] {
     str: string <- value.show();
     print_string(str)
 }
 
 -- Usage: Both Point2D and Rectangle can be passed to print_display
-fn example() -> unit proc[device_io] {
+fn example() -> atom proc[device_io] {
     point: Point2D <- Point2D {x: 3, y: 7};
     rect: Rectangle <- Rectangle {width: 4, height: 5};
     
@@ -3662,7 +3749,7 @@ impl Math for Point2D {
 }
 
 -- Function requiring multiple trait constraints
-fn print_and_compute(value: Display, math_value: Math, scale: int64) -> unit proc[device_io] {
+fn print_and_compute(value: Display, math_value: Math, scale: int64) -> atom proc[device_io] {
     -- Use Display trait
     str: string <- value.show();
     print_string(str);
@@ -3673,7 +3760,7 @@ fn print_and_compute(value: Display, math_value: Math, scale: int64) -> unit pro
 }
 
 -- Usage: Point2D implements both traits
-fn example() -> unit proc[device_io] {
+fn example() -> atom proc[device_io] {
     point: Point2D <- Point2D {x: 2, y: 3};
     
     -- Point2D can be used for both Display and Math constraints
@@ -3745,13 +3832,13 @@ impl CollectionElement for string {
 }
 
 -- Function operating on collections of trait-constrained elements
-fn print_collection_element(elem: CollectionElement) -> unit proc[device_io] {
+fn print_collection_element(elem: CollectionElement) -> atom proc[device_io] {
     str: string <- elem.to_string();
     print_string(str)
 }
 
 -- Usage: Both int64 and string can be used
-fn example() -> unit proc[device_io] {
+fn example() -> atom proc[device_io] {
     num: int64 <- 42;
     text: string <- "Hello";
     
@@ -3809,7 +3896,7 @@ impl Debug for Point2D {
 }
 
 -- Function requiring a specific trait
-fn print_debug(value: Debug) -> unit proc[device_io] {
+fn print_debug(value: Debug) -> atom proc[device_io] {
     debug_str: string <- value.debug();
     print_string(debug_str)
 }
@@ -3843,7 +3930,7 @@ impl Deserialize for User {
 }
 
 -- Function requiring both traits
-fn round_trip(value: Serialize, deserializer: Deserialize) -> unit {
+fn round_trip(value: Serialize, deserializer: Deserialize) -> atom {
     -- Serialize value
     serialized: string <- value.serialize();
     
@@ -3882,7 +3969,7 @@ impl AnyValue for string {
 }
 
 -- Function accepting any type-erased value
-fn process_any_value(value: AnyValue) -> unit proc[device_io] {
+fn process_any_value(value: AnyValue) -> atom proc[device_io] {
     type_name: string <- value.type_name();
     str_value: string <- value.to_string();
     print_string(type_name);
@@ -3904,7 +3991,7 @@ impl Sendable for int64;
 impl Sendable for string;
 
 -- Function requiring marker trait
-fn send_message(msg: Sendable) -> unit proc[concurrency] {
+fn send_message(msg: Sendable) -> atom proc[concurrency] {
     -- Can send any Sendable type
 }
 ```
@@ -4087,10 +4174,10 @@ proc[] unit                             -- pure computation
 Silica provides built-in memory operations as primitive language constructs that return processes:
 
 ```
-alloc_region(Space) : proc[mem(Space)] region(R, Space)
-alloc_ref(Region, Value) : proc[mem(Space)] ref(R, Space, T)
-read_ref(Ref) : proc[mem(Space)] T
-write_ref(Ref, Value) : proc[mem(Space)] unit
+alloc_region(Space) -> region(R, Space) proc[mem(Space)]
+alloc_ref(Region, Value) -> ref(R, Space, T) proc[mem(Space)]
+read_ref(Ref) -> T proc[mem(Space)]
+write_ref(Ref, Value) -> atom proc[mem(Space)]
 ```
 
 These operations are not function calls but fundamental language primitives for memory management.
@@ -4133,7 +4220,7 @@ Every function that uses effects must declare them explicitly in its signature:
 
 ```
 fn allocate_int(region: region(R, normal))
-    : proc[mem(normal)] ref(R, normal, int) {
+ -> ref(R, normal, int) proc[mem(normal)] {
     alloc_ref(region, 0)  // built-in memory allocation primitive
 }
 ```
@@ -4149,14 +4236,14 @@ fn allocate_int(region: region(R, normal))
 
 2. **Single Effect**: Functions with one effect declare it explicitly:
    ```
-   fn allocate(region: region(R, normal)) -> proc[mem(normal)] ref(R, normal, int) {
+   fn allocate(region: region(R, normal)) -> ref(R, normal, int) proc[mem(normal)] {
        alloc_ref(region, 0)
    }
    ```
 
 3. **Multiple Effects**: Functions with multiple effects list all effects:
    ```
-   fn allocate_and_print(region: region(R, normal)) -> proc[mem(normal), device_io] ref(R, normal, int) {
+   fn allocate_and_print(region: region(R, normal)) -> ref(R, normal, int) proc[mem(normal), device_io] {
        ref: ref(R, normal, int) <- alloc_ref(region, 0);
        print_string("Allocated");
        ref
@@ -4165,9 +4252,9 @@ fn allocate_int(region: region(R, normal))
 
 4. **Effect Propagation**: Effects propagate through function calls - if a function calls another function with effects, those effects must be declared:
    ```
-   fn helper() -> proc[mem(normal)] ref(R, normal, int) { ... }
+   fn helper() -> ref(R, normal, int) proc[mem(normal)] { ... }
    
-   fn caller() -> proc[mem(normal)] ref(R, normal, int) {
+   fn caller() -> ref(R, normal, int) proc[mem(normal)] {
        helper()  -- mem(normal) effect propagates to caller
    }
    ```
@@ -4231,13 +4318,13 @@ The effect union algorithm respects the subeffecting lattice:
 **Example 1: Simple Union**
 ```silica
 -- Function with mem(normal)
-fn alloc() -> proc[mem(normal)] ref(R, normal, int) { ... }
+fn alloc() -> ref(R, normal, int) proc[mem(normal)] { ... }
 
 -- Function with device_io
-fn print() -> proc[device_io] unit { ... }
+fn print() -> atom proc[device_io] { ... }
 
 -- Combined effects: union of both sets
-fn alloc_and_print() -> proc[mem(normal), device_io] ref(R, normal, int) {
+fn alloc_and_print() -> ref(R, normal, int) proc[mem(normal), device_io] {
     ref: ref(R, normal, int) <- alloc();  -- mem(normal)
     print();                              -- device_io
     ref                                    -- Combined: [mem(normal), device_io]
@@ -4247,13 +4334,13 @@ fn alloc_and_print() -> proc[mem(normal), device_io] ref(R, normal, int) {
 **Example 2: Subeffecting in Union**
 ```silica
 -- Function with mem(normal)
-fn alloc_normal() -> proc[mem(normal)] ref(R, normal, int) { ... }
+fn alloc_normal() -> ref(R, normal, int) proc[mem(normal)] { ... }
 
 -- Function with mem(atomic)
-fn alloc_atomic() -> proc[mem(atomic)] ref(R, atomic, int) { ... }
+fn alloc_atomic() -> ref(R, atomic, int) proc[mem(atomic)] { ... }
 
 -- Combined: mem(normal) <: mem(atomic), so result is [mem(atomic)]
-fn alloc_both() -> proc[mem(atomic)] (ref(R, normal, int), ref(R, atomic, int)) {
+fn alloc_both() -> (ref(R, normal, int), ref(R, atomic, int)) proc[mem(atomic)] {
     ref1: ref(R, normal, int) <- alloc_normal();  -- mem(normal)
     ref2: ref(R, atomic, int) <- alloc_atomic();  -- mem(atomic)
     (ref1, ref2)                                   -- Union: [mem(atomic)] (normal subsumed)
@@ -4263,7 +4350,7 @@ fn alloc_both() -> proc[mem(atomic)] (ref(R, normal, int), ref(R, atomic, int)) 
 **Example 3: Multiple Effect Union**
 ```silica
 -- Multiple function calls with different effects
-fn complex() -> proc[mem(normal), device_io, concurrency] unit {
+fn complex() -> atom proc[mem(normal), device_io, concurrency] {
     alloc();        -- mem(normal)
     print();        -- device_io
     spawn(...);     -- concurrency
@@ -4277,7 +4364,7 @@ Effects propagate through nested function calls, requiring all effects to be dec
 
 ```silica
 -- Helper function with mem(normal)
-fn allocate_helper() -> proc[mem(normal)] ref(R, normal, int) {
+fn allocate_helper() -> ref(R, normal, int) proc[mem(normal)] {
     do
         r: region(R, normal) <- alloc_region(normal);
         alloc_ref(r, 42)
@@ -4285,12 +4372,12 @@ fn allocate_helper() -> proc[mem(normal)] ref(R, normal, int) {
 }
 
 -- Helper function with device_io
-fn print_helper() -> proc[device_io] unit {
+fn print_helper() -> atom proc[device_io] {
     print_string("Helper called")
 }
 
 -- Function that calls both helpers
-fn composed_operation() -> proc[mem(normal), device_io] ref(R, normal, int) {
+fn composed_operation() -> ref(R, normal, int) proc[mem(normal), device_io] {
     do
         ref: ref(R, normal, int) <- allocate_helper();  -- mem(normal) propagates
         print_helper();                                  -- device_io propagates
@@ -4305,13 +4392,13 @@ When effects have subeffecting relationships, the compiler minimizes the effect 
 
 ```silica
 -- Function with mem(normal)
-fn alloc_normal() -> proc[mem(normal)] ref(R, normal, int) { ... }
+fn alloc_normal() -> ref(R, normal, int) proc[mem(normal)] { ... }
 
 -- Function with mem(atomic) (mem(normal) <: mem(atomic))
-fn alloc_atomic() -> proc[mem(atomic)] ref(R, atomic, int) { ... }
+fn alloc_atomic() -> ref(R, atomic, int) proc[mem(atomic)] { ... }
 
 -- Combined: mem(normal) is subsumed by mem(atomic)
-fn alloc_both() -> proc[mem(atomic)] (ref(R, normal, int), ref(R, atomic, int)) {
+fn alloc_both() -> (ref(R, normal, int), ref(R, atomic, int)) proc[mem(atomic)] {
     do
         ref1: ref(R, normal, int) <- alloc_normal();   -- mem(normal)
         ref2: ref(R, atomic, int) <- alloc_atomic();   -- mem(atomic)
@@ -4325,7 +4412,7 @@ fn alloc_both() -> proc[mem(atomic)] (ref(R, normal, int), ref(R, atomic, int)) 
 Do expressions compose effects from multiple statements:
 
 ```silica
-fn complex_operation() -> proc[mem(normal), device_io, concurrency] int {
+fn complex_operation() -> int proc[mem(normal), device_io, concurrency] {
     do
         -- Statement 1: mem(normal)
         r: region(R, normal) <- alloc_region(normal);
@@ -4350,7 +4437,7 @@ fn complex_operation() -> proc[mem(normal), device_io, concurrency] int {
 Function literals must declare effects, and those effects compose with the enclosing function:
 
 ```silica
-fn actor_with_effects() -> proc[mem(normal), device_io, concurrency] actor_ref {
+fn actor_with_effects() -> actor_ref proc[mem(normal), device_io, concurrency] {
     do
         -- Function literal with mem(normal) and device_io
         behavior_fn: fn(msg: Message, state: State) -> State proc[mem(normal), device_io] = 
@@ -4384,11 +4471,11 @@ fn caller_missing_effects() -> int {
 }
 
 -- CORRECT: All effects properly declared
-fn allocate_correct(region: region(R, normal)) -> proc[mem(normal)] ref(R, normal, int) {
+fn allocate_correct(region: region(R, normal)) -> ref(R, normal, int) proc[mem(normal)] {
     alloc_ref(region, 0)  -- Correct: mem(normal) declared
 }
 
-fn caller_correct() -> proc[mem(normal)] ref(R, normal, int) {
+fn caller_correct() -> ref(R, normal, int) proc[mem(normal)] {
     allocate_helper()  -- Correct: mem(normal) declared in caller
 }
 ```
@@ -4398,7 +4485,7 @@ fn caller_correct() -> proc[mem(normal)] ref(R, normal, int) {
 Effects compose correctly even with conditional execution:
 
 ```silica
-fn conditional_effects(condition: bool) -> proc[mem(normal), device_io] int {
+fn conditional_effects(condition: bool) -> int proc[mem(normal), device_io] {
     do
         if condition {
             -- Branch 1: mem(normal) and device_io
@@ -4421,7 +4508,7 @@ fn conditional_effects(condition: bool) -> proc[mem(normal), device_io] int {
 Effects compose correctly in pattern matching expressions:
 
 ```silica
-fn pattern_matching_effects(msg: Message) -> proc[mem(normal), device_io] int {
+fn pattern_matching_effects(msg: Message) -> int proc[mem(normal), device_io] {
     do
         result: int <- case msg of {
             AllocateMsg {size} -> {
@@ -4598,7 +4685,7 @@ Declared effects: []
 See specification: spec:§9.3.1
 
 Suggestion: Add `proc[mem(normal)]` to the function signature:
-  fn allocate_int(region: region(R, normal)) -> proc[mem(normal)] ref(R, normal, int)
+  fn allocate_int(region: region(R, normal)) -> ref(R, normal, int) proc[mem(normal)]
 
 <!-- SILICA-ERROR-METADATA
 {
@@ -4622,7 +4709,7 @@ Suggestion: Add `proc[mem(normal)]` to the function signature:
   },
   "suggestion": {
     "type": "add_effect_declaration",
-    "suggested_signature": "fn allocate_int(region: region(R, normal)) -> proc[mem(normal)] ref(R, normal, int)"
+    "suggested_signature": "fn allocate_int(region: region(R, normal)) -> ref(R, normal, int) proc[mem(normal)]"
   }
 }
 -->
@@ -4630,7 +4717,7 @@ Suggestion: Add `proc[mem(normal)]` to the function signature:
 
 **Fix:**
 ```silica
-fn allocate_int(region: region(R, normal)) -> proc[mem(normal)] ref(R, normal, int) {
+fn allocate_int(region: region(R, normal)) -> ref(R, normal, int) proc[mem(normal)] {
     alloc_ref(region, 0)
 }
 ```
@@ -4639,7 +4726,7 @@ fn allocate_int(region: region(R, normal)) -> proc[mem(normal)] ref(R, normal, i
 
 **Code:**
 ```silica
-fn helper() -> proc[mem(normal)] ref(R, normal, int) {
+fn helper() -> ref(R, normal, int) proc[mem(normal)] {
     region: region(R, normal) <- alloc_region(normal);
     alloc_ref(region, 0)
 }
@@ -4659,7 +4746,7 @@ Declared effects: []
 See specification: spec:§9.3.1
 
 Suggestion: Add `proc[mem(normal)]` to the function signature:
-  fn caller() -> proc[mem(normal)] ref(R, normal, int)
+  fn caller() -> ref(R, normal, int) proc[mem(normal)]
 
 <!-- SILICA-ERROR-METADATA
 {
@@ -4685,7 +4772,7 @@ Suggestion: Add `proc[mem(normal)]` to the function signature:
   },
   "suggestion": {
     "type": "add_effect_declaration",
-    "suggested_signature": "fn caller() -> proc[mem(normal)] ref(R, normal, int)"
+    "suggested_signature": "fn caller() -> ref(R, normal, int) proc[mem(normal)]"
   }
 }
 -->
@@ -4693,7 +4780,7 @@ Suggestion: Add `proc[mem(normal)]` to the function signature:
 
 **Fix:**
 ```silica
-fn caller() -> proc[mem(normal)] ref(R, normal, int) {
+fn caller() -> ref(R, normal, int) proc[mem(normal)] {
     helper()
 }
 ```
@@ -4702,13 +4789,13 @@ fn caller() -> proc[mem(normal)] ref(R, normal, int) {
 
 **Code:**
 ```silica
-fn high_level() -> proc[mem(normal), device_io] unit {
+fn high_level() -> atom proc[mem(normal), device_io] {
     do
         print_string("Hello")
     end
 }
 
-fn low_level() -> proc[mem(normal)] unit {
+fn low_level() -> atom proc[mem(normal)] {
     high_level()  -- Error: device_io effect mismatch
 }
 ```
@@ -4751,7 +4838,7 @@ See specification: spec:§9.3.1
 
 **Fix:**
 ```silica
-fn low_level() -> proc[mem(normal), device_io] unit {
+fn low_level() -> atom proc[mem(normal), device_io] {
     high_level()
 }
 ```
@@ -4760,7 +4847,7 @@ fn low_level() -> proc[mem(normal), device_io] unit {
 
 **Code:**
 ```silica
-fn create_actor() -> proc[concurrency] actor_ref {
+fn create_actor() -> actor_ref proc[concurrency] {
     behavior_fn: (Msg, State) -> State = fn(msg: Msg, state: State) -> State {
         print_string("Received")  -- Error: device_io effect not declared
         state
@@ -4805,7 +4892,7 @@ See specification: spec:§9.3.1
 
 **Fix:**
 ```silica
-fn create_actor() -> proc[concurrency] actor_ref {
+fn create_actor() -> actor_ref proc[concurrency] {
     behavior_fn: (Msg, State) -> State proc[device_io] = fn(msg: Msg, state: State) -> State proc[device_io] {
         print_string("Received")
         state
@@ -4818,7 +4905,7 @@ fn create_actor() -> proc[concurrency] actor_ref {
 
 **Code:**
 ```silica
-fn complex_operation() -> unit {
+fn complex_operation() -> atom {
     do
         region: region(R, normal) <- alloc_region(normal);
         print_string("Allocated")
@@ -4861,7 +4948,7 @@ See specification: spec:§9.3.1
 
 **Fix:**
 ```silica
-fn complex_operation() -> proc[mem(normal), device_io] unit {
+fn complex_operation() -> atom proc[mem(normal), device_io] {
     do
         region: region(R, normal) <- alloc_region(normal);
         print_string("Allocated")
@@ -4893,7 +4980,7 @@ Effect polymorphism is achieved through concrete functions for each effect combi
 Effects compose naturally in `do...end` blocks. When binding multiple expressions with effects, the resulting process type includes all effects from all bound expressions:
 
 ```silica
-fn example() -> unit proc[mem(normal), device_io] {
+fn example() -> atom proc[mem(normal), device_io] {
     do
         -- Creates process with mem(normal) effect
         region: region(R, normal) <- alloc_region(normal);
@@ -4914,7 +5001,7 @@ fn example() -> unit proc[mem(normal), device_io] {
 Nested `do...end` blocks compose effects from inner to outer:
 
 ```silica
-fn nested_example() -> unit proc[mem(normal), device_io, concurrency] {
+fn nested_example() -> atom proc[mem(normal), device_io, concurrency] {
     do
         -- Outer do block
         region: region(R, normal) <- alloc_region(normal);
@@ -4939,7 +5026,7 @@ Effects propagate through function calls and bindings. The type checker ensures 
 
 ```
 -- Pure computation with logging (preserves pure effect)
-fn with_logging_pure(action: proc[] int) -> proc[logging] int {
+fn with_logging_pure(action: proc[] int) -> int proc[logging] {
     do
         log("Starting action");
         result: int <- action;
@@ -4949,7 +5036,7 @@ fn with_logging_pure(action: proc[] int) -> proc[logging] int {
 }
 
 -- Memory normal computation with logging (preserves mem(normal))
-fn with_logging_mem_normal(action: proc[mem(normal)] int) -> proc[mem(normal), logging] int {
+fn with_logging_mem_normal(action: proc[mem(normal)] int) -> int proc[mem(normal), logging] {
     do
         log("Starting action");
         result: int <- action;
@@ -4959,7 +5046,7 @@ fn with_logging_mem_normal(action: proc[mem(normal)] int) -> proc[mem(normal), l
 }
 
 -- Concurrency computation with logging (preserves concurrency)
-fn with_logging_concurrency(action: proc[concurrency] int) -> proc[concurrency, logging] int {
+fn with_logging_concurrency(action: proc[concurrency] int) -> int proc[concurrency, logging] {
     do
         log("Starting action");
         result: int <- action;
@@ -4970,7 +5057,7 @@ fn with_logging_concurrency(action: proc[concurrency] int) -> proc[concurrency, 
 
 -- Combined effects: mem(normal) + concurrency (preserves both)
 fn with_logging_mem_normal_concurrency(action: proc[mem(normal), concurrency] int) 
-    -> proc[mem(normal), concurrency, logging] int {
+    -> int proc[mem(normal), concurrency, logging] {
     do
         log("Starting action");
         result: int <- action;
@@ -5005,15 +5092,15 @@ Effect capability enforcement is done at compile time. The type checker ensures:
 
 **Compile-Time Enforcement:**
 ```silica
-fn requires_io() -> unit proc[device_io] {
+fn requires_io() -> atom proc[device_io] {
     print_string("Hello")
 }
 
-fn pure_function() -> unit {
+fn pure_function() -> atom {
     requires_io()  -- ERROR: pure_function() doesn't declare device_io effect
 }
 
-fn caller() -> unit proc[device_io] {
+fn caller() -> atom proc[device_io] {
     requires_io()  -- OK: caller() declares device_io effect
 }
 ```
@@ -5104,13 +5191,13 @@ impl Display for int64 {
 }
 
 -- Function with trait constraint
-fn print_value(x: Display) -> unit proc[device_io] {
+fn print_value(x: Display) -> atom proc[device_io] {
     str: string <- x.show();
     print_string(str)
 }
 
 -- Type checking: int64 implements Display
-fn example() -> unit proc[device_io] {
+fn example() -> atom proc[device_io] {
     value: int64 <- 42;
     print_value(value)  -- ✓ Valid: int64 implements Display
 }
@@ -5157,12 +5244,12 @@ trait Display {
 }
 
 -- int64 does not implement Display (no impl declaration)
-fn print_value(x: Display) -> unit proc[device_io] {
+fn print_value(x: Display) -> atom proc[device_io] {
     str: string <- x.show();
     print_string(str)
 }
 
-fn example() -> unit proc[device_io] {
+fn example() -> atom proc[device_io] {
     value: int64 <- 42;
     print_value(value)  -- ERROR: int64 does not implement Display
 }
@@ -5253,7 +5340,7 @@ fn pure_add(x: int, y: int) -> int {
 -- Function type: (int, int) -> int ! []
 
 fn allocate_pair(r: region(R, normal))
-    : proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) {
+ -> (ref(R, normal, int), ref(R, normal, int)) proc[mem(normal)] {
     do
         x: ref(R, normal, int) <- alloc_ref(r, 1)    -- creates process value
         y: ref(R, normal, int) <- alloc_ref(r, 2)    -- creates process value
@@ -5263,7 +5350,7 @@ fn allocate_pair(r: region(R, normal))
 -- Effects properly declared: mem(normal)
 -- Returns a process value that must be spawned to execute
 
-fn bad_alloc(r: region(R, normal)) : proc[] ref(R, normal, int) {
+fn bad_alloc(r: region(R, normal)) -> ref(R, normal, int) proc[] {
     alloc_ref(r, 42)    -- ERROR: requires mem(normal) but declares []
 }
 ```
@@ -5379,7 +5466,7 @@ Processes compose through monadic binding:
 
 ```
 fn allocate_pair(r: region(R, normal))
-    : proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) {
+ -> (ref(R, normal, int), ref(R, normal, int)) proc[mem(normal)] {
     x: ref(R, normal, int) <- alloc_ref(r, 1)    -- creates process value
     y: ref(R, normal, int) <- alloc_ref(r, 2)    -- creates process value
     return (x, y)                                 -- returns composed process value
@@ -5390,8 +5477,8 @@ pair_process: proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) <- al
 result: (ref(R, normal, int), ref(R, normal, int)) <- spawn(pair_process)
 
 fn allocate_quad(r: region(R, normal))
-    : proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int),
-                         ref(R, normal, int), ref(R, normal, int)) {
+    -> (ref(R, normal, int), ref(R, normal, int),
+        ref(R, normal, int), ref(R, normal, int)) proc[mem(normal)] {
     do
         (a: ref(R, normal, int), b: ref(R, normal, int)) <- allocate_pair(r)    -- creates process value
         (c: ref(R, normal, int), d: ref(R, normal, int)) <- allocate_pair(r)    -- creates process value
@@ -5408,12 +5495,12 @@ fn allocate_quad(r: region(R, normal))
 Regions are allocated explicitly and provide memory pools:
 
 ```
-alloc_region(normal) : proc[mem(normal)] region(R, normal)
-alloc_region(normal_writeback) : proc[mem(normal_writeback)] region(R, normal_writeback)
-alloc_region(normal_writethrough) : proc[mem(normal_writethrough)] region(R, normal_writethrough)
-alloc_region(normal_noncacheable) : proc[mem(normal_noncacheable)] region(R, normal_noncacheable)
-alloc_region(atomic) : proc[mem(atomic)] region(R, atomic)
-alloc_region(device) : proc[mem(device)] region(R, device)  -- Driver library only
+alloc_region(normal) -> region(R, normal) proc[mem(normal)]
+alloc_region(normal_writeback) -> region(R, normal_writeback) proc[mem(normal_writeback)]
+alloc_region(normal_writethrough) -> region(R, normal_writethrough) proc[mem(normal_writethrough)]
+alloc_region(normal_noncacheable) -> region(R, normal_noncacheable) proc[mem(normal_noncacheable)]
+alloc_region(atomic) -> region(R, atomic) proc[mem(atomic)]
+alloc_region(device) -> region(R, device) proc[mem(device)]  -- Driver library only
 ```
 
 **Memory Space Selection Guidelines:**
@@ -6113,7 +6200,7 @@ function analyze_lifetime(expr, Γ, L, D):
             -- Verify value type matches reference type
             if τ_v != T:
                 error("Type mismatch in write_ref")
-            return (unit, L_v, D_v)
+            return (atom, L_v, D_v)
         
         -- Function call: propagate lifetime constraints
         function_call(f, args):
@@ -6140,7 +6227,7 @@ function analyze_lifetime(expr, Γ, L, D):
             for each ref(R, Space, T) in D':
                 if R ∉ L':
                     error("Reference to deallocated region")
-            return (unit, L', D')
+            return (atom, L', D')
         
         -- Do expression: sequential composition
         do_expr(stmts):
@@ -6195,7 +6282,7 @@ The algorithm computes `L'` and `D'` as follows:
 
 **Example:**
 ```silica
-fn example() -> unit proc[mem(normal)] {
+fn example() -> atom proc[mem(normal)] {
     do
         r: region(R, normal) <- alloc_region(normal);  -- L = {R:scope_do}
         ref1: ref(R, normal, int64) <- alloc_ref(r, 42);  -- D = {ref1:scope_do}
@@ -6237,15 +6324,15 @@ The compiler analyzes region lifetimes across function boundaries:
 References are allocated within regions:
 
 ```
-alloc_ref(region, initial_value) : proc[mem(Space)] ref(R, Space, T)
+alloc_ref(region, initial_value) -> ref(R, Space, T) proc[mem(Space)]
 ```
 
 #### 12.2.2 Reference Operations
 References support reading and writing:
 
 ```
-read_ref(reference)  : proc[mem(Space)] T
-write_ref(reference, value) : proc[mem(Space)] unit
+read_ref(reference) -> T proc[mem(Space)]
+write_ref(reference, value) -> atom proc[mem(Space)]
 ```
 
 #### 12.2.3 Reference Identity
@@ -6270,8 +6357,8 @@ buf(R, Space, T, N)    -- buffer of N elements of type T
 Buffers support indexed access:
 
 ```
-read_buf(buffer, index)  : proc[mem(Space)] T
-write_buf(buffer, index, value) : proc[mem(Space)] unit
+read_buf(buffer, index) -> T proc[mem(Space)]
+write_buf(buffer, index, value) -> atom proc[mem(Space)]
 ```
 
 #### 12.3.3 Bounds Checking
@@ -6590,7 +6677,7 @@ alloc_ref(r, 42)    -- Runtime error: capability violation
 Actors are created with initial state and behavior function:
 
 ```
-spawn(initial_state, behavior_fn [, core_affinity]) : proc[concurrency] actor_ref
+spawn(initial_state, behavior_fn [, core_affinity]) -> actor_ref proc[concurrency]
 ```
 
 The `spawn()` function is the execution point for actor creation. It returns an `actor_ref` handle that can be used with other functions such as `cast()`, `send()`, and `pin_actor_to_core()`. The actor begins executing immediately when `spawn()` is called.
@@ -6623,7 +6710,7 @@ Actor migration between cores is **manual-only** - there is no automatic migrati
 - **Default Behavior**: Actors remain on the core where they were spawned unless explicitly migrated
 - **Manual Migration**: Application code must call `migrate_actor()` to move actors between cores
 - **Core Affinity**: Actors can be pinned to specific cores using `pin_actor_to_core()`, preventing migration
-- **Migration API**: `migrate_actor(actor_ref, target_core) -> proc[concurrency] unit` - explicitly migrates an actor to a target core
+- **Migration API**: `migrate_actor(actor_ref, target_core) -> atom` - explicitly migrates an actor to a target core proc[concurrency]
 
 #### 15.1.2.1 AArch64 Runtime Integration
 
@@ -7233,10 +7320,10 @@ Actor migration is **manual-only** - application programmers must explicitly mig
 
 ```silica
 -- Explicitly migrate an actor to a target core
-migrate_actor(actor_ref: actor_ref, target_core: int) -> proc[concurrency] unit
+migrate_actor(actor_ref: actor_ref, target_core: int) -> atom proc[concurrency]
 
 -- Pin an actor to a specific core (prevents migration)
-pin_actor_to_core(actor_ref: actor_ref, core_id: int) -> proc[concurrency] unit
+pin_actor_to_core(actor_ref: actor_ref, core_id: int) -> atom proc[concurrency]
 ```
 
 **Migration Policy:**
@@ -7549,7 +7636,7 @@ If migration fails:
 Each actor has a unique identity:
 
 ```
-self() : proc[mailbox, concurrency] actor_ref
+self() -> actor_ref proc[mailbox, concurrency]
 ```
 
 The `actor_ref` type is a primitive type (like `int` or `bool`), representing a reference to an actor.
@@ -7566,7 +7653,7 @@ impl ActorMessage for Request;
 impl ActorMessage for Response;
 
 fn counter(msg: Request, state: int)
-    : proc[mailbox, concurrency] int {
+ -> int proc[mailbox, concurrency] {
 
     case msg of
         {command: "increment", reply_to} -> return state + 1
@@ -7597,7 +7684,7 @@ Actors can change their behavior by returning a different behavior function type
 Actors terminate when their behavior function cannot handle a message:
 
 ```
-fn fragile_behavior(msg: string, state: unit) : proc[mailbox] unit {
+fn fragile_behavior(msg: string, state: unit) -> atom proc[mailbox] {
     case msg of
         "quit" -> -- terminate actor (no return)
         other -> return ()  -- continue
@@ -7624,7 +7711,7 @@ send(actor2, "ping")    -- actor2 continues normally
 Messages are sent asynchronously:
 
 ```
-send(actor: actor_ref, message: ActorMessage) : proc[concurrency] unit
+send(actor: actor_ref, message: ActorMessage) -> atom proc[concurrency]
 ```
 
 Send never blocks - messages are queued in the actor's mailbox. The `message` parameter must be a type that implements the `ActorMessage` trait (for named types only).
@@ -7633,7 +7720,7 @@ Send never blocks - messages are queued in the actor's mailbox. The `message` pa
 Messages can be sent asynchronously without blocking, with success/failure indication:
 
 ```
-cast(actor: actor_ref, message: ActorMessage) : proc[concurrency] bool
+cast(actor: actor_ref, message: ActorMessage) -> bool proc[concurrency]
 ```
 
 Cast never blocks - messages are queued in the actor's mailbox and the function returns immediately. Returns `true` if the message was successfully enqueued, `false` if the actor doesn't exist. Mailboxes are unbounded queues that can grow without limit, so messages are never rejected due to mailbox capacity. The `message` parameter must be a type that implements the `ActorMessage` trait (for named types only).
@@ -7704,7 +7791,7 @@ To avoid message loss:
 Message reception is handled automatically by the actor runtime system. The `recv()` operation is not available for direct use in user code:
 
 ```
-recv() : proc[mailbox, concurrency] Msg  -- Runtime internal function
+recv() -> Msg proc[mailbox, concurrency]  -- Runtime internal function
 ```
 
 User behavior functions receive messages as parameters rather than calling `recv()` directly.
@@ -7777,7 +7864,7 @@ Unbounded mailboxes provide predictable performance characteristics:
 Behavior functions receive messages as parameters and can use pattern matching on them:
 
 ```
-fn selective_receiver(msg: msg_type, state: unit) : proc[mailbox] unit {
+fn selective_receiver(msg: msg_type, state: unit) -> atom proc[mailbox] {
     case msg of
         {request, data} -> handle_request(data)
         ping -> handle_ping()
@@ -7792,7 +7879,7 @@ The message parameter is automatically provided by the actor runtime when a mess
 ### 16.2.4 Cast vs Send
 Both `cast()` and `send()` send messages asynchronously without blocking:
 
-- **`send()`**: Returns `unit` - fire-and-forget message sending
+- **`send()`**: Returns `atom` - fire-and-forget message sending
   - Always succeeds (messages are always accepted by unbounded mailboxes)
   - No return value to check - suitable when message delivery is guaranteed
   
@@ -7884,7 +7971,7 @@ atomic_ref(R, Space, T)    -- atomic reference to type T
 Atomic operations work in designated memory spaces:
 
 ```
-alloc_atomic(region, initial_value) : proc[mem(Space), atomic] atomic_ref(R, Space, T)
+alloc_atomic(region, initial_value) -> atomic_ref(R, Space, T) proc[mem(Space), atomic]
 ```
 
 ### 17.2 Memory Ordering Semantics
@@ -7913,7 +8000,7 @@ type order = relaxed | acquire | release | acq_rel | seq_cst
 -- Example: Simple counter (ordering doesn't matter)
 counter: atomic_ref(R, normal, int64) <- alloc_atomic(region, 0);
 
-fn increment() -> unit proc[mem(normal), atomic] {
+fn increment() -> atom proc[mem(normal), atomic] {
     atomic_fetch_add(counter, 1, relaxed)  -- Fast, no ordering needed
 }
 ```
@@ -7929,7 +8016,7 @@ data: atomic_ref(R, normal, Data) <- alloc_atomic(region, initial_data);
 ready: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
 
 -- Publisher (Actor A)
-fn publish(new_data: Data) -> unit proc[mem(normal), atomic] {
+fn publish(new_data: Data) -> atom proc[mem(normal), atomic] {
     write_ref(data, new_data);                    -- Write data
     atomic_store(ready, true, release);           -- Publish with release
 }
@@ -7955,13 +8042,13 @@ fn consume() -> Data proc[mem(normal), atomic] {
 init_complete: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
 
 -- Initializer (Actor A)
-fn initialize() -> unit proc[mem(normal), atomic] {
+fn initialize() -> atom proc[mem(normal), atomic] {
     -- ... perform initialization ...
     atomic_store(init_complete, true, release);  -- Release: all prior writes visible
 }
 
 -- Waiter (Actor B)
-fn wait_for_init() -> unit proc[mem(normal), atomic] {
+fn wait_for_init() -> atom proc[mem(normal), atomic] {
     complete: bool <- atomic_load(init_complete, acquire);  -- Acquire: see release
     -- All initialization work is now guaranteed visible
 }
@@ -7995,7 +8082,7 @@ fn increment_with_ordering() -> int64 proc[mem(normal), atomic] {
 global_flag: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
 
 -- Actor A
-fn set_flag() -> unit proc[mem(normal), atomic] {
+fn set_flag() -> atom proc[mem(normal), atomic] {
     atomic_store(global_flag, true, seq_cst);  -- Participates in global order
 }
 
@@ -8054,7 +8141,7 @@ ready_flag: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
 data: ref(R, normal, SharedData) <- alloc_ref(region, initial_data);
 
 -- Actor A: Prepare and signal
-fn prepare_and_signal(new_data: SharedData) -> unit proc[mem(normal), atomic] {
+fn prepare_and_signal(new_data: SharedData) -> atom proc[mem(normal), atomic] {
     write_ref(data, new_data);                    -- Prepare data
     atomic_store(ready_flag, true, release);      -- Signal with release
     -- All writes before release are visible to acquire loads
@@ -8082,7 +8169,7 @@ type lock_free_stack = {
     top: atomic_ref(R, normal, ref(R, normal, stack_node))
 }
 
-fn push(stack: lock_free_stack, value: int64) -> unit proc[mem(normal), atomic] {
+fn push(stack: lock_free_stack, value: int64) -> atom proc[mem(normal), atomic] {
     new_node: ref(R, normal, stack_node) <- alloc_ref(region, {value: value, next: null});
     
     loop {
@@ -8107,7 +8194,7 @@ fn push(stack: lock_free_stack, value: int64) -> unit proc[mem(normal), atomic] 
 shared_count: atomic_ref(R, normal, int64) <- alloc_atomic(region, 0);
 
 -- Actor behavior that increments counter
-fn counter_actor(msg: IncrementMsg, state: unit) -> unit proc[mem(normal), atomic] {
+fn counter_actor(msg: IncrementMsg, state: unit) -> atom proc[mem(normal), atomic] {
     -- Use seq_cst for global ordering across all actors
     atomic_fetch_add(shared_count, 1, seq_cst);
     ()
@@ -8134,12 +8221,12 @@ Atomic operations provide synchronization between actors, complementing message 
 shared_stats: atomic_ref(R, normal, Stats) <- alloc_atomic(region, initial_stats);
 
 -- Fast path: atomic update
-fn update_stats_fast(increment: int64) -> unit proc[mem(normal), atomic] {
+fn update_stats_fast(increment: int64) -> atom proc[mem(normal), atomic] {
     atomic_fetch_add(shared_stats.count, increment, relaxed);
 }
 
 -- Coordination path: message passing
-fn request_detailed_report(reply_to: actor_ref) -> unit proc[concurrency] {
+fn request_detailed_report(reply_to: actor_ref) -> atom proc[concurrency] {
     current_stats: Stats <- atomic_load(shared_stats, acquire);
     send(reply_to, ReportMsg {stats: current_stats});
 }
@@ -8151,7 +8238,7 @@ fn request_detailed_report(reply_to: actor_ref) -> unit proc[concurrency] {
 flag: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
 
 -- Actor A
-fn actor_a_behavior(msg: StartMsg, state: unit) -> unit proc[mem(normal), atomic, concurrency] {
+fn actor_a_behavior(msg: StartMsg, state: unit) -> atom proc[mem(normal), atomic, concurrency] {
     -- Prepare data
     prepare_data();
     
@@ -8164,7 +8251,7 @@ fn actor_a_behavior(msg: StartMsg, state: unit) -> unit proc[mem(normal), atomic
 }
 
 -- Actor B
-fn actor_b_behavior(msg: DataReadyMsg, state: unit) -> unit proc[mem(normal), atomic] {
+fn actor_b_behavior(msg: DataReadyMsg, state: unit) -> atom proc[mem(normal), atomic] {
     -- Acquire: guaranteed to see release from Actor A
     ready: bool <- atomic_load(flag, acquire);
     -- All data prepared by Actor A is now visible
@@ -8320,23 +8407,23 @@ AArch64 provides size-specific variants for all atomic operations:
 
 #### 17.3.1 Load and Store
 ```
-atomic_load(aref, order) : proc[mem(Space), atomic] T
-atomic_store(aref, value, order) : proc[mem(Space), atomic] unit
+atomic_load(aref, order) -> T proc[mem(Space), atomic]
+atomic_store(aref, value, order) -> atom proc[mem(Space), atomic]
 ```
 
 #### 17.3.2 Read-Modify-Write Operations
 ```
-atomic_fetch_add(aref, delta, order) : proc[mem(Space), atomic] T
-atomic_fetch_sub(aref, delta, order) : proc[mem(Space), atomic] T
-atomic_fetch_and(aref, mask, order) : proc[mem(Space), atomic] T
-atomic_fetch_or(aref, mask, order) : proc[mem(Space), atomic] T
-atomic_fetch_xor(aref, mask, order) : proc[mem(Space), atomic] T
+atomic_fetch_add(aref, delta, order) -> T proc[mem(Space), atomic]
+atomic_fetch_sub(aref, delta, order) -> T proc[mem(Space), atomic]
+atomic_fetch_and(aref, mask, order) -> T proc[mem(Space), atomic]
+atomic_fetch_or(aref, mask, order) -> T proc[mem(Space), atomic]
+atomic_fetch_xor(aref, mask, order) -> T proc[mem(Space), atomic]
 ```
 
 #### 17.3.3 Compare and Exchange
 ```
 atomic_compare_exchange(aref, expected, new_val, order)
-    : proc[mem(Space), atomic] {ok, T} | {fail, T}
+ -> {ok, T} | {fail, T} proc[mem(Space), atomic]
 ```
 
 Returns `{ok, old_value}` if successful, `{fail, current_value}` if the value wasn't expected.
@@ -8352,7 +8439,7 @@ type spsc_queue<R, T> = {
     tail: atomic_ref(R, normal, int)
 }
 
-fn spsc_send(queue, item) : proc[mem(normal), atomic] bool {
+fn spsc_send(queue, item) -> bool proc[mem(normal), atomic] {
     tail: int <- atomic_load(queue.tail, acquire)
     head: int <- atomic_load(queue.head, acquire)
 
@@ -8366,7 +8453,7 @@ fn spsc_send(queue, item) : proc[mem(normal), atomic] bool {
     return true
 }
 
-fn spsc_recv(queue) : proc[mem(normal), atomic] option<T> {
+fn spsc_recv(queue) -> option<T> proc[mem(normal), atomic] {
     head: int <- atomic_load(queue.head, acquire)
     tail: int <- atomic_load(queue.tail, acquire)
 
@@ -8426,7 +8513,7 @@ atomic_store(flag, true, release)
 send(actor2, data)
 
 -- Actor 2 behavior function
-fn process_message(msg: Data, state: unit) -> unit {
+fn process_message(msg: Data, state: unit) -> atom {
     flag_value: bool <- atomic_load(flag, acquire)
     -- flag_value is guaranteed to be true
 }
@@ -9900,8 +9987,8 @@ impl List for ListInt {
 }
 
 -- Constructor: takes ListableType enum, compiler infers return type
-fn create_list(element_type: ListableType) -> proc[mem(normal)] ListInt  -- if element_type == Int
-fn create_list(element_type: ListableType) -> proc[mem(normal)] ListString  -- if element_type == String
+fn create_list(element_type: ListableType) -> ListInt proc[mem(normal)]  -- if element_type == Int
+fn create_list(element_type: ListableType) -> ListString proc[mem(normal)]  -- if element_type == String
 -- Compiler infers return type from element_type parameter
 
 -- Empty list literal syntax
@@ -9910,7 +9997,7 @@ fn empty_list() -> ListInt {
 }
 
 -- Functional cons: adds to front, returns NEW list (immutable)
-fn cons(list: ListInt, item: int) -> proc[mem(normal)] ListInt {
+fn cons(list: ListInt, item: int) -> ListInt proc[mem(normal)] {
     -- Create new list with item as head, old list as tail
     -- Original list unchanged (immutable)
     Cons(item, list)
@@ -9976,17 +10063,17 @@ fn fold_int_int(list: ListInt, init: int64, f: fn(int64, int64) -> int64) -> int
 
 #### 20.2.4 IO Functions
 ```
-fn print(s: string) -> proc[device_io] unit
-fn println(s: string) -> proc[device_io] unit
-fn read_line() -> proc[device_io] string
+fn print(s: string) -> atom proc[device_io]
+fn println(s: string) -> atom proc[device_io]
+fn read_line() -> string proc[device_io]
 ```
 
 #### 20.2.5 Debug and Assertion Functions
 ```
-fn debug_print(value: T) -> proc[] unit        -- Print any value for debugging
-fn debug_println(value: T) -> proc[] unit     -- Print any value with newline
+fn debug_print(value: T) -> atom proc[]        -- Print any value for debugging
+fn debug_println(value: T) -> atom proc[]     -- Print any value with newline
 fn assert(condition: bool, message: string)  -- Terminate process if condition false
-    -> proc[] unit
+    -> atom proc[]
 ```
 
 **Assertion Semantics:**
@@ -10001,19 +10088,19 @@ Assertions check for programming errors during development and testing. When an 
 
 #### 20.3.1 Actor Registry
 ```
-fn register(name: string, actor: actor_ref<Msg>) -> proc[concurrency] unit
-fn lookup(name: string) -> proc[concurrency] option<actor_ref<Msg>>
+fn register(name: string, actor: actor_ref<Msg>) -> atom proc[concurrency]
+fn lookup(name: string) -> option<actor_ref<Msg>> proc[concurrency]
 ```
 
 #### 20.3.2 Message Broadcasting
 ```
-fn broadcast(actors: list<actor_ref<Msg>>, message: Msg) -> proc[concurrency] unit
+fn broadcast(actors: list<actor_ref<Msg>>, message: Msg) -> atom proc[concurrency]
 ```
 
 #### 20.3.3 Actor Monitoring
 ```
 fn monitor(target: actor_ref, monitor: actor_ref<down_msg>)
-    -> proc[concurrency] unit
+    -> atom proc[concurrency]
 ```
 
 ### 20.4 Networking
@@ -10051,19 +10138,19 @@ module net.socket {
     pub type socket<T: protocol_type>  -- Protocol-specific socket
 
     pub fn create_socket(protocol: protocol_type)
-        -> proc[networking] result<socket<protocol>, net_error>
+        -> result<socket<protocol>, net_error> proc[networking]
 
     pub fn bind_socket(sock: socket<T>, addr: socket_addr)
-        -> proc[networking] result<unit, net_error>
+        -> result<atom, net_error> proc[networking]
 
     pub fn close_socket(sock: socket<T>)
-        -> proc[networking] unit
+        -> atom proc[networking]
 
     pub fn get_socket_addr(sock: socket<T>)
-        -> proc[networking] socket_addr
+        -> socket_addr proc[networking]
 
     pub fn set_socket_option<T>(sock: socket<T>, option: socket_option, value: T)
-        -> proc[networking] result<unit, net_error>
+        -> result<atom, net_error> proc[networking]
 }
 ```
 
@@ -10082,22 +10169,22 @@ module net.tcp {
     }
 
     pub fn connect(sock: tcp_socket, addr: socket_addr)
-        -> proc[networking] result<tcp_connection, net_error>
+        -> result<tcp_connection, net_error> proc[networking]
 
     pub fn listen(sock: tcp_socket, backlog: int)
-        -> proc[networking] result<unit, net_error>
+        -> result<atom, net_error> proc[networking]
 
     pub fn accept(sock: tcp_socket)
-        -> proc[networking] result<tcp_connection, net_error>
+        -> result<tcp_connection, net_error> proc[networking]
 
     pub fn send(sock: tcp_connection, data: buf(R, normal, byte, size))
-        -> proc[networking] result<int, net_error>
+        -> result<int, net_error> proc[networking]
 
     pub fn receive(sock: tcp_connection, buffer: buf(R, normal, byte, max_size))
-        -> proc[networking] result<int, net_error>
+        -> result<int, net_error> proc[networking]
 
     pub fn shutdown(sock: tcp_connection, direction: shutdown_direction)
-        -> proc[networking] result<unit, net_error>
+        -> result<atom, net_error> proc[networking]
 }
 ```
 
@@ -10111,16 +10198,16 @@ module net.udp {
     pub type udp_endpoint = socket_addr
 
     pub fn send_to(sock: udp_socket, data: buf(R, normal, byte, size), dest: socket_addr)
-        -> proc[networking] result<int, net_error>
+        -> result<int, net_error> proc[networking]
 
     pub fn receive_from(sock: udp_socket, buffer: buf(R, normal, byte, max_size))
-        -> proc[networking] result<(int, socket_addr), net_error>
+        -> result<(int, socket_addr), net_error> proc[networking]
 
     pub fn join_multicast_group(sock: udp_socket, group_addr: ip_addr, interface: ip_addr)
-        -> proc[networking] result<unit, net_error>
+        -> result<atom, net_error> proc[networking]
 
     pub fn leave_multicast_group(sock: udp_socket, group_addr: ip_addr, interface: ip_addr)
-        -> proc[networking] result<unit, net_error>
+        -> result<atom, net_error> proc[networking]
 }
 ```
 
@@ -10155,20 +10242,20 @@ module net.packet {
     }
 
     pub fn parse_ethernet_frame(data: buf(R, normal, byte, frame_size))
-        -> proc[] result<ethernet_frame, parse_error>
+        -> result<ethernet_frame, parse_error> proc[]
 
     pub fn parse_ipv4_packet(data: buf(R, normal, byte, packet_size))
-        -> proc[] result<ipv4_packet, parse_error>
+        -> result<ipv4_packet, parse_error> proc[]
 
     pub fn calculate_ipv4_checksum(packet: ipv4_packet)
-        -> proc[] int
+        -> int proc[]
 
     pub fn validate_packet(packet: ipv4_packet)
-        -> proc[] result<unit, validation_error>
+        -> result<atom, validation_error> proc[]
 
     -- SIMD-accelerated batch processing (when SVE available)
     pub fn process_packet_batch(packets: buf(R, normal, packet, batch_size))
-        -> proc[] processed_results
+        -> processed_results proc[]
 }
 ```
 
@@ -10177,16 +10264,16 @@ module net.packet {
 module net.utils {
 
     pub fn resolve_hostname(hostname: string)
-        -> proc[networking] result<ip_addr, resolve_error>
+        -> result<ip_addr, resolve_error> proc[networking]
 
     pub fn get_network_interfaces()
-        -> proc[networking] list<network_interface>
+        -> list<network_interface> proc[networking]
 
     pub fn create_network_buffer(size: int)
-        -> proc[networking, mem(normal_noncacheable)] buf(R, normal_noncacheable, byte, size)
+        -> buf(R, normal_noncacheable, byte, size) proc[networking, mem(normal_noncacheable)]
 
     pub fn optimize_buffer_for_nic(buffer: buf(R, normal_noncacheable, T, size), nic_device: device_ref)
-        -> proc[networking] buf(R, normal_noncacheable, T, size)
+        -> buf(R, normal_noncacheable, T, size) proc[networking]
 }
 ```
 
@@ -10312,7 +10399,7 @@ Programs using optional features must check availability:
 ```silica
 use arch.sve
 
-fn vector_operation(data: *int32, len: int) -> proc[mem(normal)] unit {
+fn vector_operation(data: *int32, len: int) -> atom proc[mem(normal)] {
     if has_sve() then
         -- Use SVE operations
         pred: Pred <- sve.create_pred_true(len)
@@ -10462,7 +10549,7 @@ Programs should check for specific SVE2 features before use:
 ```silica
 use arch.sve
 
-fn matrix_operation(data: *int8, len: int) -> proc[mem(normal)] unit {
+fn matrix_operation(data: *int8, len: int) -> atom proc[mem(normal)] {
     if has_sve2() and has_sve2_i8mm() then
         -- Use SVE2 Int8 matrix multiplication
         -- ... SVE2 I8MM operations ...
@@ -10538,7 +10625,7 @@ module arch.sve {
 
     -- Concrete load/store operations for each vector type
     pub fn load_vector_int32(ptr: *int32, pred: OptionPred) -> VecInt32
-    pub fn store_vector_int32(ptr: *int32, vec: VecInt32, pred: OptionPred) -> unit
+    pub fn store_vector_int32(ptr: *int32, vec: VecInt32, pred: OptionPred) -> atom
     pub fn add_vectors_int32(a: VecInt32, b: VecInt32) -> VecInt32
     pub fn mul_vectors_int32(a: VecInt32, b: VecInt32) -> VecInt32
     
@@ -10697,7 +10784,7 @@ SVE vectors automatically scale with hardware vector length:
 ```
 use module arch.sve
 
-fn vector_add(a: *int32, b: *int32, len: int) -> proc[] unit {
+fn vector_add(a: *int32, b: *int32, len: int) -> atom proc[] {
     pred: Pred <- sve.create_pred_true(len)
     pred_opt: OptionPred <- Some(pred)
     va: VecInt32 <- sve.load_vector_int32(a, pred_opt)
@@ -10777,7 +10864,7 @@ load_vector_int32(ptr: *int32, pred: OptionPred) -> VecInt32
 add_vectors_int32(a: VecInt32, b: VecInt32) -> VecInt32
 
 -- Store operation writes only active elements (per predicate)
-store_vector_int32(ptr: *int32, vec: VecInt32, pred: OptionPred) -> unit
+store_vector_int32(ptr: *int32, vec: VecInt32, pred: OptionPred) -> atom
 ```
 
 **Interaction with Fixed-Size Buffers:**
@@ -10785,7 +10872,7 @@ store_vector_int32(ptr: *int32, vec: VecInt32, pred: OptionPred) -> unit
 When working with fixed-size buffers (`buf(R, Space, T, N)`), SVE operations handle remainder elements:
 
 ```
-fn process_buffer(buf: buf(R, normal, int32, 100), len: int) -> proc[mem(normal)] unit {
+fn process_buffer(buf: buf(R, normal, int32, 100), len: int) -> atom proc[mem(normal)] {
     -- Calculate number of full vectors
     elements_per_vector: int <- get_sve_elements_int32();
     full_vectors: int <- len / elements_per_vector;
@@ -11029,7 +11116,7 @@ Programs must be written to handle variable vector lengths gracefully:
 ```silica
 use module arch.sve
 
-fn adaptive_vector_processing(data: *int32, len: int) -> proc[mem(normal)] unit {
+fn adaptive_vector_processing(data: *int32, len: int) -> atom proc[mem(normal)] {
     -- Query vector length at runtime (not compile-time constant)
     elements_per_vector: int <- get_sve_elements_int32();
     
@@ -11083,7 +11170,7 @@ use module arch.sve
 -- Store expected vector length (from previous run or configuration)
 expected_elements: int <- 16;  -- Expected elements per vector
 
-fn check_vector_length() -> proc[] bool {
+fn check_vector_length() -> bool proc[] {
     actual_elements: int <- get_sve_elements_int32();
     
     -- Detect vector length change
@@ -11128,7 +11215,7 @@ Programs should use adaptive strategies to handle variable vector lengths:
 ```silica
 use module arch.sve
 
-fn demonstrate_vector_length() -> proc[] unit {
+fn demonstrate_vector_length() -> atom proc[] {
     -- Query vector length (runtime values, not compile-time constants)
     vl_bytes: int <- get_sve_vector_length_bytes();
     vl_bits: int <- get_sve_vector_length_bits();
@@ -11186,7 +11273,7 @@ module arch.neon {
 
     -- Concrete operations for each vector type
     pub fn load_128_int32(ptr: *int32) -> Vec128Int32
-    pub fn store_128_int32(ptr: *int32, vec: Vec128Int32) -> unit
+    pub fn store_128_int32(ptr: *int32, vec: Vec128Int32) -> atom
     pub fn add_128_int32(a: Vec128Int32, b: Vec128Int32) -> Vec128Int32
     pub fn mul_128_int32(a: Vec128Int32, b: Vec128Int32) -> Vec128Int32
     
@@ -11229,10 +11316,10 @@ Tagged pointer operations work with any type that implements the `tagged` trait.
 ```
 -- Allocate tagged pointer (type must implement tagged trait)
 -- For NodeData type (example):
-alloc_tagged_nodedata(region: region(R, normal), size: int) -> proc[mem(normal)] ref(R, normal, NodeData)
+alloc_tagged_nodedata(region: region(R, normal), size: int) -> ref(R, normal, NodeData) proc[mem(normal)]
 
 -- Free tagged pointer
-free_tagged_nodedata(ptr: ref(R, normal, NodeData)) -> proc[mem(normal)] unit
+free_tagged_nodedata(ptr: ref(R, normal, NodeData)) -> atom proc[mem(normal)]
 
 -- Tag operations
 set_tag_nodedata(ptr: ref(R, normal, NodeData), tag: int) -> ref(R, normal, NodeData)
@@ -11303,7 +11390,7 @@ If MTE is not available or has limited support:
 When allocating tagged memory:
 
 ```
-alloc_tagged_nodedata(region: region(R, normal), size: int) -> proc[mem(normal)] ref(R, normal, NodeData)
+alloc_tagged_nodedata(region: region(R, normal), size: int) -> ref(R, normal, NodeData) proc[mem(normal)]
 ```
 
 The runtime:
@@ -11851,7 +11938,7 @@ The runtime provides the following behavioral guarantees for tag allocation fail
 **Example 1: Tag Exhaustion with Reuse**
 
 ```silica
-fn allocate_with_tag_reuse() -> proc[mem(normal)] ref(R, normal, NodeData) {
+fn allocate_with_tag_reuse() -> ref(R, normal, NodeData) proc[mem(normal)] {
     do
         r: region(R, normal) <- alloc_region(normal);
         
@@ -11870,7 +11957,7 @@ fn allocate_with_tag_reuse() -> proc[mem(normal)] ref(R, normal, NodeData) {
 **Example 2: Tag Exhaustion Detection**
 
 ```silica
-fn check_tag_space_usage() -> proc[] bool {
+fn check_tag_space_usage() -> bool proc[] {
     -- Runtime monitors tag space usage internally
     -- Programs can query tag space status (if runtime provides API)
     -- For now, tag exhaustion is handled transparently by runtime
@@ -12001,7 +12088,7 @@ struct NodeData {
 
 impl tagged for NodeData;
 
-fn example() -> unit proc[mem(normal)] {
+fn example() -> atom proc[mem(normal)] {
     do
         r: region(R, normal) <- alloc_region(normal);
         -- Allocate tagged memory
@@ -12053,7 +12140,7 @@ Authenticated pointer operations work with any type that implements the `authent
 sign_ptr_securedata(ptr: ref(R, Space, SecureData), context: int) -> ref(R, Space, SecureData)
 
 -- Authenticate pointer - hardware validates signature
-auth_ptr_securedata(ptr: ref(R, Space, SecureData), context: int) -> proc[mem(Space)] ref(R, Space, SecureData)
+auth_ptr_securedata(ptr: ref(R, Space, SecureData), context: int) -> ref(R, Space, SecureData) proc[mem(Space)]
 
 -- Check if authentication would fail (without dereferencing)
 auth_fail_securedata(ptr: ref(R, Space, SecureData), context: int) -> bool
@@ -12252,7 +12339,7 @@ The runtime:
 When authenticating a pointer:
 
 ```
-auth_ptr_securedata(ptr: ref(R, Space, SecureData), context: int) -> proc[mem(Space)] ref(R, Space, SecureData)
+auth_ptr_securedata(ptr: ref(R, Space, SecureData), context: int) -> ref(R, Space, SecureData) proc[mem(Space)]
 ```
 
 The runtime:
@@ -12340,7 +12427,7 @@ struct SecureData {
 
 impl authenticated for SecureData;
 
-fn secure_operation(data: SecureData) -> proc[mem(normal)] unit {
+fn secure_operation(data: SecureData) -> atom proc[mem(normal)] {
     do
         -- Allocate secure data
         ptr: ref(R, normal, SecureData) <- alloc_ref(region, data);
@@ -12384,7 +12471,7 @@ module arch.apple.amx {
     --
     -- Example for MatrixData type:
     pub fn load_matrix_matrixdata(data: ref(R, Space, MatrixData), rows: int, cols: int) -> ref(R, Space, MatrixData)
-    pub fn store_matrix_matrixdata(matrix: ref(R, Space, MatrixData), data: ref(R, Space, MatrixData)) -> unit
+    pub fn store_matrix_matrixdata(matrix: ref(R, Space, MatrixData), data: ref(R, Space, MatrixData)) -> atom
     pub fn matmul_matrixdata(a: ref(R, Space, MatrixData), b: ref(R, Space, MatrixData)) -> ref(R, Space, MatrixData)
     --
     -- Similar functions are generated for all types that implement apple_matrix
@@ -12401,11 +12488,11 @@ This section documents all built-in functions and primitives available in Silica
 
 ### 22.1 Memory Management Primitives
 ```
-alloc_region(space: memory_space) -> proc[mem(space)] region(R, space)
-alloc_ref(region, initial_value) -> proc[mem(space)] ref(region, space, T)
-alloc_buf(region, capacity) -> proc[mem(space)] buf(region, space, T, capacity)
-alloc_atomic(region, initial_value) -> proc[mem(space), atomic] atomic_ref(region, space, T)
-alloc_region_on_numa_node(numa_node: int, space: memory_space) -> proc[mem(space)] region(R, space)
+alloc_region(space: memory_space) -> region(R, space) proc[mem(space)]
+alloc_ref(region, initial_value) -> ref(region, space, T) proc[mem(space)]
+alloc_buf(region, capacity) -> buf(region, space, T, capacity) proc[mem(space)]
+alloc_atomic(region, initial_value) -> atomic_ref(region, space, T) proc[mem(space), atomic]
+alloc_region_on_numa_node(numa_node: int, space: memory_space) -> region(R, space) proc[mem(space)]
 ```
 
 **Memory Space Types:**
@@ -12437,25 +12524,25 @@ counter: atomic_ref(R4, atomic, int64) <- alloc_atomic(atomic_region, 0);
 
 ### 22.2 Reference Operations
 ```
-read_ref(reference) -> proc[mem(space)] T
-write_ref(reference, value) -> proc[mem(space)] unit
+read_ref(reference) -> T proc[mem(space)]
+write_ref(reference, value) -> atom proc[mem(space)]
 ```
 
 ### 22.3 Buffer Operations
 ```
-read_buf(buffer, index) -> proc[mem(space)] T
-write_buf(buffer, index, value) -> proc[mem(space)] unit
+read_buf(buffer, index) -> T proc[mem(space)]
+write_buf(buffer, index, value) -> atom proc[mem(space)]
 buffer_length(buffer) -> int
 buffer_capacity(buffer) -> int
 ```
 
 ### 22.4 Actor Operations
 ```
-spawn(initial_state, behavior [, core_affinity]) -> proc[concurrency] actor_ref
-send(actor, message) -> proc[concurrency] unit
-cast(actor, message) -> proc[concurrency] bool
-recv([actor]) -> proc[mailbox, concurrency] Msg          -- Runtime internal
-self() -> proc[mailbox, concurrency] actor_ref
+spawn(initial_state, behavior [, core_affinity]) -> actor_ref proc[concurrency]
+send(actor, message) -> atom proc[concurrency]
+cast(actor, message) -> bool proc[concurrency]
+recv([actor]) -> Msg proc[mailbox, concurrency]          -- Runtime internal
+self() -> actor_ref proc[mailbox, concurrency]
 ```
 
 **Note**: `recv()` is a runtime internal function and cannot be called directly from user code.
@@ -12473,29 +12560,29 @@ All print functions require the `device_io` effect.
 
 #### 22.5.1 String Printing
 ```
-print(value: string) -> unit proc[device_io]
-println(value: string) -> unit proc[device_io]
+print(value: string) -> atom proc[device_io]
+println(value: string) -> atom proc[device_io]
 ```
 
 #### 22.5.2 Numeric Printing
 ```
-print_int8(value: int8) -> unit proc[device_io]
-print_int16(value: int16) -> unit proc[device_io]
-print_int32(value: int32) -> unit proc[device_io]
-print_int64(value: int64) -> unit proc[device_io]
+print_int8(value: int8) -> atom proc[device_io]
+print_int16(value: int16) -> atom proc[device_io]
+print_int32(value: int32) -> atom proc[device_io]
+print_int64(value: int64) -> atom proc[device_io]
 ```
 
 #### 22.5.3 Floating-Point Printing
 ```
-print_float16(value: float16) -> unit proc[device_io]
-print_float32(value: float32) -> unit proc[device_io]
-print_float64(value: float64) -> unit proc[device_io]
+print_float16(value: float16) -> atom proc[device_io]
+print_float32(value: float32) -> atom proc[device_io]
+print_float64(value: float64) -> atom proc[device_io]
 ```
 
 #### 22.5.4 Other Type Printing
 ```
-print_bool(value: bool) -> unit proc[device_io]
-print_char(value: char) -> unit proc[device_io]
+print_bool(value: bool) -> atom proc[device_io]
+print_char(value: char) -> atom proc[device_io]
 ```
 
 ### 22.6 File I/O Functions
@@ -12510,21 +12597,21 @@ read_lines(path: string) -> list<string> proc[device_io]
 
 #### 22.6.2 File Writing
 ```
-write_file(path: string, content: string) -> unit proc[device_io]
-append_file(path: string, content: string) -> unit proc[device_io]
+write_file(path: string, content: string) -> atom proc[device_io]
+append_file(path: string, content: string) -> atom proc[device_io]
 ```
 
 #### 22.6.3 File Operations
 ```
 file_exists(path: string) -> bool proc[device_io]
-delete_file(path: string) -> unit proc[device_io]
+delete_file(path: string) -> atom proc[device_io]
 get_file_size(path: string) -> int64 proc[device_io]
 ```
 
 #### 22.6.4 Directory Operations
 ```
-create_directory(path: string) -> unit proc[device_io]
-remove_directory(path: string) -> unit proc[device_io]
+create_directory(path: string) -> atom proc[device_io]
+remove_directory(path: string) -> atom proc[device_io]
 list_directory(path: string) -> list<string> proc[device_io]
 ```
 
@@ -12635,7 +12722,7 @@ pin_actor_to_core(actor: actor_ref, core_id: int) -> (int64, affinity_error)
 pin_actor_to_efficiency_core(actor: actor_ref) -> (int64, affinity_error)
 pin_actor_to_performance_core(actor: actor_ref) -> (int64, affinity_error)
 pin_actor_realtime(actor: actor_ref, priority: int) -> (int64, affinity_error)
-unpin_actor(actor: actor_ref) -> unit
+unpin_actor(actor: actor_ref) -> atom
 
 -- Actor removal
 -- Removes an actor from the system, unpinning it and allowing cleanup
@@ -12643,7 +12730,7 @@ unpin_actor(actor: actor_ref) -> unit
 remove_actor(actor: actor_ref) -> (int64, affinity_error)
 
 -- Advanced scheduling hints
-set_actor_priority(actor: actor_ref, priority: priority_level) -> unit
+set_actor_priority(actor: actor_ref, priority: priority_level) -> atom
 ```
 
 **Error Handling:**
@@ -12695,11 +12782,11 @@ int32_elements: int <- vector_bytes / int32_size;
 
 ### 22.12 Atomic Operations
 ```
-atomic_load(ref, order) -> proc[mem(space), atomic] T
-atomic_store(ref, value, order) -> proc[mem(space), atomic] unit
-atomic_fetch_add(ref, delta, order) -> proc[mem(space), atomic] T
+atomic_load(ref, order) -> T proc[mem(space), atomic]
+atomic_store(ref, value, order) -> atom proc[mem(space), atomic]
+atomic_fetch_add(ref, delta, order) -> T proc[mem(space), atomic]
 atomic_compare_exchange(ref, expected, new_val, order)
-    -> proc[mem(space), atomic] {ok, T} | {fail, T}
+    -> {ok, T} | {fail, T} proc[mem(space), atomic]
 ```
 
 ### 22.13 Type Operations
@@ -12713,8 +12800,8 @@ type_name<T>() -> string               -- type name as string
 
 ### 22.14 Runtime Operations
 ```
-current_time() -> proc[] int           -- milliseconds since epoch
-random_int(min: int, max: int) -> proc[] int
+current_time() -> int proc[]           -- milliseconds since epoch
+random_int(min: int, max: int) -> int proc[]
 hash<T>(value: T) -> int               -- stable hash function
 ```
 
@@ -12731,9 +12818,9 @@ int_to_string(n: int) -> string
 
 ### 22.16 Control Flow
 ```
-panic(message: string) -> proc[] !          -- terminate with error
-assert(condition: bool, message: string) -> proc[] unit
-unreachable() -> proc[] !                   -- mark unreachable code
+panic(message: string) -> ! proc[]          -- terminate with error
+assert(condition: bool, message: string) -> atom proc[]
+unreachable() -> ! proc[]                   -- mark unreachable code
 ```
 
 ## 23. Runtime System
@@ -12849,7 +12936,7 @@ Runtime catches and reports errors:
 Errors propagate through the process system:
 
 ```
-fn safe_divide(x: int, y: int) -> proc[] result<int, string> {
+fn safe_divide(x: int, y: int) -> result<int, string> proc[] {
     if y == 0 {
         return Error("division by zero")
     }
@@ -12971,7 +13058,7 @@ fn parse_number(s: string) -> result<int, string> {
     -- attempt parsing, return Ok(value) or Error(message)
 }
 
-fn safe_operation() -> proc[] result<unit, runtime_error> {
+fn safe_operation() -> result<atom, runtime_error> proc[] {
     -- operations that might fail at runtime
 }
 ```
@@ -12992,7 +13079,7 @@ Actors can fail and notify monitors:
 ```
 type down_message = Down(actor_ref, exit_reason)
 
-fn failing_actor(msg: unit, state: unit) : proc[mailbox] unit {
+fn failing_actor(msg: unit, state: unit) -> atom proc[mailbox] {
     case msg of
         () -> panic("intentional failure")
     end
@@ -13006,7 +13093,7 @@ Actors can supervise other actors:
 
 ```
 fn supervisor(child_failure: down_message, state: supervisor_state)
-    : proc[mailbox] supervisor_state {
+ -> supervisor_state proc[mailbox] {
 
     case child_failure of
         Down(child_ref, reason) ->
@@ -13495,7 +13582,7 @@ LDAR X0, [X1]  -- Load-acquire after barrier
 
 ```silica
 -- Source code
-fn publish_data(data_ref: ref(R, normal, Data), atomic_flag: atomic_ref(R, atomic, bool)) -> unit proc[mem(normal), mem(atomic), atomic] {
+fn publish_data(data_ref: ref(R, normal, Data), atomic_flag: atomic_ref(R, atomic, bool)) -> atom proc[mem(normal), mem(atomic), atomic] {
     write_ref(data_ref, new_data);                    -- Normal store
     atomic_store(atomic_flag, true, release);        -- Release store
 }
@@ -13656,7 +13743,7 @@ For effect-tracked memory operations, the compiler inserts cache maintenance ins
 
 ```silica
 -- Source code
-fn flush_cache_line(ptr: ref(R, normal, Data)) -> unit proc[mem(normal)] {
+fn flush_cache_line(ptr: ref(R, normal, Data)) -> atom proc[mem(normal)] {
     -- Write data that needs to be visible to other cores
     write_ref(ptr, new_data);
     -- Compiler inserts cache flush for cross-core visibility
@@ -13682,7 +13769,7 @@ Modern AArch64 chips have sophisticated speculative execution. Silica controls t
 
 ```silica
 -- Source code with security-sensitive operation
-fn secure_operation(secret: ref(R, normal, Secret)) -> unit proc[mem(normal)] {
+fn secure_operation(secret: ref(R, normal, Secret)) -> atom proc[mem(normal)] {
     -- Access secret data
     secret_data: Secret <- read_ref(secret);
     -- Compiler inserts speculation barrier to prevent speculative leaks
@@ -13969,7 +14056,7 @@ Examine actor internal state during debugging:
 actor counter {
     state: int = 0
 
-    increment() -> unit {
+    increment() -> atom {
         state = state + 1  -- Inspect 'state' variable
     }
 }
@@ -14161,25 +14248,25 @@ fn process(value: MyType) -> int64 {
 
 ```silica
 trait Logger {
-    fn log(self: Self, msg: string) -> unit;
+    fn log(self: Self, msg: string) -> atom;
 }
 
 trait Debugger {
-    fn log(self: Self, msg: string) -> unit;  -- Same name and signature
+    fn log(self: Self, msg: string) -> atom;  -- Same name and signature
 }
 
 struct MyTool { name: string }
 
 impl Logger for MyTool {
-    fn log(self: MyTool, msg: string) -> unit { print_string(msg) }
+    fn log(self: MyTool, msg: string) -> atom { print_string(msg) }
 }
 
 impl Debugger for MyTool {
-    fn log(self: MyTool, msg: string) -> unit { print_string("DEBUG: " + msg) }
+    fn log(self: MyTool, msg: string) -> atom { print_string("DEBUG: " + msg) }
 }
 
 -- Disambiguation required: both Logger and Debugger define log()
-fn run(tool: MyTool) -> unit {
+fn run(tool: MyTool) -> atom {
     Logger.log(tool, "info");      -- Required: specify Logger.log()
     Debugger.log(tool, "debug");   -- Required: specify Debugger.log()
 }
@@ -14289,14 +14376,14 @@ impl ActorMessage for Request;
 impl ActorMessage for Response;
 
 -- ActorMessage can be used as a type
-cast(actor_ref, message: ActorMessage) : proc[concurrency] bool
+cast(actor_ref, message: ActorMessage) -> bool proc[concurrency]
 ```
 
 #### 30.1.6 Trait Bounds
 Functions can require trait implementations:
 
 ```silica
-fn print_value(x) where Display {
+fn print_value(x) -> atom where Display {
     print(to_string(x))
 }
 ```
@@ -14381,7 +14468,7 @@ impl Debug for Point {
 *Advanced features deliverables completed:*
 - Advanced pattern matching with records and variants
 - Structured exception handling
-- Advanced effect system with composition and inheritance
+- Advanced effect system with composition
 - Compiler optimizations and incremental compilation
 - IDE support with language server and debugging
 - Advanced type system with traits

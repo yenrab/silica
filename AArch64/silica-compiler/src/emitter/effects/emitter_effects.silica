@@ -1,0 +1,115 @@
+// Effect-aware AArch64 emission helpers
+// Maps SIR effect sets to AArch64 barrier instructions and ordering semantics
+// Spec references: §9.1.1 (built-in effects), §17.2.6 (AArch64 implementation),
+// sir_design_spec §4.2 (effect ordering), sir_emitter_pattern_spec §7.3 (memory)
+
+export is_pure/1;
+export has_device_io/1;
+export has_mem_atomic/1;
+export has_mem_normal/1;
+export has_any_mem/1;
+export has_concurrency/1;
+export has_mailbox/1;
+export barrier_before_call/1;
+export barrier_after_call/1;
+export effect_annotation/1;
+export fn_effect_annotation/1;
+
+// --- Effect string queries ---
+// Effect strings use SIR text format: "[]", "[device_io]", "[mem(normal), device_io]"
+
+fn is_pure(effects: string) -> bool {
+    effects == "[]"
+}
+
+fn has_device_io(effects: string) -> bool {
+    string_contains(effects, "device_io")
+}
+
+fn has_mem_atomic(effects: string) -> bool {
+    string_contains(effects, "mem(atomic)")
+}
+
+fn has_mem_normal(effects: string) -> bool {
+    string_contains(effects, "mem(normal)")
+}
+
+fn has_any_mem(effects: string) -> bool {
+    string_contains(effects, "mem(")
+}
+
+fn has_concurrency(effects: string) -> bool {
+    string_contains(effects, "concurrency")
+}
+
+fn has_mailbox(effects: string) -> bool {
+    string_contains(effects, "mailbox")
+}
+
+// --- Barrier selection ---
+// AArch64 barrier placement per spec §17.2.6 and sir_design_spec §4.2:
+//   device_io  -> DSB SY before syscall (device ordering)
+//   mem(atomic) -> DMB ISH (inner-shareable barrier for cross-core visibility)
+//   mem(normal) -> no barrier (program order sufficient)
+//   pure ([])   -> no barrier
+
+fn barrier_before_call(effects: string) -> string {
+    case has_device_io(effects) of {
+        true -> "    DSB SY";
+        false -> case has_mem_atomic(effects) of {
+            true -> "    DMB ISH";
+            false -> ""
+        }
+    }
+}
+
+fn barrier_after_call(effects: string) -> string {
+    case has_device_io(effects) of {
+        true -> "    ISB";
+        false -> case has_mem_atomic(effects) of {
+            true -> "    DMB ISH";
+            false -> ""
+        }
+    }
+}
+
+// --- Assembly annotations ---
+
+fn effect_annotation(effects: string) -> string {
+    case is_pure(effects) of {
+        true -> "";
+        false -> concat("    ; effects ", effects)
+    }
+}
+
+fn fn_effect_annotation(effects: string) -> string {
+    case is_pure(effects) of {
+        true -> "    ; pure";
+        false -> concat("    ; effects ", effects)
+    }
+}
+
+// --- String search helper ---
+// Sliding window substring search since Silica has no built-in contains
+
+fn string_contains(haystack: string, needle: string) -> bool {
+    h_len: int64 <- len(haystack);
+    n_len: int64 <- len(needle);
+    case n_len > h_len of {
+        true -> false;
+        false -> string_contains_from(haystack, needle, 0, h_len - n_len, n_len)
+    }
+}
+
+fn string_contains_from(haystack: string, needle: string, pos: int64, max_pos: int64, n_len: int64) -> bool {
+    case pos > max_pos of {
+        true -> false;
+        false -> do
+            candidate: string <- substring(haystack, pos, pos + n_len);
+            case candidate == needle of {
+                true -> true;
+                false -> string_contains_from(haystack, needle, pos + 1, max_pos, n_len)
+            }
+        end
+    }
+}
