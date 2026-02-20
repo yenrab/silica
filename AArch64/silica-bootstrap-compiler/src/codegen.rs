@@ -6124,6 +6124,18 @@ impl CodeGenerator {
                             let i64_reg = format!("%case_ptrtoint_{}_{}", self.instructions.len(), branch_idx);
                             self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", i64_reg, ptr_ref));
                             i64_reg
+                        } else if result_llvm_type == "i64" && trimmed.contains("getelementptr") && trimmed.contains("@str_const") {
+                            // String literal: raw getelementptr expr must be emitted as instruction first, then ptrtoint for i64 store
+                            let gep_instr = if trimmed.starts_with("getelementptr inbounds (") {
+                                self.convert_gep_to_instruction_format(&trimmed)
+                            } else {
+                                trimmed.clone()
+                            };
+                            let ptr_reg = format!("%case_gep_{}_{}", self.instructions.len(), branch_idx);
+                            self.instructions.push(format!("  {} = {}", ptr_reg, gep_instr));
+                            let i64_reg = format!("%case_ptrtoint_{}_{}", self.instructions.len(), branch_idx);
+                            self.instructions.push(format!("  {} = ptrtoint i8* {} to i64", i64_reg, ptr_reg));
+                            i64_reg
                         } else {
                             trimmed
                         }
@@ -7323,8 +7335,17 @@ impl CodeGenerator {
                             // For full genericity with mixed types, proper offset calculation based on
                             // element types and alignment would be needed.
                             if let Some(ref tuple_ptr_raw) = value {
-                                // Strip type prefixes from tuple pointer
-                                let tuple_ptr = tuple_ptr_raw.trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string();
+                                // Get tuple base pointer. If value is "i64 %reg" (mis-typed call or ptr-as-int),
+                                // emit inttoptr so getelementptr gets a valid pointer base.
+                                let tuple_ptr = if tuple_ptr_raw.starts_with("i64 ") {
+                                    let reg_part = tuple_ptr_raw.trim_start_matches("i64 ").trim();
+                                    let inttoptr_reg = format!("%tuple_inttoptr_{}", self.instructions.len());
+                                    self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", inttoptr_reg, Self::format_llvm_value_ref(reg_part)));
+                                    inttoptr_reg
+                                } else {
+                                    // Strip type prefixes from tuple pointer (i8* %reg -> %reg)
+                                    tuple_ptr_raw.trim_start_matches("i32 ").trim_start_matches("i1 ").trim_start_matches("i8* ").to_string()
+                                };
 
                                 // Get the expression type for tuple decomposition
                                 let expr_type_opt = if let Some(location) = Self::try_get_expression_location(expr) {
@@ -9715,14 +9736,21 @@ impl CodeGenerator {
                             }
                             Pattern::Tuple(elements) => {
                                 // Handle tuple pattern destructuring in text IR
-                                // The value_reg should be an i8* pointing to the tuple memory
-
-                                // Clean the value_reg of any type prefixes for use in getelementptr
-                                // Extract just the register name (everything after the last space)
-                                let clean_value_reg = if let Some(space_pos) = value_reg.rfind(' ') {
-                                    value_reg[space_pos + 1..].to_string()
+                                // The value_reg should be an i8* pointing to the tuple memory.
+                                // If value_reg is "i64 %reg" (e.g. from mis-typed call or ptr-as-int),
+                                // emit inttoptr so getelementptr gets a valid pointer base.
+                                let tuple_base_ptr = if value_reg.starts_with("i64 ") {
+                                    let reg_part = value_reg.trim_start_matches("i64 ").trim();
+                                    let inttoptr_reg = format!("%tuple_inttoptr_{}", self.instructions.len());
+                                    self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", inttoptr_reg, Self::format_llvm_value_ref(reg_part)));
+                                    inttoptr_reg
                                 } else {
-                                    value_reg.clone()
+                                    // Extract just the register name (everything after the last space)
+                                    if let Some(space_pos) = value_reg.rfind(' ') {
+                                        value_reg[space_pos + 1..].to_string()
+                                    } else {
+                                        value_reg.clone()
+                                    }
                                 };
 
                                 // Get element types from pattern annotations, or from expression type
@@ -9788,7 +9816,7 @@ impl CodeGenerator {
                                     // Generate getelementptr to get element pointer
                                     let elem_ptr_reg = format!("%tuple_elem_ptr_{}_{}", i, self.instructions.len());
                                     self.instructions.push(format!("  {} = getelementptr i8, i8* {}, i64 {}",
-                                        elem_ptr_reg, clean_value_reg, current_offset));
+                                        elem_ptr_reg, tuple_base_ptr, current_offset));
 
                                     // Load the element value based on its type
                                     let elem_val_reg = format!("%tuple_elem_val_{}_{}", i, self.instructions.len());

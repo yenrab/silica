@@ -78,8 +78,9 @@ type_checker/%.ll: type_checker/%.silica $(LEXER_LL) $(PARSER_LL) $(SILICA_COMPI
 # Compile main executable (LLVM IR -> object -> linked binary)
 executables: $(EXECUTABLE)
 
-# Main LLVM IR depends on subdirs, lexer, parser, type_checker, and effect_checker modules
-$(MAIN_LL): $(MAIN_FILE) subdirs $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(EFFECT_CHECKER_LL) $(SILICA_COMPILER)
+# Main LLVM IR depends on subdirs, lexer, parser, type_checker, effect_checker, and emitter (main.silica imports emitter_core)
+EMITTER_FILES := $(wildcard emitter/*.silica emitter/*/*.silica emitter/*/*/*.silica)
+$(MAIN_LL): $(MAIN_FILE) subdirs $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(EFFECT_CHECKER_LL) $(EMITTER_FILES) $(SILICA_COMPILER)
 	@$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # main.ll -> main.bc (bitcode)

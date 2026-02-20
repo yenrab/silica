@@ -61,7 +61,7 @@ Silica's design aligns well with Curry-Howard:
 - **Region types** (`ref(R, S, T)`): Propositions about memory ownership and isolation.
 - **No type inference**: Typing derivations are straightforward to construct and extract.
 
-Contracts (`requires`, `ensures`, `invariant`) are encoded as type-level propositions; a well-typed program that satisfies the contracts is a proof of those propositions.
+Contracts (`pre:`, `post:`, `inv:`) are encoded as type-level propositions; a well-typed program that satisfies the contracts is a proof of those propositions.
 
 ---
 
@@ -71,7 +71,7 @@ Verification is performed by the compiler in four sequential phases. Each phase 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  Silica AST (parsed, with optional requires/ensures/invariant annotations)  │
+│  Silica AST (parsed, with optional pre/post/inv contract annotations)         │
 └─────────────────────────────────────────────────────────────────────────────┘
                                         │
                                         ▼
@@ -118,7 +118,7 @@ Verification is performed by the compiler in four sequential phases. Each phase 
                                         │
                                         ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  Downstream: SIR generation, codegen, AArch64 emission                       │
+│  Downstream: SIR generation, AArch64 emission                       │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -179,8 +179,8 @@ t, u  ::=
 | `List[ElementType]` | List[A] |
 | `fn(x: A) -> B { e }` | λx:A. t where t : B |
 | `case e of { p -> e' }` | case analysis with pattern refinement |
-| `requires P` | Precondition as Π-context or refinement |
-| `ensures Q` | Postcondition as dependent return type |
+| `pre: ⊢ P` | Precondition as Π-context or refinement |
+| `post: ⊢ Q` | Postcondition as dependent return type |
 
 ### 4.4 Pattern Matching and Exhaustiveness
 
@@ -202,7 +202,7 @@ Silica uses traits, not generics (per design principles). Traits map to **type-c
 
 ### 4.6 Output
 
-Phase 1 produces a value-typed AST where each node is annotated with its type and a proof derivation. Contracts (requires/ensures) are represented as dependent types; the derivation witnesses that the term satisfies them.
+Phase 1 produces a value-typed AST where each node is annotated with its type and a proof derivation. Contracts (pre/post) are represented as dependent types; the derivation witnesses that the term satisfies them.
 
 ---
 
@@ -421,18 +421,147 @@ Proof terms are not required for code generation; the verified AST is sufficient
 
 ### 8.3 Contract Syntax (Future)
 
-When contracts are added to Silica, suggested syntax:
+When contracts are added to Silica, the syntax uses logical notation with `pre:`, `post:`, and `inv:` tags. This design is LLM-native (math-heavy, no inference) yet human-readable. The ⊢ symbol denotes "must hold"; all variable types come from the function signature or explicit quantification.
+
+**Basic form:**
 
 ```silica
 fn div(a: int64, b: int64) -> int64
-  requires b != 0
-  ensures result == a / b
+  pre:  ⊢ b ≠ 0
+  post: ⊢ result = a ÷ b
 {
   a / b
 }
 ```
 
-The value calculus encodes `requires` as a precondition (refinement on input) and `ensures` as a dependent return type. Phase 1 verifies these.
+The value calculus encodes `pre:` as a precondition (refinement on input) and `post:` as a dependent return type. Phase 1 verifies these.
+
+**Symbol conventions:** `≠`, `≤`, `≥`, `∧`, `∨`, `¬`, `⇒`, `÷`, `·`; typed quantifiers `∀x:T.` and `∃x:T.` when bound variables are introduced. No type inference: parameter and return types are explicit in the signature; `result` has the return type.
+
+**Examples — Basic arithmetic:**
+
+```silica
+fn mod(a: int64, b: int64) -> int64
+  pre:  ⊢ b ≠ 0
+  post: ⊢ 0 ≤ result ∧ result < |b|
+{
+  a % b
+}
+
+fn clamp(x: int64, lo: int64, hi: int64) -> int64
+  pre:  ⊢ lo ≤ hi
+  post: ⊢ result ≥ lo ∧ result ≤ hi
+  post: ⊢ result = x ∨ result = lo ∨ result = hi
+{
+  case x < lo of {
+    true  -> lo;
+    false -> case x > hi of {
+      true  -> hi;
+      false -> x
+    }
+  }
+}
+```
+
+**Examples — Recursive functions:**
+
+```silica
+fn factorial(n: int64) -> int64
+  pre:  ⊢ n ≥ 0
+  post: ⊢ result ≥ 1
+{
+  case n ≤ 1 of {
+    true  -> 1;
+    false -> n * factorial(n - 1)
+  }
+}
+
+fn sum_to(n: int64, acc: int64) -> int64
+  pre:  ⊢ n ≥ 0
+  pre:  ⊢ acc ≥ 0
+  post: ⊢ result = acc + n·(n+1)÷2
+{
+  case n == 0 of {
+    true  -> acc;
+    false -> sum_to(n - 1, acc + n)
+  }
+}
+```
+
+**Examples — With effects:**
+
+```silica
+fn safe_read(path: string) -> int64 proc[device_io]
+  pre:  ⊢ path ≠ ""
+  post: ⊢ result ≥ 0
+{
+  read_file_as_int(path)
+}
+
+fn main() -> atom proc[device_io]
+  post: ⊢ result = :ok ∨ result = :fail
+{
+  x: int64 <- read_int();
+  print_int(x);
+  :ok
+}
+```
+
+**Examples — Boolean operations:**
+
+```silica
+fn implies(p: bool, q: bool) -> bool
+  post: ⊢ result = (¬p ∨ q)
+{
+  case p of {
+    true  -> q;
+    false -> true
+  }
+}
+
+fn xor(a: bool, b: bool) -> bool
+  post: ⊢ result = (a ∧ ¬b) ∨ (¬a ∧ b)
+{
+  a != b
+}
+```
+
+**Examples — With quantification:**
+
+```silica
+fn max(a: int64, b: int64) -> int64
+  post: ⊢ result ≥ a ∧ result ≥ b
+  post: ⊢ result = a ∨ result = b
+{
+  case a ≥ b of {
+    true  -> a;
+    false -> b
+  }
+}
+
+fn abs(n: int64) -> int64
+  post: ⊢ result ≥ 0
+  post: ⊢ result = n ∨ result = -n
+{
+  case n ≥ 0 of {
+    true  -> n;
+    false -> -n
+  }
+}
+```
+
+**Examples — Multiple postconditions, product return:**
+
+```silica
+fn div_rem(a: int64, b: int64) -> (int64, int64)
+  pre:  ⊢ b ≠ 0
+  post: ⊢ result.0 = a ÷ b
+  post: ⊢ result.1 = a % b
+  post: ⊢ a = result.0 * b + result.1
+{
+  (a / b, a % b)
+}
+```
 
 ### 8.4 Error Reporting
 
@@ -444,6 +573,47 @@ Verification errors follow the Silica compiler error format (silica-specificatio
 - Specification section reference
 
 New error codes for verification failures should be allocated in the appropriate range (e.g., verification errors as a distinct category).
+
+### 8.5 Constraint Inventory Sanity Check
+
+When contracts are present, an independent **constraint inventory** provides a sanity check that verification discharged all declared obligations. This section formalizes the extraction, inventory, and completeness condition.
+
+**Constraint extraction.** Let AST denote the parsed abstract syntax tree. Define the extraction function:
+
+ℰ : AST → 𝒫(Φ)
+
+where Φ is the set of contract propositions. For each declaration d ∈ AST:
+
+- φ_pre ∈ ℰ(AST) iff d has a `pre:` clause with proposition φ_pre
+- φ_post ∈ ℰ(AST) iff d has a `post:` clause with proposition φ_post
+- φ_inv ∈ ℰ(AST) iff d has an `inv:` clause with proposition φ_inv
+
+**Constraint inventory.** The inventory is the image of extraction:
+
+𝒞 ≝ ℰ(AST) = {φ₁, φ₂, …, φₙ}
+
+Each φᵢ is tagged with its source location ℓᵢ and kind κᵢ ∈ {pre, post, inv}.
+
+**Discharged obligations.** Let 𝒟 denote the set of propositions witnessed in the proof term π produced by the verification pipeline:
+
+𝒟 ≝ {ψ ∣ π ⊢ ψ}
+
+That is, 𝒟 is the set of propositions for which the typing derivation contains a proof.
+
+**Completeness condition (sanity check).** Verification is complete iff every extracted constraint is discharged:
+
+𝒞 ⊆ 𝒟  ⟺  ∀φ ∈ 𝒞. φ ∈ 𝒟
+
+**Sanity-check procedure.** After verification succeeds:
+
+1. Compute 𝒞 = ℰ(AST).
+2. Extract 𝒟 from the proof term π (or from the typing derivations).
+3. Verify 𝒞 ⊆ 𝒟.
+4. If 𝒞 ⊈ 𝒟, report a verification bug: some declared constraint was not discharged.
+
+**Idempotence.** The sanity check does not re-verify; it cross-checks. The type checker remains the sole proof engine. The check ensures:
+
+|𝒞| = |𝒞 ∩ 𝒟|  ⟹  no constraint omitted
 
 ---
 
@@ -684,11 +854,11 @@ Lexer → Parser → Type checker → Effect checker → SIR generator → Emitt
 
 ### 11.9 Step 8: Contract Syntax (Future)
 
-**Goal:** Add optional `requires`, `ensures`, `invariant` when the language design is ready.
+**Goal:** Add optional `pre:`, `post:`, `inv:` contract syntax when the language design is ready.
 
 **Tasks:**
 
-1. **Parser:** Add grammar for `requires expr`, `ensures expr`, `invariant expr` on function declarations.
+1. **Parser:** Add grammar for `pre: ⊢ expr`, `post: ⊢ expr`, `inv: ⊢ expr` on function declarations (logical notation per §8.3).
 
 2. **Phase 1 extension:** When contracts present, encode as refinements/dependent types; verify during type checking. Use abstract interpretation or constraint propagation (see §4.3 mapping).
 
@@ -736,3 +906,5 @@ Lexer → Parser → Type checker → Effect checker → SIR generator → Emitt
 |---------|------|---------|
 | 1.0 | 2025-02-19 | Initial specification; Option A layered design; sequential composition pipeline |
 | 1.1 | 2025-02-19 | Added §11 Implementation Plan: step-wise migration from current codebase |
+| 1.2 | 2025-02-20 | §8.3: Math-heavy contract syntax (pre/post/inv, ⊢, no inference); §8.5: Constraint inventory sanity check; examples throughout |
+| 1.3 | 2025-02-20 | Replaced LaTeX with Unicode in §8.5 (𝒞, 𝒟, ℰ, Φ, φ, ⊢, ⊆, ⟺, etc.) |

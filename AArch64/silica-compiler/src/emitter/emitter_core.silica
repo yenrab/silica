@@ -7,6 +7,7 @@ use control;
 use emitter_effects;
 use atom_table;
 use atom_rodata;
+use boolean_rodata;
 
 export emit_module/1;
 
@@ -18,12 +19,18 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
     header: string <- asm_header(sir_module.module_name);
     table: AtomTable <- atom_table@build_atom_table(sir_module);
     funcs: string <- emit_functions(sir_module.functions, table);
-    rodata: string <- atom_rodata@emit_atom_rodata_section(table);
+    atom_rodata_str: string <- atom_rodata@emit_atom_rodata_section(table);
+    bool_rodata: string <- boolean_rodata@emit_boolean_rodata_section();
     code_part: string <- concat(concat(header, "\n"), funcs);
-    case len(rodata) > 0 of {
-        true -> concat(concat(code_part, "\n"), rodata);
+    with_atom: string <- case len(atom_rodata_str) > 0 of {
+        true -> concat(concat(code_part, "\n"), atom_rodata_str);
         false -> code_part
-    }
+    };
+    with_bool: string <- case boolean_rodata@module_uses_booleans(sir_module) of {
+        true -> concat(concat(with_atom, "\n"), bool_rodata);
+        false -> with_atom
+    };
+    with_bool
     end
 }
 

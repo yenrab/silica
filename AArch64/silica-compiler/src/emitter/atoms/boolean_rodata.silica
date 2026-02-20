@@ -1,0 +1,59 @@
+// Boolean string rodata for print_bool inline emission
+// Emits "true" and "false" strings used by print_bool_inline
+// Labels: L_pb_true (4 bytes), L_pb_false (5 bytes), null-terminated
+
+use sir_ast;
+
+export emit_boolean_rodata_section/0;
+export module_uses_booleans/1;
+
+// True if the SIR module uses booleans (bool const or print_bool call).
+fn module_uses_booleans(sir_module: SIRModule) -> bool {
+    term_uses_booleans_in_functions(sir_module.functions)
+}
+
+fn term_uses_booleans_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_uses_booleans(fns.head.body) of {
+            true -> true;
+            false -> term_uses_booleans_in_functions(fns.tail)
+        }
+    }
+}
+
+fn term_uses_booleans(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            0 -> term.type_name == "bool";
+            2 -> case term_uses_booleans(term.inner) of {
+                true -> true;
+                false -> term_uses_booleans(term.right_expr)
+            };
+            4 -> case term.name == "main.print_bool" of {
+                true -> true;
+                false -> term_uses_booleans(term.inner)
+            };
+            6 -> case term_uses_booleans(term.inner) of {
+                true -> true;
+                false -> term_uses_booleans(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+// Emit .section __TEXT,__rodata with L_pb_true and L_pb_false.
+// "true" = 0x74, 0x72, 0x75, 0x65, 0
+// "false" = 0x66, 0x61, 0x6c, 0x73, 0x65, 0
+fn emit_boolean_rodata_section() -> string {
+    header: string <- ".section __TEXT,__rodata\n.align\t8\n";
+    true_label: string <- "L_pb_true:\n";
+    true_bytes: string <- "    .byte 0x74, 0x72, 0x75, 0x65, 0\n";
+    false_label: string <- "L_pb_false:\n";
+    false_bytes: string <- "    .byte 0x66, 0x61, 0x6c, 0x73, 0x65, 0\n";
+    part1: string <- concat(concat(header, true_label), true_bytes);
+    part2: string <- concat(false_label, false_bytes);
+    concat(part1, part2)
+}
