@@ -84,9 +84,7 @@ integrate:
 			base=$${exe%.sams}; \
 			if [ -x "$$base" ]; then \
 				echo "Running $$dir/$$base..."; \
-				: > "$$base.sout"; \
-				./$$base >> "$$base.sout" 2>&1; \
-				printf '%s\n' $$? >> "$$base.sout"; \
+				{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
 				if [ -f "$$base.scout" ]; then \
 					if ! diff -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
 						echo "❌❌ $$dir/$$base .sout differs from .scout"; \

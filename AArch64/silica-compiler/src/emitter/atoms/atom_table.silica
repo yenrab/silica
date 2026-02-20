@@ -1,0 +1,180 @@
+// Atom table for emitter: collect unique atom lexemes from SIR, resolve to indices
+// Per spec §4.1.7: atoms are 64-bit integer indices into compile-time atom table
+// Each unique atom lexeme maps to a fixed index; first occurrence = index 0
+// Uses BST from data_structures for O(log n) lookup
+// lexemes: list in reverse add order (index 0 = tail) for rodata emission
+// Atoms-only module: all code in this file is for atom support
+
+use sir_ast;
+use bst;
+
+export AtomTable/0;
+export ListAtomLexeme/0;
+export empty_atom_table/0;
+export build_atom_table/1;
+export atom_lexeme_to_index/2;
+export int64_to_decimal_string/1;
+export reverse_lexemes/1;
+export lexeme_to_index_first_added_order/2;
+
+// List of atom lexemes in index order (index 0 = last cons = tail)
+struct ListAtomLexeme {
+    is_nil: bool,
+    head: string,
+    tail: ListAtomLexeme
+}
+
+// Atom table: either empty (is_empty true) or root node (is_empty false, root = first node)
+// lexemes: consd in reverse order; index 0 = tail (first added)
+struct AtomTable {
+    is_empty: bool,
+    root: BstNode,
+    lexemes: ListAtomLexeme
+}
+
+fn nil_lexemes() -> ListAtomLexeme {
+    ph: ListAtomLexeme <- ListAtomLexeme { is_nil: true, head: "", tail: ph };
+    ph
+}
+
+fn cons_lexeme(s: string, t: ListAtomLexeme) -> ListAtomLexeme {
+    ListAtomLexeme { is_nil: false, head: s, tail: t }
+}
+
+fn empty_atom_table() -> AtomTable {
+    AtomTable { is_empty: true, root: bst@empty_node(), lexemes: nil_lexemes() }
+}
+
+// Add lexeme to table if not present; return (updated_table, index). First added = index 0.
+// When new (idx == next_index), cons lexeme to lexemes for rodata emission.
+fn add_atom(table: AtomTable, lexeme: string, next_index: int64) -> (AtomTable, int64) {
+    case table.is_empty of {
+        true -> do
+            (root: BstNode, idx: int64) <- bst@bst_insert(bst@empty_node(), lexeme, next_index);
+            new_lexemes: ListAtomLexeme <- case idx == next_index of {
+                true -> cons_lexeme(lexeme, table.lexemes);
+                false -> table.lexemes
+            };
+            (AtomTable { is_empty: false, root: root, lexemes: new_lexemes }, idx)
+        end;
+        false -> do
+            (new_root: BstNode, idx: int64) <- bst@bst_insert(table.root, lexeme, next_index);
+            new_lexemes: ListAtomLexeme <- case idx == next_index of {
+                true -> cons_lexeme(lexeme, table.lexemes);
+                false -> table.lexemes
+            };
+            (AtomTable { is_empty: false, root: new_root, lexemes: new_lexemes }, idx)
+        end
+    }
+}
+
+// Find index of lexeme in table (0-based). Returns -1 if not found.
+fn atom_lexeme_to_index(table: AtomTable, lexeme: string) -> int64 {
+    case table.is_empty of {
+        true -> 0 - 1;
+        false -> bst@bst_lookup(table.root, lexeme)
+    }
+}
+
+// Collect atom const terms from a single SIRTerm (recursive)
+// Dummy (kind < 0) and var (kind 1): no children. Call (4): only inner. Let (2): inner + right_expr. Prim (6): inner + right_expr.
+fn collect_atoms_from_term(term: SIRTerm, table: AtomTable, next_index: int64) -> (AtomTable, int64) {
+    case term.kind < 0 of {
+        true -> (table, next_index);
+        false -> do
+            case term.kind of {
+                0 -> case term.type_name == "atom" of {
+                    true -> add_atom(table, term.value, next_index);
+                    false -> (table, next_index)
+                };
+                1 -> (table, next_index);
+                2 -> do
+                    (t1: AtomTable, i1: int64) <- collect_atoms_from_term(term.inner, table, next_index);
+                    (t2: AtomTable, i2: int64) <- collect_atoms_from_term(term.right_expr, t1, i1);
+                    (t2, i2)
+                end;
+                4 -> collect_atoms_from_term(term.inner, table, next_index);
+                6 -> do
+                    (t1: AtomTable, i1: int64) <- collect_atoms_from_term(term.inner, table, next_index);
+                    (t2: AtomTable, i2: int64) <- collect_atoms_from_term(term.right_expr, t1, i1);
+                    (t2, i2)
+                end;
+                _: int64 -> (table, next_index)
+            }
+        end
+    }
+}
+
+// Collect atoms from a function body
+fn collect_atoms_from_function(fn_val: SIRFunction, table: AtomTable, next_index: int64) -> (AtomTable, int64) {
+    collect_atoms_from_term(fn_val.body, table, next_index)
+}
+
+// Collect atoms from all functions in module; returns atom table (order: first occurrence = index 0)
+fn collect_atoms_from_functions(fns: ListSIRFunction, table: AtomTable, next_index: int64) -> (AtomTable, int64) {
+    case fns.is_nil of {
+        true -> (table, next_index);
+        false -> do
+            (t1: AtomTable, i1: int64) <- collect_atoms_from_function(fns.head, table, next_index);
+            collect_atoms_from_functions(fns.tail, t1, i1)
+        end
+    }
+}
+
+// Build atom table from SIR module. Returns table where index 0 = first atom seen, etc.
+fn build_atom_table(sir_module: SIRModule) -> AtomTable {
+    (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, empty_atom_table(), 0);
+    table
+}
+
+// Reverse lexemes list so first-added is at head; matches BST index 0 = first-added for rodata labels.
+fn rev_lexemes_acc(lexemes: ListAtomLexeme, acc: ListAtomLexeme) -> ListAtomLexeme {
+    case lexemes.is_nil of {
+        true -> acc;
+        false -> rev_lexemes_acc(lexemes.tail, cons_lexeme(lexemes.head, acc))
+    }
+}
+
+fn reverse_lexemes(lexemes: ListAtomLexeme) -> ListAtomLexeme {
+    rev_lexemes_acc(lexemes, nil_lexemes())
+}
+
+// Index of lexeme in first-added order (same as rodata / switch). Scan reversed list; return -1 if not found.
+fn lexeme_to_index_in_list(lexemes: ListAtomLexeme, lexeme: string, pos: int64) -> int64 {
+    case lexemes.is_nil of {
+        true -> 0 - 1;
+        false -> case lexemes.head == lexeme of {
+            true -> pos;
+            false -> lexeme_to_index_in_list(lexemes.tail, lexeme, pos + 1)
+        }
+    }
+}
+
+fn lexeme_to_index_first_added_order(table: AtomTable, lexeme: string) -> int64 {
+    in_order: ListAtomLexeme <- reverse_lexemes(table.lexemes);
+    lexeme_to_index_in_list(in_order, lexeme, 0)
+}
+
+// Convert int64 to decimal string (non-negative only; used for atom indices)
+fn int64_to_decimal_string(n: int64) -> string {
+    case n < 10 of {
+        true -> digit_to_char(n);
+        false -> concat(int64_to_decimal_string(n / 10), digit_to_char(n % 10))
+    }
+}
+
+fn digit_to_char(d: int64) -> string {
+    case d of {
+        0 -> "0";
+        1 -> "1";
+        2 -> "2";
+        3 -> "3";
+        4 -> "4";
+        5 -> "5";
+        6 -> "6";
+        7 -> "7";
+        8 -> "8";
+        9 -> "9";
+        _: int64 -> "0"
+    }
+}

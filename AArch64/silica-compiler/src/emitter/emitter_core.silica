@@ -5,6 +5,8 @@ use sir_ast;
 use term_emitter;
 use control;
 use emitter_effects;
+use atom_table;
+use atom_rodata;
 
 export emit_module/1;
 
@@ -14,8 +16,14 @@ export emit_module/1;
 fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
     do
     header: string <- asm_header(sir_module.module_name);
-    funcs: string <- emit_functions(sir_module.functions);
-    concat(concat(header, "\n"), funcs)
+    table: AtomTable <- atom_table@build_atom_table(sir_module);
+    funcs: string <- emit_functions(sir_module.functions, table);
+    rodata: string <- atom_rodata@emit_atom_rodata_section(table);
+    code_part: string <- concat(concat(header, "\n"), funcs);
+    case len(rodata) > 0 of {
+        true -> concat(concat(code_part, "\n"), rodata);
+        false -> code_part
+    }
     end
 }
 
@@ -23,25 +31,28 @@ fn asm_header(name: string) -> string {
     concat(".text\n", concat(concat(".global ", name), "\n"))
 }
 
-fn emit_functions(fns: ListSIRFunction) -> string proc[DeviceIO] {
+fn emit_functions(fns: ListSIRFunction, table: AtomTable) -> string proc[DeviceIO] {
     do
     case fns.is_nil of {
         true -> "";
         false -> do
-            fn_asm: string <- emit_sir_function(fns.head);
-            rest_asm: string <- emit_functions(fns.tail);
-            concat(concat(fn_asm, "\n"), rest_asm)
+            fn_asm: string <- emit_sir_function(fns.head, table);
+            rest_asm: string <- emit_functions(fns.tail, table);
+            case rest_asm == "" of {
+                true -> fn_asm;
+                false -> concat(concat(fn_asm, "\n"), rest_asm)
+            }
         end
     }
     end
 }
 
-fn emit_sir_function(fn_val: SIRFunction) -> string proc[DeviceIO] {
+fn emit_sir_function(fn_val: SIRFunction, table: AtomTable) -> string proc[DeviceIO] {
     do
     entry_label: string <- entry_point_label(fn_val.name);
     eff_comment: string <- emitter_effects@fn_effect_annotation(fn_val.effects);
     prologue: string <- control@function_prologue_with_effects(entry_label, fn_val.effects);
-    body: string <- term_emitter@term_to_asm(fn_val.body, "X0");
+    body: string <- term_emitter@term_to_asm(fn_val.body, "X0", table);
     epilogue: string <- control@function_epilogue_with_effects(fn_val.effects);
     concat(concat(concat(eff_comment, "\n"), concat(prologue, "\n")), concat(concat(body, "\n"), epilogue))
     end

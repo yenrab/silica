@@ -5,6 +5,7 @@ use parser_ast;
 use type_checker_core;
 use type_checker_expressions_literals;
 use type_checker_expressions_identifiers;
+use type_checker_expressions_atoms;
 
 export check_expr/3;
 
@@ -61,6 +62,7 @@ fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> T
 }
 
 // Built-in: print_int64(int64:x) - arg int64, returns bool/boolean
+// Built-in: print_atom(atom:x) - arg atom, returns atom (:ok on success, :fail on failure)
 fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
     case expr.name == "print_int64" of {
         true -> do
@@ -74,11 +76,38 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
                 }
             }
         end;
-        false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown or unsupported function: ", expr.name), "sect6")
+        false -> case expr.name == "print_atom" of {
+            true -> do
+                arg_result: TypeCheckResult <- check_expr(expr.inner, "atom", context);
+                case arg_result.is_ok of {
+                    false -> arg_result;
+                    true -> case expected_type of {
+                        "atom" -> type_checker_core@type_check_ok();
+                        "unit" -> type_checker_core@type_check_ok();
+                        _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("print_atom expects atom result, got ", expected_type), "sect6")
+                    }
+                }
+            end;
+            false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown or unsupported function: ", expr.name), "sect6")
+        }
     }
 }
 
-// Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call
+// Let binding: name: type <- rhs; body. Check rhs has declared type, add to env, check body.
+fn check_let(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+    bind_type: string <- expr.value;
+    rhs_result: TypeCheckResult <- check_expr(expr.inner, bind_type, context);
+    case rhs_result.is_ok of {
+        false -> rhs_result;
+        true -> do
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, bind_type, parser_ast@empty_effect_name_list());
+            new_context: TypeContext <- TypeContext { env: new_env };
+            check_expr(expr.right_expr, expected_type, new_context)
+        end
+    }
+}
+
+// Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding
 fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
     case expr.kind of {
         0 -> type_checker_expressions_literals@check_expr(expr, expected_type, context);
@@ -86,6 +115,8 @@ fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
         2 -> check_expr(expr.inner, expected_type, context);
         3 -> check_binary_op(expr, expected_type, context);
         4 -> check_call(expr, expected_type, context);
+        5 -> type_checker_expressions_atoms@check_expr(expr, expected_type, context);
+        6 -> check_let(expr, expected_type, context);
         _: int64 -> type_checker_core@type_check_ok()
     }
 }

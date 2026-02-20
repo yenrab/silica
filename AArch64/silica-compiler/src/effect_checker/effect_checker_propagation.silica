@@ -18,10 +18,11 @@ export expand_single_effect/2;
 // --- Effect collection from expressions ---
 
 {- Traverse an Expr tree and collect the union of all effects from function calls.
-   Expr kinds: 0=literal, 1=identifier, 2=parenthesized, 3=binary_op, 4=call, -1=dummy.
+   Expr kinds: 0=integer literal, 1=identifier, 2=parenthesized, 3=binary_op, 4=call, 5=atom literal, 6=let binding, -1=dummy.
    For calls (kind 4): resolve callee effects, union with effects from argument subtree.
    For binary ops (kind 3): union effects from both operands.
-   Pure expressions (literal, identifier) contribute no effects. -}
+   For let bindings (kind 6): union effects from RHS (inner) and continuation (right_expr).
+   Pure expressions (integer literal, atom literal, identifier) contribute no effects (spec §9.3.1). -}
 fn collect_expr_effects(expr: Expr, ctx: EffectContext) -> ListEffectName {
     case expr.kind == 4 of {
         true -> do
@@ -35,9 +36,19 @@ fn collect_expr_effects(expr: Expr, ctx: EffectContext) -> ListEffectName {
                 right_effects: ListEffectName <- collect_expr_effects(expr.right_expr, ctx);
                 union_effect_lists(left_effects, right_effects)
             end;
-            false -> case expr.kind == 2 of {
-                true -> collect_expr_effects(expr.inner, ctx);
-                false -> parser_ast@empty_effect_name_list()
+            false -> case expr.kind == 6 of {
+                true -> do
+                    rhs_effects: ListEffectName <- collect_expr_effects(expr.inner, ctx);
+                    body_effects: ListEffectName <- collect_expr_effects(expr.right_expr, ctx);
+                    union_effect_lists(rhs_effects, body_effects)
+                end;
+                false -> case expr.kind == 2 of {
+                    true -> collect_expr_effects(expr.inner, ctx);
+                    false -> do
+                        // kind 0 (integer literal), 1 (identifier), 5 (atom literal), -1 (dummy): pure, empty effect set per spec §9.3.1
+                        parser_ast@empty_effect_name_list()
+                    end
+                }
             }
         }
     }

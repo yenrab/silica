@@ -7,22 +7,68 @@ use type_checker_core;
 use sir_ast;
 use literals;
 use identifiers;
+use atoms;
 use int64_binary_ops;
 use int64_calls;
+use types;
 
 export expr_to_sir/2;
 
+// Convert Expr to SIRTerm when inside a let body. Uses bound_name/bound_type for identifiers matching the let-bound var (avoids lookup_symbol crash).
+fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string) -> SIRTerm {
+    case expr.kind of {
+        0 -> literals@expr_to_sir(context, expr);
+        1 -> identifiers@expr_to_sir_with_bound(context, expr, bound_name, bound_type);
+        2 -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type);
+        5 -> atoms@expr_to_sir(context, expr);
+        6 -> do
+            rhs: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type);
+            bind_type: string <- types@type_name_to_sir(expr.value);
+            prefixed: string <- concat("%", expr.name);
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, expr.value, parser_ast@empty_effect_name_list());
+            new_context: TypeContext <- TypeContext { env: new_env };
+            body: SIRTerm <- expr_to_sir_in_let_body(new_context, expr.right_expr, expr.name, expr.value);
+            SIRTerm { kind: 2, type_name: bind_type, value: "", name: prefixed, inner: rhs, right_expr: body }
+        end;
+        3 -> do
+            left: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type);
+            right: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type);
+            int64_binary_ops@build_prim_from_sir(expr.value, left, right)
+        end;
+        4 -> do
+            arg: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type);
+            case expr.name == "print_atom" of {
+                true -> atoms@build_print_atom_from_sir(expr.name, arg);
+                false -> int64_calls@build_call_from_sir(expr.name, arg)
+            }
+        end;
+        _: int64 -> sir_ast@dummy_sir_term()
+    }
+}
+
 // Convert Expr to SIRTerm. Dispatches on kind.
-// Kind 0: literal -> const(type, value)
+// Kind 0: integer literal -> const(type, value)
 // Kind 1: identifier -> var(%name)
 // Kind 2: parenthesized -> recurse on inner
 // Kind 3: binary op -> prim(add/sub/etc)
 // Kind 4: call -> call(callee, arg)
+// Kind 5: atom literal -> const(atom, value)
+// Kind 6: let binding -> let(name, type, rhs, body)
 fn expr_to_sir(context: TypeContext, expr: Expr) -> SIRTerm {
     case expr.kind of {
         0 -> literals@expr_to_sir(context, expr);
         1 -> identifiers@expr_to_sir(context, expr);
         2 -> expr_to_sir(context, expr.inner);
+        5 -> atoms@expr_to_sir(context, expr);
+        6 -> do
+            rhs: SIRTerm <- expr_to_sir(context, expr.inner);
+            bind_type: string <- types@type_name_to_sir(expr.value);
+            prefixed: string <- concat("%", expr.name);
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, expr.value, parser_ast@empty_effect_name_list());
+            new_context: TypeContext <- TypeContext { env: new_env };
+            body: SIRTerm <- expr_to_sir_in_let_body(new_context, expr.right_expr, expr.name, expr.value);
+            SIRTerm { kind: 2, type_name: bind_type, value: "", name: prefixed, inner: rhs, right_expr: body }
+        end;
         3 -> do
             left: SIRTerm <- expr_to_sir(context, expr.inner);
             right: SIRTerm <- expr_to_sir(context, expr.right_expr);
@@ -30,7 +76,10 @@ fn expr_to_sir(context: TypeContext, expr: Expr) -> SIRTerm {
         end;
         4 -> do
             arg: SIRTerm <- expr_to_sir(context, expr.inner);
-            int64_calls@build_call_from_sir(expr.name, arg)
+            case expr.name == "print_atom" of {
+                true -> atoms@build_print_atom_from_sir(expr.name, arg);
+                false -> int64_calls@build_call_from_sir(expr.name, arg)
+            }
         end;
         _: int64 -> sir_ast@dummy_sir_term()
     }

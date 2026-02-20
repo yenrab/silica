@@ -33,7 +33,7 @@ fn extract_function(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) proc[D
     fn_name: string <- r1.head.token.lexeme;
     fn_loc: SourceLocation <- r1.head.token.location;
     (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(r1.tail);
-    (body: Expr, rest_after_body: ListTokenSlot) <- extract_body(body_slots);
+    (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(body_slots);
     decl: Declaration <- Declaration { tag: 0, name: fn_name, return_type_name: ret_type, return_type_location: ret_type_loc, location: fn_loc, body: body, declared_effects: effects };
     (decl, rest_after_body)
 }
@@ -118,7 +118,7 @@ fn is_effect_decl_start(slots: ListTokenSlot) -> bool {
 }
 
 fn is_type_keyword(kinds: TokenKinds, token_kind: int64) -> bool {
-    token_kind == kinds.int8_keyword or token_kind == kinds.int16_keyword or token_kind == kinds.int32_keyword or token_kind == kinds.int64_keyword or token_kind == kinds.float16_keyword or token_kind == kinds.float32_keyword or token_kind == kinds.float64_keyword or token_kind == kinds.bool_keyword or token_kind == kinds.char_keyword or token_kind == kinds.string_keyword or token_kind == kinds.unit_keyword
+    token_kind == kinds.int8_keyword or token_kind == kinds.int16_keyword or token_kind == kinds.int32_keyword or token_kind == kinds.int64_keyword or token_kind == kinds.float16_keyword or token_kind == kinds.float32_keyword or token_kind == kinds.float64_keyword or token_kind == kinds.bool_keyword or token_kind == kinds.char_keyword or token_kind == kinds.string_keyword or token_kind == kinds.unit_keyword or token_kind == kinds.atom_keyword
 }
 
 fn kind_to_type_name(token_kind: int64) -> string {
@@ -139,10 +139,13 @@ fn kind_to_type_name(token_kind: int64) -> string {
                                 true -> "float16";
                                 false -> case token_kind == kinds.bool_keyword of {
                                     true -> "bool";
-                                    false -> case token_kind == kinds.unit_keyword of {
-                                        true -> "unit";
-                                        false -> ""
-                                    }
+                    false -> case token_kind == kinds.unit_keyword of {
+                        true -> "unit";
+                        false -> case token_kind == kinds.atom_keyword of {
+                            true -> "atom";
+                            false -> ""
+                        }
+                    }
                                 }
                             }
                         }
@@ -158,7 +161,7 @@ fn is_op_token(kinds: TokenKinds, token_kind: int64) -> bool {
 }
 
 fn is_operand_token(kinds: TokenKinds, token_kind: int64) -> bool {
-    token_kind == kinds.integer_literal or token_kind == kinds.identifier
+    token_kind == kinds.integer_literal or token_kind == kinds.identifier or token_kind == kinds.atom_literal
 }
 
 fn collect_effects_until_right_bracket(slots: ListTokenSlot, acc: ListEffectName) -> (ListEffectName, ListTokenSlot) {
@@ -285,25 +288,130 @@ fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListEffe
     end
 }
 
+// Check if slots start with binding pattern: ident : type <- (at least 4 tokens)
+fn is_binding_start(slots: ListTokenSlot) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> false;
+        false -> case slots.tail.is_nil of {
+            true -> false;
+            false -> case slots.tail.tail.is_nil of {
+                true -> false;
+                false -> case slots.tail.tail.tail.is_nil of {
+                    true -> false;
+                    false -> case slots.head.token.kind == kinds.identifier of {
+                        true -> case slots.tail.head.token.kind == kinds.colon of {
+                            true -> case is_type_keyword(kinds, slots.tail.tail.head.token.kind) of {
+                                true -> slots.tail.tail.tail.head.token.kind == kinds.left_arrow;
+                                false -> false
+                            };
+                            false -> false
+                        };
+                        false -> false
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn skip_semicolons(slots: ListTokenSlot) -> ListTokenSlot {
+    case slots.is_nil of {
+        true -> slots;
+        false -> case slots.head.token.lexeme == ";" of {
+            true -> skip_semicolons(slots.tail);
+            false -> slots
+        }
+    }
+}
+
+fn extract_binding(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
+    ident_slot: TokenSlot <- slots.head;
+    type_slot: TokenSlot <- slots.tail.tail.head;
+    rhs_slots: ListTokenSlot <- slots.tail.tail.tail.tail;
+    bind_name: string <- ident_slot.token.lexeme;
+    bind_type: string <- case len(type_slot.token.lexeme) > 0 of {
+        true -> type_slot.token.lexeme;
+        false -> kind_to_type_name(type_slot.token.kind)
+    };
+    bind_loc: SourceLocation <- ident_slot.token.location;
+    (rhs: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
+    after_semicolons: ListTokenSlot <- skip_semicolons(rest_after_rhs);
+    (body: Expr, rest_after_body: ListTokenSlot) <- extract_body(after_semicolons);
+    dummy: Expr <- parser_ast@dummy_expr();
+    let_expr: Expr <- Expr { kind: 6, value: bind_type, name: bind_name, location: bind_loc, inner: rhs, right_expr: body };
+    (let_expr, rest_after_body)
+}
+
+// Chain first_expr with rest_body: if first_expr is a let, chain rest_body into its continuation (so we keep the let body and add rest_body after it);
+// otherwise wrap first_expr in a let _ : unit <- first_expr in rest_body so the statement executes before the return.
+fn wrap_let_or_return(expr: Expr, rest_body: Expr) -> Expr {
+    case expr.kind == 6 of {
+        true -> do
+            new_continuation: Expr <- wrap_let_or_return(expr.right_expr, rest_body);
+            Expr { kind: 6, value: expr.value, name: expr.name, location: expr.location, inner: expr.inner, right_expr: new_continuation }
+        end;
+        false -> Expr { kind: 6, value: "unit", name: "_", location: expr.location, inner: expr, right_expr: rest_body }
+    }
+}
+
+// Parse function body: multiple statements separated by ; allowed; the last expression before } is the return value.
+// Preceding let-bindings are chained so their scope includes the return expression.
+fn extract_function_body(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
+    (first_expr: Expr, after_first: ListTokenSlot) <- extract_body(slots);
+    extract_function_body_tail(first_expr, after_first)
+}
+
+// Tail helper: after_first is passed as ListTokenSlot parameter so codegen does not confuse it with tuple element types.
+fn extract_function_body_tail(first_expr: Expr, after_first: ListTokenSlot) -> (Expr, ListTokenSlot) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case after_first.is_nil of {
+        true -> (first_expr, after_first);
+        false -> case after_first.head.token.kind == kinds.right_brace of {
+            true -> (first_expr, after_first);
+            false -> case after_first.head.token.lexeme == ";" of {
+                true -> do
+                    rest: ListTokenSlot <- skip_semicolons(after_first);
+                    case rest.is_nil of {
+                        true -> (first_expr, rest);
+                        false -> case rest.head.token.kind == kinds.right_brace of {
+                            true -> (first_expr, rest);
+                            false -> do
+                                (rest_body: Expr, rest_after: ListTokenSlot) <- extract_function_body(rest);
+                                body: Expr <- wrap_let_or_return(first_expr, rest_body);
+                                (body, rest_after)
+                            end
+                        }
+                    }
+                end;
+                false -> (first_expr, after_first)
+            }
+        }
+    }
+}
+
 fn extract_body(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     first: TokenSlot <- slots.head;
     rest: ListTokenSlot <- slots.tail;
     first_kind: int64 <- first.token.kind;
     case first_kind == kinds.identifier of {
-        true -> case rest.is_nil of {
-            true -> case is_operand_token(kinds, first_kind) of {
-                true -> (extract_operand_expr(first), rest);
-                false -> (extract_body_expr(first), rest)
-            };
-            false -> case rest.head.token.kind == kinds.left_paren of {
-                true -> extract_call(slots);
-                false -> case is_operand_token(kinds, first_kind) of {
-                    true -> case is_op_token(kinds, rest.head.token.kind) of {
-                        true -> extract_binary(slots);
-                        false -> (extract_operand_expr(first), rest)
-                    };
+        true -> case is_binding_start(slots) of {
+            true -> extract_binding(slots);
+            false -> case rest.is_nil of {
+                true -> case is_operand_token(kinds, first_kind) of {
+                    true -> (extract_operand_expr(first), rest);
                     false -> (extract_body_expr(first), rest)
+                };
+                false -> case rest.head.token.kind == kinds.left_paren of {
+                    true -> extract_call(slots);
+                    false -> case is_operand_token(kinds, first_kind) of {
+                        true -> case is_op_token(kinds, rest.head.token.kind) of {
+                            true -> extract_binary(slots);
+                            false -> (extract_operand_expr(first), rest)
+                        };
+                        false -> (extract_body_expr(first), rest)
+                    }
                 }
             }
         };
@@ -353,7 +461,10 @@ fn extract_operand_expr(slot: TokenSlot) -> Expr {
     dummy: Expr <- parser_ast@dummy_expr();
     case slot.token.kind == kinds.integer_literal of {
         true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
-        false -> Expr { kind: 1, value: "", name: slot.token.lexeme, location: slot.token.location, inner: dummy, right_expr: dummy }
+        false -> case slot.token.kind == kinds.atom_literal of {
+            true -> Expr { kind: 5, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+            false -> Expr { kind: 1, value: "", name: slot.token.lexeme, location: slot.token.location, inner: dummy, right_expr: dummy }
+        }
     }
 }
 
@@ -364,7 +475,10 @@ fn extract_body_expr(slot: TokenSlot) -> Expr {
         true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
         false -> case slot.token.kind == kinds.identifier of {
             true -> Expr { kind: 1, value: "", name: slot.token.lexeme, location: slot.token.location, inner: dummy, right_expr: dummy };
-            false -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy }
+            false -> case slot.token.kind == kinds.atom_literal of {
+                true -> Expr { kind: 5, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+                false -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy }
+            }
         }
     }
 }

@@ -10,14 +10,16 @@ use emitter_effects;
 
 export emit_call_body/2;
 
-// Emit BLR callee with effect-appropriate barriers.
+// Emit call: load callee address (ADRP+ADD) then BLR; result in X0.
+// BLR takes a register on AArch64. Mach-O: sym@PAGE / sym@PAGEOFF.
 // term.value carries the call's effect set (SIR text format).
 fn emit_call_body(term: SIRTerm, dest: string) -> string {
     call_effects: string <- term.value;
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
-    blr_line: string <- concat(concat("    BLR ", term.name), "");
+    callee: string <- term.name;
+    adrp_line: string <- concat(concat(concat("    ADRP X8, ", callee), "@PAGE\n"), concat(concat(concat("    ADD X8, X8, ", callee), "@PAGEOFF\n"), concat("    BLR X8", "")));
     result_mov: string <- case dest == "X0" of {
         true -> "";
         false -> concat("\n", concat(concat(concat("    MOV ", dest), ", X0"), ""))
@@ -27,8 +29,8 @@ fn emit_call_body(term: SIRTerm, dest: string) -> string {
         false -> ""
     };
     with_pre: string <- case len(pre_barrier) > 0 of {
-        true -> concat(with_comment, concat(pre_barrier, concat("\n", blr_line)));
-        false -> concat(with_comment, blr_line)
+        true -> concat(with_comment, concat(pre_barrier, concat("\n", adrp_line)));
+        false -> concat(with_comment, adrp_line)
     };
     with_post: string <- case len(post_barrier) > 0 of {
         true -> concat(with_pre, concat("\n", post_barrier));

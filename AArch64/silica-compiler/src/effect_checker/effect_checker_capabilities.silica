@@ -123,6 +123,16 @@ fn check_function_decl(decl: Declaration, ctx: EffectContext) -> EffectCheckResu
     check_body_effects(body_effects, expanded_declared, decl.name, decl.location)
 }
 
+{- Build E3001 message; when the missing effect is device_io, add a suggestion to add proc[device_io] or remove print-style calls. -}
+fn e3001_message(fn_name: string, eff: EffectName) -> string {
+    base: string <- concat("Function '", concat(fn_name, concat("' uses effect ", concat(effect_checker_core@effect_name_to_string(eff), " but does not declare it in its signature"))));
+    norm: EffectName <- effect_checker_core@normalize_effect(eff);
+    case norm.name == "device_io" of {
+        true -> concat(base, ". Add proc[device_io] to the function signature, or remove any use of print, println, print_int64, print_atom, read_lines, or file_exists");
+        false -> base
+    }
+}
+
 {- Check that all body effects are declared. Produces E3001 for the first missing effect
    with context about which function is missing the declaration. -}
 fn check_body_effects(body_effects: ListEffectName, declared: ListEffectName, fn_name: string, fn_loc: SourceLocation) -> EffectCheckResult {
@@ -133,7 +143,7 @@ fn check_body_effects(body_effects: ListEffectName, declared: ListEffectName, fn
             false -> effect_checker_core@effect_check_err(
                 "E3001",
                 fn_loc,
-                concat("Function '", concat(fn_name, concat("' uses effect ", concat(effect_checker_core@effect_name_to_string(body_effects.head), " but does not declare it in its signature")))),
+                e3001_message(fn_name, body_effects.head),
                 "sect9.3.1"
             )
         }

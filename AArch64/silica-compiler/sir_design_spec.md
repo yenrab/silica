@@ -116,6 +116,7 @@ SIRType ::=
   | char
   | string
   | unit
+  | atom
   | region(R, Space)
   | ref(R, Space, SIRType)
   | buf(R, Space, SIRType, N)
@@ -124,9 +125,9 @@ SIRType ::=
   | core_id
   | core_set
   | space
-  | (SIRType, SIRType, ...)           -- tuple
-  | { f1: SIRType, f2: SIRType, ... } -- record
-  | VariantName                        -- enum variant (no payload or with payload)
+  | (SIRType, SIRType, ...)           // tuple
+  | { f1: SIRType, f2: SIRType, ... } // record
+  | VariantName                        // enum variant (no payload or with payload)
   | Vec128Int8 | Vec128Int16 | Vec128Int32 | Vec128Int64 | Vec128Float32 | Vec128Bool
   | VecInt8 | VecInt16 | VecInt32 | VecInt64 | VecFloat16 | VecFloat32 | VecFloat64 | VecBool
   | Pred
@@ -135,7 +136,7 @@ Space ::= normal | normal_writeback | normal_writethrough | normal_noncacheable 
 
 R     ::= region identifier (e.g. R1, R2)
 
-space ::= Space  -- type of space literals, used as argument to alloc_region
+space ::= Space  // type of space literals, used as argument to alloc_region
 
 N     ::= integer literal (buffer size)
 ```
@@ -241,6 +242,7 @@ A constant value. The type must match the value.
 - `const(float64, 3.14)`
 - `const(unit, ())`
 - `const(string, "hello")`
+- `const(atom, :ok)` — atom literal (lexeme stored; emitter uses atom table index)
 - `const(space, normal)` — space literal for alloc_region
 
 #### 5.2.2 var(name)
@@ -336,8 +338,8 @@ The guard term must have type `bool`. If the pattern matches, the guard is evalu
 
 | PrimOp | SIRType | Args | Effect |
 |--------|---------|------|--------|
-| eq | int8, int16, int32, int64, float32, float64, bool, char | (a, b) | [] |
-| ne | int8, int16, int32, int64, float32, float64, bool, char | (a, b) | [] |
+| eq | int8, int16, int32, int64, float32, float64, bool, char, atom | (a, b) | [] |
+| ne | int8, int16, int32, int64, float32, float64, bool, char, atom | (a, b) | [] |
 | lt | int8, int16, int32, int64, float32, float64 | (a, b) | [] |
 | le | int8, int16, int32, int64, float32, float64 | (a, b) | [] |
 | gt | int8, int16, int32, int64, float32, float64 | (a, b) | [] |
@@ -457,7 +459,7 @@ The guard term must have type `bool`. If the pattern matches, the guard is evalu
 - **Integer literals**: Decimal `123`, hexadecimal `0x1A`, binary `0b1010`.
 - **Float literals**: `3.14`, `1e-10`.
 - **String literals**: `"hello"` with escapes `\"`, `\\`, `\n`, `\t`.
-- **Comments**: `--` to end of line; `{--` and `--}` for block comments.
+- **Comments**: `//` to end of line; `{-` and `-}` for block comments.
 
 ### 8.2 Module Syntax
 
@@ -492,15 +494,15 @@ prim type op(arg1, arg2, ...)
 ### 8.4 Pattern Syntax
 
 ```
-42                    -- literal
-%name: type           -- variable
-_ : type              -- wildcard
-(VariantName, arg)    -- variant with payload
-VariantName           -- variant without payload
-(f1 = p1, f2 = p2)    -- record
-(p1, p2, ...)         -- tuple
-[]                    -- list nil
-[%head: T | %tail: ListT]  -- list cons
+42                    // literal
+%name: type           // variable
+_ : type              // wildcard
+(VariantName, arg)    // variant with payload
+VariantName           // variant without payload
+(f1 = p1, f2 = p2)    // record
+(p1, p2, ...)         // tuple
+[]                    // list nil
+[%head: T | %tail: ListT]  // list cons
 ```
 
 ### 8.5 Full Example

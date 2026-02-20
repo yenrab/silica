@@ -282,17 +282,23 @@ unit_literal ::= "(" ")"
 ```
 
 ##### Atom Literals
-Atom literals are symbolic constants prefixed with a colon (`:`). They evaluate to themselves and are compared by identity. Atoms follow the same naming rules as identifiers but must begin with a lowercase letter:
+Atom literals are symbolic constants prefixed with a colon (`:`). They evaluate to themselves and are compared by identity. The atom name consists of all characters from the first character after the colon until a delimiter is encountered. **All characters are acceptable in atom names except the start character `:`**; any character not in the delimiter set below is valid, including Unicode (emojis, accented letters, etc.).
+
 ```
 atom_literal ::= ":" atom_name
-atom_name    ::= lower_letter (letter | digit | "_")*
-lower_letter ::= "a" | "b" | ... | "z"
 ```
+
+**Atom delimiters** (characters that end an atom name):
+- Whitespace: space, tab, newline, carriage return
+- Grouping: `( ) { } [ ] ,`
+- Operators: `+ - * / % < > = ! : ; . |`
+- Other: `& @ # ? ~ ^` plus backtick and backslash
 
 Examples:
 - `:ok`, `:error`, `:not_found`
 - `:ready`, `:pending`, `:done`
 - `:red`, `:green`, `:blue`
+- `:🔥`, `:café`, `:_private` (Unicode and underscore allowed)
 
 Atoms are compile-time constants stored in an atom table. They require no runtime allocation and are compared by identity rather than by value, making equality checks constant-time. The colon prefix distinguishes atoms from identifiers and keywords in all contexts.
 
@@ -348,9 +354,9 @@ Examples:
 ### 2.3 Comments
 
 #### 2.3.1 Line Comments
-Line comments start with `--` and continue to the end of the line:
+Line comments start with `//` and continue to the end of the line:
 ```
-line_comment ::= "--" {any_character_except_newline}
+line_comment ::= "//" {any_character_except_newline}
 ```
 
 #### 2.3.2 Block Comments
@@ -444,7 +450,7 @@ Qualified method calls allow explicit disambiguation of method calls when multip
 **Qualified Method Call Examples:**
 
 ```silica
--- Multiple traits define log() method
+// Multiple traits define log() method
 trait Loggable {
     fn log(self: Self, level: int64) -> int64;
 }
@@ -453,9 +459,9 @@ trait Debuggable {
     fn log(self: Self, level: int64) -> int64;
 }
 
--- Explicit disambiguation using qualified call
+// Explicit disambiguation using qualified call
 fn example(obj: Loggable) -> int64 {
-    Loggable.log(obj, 1)  -- Qualified call: explicitly use Loggable.log()
+    Loggable.log(obj, 1)  // Qualified call: explicitly use Loggable.log()
 }
 ```
 
@@ -561,29 +567,29 @@ Coverage(P if G) = Coverage(P, true) ∩ { v | G(v) = true }
 
 ```pseudocode
 function check_exhaustiveness(value_type, patterns):
-    -- Initialize coverage set
+    // Initialize coverage set
     total_coverage = empty_set()
     
-    -- Process each pattern
+    // Process each pattern
     for each pattern in patterns:
         if is_catch_all_pattern(pattern):
-            -- Catch-all covers everything
+            // Catch-all covers everything
             total_coverage = Domain(value_type)
             break
         else if has_guard(pattern):
-            -- Guarded pattern: coverage is intersection
+            // Guarded pattern: coverage is intersection
             pattern_coverage = compute_pattern_coverage(pattern.pattern, value_type)
             guard_coverage = compute_guard_coverage(pattern.guard, value_type)
             pattern_guard_coverage = intersection(pattern_coverage, guard_coverage)
             total_coverage = union(total_coverage, pattern_guard_coverage)
         else:
-            -- Unguarded pattern: covers all matching values
+            // Unguarded pattern: covers all matching values
             pattern_coverage = compute_pattern_coverage(pattern.pattern, value_type)
             total_coverage = union(total_coverage, pattern_coverage)
         end if
     end for
     
-    -- Check if coverage is complete
+    // Check if coverage is complete
     if total_coverage == Domain(value_type):
         return EXHAUSTIVE
     else:
@@ -616,10 +622,10 @@ Guard expressions can contain any valid Silica expression, including:
 ```silica
 fn process_number(n: int64) -> int64 {
     case n of {
-        n: int64 if n < 0 -> -1           -- Negative numbers
-        n: int64 if n >= 0 and n < 100 -> n * 2  -- Range [0, 100)
-        n: int64 if n >= 100 -> n + 100   -- Range [100, infinity)
-        -- Exhaustive: covers all int64 values
+        n: int64 if n < 0 -> -1           // Negative numbers
+        n: int64 if n >= 0 and n < 100 -> n * 2  // Range [0, 100)
+        n: int64 if n >= 100 -> n + 100   // Range [100, infinity)
+        // Exhaustive: covers all int64 values
     }
 }
 ```
@@ -635,10 +641,10 @@ This case expression is exhaustive because:
 ```silica
 fn process_with_guard(x: int64) -> int64 {
     case x of {
-        x: int64 if x > 0 -> x * 2        -- Positive numbers only
-        x: int64 if x < 0 -> x * -1       -- Negative numbers only
-        _: int64 -> 0                     -- Catch-all: covers x == 0
-        -- Exhaustive: guarded patterns + catch-all cover all values
+        x: int64 if x > 0 -> x * 2        // Positive numbers only
+        x: int64 if x < 0 -> x * -1       // Negative numbers only
+        _: int64 -> 0                     // Catch-all: covers x == 0
+        // Exhaustive: guarded patterns + catch-all cover all values
     }
 }
 ```
@@ -654,10 +660,10 @@ This case expression is exhaustive because:
 ```silica
 fn incomplete_guards(x: int64) -> int64 {
     case x of {
-        x: int64 if x > 0 -> x * 2        -- Positive numbers
-        x: int64 if x < 0 -> x * -1      -- Negative numbers
-        -- ERROR: Not exhaustive - missing case for x == 0
-        -- Compiler error: pattern match is not exhaustive
+        x: int64 if x > 0 -> x * 2        // Positive numbers
+        x: int64 if x < 0 -> x * -1      // Negative numbers
+        // ERROR: Not exhaustive - missing case for x == 0
+        // Compiler error: pattern match is not exhaustive
     }
 }
 ```
@@ -671,9 +677,9 @@ fn is_even(n: int64) -> bool {
 
 fn process_even_odd(n: int64) -> int64 {
     case n of {
-        n: int64 if is_even(n) -> n / 2      -- Even numbers
-        n: int64 if not is_even(n) -> n * 3 + 1  -- Odd numbers
-        -- Exhaustive: is_even(n) and not is_even(n) cover all values
+        n: int64 if is_even(n) -> n / 2      // Even numbers
+        n: int64 if not is_even(n) -> n * 3 + 1  // Odd numbers
+        // Exhaustive: is_even(n) and not is_even(n) cover all values
     }
 }
 ```
@@ -685,12 +691,12 @@ fn process_even_odd(n: int64) -> int64 {
 ```silica
 fn categorize_age(age: int64) -> string {
     case age of {
-        age: int64 if age < 0 -> "invalid"           -- Negative ages
-        age: int64 if age >= 0 and age < 13 -> "child"     -- [0, 13)
-        age: int64 if age >= 13 and age < 18 -> "teen"     -- [13, 18)
-        age: int64 if age >= 18 and age < 65 -> "adult"    -- [18, 65)
-        age: int64 if age >= 65 -> "senior"          -- [65, infinity)
-        -- Exhaustive: covers all int64 values with non-overlapping ranges
+        age: int64 if age < 0 -> "invalid"           // Negative ages
+        age: int64 if age >= 0 and age < 13 -> "child"     // [0, 13)
+        age: int64 if age >= 13 and age < 18 -> "teen"     // [13, 18)
+        age: int64 if age >= 18 and age < 65 -> "adult"    // [18, 65)
+        age: int64 if age >= 65 -> "senior"          // [65, infinity)
+        // Exhaustive: covers all int64 values with non-overlapping ranges
     }
 }
 ```
@@ -700,10 +706,10 @@ fn categorize_age(age: int64) -> string {
 ```silica
 fn overlapping_guards(x: int64) -> int64 {
     case x of {
-        x: int64 if x > 10 -> x * 2        -- x > 10
-        x: int64 if x > 5 -> x + 1         -- x > 5 (overlaps with x > 10)
-        _: int64 -> 0                      -- Catch-all for x <= 5
-        -- Exhaustive: overlapping guards are allowed, catch-all covers remainder
+        x: int64 if x > 10 -> x * 2        // x > 10
+        x: int64 if x > 5 -> x + 1         // x > 5 (overlaps with x > 10)
+        _: int64 -> 0                      // Catch-all for x <= 5
+        // Exhaustive: overlapping guards are allowed, catch-all covers remainder
     }
 }
 ```
@@ -715,9 +721,9 @@ fn overlapping_guards(x: int64) -> int64 {
 ```silica
 fn process_bool(b: bool) -> int64 {
     case b of {
-        b: bool if b == true -> 1          -- true case
-        b: bool if b == false -> 0         -- false case
-        -- Exhaustive: covers all bool values
+        b: bool if b == true -> 1          // true case
+        b: bool if b == false -> 0         // false case
+        // Exhaustive: covers all bool values
     }
 }
 ```
@@ -729,7 +735,7 @@ fn process_bool_simple(b: bool) -> int64 {
     case b of {
         true -> 1
         false -> 0
-        -- Exhaustive: pattern matching without guards covers all bool values
+        // Exhaustive: pattern matching without guards covers all bool values
     }
 }
 ```
@@ -765,7 +771,7 @@ fn complex_guards(n: int64) -> string {
         n: int64 if n > 0 and n <= 10 -> "small positive"
         n: int64 if n > 10 and n <= 100 -> "medium positive"
         n: int64 if n > 100 -> "large positive"
-        -- Exhaustive: covers all int64 values with overlapping guards
+        // Exhaustive: covers all int64 values with overlapping guards
     }
 }
 ```
@@ -785,7 +791,7 @@ fn guarded_pattern_matching(msg: Message) -> int {
         PrintMsg {text} if text != "" -> string_length(text)
         PrintMsg {text} if text == "" -> 0
         _: Message -> -1
-        -- Exhaustive: all Message variants covered with guards
+        // Exhaustive: all Message variants covered with guards
     }
 }
 ```
@@ -800,9 +806,9 @@ This case expression is exhaustive because:
 ```silica
 fn guard_edge_cases(n: int64) -> int64 {
     case n of {
-        n: int64 if n == 0 -> 0           -- Exact match
-        n: int64 if n != 0 -> n * 2       -- All other values
-        -- Exhaustive: n == 0 and n != 0 cover all values
+        n: int64 if n == 0 -> 0           // Exact match
+        n: int64 if n != 0 -> n * 2       // All other values
+        // Exhaustive: n == 0 and n != 0 cover all values
     }
 }
 ```
@@ -819,13 +825,13 @@ Guards are evaluated at runtime, and complex guards may impact performance:
 ```silica
 fn performance_aware_guards(x: int64) -> int64 {
     case x of {
-        -- Simple guard: fast evaluation (single comparison)
+        // Simple guard: fast evaluation (single comparison)
         x: int64 if x < 0 -> -1
         
-        -- Complex guard: slower evaluation (multiple comparisons)
+        // Complex guard: slower evaluation (multiple comparisons)
         x: int64 if x >= 0 and x < 100 and is_prime(x) -> x * 2
         
-        -- Catch-all: fastest (no guard evaluation)
+        // Catch-all: fastest (no guard evaluation)
         _: int64 -> 0
     }
 }
@@ -841,9 +847,9 @@ Performance considerations:
 ```silica
 fn boolean_guards(b: bool) -> int {
     case b of {
-        b: bool if b == true -> 1         -- Redundant guard (pattern already matches true)
-        b: bool if b == false -> 0        -- Redundant guard (pattern already matches false)
-        -- Exhaustive but redundant: guards are unnecessary for boolean patterns
+        b: bool if b == true -> 1         // Redundant guard (pattern already matches true)
+        b: bool if b == false -> 0        // Redundant guard (pattern already matches false)
+        // Exhaustive but redundant: guards are unnecessary for boolean patterns
     }
 }
 ```
@@ -859,27 +865,27 @@ The compiler uses the following algorithm to check guard exhaustiveness:
 
 ```pseudocode
 function check_guard_exhaustiveness(value_type, patterns):
-    -- Build coverage sets for each pattern
+    // Build coverage sets for each pattern
     coverage_sets = []
     
     for each pattern in patterns:
         if is_catch_all(pattern):
-            -- Catch-all covers everything
+            // Catch-all covers everything
             return EXHAUSTIVE
         else if has_guard(pattern):
-            -- Compute guard coverage
+            // Compute guard coverage
             pattern_coverage = compute_pattern_coverage(pattern.pattern, value_type)
             guard_coverage = compute_guard_coverage(pattern.guard, value_type)
             pattern_guard_coverage = intersection(pattern_coverage, guard_coverage)
             coverage_sets.append(pattern_guard_coverage)
         else:
-            -- Unguarded pattern covers all matching values
+            // Unguarded pattern covers all matching values
             pattern_coverage = compute_pattern_coverage(pattern.pattern, value_type)
             coverage_sets.append(pattern_coverage)
         end if
     end for
     
-    -- Check if union covers all values
+    // Check if union covers all values
     total_coverage = union_all(coverage_sets)
     if total_coverage == Domain(value_type):
         return EXHAUSTIVE
@@ -895,26 +901,26 @@ end function
 Common guard patterns that ensure exhaustiveness:
 
 ```silica
--- Pattern 1: Range partitioning
+// Pattern 1: Range partitioning
 case n of {
     n: int64 if n < 0 -> ...
     n: int64 if n >= 0 and n < 100 -> ...
     n: int64 if n >= 100 -> ...
 }
 
--- Pattern 2: Equality partitioning
+// Pattern 2: Equality partitioning
 case x of {
     x: int64 if x == 0 -> ...
     x: int64 if x != 0 -> ...
 }
 
--- Pattern 3: Guarded + catch-all
+// Pattern 3: Guarded + catch-all
 case x of {
     x: int64 if x > 0 -> ...
-    _: int64 -> ...  -- Covers x <= 0
+    _: int64 -> ...  // Covers x <= 0
 }
 
--- Pattern 4: Multiple conditions
+// Pattern 4: Multiple conditions
 case msg of {
     AllocateMsg {size} if size > 0 -> ...
     AllocateMsg {size} if size <= 0 -> ...
@@ -930,52 +936,52 @@ The compiler uses a conservative approach to compute guard coverage:
 
 ```pseudocode
 function compute_guard_coverage(guard_expr, value_type):
-    -- Initialize coverage set
+    // Initialize coverage set
     coverage = empty_set()
     
-    -- Analyze guard expression structure
+    // Analyze guard expression structure
     case guard_expr of:
-        -- Simple comparisons: can analyze statically
+        // Simple comparisons: can analyze statically
         comparison_op(pattern_var, literal):
             if comparison_op == ">" or ">=":
                 coverage = { v | v > literal }
             else if comparison_op == "<" or "<=":
                 coverage = { v | v < literal }
             else if comparison_op == "==":
-                coverage = { literal }  -- Exact match
+                coverage = { literal }  // Exact match
             else if comparison_op == "!=":
-                coverage = Domain(value_type) \ { literal }  -- All except literal
+                coverage = Domain(value_type) \ { literal }  // All except literal
             end if
         
-        -- Function calls: conservative assumption
+        // Function calls: conservative assumption
         function_call(func_name, args):
-            -- Cannot statically determine coverage for arbitrary functions
-            -- Assume function may not cover all cases
-            coverage = unknown_coverage()  -- Conservative: assume partial coverage
+            // Cannot statically determine coverage for arbitrary functions
+            // Assume function may not cover all cases
+            coverage = unknown_coverage()  // Conservative: assume partial coverage
         
-        -- Logical operations: combine coverage sets
+        // Logical operations: combine coverage sets
         logical_and(guard1, guard2):
             coverage1 = compute_guard_coverage(guard1, value_type)
             coverage2 = compute_guard_coverage(guard2, value_type)
-            coverage = intersection(coverage1, coverage2)  -- Both must be true
+            coverage = intersection(coverage1, coverage2)  // Both must be true
         
         logical_or(guard1, guard2):
             coverage1 = compute_guard_coverage(guard1, value_type)
             coverage2 = compute_guard_coverage(guard2, value_type)
-            coverage = union(coverage1, coverage2)  -- Either can be true
+            coverage = union(coverage1, coverage2)  // Either can be true
         
         logical_not(guard1):
             coverage1 = compute_guard_coverage(guard1, value_type)
-            coverage = difference(Domain(value_type), coverage1)  -- Complement
+            coverage = difference(Domain(value_type), coverage1)  // Complement
         
-        -- Arithmetic operations: conservative assumption
+        // Arithmetic operations: conservative assumption
         arithmetic_op(expr1, expr2):
-            -- Cannot statically determine coverage for complex arithmetic
-            coverage = unknown_coverage()  -- Conservative: assume partial coverage
+            // Cannot statically determine coverage for complex arithmetic
+            coverage = unknown_coverage()  // Conservative: assume partial coverage
         
-        -- Default: unknown coverage
+        // Default: unknown coverage
         default:
-            coverage = unknown_coverage()  -- Conservative: assume partial coverage
+            coverage = unknown_coverage()  // Conservative: assume partial coverage
     end case
     
     return coverage
@@ -1001,9 +1007,9 @@ fn is_positive(x: int64) -> bool {
 
 fn categorize(x: int64) -> string {
     case x of {
-        n: int64 if is_positive(n) -> "positive";  -- Function call in guard
+        n: int64 if is_positive(n) -> "positive";  // Function call in guard
         n: int64 if n < 0 -> "negative";
-        _: int64 -> "zero"  -- Required: catch-all for unknown coverage
+        _: int64 -> "zero"  // Required: catch-all for unknown coverage
     }
 }
 ```
@@ -1013,9 +1019,9 @@ fn categorize(x: int64) -> string {
 **Example 1: Simple Comparison (Known Coverage)**
 ```silica
 case x of {
-    n: int64 if n > 0 -> n * 2;      -- Coverage: {1, 2, 3, ...}
-    n: int64 if n < 0 -> -n * 2;     -- Coverage: {..., -3, -2, -1}
-    _: int64 -> 0                    -- Coverage: {0} (exhaustive)
+    n: int64 if n > 0 -> n * 2;      // Coverage: {1, 2, 3, ...}
+    n: int64 if n < 0 -> -n * 2;     // Coverage: {..., -3, -2, -1}
+    _: int64 -> 0                    // Coverage: {0} (exhaustive)
 }
 ```
 Coverage analysis: `{n > 0} ∪ {n < 0} ∪ {0} = Domain(int64)` ✓ Exhaustive
@@ -1023,13 +1029,13 @@ Coverage analysis: `{n > 0} ∪ {n < 0} ∪ {0} = Domain(int64)` ✓ Exhaustive
 **Example 2: Function Call (Unknown Coverage)**
 ```silica
 fn check_valid(n: int64) -> bool {
-    -- Complex logic that cannot be statically analyzed
+    // Complex logic that cannot be statically analyzed
     n % 2 == 0 and n > 10
 }
 
 case x of {
-    n: int64 if check_valid(n) -> n;  -- Unknown coverage
-    _: int64 -> 0                     -- Required: catch-all
+    n: int64 if check_valid(n) -> n;  // Unknown coverage
+    _: int64 -> 0                     // Required: catch-all
 }
 ```
 Coverage analysis: `unknown_coverage() ∪ Domain(int64) = Domain(int64)` ✓ Exhaustive (catch-all covers all)
@@ -1037,10 +1043,10 @@ Coverage analysis: `unknown_coverage() ∪ Domain(int64) = Domain(int64)` ✓ Ex
 **Example 3: Multiple Guards (Combined Coverage)**
 ```silica
 case x of {
-    n: int64 if n > 100 -> "large";           -- Coverage: {101, 102, ...}
-    n: int64 if n > 10 and n <= 100 -> "medium";  -- Coverage: {11, 12, ..., 100}
-    n: int64 if n > 0 and n <= 10 -> "small";     -- Coverage: {1, 2, ..., 10}
-    _: int64 -> "zero or negative"            -- Coverage: {0, -1, -2, ...}
+    n: int64 if n > 100 -> "large";           // Coverage: {101, 102, ...}
+    n: int64 if n > 10 and n <= 100 -> "medium";  // Coverage: {11, 12, ..., 100}
+    n: int64 if n > 0 and n <= 10 -> "small";     // Coverage: {1, 2, ..., 10}
+    _: int64 -> "zero or negative"            // Coverage: {0, -1, -2, ...}
 }
 ```
 Coverage analysis: `{n > 100} ∪ {n > 10 and n <= 100} ∪ {n > 0 and n <= 10} ∪ {rest} = Domain(int64)` ✓ Exhaustive
@@ -1067,9 +1073,9 @@ For integer types with guards, exhaustiveness requires:
 
 ```silica
 case x of {
-    n: int64 if n > 0 -> expr1;    -- Covers positive integers
-    n: int64 if n < 0 -> expr2;    -- Covers negative integers
-    _: int64 -> expr3               -- Covers zero (catch-all)
+    n: int64 if n > 0 -> expr1;    // Covers positive integers
+    n: int64 if n < 0 -> expr2;    // Covers negative integers
+    _: int64 -> expr3               // Covers zero (catch-all)
 }
 ```
 
@@ -1089,9 +1095,9 @@ Total Coverage = {1, 2, 3, ...} ∪ {..., -3, -2, -1} ∪ {0} = Domain(int64)
 
 ```silica
 case x of {
-    n: int64 if n > 0 -> expr1;    -- Covers positive integers
-    n: int64 if n < 0 -> expr2;    -- Covers negative integers
-    -- ERROR: Zero is not covered
+    n: int64 if n > 0 -> expr1;    // Covers positive integers
+    n: int64 if n < 0 -> expr2;    // Covers negative integers
+    // ERROR: Zero is not covered
 }
 ```
 
@@ -1126,8 +1132,8 @@ Coverage(true if condition1) = {true} ∩ {v | condition1(v)} = {true} if condit
 Coverage(true if condition2) = {true} ∩ {v | condition2(v)} = {true} if condition2(true)
 Coverage(false) = {false}
 
--- If condition1(true) or condition2(true) is true, then true is covered
--- If condition1(true) and condition2(true) are both false, then true is not covered
+// If condition1(true) or condition2(true) is true, then true is covered
+// If condition1(true) and condition2(true) are both false, then true is not covered
 ```
 
 **Rule 9: Overlapping Guard Coverage**
@@ -1136,11 +1142,11 @@ When guards overlap, the first matching pattern wins:
 
 ```silica
 case x of {
-    n: int64 if n > 100 -> expr1;   -- Covers {101, 102, ...}
-    n: int64 if n > 10 -> expr2;     -- Covers {11, 12, ..., 100, 101, ...}
-    -- First pattern matches first, so {101, 102, ...} goes to expr1
-    -- {11, 12, ..., 100} goes to expr2
-    _: int64 -> expr3                -- Covers {..., 10}
+    n: int64 if n > 100 -> expr1;   // Covers {101, 102, ...}
+    n: int64 if n > 10 -> expr2;     // Covers {11, 12, ..., 100, 101, ...}
+    // First pattern matches first, so {101, 102, ...} goes to expr1
+    // {11, 12, ..., 100} goes to expr2
+    _: int64 -> expr3                // Covers {..., 10}
 }
 ```
 
@@ -1148,7 +1154,7 @@ case x of {
 
 ```
 Coverage(n: int64 if n > 100) = {101, 102, ...}
-Coverage(n: int64 if n > 10) = {11, 12, ..., 100}  -- Excluding {101, 102, ...} (already matched)
+Coverage(n: int64 if n > 10) = {11, 12, ..., 100}  // Excluding {101, 102, ...} (already matched)
 Coverage(_: int64) = {..., 10}
 
 Total Coverage = {101, 102, ...} ∪ {11, 12, ..., 100} ∪ {..., 10} = Domain(int64)
@@ -1172,7 +1178,7 @@ fn classify(x: int64) -> string {
     case x of {
         n: int64 if n > 0 -> "positive";
         n: int64 if n < 0 -> "negative";
-        _: int64 -> "zero"  -- Catch-all covers zero and any other unmatched cases
+        _: int64 -> "zero"  // Catch-all covers zero and any other unmatched cases
     }
 }
 ```
@@ -1187,7 +1193,7 @@ fn classify(x: int64) -> string {
     case x of {
         n: int64 if n > 0 -> "positive";
         n: int64 if n < 0 -> "negative";
-        -- ERROR: Zero is not covered - exhaustiveness check fails
+        // ERROR: Zero is not covered - exhaustiveness check fails
     }
 }
 ```
@@ -1197,9 +1203,9 @@ fn classify(x: int64) -> string {
 fn categorize(x: int64) -> string {
     case x of {
         n: int64 if n > 100 -> "large";
-        n: int64 if n > 10 -> "medium";  -- Covers 11-100 (overlaps with n > 100, but first match wins)
-        n: int64 if n > 0 -> "small";    -- Covers 1-10
-        _: int64 -> "zero or negative"   -- Covers 0 and negative
+        n: int64 if n > 10 -> "medium";  // Covers 11-100 (overlaps with n > 100, but first match wins)
+        n: int64 if n > 0 -> "small";    // Covers 1-10
+        _: int64 -> "zero or negative"   // Covers 0 and negative
     }
 }
 ```
@@ -1254,9 +1260,9 @@ The compiler and runtime provide the following guarantees for guard evaluation:
 **Example 1: Simple Guard Evaluation**
 ```silica
 case x of {
-    n: int64 if n > 0 -> n * 2;    -- Pattern matches, guard evaluates n > 0
-    n: int64 if n < 0 -> -n * 2;   -- Pattern matches, guard evaluates n < 0
-    _: int64 -> 0                   -- Catch-all: reached if n == 0
+    n: int64 if n > 0 -> n * 2;    // Pattern matches, guard evaluates n > 0
+    n: int64 if n < 0 -> -n * 2;   // Pattern matches, guard evaluates n < 0
+    _: int64 -> 0                   // Catch-all: reached if n == 0
 }
 ```
 Evaluation order for `x = 5`:
@@ -1349,9 +1355,9 @@ Lists support pattern matching with explicit element type annotations. The patte
 
 ```silica
 case list_expression of {
-    []: List[ElementType] -> expression;                    -- Empty list pattern
-    [head: ElementType, tail: List[ElementType]] -> expression;  -- Non-empty pattern
-    _: List[ElementType] -> expression;                     -- Catch-all pattern
+    []: List[ElementType] -> expression;                    // Empty list pattern
+    [head: ElementType, tail: List[ElementType]] -> expression;  // Non-empty pattern
+    _: List[ElementType] -> expression;                     // Catch-all pattern
 }
 ```
 
@@ -1367,21 +1373,21 @@ case list_expression of {
 **Examples:**
 
 ```silica
--- Pattern matching on list of strings
+// Pattern matching on list of strings
 case my_strings: List[string] of {
     []: List[string] -> "empty";
     [first: string, rest: List[string]] -> first;
     _: List[string] -> "other";
 }
 
--- Pattern matching on list of functions
+// Pattern matching on list of functions
 case my_functions: List[(int64 -> int64)] of {
     []: List[(int64 -> int64)] -> fn(x: int64) -> int64 { 0 };
     [f: (int64 -> int64), rest: List[(int64 -> int64)]] -> f;
     _: List[(int64 -> int64)] -> fn(x: int64) -> int64 { x };
 }
 
--- Recursive list processing
+// Recursive list processing
 fn sum_list(list: List[int64]) -> int64 {
     case list of {
         []: List[int64] -> 0;
@@ -1390,7 +1396,7 @@ fn sum_list(list: List[int64]) -> int64 {
     }
 }
 
--- Building lists recursively
+// Building lists recursively
 fn build_list(count: int64) -> List[int64] {
     case count of {
         0: int64 -> empty[int64]();
@@ -1538,10 +1544,10 @@ fn make_multiplier(factor: int64) -> fn(int64) -> int64 {
 }
 
 fn main() -> int64 {
-    -- Pass function literal directly as parameter
+    // Pass function literal directly as parameter
     result1: int64 <- accept_function(fn(x: int64) -> int64 { x * 2 }, 10);
     
-    -- Create and pass a multiplier function
+    // Create and pass a multiplier function
     tripler: fn(int64) -> int64 <- make_multiplier(3);
     result2: int64 <- accept_function(tripler, 7);
     
@@ -1946,7 +1952,7 @@ case x of {
     0 -> expr0;
     1 -> expr1;
     2 -> expr2;
-    -- ... many cases ...
+    // ... many cases ...
     100 -> expr100;
     _: int64 -> default_expr;
 }
@@ -2029,64 +2035,64 @@ The compiler generates optimized guard evaluation code using AArch64 conditional
 
 ```pseudocode
 function generate_guard_evaluation(pattern_var, guard_expr, next_pattern_label, fallthrough_label):
-    -- Evaluate guard expression and branch based on result
+    // Evaluate guard expression and branch based on result
     guard_result_reg = evaluate_guard_expression(pattern_var, guard_expr)
     
-    -- Branch to next pattern if guard fails, fallthrough if guard succeeds
-    CBNZ guard_result_reg, next_pattern_label  -- Branch if guard fails (non-zero = false)
-    -- Fallthrough: guard succeeded, execute pattern branch
+    // Branch to next pattern if guard fails, fallthrough if guard succeeds
+    CBNZ guard_result_reg, next_pattern_label  // Branch if guard fails (non-zero = false)
+    // Fallthrough: guard succeeded, execute pattern branch
     return fallthrough_label
 end function
 
 function evaluate_guard_expression(pattern_var, guard_expr):
     case guard_expr.type:
-        -- Simple comparison: use conditional compare
+        // Simple comparison: use conditional compare
         comparison_op(pattern_var, literal):
             if comparison_op == ">":
                 CMP pattern_var, literal
-                CSET result_reg, GT  -- Set result_reg = 1 if pattern_var > literal
+                CSET result_reg, GT  // Set result_reg = 1 if pattern_var > literal
             else if comparison_op == ">=":
                 CMP pattern_var, literal
-                CSET result_reg, GE  -- Set result_reg = 1 if pattern_var >= literal
+                CSET result_reg, GE  // Set result_reg = 1 if pattern_var >= literal
             else if comparison_op == "<":
                 CMP pattern_var, literal
-                CSET result_reg, LT  -- Set result_reg = 1 if pattern_var < literal
+                CSET result_reg, LT  // Set result_reg = 1 if pattern_var < literal
             else if comparison_op == "<=":
                 CMP pattern_var, literal
-                CSET result_reg, LE  -- Set result_reg = 1 if pattern_var <= literal
+                CSET result_reg, LE  // Set result_reg = 1 if pattern_var <= literal
             else if comparison_op == "==":
                 CMP pattern_var, literal
-                CSET result_reg, EQ  -- Set result_reg = 1 if pattern_var == literal
+                CSET result_reg, EQ  // Set result_reg = 1 if pattern_var == literal
             else if comparison_op == "!=":
                 CMP pattern_var, literal
-                CSET result_reg, NE  -- Set result_reg = 1 if pattern_var != literal
+                CSET result_reg, NE  // Set result_reg = 1 if pattern_var != literal
             end if
             return result_reg
         
-        -- Function call: evaluate function and check result
+        // Function call: evaluate function and check result
         function_call(func_name, args):
-            -- Allocate registers for function arguments
+            // Allocate registers for function arguments
             arg_regs = allocate_argument_registers(args)
-            -- Call function
-            MOV X0, pattern_var  -- First argument
-            BL func_name  -- Branch and link to function
-            -- Function result in X0
-            -- Check if result is true (non-zero)
+            // Call function
+            MOV X0, pattern_var  // First argument
+            BL func_name  // Branch and link to function
+            // Function result in X0
+            // Check if result is true (non-zero)
             CBNZ X0, guard_succeeds_label
-            MOV result_reg, #0  -- Guard fails
+            MOV result_reg, #0  // Guard fails
             B guard_done_label
             guard_succeeds_label:
-            MOV result_reg, #1  -- Guard succeeds
+            MOV result_reg, #1  // Guard succeeds
             guard_done_label:
             return result_reg
         
-        -- Logical AND: evaluate both guards, combine results
+        // Logical AND: evaluate both guards, combine results
         logical_and(guard1, guard2):
             result1_reg = evaluate_guard_expression(pattern_var, guard1)
-            -- Short-circuit: if first guard fails, skip second guard
+            // Short-circuit: if first guard fails, skip second guard
             CBZ result1_reg, guard_fails_label
             result2_reg = evaluate_guard_expression(pattern_var, guard2)
-            -- Both guards must succeed
+            // Both guards must succeed
             AND result_reg, result1_reg, result2_reg
             B guard_done_label
             guard_fails_label:
@@ -2094,13 +2100,13 @@ function evaluate_guard_expression(pattern_var, guard_expr):
             guard_done_label:
             return result_reg
         
-        -- Logical OR: evaluate guards, combine results
+        // Logical OR: evaluate guards, combine results
         logical_or(guard1, guard2):
             result1_reg = evaluate_guard_expression(pattern_var, guard1)
-            -- Short-circuit: if first guard succeeds, skip second guard
+            // Short-circuit: if first guard succeeds, skip second guard
             CBNZ result1_reg, guard_succeeds_label
             result2_reg = evaluate_guard_expression(pattern_var, guard2)
-            -- Either guard can succeed
+            // Either guard can succeed
             ORR result_reg, result1_reg, result2_reg
             B guard_done_label
             guard_succeeds_label:
@@ -2108,20 +2114,20 @@ function evaluate_guard_expression(pattern_var, guard_expr):
             guard_done_label:
             return result_reg
         
-        -- Logical NOT: negate guard result
+        // Logical NOT: negate guard result
         logical_not(guard1):
             result1_reg = evaluate_guard_expression(pattern_var, guard1)
-            -- Negate: if guard1 is true (1), result is false (0), and vice versa
-            EOR result_reg, result1_reg, #1  -- XOR with 1 to negate
+            // Negate: if guard1 is true (1), result is false (0), and vice versa
+            EOR result_reg, result1_reg, #1  // XOR with 1 to negate
             return result_reg
         
-        -- Complex arithmetic: evaluate expression, compare result
+        // Complex arithmetic: evaluate expression, compare result
         arithmetic_op(expr1, expr2):
-            -- Evaluate arithmetic expression
+            // Evaluate arithmetic expression
             result_reg = evaluate_arithmetic_expression(pattern_var, arithmetic_op)
-            -- Compare result (typically against zero or literal)
+            // Compare result (typically against zero or literal)
             CMP result_reg, #0
-            CSET result_reg, NE  -- Set result_reg = 1 if result != 0
+            CSET result_reg, NE  // Set result_reg = 1 if result != 0
             return result_reg
     end case
 end function
@@ -2133,28 +2139,28 @@ When guards are used in decision tree pattern matching, guards are integrated in
 
 ```pseudocode
 function generate_decision_tree_with_guards(value_reg, patterns_with_guards):
-    -- Build decision tree with guard evaluation at each node
+    // Build decision tree with guard evaluation at each node
     for each pattern_with_guard in patterns_with_guards:
         pattern = pattern_with_guard.pattern
         guard = pattern_with_guard.guard
         
-        -- Generate pattern matching code
+        // Generate pattern matching code
         pattern_match_label = generate_pattern_match(value_reg, pattern)
         
-        -- Generate guard evaluation code after pattern match succeeds
+        // Generate guard evaluation code after pattern match succeeds
         guard_eval_label = generate_guard_evaluation(pattern_var, guard, next_pattern_label, guard_succeeds_label)
         
-        -- Guard succeeds: execute pattern branch
+        // Guard succeeds: execute pattern branch
         guard_succeeds_label:
         generate_pattern_branch_code(pattern_with_guard.branch_expr)
         B pattern_matching_done_label
         
-        -- Guard fails: continue to next pattern
+        // Guard fails: continue to next pattern
         next_pattern_label:
-        -- Continue decision tree traversal
+        // Continue decision tree traversal
     end for
     
-    -- No pattern matched: exhaustiveness error or catch-all
+    // No pattern matched: exhaustiveness error or catch-all
     pattern_matching_done_label:
     return
 end function
@@ -2166,24 +2172,24 @@ The compiler hoists expensive guard evaluations when possible to improve perform
 
 ```pseudocode
 function hoist_guards(patterns_with_guards):
-    -- Identify guards that can be hoisted (no dependencies on pattern bindings)
+    // Identify guards that can be hoisted (no dependencies on pattern bindings)
     hoistable_guards = []
     for each pattern_with_guard in patterns_with_guards:
         guard = pattern_with_guard.guard
         if is_hoistable(guard):
-            -- Guard only depends on input value, not pattern bindings
+            // Guard only depends on input value, not pattern bindings
             hoistable_guards.append(guard)
         end if
     end for
     
-    -- Evaluate hoisted guards before pattern matching
+    // Evaluate hoisted guards before pattern matching
     for each guard in hoistable_guards:
         guard_result = evaluate_guard_before_pattern_matching(guard)
-        -- Store result for later use in pattern matching
+        // Store result for later use in pattern matching
         store_guard_result(guard, guard_result)
     end for
     
-    -- Pattern matching can now use pre-evaluated guard results
+    // Pattern matching can now use pre-evaluated guard results
     return patterns_with_guards
 end function
 ```
@@ -2264,17 +2270,17 @@ The compiler uses the following algorithm for register allocation in pattern mat
 
 ```pseudocode
 function allocate_registers_for_pattern_matching(pattern_expr, available_registers):
-    -- Phase 1: Allocate registers for pattern value
+    // Phase 1: Allocate registers for pattern value
     pattern_value_reg = allocate_register(available_registers)
     
-    -- Phase 2: Allocate registers for pattern matching temporaries
+    // Phase 2: Allocate registers for pattern matching temporaries
     temp_registers = []
     for each subpattern in pattern_expr:
         temp_reg = allocate_register(available_registers)
         temp_registers.append(temp_reg)
     end for
     
-    -- Phase 3: Allocate registers for guard evaluation (if guards present)
+    // Phase 3: Allocate registers for guard evaluation (if guards present)
     guard_registers = []
     if has_guards(pattern_expr):
         for each guard in pattern_expr:
@@ -2283,7 +2289,7 @@ function allocate_registers_for_pattern_matching(pattern_expr, available_registe
         end for
     end if
     
-    -- Phase 4: Spill strategy when register pressure is high
+    // Phase 4: Spill strategy when register pressure is high
     if register_pressure > REGISTER_PRESSURE_THRESHOLD:
         spilled_registers = spill_to_stack(least_used_registers)
     end if
@@ -2303,11 +2309,11 @@ For literal patterns, minimal registers are needed:
 - **Total**: 2 registers
 
 ```assembly
--- Literal pattern: case x of { 42 -> ... }
-LDR   X0, [X1]        -- Load pattern value (X0 = x)
-MOV   X9, #42         -- Load literal (X9 = 42)
-CMP   X0, X9          -- Compare (uses condition flags)
-B.EQ  match_42        -- Branch if match
+// Literal pattern: case x of { 42 -> ... }
+LDR   X0, [X1]        // Load pattern value (X0 = x)
+MOV   X9, #42         // Load literal (X9 = 42)
+CMP   X0, X9          // Compare (uses condition flags)
+B.EQ  match_42        // Branch if match
 ```
 
 **Variant Pattern Register Allocation:**
@@ -2321,12 +2327,12 @@ For variant patterns, tag extraction and dispatch require registers:
 - **Total**: 3 registers
 
 ```assembly
--- Variant pattern: case x of { Some(n) -> ...; None -> ... }
-LDR   X0, [X1]        -- Load pattern value (X0 = x)
-UBFX  X9, X0, #0, #8  -- Extract tag (X9 = variant tag)
-CMP   X9, #0          -- Compare tag (Some = 0, None = 1)
-B.EQ  match_some      -- Branch if Some
-B     match_none      -- Branch if None
+// Variant pattern: case x of { Some(n) -> ...; None -> ... }
+LDR   X0, [X1]        // Load pattern value (X0 = x)
+UBFX  X9, X0, #0, #8  // Extract tag (X9 = variant tag)
+CMP   X9, #0          // Compare tag (Some = 0, None = 1)
+B.EQ  match_some      // Branch if Some
+B     match_none      // Branch if None
 ```
 
 **Record Pattern Register Allocation:**
@@ -2339,10 +2345,10 @@ For record patterns, multiple field extractions require registers:
 - **Total**: 1 + N registers (where N is number of fields)
 
 ```assembly
--- Record pattern: case x of { {a, b} -> ... }
-LDR   X0, [X1]        -- Load pattern value (X0 = x)
-LDP   X9, X10, [X0]   -- Load pair: X9 = a, X10 = b (load-pair optimization)
--- Field comparisons use X9, X10 directly
+// Record pattern: case x of { {a, b} -> ... }
+LDR   X0, [X1]        // Load pattern value (X0 = x)
+LDP   X9, X10, [X0]   // Load pair: X9 = a, X10 = b (load-pair optimization)
+// Field comparisons use X9, X10 directly
 ```
 
 **Tuple Pattern Register Allocation:**
@@ -2354,11 +2360,11 @@ For tuple patterns, tuple decomposition uses load-pair instructions:
 - **Total**: 1 + ceil(N/2) registers (load-pair optimization)
 
 ```assembly
--- Tuple pattern: case x of { (a, b, c) -> ... }
-LDR   X0, [X1]        -- Load pattern value (X0 = x)
-LDP   X9, X10, [X0]   -- Load pair: X9 = a, X10 = b
-LDR   X11, [X0, #16]  -- Load: X11 = c
--- Tuple elements in X9, X10, X11
+// Tuple pattern: case x of { (a, b, c) -> ... }
+LDR   X0, [X1]        // Load pattern value (X0 = x)
+LDP   X9, X10, [X0]   // Load pair: X9 = a, X10 = b
+LDR   X11, [X0, #16]  // Load: X11 = c
+// Tuple elements in X9, X10, X11
 ```
 
 **Guarded Pattern Register Allocation:**
@@ -2371,12 +2377,12 @@ For guarded patterns, guard evaluation requires additional registers:
 - **Total**: Pattern registers + M + 1 registers
 
 ```assembly
--- Guarded pattern: case x of { n: int64 if n > 0 -> ... }
-LDR   X0, [X1]        -- Load pattern value (X0 = x)
-MOV   X9, X0          -- Copy to X9 for guard evaluation
-CMP   X9, #0          -- Guard: n > 0
-B.LE  next_pattern    -- Branch if guard fails
--- Pattern match and guard both passed
+// Guarded pattern: case x of { n: int64 if n > 0 -> ... }
+LDR   X0, [X1]        // Load pattern value (X0 = x)
+MOV   X9, X0          // Copy to X9 for guard evaluation
+CMP   X9, #0          // Guard: n > 0
+B.LE  next_pattern    // Branch if guard fails
+// Pattern match and guard both passed
 ```
 
 **Register Pressure Management:**
@@ -2389,21 +2395,21 @@ When registers are exhausted, values are spilled to the stack:
 
 ```pseudocode
 function spill_to_stack(register):
-    -- Save register to stack
+    // Save register to stack
     stack_offset = allocate_stack_slot()
     STR register, [SP, #stack_offset]
     
-    -- Mark register as available
+    // Mark register as available
     mark_register_available(register)
     
     return stack_offset
 end function
 
 function reload_from_stack(stack_offset, target_register):
-    -- Reload register from stack
+    // Reload register from stack
     LDR target_register, [SP, #stack_offset]
     
-    -- Free stack slot
+    // Free stack slot
     free_stack_slot(stack_offset)
 end function
 ```
@@ -2580,10 +2586,10 @@ type bool = true | false
 Silica provides multiple integer types with different bit widths:
 
 ```
-type int8   -- 8-bit signed integer (-128 to 127)
-type int16  -- 16-bit signed integer (-32,768 to 32,767)
-type int32  -- 32-bit signed integer (-2,147,483,648 to 2,147,483,647)
-type int64  -- 64-bit signed integer (-9,223,372,036,854,775,808 to 9,223,372,036,854,775,807)
+type int8   // 8-bit signed integer (-128 to 127)
+type int16  // 16-bit signed integer (-32,768 to 32,767)
+type int32  // 32-bit signed integer (-2,147,483,648 to 2,147,483,647)
+type int64  // 64-bit signed integer (-9,223,372,036,854,775,808 to 9,223,372,036,854,775,807)
 ```
 
 The unqualified `int` type is an alias for `int64`.
@@ -2592,9 +2598,9 @@ The unqualified `int` type is an alias for `int64`.
 Silica provides multiple floating-point types with different precisions:
 
 ```
-type float16  -- 16-bit half precision floating-point (IEEE 754 binary16)
-type float32  -- 32-bit single precision floating-point (IEEE 754 binary32)
-type float64  -- 64-bit double precision floating-point (IEEE 754 binary64)
+type float16  // 16-bit half precision floating-point (IEEE 754 binary16)
+type float32  // 32-bit single precision floating-point (IEEE 754 binary32)
+type float64  // 64-bit double precision floating-point (IEEE 754 binary64)
 ```
 
 #### 4.1.5 Character Type
@@ -2612,7 +2618,7 @@ type string
 ```
 
 #### 4.1.7 Atom Type
-The `atom` type represents symbolic constants that evaluate to themselves. Atoms are prefixed with a colon (`:`) and follow snake_case naming conventions starting with a lowercase letter.
+The `atom` type represents symbolic constants that evaluate to themselves. Atoms are prefixed with a colon (`:`); all characters except the atom delimiters (see §2.2.3 Atom Literals) are valid in atom names, including Unicode such as emojis and accented letters.
 
 ```
 type atom
@@ -2622,10 +2628,10 @@ Atoms are interned at compile time into a global atom table. Each unique atom na
 
 **Atom Literal Syntax:**
 ```silica
-:ok                -- atom representing success
-:error             -- atom representing failure
-:not_found         -- atom representing absence
-:pending           -- atom representing a waiting state
+:ok                // atom representing success
+:error             // atom representing failure
+:not_found         // atom representing absence
+:pending           // atom representing a waiting state
 ```
 
 **Usage in Variable Bindings:**
@@ -2678,9 +2684,9 @@ fn handle_result(result: (atom, int64)) -> string {
 Two atoms are equal if and only if they have the same name. Atom comparison is O(1) since the compiler maps each atom to a unique integer index at compile time.
 
 ```silica
-:ok == :ok           -- true
-:ok == :error        -- false
-:ok != :error        -- true
+:ok == :ok           // true
+:ok == :error        // false
+:ok != :error        // true
 ```
 
 **AArch64 Representation:**
@@ -2693,9 +2699,9 @@ Function types have the form `(ParamTypes...) -> ReturnType`.
 
 Examples:
 ```
-(int, int) -> int                    -- binary function
-() -> atom                           -- nullary function returning atom
-(string) -> int proc[mem(normal)]    -- function returning a process
+(int, int) -> int                    // binary function
+() -> atom                           // nullary function returning atom
+(string) -> int proc[mem(normal)]    // function returning a process
 ```
 
 #### 4.2.2 Tuple Types
@@ -2703,9 +2709,9 @@ Tuple types have the form `(Type1, Type2, ..., TypeN)`.
 
 Examples:
 ```
-(int, bool)                          -- pair of int and bool
-(char, char, char)                   -- triple of characters
-()                                   -- unit (empty tuple)
+(int, bool)                          // pair of int and bool
+(char, char, char)                   // triple of characters
+()                                   // unit (empty tuple)
 ```
 
 #### 4.2.3 Record Types
@@ -2752,9 +2758,9 @@ Process types represent monadic computations and have the form `proc[Effects] Re
 
 Examples:
 ```
-proc[] int                           -- pure computation returning int
-proc[mem(normal)] ref(region, int)   -- computation allocating memory
-proc[concurrency] actor_ref(msg)     -- computation spawning an actor
+proc[] int                           // pure computation returning int
+proc[mem(normal)] ref(region, int)   // computation allocating memory
+proc[concurrency] actor_ref(msg)     // computation spawning an actor
 ```
 
 ### 4.4 Region and Memory Types
@@ -2765,12 +2771,12 @@ Region types represent memory regions: `region(R, Space)` where R is a region id
 **Memory Space Types:**
 
 ```
-normal                              -- Normal memory (write-back cacheable, default)
-normal_writeback                    -- Normal memory with write-back caching (default normal)
-normal_writethrough                 -- Normal memory with write-through caching
-normal_noncacheable                -- Normal memory, non-cacheable
-atomic                              -- Atomic memory region (for atomic operations)
-device                              -- Device memory (reserved for future driver library)
+normal                              // Normal memory (write-back cacheable, default)
+normal_writeback                    // Normal memory with write-back caching (default normal)
+normal_writethrough                 // Normal memory with write-through caching
+normal_noncacheable                // Normal memory, non-cacheable
+atomic                              // Atomic memory region (for atomic operations)
+device                              // Device memory (reserved for future driver library)
 ```
 
 **Normal Memory Variants:**
@@ -2785,33 +2791,33 @@ device                              -- Device memory (reserved for future driver
 - **device**: Memory-mapped I/O space for device registers. Reserved for future device driver library. Application code should use normal memory variants.
 
 ```
-region(normal)                      -- normal memory region (write-back)
-region(normal_writeback)            -- explicit write-back (same as normal)
-region(normal_writethrough)         -- write-through cacheable
-region(normal_noncacheable)         -- non-cacheable
-region(atomic)                      -- atomic memory region
-region(device)                      -- device memory (driver library only)
+region(normal)                      // normal memory region (write-back)
+region(normal_writeback)            // explicit write-back (same as normal)
+region(normal_writethrough)         // write-through cacheable
+region(normal_noncacheable)         // non-cacheable
+region(atomic)                      // atomic memory region
+region(device)                      // device memory (driver library only)
 ```
 
 #### 4.4.2 Reference Types
 Reference types represent pointers to memory: `ref(R, Space, T)`.
 
 ```
-ref(R, normal, int)                  -- reference to int in region R
+ref(R, normal, int)                  // reference to int in region R
 ```
 
 #### 4.4.3 Buffer Types
 Buffer types represent contiguous arrays: `buf(R, Space, T, N)`.
 
 ```
-buf(R, normal, int, 1024)            -- buffer of 1024 ints
+buf(R, normal, int, 1024)            // buffer of 1024 ints
 ```
 
 #### 4.4.4 Atomic Types
 Atomic reference types: `atomic_ref(R, Space, T)`.
 
 ```
-atomic_ref(R, normal, int)           -- atomic reference to int
+atomic_ref(R, normal, int)           // atomic reference to int
 ```
 
 ### 4.5 Actor Types
@@ -2820,7 +2826,7 @@ atomic_ref(R, normal, int)           -- atomic reference to int
 Actor references are a primitive type (like `int` or `bool`):
 
 ```
-actor_ref                            -- actor reference (primitive type)
+actor_ref                            // actor reference (primitive type)
 ```
 
 The `actor_ref` type is not parameterized by message type. It is a primitive type that represents a reference to an actor, created by the `spawn()` function.
@@ -2830,10 +2836,10 @@ The `actor_ref` type is not parameterized by message type. It is a primitive typ
 Silica provides types for specifying CPU core affinity for actor placement:
 
 ```
-core_id                              -- Single CPU core identifier (primitive type)
-core_set                             -- Set of CPU cores (primitive type)
-performance_cores                     -- Built-in: high-performance cores
-efficiency_cores                      -- Built-in: low-power efficiency cores
+core_id                              // Single CPU core identifier (primitive type)
+core_set                             // Set of CPU cores (primitive type)
+performance_cores                     // Built-in: high-performance cores
+efficiency_cores                      // Built-in: low-power efficiency cores
 ```
 
 These types are used with the `spawn()` function to control actor placement:
@@ -2851,17 +2857,17 @@ Silica provides first-class SIMD vector types for AArch64 architectures using co
 #### 4.7.1 Marker Traits for Vector Elements
 
 ```
--- Marker trait for NEON 128-bit vector elements
+// Marker trait for NEON 128-bit vector elements
 trait Vec128Element {
-    -- Marker trait, no methods needed
+    // Marker trait, no methods needed
 }
 
--- Marker trait for SVE scalable vector elements
+// Marker trait for SVE scalable vector elements
 trait VecElement {
-    -- Marker trait, no methods needed
+    // Marker trait, no methods needed
 }
 
--- Implement traits for supported types
+// Implement traits for supported types
 impl Vec128Element for int8;
 impl Vec128Element for int16;
 impl Vec128Element for int32;
@@ -2881,12 +2887,12 @@ impl VecElement for float64;
 Fixed-width 128-bit vectors using NEON instructions:
 
 ```
-Vec128Int8    -- 16 × int8 elements
-Vec128Int16   -- 8 × int16 elements
-Vec128Int32   -- 4 × int32 elements
-Vec128Int64   -- 2 × int64 elements
-Vec128Float32 -- 4 × float32 elements
-Vec128Bool    -- Boolean vector for comparisons
+Vec128Int8    // 16 × int8 elements
+Vec128Int16   // 8 × int16 elements
+Vec128Int32   // 4 × int32 elements
+Vec128Int64   // 2 × int64 elements
+Vec128Float32 // 4 × float32 elements
+Vec128Bool    // Boolean vector for comparisons
 ```
 
 **Note**: All NEON vector types use concrete element types. The `Vec128Element` trait marks types that can be used as NEON vector elements.
@@ -2895,21 +2901,21 @@ Vec128Bool    -- Boolean vector for comparisons
 Scalable vectors using SVE/SVE2 instructions (size determined at runtime):
 
 ```
-VecInt8       -- Scalable vector of int8
-VecInt16      -- Scalable vector of int16
-VecInt32      -- Scalable vector of int32
-VecInt64      -- Scalable vector of int64
-VecFloat16    -- Scalable vector of float16
-VecFloat32    -- Scalable vector of float32
-VecFloat64    -- Scalable vector of float64
-VecBool       -- Scalable boolean vector
+VecInt8       // Scalable vector of int8
+VecInt16      // Scalable vector of int16
+VecInt32      // Scalable vector of int32
+VecInt64      // Scalable vector of int64
+VecFloat16    // Scalable vector of float16
+VecFloat32    // Scalable vector of float32
+VecFloat64    // Scalable vector of float64
+VecBool       // Scalable boolean vector
 ```
 
 **Note**: All SVE vector types use concrete element types. The `VecElement` trait marks types that can be used as SVE vector elements.
 
 #### 4.7.4 SVE Predicate Type
 ```
-Pred          -- SVE predicate mask for conditional operations
+Pred          // SVE predicate mask for conditional operations
 ```
 
 The `Pred` type represents a predicate mask used for conditional vector operations in SVE.
@@ -3048,43 +3054,43 @@ All list operations work with the `List[ElementType]` type where `ElementType` m
 #### 5.6.1 List Construction
 
 ```silica
--- Create empty list with explicit element type
+// Create empty list with explicit element type
 fn empty[ElementType: Collectable]() -> List[ElementType]
 ```
 
 #### 5.6.2 Head Operations
 
 ```silica
--- Prepend an element to the front of a list (returns new list)
--- Efficient: uses structural sharing, does not copy existing elements
+// Prepend an element to the front of a list (returns new list)
+// Efficient: uses structural sharing, does not copy existing elements
 fn prepend[ElementType: Collectable](item: ElementType, list: List[ElementType]) -> List[ElementType]
 
--- Remove the head element from a list (returns new list)
--- Efficient: uses structural sharing, does not copy remaining elements
--- Returns empty list if input list is empty
+// Remove the head element from a list (returns new list)
+// Efficient: uses structural sharing, does not copy remaining elements
+// Returns empty list if input list is empty
 fn remove_head[ElementType: Collectable](list: List[ElementType]) -> List[ElementType]
 
--- Get the head element of a list
--- Returns the first element
+// Get the head element of a list
+// Returns the first element
 fn head[ElementType: Collectable](list: List[ElementType]) -> ElementType
--- Runtime error if list is empty
+// Runtime error if list is empty
 
--- Get the tail of a list (all elements except the head)
--- Returns a new list containing all elements except the first
+// Get the tail of a list (all elements except the head)
+// Returns a new list containing all elements except the first
 fn tail[ElementType: Collectable](list: List[ElementType]) -> List[ElementType]
--- Returns empty list if input list has 0 or 1 elements
+// Returns empty list if input list has 0 or 1 elements
 ```
 
 #### 5.6.3 List Utilities
 
 ```silica
--- Reverse a list (returns new list with elements in reverse order)
+// Reverse a list (returns new list with elements in reverse order)
 fn reverse[ElementType: Collectable](list: List[ElementType]) -> List[ElementType]
 
--- Get list length
+// Get list length
 fn length[ElementType: Collectable](list: List[ElementType]) -> int64
 
--- Check if list is empty
+// Check if list is empty
 fn is_empty[ElementType: Collectable](list: List[ElementType]) -> bool
 ```
 
@@ -3096,31 +3102,31 @@ fn is_empty[ElementType: Collectable](list: List[ElementType]) -> bool
 **Examples:**
 
 ```silica
--- Create a list
+// Create a list
 my_list: List[string] <- ["hello", "world"]: List[string];
 
--- Prepend an element (returns new list)
+// Prepend an element (returns new list)
 new_list: List[string] <- prepend[string]("new", my_list);
--- my_list is unchanged, new_list is ["new", "hello", "world"]
+// my_list is unchanged, new_list is ["new", "hello", "world"]
 
--- Remove head element (returns new list)
+// Remove head element (returns new list)
 shorter_list: List[string] <- remove_head[string](my_list);
--- my_list is unchanged, shorter_list is ["world"]
+// my_list is unchanged, shorter_list is ["world"]
 
--- Get head element
-first: string <- head[string](my_list);  -- "hello"
+// Get head element
+first: string <- head[string](my_list);  // "hello"
 
--- Get tail
-rest: List[string] <- tail[string](my_list);  -- ["world"]
+// Get tail
+rest: List[string] <- tail[string](my_list);  // ["world"]
 
--- Reverse list
-reversed: List[string] <- reverse[string](my_list);  -- ["world", "hello"]
+// Reverse list
+reversed: List[string] <- reverse[string](my_list);  // ["world", "hello"]
 
--- Check properties
-len: int64 <- length[string](my_list);  -- 2
-empty_flag: bool <- is_empty[string](my_list);  -- false
+// Check properties
+len: int64 <- length[string](my_list);  // 2
+empty_flag: bool <- is_empty[string](my_list);  // false
 
--- Create empty list
+// Create empty list
 empty_list: List[string] <- empty[string]();
 ```
 
@@ -3222,31 +3228,31 @@ AArch64 hardware generates exceptions for various error conditions:
 Silica integrates with AArch64 exception handling mechanisms:
 
 ```pseudocode
--- AArch64 exception handling flow
+// AArch64 exception handling flow
 function handle_hardware_exception(exception_type, exception_info):
     case exception_type of {
         DIVISION_BY_ZERO -> {
-            -- AArch64 generates synchronous exception for division by zero
-            -- Silica runtime converts to language-level error handling
+            // AArch64 generates synchronous exception for division by zero
+            // Silica runtime converts to language-level error handling
             raise_exception(DivisionByZero)
         }
         MEMORY_ACCESS_VIOLATION -> {
-            -- AArch64 generates synchronous exception for invalid memory access
-            -- Silica runtime converts to language-level error handling
+            // AArch64 generates synchronous exception for invalid memory access
+            // Silica runtime converts to language-level error handling
             raise_exception(InvalidMemoryAccess(exception_info.address))
         }
         MTE_TAG_FAULT -> {
-            -- AArch64 MTE generates tag fault exception
-            -- Silica runtime converts to language-level error handling
+            // AArch64 MTE generates tag fault exception
+            // Silica runtime converts to language-level error handling
             raise_exception(MemoryTagMismatch(exception_info.address, exception_info.tag))
         }
         POINTER_AUTHENTICATION_FAILURE -> {
-            -- AArch64 PAC generates authentication failure exception
-            -- Silica runtime converts to language-level error handling
+            // AArch64 PAC generates authentication failure exception
+            // Silica runtime converts to language-level error handling
             raise_exception(PointerAuthenticationFailed(exception_info.address))
         }
         _: ExceptionType -> {
-            -- Other AArch64 exceptions
+            // Other AArch64 exceptions
             raise_exception(SystemError(exception_type, exception_info))
         }
     }
@@ -3273,28 +3279,28 @@ type Response = {
 impl ActorMessage for Request;
 impl ActorMessage for Response;
 
--- Actor behavior with exception handling
+// Actor behavior with exception handling
 fn safe_calculator(msg: Request, state: int64) -> int64 proc[mailbox, concurrency] {
     case msg.command of {
         "divide" -> {
-            -- Division with error handling
+            // Division with error handling
             divisor: int64 <- msg.value;
             if divisor == 0 {
-                -- Return error response (no exception thrown)
+                // Return error response (no exception thrown)
                 Response {result: 0, error: Some(DivisionByZero)}
             } else {
-                -- Successful division
+                // Successful division
                 result: int64 <- state / divisor;
                 Response {result: result, error: None}
             }
         }
         "multiply" -> {
-            -- Multiplication (no error possible)
+            // Multiplication (no error possible)
             result: int64 <- state * msg.value;
             Response {result: result, error: None}
         }
         _: string -> {
-            -- Unknown command
+            // Unknown command
             Response {result: 0, error: Some(InvalidArgument(msg.command))}
         }
     }
@@ -3323,10 +3329,10 @@ Always check conditions before operations that may generate hardware exceptions:
 ```silica
 fn safe_divide(x: int64, y: int64) -> ResultInt64String {
     if y == 0 {
-        -- Check before division to avoid hardware exception
+        // Check before division to avoid hardware exception
         Error("Division by zero")
     } else {
-        -- Safe division (no hardware exception)
+        // Safe division (no hardware exception)
         Ok(x / y)
     }
 }
@@ -3341,15 +3347,15 @@ type ResultInt64String = Ok(int64) | Error(string)
 
 fn process_with_errors(x: int64, y: int64) -> ResultInt64String {
     do
-        -- Chain operations with error handling
+        // Chain operations with error handling
         result1: ResultInt64String <- safe_divide(x, y);
         case result1 of {
             Ok(value) -> {
-                -- Continue processing
+                // Continue processing
                 Ok(value * 2)
             }
             Error(msg) -> {
-                -- Propagate error
+                // Propagate error
                 Error(msg)
             }
         }
@@ -3362,19 +3368,19 @@ fn process_with_errors(x: int64, y: int64) -> ResultInt64String {
 Actors handle exceptions independently, providing isolation:
 
 ```silica
--- Actor with robust error handling
+// Actor with robust error handling
 fn robust_actor(msg: Request, state: State) -> State proc[mailbox, concurrency] {
     do
-        -- Attempt operation with error handling
+        // Attempt operation with error handling
         result: ResultInt64String <- process_with_errors(msg.value1, msg.value2);
         case result of {
             Ok(value) -> {
-                -- Update state on success
+                // Update state on success
                 State {value: value, error_count: state.error_count}
             }
             Error(msg) -> {
-                -- Handle error without crashing actor
-                -- Log error, update error count, continue processing
+                // Handle error without crashing actor
+                // Log error, update error count, continue processing
                 State {value: state.value, error_count: state.error_count + 1}
             }
         }
@@ -3397,11 +3403,11 @@ Exception handling has performance implications:
 
 ```silica
 fn safe_division(x: int64, y: int64) -> ResultInt64String {
-    -- Check before division (avoids hardware exception)
+    // Check before division (avoids hardware exception)
     if y == 0 {
         Error("Division by zero")
     } else {
-        -- Safe division (no hardware exception generated)
+        // Safe division (no hardware exception generated)
         Ok(x / y)
     }
 }
@@ -3411,11 +3417,11 @@ fn safe_division(x: int64, y: int64) -> ResultInt64String {
 
 ```silica
 fn safe_memory_access(ref: ref(R, normal, int), index: int) -> ResultInt64String {
-    -- Validate index before access (avoids hardware exception)
+    // Validate index before access (avoids hardware exception)
     if index < 0 or index >= buffer_length(ref) {
         Error("Index out of bounds")
     } else {
-        -- Safe access (no hardware exception generated)
+        // Safe access (no hardware exception generated)
         Ok(read_ref(ref, index))
     }
 }
@@ -3425,12 +3431,12 @@ fn safe_memory_access(ref: ref(R, normal, int), index: int) -> ResultInt64String
 
 ```silica
 fn safe_tagged_access(ptr: ref(R, normal, NodeData)) -> ResultNodeDataString {
-    -- Check tag before access (avoids MTE hardware exception)
+    // Check tag before access (avoids MTE hardware exception)
     tag_valid: bool <- check_tag_nodedata(ptr);
     if not tag_valid {
         Error("Tag mismatch - potential use-after-free")
     } else {
-        -- Safe access (no MTE hardware exception generated)
+        // Safe access (no MTE hardware exception generated)
         Ok(read_ref(ptr))
     }
 }
@@ -3468,69 +3474,69 @@ fn combined_operation() -> int proc[io_and_mem] {
 Literal expressions evaluate to their corresponding values:
 
 ```
-42          -- evaluates to integer 42
-true        -- evaluates to boolean true
-'a'         -- evaluates to character 'a'
-"hello"     -- evaluates to string "hello"
-()          -- evaluates to unit value
-:ok         -- evaluates to atom :ok
+42          // evaluates to integer 42
+true        // evaluates to boolean true
+'a'         // evaluates to character 'a'
+"hello"     // evaluates to string "hello"
+()          // evaluates to unit value
+:ok         // evaluates to atom :ok
 ```
 
 ### 7.2 Identifiers
 Identifier expressions evaluate to the value bound to that identifier in the current scope.
 
 ```
-x           -- evaluates to the value of variable x
-my_function -- evaluates to the function bound to my_function
+x           // evaluates to the value of variable x
+my_function // evaluates to the function bound to my_function
 ```
 
 ### 7.3 Arithmetic Expressions
 Arithmetic operators work on integers:
 
 ```
-x + y       -- integer addition
-a - b       -- integer subtraction
-m * n       -- integer multiplication
-p / q       -- integer division (truncates toward zero)
-r % s       -- integer modulo
+x + y       // integer addition
+a - b       // integer subtraction
+m * n       // integer multiplication
+p / q       // integer division (truncates toward zero)
+r % s       // integer modulo
 ```
 
 ### 7.4 Comparison Expressions
 Comparison operators return boolean values:
 
 ```
-x == y      -- equality
-a != b      -- inequality
-p < q       -- less than
-r <= s      -- less than or equal
-m > n       -- greater than
-u >= v      -- greater than or equal
+x == y      // equality
+a != b      // inequality
+p < q       // less than
+r <= s      // less than or equal
+m > n       // greater than
+u >= v      // greater than or equal
 ```
 
 ### 7.5 Logical Expressions
 Logical operators work on booleans:
 
 ```
-not p       -- logical negation
-p and q     -- logical conjunction
-r or s      -- logical disjunction
+not p       // logical negation
+p and q     // logical conjunction
+r or s      // logical disjunction
 ```
 
 ### 7.6 Function Application
 Function application has the form `function(arg1, arg2, ..., argN)`:
 
 ```
-add(3, 4)           -- applies add function to 3 and 4
-length("hello")     -- applies length function to string
-f()                 -- applies nullary function
+add(3, 4)           // applies add function to 3 and 4
+length("hello")     // applies length function to string
+f()                 // applies nullary function
 ```
 
 ### 7.7 Grouping
 Parentheses can be used to group expressions and override precedence:
 
 ```
-(2 + 3) * 4         -- evaluates to 20, not 14
-not (p and q)       -- equivalent to (not p) or (not q)
+(2 + 3) * 4         // evaluates to 20, not 14
+not (p and q)       // equivalent to (not p) or (not q)
 ```
 
 ## 8. Type System
@@ -3555,9 +3561,9 @@ type string_map = { data: list<pair<string, string>>, size: int }
 Types are equivalent if they have the same structure:
 
 ```
-int ≡ int                                   -- primitive types
-(int, bool) ≡ (int, bool)                   -- tuple types
-{a: int, b: bool} ≡ {a: int, b: bool}       -- record types
+int ≡ int                                   // primitive types
+(int, bool) ≡ (int, bool)                   // tuple types
+{a: int, b: bool} ≡ {a: int, b: bool}       // record types
 ```
 
 #### 8.2.2 Nominal Equivalence for User Types
@@ -3567,27 +3573,27 @@ User-defined types are equivalent only if they have the same name:
 type my_int = int
 type your_int = int
 
-my_int ≢ your_int    -- different names, not equivalent
-my_int ≢ int         -- user type vs primitive
+my_int ≢ your_int    // different names, not equivalent
+my_int ≢ int         // user type vs primitive
 ```
 
 #### 8.2.3 Subtyping Rules
 Silica has no structural subtyping - all types must match exactly. However, polymorphism is achieved through trait composition, where types implementing the same trait can be used interchangeably in trait-constrained contexts.
 
 ```
--- No structural subtyping:
+// No structural subtyping:
 type MyInt = int64
 type YourInt = int64
-MyInt ≢ YourInt    -- Different names, not equivalent
+MyInt ≢ YourInt    // Different names, not equivalent
 
--- Trait-based polymorphism (not subtyping):
+// Trait-based polymorphism (not subtyping):
 trait Display { fn show(self) -> string; }
 impl Display for int64;
 impl Display for string;
 
--- Types implementing Display can be used where Display is required
+// Types implementing Display can be used where Display is required
 fn print_value(x: Display) -> atom { ... }
--- int64 and string can both be passed to print_value
+// int64 and string can both be passed to print_value
 ```
 
 #### 8.2.4 Collectable Trait
@@ -3596,8 +3602,8 @@ The `Collectable` trait is a marker trait indicating that a type can be collecte
 
 ```silica
 trait Collectable {
-    -- Marker trait indicating that a type can be collected in lists
-    -- This trait has no methods; it serves as a type-level marker
+    // Marker trait indicating that a type can be collected in lists
+    // This trait has no methods; it serves as a type-level marker
 }
 ```
 
@@ -3639,7 +3645,7 @@ struct Point {
     x: int64,
     y: int64
 }
--- Point automatically implements Collectable
+// Point automatically implements Collectable
 ```
 
 **Enum Types (Automatic Collectable):**
@@ -3649,21 +3655,21 @@ enum OptionInt {
     None,
     Some(int64)
 }
--- OptionInt automatically implements Collectable
+// OptionInt automatically implements Collectable
 ```
 
 **Type Aliases (Automatic Collectable):**
 Type aliases inherit `Collectable` from their underlying type:
 ```silica
 type MyInt = int64;
--- MyInt automatically implements Collectable (inherited from int64)
+// MyInt automatically implements Collectable (inherited from int64)
 ```
 
 **List Type (Automatic Collectable):**
 The `List` type itself automatically implements `Collectable`, enabling nested lists:
 ```silica
--- List[ElementType] automatically implements Collectable for any ElementType
--- This allows: List[List[string]], List[List[List[int64]]], etc.
+// List[ElementType] automatically implements Collectable for any ElementType
+// This allows: List[List[string]], List[List[List[int64]]], etc.
 ```
 
 **Type Checking Rules for Lists:**
@@ -3680,51 +3686,51 @@ The `List` type itself automatically implements `Collectable`, enabling nested l
 **Example 1: Basic Trait Polymorphism**
 
 ```silica
--- Define trait
+// Define trait
 trait Display {
     fn show(self: Self) -> string;
 }
 
--- Define types
+// Define types
 type Point2D = {x: int64, y: int64};
 type Rectangle = {width: int64, height: int64};
 
--- Implement trait for different types
+// Implement trait for different types
 impl Display for Point2D {
     fn show(self: Point2D) -> string {
-        -- Format point as string
+        // Format point as string
         format("Point({}, {})", self.x, self.y)
     }
 }
 
 impl Display for Rectangle {
     fn show(self: Rectangle) -> string {
-        -- Format rectangle as string
+        // Format rectangle as string
         format("Rectangle({}x{})", self.width, self.height)
     }
 }
 
--- Function using trait constraint
+// Function using trait constraint
 fn print_display(value: Display) -> atom proc[device_io] {
     str: string <- value.show();
     print_string(str)
 }
 
--- Usage: Both Point2D and Rectangle can be passed to print_display
+// Usage: Both Point2D and Rectangle can be passed to print_display
 fn example() -> atom proc[device_io] {
     point: Point2D <- Point2D {x: 3, y: 7};
     rect: Rectangle <- Rectangle {width: 4, height: 5};
     
-    -- Both types implement Display, so both can be used
-    print_display(point);  -- Calls Point2D.show()
-    print_display(rect);   -- Calls Rectangle.show()
+    // Both types implement Display, so both can be used
+    print_display(point);  // Calls Point2D.show()
+    print_display(rect);   // Calls Rectangle.show()
 }
 ```
 
 **Example 2: Multiple Trait Constraints**
 
 ```silica
--- Define multiple traits
+// Define multiple traits
 trait Display {
     fn show(self: Self) -> string;
 }
@@ -3733,7 +3739,7 @@ trait Math {
     fn compute(self: Self, other: int64) -> int64;
 }
 
--- Type implementing multiple traits
+// Type implementing multiple traits
 type Point2D = {x: int64, y: int64};
 
 impl Display for Point2D {
@@ -3748,22 +3754,22 @@ impl Math for Point2D {
     }
 }
 
--- Function requiring multiple trait constraints
+// Function requiring multiple trait constraints
 fn print_and_compute(value: Display, math_value: Math, scale: int64) -> atom proc[device_io] {
-    -- Use Display trait
+    // Use Display trait
     str: string <- value.show();
     print_string(str);
     
-    -- Use Math trait
+    // Use Math trait
     result: int64 <- math_value.compute(scale);
     print_int64(result)
 }
 
--- Usage: Point2D implements both traits
+// Usage: Point2D implements both traits
 fn example() -> atom proc[device_io] {
     point: Point2D <- Point2D {x: 2, y: 3};
     
-    -- Point2D can be used for both Display and Math constraints
+    // Point2D can be used for both Display and Math constraints
     print_and_compute(point, point, 4)
 }
 ```
@@ -3771,13 +3777,13 @@ fn example() -> atom proc[device_io] {
 **Example 3: Trait Constraints in Function Parameters**
 
 ```silica
--- Define trait
+// Define trait
 trait Comparable {
     fn equals(self: Self, other: Self) -> bool;
     fn less_than(self: Self, other: Self) -> bool;
 }
 
--- Implement trait for different types
+// Implement trait for different types
 type Person = {name: string, age: int64};
 
 impl Comparable for Person {
@@ -3790,7 +3796,7 @@ impl Comparable for Person {
     }
 }
 
--- Function using trait constraint
+// Function using trait constraint
 fn find_maximum(a: Comparable, b: Comparable) -> Comparable {
     if a.less_than(b) {
         b
@@ -3799,12 +3805,12 @@ fn find_maximum(a: Comparable, b: Comparable) -> Comparable {
     }
 }
 
--- Usage: Person implements Comparable
+// Usage: Person implements Comparable
 fn example() -> Person {
     person1: Person <- Person {name: "Alice", age: 30};
     person2: Person <- Person {name: "Bob", age: 25};
     
-    -- Person can be used where Comparable is required
+    // Person can be used where Comparable is required
     max_person: Person <- find_maximum(person1, person2);
     max_person
 }
@@ -3813,12 +3819,12 @@ fn example() -> Person {
 **Example 4: Trait-Based Collections**
 
 ```silica
--- Define trait for collection elements
+// Define trait for collection elements
 trait CollectionElement {
     fn to_string(self: Self) -> string;
 }
 
--- Implement trait for different types
+// Implement trait for different types
 impl CollectionElement for int64 {
     fn to_string(self: int64) -> string {
         format("{}", self)
@@ -3831,20 +3837,20 @@ impl CollectionElement for string {
     }
 }
 
--- Function operating on collections of trait-constrained elements
+// Function operating on collections of trait-constrained elements
 fn print_collection_element(elem: CollectionElement) -> atom proc[device_io] {
     str: string <- elem.to_string();
     print_string(str)
 }
 
--- Usage: Both int64 and string can be used
+// Usage: Both int64 and string can be used
 fn example() -> atom proc[device_io] {
     num: int64 <- 42;
     text: string <- "Hello";
     
-    -- Both types implement CollectionElement
-    print_collection_element(num);   -- Calls int64.to_string()
-    print_collection_element(text);  -- Calls string.to_string()
+    // Both types implement CollectionElement
+    print_collection_element(num);   // Calls int64.to_string()
+    print_collection_element(text);  // Calls string.to_string()
 }
 ```
 
@@ -3880,7 +3886,7 @@ trait Debug {
     fn debug(self: Self) -> string;
 }
 
--- Type implementing multiple traits
+// Type implementing multiple traits
 type Point2D = {x: int64, y: int64};
 
 impl Display for Point2D {
@@ -3895,7 +3901,7 @@ impl Debug for Point2D {
     }
 }
 
--- Function requiring a specific trait
+// Function requiring a specific trait
 fn print_debug(value: Debug) -> atom proc[device_io] {
     debug_str: string <- value.debug();
     print_string(debug_str)
@@ -3904,7 +3910,7 @@ fn print_debug(value: Debug) -> atom proc[device_io] {
 
 **Example 2: Multiple Trait Constraints**
 ```silica
--- Define independent traits
+// Define independent traits
 trait Serialize {
     fn serialize(self: Self) -> string;
 }
@@ -3913,7 +3919,7 @@ trait Deserialize {
     fn deserialize(data: string) -> Self;
 }
 
--- Type implementing both traits
+// Type implementing both traits
 type User = {id: int64, name: string};
 
 impl Serialize for User {
@@ -3924,30 +3930,30 @@ impl Serialize for User {
 
 impl Deserialize for User {
     fn deserialize(data: string) -> User {
-        -- Parse JSON-like string (simplified)
+        // Parse JSON-like string (simplified)
         User {id: 1, name: "Alice"}
     }
 }
 
--- Function requiring both traits
+// Function requiring both traits
 fn round_trip(value: Serialize, deserializer: Deserialize) -> atom {
-    -- Serialize value
+    // Serialize value
     serialized: string <- value.serialize();
     
-    -- Deserialize using different type's deserializer
-    -- (Note: This is a simplified example - actual usage would be type-specific)
+    // Deserialize using different type's deserializer
+    // (Note: This is a simplified example - actual usage would be type-specific)
 }
 ```
 
 **Example 3: Trait-Based Type Erasure**
 ```silica
--- Trait for type-erased values
+// Trait for type-erased values
 trait AnyValue {
     fn type_name(self: Self) -> string;
     fn to_string(self: Self) -> string;
 }
 
--- Implement for different types
+// Implement for different types
 impl AnyValue for int64 {
     fn type_name(self: int64) -> string {
         "int64"
@@ -3968,7 +3974,7 @@ impl AnyValue for string {
     }
 }
 
--- Function accepting any type-erased value
+// Function accepting any type-erased value
 fn process_any_value(value: AnyValue) -> atom proc[device_io] {
     type_name: string <- value.type_name();
     str_value: string <- value.to_string();
@@ -3981,39 +3987,39 @@ fn process_any_value(value: AnyValue) -> atom proc[device_io] {
 
 **Pattern 1: Marker Traits**
 ```silica
--- Marker trait (no methods, just type safety)
+// Marker trait (no methods, just type safety)
 trait Sendable {
-    -- No methods - just marks types as safe to send between actors
+    // No methods - just marks types as safe to send between actors
 }
 
--- Implement for types that can be sent
+// Implement for types that can be sent
 impl Sendable for int64;
 impl Sendable for string;
 
--- Function requiring marker trait
+// Function requiring marker trait
 fn send_message(msg: Sendable) -> atom proc[concurrency] {
-    -- Can send any Sendable type
+    // Can send any Sendable type
 }
 ```
 
 **Pattern 2: Builder Pattern with Traits**
 ```silica
--- Trait for buildable types
+// Trait for buildable types
 trait Buildable {
     fn build(self: Self) -> Self;
 }
 
--- Type with builder methods
+// Type with builder methods
 type Config = {host: string, port: int64};
 
 impl Buildable for Config {
     fn build(self: Config) -> Config {
-        -- Validate and build configuration
+        // Validate and build configuration
         self
     }
 }
 
--- Builder function using trait
+// Builder function using trait
 fn create_config(builder: Buildable) -> Buildable {
     builder.build()
 }
@@ -4021,30 +4027,30 @@ fn create_config(builder: Buildable) -> Buildable {
 
 **Pattern 3: Strategy Pattern with Traits**
 ```silica
--- Strategy trait
+// Strategy trait
 trait SortStrategy {
     fn sort(self: Self, data: list<int64>) -> list<int64>;
 }
 
--- Different sorting strategies
+// Different sorting strategies
 type QuickSort = unit;
 type MergeSort = unit;
 
 impl SortStrategy for QuickSort {
     fn sort(self: QuickSort, data: list<int64>) -> list<int64> {
-        -- Quick sort implementation
+        // Quick sort implementation
         data
     }
 }
 
 impl SortStrategy for MergeSort {
     fn sort(self: MergeSort, data: list<int64>) -> list<int64> {
-        -- Merge sort implementation
+        // Merge sort implementation
         data
     }
 }
 
--- Function using strategy trait
+// Function using strategy trait
 fn sort_data(strategy: SortStrategy, data: list<int64>) -> list<int64> {
     strategy.sort(data)
 }
@@ -4056,7 +4062,7 @@ While Silica requires explicit type annotations for all variable bindings, funct
 
 **Example: Trait-Based Type Checking**
 ```silica
--- Trait for numeric operations
+// Trait for numeric operations
 trait Numeric {
     fn add(self: Self, other: Self) -> Self;
     fn multiply(self: Self, other: Self) -> Self;
@@ -4072,17 +4078,17 @@ impl Numeric for int64 {
     }
 }
 
--- Function with trait constraint - type checker verifies trait implementation
+// Function with trait constraint - type checker verifies trait implementation
 fn compute(value: Numeric, factor: Numeric) -> Numeric {
-    -- Trait constraint: return type must match input type's trait implementation
+    // Trait constraint: return type must match input type's trait implementation
     value.multiply(factor)
 }
 
--- Usage: Type is explicit but constrained by trait
+// Usage: Type is explicit but constrained by trait
 fn example() -> int64 {
     x: int64 <- 10;
     y: int64 <- 5;
-    result: int64 <- compute(x, y);  -- Type must be explicit, trait checked at compile time
+    result: int64 <- compute(x, y);  // Type must be explicit, trait checked at compile time
     result
 }
 ```
@@ -4107,11 +4113,11 @@ All types must be explicitly declared in Silica. There is no type inference - ev
 #### 8.3.3 Type Annotation Examples
 
 ```
-fn add(x: int64, y: int64) -> int64 { x + y }        -- explicit types
+fn add(x: int64, y: int64) -> int64 { x + y }        // explicit types
 
 fn example() -> int64 {
     do
-        x: int64 <- 42;                               -- variable binding with type
+        x: int64 <- 42;                               // variable binding with type
         x
     end
 }
@@ -4155,8 +4161,8 @@ effect atomic_eff = [mem(atomic), atomic]
 New effects can be declared for domain-specific side effects:
 
 ```
-effect logging = []        -- pure effect for logging framework
-effect database = [mem(normal), device_io]  -- database operations
+effect logging = []        // pure effect for logging framework
+effect database = [mem(normal), device_io]  // database operations
 ```
 
 ### 9.2 Effect Composition
@@ -4165,9 +4171,9 @@ effect database = [mem(normal), device_io]  -- database operations
 Effects are combined in sets: `proc[effect1, effect2, ...] Result`
 
 ```
-proc[mem(normal), atomic] int           -- memory + atomic operations
-proc[concurrency] actor_ref<msg>        -- actor spawning
-proc[] unit                             -- pure computation
+proc[mem(normal), atomic] int           // memory + atomic operations
+proc[concurrency] actor_ref<msg>        // actor spawning
+proc[] unit                             // pure computation
 ```
 
 #### 9.2.2 Built-in Memory Operations
@@ -4186,14 +4192,14 @@ These operations are not function calls but fundamental language primitives for 
 Processes compose through monadic binding:
 
 ```
--- Creates a process value (not executed)
+// Creates a process value (not executed)
 process_value: proc[mem(normal), mem(atomic)] (region(R1, normal), region(R2, atomic)) <- do
-    x: region(R1, normal) <- alloc_region(normal)     -- creates process value
-    y: region(R2, atomic) <- alloc_region(atomic)     -- creates process value
+    x: region(R1, normal) <- alloc_region(normal)     // creates process value
+    y: region(R2, atomic) <- alloc_region(atomic)     // creates process value
     (x, y)
 end
 
--- Execute the process using spawn
+// Execute the process using spawn
 result: (region(R1, normal), region(R2, atomic)) <- spawn(process_value)
 ```
 
@@ -4255,7 +4261,7 @@ fn allocate_int(region: region(R, normal))
    fn helper() -> ref(R, normal, int) proc[mem(normal)] { ... }
    
    fn caller() -> ref(R, normal, int) proc[mem(normal)] {
-       helper()  -- mem(normal) effect propagates to caller
+       helper()  // mem(normal) effect propagates to caller
    }
    ```
 
@@ -4265,33 +4271,33 @@ When multiple effects are combined (e.g., from multiple function calls or operat
 
 ```pseudocode
 function union_effect_sets(effect_set1, effect_set2):
-    -- Initialize result set
+    // Initialize result set
     result = empty_set()
     
-    -- Add all effects from first set
+    // Add all effects from first set
     for each effect in effect_set1:
         result = result ∪ {effect}
     
-    -- Add all effects from second set
+    // Add all effects from second set
     for each effect in effect_set2:
         result = result ∪ {effect}
     
-    -- Apply subeffecting: if e1 <: e2, keep only e2 (more general)
-    -- Remove redundant effects based on subeffecting lattice
+    // Apply subeffecting: if e1 <: e2, keep only e2 (more general)
+    // Remove redundant effects based on subeffecting lattice
     result = minimize_effect_set(result)
     
     return result
 end function
 
 function minimize_effect_set(effect_set):
-    -- Remove redundant effects based on subeffecting
+    // Remove redundant effects based on subeffecting
     minimized = effect_set
     
-    -- Check for subeffecting relationships
+    // Check for subeffecting relationships
     for each effect1 in minimized:
         for each effect2 in minimized:
             if effect1 != effect2 and effect1 <: effect2:
-                -- effect1 is subsumed by effect2, remove effect1
+                // effect1 is subsumed by effect2, remove effect1
                 minimized = minimized \ {effect1}
             end if
         end for
@@ -4317,44 +4323,44 @@ The effect union algorithm respects the subeffecting lattice:
 
 **Example 1: Simple Union**
 ```silica
--- Function with mem(normal)
+// Function with mem(normal)
 fn alloc() -> ref(R, normal, int) proc[mem(normal)] { ... }
 
--- Function with device_io
+// Function with device_io
 fn print() -> atom proc[device_io] { ... }
 
--- Combined effects: union of both sets
+// Combined effects: union of both sets
 fn alloc_and_print() -> ref(R, normal, int) proc[mem(normal), device_io] {
-    ref: ref(R, normal, int) <- alloc();  -- mem(normal)
-    print();                              -- device_io
-    ref                                    -- Combined: [mem(normal), device_io]
+    ref: ref(R, normal, int) <- alloc();  // mem(normal)
+    print();                              // device_io
+    ref                                    // Combined: [mem(normal), device_io]
 }
 ```
 
 **Example 2: Subeffecting in Union**
 ```silica
--- Function with mem(normal)
+// Function with mem(normal)
 fn alloc_normal() -> ref(R, normal, int) proc[mem(normal)] { ... }
 
--- Function with mem(atomic)
+// Function with mem(atomic)
 fn alloc_atomic() -> ref(R, atomic, int) proc[mem(atomic)] { ... }
 
--- Combined: mem(normal) <: mem(atomic), so result is [mem(atomic)]
+// Combined: mem(normal) <: mem(atomic), so result is [mem(atomic)]
 fn alloc_both() -> (ref(R, normal, int), ref(R, atomic, int)) proc[mem(atomic)] {
-    ref1: ref(R, normal, int) <- alloc_normal();  -- mem(normal)
-    ref2: ref(R, atomic, int) <- alloc_atomic();  -- mem(atomic)
-    (ref1, ref2)                                   -- Union: [mem(atomic)] (normal subsumed)
+    ref1: ref(R, normal, int) <- alloc_normal();  // mem(normal)
+    ref2: ref(R, atomic, int) <- alloc_atomic();  // mem(atomic)
+    (ref1, ref2)                                   // Union: [mem(atomic)] (normal subsumed)
 }
 ```
 
 **Example 3: Multiple Effect Union**
 ```silica
--- Multiple function calls with different effects
+// Multiple function calls with different effects
 fn complex() -> atom proc[mem(normal), device_io, concurrency] {
-    alloc();        -- mem(normal)
-    print();        -- device_io
-    spawn(...);     -- concurrency
-    ()              -- Union: [mem(normal), device_io, concurrency]
+    alloc();        // mem(normal)
+    print();        // device_io
+    spawn(...);     // concurrency
+    ()              // Union: [mem(normal), device_io, concurrency]
 }
 ```
 
@@ -4363,7 +4369,7 @@ fn complex() -> atom proc[mem(normal), device_io, concurrency] {
 Effects propagate through nested function calls, requiring all effects to be declared:
 
 ```silica
--- Helper function with mem(normal)
+// Helper function with mem(normal)
 fn allocate_helper() -> ref(R, normal, int) proc[mem(normal)] {
     do
         r: region(R, normal) <- alloc_region(normal);
@@ -4371,17 +4377,17 @@ fn allocate_helper() -> ref(R, normal, int) proc[mem(normal)] {
     end
 }
 
--- Helper function with device_io
+// Helper function with device_io
 fn print_helper() -> atom proc[device_io] {
     print_string("Helper called")
 }
 
--- Function that calls both helpers
+// Function that calls both helpers
 fn composed_operation() -> ref(R, normal, int) proc[mem(normal), device_io] {
     do
-        ref: ref(R, normal, int) <- allocate_helper();  -- mem(normal) propagates
-        print_helper();                                  -- device_io propagates
-        ref                                              -- Combined: [mem(normal), device_io]
+        ref: ref(R, normal, int) <- allocate_helper();  // mem(normal) propagates
+        print_helper();                                  // device_io propagates
+        ref                                              // Combined: [mem(normal), device_io]
     end
 }
 ```
@@ -4391,18 +4397,18 @@ fn composed_operation() -> ref(R, normal, int) proc[mem(normal), device_io] {
 When effects have subeffecting relationships, the compiler minimizes the effect set:
 
 ```silica
--- Function with mem(normal)
+// Function with mem(normal)
 fn alloc_normal() -> ref(R, normal, int) proc[mem(normal)] { ... }
 
--- Function with mem(atomic) (mem(normal) <: mem(atomic))
+// Function with mem(atomic) (mem(normal) <: mem(atomic))
 fn alloc_atomic() -> ref(R, atomic, int) proc[mem(atomic)] { ... }
 
--- Combined: mem(normal) is subsumed by mem(atomic)
+// Combined: mem(normal) is subsumed by mem(atomic)
 fn alloc_both() -> (ref(R, normal, int), ref(R, atomic, int)) proc[mem(atomic)] {
     do
-        ref1: ref(R, normal, int) <- alloc_normal();   -- mem(normal)
-        ref2: ref(R, atomic, int) <- alloc_atomic();   -- mem(atomic)
-        (ref1, ref2)                                    -- Union: [mem(atomic)] (normal subsumed)
+        ref1: ref(R, normal, int) <- alloc_normal();   // mem(normal)
+        ref2: ref(R, atomic, int) <- alloc_atomic();   // mem(atomic)
+        (ref1, ref2)                                    // Union: [mem(atomic)] (normal subsumed)
     end
 }
 ```
@@ -4414,20 +4420,20 @@ Do expressions compose effects from multiple statements:
 ```silica
 fn complex_operation() -> int proc[mem(normal), device_io, concurrency] {
     do
-        -- Statement 1: mem(normal)
+        // Statement 1: mem(normal)
         r: region(R, normal) <- alloc_region(normal);
         ref: ref(R, normal, int) <- alloc_ref(r, 42);
         
-        -- Statement 2: device_io
+        // Statement 2: device_io
         print_string("Allocated: ");
         print_int(read_ref(ref));
         
-        -- Statement 3: concurrency
+        // Statement 3: concurrency
         actor_ref: actor_ref <- spawn(initial_state, behavior_fn);
         send(actor_ref, SomeMessage {});
         
-        -- Return value
-        read_ref(ref)  -- Combined: [mem(normal), device_io, concurrency]
+        // Return value
+        read_ref(ref)  // Combined: [mem(normal), device_io, concurrency]
     end
 }
 ```
@@ -4439,7 +4445,7 @@ Function literals must declare effects, and those effects compose with the enclo
 ```silica
 fn actor_with_effects() -> actor_ref proc[mem(normal), device_io, concurrency] {
     do
-        -- Function literal with mem(normal) and device_io
+        // Function literal with mem(normal) and device_io
         behavior_fn: fn(msg: Message, state: State) -> State proc[mem(normal), device_io] = 
             fn(msg: Message, state: State) -> State proc[mem(normal), device_io] {
                 do
@@ -4449,8 +4455,8 @@ fn actor_with_effects() -> actor_ref proc[mem(normal), device_io, concurrency] {
                 end
             };
         
-        -- Spawn actor (concurrency effect)
-        spawn(initial_state, behavior_fn)  -- Combined: [mem(normal), device_io, concurrency]
+        // Spawn actor (concurrency effect)
+        spawn(initial_state, behavior_fn)  // Combined: [mem(normal), device_io, concurrency]
     end
 }
 ```
@@ -4460,23 +4466,23 @@ fn actor_with_effects() -> actor_ref proc[mem(normal), device_io, concurrency] {
 When effects are not properly declared, compilation errors occur:
 
 ```silica
--- ERROR: Function uses mem(normal) but doesn't declare it
+// ERROR: Function uses mem(normal) but doesn't declare it
 fn allocate_missing_effect(region: region(R, normal)) -> ref(R, normal, int) {
-    alloc_ref(region, 0)  -- Error: mem(normal) effect not declared
+    alloc_ref(region, 0)  // Error: mem(normal) effect not declared
 }
 
--- ERROR: Function calls helper with effects but doesn't declare them
+// ERROR: Function calls helper with effects but doesn't declare them
 fn caller_missing_effects() -> int {
-    allocate_helper()  -- Error: mem(normal) effect not declared in caller
+    allocate_helper()  // Error: mem(normal) effect not declared in caller
 }
 
--- CORRECT: All effects properly declared
+// CORRECT: All effects properly declared
 fn allocate_correct(region: region(R, normal)) -> ref(R, normal, int) proc[mem(normal)] {
-    alloc_ref(region, 0)  -- Correct: mem(normal) declared
+    alloc_ref(region, 0)  // Correct: mem(normal) declared
 }
 
 fn caller_correct() -> ref(R, normal, int) proc[mem(normal)] {
-    allocate_helper()  -- Correct: mem(normal) declared in caller
+    allocate_helper()  // Correct: mem(normal) declared in caller
 }
 ```
 
@@ -4488,17 +4494,17 @@ Effects compose correctly even with conditional execution:
 fn conditional_effects(condition: bool) -> int proc[mem(normal), device_io] {
     do
         if condition {
-            -- Branch 1: mem(normal) and device_io
+            // Branch 1: mem(normal) and device_io
             r: region(R, normal) <- alloc_region(normal);
             ref: ref(R, normal, int) <- alloc_ref(r, 42);
             print_string("Branch 1");
             read_ref(ref)
         } else {
-            -- Branch 2: device_io only
+            // Branch 2: device_io only
             print_string("Branch 2");
             0
         }
-        -- Combined: [mem(normal), device_io] (union of both branches)
+        // Combined: [mem(normal), device_io] (union of both branches)
     end
 }
 ```
@@ -4512,22 +4518,22 @@ fn pattern_matching_effects(msg: Message) -> int proc[mem(normal), device_io] {
     do
         result: int <- case msg of {
             AllocateMsg {size} -> {
-                -- Pattern branch: mem(normal)
+                // Pattern branch: mem(normal)
                 r: region(R, normal) <- alloc_region(normal);
                 alloc_ref(r, size);
                 0
             }
             PrintMsg {text} -> {
-                -- Pattern branch: device_io
+                // Pattern branch: device_io
                 print_string(text);
                 0
             }
             _: Message -> {
-                -- Catch-all: no effects
+                // Catch-all: no effects
                 0
             }
         };
-        -- Combined: [mem(normal), device_io] (union of all branches)
+        // Combined: [mem(normal), device_io] (union of all branches)
         result
     end
 }
@@ -4539,16 +4545,16 @@ The compiler computes the minimal effect set by removing redundant effects:
 
 ```pseudocode
 function compute_minimal_effects(function_body):
-    -- Collect all effects from function body
+    // Collect all effects from function body
     all_effects = empty_set()
     
-    -- Traverse function body and collect effects
+    // Traverse function body and collect effects
     for each operation in function_body:
         op_effects = get_operation_effects(operation)
         all_effects = union_effect_sets(all_effects, op_effects)
     end for
     
-    -- Minimize effect set (remove redundant effects)
+    // Minimize effect set (remove redundant effects)
     minimal_effects = minimize_effect_set(all_effects)
     
     return minimal_effects
@@ -4561,7 +4567,7 @@ When a function calls another function, the caller's effect set must include all
 
 ```pseudocode
 function check_function_call(caller_effects, callee_effects):
-    -- Verify callee effects are subsumed by caller effects
+    // Verify callee effects are subsumed by caller effects
     for each effect in callee_effects:
         if not is_subsumed_by(effect, caller_effects):
             error("Caller must declare effect: " + effect)
@@ -4570,19 +4576,19 @@ function check_function_call(caller_effects, callee_effects):
 end function
 
 function is_subsumed_by(effect, effect_set):
-    -- Check if effect is subsumed by any effect in effect_set
+    // Check if effect is subsumed by any effect in effect_set
     for each e in effect_set:
         if effect <: e:
-            return true  -- Effect is subsumed
+            return true  // Effect is subsumed
         end if
     end for
     
-    -- Check if effect is directly in the set
+    // Check if effect is directly in the set
     if effect in effect_set:
         return true
     end if
     
-    return false  -- Effect not subsumed
+    return false  // Effect not subsumed
 end function
 ```
 
@@ -4598,9 +4604,9 @@ The type checker verifies that:
 Silica does not infer effects. If a function uses an effect but does not declare it, a compilation error occurs:
 
 ```
--- ERROR: Function uses mem(normal) but doesn't declare it
+// ERROR: Function uses mem(normal) but doesn't declare it
 fn allocate(region: region(R, normal)) -> ref(R, normal, int) {
-    alloc_ref(region, 0)  -- Error: mem(normal) effect not declared
+    alloc_ref(region, 0)  // Error: mem(normal) effect not declared
 }
 ```
 
@@ -4671,7 +4677,7 @@ See specification: spec:[section]
 **Code:**
 ```silica
 fn allocate_int(region: region(R, normal)) -> ref(R, normal, int) {
-    alloc_ref(region, 0)  -- Error: mem(normal) effect not declared
+    alloc_ref(region, 0)  // Error: mem(normal) effect not declared
 }
 ```
 
@@ -4731,7 +4737,7 @@ fn helper() -> ref(R, normal, int) proc[mem(normal)] {
     alloc_ref(region, 0)
 }
 
-fn caller() -> ref(R, normal, int) {  -- Error: missing mem(normal) effect
+fn caller() -> ref(R, normal, int) {  // Error: missing mem(normal) effect
     helper()
 }
 ```
@@ -4796,7 +4802,7 @@ fn high_level() -> atom proc[mem(normal), device_io] {
 }
 
 fn low_level() -> atom proc[mem(normal)] {
-    high_level()  -- Error: device_io effect mismatch
+    high_level()  // Error: device_io effect mismatch
 }
 ```
 
@@ -4849,7 +4855,7 @@ fn low_level() -> atom proc[mem(normal), device_io] {
 ```silica
 fn create_actor() -> actor_ref proc[concurrency] {
     behavior_fn: (Msg, State) -> State = fn(msg: Msg, state: State) -> State {
-        print_string("Received")  -- Error: device_io effect not declared
+        print_string("Received")  // Error: device_io effect not declared
         state
     };
     spawn(initial_state, behavior_fn)
@@ -4982,16 +4988,16 @@ Effects compose naturally in `do...end` blocks. When binding multiple expression
 ```silica
 fn example() -> atom proc[mem(normal), device_io] {
     do
-        -- Creates process with mem(normal) effect
+        // Creates process with mem(normal) effect
         region: region(R, normal) <- alloc_region(normal);
         
-        -- Creates process with device_io effect
+        // Creates process with device_io effect
         print_string("Region allocated");
         
-        -- Creates process with mem(normal) effect
+        // Creates process with mem(normal) effect
         ref: ref(R, normal, int64) <- alloc_ref(region, 42);
         
-        -- Result process has both mem(normal) and device_io effects
+        // Result process has both mem(normal) and device_io effects
         ()
     end
 }
@@ -5003,19 +5009,19 @@ Nested `do...end` blocks compose effects from inner to outer:
 ```silica
 fn nested_example() -> atom proc[mem(normal), device_io, concurrency] {
     do
-        -- Outer do block
+        // Outer do block
         region: region(R, normal) <- alloc_region(normal);
         
         inner_result: unit <- do
-            -- Inner do block with device_io
+            // Inner do block with device_io
             print_string("Inner block");
             ()
         end;
         
-        -- Spawn actor (requires concurrency)
+        // Spawn actor (requires concurrency)
         actor_ref: actor_ref <- spawn(initial_state, behavior);
         
-        -- Result includes all effects: mem(normal), device_io, concurrency
+        // Result includes all effects: mem(normal), device_io, concurrency
         ()
     end
 }
@@ -5025,7 +5031,7 @@ fn nested_example() -> atom proc[mem(normal), device_io, concurrency] {
 Effects propagate through function calls and bindings. The type checker ensures all required effects are declared:
 
 ```
--- Pure computation with logging (preserves pure effect)
+// Pure computation with logging (preserves pure effect)
 fn with_logging_pure(action: proc[] int) -> int proc[logging] {
     do
         log("Starting action");
@@ -5035,7 +5041,7 @@ fn with_logging_pure(action: proc[] int) -> int proc[logging] {
     end
 }
 
--- Memory normal computation with logging (preserves mem(normal))
+// Memory normal computation with logging (preserves mem(normal))
 fn with_logging_mem_normal(action: proc[mem(normal)] int) -> int proc[mem(normal), logging] {
     do
         log("Starting action");
@@ -5045,7 +5051,7 @@ fn with_logging_mem_normal(action: proc[mem(normal)] int) -> int proc[mem(normal
     end
 }
 
--- Concurrency computation with logging (preserves concurrency)
+// Concurrency computation with logging (preserves concurrency)
 fn with_logging_concurrency(action: proc[concurrency] int) -> int proc[concurrency, logging] {
     do
         log("Starting action");
@@ -5055,7 +5061,7 @@ fn with_logging_concurrency(action: proc[concurrency] int) -> int proc[concurren
     end
 }
 
--- Combined effects: mem(normal) + concurrency (preserves both)
+// Combined effects: mem(normal) + concurrency (preserves both)
 fn with_logging_mem_normal_concurrency(action: proc[mem(normal), concurrency] int) 
     -> int proc[mem(normal), concurrency, logging] {
     do
@@ -5097,11 +5103,11 @@ fn requires_io() -> atom proc[device_io] {
 }
 
 fn pure_function() -> atom {
-    requires_io()  -- ERROR: pure_function() doesn't declare device_io effect
+    requires_io()  // ERROR: pure_function() doesn't declare device_io effect
 }
 
 fn caller() -> atom proc[device_io] {
-    requires_io()  -- OK: caller() declares device_io effect
+    requires_io()  // OK: caller() declares device_io effect
 }
 ```
 
@@ -5178,28 +5184,28 @@ The type checker looks up trait implementations using the following algorithm:
 **Trait Constraint Examples:**
 
 ```silica
--- Define trait
+// Define trait
 trait Display {
     fn show(self: Self) -> string;
 }
 
--- Implement trait for int64
+// Implement trait for int64
 impl Display for int64 {
     fn show(self: int64) -> string {
         format("{}", self)
     }
 }
 
--- Function with trait constraint
+// Function with trait constraint
 fn print_value(x: Display) -> atom proc[device_io] {
     str: string <- x.show();
     print_string(str)
 }
 
--- Type checking: int64 implements Display
+// Type checking: int64 implements Display
 fn example() -> atom proc[device_io] {
     value: int64 <- 42;
-    print_value(value)  -- ✓ Valid: int64 implements Display
+    print_value(value)  // ✓ Valid: int64 implements Display
 }
 ```
 
@@ -5216,14 +5222,14 @@ trait Comparable {
     fn equals(self: Self, other: Self) -> bool;
 }
 
--- Function requiring both traits
+// Function requiring both traits
 fn print_and_compare(x: Display, y: Comparable) -> bool proc[device_io] {
     str: string <- x.show();
     print_string(str);
     y.equals(y, y)
 }
 
--- Type checking: Both arguments must implement their respective traits
+// Type checking: Both arguments must implement their respective traits
 ```
 
 **Trait Constraint Error:**
@@ -5243,7 +5249,7 @@ trait Display {
     fn show(self: Self) -> string;
 }
 
--- int64 does not implement Display (no impl declaration)
+// int64 does not implement Display (no impl declaration)
 fn print_value(x: Display) -> atom proc[device_io] {
     str: string <- x.show();
     print_string(str)
@@ -5251,7 +5257,7 @@ fn print_value(x: Display) -> atom proc[device_io] {
 
 fn example() -> atom proc[device_io] {
     value: int64 <- 42;
-    print_value(value)  -- ERROR: int64 does not implement Display
+    print_value(value)  // ERROR: int64 does not implement Display
 }
 ```
 
@@ -5269,11 +5275,11 @@ Trait constraints propagate through function calls:
 
 ```silica
 fn helper(x: Display) -> string {
-    x.show()  -- Trait constraint propagates: x must implement Display
+    x.show()  // Trait constraint propagates: x must implement Display
 }
 
 fn caller(value: int64) -> string {
-    helper(value)  -- int64 must implement Display for this to type-check
+    helper(value)  // int64 must implement Display for this to type-check
 }
 ```
 
@@ -5335,23 +5341,23 @@ Function expects n arguments, but got m
 
 ```
 fn pure_add(x: int, y: int) -> int {
-    x + y        -- Type: int ! []
+    x + y        // Type: int ! []
 }
--- Function type: (int, int) -> int ! []
+// Function type: (int, int) -> int ! []
 
 fn allocate_pair(r: region(R, normal))
  -> (ref(R, normal, int), ref(R, normal, int)) proc[mem(normal)] {
     do
-        x: ref(R, normal, int) <- alloc_ref(r, 1)    -- creates process value
-        y: ref(R, normal, int) <- alloc_ref(r, 2)    -- creates process value
-        (x, y)                                         -- returns composed process value
+        x: ref(R, normal, int) <- alloc_ref(r, 1)    // creates process value
+        y: ref(R, normal, int) <- alloc_ref(r, 2)    // creates process value
+        (x, y)                                         // returns composed process value
     end
 }
--- Effects properly declared: mem(normal)
--- Returns a process value that must be spawned to execute
+// Effects properly declared: mem(normal)
+// Returns a process value that must be spawned to execute
 
 fn bad_alloc(r: region(R, normal)) -> ref(R, normal, int) proc[] {
-    alloc_ref(r, 42)    -- ERROR: requires mem(normal) but declares []
+    alloc_ref(r, 42)    // ERROR: requires mem(normal) but declares []
 }
 ```
 
@@ -5370,8 +5376,8 @@ Processes support monadic binding (`<-`) and implicit return:
 
 ```
 do
-    p <- m    -- bind: create process m, bind to p
-    q         -- last expression without semicolon is the return value
+    p <- m    // bind: create process m, bind to p
+    q         // last expression without semicolon is the return value
 end
 ```
 
@@ -5382,12 +5388,12 @@ When processes are executed via `spawn()`, execution is strictly sequential:
 
 ```
 computation: proc[] (int, int) <- do
-    x: int <- computation1    -- creates process for computation1
-    y: int <- computation2    -- creates process for computation2
+    x: int <- computation1    // creates process for computation1
+    y: int <- computation2    // creates process for computation2
     return (x, y)
 end
 
--- Execution happens when spawned
+// Execution happens when spawned
 result: (int, int) <- spawn(computation)
 ```
 
@@ -5408,11 +5414,11 @@ Effects are tracked through the execution stack:
 ```
 Execution Stack:
 ┌─────────────────────────────────┐
-│ Process: proc[mem(normal)] ref  │  -- current process
+│ Process: proc[mem(normal)] ref  │  // current process
 ├─────────────────────────────────┤
-│ Process: proc[concurrency] unit │  -- caller
+│ Process: proc[concurrency] unit │  // caller
 ├─────────────────────────────────┤
-│ Process: proc[] int            │  -- root
+│ Process: proc[] int            │  // root
 └─────────────────────────────────┘
 
 Active Effects: [mem(normal), concurrency]
@@ -5422,17 +5428,17 @@ Active Effects: [mem(normal), concurrency]
 Runtime enforces effect capabilities when processes are executed via `spawn()`:
 
 ```
--- Creates process value (not executed yet)
+// Creates process value (not executed yet)
 process: proc[mem(normal)] ref(R, normal, int) <- alloc_ref(region, value)
--- ✓ Allowed: mem(normal) effect declared
+// ✓ Allowed: mem(normal) effect declared
 
--- Execute the process
+// Execute the process
 ref: ref(R, normal, int) <- spawn(process)
--- ✓ Allowed: mem(normal) capability active during execution
+// ✓ Allowed: mem(normal) capability active during execution
 
--- Invalid process (missing required effect)
+// Invalid process (missing required effect)
 bad_process: proc[] ref(R, normal, int) <- alloc_ref(region, value)
--- ✗ Type Error: process requires mem(normal) but declares []
+// ✗ Type Error: process requires mem(normal) but declares []
 ```
 
 ### 11.3 Process Lifecycle
@@ -5441,7 +5447,7 @@ bad_process: proc[] ref(R, normal, int) <- alloc_ref(region, value)
 Processes are created when bound but not executed:
 
 ```
-p: proc[mem(normal)] ref(R, normal, int) <- alloc_ref(r, 42)    -- creates process value, does not execute
+p: proc[mem(normal)] ref(R, normal, int) <- alloc_ref(r, 42)    // creates process value, does not execute
 ```
 
 Processes are executed using the built-in `spawn()` function. Binding creates a process value that can be passed around or executed later.
@@ -5450,14 +5456,14 @@ Processes are executed using the built-in `spawn()` function. Binding creates a 
 Processes are executed using the `spawn()` function:
 
 ```
--- Process creation (not executed)
+// Process creation (not executed)
 computation: proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) <- do
     x: ref(R, normal, int) <- alloc_ref(region, 1)
     y: ref(R, normal, int) <- alloc_ref(region, 2)
     (x, y)
 end
 
--- Process execution via spawn
+// Process execution via spawn
 result: (ref(R, normal, int), ref(R, normal, int)) <- spawn(computation)
 ```
 
@@ -5467,12 +5473,12 @@ Processes compose through monadic binding:
 ```
 fn allocate_pair(r: region(R, normal))
  -> (ref(R, normal, int), ref(R, normal, int)) proc[mem(normal)] {
-    x: ref(R, normal, int) <- alloc_ref(r, 1)    -- creates process value
-    y: ref(R, normal, int) <- alloc_ref(r, 2)    -- creates process value
-    return (x, y)                                 -- returns composed process value
+    x: ref(R, normal, int) <- alloc_ref(r, 1)    // creates process value
+    y: ref(R, normal, int) <- alloc_ref(r, 2)    // creates process value
+    return (x, y)                                 // returns composed process value
 }
 
--- Usage: the function returns a process value that must be spawned
+// Usage: the function returns a process value that must be spawned
 pair_process: proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) <- allocate_pair(region)
 result: (ref(R, normal, int), ref(R, normal, int)) <- spawn(pair_process)
 
@@ -5480,9 +5486,9 @@ fn allocate_quad(r: region(R, normal))
     -> (ref(R, normal, int), ref(R, normal, int),
         ref(R, normal, int), ref(R, normal, int)) proc[mem(normal)] {
     do
-        (a: ref(R, normal, int), b: ref(R, normal, int)) <- allocate_pair(r)    -- creates process value
-        (c: ref(R, normal, int), d: ref(R, normal, int)) <- allocate_pair(r)    -- creates process value
-        (a, b, c, d)                                                              -- returns composed process value
+        (a: ref(R, normal, int), b: ref(R, normal, int)) <- allocate_pair(r)    // creates process value
+        (c: ref(R, normal, int), d: ref(R, normal, int)) <- allocate_pair(r)    // creates process value
+        (a, b, c, d)                                                              // returns composed process value
     end
 }
 ```
@@ -5500,7 +5506,7 @@ alloc_region(normal_writeback) -> region(R, normal_writeback) proc[mem(normal_wr
 alloc_region(normal_writethrough) -> region(R, normal_writethrough) proc[mem(normal_writethrough)]
 alloc_region(normal_noncacheable) -> region(R, normal_noncacheable) proc[mem(normal_noncacheable)]
 alloc_region(atomic) -> region(R, atomic) proc[mem(atomic)]
-alloc_region(device) -> region(R, device) proc[mem(device)]  -- Driver library only
+alloc_region(device) -> region(R, device) proc[mem(device)]  // Driver library only
 ```
 
 **Memory Space Selection Guidelines:**
@@ -5613,10 +5619,10 @@ At program startup, the runtime configures MAIR_EL1 with the following attribute
 
 ```
 MAIR_EL1 Configuration:
-Attr0 = 0xFF (WBRAWA)  -- normal, normal_writeback, atomic
-Attr1 = 0x44 (WTRAWA)  -- normal_writethrough
-Attr2 = 0x00 (NCNB)    -- normal_noncacheable
-Attr3 = 0x04 (DEV_nGnRE) -- device
+Attr0 = 0xFF (WBRAWA)  // normal, normal_writeback, atomic
+Attr1 = 0x44 (WTRAWA)  // normal_writethrough
+Attr2 = 0x00 (NCNB)    // normal_noncacheable
+Attr3 = 0x04 (DEV_nGnRE) // device
 Attr4-Attr7 = Reserved (0x00)
 ```
 
@@ -5625,30 +5631,30 @@ Attr4-Attr7 = Reserved (0x00)
 The runtime initializes MAIR_EL1 during program startup:
 
 ```pseudocode
--- Initialize MAIR_EL1 register
-MAIR_EL1 = 0x0000000000000000  -- Clear register
+// Initialize MAIR_EL1 register
+MAIR_EL1 = 0x0000000000000000  // Clear register
 
--- Set Attr0: Write-Back, Read-Allocate, Write-Allocate (WBRAWA)
--- Outer: 1111 (WBRAWA, Inner Shareable)
--- Inner: 1111 (WBRAWA, Inner Shareable)
+// Set Attr0: Write-Back, Read-Allocate, Write-Allocate (WBRAWA)
+// Outer: 1111 (WBRAWA, Inner Shareable)
+// Inner: 1111 (WBRAWA, Inner Shareable)
 MAIR_EL1[7:0] = 0xFF
 
--- Set Attr1: Write-Through, Read-Allocate, Write-Allocate (WTRAWA)
--- Outer: 0100 (WTRAWA, Inner Shareable)
--- Inner: 0100 (WTRAWA, Inner Shareable)
+// Set Attr1: Write-Through, Read-Allocate, Write-Allocate (WTRAWA)
+// Outer: 0100 (WTRAWA, Inner Shareable)
+// Inner: 0100 (WTRAWA, Inner Shareable)
 MAIR_EL1[15:8] = 0x44
 
--- Set Attr2: Non-Cacheable, Non-Bufferable (NCNB)
--- Outer: 0000 (Non-cacheable, Inner Shareable)
--- Inner: 0000 (Non-cacheable, Inner Shareable)
+// Set Attr2: Non-Cacheable, Non-Bufferable (NCNB)
+// Outer: 0000 (Non-cacheable, Inner Shareable)
+// Inner: 0000 (Non-cacheable, Inner Shareable)
 MAIR_EL1[23:16] = 0x00
 
--- Set Attr3: Device, Non-Gathering, Non-Reordering, Early Write Acknowledgment
--- Outer: 0000 (Device nGnRE, Outer Shareable)
--- Inner: 0100 (Device nGnRE, Outer Shareable)
+// Set Attr3: Device, Non-Gathering, Non-Reordering, Early Write Acknowledgment
+// Outer: 0000 (Device nGnRE, Outer Shareable)
+// Inner: 0100 (Device nGnRE, Outer Shareable)
 MAIR_EL1[31:24] = 0x04
 
--- Write MAIR_EL1 register
+// Write MAIR_EL1 register
 MSR MAIR_EL1, MAIR_EL1
 ```
 
@@ -6017,9 +6023,9 @@ The specification provides latency ranges as **guidelines** rather than strict g
 Regions exist until explicitly deallocated or process termination:
 
 ```
-r: region(R, normal) <- alloc_region(normal)    -- region created
-refs: list<ref(R, normal, int)> <- allocate_in_region(r) -- allocate references in region
--- implicit deallocation when r goes out of scope
+r: region(R, normal) <- alloc_region(normal)    // region created
+refs: list<ref(R, normal, int)> <- allocate_in_region(r) // allocate references in region
+// implicit deallocation when r goes out of scope
 ```
 
 #### 12.1.3 Region Isolation
@@ -6028,8 +6034,8 @@ Regions provide memory isolation:
 ```
 r1: region(R1, normal) <- alloc_region(normal)
 r2: region(R2, normal) <- alloc_region(normal)
--- r1 and r2 are separate memory pools
--- no aliasing between different regions
+// r1 and r2 are separate memory pools
+// no aliasing between different regions
 ```
 
 #### 12.1.4 Static Region Lifetime Analysis
@@ -6126,12 +6132,12 @@ The lifetime analysis algorithm processes expressions and statements to compute 
 
 ```pseudocode
 function analyze_lifetime(expr, Γ, L, D):
-    -- Initialize result environments
+    // Initialize result environments
     L' = L
     D' = D
     
     case expr of:
-        -- Region allocation: add region to L
+        // Region allocation: add region to L
         alloc_region(Space):
             R = fresh_region_id()
             scope_current = current_scope()
@@ -6139,38 +6145,38 @@ function analyze_lifetime(expr, Γ, L, D):
             D' = D
             return (region(R, Space), L', D')
         
-        -- Reference allocation: add reference to D, verify region exists
+        // Reference allocation: add reference to D, verify region exists
         alloc_ref(r, v):
-            -- Analyze region parameter
+            // Analyze region parameter
             (τ_r, L_r, D_r) = analyze_lifetime(r, Γ, L, D)
-            -- Verify r is a region type
+            // Verify r is a region type
             if τ_r != region(R, Space):
                 error("Expected region type")
-            -- Verify region exists in lifetime environment
+            // Verify region exists in lifetime environment
             if R ∉ L_r:
                 error("Region R not in scope")
-            -- Analyze value
+            // Analyze value
             (τ_v, L_v, D_v) = analyze_lifetime(v, Γ, L_r, D_r)
-            -- Add reference to dependency set
+            // Add reference to dependency set
             scope_current = current_scope()
             D' = D_v ∪ {ref(R, Space, τ_v):scope_current}
             L' = L_v
             return (ref(R, Space, τ_v), L', D')
         
-        -- Reference read: verify reference and region exist
+        // Reference read: verify reference and region exist
         read_ref(ref_expr):
-            -- Analyze reference expression
+            // Analyze reference expression
             (τ_ref, L_ref, D_ref) = analyze_lifetime(ref_expr, Γ, L, D)
-            -- Verify ref_expr is a reference type
+            // Verify ref_expr is a reference type
             if τ_ref != ref(R, Space, T):
                 error("Expected reference type")
-            -- Verify region exists
+            // Verify region exists
             if R ∉ L_ref:
                 error("Region R not in scope")
-            -- Verify reference exists in dependency set
+            // Verify reference exists in dependency set
             if ref(R, Space, T) ∉ D_ref:
                 error("Reference not in dependency set")
-            -- Verify scope constraints
+            // Verify scope constraints
             scope_current = current_scope()
             scope_r = L_ref[R]
             scope_ref = D_ref[ref(R, Space, T)]
@@ -6178,58 +6184,58 @@ function analyze_lifetime(expr, Γ, L, D):
                 error("Reference used after region deallocation")
             if scope_current > scope_ref:
                 error("Reference used after creation scope")
-            -- Reference read doesn't modify environments
+            // Reference read doesn't modify environments
             return (T, L_ref, D_ref)
         
-        -- Reference write: verify reference and region exist
+        // Reference write: verify reference and region exist
         write_ref(ref_expr, value):
-            -- Analyze reference (same as read_ref)
+            // Analyze reference (same as read_ref)
             (τ_ref, L_ref, D_ref) = analyze_lifetime(ref_expr, Γ, L, D)
             if τ_ref != ref(R, Space, T):
                 error("Expected reference type")
             if R ∉ L_ref or ref(R, Space, T) ∉ D_ref:
                 error("Reference or region not in scope")
-            -- Verify scope constraints (same as read_ref)
+            // Verify scope constraints (same as read_ref)
             scope_current = current_scope()
             scope_r = L_ref[R]
             scope_ref = D_ref[ref(R, Space, T)]
             if scope_current > scope_r or scope_current > scope_ref:
                 error("Reference used after deallocation")
-            -- Analyze value
+            // Analyze value
             (τ_v, L_v, D_v) = analyze_lifetime(value, Γ, L_ref, D_ref)
-            -- Verify value type matches reference type
+            // Verify value type matches reference type
             if τ_v != T:
                 error("Type mismatch in write_ref")
             return (atom, L_v, D_v)
         
-        -- Function call: propagate lifetime constraints
+        // Function call: propagate lifetime constraints
         function_call(f, args):
-            -- Analyze function type
+            // Analyze function type
             τ_f = lookup_function_type(f, Γ)
-            -- Analyze arguments and collect lifetime constraints
+            // Analyze arguments and collect lifetime constraints
             L_args = L
             D_args = D
             for each arg in args:
                 (τ_arg, L_arg, D_arg) = analyze_lifetime(arg, Γ, L_args, D_args)
                 L_args = L_arg
                 D_args = D_arg
-            -- Function call doesn't extend lifetimes (regions passed as args extend via parameter rules)
+            // Function call doesn't extend lifetimes (regions passed as args extend via parameter rules)
             return (return_type(τ_f), L_args, D_args)
         
-        -- Scope exit: remove scoped regions and references
+        // Scope exit: remove scoped regions and references
         end_scope(scope_id):
             scope_current = scope_id
-            -- Remove regions allocated in this scope
+            // Remove regions allocated in this scope
             L' = {R:scope_r | R:scope_r ∈ L and scope_r != scope_current}
-            -- Remove references allocated in this scope
+            // Remove references allocated in this scope
             D' = {ref(R, Space, T):scope_ref | ref(R, Space, T):scope_ref ∈ D and scope_ref != scope_current}
-            -- Safety check: verify no references to deallocated regions
+            // Safety check: verify no references to deallocated regions
             for each ref(R, Space, T) in D':
                 if R ∉ L':
                     error("Reference to deallocated region")
             return (atom, L', D')
         
-        -- Do expression: sequential composition
+        // Do expression: sequential composition
         do_expr(stmts):
             L_current = L
             D_current = D
@@ -6239,7 +6245,7 @@ function analyze_lifetime(expr, Γ, L, D):
                 D_current = D_stmt
             return (return_type(last_stmt), L_current, D_current)
         
-        -- Other expressions: no lifetime effects
+        // Other expressions: no lifetime effects
         default:
             return (type_of(expr), L, D)
     end case
@@ -6284,14 +6290,14 @@ The algorithm computes `L'` and `D'` as follows:
 ```silica
 fn example() -> atom proc[mem(normal)] {
     do
-        r: region(R, normal) <- alloc_region(normal);  -- L = {R:scope_do}
-        ref1: ref(R, normal, int64) <- alloc_ref(r, 42);  -- D = {ref1:scope_do}
-        -- ref1 is valid here: scope_current = scope_do, scope_r = scope_do, scope_ref = scope_do
-        value: int64 <- read_ref(ref1);  -- ✓ Valid: scope_do ≤ scope_do
-        -- Region r and ref1 are deallocated at end of scope
-    end  -- L' = ∅, D' = ∅, safety check: ✓ No references remain
-    -- ERROR: Cannot use ref1 here - region r is deallocated
-    -- read_ref(ref1) would fail: R ∉ L'
+        r: region(R, normal) <- alloc_region(normal);  // L = {R:scope_do}
+        ref1: ref(R, normal, int64) <- alloc_ref(r, 42);  // D = {ref1:scope_do}
+        // ref1 is valid here: scope_current = scope_do, scope_r = scope_do, scope_ref = scope_do
+        value: int64 <- read_ref(ref1);  // ✓ Valid: scope_do ≤ scope_do
+        // Region r and ref1 are deallocated at end of scope
+    end  // L' = ∅, D' = ∅, safety check: ✓ No references remain
+    // ERROR: Cannot use ref1 here - region r is deallocated
+    // read_ref(ref1) would fail: R ∉ L'
 }
 ```
 
@@ -6341,7 +6347,7 @@ References are identity-based:
 ```
 r1: ref(R, normal, int) <- alloc_ref(region, 42)
 r2: ref(R, normal, int) <- alloc_ref(region, 42)
-r1 ≠ r2    -- different references, even with same value
+r1 ≠ r2    // different references, even with same value
 ```
 
 ### 12.3 Buffer Semantics
@@ -6350,7 +6356,7 @@ r1 ≠ r2    -- different references, even with same value
 Buffers represent contiguous memory arrays:
 
 ```
-buf(R, Space, T, N)    -- buffer of N elements of type T
+buf(R, Space, T, N)    // buffer of N elements of type T
 ```
 
 #### 12.3.2 Buffer Operations
@@ -6365,9 +6371,9 @@ write_buf(buffer, index, value) -> atom proc[mem(Space)]
 Buffer access is bounds-checked:
 
 ```
-buf: buf(R, normal, int, 10) <- alloc_buf(region, 10)  -- buffer of size 10
-x: int <- read_buf(buf, 5)           -- ✓ valid index
-y: int <- read_buf(buf, 15)          -- ✗ runtime bounds error
+buf: buf(R, normal, int, 10) <- alloc_buf(region, 10)  // buffer of size 10
+x: int <- read_buf(buf, 5)           // ✓ valid index
+y: int <- read_buf(buf, 15)          // ✗ runtime bounds error
 ```
 
 ### 12.4 Memory Safety Guarantees
@@ -6380,8 +6386,8 @@ r1: region(R1, normal) <- alloc_region(normal)
 r2: region(R2, normal) <- alloc_region(normal)
 ref1: ref(R1, normal, int) <- alloc_ref(r1, 42)
 
--- Cannot create reference in r2 pointing to r1's memory
--- Type system prevents: ref(R2, normal, ref(R1, normal, int))
+// Cannot create reference in r2 pointing to r1's memory
+// Type system prevents: ref(R2, normal, ref(R1, normal, int))
 ```
 
 #### 12.4.2 Lifetime Safety
@@ -6391,10 +6397,10 @@ References cannot outlive their regions:
 {
     r: region(R, normal) <- alloc_region(normal)
     ref: ref(R, normal, int) <- alloc_ref(r, 42)
-    -- ref is valid here
+    // ref is valid here
 }
--- r deallocated here
--- ref is now invalid (use would be memory error)
+// r deallocated here
+// ref is now invalid (use would be memory error)
 ```
 
 #### 12.4.3 Type Safety
@@ -6404,8 +6410,8 @@ Memory operations preserve types:
 ref_int: ref(R, normal, int) <- alloc_ref(r, 42)
 ref_str: ref(R, normal, string) <- alloc_ref(r, "hello")
 
-x: int <- read_ref(ref_int)    -- x : int
-y: string <- read_ref(ref_str)    -- y : string
+x: int <- read_ref(ref_int)    // x : int
+y: string <- read_ref(ref_str)    // y : string
 ```
 
 ## 13. Operational Semantics
@@ -6542,9 +6548,9 @@ The `do ... end` expression creates a process value through monadic binding:
 
 ```
 do
-    x <- e1    -- creates process e1, binds result to x
-    y <- e2    -- creates process e2, binds result to y
-    result     -- last expression without semicolon is the return value
+    x <- e1    // creates process e1, binds result to x
+    y <- e2    // creates process e2, binds result to y
+    result     // last expression without semicolon is the return value
 end
 ```
 
@@ -6570,9 +6576,9 @@ Reference lifetimes are bounded by region lifetimes:
 {
     r: region(R, normal) <- alloc_region(normal)
     ref: ref(R, normal, int) <- alloc_ref(r, 42)
-    -- ref is valid here
+    // ref is valid here
 }
--- r and ref are deallocated together
+// r and ref are deallocated together
 ```
 
 #### 14.1.3 No Use-After-Free
@@ -6582,7 +6588,7 @@ Attempting to use a reference after its region is deallocated is a type error:
 fn bad_lifetime() {
     r: region(R, normal) <- alloc_region(normal)
     ref: ref(R, normal, int) <- alloc_ref(r, 42)
-    return ref    -- ERROR: ref would outlive region r
+    return ref    // ERROR: ref would outlive region r
 }
 ```
 
@@ -6601,8 +6607,8 @@ If ⊢ program : τ then either:
 Effect violations are caught at runtime:
 
 ```
-proc[] int = alloc_ref(r, 42)    -- Type checks!
--- But fails at runtime: missing mem(normal) capability
+proc[] int = alloc_ref(r, 42)    // Type checks!
+// But fails at runtime: missing mem(normal) capability
 ```
 
 #### 14.2.3 Pattern Match Exhaustiveness
@@ -6613,7 +6619,7 @@ type OptionInt = Some(int64) | None
 
 case opt of {
     Some(x: int64) -> x
-    -- Missing None case: compilation error
+    // Missing None case: compilation error
 }
 ```
 
@@ -6632,7 +6638,7 @@ Messages maintain happens-before relationships:
 ```
 send(actor1, msg1)
 send(actor1, msg2)
--- actor1 receives msg1 before msg2
+// actor1 receives msg1 before msg2
 ```
 
 #### 14.3.3 Atomicity Guarantees
@@ -6640,8 +6646,8 @@ Atomic operations provide strong guarantees:
 
 ```
 atomic_compare_exchange(ref, expected, new)
--- Either succeeds completely or fails completely
--- No partial updates visible to other threads
+// Either succeeds completely or fails completely
+// No partial updates visible to other threads
 ```
 
 ### 14.4 Runtime Safety
@@ -6651,22 +6657,22 @@ Array/buffer access is bounds-checked:
 
 ```
 buf: buf(R, normal, int, 10) <- alloc_buf(r, 10)
-x: int <- read_buf(buf, 15)    -- Runtime error: index out of bounds
+x: int <- read_buf(buf, 15)    // Runtime error: index out of bounds
 ```
 
 #### 14.4.2 Division by Zero
 Integer division checks for zero divisor:
 
 ```
-x / 0    -- Runtime error: division by zero
+x / 0    // Runtime error: division by zero
 ```
 
 #### 14.4.3 Effect Violations
 Missing capabilities cause runtime errors:
 
 ```
--- Without mem(normal) capability:
-alloc_ref(r, 42)    -- Runtime error: capability violation
+// Without mem(normal) capability:
+alloc_ref(r, 42)    // Runtime error: capability violation
 ```
 
 ## 15. Actor Model Semantics
@@ -6693,9 +6699,9 @@ Each actor executes as an infinite loop in the runtime system:
 
 ```
 actor_loop(state, behavior) {
-    message <- recv()           -- runtime receives message from mailbox
-    new_state <- behavior(message, state)  -- user behavior processes message
-    actor_loop(new_state, behavior)        -- continue with new state
+    message <- recv()           // runtime receives message from mailbox
+    new_state <- behavior(message, state)  // user behavior processes message
+    actor_loop(new_state, behavior)        // continue with new state
 }
 ```
 
@@ -6763,16 +6769,16 @@ MPIDR_EL1 Register Layout:
 **Core ID Extraction:**
 
 ```pseudocode
--- Read MPIDR_EL1 for current core
+// Read MPIDR_EL1 for current core
 MRS MPIDR_EL1, MPIDR_EL1
 
--- Extract core identification
-CPU_ID = MPIDR_EL1[7:0]        -- Affinity level 0 (CPU within cluster)
-CLUSTER_ID = MPIDR_EL1[15:8]   -- Affinity level 1 (cluster)
-NUMA_NODE = MPIDR_EL1[23:16]   -- Affinity level 2 (NUMA node)
-SOCKET_ID = MPIDR_EL1[31:24]   -- Affinity level 3 (socket)
+// Extract core identification
+CPU_ID = MPIDR_EL1[7:0]        // Affinity level 0 (CPU within cluster)
+CLUSTER_ID = MPIDR_EL1[15:8]   // Affinity level 1 (cluster)
+NUMA_NODE = MPIDR_EL1[23:16]   // Affinity level 2 (NUMA node)
+SOCKET_ID = MPIDR_EL1[31:24]   // Affinity level 3 (socket)
 
--- Construct logical core ID
+// Construct logical core ID
 LOGICAL_CORE_ID = (SOCKET_ID << 24) | (NUMA_NODE << 16) | (CLUSTER_ID << 8) | CPU_ID
 ```
 
@@ -6822,21 +6828,21 @@ CCSIDR_EL1 Register Layout:
 **Cache Size Calculation:**
 
 ```pseudocode
--- Select cache level (via CSSELR_EL1)
-CSSELR_EL1[3:1] = cache_level  -- Select cache level (1, 2, or 3)
-IS = 0  -- Instruction cache (0) or Data cache (1)
+// Select cache level (via CSSELR_EL1)
+CSSELR_EL1[3:1] = cache_level  // Select cache level (1, 2, or 3)
+IS = 0  // Instruction cache (0) or Data cache (1)
 CSSELR_EL1[0] = IS
 MSR CSSELR_EL1, CSSELR_EL1
 
--- Read cache size information
+// Read cache size information
 MRS CCSIDR_EL1, CCSIDR_EL1
 
--- Calculate cache parameters
-LINE_SIZE = 2^(CCSIDR_EL1[2:0] + 4)  -- Cache line size in bytes
-ASSOCIATIVITY = 2^(CCSIDR_EL1[12:3] + 1)  -- Number of ways
-NUM_SETS = 2^(CCSIDR_EL1[26:13] + 1)  -- Number of sets
+// Calculate cache parameters
+LINE_SIZE = 2^(CCSIDR_EL1[2:0] + 4)  // Cache line size in bytes
+ASSOCIATIVITY = 2^(CCSIDR_EL1[12:3] + 1)  // Number of ways
+NUM_SETS = 2^(CCSIDR_EL1[26:13] + 1)  // Number of sets
 
--- Calculate total cache size
+// Calculate total cache size
 CACHE_SIZE = LINE_SIZE * ASSOCIATIVITY * NUM_SETS
 ```
 
@@ -6846,45 +6852,45 @@ CACHE_SIZE = LINE_SIZE * ASSOCIATIVITY * NUM_SETS
 function detect_cpu_topology():
     topology = {}
     
-    -- Query all cores
+    // Query all cores
     for each core in system:
-        -- Set core affinity
+        // Set core affinity
         set_cpu_affinity(core)
         
-        -- Read MPIDR_EL1
+        // Read MPIDR_EL1
         MRS MPIDR_EL1, MPIDR_EL1
         cpu_id = MPIDR_EL1[7:0]
         cluster_id = MPIDR_EL1[15:8]
         numa_node = MPIDR_EL1[23:16]
         socket_id = MPIDR_EL1[31:24]
         
-        -- Read cache hierarchy
+        // Read cache hierarchy
         MRS CLIDR_EL1, CLIDR_EL1
         l1_type = CLIDR_EL1[2:0]
         l2_type = CLIDR_EL1[5:3]
         l3_type = CLIDR_EL1[8:6]
         
-        -- Query L1 cache size
-        CSSELR_EL1 = (1 << 1) | 0  -- Level 1, Data cache
+        // Query L1 cache size
+        CSSELR_EL1 = (1 << 1) | 0  // Level 1, Data cache
         MSR CSSELR_EL1, CSSELR_EL1
         MRS CCSIDR_EL1, CCSIDR_EL1
         l1_size = calculate_cache_size(CCSIDR_EL1)
         
-        -- Query L2 cache size
-        CSSELR_EL1 = (2 << 1) | 0  -- Level 2, Data cache
+        // Query L2 cache size
+        CSSELR_EL1 = (2 << 1) | 0  // Level 2, Data cache
         MSR CSSELR_EL1, CSSELR_EL1
         MRS CCSIDR_EL1, CCSIDR_EL1
         l2_size = calculate_cache_size(CCSIDR_EL1)
         
-        -- Query L3 cache size (if present)
+        // Query L3 cache size (if present)
         if l3_type != 0:
-            CSSELR_EL1 = (3 << 1) | 0  -- Level 3, Data cache
+            CSSELR_EL1 = (3 << 1) | 0  // Level 3, Data cache
             MSR CSSELR_EL1, CSSELR_EL1
             MRS CCSIDR_EL1, CCSIDR_EL1
             l3_size = calculate_cache_size(CCSIDR_EL1)
         end if
         
-        -- Store topology information
+        // Store topology information
         topology[core] = {
             cpu_id: cpu_id,
             cluster_id: cluster_id,
@@ -6909,17 +6915,17 @@ For systems with heterogeneous cores (performance vs. efficiency), the runtime d
 
 ```pseudocode
 function detect_core_types():
-    -- Read MIDR_EL1 (Main ID Register) for each core
+    // Read MIDR_EL1 (Main ID Register) for each core
     for each core in system:
         set_cpu_affinity(core)
         MRS MIDR_EL1, MIDR_EL1
         
-        -- Extract implementer and part number
+        // Extract implementer and part number
         IMPLEMENTER = MIDR_EL1[31:24]
         PART_NUM = MIDR_EL1[15:4]
         
-        -- Determine core type based on implementer/part number
-        -- (implementation-specific, e.g., ARM Cortex-A78 vs Cortex-A55)
+        // Determine core type based on implementer/part number
+        // (implementation-specific, e.g., ARM Cortex-A78 vs Cortex-A55)
         if is_performance_core(IMPLEMENTER, PART_NUM):
             core_type[core] = PERFORMANCE_CORE
         else:
@@ -6935,20 +6941,20 @@ NUMA node information is extracted from MPIDR_EL1 and cross-referenced with syst
 
 ```pseudocode
 function detect_numa_topology():
-    -- Read MPIDR_EL1 for NUMA node assignment
+    // Read MPIDR_EL1 for NUMA node assignment
     for each core in system:
         set_cpu_affinity(core)
         MRS MPIDR_EL1, MPIDR_EL1
         numa_node = MPIDR_EL1[23:16]
         
-        -- Cross-reference with /proc/cpuinfo or sysfs
-        -- /sys/devices/system/node/node{N}/cpulist
+        // Cross-reference with /proc/cpuinfo or sysfs
+        // /sys/devices/system/node/node{N}/cpulist
         numa_nodes[numa_node].cores.append(core)
     end for
     
-    -- Query NUMA node memory information
+    // Query NUMA node memory information
     for each numa_node in numa_nodes:
-        -- Read from /sys/devices/system/node/node{N}/meminfo
+        // Read from /sys/devices/system/node/node{N}/meminfo
         numa_nodes[numa_node].memory_size = read_numa_memory_size(numa_node)
     end for
 end function
@@ -6959,13 +6965,13 @@ end function
 When an actor is spawned with core affinity:
 
 ```silica
--- Pin actor to performance cores
+// Pin actor to performance cores
 actor_ref: actor_ref <- spawn(initial_state, behavior, performance_cores)
 
--- Pin actor to specific core
+// Pin actor to specific core
 actor_ref: actor_ref <- spawn(initial_state, behavior, core_id(0))
 
--- Pin actor to core set
+// Pin actor to core set
 actor_ref: actor_ref <- spawn(initial_state, behavior, core_set([0, 1, 2]))
 ```
 
@@ -7003,17 +7009,17 @@ The runtime interacts with CPU frequency scaling:
 **Runtime Adaptation:**
 ```pseudocode
 function schedule_actor_with_frequency_scaling(actor, core):
-    -- Pin actor to core
+    // Pin actor to core
     pin_actor_to_core(actor, core)
     
-    -- Monitor actor priority and load
+    // Monitor actor priority and load
     if actor.priority == HIGH_PRIORITY:
-        -- Request maximum frequency for performance cores
+        // Request maximum frequency for performance cores
         if is_performance_core(core):
             set_cpu_frequency(core, MAX_FREQUENCY)
         end if
     else if actor.priority == LOW_PRIORITY:
-        -- Allow frequency scaling down for power saving
+        // Allow frequency scaling down for power saving
         set_cpu_frequency(core, SCALABLE)
     end if
 end function
@@ -7040,15 +7046,15 @@ Efficiency cores may be parked/unparked by the OS based on system load:
 ```pseudocode
 function handle_core_parking(core):
     if core_is_parked(core):
-        -- Find actors on parked core
+        // Find actors on parked core
         actors_on_core = get_actors_on_core(core)
         
-        -- Migrate actors to active cores
+        // Migrate actors to active cores
         for each actor in actors_on_core:
-            -- Find suitable active core
+            // Find suitable active core
             target_core = find_active_core(actor.affinity)
             
-            -- Migrate actor
+            // Migrate actor
             migrate_actor(actor, target_core)
         end for
     end if
@@ -7056,11 +7062,11 @@ end function
 
 function handle_core_unparking(core):
     if core_is_unparked(core):
-        -- Core is now available
-        -- Runtime can schedule new actors on this core
+        // Core is now available
+        // Runtime can schedule new actors on this core
         available_cores.add(core)
         
-        -- Prefer unparked efficiency cores for low-priority actors
+        // Prefer unparked efficiency cores for low-priority actors
         schedule_low_priority_actors_on_efficiency_cores()
     end if
 end function
@@ -7090,12 +7096,12 @@ function monitor_thermal_state():
         temperature = get_core_temperature(core)
         
         if temperature > THROTTLE_THRESHOLD:
-            -- Core is throttling
+            // Core is throttling
             if temperature > MIGRATION_THRESHOLD:
-                -- Migrate actors to cooler cores
+                // Migrate actors to cooler cores
                 migrate_actors_from_hot_core(core)
             else:
-                -- Reduce actor priority on hot core
+                // Reduce actor priority on hot core
                 reduce_actor_priority_on_core(core)
             end if
         end if
@@ -7103,18 +7109,18 @@ function monitor_thermal_state():
 end function
 
 function migrate_actors_from_hot_core(hot_core):
-    -- Find cooler cores
+    // Find cooler cores
     cool_cores = find_cooler_cores(hot_core)
     
-    -- Migrate high-priority actors first
+    // Migrate high-priority actors first
     actors = get_actors_on_core(hot_core)
     sort_by_priority(actors)
     
     for each actor in actors:
-        -- Find suitable cool core
+        // Find suitable cool core
         target_core = find_suitable_cool_core(actor, cool_cores)
         
-        -- Migrate actor
+        // Migrate actor
         migrate_actor(actor, target_core)
     end for
 end function
@@ -7141,23 +7147,23 @@ The runtime optimizes for energy efficiency by placing actors on appropriate cor
 **Runtime Strategy:**
 ```pseudocode
 function optimize_energy_efficiency():
-    -- Classify actors by priority
+    // Classify actors by priority
     high_priority_actors = filter_actors_by_priority(HIGH)
     low_priority_actors = filter_actors_by_priority(LOW)
     
-    -- Schedule high-priority actors on performance cores
+    // Schedule high-priority actors on performance cores
     for each actor in high_priority_actors:
         performance_core = find_available_performance_core()
         schedule_actor(actor, performance_core)
     end for
     
-    -- Schedule low-priority actors on efficiency cores
+    // Schedule low-priority actors on efficiency cores
     for each actor in low_priority_actors:
         efficiency_core = find_available_efficiency_core()
         schedule_actor(actor, efficiency_core)
     end for
     
-    -- Balance load to minimize power consumption
+    // Balance load to minimize power consumption
     balance_load_for_power_efficiency()
 end function
 ```
@@ -7209,25 +7215,25 @@ Each actor maintains runtime state for AArch64 integration:
 
 ```
 actor_runtime_state {
-    core_id: int,              -- Core the actor is pinned to
-    numa_node: int,            -- NUMA node of the actor's core
-    cache_domain: int,          -- Cache domain (L2/L3 sharing)
-    priority: int,              -- Scheduling priority
-    affinity_mask: cpu_set_t,   -- CPU affinity mask
+    core_id: int,              // Core the actor is pinned to
+    numa_node: int,            // NUMA node of the actor's core
+    cache_domain: int,          // Cache domain (L2/L3 sharing)
+    priority: int,              // Scheduling priority
+    affinity_mask: cpu_set_t,   // CPU affinity mask
 }
 ```
 
 **Example: NUMA-Aware Actor Placement**
 
 ```silica
--- Allocate region on NUMA node 0
+// Allocate region on NUMA node 0
 region: region(R, normal) <- alloc_region_on_numa(0, normal);
 
--- Spawn actor on same NUMA node
+// Spawn actor on same NUMA node
 actor_ref: actor_ref <- spawn_on_numa(initial_state, behavior, 0);
 
--- Runtime ensures actor runs on a core within NUMA node 0
--- minimizing cross-NUMA memory access latency
+// Runtime ensures actor runs on a core within NUMA node 0
+// minimizing cross-NUMA memory access latency
 ```
 
 #### 15.1.2.2 Actor Migration Overhead and Behavior
@@ -7319,10 +7325,10 @@ Actor migration is **manual-only** - application programmers must explicitly mig
 **Migration API:**
 
 ```silica
--- Explicitly migrate an actor to a target core
+// Explicitly migrate an actor to a target core
 migrate_actor(actor_ref: actor_ref, target_core: int) -> atom proc[concurrency]
 
--- Pin an actor to a specific core (prevents migration)
+// Pin an actor to a specific core (prevents migration)
 pin_actor_to_core(actor_ref: actor_ref, core_id: int) -> atom proc[concurrency]
 ```
 
@@ -7343,15 +7349,15 @@ Before making migration decisions, the runtime detects NUMA topology using AArch
 
 ```pseudocode
 function detect_numa_topology():
-    -- Read MPIDR_EL1 for NUMA node information
+    // Read MPIDR_EL1 for NUMA node information
     MRS MPIDR_EL1, MPIDR_EL1
-    NUMA_NODE = MPIDR_EL1[23:16]  -- Affinity level 2 (NUMA node)
+    NUMA_NODE = MPIDR_EL1[23:16]  // Affinity level 2 (NUMA node)
     
-    -- Query kernel interfaces for NUMA topology
-    -- /sys/devices/system/node/node{N}/cpulist provides core-to-NUMA mapping
-    -- /proc/cpuinfo provides core identification
+    // Query kernel interfaces for NUMA topology
+    // /sys/devices/system/node/node{N}/cpulist provides core-to-NUMA mapping
+    // /proc/cpuinfo provides core identification
     
-    -- Build NUMA topology map
+    // Build NUMA topology map
     for each core in system:
         core_numa_node = query_numa_node(core)
         numa_topology[core] = core_numa_node
@@ -7367,13 +7373,13 @@ The runtime uses the following algorithm to determine optimal actor placement:
 
 ```pseudocode
 function decide_actor_migration(actor, current_core, target_candidates):
-    -- Get actor's data region NUMA affinity
+    // Get actor's data region NUMA affinity
     actor_data_numa = get_actor_data_numa_node(actor)
     
-    -- Get current core NUMA node
+    // Get current core NUMA node
     current_numa = numa_topology[current_core]
     
-    -- Evaluate migration candidates
+    // Evaluate migration candidates
     best_core = current_core
     best_score = evaluate_placement_score(actor, current_core, actor_data_numa)
     
@@ -7387,7 +7393,7 @@ function decide_actor_migration(actor, current_core, target_candidates):
         end if
     end for
     
-    -- Migration decision: migrate if significantly better placement available
+    // Migration decision: migrate if significantly better placement available
     if best_core != current_core and best_score > best_score + MIGRATION_THRESHOLD:
         return MIGRATE_TO(best_core)
     else:
@@ -7398,14 +7404,14 @@ end function
 function evaluate_placement_score(actor, core, data_numa):
     core_numa = numa_topology[core]
     
-    -- Same NUMA node: highest score (local memory access)
+    // Same NUMA node: highest score (local memory access)
     if core_numa == data_numa:
         return 100
     
-    -- Different NUMA node: lower score (cross-NUMA access)
-    -- Score decreases with NUMA distance
+    // Different NUMA node: lower score (cross-NUMA access)
+    // Score decreases with NUMA distance
     numa_distance = get_numa_distance(core_numa, data_numa)
-    return 100 - (numa_distance * 20)  -- Penalty for cross-NUMA access
+    return 100 - (numa_distance * 20)  // Penalty for cross-NUMA access
 end function
 ```
 
@@ -7475,48 +7481,48 @@ NUMA-aware migration occurs at specific times:
 **Example 1: Same-NUMA Migration**
 
 ```silica
--- Actor with data on NUMA node 0
+// Actor with data on NUMA node 0
 actor_ref: actor_ref <- spawn(initial_state, behavior_fn);
 
--- Data region allocated on NUMA node 0
+// Data region allocated on NUMA node 0
 do
-    r: region(R, normal) <- alloc_region(normal);  -- Allocated on NUMA node 0
-    -- Actor is placed on core in NUMA node 0 (optimal placement)
+    r: region(R, normal) <- alloc_region(normal);  // Allocated on NUMA node 0
+    // Actor is placed on core in NUMA node 0 (optimal placement)
 end
 
--- Migration within NUMA node 0 (minimal overhead)
-migrate_actor(actor_ref, target_core_in_numa_0);  -- Same NUMA, fast migration
+// Migration within NUMA node 0 (minimal overhead)
+migrate_actor(actor_ref, target_core_in_numa_0);  // Same NUMA, fast migration
 ```
 
 **Example 2: Cross-NUMA Migration**
 
 ```silica
--- Actor with data on NUMA node 0
+// Actor with data on NUMA node 0
 actor_ref: actor_ref <- spawn(initial_state, behavior_fn);
 
--- Data region allocated on NUMA node 0
+// Data region allocated on NUMA node 0
 do
-    r: region(R, normal) <- alloc_region(normal);  -- Allocated on NUMA node 0
-    -- Actor is placed on core in NUMA node 0
+    r: region(R, normal) <- alloc_region(normal);  // Allocated on NUMA node 0
+    // Actor is placed on core in NUMA node 0
 end
 
--- Migration to NUMA node 1 (cross-NUMA, higher latency)
+// Migration to NUMA node 1 (cross-NUMA, higher latency)
 migrate_actor(actor_ref, target_core_in_numa_1);  
--- Memory access latency increases (cross-NUMA access)
--- Actor execution remains correct, but performance may degrade
+// Memory access latency increases (cross-NUMA access)
+// Actor execution remains correct, but performance may degrade
 ```
 
 **Example 3: NUMA-Optimized Placement**
 
 ```silica
--- Allocate data region on specific NUMA node
+// Allocate data region on specific NUMA node
 do
-    -- Allocate region on NUMA node 0
+    // Allocate region on NUMA node 0
     r: region(R, normal) <- alloc_region_on_numa(normal, numa_node_0);
     
-    -- Spawn actor - runtime places on core in NUMA node 0
+    // Spawn actor - runtime places on core in NUMA node 0
     actor_ref: actor_ref <- spawn(initial_state, behavior_fn);
-    -- Actor automatically placed on NUMA node 0 core (optimal)
+    // Actor automatically placed on NUMA node 0 core (optimal)
 end
 ```
 
@@ -7588,17 +7594,17 @@ The migration window is the period during which an actor is transitioning betwee
 **Example: Message Delivery During Migration**
 
 ```silica
--- Actor A sends messages to Actor B
-send(actor_b, msg1)  -- Delivered before migration
-send(actor_b, msg2)  -- Delivered before migration
+// Actor A sends messages to Actor B
+send(actor_b, msg1)  // Delivered before migration
+send(actor_b, msg2)  // Delivered before migration
 
--- Runtime decides to migrate Actor B (migration window starts)
--- Migration occurs (1-20 microseconds)
+// Runtime decides to migrate Actor B (migration window starts)
+// Migration occurs (1-20 microseconds)
 
-send(actor_b, msg3)  -- Queued during migration, delivered after migration completes
-send(actor_b, msg4)  -- Delivered after migration completes
+send(actor_b, msg3)  // Queued during migration, delivered after migration completes
+send(actor_b, msg4)  // Delivered after migration completes
 
--- Actor B processes messages in order: msg1, msg2, msg3, msg4
+// Actor B processes messages in order: msg1, msg2, msg3, msg4
 ```
 
 **Cross-Core Message Delivery:**
@@ -7658,7 +7664,7 @@ fn counter(msg: Request, state: int)
     case msg of
         {command: "increment", reply_to} -> return state + 1
         {command: "get", reply_to} ->
-            -- Send response back using cast
+            // Send response back using cast
             cast(reply_to, Response {result: state})
             return state
         {command: "reset", reply_to} -> return 0
@@ -7670,9 +7676,9 @@ fn counter(msg: Request, state: int)
 Actor state is private and can only be modified by the actor itself:
 
 ```
--- External code cannot access or modify actor state
+// External code cannot access or modify actor state
 actor_ref: actor_ref <- spawn(0, counter)
--- No way to read or write the counter value directly
+// No way to read or write the counter value directly
 ```
 
 #### 15.2.3 Behavior Hot-Swapping
@@ -7686,8 +7692,8 @@ Actors terminate when their behavior function cannot handle a message:
 ```
 fn fragile_behavior(msg: string, state: unit) -> atom proc[mailbox] {
     case msg of
-        "quit" -> -- terminate actor (no return)
-        other -> return ()  -- continue
+        "quit" -> // terminate actor (no return)
+        other -> return ()  // continue
     end
 }
 ```
@@ -7699,8 +7705,8 @@ Actor failures don't affect other actors:
 actor1: actor_ref <- spawn((), fragile_behavior)
 actor2: actor_ref <- spawn((), robust_behavior)
 
-send(actor1, "quit")    -- actor1 terminates
-send(actor2, "ping")    -- actor2 continues normally
+send(actor1, "quit")    // actor1 terminates
+send(actor2, "ping")    // actor2 continues normally
 ```
 
 ## 16. Message Passing
@@ -7731,8 +7737,8 @@ Each actor's mailbox is a queue containing all messages from all actors sending 
 ```
 send(actor, msg1)
 send(actor, msg2)
--- actor receives msg1, then msg2 (maintains sender order)
--- Messages from other actors may be interleaved between msg1 and msg2
+// actor receives msg1, then msg2 (maintains sender order)
+// Messages from other actors may be interleaved between msg1 and msg2
 ```
 
 #### 16.1.4 Message Delivery
@@ -7757,17 +7763,17 @@ An actor is considered terminated when:
 **Message Delivery Semantics:**
 
 ```silica
--- Actor A sends message to Actor B
+// Actor A sends message to Actor B
 actor_b_ref: actor_ref <- spawn(initial_state, behavior_fn);
 
--- Actor B terminates (for any reason)
--- ... Actor B terminates ...
+// Actor B terminates (for any reason)
+// ... Actor B terminates ...
 
--- Actor A sends message to terminated Actor B
-send(actor_b_ref, SomeMessage {});  -- Message is dropped, no error raised
+// Actor A sends message to terminated Actor B
+send(actor_b_ref, SomeMessage {});  // Message is dropped, no error raised
 
--- Optional: Runtime may log warning (implementation-dependent)
--- Warning: "Message sent to terminated actor"
+// Optional: Runtime may log warning (implementation-dependent)
+// Warning: "Message sent to terminated actor"
 ```
 
 **Race Conditions:**
@@ -7791,7 +7797,7 @@ To avoid message loss:
 Message reception is handled automatically by the actor runtime system. The `recv()` operation is not available for direct use in user code:
 
 ```
-recv() -> Msg proc[mailbox, concurrency]  -- Runtime internal function
+recv() -> Msg proc[mailbox, concurrency]  // Runtime internal function
 ```
 
 User behavior functions receive messages as parameters rather than calling `recv()` directly.
@@ -7922,8 +7928,8 @@ type Request = {data: int, reply_to: actor_ref};
 impl ActorMessage for Request;
 
 actor_ref: actor_ref <- spawn(0, handler)
-cast(actor_ref, Request {data: 42, reply_to: some_actor})  -- ✓ correct type
-cast(actor_ref, 42)  -- ✗ type error: int doesn't implement ActorMessage
+cast(actor_ref, Request {data: 42, reply_to: some_actor})  // ✓ correct type
+cast(actor_ref, 42)  // ✗ type error: int doesn't implement ActorMessage
 ```
 
 #### 16.3.4 Cast-Back Pattern
@@ -7938,9 +7944,9 @@ impl ActorMessage for Response;
 fn handler(msg: Request, state: State) -> State {
     case msg of
         {data, reply_to} ->
-            -- Process request and send response back
+            // Process request and send response back
             cast(reply_to, Response {result: data * 2})
-            -- ... update state ...
+            // ... update state ...
     end
 }
 ```
@@ -7964,7 +7970,7 @@ The `reply_to` field is optional - messages without it cannot be used for cast-b
 Atomic references provide thread-safe shared memory:
 
 ```
-atomic_ref(R, Space, T)    -- atomic reference to type T
+atomic_ref(R, Space, T)    // atomic reference to type T
 ```
 
 #### 17.1.2 Atomic Memory Spaces
@@ -7997,11 +8003,11 @@ type order = relaxed | acquire | release | acq_rel | seq_cst
 - Use for: counters, statistics, or when ordering truly doesn't matter
 
 ```silica
--- Example: Simple counter (ordering doesn't matter)
+// Example: Simple counter (ordering doesn't matter)
 counter: atomic_ref(R, normal, int64) <- alloc_atomic(region, 0);
 
 fn increment() -> atom proc[mem(normal), atomic] {
-    atomic_fetch_add(counter, 1, relaxed)  -- Fast, no ordering needed
+    atomic_fetch_add(counter, 1, relaxed)  // Fast, no ordering needed
 }
 ```
 
@@ -8011,21 +8017,21 @@ fn increment() -> atom proc[mem(normal), atomic] {
 - Use for: reading shared data that was published with release
 
 ```silica
--- Example: Reading published data
+// Example: Reading published data
 data: atomic_ref(R, normal, Data) <- alloc_atomic(region, initial_data);
 ready: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
 
--- Publisher (Actor A)
+// Publisher (Actor A)
 fn publish(new_data: Data) -> atom proc[mem(normal), atomic] {
-    write_ref(data, new_data);                    -- Write data
-    atomic_store(ready, true, release);           -- Publish with release
+    write_ref(data, new_data);                    // Write data
+    atomic_store(ready, true, release);           // Publish with release
 }
 
--- Consumer (Actor B)
+// Consumer (Actor B)
 fn consume() -> Data proc[mem(normal), atomic] {
-    ready_flag: bool <- atomic_load(ready, acquire);  -- Acquire synchronization
+    ready_flag: bool <- atomic_load(ready, acquire);  // Acquire synchronization
     if ready_flag {
-        read_ref(data)  -- Guaranteed to see the data written before release
+        read_ref(data)  // Guaranteed to see the data written before release
     } else {
         initial_data
     }
@@ -8038,19 +8044,19 @@ fn consume() -> Data proc[mem(normal), atomic] {
 - Use for: publishing shared data that will be read with acquire
 
 ```silica
--- Example: Publishing initialization complete
+// Example: Publishing initialization complete
 init_complete: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
 
--- Initializer (Actor A)
+// Initializer (Actor A)
 fn initialize() -> atom proc[mem(normal), atomic] {
-    -- ... perform initialization ...
-    atomic_store(init_complete, true, release);  -- Release: all prior writes visible
+    // ... perform initialization ...
+    atomic_store(init_complete, true, release);  // Release: all prior writes visible
 }
 
--- Waiter (Actor B)
+// Waiter (Actor B)
 fn wait_for_init() -> atom proc[mem(normal), atomic] {
-    complete: bool <- atomic_load(init_complete, acquire);  -- Acquire: see release
-    -- All initialization work is now guaranteed visible
+    complete: bool <- atomic_load(init_complete, acquire);  // Acquire: see release
+    // All initialization work is now guaranteed visible
 }
 ```
 
@@ -8059,14 +8065,14 @@ fn wait_for_init() -> atom proc[mem(normal), atomic] {
 - Use for: read-modify-write operations that both read and write shared state
 
 ```silica
--- Example: Atomic counter with ordering
+// Example: Atomic counter with ordering
 shared_counter: atomic_ref(R, normal, int64) <- alloc_atomic(region, 0);
 
 fn increment_with_ordering() -> int64 proc[mem(normal), atomic] {
-    -- acq_rel ensures this operation synchronizes both ways
+    // acq_rel ensures this operation synchronizes both ways
     old_value: int64 <- atomic_fetch_add(shared_counter, 1, acq_rel);
-    -- All prior increments are visible (acquire)
-    -- This increment is visible to future operations (release)
+    // All prior increments are visible (acquire)
+    // This increment is visible to future operations (release)
     old_value
 }
 ```
@@ -8078,17 +8084,17 @@ fn increment_with_ordering() -> int64 proc[mem(normal), atomic] {
 - Use when: you need the strongest guarantees or are unsure which ordering to use
 
 ```silica
--- Example: Global flag coordination
+// Example: Global flag coordination
 global_flag: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
 
--- Actor A
+// Actor A
 fn set_flag() -> atom proc[mem(normal), atomic] {
-    atomic_store(global_flag, true, seq_cst);  -- Participates in global order
+    atomic_store(global_flag, true, seq_cst);  // Participates in global order
 }
 
--- Actor B
+// Actor B
 fn check_flag() -> bool proc[mem(normal), atomic] {
-    atomic_load(global_flag, seq_cst)  -- Sees all seq_cst operations in order
+    atomic_load(global_flag, seq_cst)  // Sees all seq_cst operations in order
 }
 ```
 
@@ -8096,39 +8102,39 @@ fn check_flag() -> bool proc[mem(normal), atomic] {
 
 **Producer-Consumer Pattern:**
 ```silica
--- Shared buffer with atomic head/tail pointers
+// Shared buffer with atomic head/tail pointers
 type ring_buffer = {
     data: buf(R, normal, int64, 100),
     head: atomic_ref(R, normal, int64),
     tail: atomic_ref(R, normal, int64)
 }
 
--- Producer: publish items
+// Producer: publish items
 fn produce(buffer: ring_buffer, item: int64) -> bool proc[mem(normal), atomic] {
     head: int64 <- atomic_load(buffer.head, acquire);
     tail: int64 <- atomic_load(buffer.tail, relaxed);
     
     next_head: int64 <- (head + 1) % 100;
     if next_head == tail {
-        false  -- Buffer full
+        false  // Buffer full
     } else {
         write_buf(buffer.data, head, item);
-        atomic_store(buffer.head, next_head, release);  -- Release: item visible
+        atomic_store(buffer.head, next_head, release);  // Release: item visible
         true
     }
 }
 
--- Consumer: consume items
+// Consumer: consume items
 fn consume(buffer: ring_buffer) -> OptionInt64 proc[mem(normal), atomic] {
-    tail: int64 <- atomic_load(buffer.tail, acquire);  -- Acquire: see producer releases
+    tail: int64 <- atomic_load(buffer.tail, acquire);  // Acquire: see producer releases
     head: int64 <- atomic_load(buffer.head, relaxed);
     
     if tail == head {
-        None  -- Buffer empty
+        None  // Buffer empty
     } else {
         item: int64 <- read_buf(buffer.data, tail);
         next_tail: int64 <- (tail + 1) % 100;
-        atomic_store(buffer.tail, next_tail, release);  -- Release: consumption visible
+        atomic_store(buffer.tail, next_tail, release);  // Release: consumption visible
         Some(item)
     }
 }
@@ -8136,22 +8142,22 @@ fn consume(buffer: ring_buffer) -> OptionInt64 proc[mem(normal), atomic] {
 
 **Flag-Based Coordination:**
 ```silica
--- Coordination flag between actors
+// Coordination flag between actors
 ready_flag: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
 data: ref(R, normal, SharedData) <- alloc_ref(region, initial_data);
 
--- Actor A: Prepare and signal
+// Actor A: Prepare and signal
 fn prepare_and_signal(new_data: SharedData) -> atom proc[mem(normal), atomic] {
-    write_ref(data, new_data);                    -- Prepare data
-    atomic_store(ready_flag, true, release);      -- Signal with release
-    -- All writes before release are visible to acquire loads
+    write_ref(data, new_data);                    // Prepare data
+    atomic_store(ready_flag, true, release);      // Signal with release
+    // All writes before release are visible to acquire loads
 }
 
--- Actor B: Wait and read
+// Actor B: Wait and read
 fn wait_and_read() -> SharedData proc[mem(normal), atomic] {
-    ready: bool <- atomic_load(ready_flag, acquire);  -- Acquire: see release
+    ready: bool <- atomic_load(ready_flag, acquire);  // Acquire: see release
     if ready {
-        read_ref(data)  -- Guaranteed to see data written before release
+        read_ref(data)  // Guaranteed to see data written before release
     } else {
         initial_data
     }
@@ -8176,13 +8182,13 @@ fn push(stack: lock_free_stack, value: int64) -> atom proc[mem(normal), atomic] 
         old_top: ref(R, normal, stack_node) <- atomic_load(stack.top, acquire);
         write_ref(new_node.next, old_top);
         
-        -- Compare-and-swap with acq_rel for both read and write ordering
+        // Compare-and-swap with acq_rel for both read and write ordering
         result: {ok, ref(R, normal, stack_node)} | {fail, ref(R, normal, stack_node)} 
             <- atomic_compare_exchange(stack.top, old_top, new_node, acq_rel);
         
         case result of {
-            {ok, _} -> return;  -- Success
-            {fail, current_top} -> write_ref(new_node.next, current_top);  -- Retry
+            {ok, _} -> return;  // Success
+            {fail, current_top} -> write_ref(new_node.next, current_top);  // Retry
         }
     }
 }
@@ -8190,19 +8196,19 @@ fn push(stack: lock_free_stack, value: int64) -> atom proc[mem(normal), atomic] 
 
 **Actor Synchronization with Atomics:**
 ```silica
--- Shared counter accessed by multiple actors
+// Shared counter accessed by multiple actors
 shared_count: atomic_ref(R, normal, int64) <- alloc_atomic(region, 0);
 
--- Actor behavior that increments counter
+// Actor behavior that increments counter
 fn counter_actor(msg: IncrementMsg, state: unit) -> atom proc[mem(normal), atomic] {
-    -- Use seq_cst for global ordering across all actors
+    // Use seq_cst for global ordering across all actors
     atomic_fetch_add(shared_count, 1, seq_cst);
     ()
 }
 
--- Reader actor that reads the counter
+// Reader actor that reads the counter
 fn reader_actor(msg: ReadMsg, state: unit) -> int64 proc[mem(normal), atomic] {
-    -- seq_cst ensures we see all increments in order
+    // seq_cst ensures we see all increments in order
     atomic_load(shared_count, seq_cst)
 }
 ```
@@ -8217,15 +8223,15 @@ Atomic operations provide synchronization between actors, complementing message 
 
 **Combining Both:**
 ```silica
--- Use atomics for fast shared state, messages for coordination
+// Use atomics for fast shared state, messages for coordination
 shared_stats: atomic_ref(R, normal, Stats) <- alloc_atomic(region, initial_stats);
 
--- Fast path: atomic update
+// Fast path: atomic update
 fn update_stats_fast(increment: int64) -> atom proc[mem(normal), atomic] {
     atomic_fetch_add(shared_stats.count, increment, relaxed);
 }
 
--- Coordination path: message passing
+// Coordination path: message passing
 fn request_detailed_report(reply_to: actor_ref) -> atom proc[concurrency] {
     current_stats: Stats <- atomic_load(shared_stats, acquire);
     send(reply_to, ReportMsg {stats: current_stats});
@@ -8234,27 +8240,27 @@ fn request_detailed_report(reply_to: actor_ref) -> atom proc[concurrency] {
 
 **Happens-Before with Actors:**
 ```silica
--- Atomic release in one actor, message send, atomic acquire in another
+// Atomic release in one actor, message send, atomic acquire in another
 flag: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
 
--- Actor A
+// Actor A
 fn actor_a_behavior(msg: StartMsg, state: unit) -> atom proc[mem(normal), atomic, concurrency] {
-    -- Prepare data
+    // Prepare data
     prepare_data();
     
-    -- Release: all prior writes visible
+    // Release: all prior writes visible
     atomic_store(flag, true, release);
     
-    -- Send message (happens after release)
+    // Send message (happens after release)
     send(actor_b_ref, DataReadyMsg {});
     ()
 }
 
--- Actor B
+// Actor B
 fn actor_b_behavior(msg: DataReadyMsg, state: unit) -> atom proc[mem(normal), atomic] {
-    -- Acquire: guaranteed to see release from Actor A
+    // Acquire: guaranteed to see release from Actor A
     ready: bool <- atomic_load(flag, acquire);
-    -- All data prepared by Actor A is now visible
+    // All data prepared by Actor A is now visible
     process_data();
     ()
 }
@@ -8360,9 +8366,9 @@ AArch64 provides several memory barrier instructions:
 The `LDXR`/`STXR` (Load-Exclusive/Store-Exclusive) pair provides atomic read-modify-write:
 
 ```
-LDXR <Rt>, [<Xn|SP>]     -- Load-exclusive: marks memory location as exclusive
--- ... modify <Rt> ...
-STXR <Ws>, <Rt>, [<Xn|SP>] -- Store-exclusive: stores if location still exclusive
+LDXR <Rt>, [<Xn|SP>]     // Load-exclusive: marks memory location as exclusive
+// ... modify <Rt> ...
+STXR <Ws>, <Rt>, [<Xn|SP>] // Store-exclusive: stores if location still exclusive
 ```
 
 - **Exclusive Monitor**: Hardware tracks exclusive access per core
@@ -8372,9 +8378,9 @@ STXR <Ws>, <Rt>, [<Xn|SP>] -- Store-exclusive: stores if location still exclusiv
   ```
   loop:
       LDXR Rt, [Xn]
-      -- modify Rt
+      // modify Rt
       STXR Ws, Rt, [Xn]
-      CBNZ Ws, loop  -- retry if Ws != 0
+      CBNZ Ws, loop  // retry if Ws != 0
   ```
 
 **Instruction Variants:**
@@ -8445,7 +8451,7 @@ fn spsc_send(queue, item) -> bool proc[mem(normal), atomic] {
 
     next_tail = (tail + 1) % queue.capacity
     if next_tail == head {
-        return false    -- queue full
+        return false    // queue full
     }
 
     write_buf(queue.buf, tail, item)
@@ -8458,7 +8464,7 @@ fn spsc_recv(queue) -> option<T> proc[mem(normal), atomic] {
     tail: int <- atomic_load(queue.tail, acquire)
 
     if head == tail {
-        return None     -- queue empty
+        return None     // queue empty
     }
 
     item: T <- read_buf(queue.buf, head)
@@ -8481,8 +8487,8 @@ establishes: `msg1` happens-before `msg2` in actorA
 
 #### 18.1.2 Atomic Synchronization
 ```
-atomic_store(ref, value, release)  -- in actor A
-atomic_load(ref, acquire)          -- in actor B
+atomic_store(ref, value, release)  // in actor A
+atomic_load(ref, acquire)          // in actor B
 ```
 establishes: store happens-before load
 
@@ -8498,7 +8504,7 @@ A → B and B → C implies A → C
 Within a single actor, all operations appear sequentially consistent:
 
 ```
--- Inside actor, this appears atomic to external observers
+// Inside actor, this appears atomic to external observers
 x: int <- read_ref(ref1)
 y: int <- read_ref(ref2)
 write_ref(ref3, x + y)
@@ -8508,14 +8514,14 @@ write_ref(ref3, x + y)
 Between actors, only explicit synchronization establishes ordering:
 
 ```
--- Actor 1
+// Actor 1
 atomic_store(flag, true, release)
 send(actor2, data)
 
--- Actor 2 behavior function
+// Actor 2 behavior function
 fn process_message(msg: Data, state: unit) -> atom {
     flag_value: bool <- atomic_load(flag, acquire)
-    -- flag_value is guaranteed to be true
+    // flag_value is guaranteed to be true
 }
 ```
 
@@ -8546,27 +8552,27 @@ AArch64's weak ordering means:
 
 1. **No Guaranteed Ordering**: Without synchronization, memory operations can be reordered:
    ```
-   -- These may be reordered on AArch64:
-   write_ref(x, 1)  -- May appear after write_ref(y, 2) to other cores
+   // These may be reordered on AArch64:
+   write_ref(x, 1)  // May appear after write_ref(y, 2) to other cores
    write_ref(y, 2)
    ```
 
 2. **Acquire/Release Ordering**: Acquire/release pairs establish ordering:
    ```
-   -- Actor 1: Release
+   // Actor 1: Release
    write_ref(data, value)
-   atomic_store(flag, true, release)  -- STLR ensures prior writes visible
+   atomic_store(flag, true, release)  // STLR ensures prior writes visible
    
-   -- Actor 2: Acquire
-   ready: bool <- atomic_load(flag, acquire)  -- LDAR ensures sees release
-   value: int <- read_ref(data)  -- Guaranteed to see write_ref(data, value)
+   // Actor 2: Acquire
+   ready: bool <- atomic_load(flag, acquire)  // LDAR ensures sees release
+   value: int <- read_ref(data)  // Guaranteed to see write_ref(data, value)
    ```
 
 3. **Sequential Consistency**: Sequential consistency requires full barriers:
    ```
-   -- seq_cst operations use DMB ISH + LDAR/STLR
-   atomic_store(x, 1, seq_cst)  -- DMB ISH + STLR
-   atomic_load(y, seq_cst)      -- LDAR + DMB ISH
+   // seq_cst operations use DMB ISH + LDAR/STLR
+   atomic_store(x, 1, seq_cst)  // DMB ISH + STLR
+   atomic_load(y, seq_cst)      // LDAR + DMB ISH
    ```
 
 **Cache Coherency Guarantees:**
@@ -8611,26 +8617,26 @@ AArch64 implements a release consistency model:
 **Example: AArch64 Ordering Guarantees**
 
 ```silica
--- Actor 1: Producer
+// Actor 1: Producer
 fn producer_behavior(msg: unit, state: ProducerState) -> ProducerState proc[mem(normal), atomic] {
-    -- Prepare data
+    // Prepare data
     write_ref(state.data, 42);
     
-    -- Release: ensures data write is visible before flag write
-    atomic_store(state.ready_flag, true, release);  -- STLR instruction
+    // Release: ensures data write is visible before flag write
+    atomic_store(state.ready_flag, true, release);  // STLR instruction
     
-    -- Send message (happens after release)
+    // Send message (happens after release)
     send(consumer_ref, DataReadyMsg {});
     state
 }
 
--- Actor 2: Consumer
+// Actor 2: Consumer
 fn consumer_behavior(msg: DataReadyMsg, state: ConsumerState) -> ConsumerState proc[mem(normal), atomic] {
-    -- Acquire: guaranteed to see release from producer
-    ready: bool <- atomic_load(shared_flag, acquire);  -- LDAR instruction
+    // Acquire: guaranteed to see release from producer
+    ready: bool <- atomic_load(shared_flag, acquire);  // LDAR instruction
     
-    -- All data prepared by producer is now visible
-    -- This read is guaranteed to see write_ref(state.data, 42)
+    // All data prepared by producer is now visible
+    // This read is guaranteed to see write_ref(state.data, 42)
     value: int <- read_ref(shared_data);
     
     state
@@ -8708,10 +8714,10 @@ atomic_store(ptr, value, relaxed)
 
 Generated code:
 ```assembly
--- No barriers, just atomic store
-LDXR  W0, [X1]      -- Load exclusive (no ordering)
-STXR  W2, W0, [X1]  -- Store exclusive (no ordering)
-CBNZ  W2, retry      -- Retry if store failed
+// No barriers, just atomic store
+LDXR  W0, [X1]      // Load exclusive (no ordering)
+STXR  W2, W0, [X1]  // Store exclusive (no ordering)
+CBNZ  W2, retry      // Retry if store failed
 ```
 
 **2. Acquire Ordering (`acquire`):**
@@ -8722,8 +8728,8 @@ value: int <- atomic_load(ptr, acquire)
 
 Generated code:
 ```assembly
--- Load-acquire instruction provides acquire semantics
-LDAR  W0, [X1]      -- Load-acquire: ensures subsequent operations see prior releases
+// Load-acquire instruction provides acquire semantics
+LDAR  W0, [X1]      // Load-acquire: ensures subsequent operations see prior releases
 ```
 
 **3. Release Ordering (`release`):**
@@ -8734,8 +8740,8 @@ atomic_store(ptr, value, release)
 
 Generated code:
 ```assembly
--- Store-release instruction provides release semantics
-STLR  W0, [X1]      -- Store-release: ensures prior operations visible before store
+// Store-release instruction provides release semantics
+STLR  W0, [X1]      // Store-release: ensures prior operations visible before store
 ```
 
 **4. Acquire-Release Ordering (`acq_rel`):**
@@ -8747,10 +8753,10 @@ old_value: int <- atomic_fetch_add(ptr, 1, acq_rel)
 Generated code:
 ```assembly
 loop:
-  LDAXR W0, [X1]    -- Load-acquire: see prior releases
-  ADD   W0, W0, #1  -- Modify value
-  STLXR W2, W0, [X1] -- Store-release: make modification visible
-  CBNZ  W2, loop     -- Retry if store failed
+  LDAXR W0, [X1]    // Load-acquire: see prior releases
+  ADD   W0, W0, #1  // Modify value
+  STLXR W2, W0, [X1] // Store-release: make modification visible
+  CBNZ  W2, loop     // Retry if store failed
 ```
 
 **5. Sequential Consistency (`seq_cst`):**
@@ -8761,17 +8767,17 @@ atomic_store(ptr, value, seq_cst)
 
 Generated code:
 ```assembly
--- Full barrier before store-release for global ordering
-DMB   ISH           -- Ensure all prior operations complete
-STLR  W0, [X1]      -- Store-release with global ordering
-DMB   ISH           -- Ensure store completes before subsequent operations
+// Full barrier before store-release for global ordering
+DMB   ISH           // Ensure all prior operations complete
+STLR  W0, [X1]      // Store-release with global ordering
+DMB   ISH           // Ensure store completes before subsequent operations
 ```
 
 For `atomic_load` with `seq_cst`:
 
 ```assembly
-LDAR  W0, [X1]      -- Load-acquire
-DMB   ISH           -- Ensure load completes before subsequent operations
+LDAR  W0, [X1]      // Load-acquire
+DMB   ISH           // Ensure load completes before subsequent operations
 ```
 
 **Barrier Selection Guidelines:**
@@ -8975,30 +8981,30 @@ The following tables provide comprehensive guidance for selecting appropriate ba
 **Example: Producer-Consumer with Barriers**
 
 ```silica
--- Producer (Actor 1)
+// Producer (Actor 1)
 fn producer(msg: unit, state: ProducerState) -> ProducerState proc[mem(normal), atomic] {
     write_ref(state.data, 42);
-    atomic_store(state.ready_flag, true, release);  -- STLR instruction
+    atomic_store(state.ready_flag, true, release);  // STLR instruction
     state
 }
 ```
 
 Generated code for producer:
 ```assembly
--- write_ref(state.data, 42)
-STR   W2, [X1]      -- Store data (normal store, no ordering)
+// write_ref(state.data, 42)
+STR   W2, [X1]      // Store data (normal store, no ordering)
 
--- atomic_store(state.ready_flag, true, release)
+// atomic_store(state.ready_flag, true, release)
 MOV   W0, #1
-STLR  W0, [X3]      -- Store-release: ensures data store visible before flag store
+STLR  W0, [X3]      // Store-release: ensures data store visible before flag store
 ```
 
 ```silica
--- Consumer (Actor 2)
+// Consumer (Actor 2)
 fn consumer(msg: unit, state: ConsumerState) -> ConsumerState proc[mem(normal), atomic] {
-    ready: bool <- atomic_load(state.ready_flag, acquire);  -- LDAR instruction
+    ready: bool <- atomic_load(state.ready_flag, acquire);  // LDAR instruction
     if ready {
-        value: int <- read_ref(state.data);  -- Guaranteed to see producer's write
+        value: int <- read_ref(state.data);  // Guaranteed to see producer's write
     }
     state
 }
@@ -9006,13 +9012,13 @@ fn consumer(msg: unit, state: ConsumerState) -> ConsumerState proc[mem(normal), 
 
 Generated code for consumer:
 ```assembly
--- atomic_load(state.ready_flag, acquire)
-LDAR  W0, [X3]      -- Load-acquire: ensures sees producer's release
-CBNZ  W0, read_data -- Branch if ready
+// atomic_load(state.ready_flag, acquire)
+LDAR  W0, [X3]      // Load-acquire: ensures sees producer's release
+CBNZ  W0, read_data // Branch if ready
 
 read_data:
--- read_ref(state.data)
-LDR   W1, [X1]      -- Load data (guaranteed to see producer's write due to LDAR)
+// read_ref(state.data)
+LDR   W1, [X1]      // Load data (guaranteed to see producer's write due to LDAR)
 ```
 
 **Performance Considerations:**
@@ -9030,7 +9036,7 @@ Atomic operations prevent data races:
 ```
 counter: atomic_ref(R, normal, int) <- alloc_atomic(region, 0)
 
--- Multiple actors can safely increment
+// Multiple actors can safely increment
 fn increment_counter() {
     atomic_fetch_add(counter, 1, seq_cst)
 }
@@ -9040,8 +9046,8 @@ fn increment_counter() {
 Actors cannot directly share mutable state:
 
 ```
--- This is not possible in Silica
-actor1_state = actor2.state.field  -- ✗ No shared state access
+// This is not possible in Silica
+actor1_state = actor2.state.field  // ✗ No shared state access
 ```
 
 #### 18.3.3 Message Immutability
@@ -9050,8 +9056,8 @@ Messages cannot be mutated after sending:
 ```
 mutable_data = {value: 42}
 send(actor, mutable_data)
--- Cannot modify mutable_data.value here
--- Actor receives immutable copy
+// Cannot modify mutable_data.value here
+// Actor receives immutable copy
 ```
 
 ### 18.4 Deadlock Freedom
@@ -9071,16 +9077,16 @@ Atomic RMW operations are indivisible - no partial update deadlocks.
 Atomic operations enable lock-free data structures:
 
 ```
--- SPSC queue: no locks, wait-free for single producer/consumer
--- MPSC queue: lock-free, wait-free for producers
+// SPSC queue: no locks, wait-free for single producer/consumer
+// MPSC queue: lock-free, wait-free for producers
 ```
 
 #### 16.5.2 Composable Concurrency
 Actors compose without synchronization overhead:
 
 ```
--- Independent actors scale linearly
--- No global locks or shared state bottlenecks
+// Independent actors scale linearly
+// No global locks or shared state bottlenecks
 ```
 
 #### 18.5.3 Hardware Utilization
@@ -9113,11 +9119,11 @@ Modules are organized through file system structure and search paths:
 
 ```
 project/
-├── main.silica          -- module 'main'
-├── math_utils.silica    -- module 'math_utils'
+├── main.silica          // module 'main'
+├── math_utils.silica    // module 'math_utils'
 └── utils/
-    ├── string.silica    -- module 'string'
-    └── list.silica      -- module 'list'
+    ├── string.silica    // module 'string'
+    └── list.silica      // module 'list'
 ```
 
 ### 19.2 Export System
@@ -9146,8 +9152,8 @@ The compiler validates that:
 Import modules using the `use` keyword with comma-separated module names:
 
 ```
-use math_utils;                    -- import single module
-use collections, io, string;      -- import multiple modules
+use math_utils;                    // import single module
+use collections, io, string;      // import multiple modules
 ```
 
 - All exported functions from imported modules become available in the current scope
@@ -9163,8 +9169,8 @@ use math_utils;
 
 fn main() -> int {
     do
-        result:int <- add(3, 4);   -- 'add' from math_utils module
-        multiply(result, 2)        -- 'multiply' from math_utils module
+        result:int <- add(3, 4);   // 'add' from math_utils module
+        multiply(result, 2)        // 'multiply' from math_utils module
     end
 }
 ```
@@ -9201,7 +9207,7 @@ When multiple modules are imported in a single `use` statement, conflicts are de
 
 ```pseudocode
 function detect_name_conflicts(imported_modules):
-    -- Collect all exported symbols from all modules
+    // Collect all exported symbols from all modules
     all_symbols = {}
     module_symbols = {}
     
@@ -9216,11 +9222,11 @@ function detect_name_conflicts(imported_modules):
         end for
     end for
     
-    -- Detect conflicts
+    // Detect conflicts
     conflicts = []
     for each symbol_name, symbol_list in all_symbols:
         if length(symbol_list) > 1:
-            -- Multiple modules export the same name
+            // Multiple modules export the same name
             conflicts.append({
                 name: symbol_name,
                 modules: [s.module for s in symbol_list],
@@ -9229,7 +9235,7 @@ function detect_name_conflicts(imported_modules):
         end if
     end for
     
-    -- Report all conflicts together
+    // Report all conflicts together
     if conflicts:
         error("Name conflicts detected: " + format_conflicts(conflicts))
     end if
@@ -9239,17 +9245,17 @@ end function
 **Conflict Detection Example:**
 
 ```silica
--- math.silica
+// math.silica
 export add/2, multiply/2;
 
--- string.silica
+// string.silica
 export add/2, concat/2;
 
--- collections.silica
+// collections.silica
 export add/2, remove/1;
 
--- main.silica
-use math, string, collections;  -- Error: add/2 conflict across 3 modules
+// main.silica
+use math, string, collections;  // Error: add/2 conflict across 3 modules
 ```
 
 **Error Message Format:**
@@ -9294,14 +9300,14 @@ See specification: spec:§19.3.3
 If multiple name conflicts exist, all are reported:
 
 ```silica
--- math.silica
+// math.silica
 export add/2, subtract/2;
 
--- string.silica
-export add/2, subtract/2;  -- Both add/2 and subtract/2 conflict
+// string.silica
+export add/2, subtract/2;  // Both add/2 and subtract/2 conflict
 
--- main.silica
-use math, string;  -- Error: 2 conflicts reported together
+// main.silica
+use math, string;  // Error: 2 conflicts reported together
 ```
 
 **Error Message for Multiple Conflicts:**
@@ -9326,26 +9332,26 @@ Restructure modules to avoid conflicts by creating more specific module names:
 
 **Before (Conflict):**
 ```silica
--- math.silica
+// math.silica
 export add/2, multiply/2;
 
--- string.silica
-export add/2;  -- Conflict: add/2 already exported by math
+// string.silica
+export add/2;  // Conflict: add/2 already exported by math
 
--- main.silica
-use math, string;  -- Error: add/2 conflict
+// main.silica
+use math, string;  // Error: add/2 conflict
 ```
 
 **After (Resolved):**
 ```silica
--- math_utils.silica
+// math_utils.silica
 export add/2, multiply/2;
 
--- string_utils.silica
-export concat/2;  -- Renamed from add/2 to concat/2
+// string_utils.silica
+export concat/2;  // Renamed from add/2 to concat/2
 
--- main.silica
-use math_utils, string_utils;  -- No conflict
+// main.silica
+use math_utils, string_utils;  // No conflict
 ```
 
 **Strategy 2: Function Renaming**
@@ -9354,26 +9360,26 @@ Rename conflicting functions in one of the modules:
 
 **Before (Conflict):**
 ```silica
--- collections.silica
-export add/2;  -- Add element to collection
+// collections.silica
+export add/2;  // Add element to collection
 
--- math.silica
-export add/2;  -- Add two numbers
+// math.silica
+export add/2;  // Add two numbers
 
--- main.silica
-use collections, math;  -- Error: add/2 conflict
+// main.silica
+use collections, math;  // Error: add/2 conflict
 ```
 
 **After (Resolved):**
 ```silica
--- collections.silica
-export add_element/2;  -- Renamed to avoid conflict
+// collections.silica
+export add_element/2;  // Renamed to avoid conflict
 
--- math.silica
-export add/2;  -- Keep original name
+// math.silica
+export add/2;  // Keep original name
 
--- main.silica
-use collections, math;  -- No conflict: add_element/2 vs add/2
+// main.silica
+use collections, math;  // No conflict: add_element/2 vs add/2
 ```
 
 **Strategy 3: Module Hierarchy (Future Consideration)**
@@ -9381,7 +9387,7 @@ use collections, math;  -- No conflict: add_element/2 vs add/2
 While Silica doesn't currently support module hierarchies, future versions may support:
 
 ```silica
--- Proposed future syntax (not currently supported)
+// Proposed future syntax (not currently supported)
 use math::arithmetic;
 use math::geometry;
 use string::operations;
@@ -9393,26 +9399,26 @@ Create wrapper modules that selectively re-export functions:
 
 **Before (Conflict):**
 ```silica
--- io.silica
+// io.silica
 export read/1, write/2;
 
--- network.silica
-export read/1, send/2;  -- Conflict: read/1
+// network.silica
+export read/1, send/2;  // Conflict: read/1
 
--- main.silica
-use io, network;  -- Error: read/1 conflict
+// main.silica
+use io, network;  // Error: read/1 conflict
 ```
 
 **After (Resolved):**
 ```silica
--- io.silica
+// io.silica
 export read_file/1, write_file/2;
 
--- network.silica
+// network.silica
 export read_socket/1, send/2;
 
--- main.silica
-use io, network;  -- No conflict: read_file/1 vs read_socket/1
+// main.silica
+use io, network;  // No conflict: read_file/1 vs read_socket/1
 ```
 
 **Naming Conventions to Avoid Conflicts:**
@@ -9428,10 +9434,10 @@ use io, network;  -- No conflict: read_file/1 vs read_socket/1
 Avoid overly generic names that are likely to conflict:
 
 ```silica
--- Bad: Too generic
+// Bad: Too generic
 export add/2, get/1, set/2, create/1
 
--- Good: More specific
+// Good: More specific
 export add_element/2, get_value/1, set_value/2, create_instance/1
 ```
 
@@ -9440,10 +9446,10 @@ export add_element/2, get_value/1, set_value/2, create_instance/1
 Avoid conflicts with standard library function names:
 
 ```silica
--- Bad: Conflicts with stdlib
+// Bad: Conflicts with stdlib
 export print/1, read/1, write/2
 
--- Good: More specific
+// Good: More specific
 export print_debug/1, read_config/1, write_log/2
 ```
 
@@ -9452,10 +9458,10 @@ export print_debug/1, read_config/1, write_log/2
 Common operations (add, remove, get, set) are prone to conflicts:
 
 ```silica
--- Bad: Common names
+// Bad: Common names
 export add/2, remove/1, get/1
 
--- Good: Context-specific names
+// Good: Context-specific names
 export add_to_list/2, remove_from_set/1, get_map_value/1
 ```
 
@@ -9471,34 +9477,34 @@ export add_to_list/2, remove_from_set/1, get_map_value/1
 
 **Initial State (Conflict):**
 ```silica
--- calculator.silica
+// calculator.silica
 export add/2, subtract/2, multiply/2;
 
--- list_ops.silica
-export add/2, remove/1;  -- Conflict: add/2
+// list_ops.silica
+export add/2, remove/1;  // Conflict: add/2
 
--- main.silica
-use calculator, list_ops;  -- Error: add/2 conflict
+// main.silica
+use calculator, list_ops;  // Error: add/2 conflict
 ```
 
 **Resolution:**
 ```silica
--- calculator.silica (unchanged)
+// calculator.silica (unchanged)
 export add/2, subtract/2, multiply/2;
 
--- list_ops.silica (renamed function)
-export append/2, remove/1;  -- Renamed add/2 to append/2
+// list_ops.silica (renamed function)
+export append/2, remove/1;  // Renamed add/2 to append/2
 
--- main.silica (no conflict)
+// main.silica (no conflict)
 use calculator, list_ops;
 
 fn example() -> int64 {
     do
-        -- Use calculator.add/2
+        // Use calculator.add/2
         sum: int64 <- add(3, 4);
         
-        -- Use list_ops.append/2 (renamed from add/2)
-        -- (list operations would use append/2)
+        // Use list_ops.append/2 (renamed from add/2)
+        // (list operations would use append/2)
         sum
     end
 }
@@ -9525,19 +9531,19 @@ Silica's module system is designed to be:
 Modules can depend on other modules through imports:
 
 ```
--- math_utils.silica (module name: math_utils)
+// math_utils.silica (module name: math_utils)
 export add/2, multiply/2;
 
 fn add(x: int, y: int) -> int { x + y }
 fn multiply(x: int, y: int) -> int { x * y }
 
--- main.silica (module name: main)
+// main.silica (module name: main)
 use math_utils;
 
 fn main() -> int {
     do
-        sum:int <- add(3, 4);        -- uses function from math_utils
-        product:int <- multiply(sum, 2);  -- uses another function from math_utils
+        sum:int <- add(3, 4);        // uses function from math_utils
+        product:int <- multiply(sum, 2);  // uses another function from math_utils
         product
     end
 }
@@ -9556,13 +9562,13 @@ The compiler handles multi-module programs as follows:
 ```
 my_project/
 ├── silica-comp -I modules -I stdlib main.silica
-├── main.silica           -- Entry point module
+├── main.silica           // Entry point module
 ├── modules/
-│   ├── math_utils.silica -- Math utilities
-│   └── collections.silica -- Data structures
+│   ├── math_utils.silica // Math utilities
+│   └── collections.silica // Data structures
 └── stdlib/
-    ├── io.silica         -- Input/output
-    └── string.silica     -- String operations
+    ├── io.silica         // Input/output
+    └── string.silica     // String operations
 ```
 
 #### 19.4.4 Compilation Order
@@ -9631,7 +9637,7 @@ The compilation process consists of three sequential phases:
 - **Implementation**: Parse all modules concurrently using thread pool
 
 ```pseudocode
--- Parse phase: fully parallel
+// Parse phase: fully parallel
 for each module_file in parallel:
     ast = parse(module_file)
     module_asts[module_name] = ast
@@ -9649,16 +9655,16 @@ for each module_file in parallel:
 - **Implementation**: Single-threaded type checking with access to all module ASTs
 
 ```pseudocode
--- Type check phase: sequential (cross-module dependencies)
+// Type check phase: sequential (cross-module dependencies)
 type_check_all_modules(module_asts, dependency_graph):
-    -- Build global type environment from all modules
+    // Build global type environment from all modules
     global_env = build_global_type_environment(module_asts)
     
-    -- Type check each module (can access all module types)
+    // Type check each module (can access all module types)
     for each module in topological_order(dependency_graph):
         type_check_module(module, global_env)
     
-    -- Verify cross-module type consistency
+    // Verify cross-module type consistency
     verify_cross_module_types(global_env)
 ```
 
@@ -9675,19 +9681,19 @@ type_check_all_modules(module_asts, dependency_graph):
 - **Implementation**: Parallel codegen for modules at same level, sequential for dependencies
 
 ```pseudocode
--- Codegen phase: parallel with dependency constraints
+// Codegen phase: parallel with dependency constraints
 codegen_all_modules(type_checked_asts, dependency_graph):
-    -- Process modules level by level
+    // Process modules level by level
     for each level in dependency_levels(dependency_graph):
-        -- Parallel codegen for modules at this level
+        // Parallel codegen for modules at this level
         for each module in level in parallel:
             llvm_module = codegen_module(module, type_checked_asts[module])
             llvm_modules[module] = llvm_module
         
-        -- Wait for all modules at this level to complete
+        // Wait for all modules at this level to complete
         synchronize()
     
-    -- Link all LLVM modules together
+    // Link all LLVM modules together
     final_module = link_llvm_modules(llvm_modules)
 ```
 
@@ -9743,7 +9749,7 @@ Codegen Phase (parallel by level):
 After codegen, all LLVM modules are linked together for cross-module optimization:
 
 ```pseudocode
--- Cross-module optimization (sequential)
+// Cross-module optimization (sequential)
 optimized_module = link_and_optimize(llvm_modules)
 ```
 
@@ -9763,11 +9769,11 @@ This phase:
 Cyclic module dependencies are not allowed:
 
 ```
--- a.silica
-use b;        -- A depends on B
+// a.silica
+use b;        // A depends on B
 
--- b.silica
-use a;        -- B depends on A (creates cycle)
+// b.silica
+use a;        // B depends on A (creates cycle)
 ```
 This results in a compilation error.
 
@@ -9827,14 +9833,14 @@ silica-comp -I modules -I stdlib main.silica
 
 #### 19.6.4 Error Examples
 ```
--- Error: module 'nonexistent' not found in search paths
+// Error: module 'nonexistent' not found in search paths
 use nonexistent;
 
--- Error: function 'divide' not defined in this module
+// Error: function 'divide' not defined in this module
 export divide/2;
 
--- Error: both 'math' and 'advanced_math' export 'add'
-use math, advanced_math;  -- if both export add/2
+// Error: both 'math' and 'advanced_math' export 'add'
+use math, advanced_math;  // if both export add/2
 ```
 
 ## 20. Standard Library
@@ -9845,19 +9851,19 @@ use math, advanced_math;  -- if both export add/2
 Represents optional values using concrete variant types:
 
 ```
--- Concrete option types for common cases
+// Concrete option types for common cases
 type OptionInt = Some(int) | None
 type OptionString = Some(string) | None
 type OptionBool = Some(bool) | None
--- Additional concrete types can be defined as needed
+// Additional concrete types can be defined as needed
 
--- Common Option trait for shared operations
+// Common Option trait for shared operations
 trait OptionLike {
     fn is_some(self: Self) -> bool;
     fn is_none(self: Self) -> bool;
 }
 
--- Implement OptionLike for concrete option types
+// Implement OptionLike for concrete option types
 impl OptionLike for OptionInt {
     fn is_some(self: OptionInt) -> bool {
         case self of
@@ -9874,7 +9880,7 @@ impl OptionLike for OptionInt {
     }
 }
 
--- Type-specific operations
+// Type-specific operations
 fn unwrap_int(opt: OptionInt) -> int {
     case opt of
         Some(value) -> value
@@ -9883,8 +9889,8 @@ fn unwrap_int(opt: OptionInt) -> int {
 }
 
 fn find_index_int(list: ListInt, item: int) -> OptionInt {
-    -- returns Some(index) or None
-    -- Implementation...
+    // returns Some(index) or None
+    // Implementation...
 }
 ```
 
@@ -9894,19 +9900,19 @@ fn find_index_int(list: ListInt, item: int) -> OptionInt {
 Represents computation results or errors using concrete variant types:
 
 ```
--- Concrete result types for common cases
+// Concrete result types for common cases
 type ResultIntString = Ok(int) | Error(string)
 type ResultStringInt = Ok(string) | Error(int)
 type ResultIntInt = Ok(int) | Error(int)
--- Additional concrete types can be defined as needed
+// Additional concrete types can be defined as needed
 
--- Common Result trait for shared operations
+// Common Result trait for shared operations
 trait ResultLike {
     fn is_ok(self: Self) -> bool;
     fn is_error(self: Self) -> bool;
 }
 
--- Implement ResultLike for concrete result types
+// Implement ResultLike for concrete result types
 impl ResultLike for ResultIntString {
     fn is_ok(self: ResultIntString) -> bool {
         case self of
@@ -9923,7 +9929,7 @@ impl ResultLike for ResultIntString {
     }
 }
 
--- Type-specific operations
+// Type-specific operations
 fn unwrap_ok_int_string(result: ResultIntString) -> int {
     case result of
         Ok(value) -> value
@@ -9932,8 +9938,8 @@ fn unwrap_ok_int_string(result: ResultIntString) -> int {
 }
 
 fn parse_int(s: string) -> ResultIntString {
-    -- returns Ok(value) or Error("invalid number")
-    -- Implementation...
+    // returns Ok(value) or Error("invalid number")
+    // Implementation...
 }
 ```
 
@@ -9943,33 +9949,33 @@ fn parse_int(s: string) -> ResultIntString {
 Immutable functional lists using variant types per element type:
 
 ```
--- Marker trait: any type implementing this can be in a list
+// Marker trait: any type implementing this can be in a list
 trait Listable {
-    -- Marker trait, no methods needed
+    // Marker trait, no methods needed
 }
 
--- Implement Listable for all types that can be in lists
+// Implement Listable for all types that can be in lists
 impl Listable for int;
 impl Listable for string;
 impl Listable for bool;
--- User-defined types can implement Listable trait
+// User-defined types can implement Listable trait
 
--- Type descriptor for Listable types (used in constructor)
+// Type descriptor for Listable types (used in constructor)
 type ListableType = Int | String | Bool | CustomType
 
--- Variant types per element type (functional/immutable lists)
+// Variant types per element type (functional/immutable lists)
 type ListInt = Nil | Cons(int, ListInt)
 type ListString = Nil | Cons(string, ListString)
 type ListBool = Nil | Cons(bool, ListBool)
--- Additional list types can be defined for other Listable types
+// Additional list types can be defined for other Listable types
 
--- Common List trait for shared operations
+// Common List trait for shared operations
 trait List {
     fn length(self: Self) -> int;
     fn is_empty(self: Self) -> bool;
 }
 
--- Implement List trait for concrete list types
+// Implement List trait for concrete list types
 impl List for ListInt {
     fn length(self: ListInt) -> int {
         case self of
@@ -9986,24 +9992,24 @@ impl List for ListInt {
     }
 }
 
--- Constructor: takes ListableType enum, compiler infers return type
-fn create_list(element_type: ListableType) -> ListInt proc[mem(normal)]  -- if element_type == Int
-fn create_list(element_type: ListableType) -> ListString proc[mem(normal)]  -- if element_type == String
--- Compiler infers return type from element_type parameter
+// Constructor: takes ListableType enum, compiler infers return type
+fn create_list(element_type: ListableType) -> ListInt proc[mem(normal)]  // if element_type == Int
+fn create_list(element_type: ListableType) -> ListString proc[mem(normal)]  // if element_type == String
+// Compiler infers return type from element_type parameter
 
--- Empty list literal syntax
+// Empty list literal syntax
 fn empty_list() -> ListInt {
-    Nil  -- or use [] literal syntax
+    Nil  // or use [] literal syntax
 }
 
--- Functional cons: adds to front, returns NEW list (immutable)
+// Functional cons: adds to front, returns NEW list (immutable)
 fn cons(list: ListInt, item: int) -> ListInt proc[mem(normal)] {
-    -- Create new list with item as head, old list as tail
-    -- Original list unchanged (immutable)
+    // Create new list with item as head, old list as tail
+    // Original list unchanged (immutable)
     Cons(item, list)
 }
 
--- Head returns concrete element type (compile-time inference)
+// Head returns concrete element type (compile-time inference)
 fn head(list: ListInt) -> int {
     case list of
         Nil -> panic("head on empty list")
@@ -10011,7 +10017,7 @@ fn head(list: ListInt) -> int {
     end
 }
 
--- Tail preserves type and returns new list (immutable)
+// Tail preserves type and returns new list (immutable)
 fn tail(list: ListInt) -> ListInt {
     case list of
         Nil -> panic("tail on empty list")
@@ -10045,7 +10051,7 @@ fn contains(s: string, substr: string) -> bool
 List functions use concrete types (ListInt, ListString, etc.). Examples shown for ListInt - similar functions exist for other list types.
 
 ```
--- ListInt functions
+// ListInt functions
 fn length_int(list: ListInt) -> int64
 fn is_empty_int(list: ListInt) -> bool
 fn nth_int(list: ListInt, index: int64) -> OptionInt
@@ -10055,10 +10061,10 @@ fn map_int_string(list: ListInt, f: fn(int64) -> string) -> ListString
 fn filter_int(list: ListInt, pred: fn(int64) -> bool) -> ListInt
 fn fold_int_int(list: ListInt, init: int64, f: fn(int64, int64) -> int64) -> int64
 
--- Similar functions exist for other list types:
--- ListString: length_string, append_string, map_string_string, etc.
--- ListBool: length_bool, append_bool, map_bool_bool, etc.
--- Each concrete list type has its own set of functions
+// Similar functions exist for other list types:
+// ListString: length_string, append_string, map_string_string, etc.
+// ListBool: length_bool, append_bool, map_bool_bool, etc.
+// Each concrete list type has its own set of functions
 ```
 
 #### 20.2.4 IO Functions
@@ -10070,9 +10076,9 @@ fn read_line() -> string proc[device_io]
 
 #### 20.2.5 Debug and Assertion Functions
 ```
-fn debug_print(value: T) -> atom proc[]        -- Print any value for debugging
-fn debug_println(value: T) -> atom proc[]     -- Print any value with newline
-fn assert(condition: bool, message: string)  -- Terminate process if condition false
+fn debug_print(value: T) -> atom proc[]        // Print any value for debugging
+fn debug_println(value: T) -> atom proc[]     // Print any value with newline
+fn assert(condition: bool, message: string)  // Terminate process if condition false
     -> atom proc[]
 ```
 
@@ -10115,8 +10121,8 @@ type socket_addr = {
 }
 
 type ip_addr = ipv4_addr | ipv6_addr
-type ipv4_addr = (int, int, int, int)  -- IPv4 tuple
-type ipv6_addr = buf(R, normal, int, 16)  -- 16-byte IPv6 address
+type ipv4_addr = (int, int, int, int)  // IPv4 tuple
+type ipv6_addr = buf(R, normal, int, 16)  // 16-byte IPv6 address
 
 type protocol_type = tcp | udp | raw
 type socket_state = closed | listening | connected | error
@@ -10135,7 +10141,7 @@ type net_error =
 ```
 module net.socket {
 
-    pub type socket<T: protocol_type>  -- Protocol-specific socket
+    pub type socket<T: protocol_type>  // Protocol-specific socket
 
     pub fn create_socket(protocol: protocol_type)
         -> result<socket<protocol>, net_error> proc[networking]
@@ -10215,7 +10221,7 @@ module net.udp {
 ```
 module net.packet {
 
-    use module arch.sve  -- Optional: for SIMD acceleration
+    use module arch.sve  // Optional: for SIMD acceleration
 
     pub type ethernet_frame = {
         dest_mac: mac_addr,
@@ -10253,7 +10259,7 @@ module net.packet {
     pub fn validate_packet(packet: ipv4_packet)
         -> result<atom, validation_error> proc[]
 
-    -- SIMD-accelerated batch processing (when SVE available)
+    // SIMD-accelerated batch processing (when SVE available)
     pub fn process_packet_batch(packets: buf(R, normal, packet, batch_size))
         -> processed_results proc[]
 }
@@ -10291,7 +10297,7 @@ Network buffers and processing can be NUMA-optimized:
 **NUMA Topology Detection:**
 The runtime provides functions to discover NUMA topology:
 ```silica
--- Get NUMA node information
+// Get NUMA node information
 get_numa_node_count() -> int
 get_numa_node_for_core(core_id: int) -> int
 get_numa_node_memory_ranges(numa_node: int) -> list<memory_range>
@@ -10299,12 +10305,12 @@ get_numa_node_memory_ranges(numa_node: int) -> list<memory_range>
 
 **NUMA-Optimized Allocation:**
 ```silica
--- Place network buffers close to NIC for minimal latency
+// Place network buffers close to NIC for minimal latency
 nic_numa_node: int <- get_nic_numa_node(network_interface)
 region: region(R, normal) <- alloc_region_on_numa_node(nic_numa_node, normal)
 rx_buffers: buf(R, normal, packet, N) <- alloc_buf(region, buffer_count)
 
--- Allocate actor on same NUMA node as its data
+// Allocate actor on same NUMA node as its data
 actor_ref: actor_ref <- spawn(initial_state, behavior)
 pin_actor_to_numa_node(actor_ref, nic_numa_node)
 ```
@@ -10315,11 +10321,11 @@ Actors processing NUMA-local data should be placed on cores within the same NUMA
 #### 20.5.2 CPU Affinity for Network Processing
 Network actors can be pinned to optimal cores:
 ```silica
--- Pin network processing to efficiency cores (continuous I/O)
+// Pin network processing to efficiency cores (continuous I/O)
 network_actor: actor_ref <- spawn_actor(network_state, packet_processor)
 pin_actor_to_efficiency_core(network_actor)
 
--- Pin application logic to performance cores (bursty processing)
+// Pin application logic to performance cores (bursty processing)
 app_actor: actor_ref <- spawn_actor(app_state, app_logic)
 pin_actor_to_performance_core(app_actor)
 ```
@@ -10328,9 +10334,9 @@ pin_actor_to_performance_core(app_actor)
 When SVE is available, packet processing is automatically vectorized:
 ```silica
 use module net.packet
-use module arch.sve  -- Enables SIMD acceleration
+use module arch.sve  // Enables SIMD acceleration
 
--- Automatic vectorization for batch packet processing
+// Automatic vectorization for batch packet processing
 results <- net.packet.process_packet_batch(packet_batch)
 ```
 
@@ -10339,7 +10345,7 @@ Network buffers can use memory tagging for security:
 ```silica
 use module arch.mte
 
--- Tagged network buffers prevent overflow exploits
+// Tagged network buffers prevent overflow exploits
 secure_buffer <- net.utils.create_secure_network_buffer(size)
 ```
 
@@ -10354,21 +10360,21 @@ Silica provides runtime capability detection for optional AArch64 hardware featu
 The runtime provides functions to query AArch64 hardware capabilities:
 
 ```
--- Query SVE/SVE2 availability
+// Query SVE/SVE2 availability
 has_sve() -> bool
 has_sve2() -> bool
 
--- Query NEON availability
+// Query NEON availability
 has_neon() -> bool
 
--- Query Memory Tagging Extensions availability
+// Query Memory Tagging Extensions availability
 has_mte() -> bool
 
--- Query Pointer Authentication availability
+// Query Pointer Authentication availability
 has_pac() -> bool
 
--- Query Apple-specific features
-has_amx() -> bool  -- Apple Matrix Engine
+// Query Apple-specific features
+has_amx() -> bool  // Apple Matrix Engine
 ```
 
 **Capability Detection Mechanism:**
@@ -10401,13 +10407,13 @@ use arch.sve
 
 fn vector_operation(data: *int32, len: int) -> atom proc[mem(normal)] {
     if has_sve() then
-        -- Use SVE operations
+        // Use SVE operations
         pred: Pred <- sve.create_pred_true(len)
         vec: VecInt32 <- sve.load_vector_int32(data, Some(pred))
-        -- ... SVE operations ...
+        // ... SVE operations ...
     else
-        -- Fallback to scalar operations
-        -- ... scalar implementation ...
+        // Fallback to scalar operations
+        // ... scalar implementation ...
     end
 }
 ```
@@ -10517,12 +10523,12 @@ SVE2 extends SVE with additional instructions and capabilities. The runtime prov
 SVE2 capabilities are detected via `ID_AA64ZFR0_EL1` (SVE Feature Register 0):
 
 ```
--- Query SVE2-specific features
-has_sve2_bf16() -> bool        -- BFloat16 support
-has_sve2_i8mm() -> bool        -- Int8 matrix multiplication
-has_sve2_f32mm() -> bool       -- Float32 matrix multiplication
-has_sve2_f64mm() -> bool       -- Float64 matrix multiplication
-has_sve2_sme() -> bool         -- Scalable Matrix Extension (SME)
+// Query SVE2-specific features
+has_sve2_bf16() -> bool        // BFloat16 support
+has_sve2_i8mm() -> bool        // Int8 matrix multiplication
+has_sve2_f32mm() -> bool       // Float32 matrix multiplication
+has_sve2_f64mm() -> bool       // Float64 matrix multiplication
+has_sve2_sme() -> bool         // Scalable Matrix Extension (SME)
 ```
 
 **SVE2 Feature Detection Mechanism:**
@@ -10551,14 +10557,14 @@ use arch.sve
 
 fn matrix_operation(data: *int8, len: int) -> atom proc[mem(normal)] {
     if has_sve2() and has_sve2_i8mm() then
-        -- Use SVE2 Int8 matrix multiplication
-        -- ... SVE2 I8MM operations ...
+        // Use SVE2 Int8 matrix multiplication
+        // ... SVE2 I8MM operations ...
     else if has_sve() then
-        -- Fallback to SVE operations
-        -- ... SVE operations ...
+        // Fallback to SVE operations
+        // ... SVE operations ...
     else
-        -- Fallback to scalar operations
-        -- ... scalar implementation ...
+        // Fallback to scalar operations
+        // ... scalar implementation ...
     end
 }
 ```
@@ -10590,23 +10596,23 @@ SVE2 extensions have varying availability:
 ```
 module arch.sve {
 
-    -- Concrete SVE vector types (no generics)
-    pub type VecInt8       -- Scalable vector of int8
-    pub type VecInt16      -- Scalable vector of int16
-    pub type VecInt32      -- Scalable vector of int32
-    pub type VecInt64      -- Scalable vector of int64
-    pub type VecFloat16    -- Scalable vector of float16
-    pub type VecFloat32    -- Scalable vector of float32
-    pub type VecFloat64    -- Scalable vector of float64
-    pub type VecBool       -- Scalable boolean vector
-    pub type Pred          -- predicate mask for conditional operations
+    // Concrete SVE vector types (no generics)
+    pub type VecInt8       // Scalable vector of int8
+    pub type VecInt16      // Scalable vector of int16
+    pub type VecInt32      // Scalable vector of int32
+    pub type VecInt64      // Scalable vector of int64
+    pub type VecFloat16    // Scalable vector of float16
+    pub type VecFloat32    // Scalable vector of float32
+    pub type VecFloat64    // Scalable vector of float64
+    pub type VecBool       // Scalable boolean vector
+    pub type Pred          // predicate mask for conditional operations
 
-    -- Marker trait for SVE-supported element types
+    // Marker trait for SVE-supported element types
     trait VecElement {
-        -- Marker trait, no methods needed
+        // Marker trait, no methods needed
     }
     
-    -- Implement VecElement for supported types
+    // Implement VecElement for supported types
     impl VecElement for int8;
     impl VecElement for int16;
     impl VecElement for int32;
@@ -10623,19 +10629,19 @@ module arch.sve {
 ```
 module arch.sve {
 
-    -- Concrete load/store operations for each vector type
+    // Concrete load/store operations for each vector type
     pub fn load_vector_int32(ptr: *int32, pred: OptionPred) -> VecInt32
     pub fn store_vector_int32(ptr: *int32, vec: VecInt32, pred: OptionPred) -> atom
     pub fn add_vectors_int32(a: VecInt32, b: VecInt32) -> VecInt32
     pub fn mul_vectors_int32(a: VecInt32, b: VecInt32) -> VecInt32
     
-    -- Repeat for other types: int8, int16, int64, float16, float32, float64
+    // Repeat for other types: int8, int16, int64, float16, float32, float64
     pub fn load_vector_int8(ptr: *int8, pred: OptionPred) -> VecInt8
     pub fn load_vector_int64(ptr: *int64, pred: OptionPred) -> VecInt64
     pub fn load_vector_float32(ptr: *float32, pred: OptionPred) -> VecFloat32
-    -- ... (similar for all element types)
+    // ... (similar for all element types)
 
-    -- Predicate operations
+    // Predicate operations
     pub fn create_pred_true(len: int) -> Pred
     pub fn create_pred_from_mask(mask: VecBool) -> Pred
     pub fn test_any_true(pred: Pred) -> bool
@@ -10667,38 +10673,38 @@ pred: Pred <- sve.create_pred_true(len)
 
 Generated code:
 ```assembly
--- create_pred_true(len) generates:
-MOV   X0, len              -- Load length to general register
-WHILELT P0.B, XZR, X0      -- Generate predicate: P0 = (0..len-1) < len
+// create_pred_true(len) generates:
+MOV   X0, len              // Load length to general register
+WHILELT P0.B, XZR, X0      // Generate predicate: P0 = (0..len-1) < len
 ```
 
 **Predicate Operation Code Generation:**
 
 **create_pred_true(len):**
 ```assembly
--- Generates WHILELT instruction
-WHILELT P0.B, XZR, X0      -- P0 = active elements for length len
+// Generates WHILELT instruction
+WHILELT P0.B, XZR, X0      // P0 = active elements for length len
 ```
 
 **create_pred_from_mask(mask: VecBool):**
 ```assembly
--- Converts VecBool vector to predicate
-MOV    Z0, mask            -- Load boolean vector
-CMPNE  P0.B, Z0/Z, #0      -- Generate predicate from non-zero elements
+// Converts VecBool vector to predicate
+MOV    Z0, mask            // Load boolean vector
+CMPNE  P0.B, Z0/Z, #0      // Generate predicate from non-zero elements
 ```
 
 **test_any_true(pred: Pred):**
 ```assembly
--- Tests if any predicate bit is set
-PTEST  P0, P0.B            -- Test predicate
-CSET   W0, NE               -- Set result if any bit is true
+// Tests if any predicate bit is set
+PTEST  P0, P0.B            // Test predicate
+CSET   W0, NE               // Set result if any bit is true
 ```
 
 **test_all_true(pred: Pred):**
 ```assembly
--- Tests if all predicate bits are set
-PTEST  P0, P0.B            -- Test predicate
-CSET   W0, EQ               -- Set result if all bits are true
+// Tests if all predicate bits are set
+PTEST  P0, P0.B            // Test predicate
+CSET   W0, EQ               // Set result if all bits are true
 ```
 
 **Vector Register Allocation:**
@@ -10711,8 +10717,8 @@ vec: VecInt32 <- sve.load_vector_int32(ptr, Some(pred))
 
 Generated code:
 ```assembly
--- load_vector_int32 with predicate
-LD1W   {Z0.S}, P0/Z, [X0]  -- Load int32 vector with predicate P0
+// load_vector_int32 with predicate
+LD1W   {Z0.S}, P0/Z, [X0]  // Load int32 vector with predicate P0
 ```
 
 **Register Pressure Considerations:**
@@ -10729,14 +10735,14 @@ The compiler manages register pressure for SVE operations:
 Predicate registers control vector operations:
 
 ```silica
--- Conditional vector operation
+// Conditional vector operation
 vec: VecInt32 <- sve.load_vector_int32(ptr, Some(pred))
 ```
 
 Generated code:
 ```assembly
-LD1W   {Z0.S}, P0/Z, [X0]  -- P0 controls which elements are loaded
-                          -- Elements where P0 is false are set to zero
+LD1W   {Z0.S}, P0/Z, [X0]  // P0 controls which elements are loaded
+                          // Elements where P0 is false are set to zero
 ```
 
 **Code Generation Examples:**
@@ -10748,8 +10754,8 @@ vec: VecInt32 <- sve.load_vector_int32(ptr, None)
 
 Generated code:
 ```assembly
-MOV    P0.B, #-1           -- All-true predicate (None case)
-LD1W   {Z0.S}, P0/Z, [X0]  -- Load all elements
+MOV    P0.B, #-1           // All-true predicate (None case)
+LD1W   {Z0.S}, P0/Z, [X0]  // Load all elements
 ```
 
 **Example 2: Predicated Vector Load**
@@ -10760,8 +10766,8 @@ vec: VecInt32 <- sve.load_vector_int32(ptr, Some(pred))
 
 Generated code:
 ```assembly
-WHILELT P0.B, XZR, X1      -- Generate predicate for length
-LD1W   {Z0.S}, P0/Z, [X0]  -- Load with predicate
+WHILELT P0.B, XZR, X1      // Generate predicate for length
+LD1W   {Z0.S}, P0/Z, [X0]  // Load with predicate
 ```
 
 **Example 3: Vector Arithmetic**
@@ -10771,7 +10777,7 @@ result: VecInt32 <- sve.add_vectors_int32(a, b)
 
 Generated code:
 ```assembly
-ADD    Z0.S, Z0.S, Z1.S    -- Vector addition (Z0 = a, Z1 = b)
+ADD    Z0.S, Z0.S, Z1.S    // Vector addition (Z0 = a, Z1 = b)
 ```
 
 **Cross-References:**
@@ -10790,7 +10796,7 @@ fn vector_add(a: *int32, b: *int32, len: int) -> atom proc[] {
     va: VecInt32 <- sve.load_vector_int32(a, pred_opt)
     vb: VecInt32 <- sve.load_vector_int32(b, pred_opt)
     result: VecInt32 <- sve.add_vectors_int32(va, vb)
-    sve.store_vector_int32(a, result, pred_opt)  -- a = a + b
+    sve.store_vector_int32(a, result, pred_opt)  // a = a + b
 }
 ```
 
@@ -10805,16 +10811,16 @@ SVE vectors have scalable width determined at runtime based on hardware capabili
 The runtime provides functions to query SVE vector length:
 
 ```
--- Query vector length in bytes (VL_B)
+// Query vector length in bytes (VL_B)
 get_sve_vector_length_bytes() -> int
 
--- Query vector length in bits (VL_B * 8)
+// Query vector length in bits (VL_B * 8)
 get_sve_vector_length_bits() -> int
 
--- Query number of elements for a specific type
-get_sve_elements_int32() -> int  -- Returns VL_B / 4 for int32
-get_sve_elements_int64() -> int  -- Returns VL_B / 8 for int64
-get_sve_elements_float32() -> int  -- Returns VL_B / 4 for float32
+// Query number of elements for a specific type
+get_sve_elements_int32() -> int  // Returns VL_B / 4 for int32
+get_sve_elements_int64() -> int  // Returns VL_B / 8 for int64
+get_sve_elements_float32() -> int  // Returns VL_B / 4 for float32
 ```
 
 **Vector Length Characteristics:**
@@ -10834,15 +10840,15 @@ get_sve_elements_float32() -> int  -- Returns VL_B / 4 for float32
 SVE predicates (`Pred` type) are scalable masks that match the vector length:
 
 ```
--- Create predicate for all elements
+// Create predicate for all elements
 create_pred_true(len: int) -> Pred
 
--- Create predicate from boolean vector
+// Create predicate from boolean vector
 create_pred_from_mask(mask: VecBool) -> Pred
 
--- Test predicate conditions
-test_any_true(pred: Pred) -> bool  -- Returns true if any element is active
-test_all_true(pred: Pred) -> bool  -- Returns true if all elements are active
+// Test predicate conditions
+test_any_true(pred: Pred) -> bool  // Returns true if any element is active
+test_all_true(pred: Pred) -> bool  // Returns true if all elements are active
 ```
 
 **Predicate Semantics:**
@@ -10857,13 +10863,13 @@ test_all_true(pred: Pred) -> bool  -- Returns true if all elements are active
 All SVE vector operations automatically adapt to hardware vector length:
 
 ```
--- Load operation processes VL_B / sizeof(T) elements
+// Load operation processes VL_B / sizeof(T) elements
 load_vector_int32(ptr: *int32, pred: OptionPred) -> VecInt32
 
--- Arithmetic operations process all active elements
+// Arithmetic operations process all active elements
 add_vectors_int32(a: VecInt32, b: VecInt32) -> VecInt32
 
--- Store operation writes only active elements (per predicate)
+// Store operation writes only active elements (per predicate)
 store_vector_int32(ptr: *int32, vec: VecInt32, pred: OptionPred) -> atom
 ```
 
@@ -10873,26 +10879,26 @@ When working with fixed-size buffers (`buf(R, Space, T, N)`), SVE operations han
 
 ```
 fn process_buffer(buf: buf(R, normal, int32, 100), len: int) -> atom proc[mem(normal)] {
-    -- Calculate number of full vectors
+    // Calculate number of full vectors
     elements_per_vector: int <- get_sve_elements_int32();
     full_vectors: int <- len / elements_per_vector;
     remainder: int <- len % elements_per_vector;
     
-    -- Process full vectors
+    // Process full vectors
     i: int <- 0;
     while i < full_vectors {
-        -- Process one vector
+        // Process one vector
         offset: int <- i * elements_per_vector;
         vec: VecInt32 <- sve.load_vector_int32(&buf[offset], Some(create_pred_true(elements_per_vector)));
-        -- ... process vector ...
+        // ... process vector ...
         i <- i + 1;
     }
     
-    -- Process remainder with predicate
+    // Process remainder with predicate
     if remainder > 0 {
         remainder_pred: Pred <- create_pred_true(remainder);
         vec: VecInt32 <- sve.load_vector_int32(&buf[full_vectors * elements_per_vector], Some(remainder_pred));
-        -- ... process remainder ...
+        // ... process remainder ...
     }
 }
 ```
@@ -10936,22 +10942,22 @@ ID_AA64ZFR0_EL1 Register Layout:
 **SVE Detection Pseudocode:**
 
 ```pseudocode
--- Read ID_AA64ZFR0_EL1 register
+// Read ID_AA64ZFR0_EL1 register
 MRS ID_AA64ZFR0_EL1, ID_AA64ZFR0_EL1
 
--- Check if SVE is supported (bits [3:0] != 0)
+// Check if SVE is supported (bits [3:0] != 0)
 if (ID_AA64ZFR0_EL1[3:0] != 0) then
     SVE_SUPPORTED = true
     SVE_VERSION = ID_AA64ZFR0_EL1[3:0]
     
-    -- Check SVE2 support (bits [19:16] != 0)
+    // Check SVE2 support (bits [19:16] != 0)
     if (ID_AA64ZFR0_EL1[19:16] != 0) then
         SVE2_SUPPORTED = true
         SVE2_VERSION = ID_AA64ZFR0_EL1[19:16]
     end if
 else
     SVE_SUPPORTED = false
-    -- SVE not available, fall back to NEON
+    // SVE not available, fall back to NEON
 end if
 ```
 
@@ -10985,21 +10991,21 @@ The LEN field specifies the maximum vector length:
 The runtime configures SVE vector length as follows:
 
 ```pseudocode
--- Read current ZCR_EL1 configuration
+// Read current ZCR_EL1 configuration
 MRS ZCR_EL1, ZCR_EL1
 
--- Query maximum supported vector length
+// Query maximum supported vector length
 MAX_LEN = ZCR_EL1[3:0]
 
--- Configure vector length (use maximum supported)
--- This enables SVE and sets vector length
+// Configure vector length (use maximum supported)
+// This enables SVE and sets vector length
 ZCR_EL1[3:0] = MAX_LEN
 
--- Write ZCR_EL1 register
+// Write ZCR_EL1 register
 MSR ZCR_EL1, ZCR_EL1
 
--- Vector length is now configured
--- VL_B (vector length in bytes) = 16 * (2^MAX_LEN)
+// Vector length is now configured
+// VL_B (vector length in bytes) = 16 * (2^MAX_LEN)
 VL_B = 16 * (1 << MAX_LEN)
 ```
 
@@ -11008,22 +11014,22 @@ VL_B = 16 * (1 << MAX_LEN)
 The runtime provides functions to query configured vector length:
 
 ```pseudocode
--- Query vector length in bytes
+// Query vector length in bytes
 function get_sve_vector_length_bytes() -> int:
-    -- Read ZCR_EL1.LEN
+    // Read ZCR_EL1.LEN
     MRS ZCR_EL1, ZCR_EL1
     LEN = ZCR_EL1[3:0]
-    -- Return VL_B = 16 * (2^LEN)
+    // Return VL_B = 16 * (2^LEN)
     return 16 * (1 << LEN)
 
--- Query vector length in bits
+// Query vector length in bits
 function get_sve_vector_length_bits() -> int:
     return get_sve_vector_length_bytes() * 8
 
--- Query number of elements for int32
+// Query number of elements for int32
 function get_sve_elements_int32() -> int:
     VL_B = get_sve_vector_length_bytes()
-    -- int32 is 4 bytes, so elements = VL_B / 4
+    // int32 is 4 bytes, so elements = VL_B / 4
     return VL_B / 4
 ```
 
@@ -11042,11 +11048,11 @@ SVE2 extends SVE with additional features. The runtime detects SVE2 support and 
 **SVE2 Detection:**
 
 ```pseudocode
--- Read SVE feature register
+// Read SVE feature register
 MRS ID_AA64ZFR0_EL1, ID_AA64ZFR0_EL1
 SVE2_FIELD = ID_AA64ZFR0_EL1[19:16]
 
--- Check SVE2 support
+// Check SVE2 support
 if SVE2_FIELD != 0:
     SVE2_SUPPORTED = true
     SVE2_VERSION = SVE2_FIELD
@@ -11117,28 +11123,28 @@ Programs must be written to handle variable vector lengths gracefully:
 use module arch.sve
 
 fn adaptive_vector_processing(data: *int32, len: int) -> atom proc[mem(normal)] {
-    -- Query vector length at runtime (not compile-time constant)
+    // Query vector length at runtime (not compile-time constant)
     elements_per_vector: int <- get_sve_elements_int32();
     
-    -- Calculate number of full vectors
+    // Calculate number of full vectors
     full_vectors: int <- len / elements_per_vector;
     remainder: int <- len % elements_per_vector;
     
-    -- Process full vectors (adapts to any vector length)
+    // Process full vectors (adapts to any vector length)
     i: int <- 0;
     while i < full_vectors {
         offset: int <- i * elements_per_vector;
-        -- Vector operation processes exactly elements_per_vector elements
+        // Vector operation processes exactly elements_per_vector elements
         vec: VecInt32 <- sve.load_vector_int32(&data[offset], Some(create_pred_true(elements_per_vector)));
-        -- ... process vector ...
+        // ... process vector ...
         i <- i + 1;
     }
     
-    -- Process remainder (handles any remainder size)
+    // Process remainder (handles any remainder size)
     if remainder > 0 {
         remainder_pred: Pred <- create_pred_true(remainder);
         vec: VecInt32 <- sve.load_vector_int32(&data[full_vectors * elements_per_vector], Some(remainder_pred));
-        -- ... process remainder ...
+        // ... process remainder ...
     }
 }
 ```
@@ -11167,18 +11173,18 @@ Programs can detect if vector length changes between runs:
 ```silica
 use module arch.sve
 
--- Store expected vector length (from previous run or configuration)
-expected_elements: int <- 16;  -- Expected elements per vector
+// Store expected vector length (from previous run or configuration)
+expected_elements: int <- 16;  // Expected elements per vector
 
 fn check_vector_length() -> bool proc[] {
     actual_elements: int <- get_sve_elements_int32();
     
-    -- Detect vector length change
+    // Detect vector length change
     if actual_elements != expected_elements {
-        -- Vector length changed - program must adapt
+        // Vector length changed - program must adapt
         return false;
     else
-        -- Vector length matches expected
+        // Vector length matches expected
         return true;
     end
 }
@@ -11216,14 +11222,14 @@ Programs should use adaptive strategies to handle variable vector lengths:
 use module arch.sve
 
 fn demonstrate_vector_length() -> atom proc[] {
-    -- Query vector length (runtime values, not compile-time constants)
+    // Query vector length (runtime values, not compile-time constants)
     vl_bytes: int <- get_sve_vector_length_bytes();
     vl_bits: int <- get_sve_vector_length_bits();
     elements_int32: int <- get_sve_elements_int32();
     
-    -- Use vector length for processing
-    -- elements_int32 elements are processed per vector operation
-    -- Program adapts to any supported vector length
+    // Use vector length for processing
+    // elements_int32 elements are processed per vector operation
+    // Program adapts to any supported vector length
 }
 ```
 
@@ -11239,24 +11245,24 @@ fn demonstrate_vector_length() -> atom proc[] {
 ```
 module arch.neon {
 
-    -- Concrete NEON vector types (no generics)
-    pub type Vec128Int8    -- 128-bit vector of int8
-    pub type Vec128Int16   -- 128-bit vector of int16
-    pub type Vec128Int32   -- 128-bit vector of int32
-    pub type Vec128Int64   -- 128-bit vector of int64
-    pub type Vec128Float32 -- 128-bit vector of float32
-    pub type Vec128Bool    -- 128-bit boolean vector
-    pub type Vec64Int8     -- 64-bit vector of int8 (limited use)
-    pub type Vec64Int16    -- 64-bit vector of int16 (limited use)
-    pub type Vec64Int32    -- 64-bit vector of int32 (limited use)
-    pub type Vec64Float32  -- 64-bit vector of float32 (limited use)
+    // Concrete NEON vector types (no generics)
+    pub type Vec128Int8    // 128-bit vector of int8
+    pub type Vec128Int16   // 128-bit vector of int16
+    pub type Vec128Int32   // 128-bit vector of int32
+    pub type Vec128Int64   // 128-bit vector of int64
+    pub type Vec128Float32 // 128-bit vector of float32
+    pub type Vec128Bool    // 128-bit boolean vector
+    pub type Vec64Int8     // 64-bit vector of int8 (limited use)
+    pub type Vec64Int16    // 64-bit vector of int16 (limited use)
+    pub type Vec64Int32    // 64-bit vector of int32 (limited use)
+    pub type Vec64Float32  // 64-bit vector of float32 (limited use)
 
-    -- Marker trait for NEON-supported element types
+    // Marker trait for NEON-supported element types
     trait Vec128Element {
-        -- Marker trait, no methods needed
+        // Marker trait, no methods needed
     }
     
-    -- Implement Vec128Element for supported types
+    // Implement Vec128Element for supported types
     impl Vec128Element for int8;
     impl Vec128Element for int16;
     impl Vec128Element for int32;
@@ -11271,21 +11277,21 @@ module arch.neon {
 ```
 module arch.neon {
 
-    -- Concrete operations for each vector type
+    // Concrete operations for each vector type
     pub fn load_128_int32(ptr: *int32) -> Vec128Int32
     pub fn store_128_int32(ptr: *int32, vec: Vec128Int32) -> atom
     pub fn add_128_int32(a: Vec128Int32, b: Vec128Int32) -> Vec128Int32
     pub fn mul_128_int32(a: Vec128Int32, b: Vec128Int32) -> Vec128Int32
     
-    -- Repeat for other types: int8, int16, int64, float32
+    // Repeat for other types: int8, int16, int64, float32
     pub fn load_128_int8(ptr: *int8) -> Vec128Int8
     pub fn load_128_float32(ptr: *float32) -> Vec128Float32
-    -- ... (similar for all element types)
+    // ... (similar for all element types)
 
-    -- Lane access (type-specific)
+    // Lane access (type-specific)
     pub fn extract_lane_128_int32(vec: Vec128Int32, lane: int) -> int32
     pub fn insert_lane_128_int32(vec: Vec128Int32, lane: int, value: int32) -> Vec128Int32
-    -- ... (similar for all element types)
+    // ... (similar for all element types)
 }
 ```
 
@@ -11298,10 +11304,10 @@ Memory Tagging Extensions (MTE) provide hardware-accelerated memory safety throu
 
 ```
 trait tagged {
-    -- Marker trait for types that can be used with MTE
+    // Marker trait for types that can be used with MTE
 }
 
--- Example: Implement tagged trait for a struct
+// Example: Implement tagged trait for a struct
 struct NodeData {
     value: int64,
     next: int64
@@ -11314,14 +11320,14 @@ impl tagged for NodeData;
 Tagged pointer operations work with any type that implements the `tagged` trait. Since Silica does not support generics, separate functions are provided for each concrete type that implements the `tagged` trait:
 
 ```
--- Allocate tagged pointer (type must implement tagged trait)
--- For NodeData type (example):
+// Allocate tagged pointer (type must implement tagged trait)
+// For NodeData type (example):
 alloc_tagged_nodedata(region: region(R, normal), size: int) -> ref(R, normal, NodeData) proc[mem(normal)]
 
--- Free tagged pointer
+// Free tagged pointer
 free_tagged_nodedata(ptr: ref(R, normal, NodeData)) -> atom proc[mem(normal)]
 
--- Tag operations
+// Tag operations
 set_tag_nodedata(ptr: ref(R, normal, NodeData), tag: int) -> ref(R, normal, NodeData)
 get_tag_nodedata(ptr: ref(R, normal, NodeData)) -> int
 check_tag_nodedata(ptr: ref(R, normal, NodeData)) -> bool
@@ -11358,23 +11364,23 @@ Different AArch64 implementations may have varying MTE support:
 The runtime detects MTE capabilities at startup:
 
 ```pseudocode
--- Read MTE feature register
+// Read MTE feature register
 MRS ID_AA64PFR1_EL1, ID_AA64PFR1_EL1
 MTE_FIELD = ID_AA64PFR1_EL1[11:8]
 
--- Check MTE support level
+// Check MTE support level
 if MTE_FIELD == 0b0001:
-    -- MTE supported with full features
+    // MTE supported with full features
     MTE_SUPPORTED = true
     MTE_FULL_FEATURES = true
 else if MTE_FIELD == 0b0010:
-    -- MTE supported with limited features (top-byte only)
+    // MTE supported with limited features (top-byte only)
     MTE_SUPPORTED = true
     MTE_FULL_FEATURES = false
 else:
-    -- MTE not supported
+    // MTE not supported
     MTE_SUPPORTED = false
-    -- Fall back to software-based memory safety
+    // Fall back to software-based memory safety
 end if
 ```
 
@@ -11418,22 +11424,22 @@ When loading from a tagged pointer, hardware performs the following validation:
 
 ```pseudocode
 function hardware_tag_check_load(pointer, address):
-    -- Extract pointer tag (bits 56-59)
+    // Extract pointer tag (bits 56-59)
     pointer_tag = (pointer >> 56) & 0x0F
     
-    -- Calculate tag storage address (16-byte aligned)
-    tag_storage_addr = address & ~0x0F  -- Align to 16-byte boundary
+    // Calculate tag storage address (16-byte aligned)
+    tag_storage_addr = address & ~0x0F  // Align to 16-byte boundary
     tag_index = (address >> 4) & 0xFFFFFFFF
     
-    -- Read memory tag from tag storage
+    // Read memory tag from tag storage
     memory_tag = read_tag_storage(tag_storage_addr, tag_index)
     
-    -- Compare tags
+    // Compare tags
     if pointer_tag != memory_tag:
-        -- Generate tag fault
+        // Generate tag fault
         raise_tag_fault(address, pointer_tag, memory_tag)
     else:
-        -- Tags match, proceed with load
+        // Tags match, proceed with load
         return load_data(address)
     end if
 end function
@@ -11471,17 +11477,17 @@ When a tag mismatch is detected:
 
 ```pseudocode
 function handle_tag_fault(fault_info):
-    -- Extract fault information
+    // Extract fault information
     fault_address = fault_info.address
     pointer_tag = fault_info.pointer_tag
     memory_tag = fault_info.memory_tag
     access_type = fault_info.access_type
     
-    -- Log fault information
+    // Log fault information
     log_tag_fault(fault_address, pointer_tag, memory_tag, access_type)
     
-    -- Default behavior: terminate program
-    -- (Runtime can provide custom fault handlers)
+    // Default behavior: terminate program
+    // (Runtime can provide custom fault handlers)
     terminate_program("MTE tag mismatch detected")
 end function
 ```
@@ -11531,19 +11537,19 @@ When tag storage is exhausted:
 The runtime handles tag storage exhaustion:
 
 ```silica
--- Attempt tagged allocation
+// Attempt tagged allocation
 result: result<ref(R, normal, NodeData), alloc_error> <- 
     alloc_tagged_nodedata(region, size);
 
 case result of {
-    {ok, ptr} -> -- Tagged allocation succeeded
-        -- Use tagged pointer
-    {fail, error: alloc_error} -> -- Allocation failed
+    {ok, ptr} -> // Tagged allocation succeeded
+        // Use tagged pointer
+    {fail, error: alloc_error} -> // Allocation failed
         case error of {
-            TagStorageExhausted -> -- Tag storage is full
-                -- Fallback to non-tagged allocation or report error
-            _ -> -- Other allocation errors
-                -- Handle other errors
+            TagStorageExhausted -> // Tag storage is full
+                // Fallback to non-tagged allocation or report error
+            _ -> // Other allocation errors
+                // Handle other errors
         }
 }
 ```
@@ -11562,10 +11568,10 @@ The runtime tracks tag storage usage:
 Programs can query tag storage capacity:
 
 ```
--- Query tag storage capacity (if supported by runtime)
-get_tag_storage_capacity() -> OptionInt64  -- Returns Some(capacity) or None
-get_tag_storage_usage() -> OptionInt64     -- Returns Some(usage) or None
-get_tag_storage_available() -> OptionInt64  -- Returns Some(available) or None
+// Query tag storage capacity (if supported by runtime)
+get_tag_storage_capacity() -> OptionInt64  // Returns Some(capacity) or None
+get_tag_storage_usage() -> OptionInt64     // Returns Some(usage) or None
+get_tag_storage_available() -> OptionInt64  // Returns Some(available) or None
 ```
 
 **Note**: Tag storage capacity queries are optional and may not be available on all implementations. Programs should handle `None` return values gracefully.
@@ -11661,29 +11667,29 @@ The runtime manages tags automatically:
 
 ```pseudocode
 function allocate_tagged_memory(region, size):
-    -- Allocate memory (16-byte aligned)
+    // Allocate memory (16-byte aligned)
     address = allocate_aligned_memory(size, 16)
     
-    -- Generate random tag (4-bit value: 0-15)
+    // Generate random tag (4-bit value: 0-15)
     tag = generate_random_tag()
     
-    -- Store tag in tag storage
+    // Store tag in tag storage
     store_tag_in_storage(address, tag)
     
-    -- Embed tag in pointer (bits 56-59)
+    // Embed tag in pointer (bits 56-59)
     tagged_pointer = address | (tag << 56)
     
     return tagged_pointer
 end function
 
 function free_tagged_memory(tagged_pointer):
-    -- Extract address (clear tag bits)
+    // Extract address (clear tag bits)
     address = tagged_pointer & 0x00FFFFFFFFFFFFFF
     
-    -- Clear tag in tag storage (set to invalid tag)
+    // Clear tag in tag storage (set to invalid tag)
     clear_tag_in_storage(address)
     
-    -- Free memory
+    // Free memory
     free_memory(address)
 end function
 ```
@@ -11788,39 +11794,39 @@ When all 16 tag values are in use and a new allocation requires a tag:
 
 ```pseudocode
 function allocate_with_tag_exhaustion(region, size):
-    -- Attempt to allocate tag
+    // Attempt to allocate tag
     available_tag = find_available_tag()
     
     if available_tag == NO_TAG_AVAILABLE:
-        -- Tag space exhausted
-        -- Strategy 1: Wait for tag reuse (if memory is being freed)
-        -- Strategy 2: Reuse tag from deallocated memory (after validation)
-        -- Strategy 3: Fall back to software bounds checking
+        // Tag space exhausted
+        // Strategy 1: Wait for tag reuse (if memory is being freed)
+        // Strategy 2: Reuse tag from deallocated memory (after validation)
+        // Strategy 3: Fall back to software bounds checking
         
-        -- Try to reuse tag from deallocated memory
+        // Try to reuse tag from deallocated memory
         reused_tag = find_reusable_tag()
         
         if reused_tag != NO_TAG_AVAILABLE:
-            -- Validate tag is safe to reuse
+            // Validate tag is safe to reuse
             if validate_tag_reuse(reused_tag):
-                -- Reuse tag
+                // Reuse tag
                 tag = reused_tag
             else:
-                -- Tag still in use, cannot reuse
-                -- Fall back to software bounds checking
+                // Tag still in use, cannot reuse
+                // Fall back to software bounds checking
                 return allocate_with_software_bounds_checking(region, size)
             end if
         else:
-            -- No tags available for reuse
-            -- Fall back to software bounds checking
+            // No tags available for reuse
+            // Fall back to software bounds checking
             return allocate_with_software_bounds_checking(region, size)
         end if
     else:
-        -- Tag available, use it
+        // Tag available, use it
         tag = available_tag
     end if
     
-    -- Allocate memory with tag
+    // Allocate memory with tag
     return allocate_tagged_memory(region, size, tag)
 end function
 ```
@@ -11831,14 +11837,14 @@ When attempting to reuse a tag, validation may fail:
 
 ```pseudocode
 function validate_tag_reuse(tag):
-    -- Check if any memory with this tag is still allocated
+    // Check if any memory with this tag is still allocated
     allocated_memory = find_memory_with_tag(tag)
     
     if allocated_memory != EMPTY:
-        -- Tag still in use, cannot reuse
+        // Tag still in use, cannot reuse
         return false
     else:
-        -- Tag is safe to reuse
+        // Tag is safe to reuse
         return true
     end if
 end function
@@ -11862,18 +11868,18 @@ When tag space is exhausted, the runtime attempts to reuse tags from deallocated
 
 ```pseudocode
 function recover_via_tag_reuse():
-    -- Find tags from deallocated memory
+    // Find tags from deallocated memory
     deallocated_tags = find_deallocated_tags()
     
     for each tag in deallocated_tags:
-        -- Validate tag is safe to reuse
+        // Validate tag is safe to reuse
         if validate_tag_reuse(tag):
-            -- Tag is safe to reuse
+            // Tag is safe to reuse
             return tag
         end if
     end for
     
-    -- No reusable tags found
+    // No reusable tags found
     return NO_TAG_AVAILABLE
 end function
 ```
@@ -11884,17 +11890,17 @@ When tag reuse is not possible, the runtime falls back to software-based bounds 
 
 ```pseudocode
 function allocate_with_software_bounds_checking(region, size):
-    -- Allocate memory without MTE tagging
+    // Allocate memory without MTE tagging
     address = allocate_memory(region, size)
     
-    -- Use software bounds checking instead of hardware tagging
-    -- Compiler generates bounds checks for all memory accesses
-    -- Runtime tracks allocation bounds in software metadata
+    // Use software bounds checking instead of hardware tagging
+    // Compiler generates bounds checks for all memory accesses
+    // Runtime tracks allocation bounds in software metadata
     
-    -- Store bounds in software metadata
+    // Store bounds in software metadata
     store_allocation_bounds(address, size)
     
-    -- Return untagged pointer (bounds checked in software)
+    // Return untagged pointer (bounds checked in software)
     return address
 end function
 ```
@@ -11905,21 +11911,21 @@ The runtime monitors tag space usage to prevent exhaustion:
 
 ```pseudocode
 function monitor_tag_space():
-    -- Track tag usage
+    // Track tag usage
     used_tags = count_used_tags()
-    total_tags = 16  -- MTE provides 16 tag values
+    total_tags = 16  // MTE provides 16 tag values
     
-    -- Calculate usage percentage
+    // Calculate usage percentage
     usage_percentage = (used_tags / total_tags) * 100
     
-    -- Warn when approaching exhaustion
+    // Warn when approaching exhaustion
     if usage_percentage > 75:
         log_warning("Tag space usage high: " + usage_percentage + "%")
     end if
     
     if usage_percentage > 90:
         log_error("Tag space nearly exhausted: " + usage_percentage + "%")
-        -- Suggest tag reuse or software fallback
+        // Suggest tag reuse or software fallback
     end if
 end function
 ```
@@ -11942,12 +11948,12 @@ fn allocate_with_tag_reuse() -> ref(R, normal, NodeData) proc[mem(normal)] {
     do
         r: region(R, normal) <- alloc_region(normal);
         
-        -- Attempt allocation (may trigger tag reuse if tag space exhausted)
+        // Attempt allocation (may trigger tag reuse if tag space exhausted)
         node: ref(R, normal, NodeData) <- alloc_tagged_nodedata(r, 1);
-        -- Runtime handles tag exhaustion internally:
-        -- 1. Attempts to reuse tags from deallocated memory
-        -- 2. Validates tag reuse safety
-        -- 3. Falls back to software bounds checking if reuse fails
+        // Runtime handles tag exhaustion internally:
+        // 1. Attempts to reuse tags from deallocated memory
+        // 2. Validates tag reuse safety
+        // 3. Falls back to software bounds checking if reuse fails
         
         node
     end
@@ -11958,11 +11964,11 @@ fn allocate_with_tag_reuse() -> ref(R, normal, NodeData) proc[mem(normal)] {
 
 ```silica
 fn check_tag_space_usage() -> bool proc[] {
-    -- Runtime monitors tag space usage internally
-    -- Programs can query tag space status (if runtime provides API)
-    -- For now, tag exhaustion is handled transparently by runtime
+    // Runtime monitors tag space usage internally
+    // Programs can query tag space status (if runtime provides API)
+    // For now, tag exhaustion is handled transparently by runtime
     
-    -- Allocation always succeeds (may use software fallback)
+    // Allocation always succeeds (may use software fallback)
     return true
 }
 ```
@@ -12091,22 +12097,22 @@ impl tagged for NodeData;
 fn example() -> atom proc[mem(normal)] {
     do
         r: region(R, normal) <- alloc_region(normal);
-        -- Allocate tagged memory
+        // Allocate tagged memory
         node: ref(R, normal, NodeData) <- alloc_tagged_nodedata(r, 1);
         
-        -- Tag is automatically set and checked by hardware
-        data: NodeData <- read_ref(node);  -- Hardware validates tag
+        // Tag is automatically set and checked by hardware
+        data: NodeData <- read_ref(node);  // Hardware validates tag
         
-        -- Get tag value
+        // Get tag value
         tag: int <- get_tag_nodedata(node);
         
-        -- Set new tag (pointer tag only, not memory tag)
+        // Set new tag (pointer tag only, not memory tag)
         new_ptr: ref(R, normal, NodeData) <- set_tag_nodedata(node, 5);
         
-        -- Check tag match
+        // Check tag match
         matches: bool <- check_tag_nodedata(new_ptr);
         
-        -- Free tagged memory (clears tags)
+        // Free tagged memory (clears tags)
         free_tagged_nodedata(node);
     end
 }
@@ -12119,10 +12125,10 @@ Pointer Authentication Codes (PAC) provide cryptographic signing of pointers for
 
 ```
 trait authenticated {
-    -- Marker trait for types that can be used with PAC
+    // Marker trait for types that can be used with PAC
 }
 
--- Example: Implement authenticated trait for a struct
+// Example: Implement authenticated trait for a struct
 struct SecureData {
     value: int64,
     metadata: string
@@ -12135,14 +12141,14 @@ impl authenticated for SecureData;
 Authenticated pointer operations work with any type that implements the `authenticated` trait. Since Silica does not support generics, separate functions are provided for each concrete type that implements the `authenticated` trait:
 
 ```
--- Sign pointer with context (type must implement authenticated trait)
--- For SecureData type (example):
+// Sign pointer with context (type must implement authenticated trait)
+// For SecureData type (example):
 sign_ptr_securedata(ptr: ref(R, Space, SecureData), context: int) -> ref(R, Space, SecureData)
 
--- Authenticate pointer - hardware validates signature
+// Authenticate pointer - hardware validates signature
 auth_ptr_securedata(ptr: ref(R, Space, SecureData), context: int) -> ref(R, Space, SecureData) proc[mem(Space)]
 
--- Check if authentication would fail (without dereferencing)
+// Check if authentication would fail (without dereferencing)
 auth_fail_securedata(ptr: ref(R, Space, SecureData), context: int) -> bool
 ```
 
@@ -12374,18 +12380,18 @@ Context values provide additional security by binding pointers to specific conte
 **Example Context Usage:**
 
 ```silica
--- Sign pointer with function address as context
+// Sign pointer with function address as context
 fn create_secure_ptr(data: SecureData) -> ref(R, normal, SecureData) proc[mem(normal)] {
     ptr: ref(R, normal, SecureData) <- alloc_ref(region, data);
-    -- Sign with function address as context
+    // Sign with function address as context
     fn_addr: int <- get_function_address(create_secure_ptr);
     sign_ptr_securedata(ptr, fn_addr)
 }
 
--- Authenticate pointer with same context
+// Authenticate pointer with same context
 fn use_secure_ptr(signed_ptr: ref(R, normal, SecureData)) -> SecureData proc[mem(normal)] {
     fn_addr: int <- get_function_address(use_secure_ptr);
-    -- Authenticate before use
+    // Authenticate before use
     authenticated_ptr: ref(R, normal, SecureData) <- auth_ptr_securedata(signed_ptr, fn_addr);
     read_ref(authenticated_ptr)
 }
@@ -12429,17 +12435,17 @@ impl authenticated for SecureData;
 
 fn secure_operation(data: SecureData) -> atom proc[mem(normal)] {
     do
-        -- Allocate secure data
+        // Allocate secure data
         ptr: ref(R, normal, SecureData) <- alloc_ref(region, data);
         
-        -- Sign pointer with context
-        context: int <- 0x1234;  -- Context value
+        // Sign pointer with context
+        context: int <- 0x1234;  // Context value
         signed_ptr: ref(R, normal, SecureData) <- sign_ptr_securedata(ptr, context);
         
-        -- Later: authenticate before use
+        // Later: authenticate before use
         authenticated_ptr: ref(R, normal, SecureData) <- auth_ptr_securedata(signed_ptr, context);
         
-        -- Use authenticated pointer
+        // Use authenticated pointer
         data: SecureData <- read_ref(authenticated_ptr);
     end
 }
@@ -12454,27 +12460,27 @@ The Apple Matrix Engine (AMX) provides hardware-accelerated matrix operations. T
 module arch.apple.amx {
 
     trait apple_matrix {
-        -- Marker trait for types that can be used with AMX
+        // Marker trait for types that can be used with AMX
     }
 
-    -- Example: Implement apple_matrix trait for a struct
+    // Example: Implement apple_matrix trait for a struct
     struct MatrixData {
         values: buf(R, normal, float32, 16)
     }
 
     impl apple_matrix for MatrixData;
 
-    -- AMX matrix operations (type must implement apple_matrix trait)
-    -- For each type that implements the apple_matrix trait, the compiler generates
-    -- type-specific versions of these functions. The function names follow the pattern
-    -- load_matrix_<typename>, store_matrix_<typename>, matmul_<typename>, etc.
+    // AMX matrix operations (type must implement apple_matrix trait)
+    // For each type that implements the apple_matrix trait, the compiler generates
+    // type-specific versions of these functions. The function names follow the pattern
+    // load_matrix_<typename>, store_matrix_<typename>, matmul_<typename>, etc.
     --
-    -- Example for MatrixData type:
+    // Example for MatrixData type:
     pub fn load_matrix_matrixdata(data: ref(R, Space, MatrixData), rows: int, cols: int) -> ref(R, Space, MatrixData)
     pub fn store_matrix_matrixdata(matrix: ref(R, Space, MatrixData), data: ref(R, Space, MatrixData)) -> atom
     pub fn matmul_matrixdata(a: ref(R, Space, MatrixData), b: ref(R, Space, MatrixData)) -> ref(R, Space, MatrixData)
     --
-    -- Similar functions are generated for all types that implement apple_matrix
+    // Similar functions are generated for all types that implement apple_matrix
 }
 ```
 
@@ -12507,17 +12513,17 @@ The `alloc_region_on_numa_node()` function allocates a memory region on a specif
 
 **Example Usage:**
 ```silica
--- Standard write-back cacheable memory (most common)
+// Standard write-back cacheable memory (most common)
 region1: region(R1, normal) <- alloc_region(normal);
 
--- Write-through for immediate visibility
+// Write-through for immediate visibility
 region2: region(R2, normal_writethrough) <- alloc_region(normal_writethrough);
 
--- Non-cacheable for DMA buffers
+// Non-cacheable for DMA buffers
 dma_region: region(R3, normal_noncacheable) <- alloc_region(normal_noncacheable);
 dma_buffer: buf(R3, normal_noncacheable, byte, 4096) <- alloc_buf(dma_region, 4096);
 
--- Atomic memory for shared counters
+// Atomic memory for shared counters
 atomic_region: region(R4, atomic) <- alloc_region(atomic);
 counter: atomic_ref(R4, atomic, int64) <- alloc_atomic(atomic_region, 0);
 ```
@@ -12541,7 +12547,7 @@ buffer_capacity(buffer) -> int
 spawn(initial_state, behavior [, core_affinity]) -> actor_ref proc[concurrency]
 send(actor, message) -> atom proc[concurrency]
 cast(actor, message) -> bool proc[concurrency]
-recv([actor]) -> Msg proc[mailbox, concurrency]          -- Runtime internal
+recv([actor]) -> Msg proc[mailbox, concurrency]          // Runtime internal
 self() -> actor_ref proc[mailbox, concurrency]
 ```
 
@@ -12621,8 +12627,8 @@ String operations are pure functions (no effects required).
 
 #### 22.7.1 String Length
 ```
-len(s: string) -> int64                    -- byte length
-len_chars(s: string) -> int64              -- character count
+len(s: string) -> int64                    // byte length
+len_chars(s: string) -> int64              // character count
 ```
 
 #### 22.7.2 String Manipulation
@@ -12668,7 +12674,7 @@ type numa_info = {
 type memory_range = {
     start_address: int,
     size: int,
-    latency: int  -- relative latency to this NUMA node
+    latency: int  // relative latency to this NUMA node
 }
 
 type cache_info = {
@@ -12676,7 +12682,7 @@ type cache_info = {
 }
 
 type cache_level = {
-    level: int,  -- L1, L2, L3
+    level: int,  // L1, L2, L3
     size_kb: int,
     line_size: int,
     associativity: int,
@@ -12691,7 +12697,7 @@ type cpu_topology = {
 
 type core_info = {
     id: int,
-    core_type: core_type,  -- efficiency | performance
+    core_type: core_type,  // efficiency | performance
     capabilities: list<string>,
     frequency_mhz: int
 }
@@ -12709,27 +12715,27 @@ type affinity_error =
 All CPU affinity functions are pure runtime functions (no effects required):
 
 ```
--- CPU topology and status discovery
+// CPU topology and status discovery
 get_cpu_topology() -> cpu_topology
 get_efficiency_cores() -> list<int>
 get_performance_cores() -> list<int>
 get_core_capabilities(core_id: int) -> core_info
 
--- Actor pinning operations
--- Returns (int64, affinity_error) tuple: (0, error) on failure, (1, error) on success
--- error is set to appropriate value or empty on success
+// Actor pinning operations
+// Returns (int64, affinity_error) tuple: (0, error) on failure, (1, error) on success
+// error is set to appropriate value or empty on success
 pin_actor_to_core(actor: actor_ref, core_id: int) -> (int64, affinity_error)
 pin_actor_to_efficiency_core(actor: actor_ref) -> (int64, affinity_error)
 pin_actor_to_performance_core(actor: actor_ref) -> (int64, affinity_error)
 pin_actor_realtime(actor: actor_ref, priority: int) -> (int64, affinity_error)
 unpin_actor(actor: actor_ref) -> atom
 
--- Actor removal
--- Removes an actor from the system, unpinning it and allowing cleanup
--- All actors are pinned until remove() is called
+// Actor removal
+// Removes an actor from the system, unpinning it and allowing cleanup
+// All actors are pinned until remove() is called
 remove_actor(actor: actor_ref) -> (int64, affinity_error)
 
--- Advanced scheduling hints
+// Advanced scheduling hints
 set_actor_priority(actor: actor_ref, priority: priority_level) -> atom
 ```
 
@@ -12746,18 +12752,18 @@ All actors are pinned to their initial core assignment until `remove_actor()` is
 
 Example usage:
 ```silica
--- Pin actor to specific core
+// Pin actor to specific core
 (result: int64, error: affinity_error) <- pin_actor_to_core(actor_ref, 2);
 case result of {
-    1 -> -- Success, actor pinned
-    0 -> -- Failure, check error for reason
+    1 -> // Success, actor pinned
+    0 -> // Failure, check error for reason
 }
 
--- Remove actor (unpins and allows cleanup)
+// Remove actor (unpins and allows cleanup)
 (remove_result: int64, remove_error: affinity_error) <- remove_actor(actor_ref);
 case remove_result of {
-    1 -> -- Success, actor removed
-    0 -> -- Failure, check error for reason
+    1 -> // Success, actor removed
+    0 -> // Failure, check error for reason
 }
 ```
 
@@ -12766,7 +12772,7 @@ case remove_result of {
 SVE vector length query functions are built-in runtime functions (no effects required):
 
 ```
--- Get SVE vector length in bytes (hardware vector length)
+// Get SVE vector length in bytes (hardware vector length)
 get_sve_vector_length() -> int
 ```
 
@@ -12777,7 +12783,7 @@ Example usage:
 vector_bytes: int <- get_sve_vector_length();
 int32_size: int <- size_of<int32>();
 int32_elements: int <- vector_bytes / int32_size;
--- int32_elements indicates how many int32 values fit in one SVE vector
+// int32_elements indicates how many int32 values fit in one SVE vector
 ```
 
 ### 22.12 Atomic Operations
@@ -12791,18 +12797,18 @@ atomic_compare_exchange(ref, expected, new_val, order)
 
 ### 22.13 Type Operations
 ```
-size_of<T>() -> int                    -- size in bytes
-align_of<T>() -> int                   -- alignment requirement
-type_name<T>() -> string               -- type name as string
+size_of<T>() -> int                    // size in bytes
+align_of<T>() -> int                   // alignment requirement
+type_name<T>() -> string               // type name as string
 ```
 
 **Note**: The `size_of<T>()`, `align_of<T>()`, and `type_name<T>()` functions use generic-like syntax for documentation purposes, but Silica requires concrete type arguments at compile time. For example, `size_of<int64>()` or `size_of<Point>()` where `Point` is a concrete struct type.
 
 ### 22.14 Runtime Operations
 ```
-current_time() -> int proc[]           -- milliseconds since epoch
+current_time() -> int proc[]           // milliseconds since epoch
 random_int(min: int, max: int) -> int proc[]
-hash<T>(value: T) -> int               -- stable hash function
+hash<T>(value: T) -> int               // stable hash function
 ```
 
 **Note**: The `hash<T>()` function uses generic-like syntax for documentation, but requires concrete type arguments at compile time.
@@ -12818,9 +12824,9 @@ int_to_string(n: int) -> string
 
 ### 22.16 Control Flow
 ```
-panic(message: string) -> ! proc[]          -- terminate with error
+panic(message: string) -> ! proc[]          // terminate with error
 assert(condition: bool, message: string) -> atom proc[]
-unreachable() -> ! proc[]                   -- mark unreachable code
+unreachable() -> ! proc[]                   // mark unreachable code
 ```
 
 ## 23. Runtime System
@@ -12943,7 +12949,7 @@ fn safe_divide(x: int, y: int) -> result<int, string> proc[] {
     return Ok(x / y)
 }
 
--- Usage
+// Usage
 do
     result: Result<int, string> <- safe_divide(10, 0)
     case result of
@@ -13032,20 +13038,20 @@ Runtime implementations must:
 #### 25.1.1 Runtime Errors
 ```
 type runtime_error =
-    EffectViolation(string)        -- missing capability
-  | MemoryError(string)           -- memory corruption
-  | BoundsError(string)           -- array bounds violation
-  | TypeError(string)             -- type mismatch at runtime
-  | ActorError(string)            -- actor failure
+    EffectViolation(string)        // missing capability
+  | MemoryError(string)           // memory corruption
+  | BoundsError(string)           // array bounds violation
+  | TypeError(string)             // type mismatch at runtime
+  | ActorError(string)            // actor failure
 ```
 
 #### 25.1.2 Compilation Errors
 ```
 type compile_error =
-    TypeError(string)             -- static type error
-  | EffectError(string)           -- effect mismatch
-  | SyntaxError(string)           -- parse error
-  | ModuleError(string)           -- module resolution error
+    TypeError(string)             // static type error
+  | EffectError(string)           // effect mismatch
+  | SyntaxError(string)           // parse error
+  | ModuleError(string)           // module resolution error
 ```
 
 ### 25.2 Error Propagation
@@ -13055,11 +13061,11 @@ Functions return results to indicate success or failure:
 
 ```
 fn parse_number(s: string) -> result<int, string> {
-    -- attempt parsing, return Ok(value) or Error(message)
+    // attempt parsing, return Ok(value) or Error(message)
 }
 
 fn safe_operation() -> result<atom, runtime_error> proc[] {
-    -- operations that might fail at runtime
+    // operations that might fail at runtime
 }
 ```
 
@@ -13068,8 +13074,8 @@ For unrecoverable errors:
 
 ```
 fn panic(message: string) -> ! {
-    -- terminates the current process with error message
-    -- '!' indicates this function never returns normally
+    // terminates the current process with error message
+    // '!' indicates this function never returns normally
 }
 ```
 
@@ -13098,7 +13104,7 @@ fn supervisor(child_failure: down_message, state: supervisor_state)
     case child_failure of
         Down(child_ref, reason) ->
             new_child: actor_ref <- spawn_actor(initial_state, child_behavior)
-            -- restart failed child
+            // restart failed child
             return updated_state
     end
 }
@@ -13142,13 +13148,13 @@ The compiler and runtime work together to map regions to cache levels:
 
 **Cache-Aware Region Allocation:**
 ```silica
--- Runtime queries cache hierarchy
+// Runtime queries cache hierarchy
 cache_info: cache_info <- get_cache_hierarchy()
--- Returns cache levels with sizes, line sizes, and associativity
+// Returns cache levels with sizes, line sizes, and associativity
 
--- Regions are automatically aligned to cache line boundaries
+// Regions are automatically aligned to cache line boundaries
 region: region(R, normal) <- alloc_region(normal)
--- Compiler ensures region data structures align to cache lines (typically 64 bytes on AArch64)
+// Compiler ensures region data structures align to cache lines (typically 64 bytes on AArch64)
 ```
 
 **Cache Line Optimization:**
@@ -13543,17 +13549,17 @@ The compiler automatically inserts memory barriers based on effect annotations. 
 **Example 1: Atomic Operations with Acquire Semantics**
 
 ```silica
--- Source code
+// Source code
 fn load_shared_data(atomic_ref: atomic_ref(R, atomic, Data)) -> Data proc[mem(atomic), atomic] {
-    atomic_load(atomic_ref, acquire)  -- acquire ordering
+    atomic_load(atomic_ref, acquire)  // acquire ordering
 }
 ```
 
 **Generated AArch64 Code (Before Optimization):**
 ```assembly
--- Load with acquire semantics
-LDAR X0, [X1]  -- Load-acquire: X0 = atomic_ref, X1 = address
--- LDAR provides acquire semantics automatically
+// Load with acquire semantics
+LDAR X0, [X1]  // Load-acquire: X0 = atomic_ref, X1 = address
+// LDAR provides acquire semantics automatically
 ```
 
 **Barrier Insertion**: `LDAR` instruction provides acquire semantics, so no additional barrier is needed. The compiler recognizes that `LDAR` already includes the necessary ordering guarantees.
@@ -13561,19 +13567,19 @@ LDAR X0, [X1]  -- Load-acquire: X0 = atomic_ref, X1 = address
 **Example 2: Sequential Consistency Operations**
 
 ```silica
--- Source code
+// Source code
 fn seq_cst_load(atomic_ref: atomic_ref(R, atomic, int64)) -> int64 proc[mem(atomic), atomic] {
-    atomic_load(atomic_ref, seq_cst)  -- sequential consistency
+    atomic_load(atomic_ref, seq_cst)  // sequential consistency
 }
 ```
 
 **Generated AArch64 Code:**
 ```assembly
--- Sequential consistency requires full memory barrier
-DMB ISH        -- Data Memory Barrier, Inner Shareable domain
-LDAR X0, [X1]  -- Load-acquire after barrier
--- DMB ensures all prior operations complete before LDAR
--- LDAR ensures all subsequent operations see the load result
+// Sequential consistency requires full memory barrier
+DMB ISH        // Data Memory Barrier, Inner Shareable domain
+LDAR X0, [X1]  // Load-acquire after barrier
+// DMB ensures all prior operations complete before LDAR
+// LDAR ensures all subsequent operations see the load result
 ```
 
 **Barrier Insertion**: For `seq_cst` ordering, the compiler inserts `DMB ISH` before `LDAR` to ensure global ordering. This provides the strongest ordering guarantee required by sequential consistency.
@@ -13581,20 +13587,20 @@ LDAR X0, [X1]  -- Load-acquire after barrier
 **Example 3: Release Store Followed by Normal Store**
 
 ```silica
--- Source code
+// Source code
 fn publish_data(data_ref: ref(R, normal, Data), atomic_flag: atomic_ref(R, atomic, bool)) -> atom proc[mem(normal), mem(atomic), atomic] {
-    write_ref(data_ref, new_data);                    -- Normal store
-    atomic_store(atomic_flag, true, release);        -- Release store
+    write_ref(data_ref, new_data);                    // Normal store
+    atomic_store(atomic_flag, true, release);        // Release store
 }
 ```
 
 **Generated AArch64 Code:**
 ```assembly
--- Store data
-STR X2, [X3]        -- Normal store: X2 = new_data, X3 = data_ref address
--- Release store ensures all prior stores are visible
-STLR X4, [X5]       -- Store-release: X4 = true, X5 = atomic_flag address
--- STLR provides release semantics automatically
+// Store data
+STR X2, [X3]        // Normal store: X2 = new_data, X3 = data_ref address
+// Release store ensures all prior stores are visible
+STLR X4, [X5]       // Store-release: X4 = true, X5 = atomic_flag address
+// STLR provides release semantics automatically
 ```
 
 **Barrier Insertion**: `STLR` provides release semantics, ensuring all prior stores (including the normal store) are visible before the release store completes. No additional barrier needed.
@@ -13602,21 +13608,21 @@ STLR X4, [X5]       -- Store-release: X4 = true, X5 = atomic_flag address
 **Example 4: Cross-Actor Memory Visibility**
 
 ```silica
--- Source code (Actor A)
+// Source code (Actor A)
 fn actor_a_behavior(msg: Message, state: State) -> State proc[mem(normal), mem(atomic), atomic, concurrency] {
-    -- Prepare shared data
+    // Prepare shared data
     write_ref(shared_data_ref, prepared_data);
-    -- Publish with release semantics
+    // Publish with release semantics
     atomic_store(publish_flag, true, release);
     state
 }
 
--- Source code (Actor B)
+// Source code (Actor B)
 fn actor_b_behavior(msg: Message, state: State) -> State proc[mem(normal), mem(atomic), atomic, concurrency] {
-    -- Wait for data to be published
+    // Wait for data to be published
     ready: bool <- atomic_load(publish_flag, acquire);
     if ready {
-        data: Data <- read_ref(shared_data_ref);  -- Read published data
+        data: Data <- read_ref(shared_data_ref);  // Read published data
     }
     state
 }
@@ -13624,21 +13630,21 @@ fn actor_b_behavior(msg: Message, state: State) -> State proc[mem(normal), mem(a
 
 **Generated AArch64 Code (Actor A):**
 ```assembly
--- Prepare data
-STR X2, [X3]        -- Store shared data
--- Publish with release
-STLR X4, [X5]       -- Store-release: publish_flag = true
--- STLR ensures all prior stores (including shared_data) are visible
+// Prepare data
+STR X2, [X3]        // Store shared data
+// Publish with release
+STLR X4, [X5]       // Store-release: publish_flag = true
+// STLR ensures all prior stores (including shared_data) are visible
 ```
 
 **Generated AArch64 Code (Actor B):**
 ```assembly
--- Wait for publication
-LDAR X0, [X5]       -- Load-acquire: X0 = publish_flag
-CBNZ X0, data_ready -- Branch if flag is set
--- Load-acquire ensures we see all stores before the release store
+// Wait for publication
+LDAR X0, [X5]       // Load-acquire: X0 = publish_flag
+CBNZ X0, data_ready // Branch if flag is set
+// Load-acquire ensures we see all stores before the release store
 data_ready:
-LDR X1, [X3]        -- Load shared data (guaranteed to see Actor A's store)
+LDR X1, [X3]        // Load shared data (guaranteed to see Actor A's store)
 ```
 
 **Barrier Insertion**: The acquire-release pair (`LDAR`/`STLR`) provides the necessary synchronization. The compiler recognizes this pattern and ensures proper ordering without additional barriers.
@@ -13646,15 +13652,15 @@ LDR X1, [X3]        -- Load shared data (guaranteed to see Actor A's store)
 **Example 5: Multiple Atomic Operations with Different Orderings**
 
 ```silica
--- Source code
+// Source code
 fn complex_atomic_operation(
     counter: atomic_ref(R, atomic, int64),
     flag: atomic_ref(R, atomic, bool)
 ) -> int64 proc[mem(atomic), atomic] {
-    -- Relaxed increment (no ordering needed)
+    // Relaxed increment (no ordering needed)
     old_count: int64 <- atomic_fetch_add(counter, 1, relaxed);
     
-    -- Sequential consistency store (needs full ordering)
+    // Sequential consistency store (needs full ordering)
     atomic_store(flag, true, seq_cst);
     
     old_count
@@ -13663,16 +13669,16 @@ fn complex_atomic_operation(
 
 **Generated AArch64 Code:**
 ```assembly
--- Relaxed increment (no barrier needed)
-LDXR X0, [X1]      -- Load-exclusive: X0 = counter value
-ADD X0, X0, #1     -- Increment
-STXR W2, X0, [X1]  -- Store-exclusive: W2 = success flag
-CBNZ W2, retry     -- Retry if store failed
+// Relaxed increment (no barrier needed)
+LDXR X0, [X1]      // Load-exclusive: X0 = counter value
+ADD X0, X0, #1     // Increment
+STXR W2, X0, [X1]  // Store-exclusive: W2 = success flag
+CBNZ W2, retry     // Retry if store failed
 retry:
--- Sequential consistency store (needs barrier)
-DMB ISH            -- Full memory barrier before seq_cst store
-STLR X3, [X4]      -- Store-release: X3 = true, X4 = flag address
-DMB ISH            -- Full memory barrier after seq_cst store
+// Sequential consistency store (needs barrier)
+DMB ISH            // Full memory barrier before seq_cst store
+STLR X3, [X4]      // Store-release: X3 = true, X4 = flag address
+DMB ISH            // Full memory barrier after seq_cst store
 ```
 
 **Barrier Insertion**: For `seq_cst` operations, the compiler inserts `DMB ISH` barriers before and after the operation to ensure global ordering. The relaxed operation uses `LDXR`/`STXR` without barriers.
@@ -13683,42 +13689,42 @@ DMB ISH            -- Full memory barrier after seq_cst store
 function insert_barriers_for_effects(operation, effects, ordering):
     barriers = []
     
-    -- Check if operation requires barriers based on effects
+    // Check if operation requires barriers based on effects
     if "atomic" in effects:
         case ordering:
             relaxed:
-                -- No barriers needed for relaxed ordering
+                // No barriers needed for relaxed ordering
                 barriers = []
             
             acquire:
-                -- Load-acquire provides acquire semantics
+                // Load-acquire provides acquire semantics
                 if operation.type == "load":
-                    barriers = []  -- LDAR provides acquire
+                    barriers = []  // LDAR provides acquire
                 else:
-                    barriers = []  -- No barrier needed for acquire load
+                    barriers = []  // No barrier needed for acquire load
             
             release:
-                -- Store-release provides release semantics
+                // Store-release provides release semantics
                 if operation.type == "store":
-                    barriers = []  -- STLR provides release
+                    barriers = []  // STLR provides release
                 else:
-                    barriers = []  -- No barrier needed for release store
+                    barriers = []  // No barrier needed for release store
             
             acq_rel:
-                -- RMW operations use LDAXR/STLXR which provide acq_rel
+                // RMW operations use LDAXR/STLXR which provide acq_rel
                 if operation.type == "rmw":
-                    barriers = []  -- LDAXR/STLXR provide acq_rel
+                    barriers = []  // LDAXR/STLXR provide acq_rel
                 else:
-                    -- Need both acquire and release
-                    barriers = [DMB_ISH]  -- Barrier for cross-operation ordering
+                    // Need both acquire and release
+                    barriers = [DMB_ISH]  // Barrier for cross-operation ordering
             
             seq_cst:
-                -- Sequential consistency requires full barriers
+                // Sequential consistency requires full barriers
                 barriers = [DMB_ISH_BEFORE, DMB_ISH_AFTER]
         end case
     end if
     
-    -- Insert barriers in generated code
+    // Insert barriers in generated code
     insert_barriers(operation, barriers)
 end function
 ```
@@ -13742,19 +13748,19 @@ The compiler minimizes barrier overhead by:
 For effect-tracked memory operations, the compiler inserts cache maintenance instructions:
 
 ```silica
--- Source code
+// Source code
 fn flush_cache_line(ptr: ref(R, normal, Data)) -> atom proc[mem(normal)] {
-    -- Write data that needs to be visible to other cores
+    // Write data that needs to be visible to other cores
     write_ref(ptr, new_data);
-    -- Compiler inserts cache flush for cross-core visibility
+    // Compiler inserts cache flush for cross-core visibility
 }
 ```
 
 **Generated AArch64 Code:**
 ```assembly
-STR X0, [X1]        -- Store data
-DC CIVAC, X1        -- Data Cache Clean and Invalidate by Virtual Address to Point of Coherency
--- Ensures data is visible to other cores and DMA devices
+STR X0, [X1]        // Store data
+DC CIVAC, X1        // Data Cache Clean and Invalidate by Virtual Address to Point of Coherency
+// Ensures data is visible to other cores and DMA devices
 ```
 
 **Speculative Execution Control:**
@@ -13768,22 +13774,22 @@ Modern AArch64 chips have sophisticated speculative execution. Silica controls t
 **Speculation Barrier Example:**
 
 ```silica
--- Source code with security-sensitive operation
+// Source code with security-sensitive operation
 fn secure_operation(secret: ref(R, normal, Secret)) -> atom proc[mem(normal)] {
-    -- Access secret data
+    // Access secret data
     secret_data: Secret <- read_ref(secret);
-    -- Compiler inserts speculation barrier to prevent speculative leaks
+    // Compiler inserts speculation barrier to prevent speculative leaks
     process_secret(secret_data);
 }
 ```
 
 **Generated AArch64 Code:**
 ```assembly
-LDR X0, [X1]        -- Load secret data
-DSB SY              -- Data Synchronization Barrier (full system)
-ISB                 -- Instruction Synchronization Barrier
--- Barriers prevent speculative execution from leaking secret data
-BL process_secret   -- Call processing function
+LDR X0, [X1]        // Load secret data
+DSB SY              // Data Synchronization Barrier (full system)
+ISB                 // Instruction Synchronization Barrier
+// Barriers prevent speculative execution from leaking secret data
+BL process_secret   // Call processing function
 ```
 
 **Cross-References:**
@@ -13966,11 +13972,11 @@ main.silica ──┐
 Persistent caching of compiled modules:
 
 ```silica
--- Module cache structure
+// Module cache structure
 .cache/
-├── math.silica.bc       -- Compiled bytecode
-├── math.silica.deps     -- Dependency information
-└── math.silica.types    -- Type information
+├── math.silica.bc       // Compiled bytecode
+├── math.silica.deps     // Dependency information
+└── math.silica.types    // Type information
 ```
 
 **Cache Structure Details:**
@@ -14016,7 +14022,7 @@ Navigate to symbol definitions across modules:
 
 ```
 fn main() {
-    result: int <- add(1, 2)  -- Ctrl+click on 'add' jumps to math.silica
+    result: int <- add(1, 2)  // Ctrl+click on 'add' jumps to math.silica
 }
 ```
 
@@ -14024,7 +14030,7 @@ fn main() {
 Display type and documentation information:
 
 ```silica
-fn add(x: int, y: int) -> int  -- Hover shows signature
+fn add(x: int, y: int) -> int  // Hover shows signature
 ```
 
 #### 29.1.4 Auto-completion
@@ -14032,7 +14038,7 @@ Context-aware code completion:
 
 ```silica
 use math_
-      -- Suggests: math_utils
+      // Suggests: math_utils
 ```
 
 ### 29.2 Debugging Support
@@ -14042,7 +14048,7 @@ Step through Silica code with source line mapping:
 
 ```silica
 fn factorial(n: int) -> int {
-    if n <= 1 {           -- Breakpoint here
+    if n <= 1 {           // Breakpoint here
         return 1
     }
     return n * factorial(n - 1)
@@ -14057,7 +14063,7 @@ actor counter {
     state: int = 0
 
     increment() -> atom {
-        state = state + 1  -- Inspect 'state' variable
+        state = state + 1  // Inspect 'state' variable
     }
 }
 ```
@@ -14153,10 +14159,10 @@ trait Reader {
 }
 
 trait Writer {
-    fn read(self: Self) -> int64;  -- Same method name as Reader
+    fn read(self: Self) -> int64;  // Same method name as Reader
 }
 
--- A type implementing both traits
+// A type implementing both traits
 struct MyType { data: int64 }
 
 impl Reader for MyType {
@@ -14168,7 +14174,7 @@ impl Writer for MyType {
 }
 
 fn process(value: MyType) -> int64 {
-    -- Use qualified names to disambiguate
+    // Use qualified names to disambiguate
     reader_result: int64 <- Reader.read(value);
     writer_result: int64 <- Writer.read(value);
     reader_result + writer_result
@@ -14224,7 +14230,7 @@ trait Reader {
 }
 
 trait Writer {
-    fn write(self: Self, data: int64) -> int64;  -- Different name
+    fn write(self: Self, data: int64) -> int64;  // Different name
 }
 
 struct MyType { data: int64 }
@@ -14237,10 +14243,10 @@ impl Writer for MyType {
     fn write(self: MyType, data: int64) -> int64 { data }
 }
 
--- No disambiguation needed: method names are unique
+// No disambiguation needed: method names are unique
 fn process(value: MyType) -> int64 {
-    value2: int64 <- value.read();        -- Unambiguous: only Reader.read()
-    value.write(value2)                   -- Unambiguous: only Writer.write()
+    value2: int64 <- value.read();        // Unambiguous: only Reader.read()
+    value.write(value2)                   // Unambiguous: only Writer.write()
 }
 ```
 
@@ -14252,7 +14258,7 @@ trait Logger {
 }
 
 trait Debugger {
-    fn log(self: Self, msg: string) -> atom;  -- Same name and signature
+    fn log(self: Self, msg: string) -> atom;  // Same name and signature
 }
 
 struct MyTool { name: string }
@@ -14265,10 +14271,10 @@ impl Debugger for MyTool {
     fn log(self: MyTool, msg: string) -> atom { print_string("DEBUG: " + msg) }
 }
 
--- Disambiguation required: both Logger and Debugger define log()
+// Disambiguation required: both Logger and Debugger define log()
 fn run(tool: MyTool) -> atom {
-    Logger.log(tool, "info");      -- Required: specify Logger.log()
-    Debugger.log(tool, "debug");   -- Required: specify Debugger.log()
+    Logger.log(tool, "info");      // Required: specify Logger.log()
+    Debugger.log(tool, "debug");   // Required: specify Debugger.log()
 }
 ```
 
@@ -14302,10 +14308,10 @@ impl NetworkReader for MyReader {
     fn read_socket(self: MyReader, sock: socket) -> string { ... }
 }
 
--- No disambiguation needed: method names are distinct
+// No disambiguation needed: method names are distinct
 fn read_all(reader: MyReader) -> string {
-    file_data: string <- reader.read_file("data.txt");      -- Unambiguous
-    socket_data: string <- reader.read_socket(sock);        -- Unambiguous
+    file_data: string <- reader.read_file("data.txt");      // Unambiguous
+    socket_data: string <- reader.read_socket(sock);        // Unambiguous
     file_data + socket_data
 }
 ```
@@ -14375,7 +14381,7 @@ type Response = {result: int};
 impl ActorMessage for Request;
 impl ActorMessage for Response;
 
--- ActorMessage can be used as a type
+// ActorMessage can be used as a type
 cast(actor_ref, message: ActorMessage) -> bool proc[concurrency]
 ```
 

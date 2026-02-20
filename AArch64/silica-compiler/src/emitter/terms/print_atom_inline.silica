@@ -1,0 +1,137 @@
+// Fully inline emission for print_atom(atom) built-in
+// Const arg: emit write(2) with known label/length. Var/other arg: arg already in X0, emit switch on index.
+// No external symbol required; can be extended or fixed in this file without touching call.silica.
+
+use sir_ast;
+use atom_table;
+use emitter_effects;
+
+export emit_print_atom_inline/3;
+export is_print_atom_const_arg/2;
+export emit_print_atom_by_index/3;
+
+// True when term is a call to main.print_atom and the argument is a const atom.
+// Used by term_emitter to decide whether to emit inline or generic call.
+fn is_print_atom_const_arg(term: SIRTerm, table: AtomTable) -> bool {
+    case term.name == "main.print_atom" of {
+        false -> false;
+        true -> case term.inner.kind of {
+            0 -> term.inner.type_name == "atom";
+            _: int64 -> false
+        }
+    }
+}
+
+// Emit fully inline assembly for print_atom(const_atom).
+// Precondition: term.name == "main.print_atom" and term.inner is const atom (kind 0, type_name "atom").
+// Uses write(2) syscall: fd=1 (stdout), buf=atom string in rodata, count=len(lexeme).
+// macOS ARM64: write syscall number 4; X0=fd, X1=buf, X2=count; result in X0.
+// Returns atom index 0 (:ok) in dest after the syscall.
+fn emit_print_atom_inline(term: SIRTerm, dest: string, table: AtomTable) -> string {
+    lexeme: string <- term.inner.value;
+    index: int64 <- atom_table@atom_lexeme_to_index(table, lexeme);
+    index_str: string <- atom_table@int64_to_decimal_string(index);
+    label: string <- concat("atom_", index_str);
+    length: int64 <- len(lexeme);
+    length_str: string <- atom_table@int64_to_decimal_string(length);
+    call_effects: string <- term.value;
+    eff_comment: string <- emitter_effects@effect_annotation(call_effects);
+    pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
+    post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
+    comment_line: string <- case len(eff_comment) > 0 of {
+        true -> concat(eff_comment, "\n");
+        false -> ""
+    };
+    mov_fd: string <- "    MOV X0, #1\n";
+    adrp_part: string <- concat(concat("    ADRP X1, ", label), "@PAGE\n");
+    add_suffix: string <- concat(label, "@PAGEOFF\n");
+    add_part: string <- concat(concat("    ADD X1, X1, ", add_suffix), "    ");
+    mov_count: string <- concat(concat("    MOV X2, ", concat("#", length_str)), "\n");
+    adrp_line: string <- concat(concat(adrp_part, add_part), mov_count);
+    syscall_line: string <- "\n    MOV X16, #4\n    SVC #0\n";
+    result_part: string <- concat("    MOV ", dest);
+    result_line: string <- concat(concat(result_part, ", #0\n"), "");
+    with_comment: string <- concat(comment_line, mov_fd);
+    with_adrp: string <- concat(with_comment, concat(adrp_line, syscall_line));
+    with_post: string <- case len(post_barrier) > 0 of {
+        true -> concat(with_adrp, concat(concat("\n", post_barrier), "\n"));
+        false -> concat(with_adrp, "\n")
+    };
+    with_pre: string <- case len(pre_barrier) > 0 of {
+        true -> concat(pre_barrier, concat("\n", with_post));
+        false -> with_post
+    };
+    concat(with_pre, result_line)
+}
+
+// Emit switch on X0 (atom index) to write the corresponding atom string, then MOV dest, #0.
+// Caller has already emitted the argument to X0. Uses same atom_0, atom_1, ... order as rodata.
+fn emit_switch_cases(lexemes: ListAtomLexeme, index: int64, dest: string) -> string {
+    case lexemes.is_nil of {
+        true -> "L_pa_after:\n";
+        false -> do
+            index_str: string <- atom_table@int64_to_decimal_string(index);
+            label: string <- concat("atom_", index_str);
+            length: int64 <- len(lexemes.head);
+            len_str: string <- atom_table@int64_to_decimal_string(length);
+            next_label: string <- concat("L_next_", index_str);
+            cmp_prefix: string <- concat("    CMP X0, ", concat("#", index_str));
+            cmp_line: string <- concat(cmp_prefix, "\n");
+            b_ne: string <- concat(concat("    B.ne ", next_label), "\n");
+            adrp_prefix: string <- concat("    ADRP X1, ", label);
+            adrp: string <- concat(adrp_prefix, "@PAGE\n");
+            add_suf: string <- concat(label, "@PAGEOFF\n");
+            comma_sp: string <- concat(",", " ");
+            add_first: string <- concat("    ADD X1", comma_sp);
+            add_second: string <- concat(add_first, "X1");
+            add_third: string <- concat(add_second, comma_sp);
+            add_line: string <- concat(add_third, add_suf);
+            mov_len_prefix: string <- concat("    MOV X2, ", concat("#", len_str));
+            mov_len: string <- concat(mov_len_prefix, "\n");
+            mov_fd: string <- "    MOV X0, #1\n";
+            mov_svc: string <- "    MOV X16, #4\n";
+            svc: string <- "    SVC #0\n";
+            mov_ret_part: string <- concat("    MOV ", dest);
+            comma_space: string <- concat(",", " ");
+            mov_ret: string <- concat(concat(mov_ret_part, comma_space), concat("#", "0\n"));
+            b_after: string <- "    B L_pa_after\n";
+            rest: string <- emit_switch_cases(lexemes.tail, index + 1, dest);
+            step1a: string <- concat(cmp_line, b_ne);
+            step1b: string <- concat(step1a, adrp);
+            step1: string <- concat(step1b, add_line);
+            step2a: string <- concat(step1, mov_len);
+            step2b: string <- concat(step2a, mov_fd);
+            step2: string <- concat(step2b, mov_svc);
+            step3a: string <- concat(step2, svc);
+            step3: string <- concat(step3a, mov_ret);
+            one_block: string <- concat(step3, b_after);
+            label_line: string <- concat(next_label, ":\n");
+            concat(concat(one_block, label_line), rest)
+        end
+    }
+}
+
+// Emit full inline for print_atom when argument is not const (e.g. var): X0 already holds atom index.
+// Use same lexeme order as rodata (first-added = index 0) so labels and lengths match.
+fn emit_print_atom_by_index(term: SIRTerm, dest: string, table: AtomTable) -> string {
+    call_effects: string <- term.value;
+    eff_comment: string <- emitter_effects@effect_annotation(call_effects);
+    pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
+    post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
+    comment_line: string <- case len(eff_comment) > 0 of {
+        true -> concat(eff_comment, "\n");
+        false -> ""
+    };
+    in_order: ListAtomLexeme <- atom_table@reverse_lexemes(table.lexemes);
+    switch_asm: string <- emit_switch_cases(in_order, 0, dest);
+    with_comment: string <- concat(comment_line, switch_asm);
+    with_post: string <- case len(post_barrier) > 0 of {
+        true -> concat(with_comment, concat(concat("\n", post_barrier), "\n"));
+        false -> with_comment
+    };
+    with_pre: string <- case len(pre_barrier) > 0 of {
+        true -> concat(pre_barrier, concat("\n", with_post));
+        false -> with_post
+    };
+    with_pre
+}

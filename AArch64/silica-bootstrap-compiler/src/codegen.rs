@@ -12881,8 +12881,15 @@ impl CodeGenerator {
     fn get_path_arg_and_length(&mut self, path_val: &str) -> Result<(String, Option<String>)> {
         if let Some(path_length) = self.find_string_constant_length(path_val) {
             // String constant: use getelementptr/constant and compile-time length
-            let path_arg = if path_val.starts_with("i8* ") || path_val.starts_with("i64 ") {
+            let path_arg = if path_val.starts_with("i64 ") {
                 path_val.to_string()
+            } else if path_val.starts_with("i8* ") {
+                let rest = path_val.strip_prefix("i8* ").unwrap_or(path_val).trim_start_matches(' ');
+                if rest.starts_with('%') || rest.starts_with('@') || rest.contains("getelementptr") {
+                    path_val.to_string()
+                } else {
+                    format!("i8* %{}", rest.trim_start_matches('%'))
+                }
             } else if path_val.starts_with("getelementptr") {
                 format!("i8* {}", path_val)
             } else if path_val.starts_with('%') {
@@ -12891,14 +12898,19 @@ impl CodeGenerator {
                 let len = path_length + 1;
                 format!("i8* getelementptr inbounds ([{} x i8], [{} x i8]* {}, i64 0, i64 0)", len, len, path_val)
             } else {
-                format!("i8* {}", path_val)
+                format!("i8* %{}", path_val.trim_start_matches('%'))
             };
             Ok((path_arg, Some(format!("i64 {}", path_length))))
         } else {
             // Variable: use path for silica_read_file_path (handles both SilicaString and raw constant)
             // Must produce i8* - cast i64 to i8* when stored as ptr-as-int
             let path_arg = if path_val.starts_with("i8* ") {
-                path_val.to_string()
+                let rest = path_val.strip_prefix("i8* ").unwrap_or(path_val).trim_start_matches(' ');
+                if rest.starts_with('%') || rest.starts_with('@') || rest.contains("getelementptr") {
+                    path_val.to_string()
+                } else {
+                    format!("i8* %{}", rest.trim_start_matches('%'))
+                }
             } else if path_val.starts_with("i64 ") {
                 let cast_reg = self.next_register();
                 self.instructions.push(format!("  %{} = inttoptr {} to i8*", cast_reg, path_val.trim_start_matches("i64 ")));
