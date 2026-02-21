@@ -201,7 +201,7 @@ Silica source code is UTF-8 encoded. The language uses ASCII characters for keyw
 The following identifiers are reserved keywords:
 
 ```
-actor      actor_ref  as        atom      atomic    bool      buf       case
+actor      actor_ref  as        atom      atomic    boolean      buf       case
 cast       char       concurrency core_id  core_set device_io do        effect
 efficiency_cores else end        enum      export    false     float16   float32
 float64    fn         for        from      if        impl      import    int8
@@ -486,7 +486,7 @@ case x of {
 
 **Example - Pattern matching with guards using helper functions:**
 ```silica
-fn is_positive(x: int64) -> bool {
+fn is_positive(x: int64) -> boolean {
     x > 0
 }
 
@@ -671,7 +671,7 @@ fn incomplete_guards(x: int64) -> int64 {
 **Example 4: Guard Exhaustiveness with Function Calls**
 
 ```silica
-fn is_even(n: int64) -> bool {
+fn is_even(n: int64) -> boolean {
     (n % 2) == 0
 }
 
@@ -719,11 +719,11 @@ fn overlapping_guards(x: int64) -> int64 {
 **Example 7: Boolean Exhaustiveness**
 
 ```silica
-fn process_bool(b: bool) -> int64 {
+fn process_boolean(b: boolean) -> int64 {
     case b of {
-        b: bool if b == true -> 1          // true case
-        b: bool if b == false -> 0         // false case
-        // Exhaustive: covers all bool values
+        b: boolean if b == true -> 1          // true case
+        b: boolean if b == false -> 0         // false case
+        // Exhaustive: covers all boolean values
     }
 }
 ```
@@ -731,11 +731,11 @@ fn process_bool(b: bool) -> int64 {
 **Alternative (simpler) for booleans:**
 
 ```silica
-fn process_bool_simple(b: bool) -> int64 {
+fn process_boolean_simple(b: boolean) -> int64 {
     case b of {
         true -> 1
         false -> 0
-        // Exhaustive: pattern matching without guards covers all bool values
+        // Exhaustive: pattern matching without guards covers all boolean values
     }
 }
 ```
@@ -845,18 +845,18 @@ Performance considerations:
 **Example 8: Guard Exhaustiveness with Boolean Patterns**
 
 ```silica
-fn boolean_guards(b: bool) -> int {
+fn boolean_guards(b: boolean) -> int {
     case b of {
-        b: bool if b == true -> 1         // Redundant guard (pattern already matches true)
-        b: bool if b == false -> 0        // Redundant guard (pattern already matches false)
+        b: boolean if b == true -> 1         // Redundant guard (pattern already matches true)
+        b: boolean if b == false -> 0        // Redundant guard (pattern already matches false)
         // Exhaustive but redundant: guards are unnecessary for boolean patterns
     }
 }
 ```
 
 For boolean patterns, guards are often redundant:
-- `b: bool if b == true` is equivalent to `true ->`
-- `b: bool if b == false` is equivalent to `false ->`
+- `b: boolean if b == true` is equivalent to `true ->`
+- `b: boolean if b == false` is equivalent to `false ->`
 - Guards are useful when combining with other conditions
 
 **Example 9: Guard Exhaustiveness Checking Algorithm**
@@ -1001,7 +1001,7 @@ When guard coverage cannot be determined statically (e.g., function calls, compl
 Any Silica function can be used in guard expressions. Function calls in guards are handled conservatively:
 
 ```silica
-fn is_positive(x: int64) -> bool {
+fn is_positive(x: int64) -> boolean {
     x > 0
 }
 
@@ -1028,7 +1028,7 @@ Coverage analysis: `{n > 0} ∪ {n < 0} ∪ {0} = Domain(int64)` ✓ Exhaustive
 
 **Example 2: Function Call (Unknown Coverage)**
 ```silica
-fn check_valid(n: int64) -> bool {
+fn check_valid(n: int64) -> boolean {
     // Complex logic that cannot be statically analyzed
     n % 2 == 0 and n > 10
 }
@@ -1292,7 +1292,7 @@ Evaluation order for `x = -5`:
 
 **Example 3: Guard with Function Calls**
 ```silica
-fn is_valid(n: int64) -> bool {
+fn is_valid(n: int64) -> boolean {
     n > 0 and n < 1000
 }
 
@@ -1941,7 +1941,7 @@ case x of {
 - **Redundancy Elimination**: Remove unreachable pattern branches
 - **Backtracking Minimization**: Prefer deterministic patterns over backtracking
 - **Early Exit**: Check most common patterns first
-- **Type Specialization**: Generate specialized code for common types (int64, bool, etc.)
+- **Type Specialization**: Generate specialized code for common types (int64, boolean, etc.)
 
 **Jump Table Optimization:**
 
@@ -2576,10 +2576,10 @@ type unit = ()
 ```
 
 #### 4.1.2 Boolean Type
-The `bool` type represents boolean values.
+The `boolean` type represents boolean values.
 
 ```
-type bool = true | false
+type boolean = true | false
 ```
 
 #### 4.1.3 Integer Types
@@ -2709,7 +2709,7 @@ Tuple types have the form `(Type1, Type2, ..., TypeN)`.
 
 Examples:
 ```
-(int, bool)                          // pair of int and bool
+(int, boolean)                          // pair of int and boolean
 (char, char, char)                   // triple of characters
 ()                                   // unit (empty tuple)
 ```
@@ -2719,7 +2719,7 @@ Record types have the form `{field1: Type1, field2: Type2, ..., fieldN: TypeN}`.
 
 Example:
 ```
-{ name: string, age: int, active: bool }
+{ name: string, age: int, active: boolean }
 ```
 
 #### 4.2.4 List Types
@@ -2823,7 +2823,7 @@ atomic_ref(R, normal, int)           // atomic reference to int
 ### 4.5 Actor Types
 
 #### 4.5.1 Actor Reference Types
-Actor references are a primitive type (like `int` or `bool`):
+Actor references are a primitive type (like `int` or `boolean`):
 
 ```
 actor_ref                            // actor reference (primitive type)
@@ -2892,7 +2892,7 @@ Vec128Int16   // 8 × int16 elements
 Vec128Int32   // 4 × int32 elements
 Vec128Int64   // 2 × int64 elements
 Vec128Float32 // 4 × float32 elements
-Vec128Bool    // Boolean vector for comparisons
+Vec128Boolean    // Boolean vector for comparisons
 ```
 
 **Note**: All NEON vector types use concrete element types. The `Vec128Element` trait marks types that can be used as NEON vector elements.
@@ -2908,7 +2908,7 @@ VecInt64      // Scalable vector of int64
 VecFloat16    // Scalable vector of float16
 VecFloat32    // Scalable vector of float32
 VecFloat64    // Scalable vector of float64
-VecBool       // Scalable boolean vector
+VecBoolean       // Scalable boolean vector
 ```
 
 **Note**: All SVE vector types use concrete element types. The `VecElement` trait marks types that can be used as SVE vector elements.
@@ -2957,7 +2957,7 @@ Print floating-point values to stdout. Returns `:ok` on success.
 
 #### 5.1.4 Other Type Printing
 ```
-print_bool(value: bool) -> atom proc[device_io]
+print_boolean(value: boolean) -> atom proc[device_io]
 print_char(value: char) -> atom proc[device_io]
 ```
 
@@ -2985,7 +2985,7 @@ Write or append content to a file.
 
 #### 5.2.3 File Operations
 ```
-file_exists(path: string) -> bool proc[device_io]
+file_exists(path: string) -> boolean proc[device_io]
 delete_file(path: string) -> atom proc[device_io]
 get_file_size(path: string) -> int64 proc[device_io]
 ```
@@ -3024,9 +3024,9 @@ Concatenate strings and extract substrings.
 
 #### 5.3.3 String Predicates
 ```
-starts_with(s: string, prefix: string) -> bool
-ends_with(s: string, suffix: string) -> bool
-contains(s: string, substr: string) -> bool
+starts_with(s: string, prefix: string) -> boolean
+ends_with(s: string, suffix: string) -> boolean
+contains(s: string, substr: string) -> boolean
 ```
 
 Check string prefixes, suffixes, and containment.
@@ -3091,7 +3091,7 @@ fn reverse[ElementType: Collectable](list: List[ElementType]) -> List[ElementTyp
 fn length[ElementType: Collectable](list: List[ElementType]) -> int64
 
 // Check if list is empty
-fn is_empty[ElementType: Collectable](list: List[ElementType]) -> bool
+fn is_empty[ElementType: Collectable](list: List[ElementType]) -> boolean
 ```
 
 **Operation Notes:**
@@ -3124,7 +3124,7 @@ reversed: List[string] <- reverse[string](my_list);  // ["world", "hello"]
 
 // Check properties
 len: int64 <- length[string](my_list);  // 2
-empty_flag: bool <- is_empty[string](my_list);  // false
+empty_flag: boolean <- is_empty[string](my_list);  // false
 
 // Create empty list
 empty_list: List[string] <- empty[string]();
@@ -3432,7 +3432,7 @@ fn safe_memory_access(ref: ref(R, normal, int), index: int) -> ResultInt64String
 ```silica
 fn safe_tagged_access(ptr: ref(R, normal, NodeData)) -> ResultNodeDataString {
     // Check tag before access (avoids MTE hardware exception)
-    tag_valid: bool <- check_tag_nodedata(ptr);
+    tag_valid: boolean <- check_tag_nodedata(ptr);
     if not tag_valid {
         Error("Tag mismatch - potential use-after-free")
     } else {
@@ -3562,8 +3562,8 @@ Types are equivalent if they have the same structure:
 
 ```
 int ≡ int                                   // primitive types
-(int, bool) ≡ (int, bool)                   // tuple types
-{a: int, b: bool} ≡ {a: int, b: bool}       // record types
+(int, boolean) ≡ (int, boolean)                   // tuple types
+{a: int, b: boolean} ≡ {a: int, b: boolean}       // record types
 ```
 
 #### 8.2.2 Nominal Equivalence for User Types
@@ -3613,7 +3613,7 @@ The following types automatically implement `Collectable` without requiring expl
 
 **Primitive Types (Automatic Collectable):**
 - `unit`
-- `bool`
+- `boolean`
 - `int8`
 - `int16`
 - `int32`
@@ -3627,14 +3627,14 @@ The following types automatically implement `Collectable` without requiring expl
 
 **Function Types (Automatic Collectable):**
 All function types of the form `(T1 -> T2)` where `T1` and `T2` are concrete types automatically implement `Collectable`. This includes:
-- Simple function types: `(int64 -> int64)`, `(string -> bool)`, etc.
-- Higher-order function types: `((int64 -> int64) -> string)`, `((string -> bool) -> (int64 -> int64))`, etc.
-- Functions with any arity: `(int64, string -> bool)`, `(int64, int64, int64 -> int64)`, etc.
+- Simple function types: `(int64 -> int64)`, `(string -> boolean)`, etc.
+- Higher-order function types: `((int64 -> int64) -> string)`, `((string -> boolean) -> (int64 -> int64))`, etc.
+- Functions with any arity: `(int64, string -> boolean)`, `(int64, int64, int64 -> int64)`, etc.
 
 **Tuple Types (Automatic Collectable):**
 All tuple types of the form `(T1, T2, ...)` where all `Ti` are concrete types automatically implement `Collectable`. This includes:
 - `(int64, string)`
-- `(bool, int64, string)`
+- `(boolean, int64, string)`
 - `((int64 -> int64), string)` (tuples containing functions)
 - Any combination of concrete types
 
@@ -3779,19 +3779,19 @@ fn example() -> atom proc[device_io] {
 ```silica
 // Define trait
 trait Comparable {
-    fn equals(self: Self, other: Self) -> bool;
-    fn less_than(self: Self, other: Self) -> bool;
+    fn equals(self: Self, other: Self) -> boolean;
+    fn less_than(self: Self, other: Self) -> boolean;
 }
 
 // Implement trait for different types
 type Person = {name: string, age: int64};
 
 impl Comparable for Person {
-    fn equals(self: Person, other: Person) -> bool {
+    fn equals(self: Person, other: Person) -> boolean {
         self.name == other.name and self.age == other.age
     }
     
-    fn less_than(self: Person, other: Person) -> bool {
+    fn less_than(self: Person, other: Person) -> boolean {
         self.age < other.age
     }
 }
@@ -4491,7 +4491,7 @@ fn caller_correct() -> ref(R, normal, int) proc[mem(normal)] {
 Effects compose correctly even with conditional execution:
 
 ```silica
-fn conditional_effects(condition: bool) -> int proc[mem(normal), device_io] {
+fn conditional_effects(condition: boolean) -> int proc[mem(normal), device_io] {
     do
         if condition {
             // Branch 1: mem(normal) and device_io
@@ -5134,8 +5134,8 @@ Where:
 #### 10.1.2 Literal Typing
 ```
 Γ ⊢ n : int ! []          where n is an integer literal
-Γ ⊢ true : bool ! []
-Γ ⊢ false : bool ! []
+Γ ⊢ true : boolean ! []
+Γ ⊢ false : boolean ! []
 Γ ⊢ 'c' : char ! []
 Γ ⊢ "s" : string ! []
 Γ ⊢ () : unit ! []
@@ -5219,11 +5219,11 @@ trait Display {
 }
 
 trait Comparable {
-    fn equals(self: Self, other: Self) -> bool;
+    fn equals(self: Self, other: Self) -> boolean;
 }
 
 // Function requiring both traits
-fn print_and_compare(x: Display, y: Comparable) -> bool proc[device_io] {
+fn print_and_compare(x: Display, y: Comparable) -> boolean proc[device_io] {
     str: string <- x.show();
     print_string(str);
     y.equals(y, y)
@@ -6690,7 +6690,7 @@ The `spawn()` function is the execution point for actor creation. It returns an 
 
 The behavior function has type: `(Msg, State) -> State proc[effects]` where `effects` are the effects required by the behavior function.
 
-The `initial_state` parameter must implement the `ActorState` trait (for named types only). The `actor_ref` return type is a primitive type (like `int` or `bool`), not parameterized by message type.
+The `initial_state` parameter must implement the `ActorState` trait (for named types only). The `actor_ref` return type is a primitive type (like `int` or `boolean`), not parameterized by message type.
 
 **Important**: `spawn()` creates and immediately starts executing the actor. The returned `actor_ref` is a handle to the running actor that can be used for message passing and control operations.
 
@@ -7645,7 +7645,7 @@ Each actor has a unique identity:
 self() -> actor_ref proc[mailbox, concurrency]
 ```
 
-The `actor_ref` type is a primitive type (like `int` or `bool`), representing a reference to an actor.
+The `actor_ref` type is a primitive type (like `int` or `boolean`), representing a reference to an actor.
 
 ### 15.2 Actor Behavior Functions
 
@@ -7726,7 +7726,7 @@ Send never blocks - messages are queued in the actor's mailbox. The `message` pa
 Messages can be sent asynchronously without blocking, with success/failure indication:
 
 ```
-cast(actor: actor_ref, message: ActorMessage) -> bool proc[concurrency]
+cast(actor: actor_ref, message: ActorMessage) -> boolean proc[concurrency]
 ```
 
 Cast never blocks - messages are queued in the actor's mailbox and the function returns immediately. Returns `true` if the message was successfully enqueued, `false` if the actor doesn't exist. Mailboxes are unbounded queues that can grow without limit, so messages are never rejected due to mailbox capacity. The `message` parameter must be a type that implements the `ActorMessage` trait (for named types only).
@@ -7889,7 +7889,7 @@ Both `cast()` and `send()` send messages asynchronously without blocking:
   - Always succeeds (messages are always accepted by unbounded mailboxes)
   - No return value to check - suitable when message delivery is guaranteed
   
-- **`cast()`**: Returns `bool` - indicates whether actor exists
+- **`cast()`**: Returns `boolean` - indicates whether actor exists
   - Returns `true` if message was successfully enqueued (actor exists)
   - Returns `false` only if actor doesn't exist (terminated or invalid actor reference)
   - Never returns `false` due to mailbox capacity (mailboxes are unbounded)
@@ -7959,8 +7959,8 @@ The `reply_to` field is optional - messages without it cannot be used for cast-b
 - **Compile-Time Verification**: Field access (e.g., `reply_to`) is verified at compile time - attempting to access a field that doesn't exist in the message type results in a compile-time error
 - **Immutability**: Message data cannot be mutated after sending
 - **Isolation**: Message contents are copied between actors
-- **Cast Success Indication**: `cast()` returns `bool` indicating success/failure of message enqueueing
-- **Actor Reference Type**: `actor_ref` is a primitive type (like `int` or `bool`), not parameterized by message type
+- **Cast Success Indication**: `cast()` returns `boolean` indicating success/failure of message enqueueing
+- **Actor Reference Type**: `actor_ref` is a primitive type (like `int` or `boolean`), not parameterized by message type
 
 ## 17. Atomic Operations
 
@@ -8019,7 +8019,7 @@ fn increment() -> atom proc[mem(normal), atomic] {
 ```silica
 // Example: Reading published data
 data: atomic_ref(R, normal, Data) <- alloc_atomic(region, initial_data);
-ready: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
+ready: atomic_ref(R, normal, boolean) <- alloc_atomic(region, false);
 
 // Publisher (Actor A)
 fn publish(new_data: Data) -> atom proc[mem(normal), atomic] {
@@ -8029,7 +8029,7 @@ fn publish(new_data: Data) -> atom proc[mem(normal), atomic] {
 
 // Consumer (Actor B)
 fn consume() -> Data proc[mem(normal), atomic] {
-    ready_flag: bool <- atomic_load(ready, acquire);  // Acquire synchronization
+    ready_flag: boolean <- atomic_load(ready, acquire);  // Acquire synchronization
     if ready_flag {
         read_ref(data)  // Guaranteed to see the data written before release
     } else {
@@ -8045,7 +8045,7 @@ fn consume() -> Data proc[mem(normal), atomic] {
 
 ```silica
 // Example: Publishing initialization complete
-init_complete: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
+init_complete: atomic_ref(R, normal, boolean) <- alloc_atomic(region, false);
 
 // Initializer (Actor A)
 fn initialize() -> atom proc[mem(normal), atomic] {
@@ -8055,7 +8055,7 @@ fn initialize() -> atom proc[mem(normal), atomic] {
 
 // Waiter (Actor B)
 fn wait_for_init() -> atom proc[mem(normal), atomic] {
-    complete: bool <- atomic_load(init_complete, acquire);  // Acquire: see release
+    complete: boolean <- atomic_load(init_complete, acquire);  // Acquire: see release
     // All initialization work is now guaranteed visible
 }
 ```
@@ -8085,7 +8085,7 @@ fn increment_with_ordering() -> int64 proc[mem(normal), atomic] {
 
 ```silica
 // Example: Global flag coordination
-global_flag: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
+global_flag: atomic_ref(R, normal, boolean) <- alloc_atomic(region, false);
 
 // Actor A
 fn set_flag() -> atom proc[mem(normal), atomic] {
@@ -8093,7 +8093,7 @@ fn set_flag() -> atom proc[mem(normal), atomic] {
 }
 
 // Actor B
-fn check_flag() -> bool proc[mem(normal), atomic] {
+fn check_flag() -> boolean proc[mem(normal), atomic] {
     atomic_load(global_flag, seq_cst)  // Sees all seq_cst operations in order
 }
 ```
@@ -8110,7 +8110,7 @@ type ring_buffer = {
 }
 
 // Producer: publish items
-fn produce(buffer: ring_buffer, item: int64) -> bool proc[mem(normal), atomic] {
+fn produce(buffer: ring_buffer, item: int64) -> boolean proc[mem(normal), atomic] {
     head: int64 <- atomic_load(buffer.head, acquire);
     tail: int64 <- atomic_load(buffer.tail, relaxed);
     
@@ -8143,7 +8143,7 @@ fn consume(buffer: ring_buffer) -> OptionInt64 proc[mem(normal), atomic] {
 **Flag-Based Coordination:**
 ```silica
 // Coordination flag between actors
-ready_flag: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
+ready_flag: atomic_ref(R, normal, boolean) <- alloc_atomic(region, false);
 data: ref(R, normal, SharedData) <- alloc_ref(region, initial_data);
 
 // Actor A: Prepare and signal
@@ -8155,7 +8155,7 @@ fn prepare_and_signal(new_data: SharedData) -> atom proc[mem(normal), atomic] {
 
 // Actor B: Wait and read
 fn wait_and_read() -> SharedData proc[mem(normal), atomic] {
-    ready: bool <- atomic_load(ready_flag, acquire);  // Acquire: see release
+    ready: boolean <- atomic_load(ready_flag, acquire);  // Acquire: see release
     if ready {
         read_ref(data)  // Guaranteed to see data written before release
     } else {
@@ -8241,7 +8241,7 @@ fn request_detailed_report(reply_to: actor_ref) -> atom proc[concurrency] {
 **Happens-Before with Actors:**
 ```silica
 // Atomic release in one actor, message send, atomic acquire in another
-flag: atomic_ref(R, normal, bool) <- alloc_atomic(region, false);
+flag: atomic_ref(R, normal, boolean) <- alloc_atomic(region, false);
 
 // Actor A
 fn actor_a_behavior(msg: StartMsg, state: unit) -> atom proc[mem(normal), atomic, concurrency] {
@@ -8259,7 +8259,7 @@ fn actor_a_behavior(msg: StartMsg, state: unit) -> atom proc[mem(normal), atomic
 // Actor B
 fn actor_b_behavior(msg: DataReadyMsg, state: unit) -> atom proc[mem(normal), atomic] {
     // Acquire: guaranteed to see release from Actor A
-    ready: bool <- atomic_load(flag, acquire);
+    ready: boolean <- atomic_load(flag, acquire);
     // All data prepared by Actor A is now visible
     process_data();
     ()
@@ -8445,7 +8445,7 @@ type spsc_queue<R, T> = {
     tail: atomic_ref(R, normal, int)
 }
 
-fn spsc_send(queue, item) -> bool proc[mem(normal), atomic] {
+fn spsc_send(queue, item) -> boolean proc[mem(normal), atomic] {
     tail: int <- atomic_load(queue.tail, acquire)
     head: int <- atomic_load(queue.head, acquire)
 
@@ -8520,7 +8520,7 @@ send(actor2, data)
 
 // Actor 2 behavior function
 fn process_message(msg: Data, state: unit) -> atom {
-    flag_value: bool <- atomic_load(flag, acquire)
+    flag_value: boolean <- atomic_load(flag, acquire)
     // flag_value is guaranteed to be true
 }
 ```
@@ -8564,7 +8564,7 @@ AArch64's weak ordering means:
    atomic_store(flag, true, release)  // STLR ensures prior writes visible
    
    // Actor 2: Acquire
-   ready: bool <- atomic_load(flag, acquire)  // LDAR ensures sees release
+   ready: boolean <- atomic_load(flag, acquire)  // LDAR ensures sees release
    value: int <- read_ref(data)  // Guaranteed to see write_ref(data, value)
    ```
 
@@ -8633,7 +8633,7 @@ fn producer_behavior(msg: unit, state: ProducerState) -> ProducerState proc[mem(
 // Actor 2: Consumer
 fn consumer_behavior(msg: DataReadyMsg, state: ConsumerState) -> ConsumerState proc[mem(normal), atomic] {
     // Acquire: guaranteed to see release from producer
-    ready: bool <- atomic_load(shared_flag, acquire);  // LDAR instruction
+    ready: boolean <- atomic_load(shared_flag, acquire);  // LDAR instruction
     
     // All data prepared by producer is now visible
     // This read is guaranteed to see write_ref(state.data, 42)
@@ -9002,7 +9002,7 @@ STLR  W0, [X3]      // Store-release: ensures data store visible before flag sto
 ```silica
 // Consumer (Actor 2)
 fn consumer(msg: unit, state: ConsumerState) -> ConsumerState proc[mem(normal), atomic] {
-    ready: bool <- atomic_load(state.ready_flag, acquire);  // LDAR instruction
+    ready: boolean <- atomic_load(state.ready_flag, acquire);  // LDAR instruction
     if ready {
         value: int <- read_ref(state.data);  // Guaranteed to see producer's write
     }
@@ -9854,25 +9854,25 @@ Represents optional values using concrete variant types:
 // Concrete option types for common cases
 type OptionInt = Some(int) | None
 type OptionString = Some(string) | None
-type OptionBool = Some(bool) | None
+type OptionBoolean = Some(boolean) | None
 // Additional concrete types can be defined as needed
 
 // Common Option trait for shared operations
 trait OptionLike {
-    fn is_some(self: Self) -> bool;
-    fn is_none(self: Self) -> bool;
+    fn is_some(self: Self) -> boolean;
+    fn is_none(self: Self) -> boolean;
 }
 
 // Implement OptionLike for concrete option types
 impl OptionLike for OptionInt {
-    fn is_some(self: OptionInt) -> bool {
+    fn is_some(self: OptionInt) -> boolean {
         case self of
             Some(_) -> true
             None -> false
         end
     }
     
-    fn is_none(self: OptionInt) -> bool {
+    fn is_none(self: OptionInt) -> boolean {
         case self of
             Some(_) -> false
             None -> true
@@ -9908,20 +9908,20 @@ type ResultIntInt = Ok(int) | Error(int)
 
 // Common Result trait for shared operations
 trait ResultLike {
-    fn is_ok(self: Self) -> bool;
-    fn is_error(self: Self) -> bool;
+    fn is_ok(self: Self) -> boolean;
+    fn is_error(self: Self) -> boolean;
 }
 
 // Implement ResultLike for concrete result types
 impl ResultLike for ResultIntString {
-    fn is_ok(self: ResultIntString) -> bool {
+    fn is_ok(self: ResultIntString) -> boolean {
         case self of
             Ok(_) -> true
             Error(_) -> false
         end
     }
     
-    fn is_error(self: ResultIntString) -> bool {
+    fn is_error(self: ResultIntString) -> boolean {
         case self of
             Ok(_) -> false
             Error(_) -> true
@@ -9957,22 +9957,22 @@ trait Listable {
 // Implement Listable for all types that can be in lists
 impl Listable for int;
 impl Listable for string;
-impl Listable for bool;
+impl Listable for boolean;
 // User-defined types can implement Listable trait
 
 // Type descriptor for Listable types (used in constructor)
-type ListableType = Int | String | Bool | CustomType
+type ListableType = Int | String | Boolean | CustomType
 
 // Variant types per element type (functional/immutable lists)
 type ListInt = Nil | Cons(int, ListInt)
 type ListString = Nil | Cons(string, ListString)
-type ListBool = Nil | Cons(bool, ListBool)
+type ListBoolean = Nil | Cons(boolean, ListBoolean)
 // Additional list types can be defined for other Listable types
 
 // Common List trait for shared operations
 trait List {
     fn length(self: Self) -> int;
-    fn is_empty(self: Self) -> bool;
+    fn is_empty(self: Self) -> boolean;
 }
 
 // Implement List trait for concrete list types
@@ -9984,7 +9984,7 @@ impl List for ListInt {
         end
     }
     
-    fn is_empty(self: ListInt) -> bool {
+    fn is_empty(self: ListInt) -> boolean {
         case self of
             Nil -> true
             Cons(_, _) -> false
@@ -10043,7 +10043,7 @@ fn pow(base: int, exp: int) -> int
 fn length(s: string) -> int
 fn concat(s1: string, s2: string) -> string
 fn substring(s: string, start: int, len: int) -> string
-fn contains(s: string, substr: string) -> bool
+fn contains(s: string, substr: string) -> boolean
 ```
 
 #### 20.2.3 List Functions
@@ -10053,17 +10053,17 @@ List functions use concrete types (ListInt, ListString, etc.). Examples shown fo
 ```
 // ListInt functions
 fn length_int(list: ListInt) -> int64
-fn is_empty_int(list: ListInt) -> bool
+fn is_empty_int(list: ListInt) -> boolean
 fn nth_int(list: ListInt, index: int64) -> OptionInt
 fn append_int(list1: ListInt, list2: ListInt) -> ListInt
 fn map_int_int(list: ListInt, f: fn(int64) -> int64) -> ListInt
 fn map_int_string(list: ListInt, f: fn(int64) -> string) -> ListString
-fn filter_int(list: ListInt, pred: fn(int64) -> bool) -> ListInt
+fn filter_int(list: ListInt, pred: fn(int64) -> boolean) -> ListInt
 fn fold_int_int(list: ListInt, init: int64, f: fn(int64, int64) -> int64) -> int64
 
 // Similar functions exist for other list types:
 // ListString: length_string, append_string, map_string_string, etc.
-// ListBool: length_bool, append_bool, map_bool_bool, etc.
+// ListBoolean: length_boolean, append_boolean, map_boolean_boolean, etc.
 // Each concrete list type has its own set of functions
 ```
 
@@ -10078,7 +10078,7 @@ fn read_line() -> string proc[device_io]
 ```
 fn debug_print(value: T) -> atom proc[]        // Print any value for debugging
 fn debug_println(value: T) -> atom proc[]     // Print any value with newline
-fn assert(condition: bool, message: string)  // Terminate process if condition false
+fn assert(condition: boolean, message: string)  // Terminate process if condition false
     -> atom proc[]
 ```
 
@@ -10361,20 +10361,20 @@ The runtime provides functions to query AArch64 hardware capabilities:
 
 ```
 // Query SVE/SVE2 availability
-has_sve() -> bool
-has_sve2() -> bool
+has_sve() -> boolean
+has_sve2() -> boolean
 
 // Query NEON availability
-has_neon() -> bool
+has_neon() -> boolean
 
 // Query Memory Tagging Extensions availability
-has_mte() -> bool
+has_mte() -> boolean
 
 // Query Pointer Authentication availability
-has_pac() -> bool
+has_pac() -> boolean
 
 // Query Apple-specific features
-has_amx() -> bool  // Apple Matrix Engine
+has_amx() -> boolean  // Apple Matrix Engine
 ```
 
 **Capability Detection Mechanism:**
@@ -10524,11 +10524,11 @@ SVE2 capabilities are detected via `ID_AA64ZFR0_EL1` (SVE Feature Register 0):
 
 ```
 // Query SVE2-specific features
-has_sve2_bf16() -> bool        // BFloat16 support
-has_sve2_i8mm() -> bool        // Int8 matrix multiplication
-has_sve2_f32mm() -> bool       // Float32 matrix multiplication
-has_sve2_f64mm() -> bool       // Float64 matrix multiplication
-has_sve2_sme() -> bool         // Scalable Matrix Extension (SME)
+has_sve2_bf16() -> boolean        // BFloat16 support
+has_sve2_i8mm() -> boolean        // Int8 matrix multiplication
+has_sve2_f32mm() -> boolean       // Float32 matrix multiplication
+has_sve2_f64mm() -> boolean       // Float64 matrix multiplication
+has_sve2_sme() -> boolean         // Scalable Matrix Extension (SME)
 ```
 
 **SVE2 Feature Detection Mechanism:**
@@ -10604,7 +10604,7 @@ module arch.sve {
     pub type VecFloat16    // Scalable vector of float16
     pub type VecFloat32    // Scalable vector of float32
     pub type VecFloat64    // Scalable vector of float64
-    pub type VecBool       // Scalable boolean vector
+    pub type VecBoolean       // Scalable boolean vector
     pub type Pred          // predicate mask for conditional operations
 
     // Marker trait for SVE-supported element types
@@ -10643,9 +10643,9 @@ module arch.sve {
 
     // Predicate operations
     pub fn create_pred_true(len: int) -> Pred
-    pub fn create_pred_from_mask(mask: VecBool) -> Pred
-    pub fn test_any_true(pred: Pred) -> bool
-    pub fn test_all_true(pred: Pred) -> bool
+    pub fn create_pred_from_mask(mask: VecBoolean) -> Pred
+    pub fn test_any_true(pred: Pred) -> boolean
+    pub fn test_all_true(pred: Pred) -> boolean
 }
 ```
 
@@ -10686,9 +10686,9 @@ WHILELT P0.B, XZR, X0      // Generate predicate: P0 = (0..len-1) < len
 WHILELT P0.B, XZR, X0      // P0 = active elements for length len
 ```
 
-**create_pred_from_mask(mask: VecBool):**
+**create_pred_from_mask(mask: VecBoolean):**
 ```assembly
-// Converts VecBool vector to predicate
+// Converts VecBoolean vector to predicate
 MOV    Z0, mask            // Load boolean vector
 CMPNE  P0.B, Z0/Z, #0      // Generate predicate from non-zero elements
 ```
@@ -10844,11 +10844,11 @@ SVE predicates (`Pred` type) are scalable masks that match the vector length:
 create_pred_true(len: int) -> Pred
 
 // Create predicate from boolean vector
-create_pred_from_mask(mask: VecBool) -> Pred
+create_pred_from_mask(mask: VecBoolean) -> Pred
 
 // Test predicate conditions
-test_any_true(pred: Pred) -> bool  // Returns true if any element is active
-test_all_true(pred: Pred) -> bool  // Returns true if all elements are active
+test_any_true(pred: Pred) -> boolean  // Returns true if any element is active
+test_all_true(pred: Pred) -> boolean  // Returns true if all elements are active
 ```
 
 **Predicate Semantics:**
@@ -11176,7 +11176,7 @@ use module arch.sve
 // Store expected vector length (from previous run or configuration)
 expected_elements: int <- 16;  // Expected elements per vector
 
-fn check_vector_length() -> bool proc[] {
+fn check_vector_length() -> boolean proc[] {
     actual_elements: int <- get_sve_elements_int32();
     
     // Detect vector length change
@@ -11251,7 +11251,7 @@ module arch.neon {
     pub type Vec128Int32   // 128-bit vector of int32
     pub type Vec128Int64   // 128-bit vector of int64
     pub type Vec128Float32 // 128-bit vector of float32
-    pub type Vec128Bool    // 128-bit boolean vector
+    pub type Vec128Boolean    // 128-bit boolean vector
     pub type Vec64Int8     // 64-bit vector of int8 (limited use)
     pub type Vec64Int16    // 64-bit vector of int16 (limited use)
     pub type Vec64Int32    // 64-bit vector of int32 (limited use)
@@ -11330,7 +11330,7 @@ free_tagged_nodedata(ptr: ref(R, normal, NodeData)) -> atom proc[mem(normal)]
 // Tag operations
 set_tag_nodedata(ptr: ref(R, normal, NodeData), tag: int) -> ref(R, normal, NodeData)
 get_tag_nodedata(ptr: ref(R, normal, NodeData)) -> int
-check_tag_nodedata(ptr: ref(R, normal, NodeData)) -> bool
+check_tag_nodedata(ptr: ref(R, normal, NodeData)) -> boolean
 ```
 
 **Note**: For each type that implements the `tagged` trait, the compiler generates type-specific versions of these functions. The function names follow the pattern `alloc_tagged_<typename>`, `free_tagged_<typename>`, etc.
@@ -11963,7 +11963,7 @@ fn allocate_with_tag_reuse() -> ref(R, normal, NodeData) proc[mem(normal)] {
 **Example 2: Tag Exhaustion Detection**
 
 ```silica
-fn check_tag_space_usage() -> bool proc[] {
+fn check_tag_space_usage() -> boolean proc[] {
     // Runtime monitors tag space usage internally
     // Programs can query tag space status (if runtime provides API)
     // For now, tag exhaustion is handled transparently by runtime
@@ -12056,7 +12056,7 @@ get_tag_nodedata(ptr: ref(R, normal, NodeData)) -> int
 Extracts the tag value from the pointer (bits 56-59).
 
 ```
-check_tag_nodedata(ptr: ref(R, normal, NodeData)) -> bool
+check_tag_nodedata(ptr: ref(R, normal, NodeData)) -> boolean
 ```
 Checks if the pointer tag matches the memory tag at the pointer's address. Returns `true` if tags match, `false` if mismatch (without generating a fault). This is a software check that does not trigger hardware tag faults.
 
@@ -12110,7 +12110,7 @@ fn example() -> atom proc[mem(normal)] {
         new_ptr: ref(R, normal, NodeData) <- set_tag_nodedata(node, 5);
         
         // Check tag match
-        matches: bool <- check_tag_nodedata(new_ptr);
+        matches: boolean <- check_tag_nodedata(new_ptr);
         
         // Free tagged memory (clears tags)
         free_tagged_nodedata(node);
@@ -12149,7 +12149,7 @@ sign_ptr_securedata(ptr: ref(R, Space, SecureData), context: int) -> ref(R, Spac
 auth_ptr_securedata(ptr: ref(R, Space, SecureData), context: int) -> ref(R, Space, SecureData) proc[mem(Space)]
 
 // Check if authentication would fail (without dereferencing)
-auth_fail_securedata(ptr: ref(R, Space, SecureData), context: int) -> bool
+auth_fail_securedata(ptr: ref(R, Space, SecureData), context: int) -> boolean
 ```
 
 **Note**: For each type that implements the `authenticated` trait, the compiler generates type-specific versions of these functions. The function names follow the pattern `sign_ptr_<typename>`, `auth_ptr_<typename>`, `auth_fail_<typename>`, etc.
@@ -12546,7 +12546,7 @@ buffer_capacity(buffer) -> int
 ```
 spawn(initial_state, behavior [, core_affinity]) -> actor_ref proc[concurrency]
 send(actor, message) -> atom proc[concurrency]
-cast(actor, message) -> bool proc[concurrency]
+cast(actor, message) -> boolean proc[concurrency]
 recv([actor]) -> Msg proc[mailbox, concurrency]          // Runtime internal
 self() -> actor_ref proc[mailbox, concurrency]
 ```
@@ -12587,7 +12587,7 @@ print_float64(value: float64) -> atom proc[device_io]
 
 #### 22.5.4 Other Type Printing
 ```
-print_bool(value: bool) -> atom proc[device_io]
+print_boolean(value: boolean) -> atom proc[device_io]
 print_char(value: char) -> atom proc[device_io]
 ```
 
@@ -12609,7 +12609,7 @@ append_file(path: string, content: string) -> atom proc[device_io]
 
 #### 22.6.3 File Operations
 ```
-file_exists(path: string) -> bool proc[device_io]
+file_exists(path: string) -> boolean proc[device_io]
 delete_file(path: string) -> atom proc[device_io]
 get_file_size(path: string) -> int64 proc[device_io]
 ```
@@ -12640,9 +12640,9 @@ substring_until_char(s: string, start: int64, char: char) -> string
 
 #### 22.7.3 String Predicates
 ```
-starts_with(s: string, prefix: string) -> bool
-ends_with(s: string, suffix: string) -> bool
-contains(s: string, substr: string) -> bool
+starts_with(s: string, prefix: string) -> boolean
+ends_with(s: string, suffix: string) -> boolean
+contains(s: string, substr: string) -> boolean
 ```
 
 ### 22.8 Process Execution
@@ -12825,7 +12825,7 @@ int_to_string(n: int) -> string
 ### 22.16 Control Flow
 ```
 panic(message: string) -> ! proc[]          // terminate with error
-assert(condition: bool, message: string) -> atom proc[]
+assert(condition: boolean, message: string) -> atom proc[]
 unreachable() -> ! proc[]                   // mark unreachable code
 ```
 
@@ -13588,7 +13588,7 @@ LDAR X0, [X1]  // Load-acquire after barrier
 
 ```silica
 // Source code
-fn publish_data(data_ref: ref(R, normal, Data), atomic_flag: atomic_ref(R, atomic, bool)) -> atom proc[mem(normal), mem(atomic), atomic] {
+fn publish_data(data_ref: ref(R, normal, Data), atomic_flag: atomic_ref(R, atomic, boolean)) -> atom proc[mem(normal), mem(atomic), atomic] {
     write_ref(data_ref, new_data);                    // Normal store
     atomic_store(atomic_flag, true, release);        // Release store
 }
@@ -13620,7 +13620,7 @@ fn actor_a_behavior(msg: Message, state: State) -> State proc[mem(normal), mem(a
 // Source code (Actor B)
 fn actor_b_behavior(msg: Message, state: State) -> State proc[mem(normal), mem(atomic), atomic, concurrency] {
     // Wait for data to be published
-    ready: bool <- atomic_load(publish_flag, acquire);
+    ready: boolean <- atomic_load(publish_flag, acquire);
     if ready {
         data: Data <- read_ref(shared_data_ref);  // Read published data
     }
@@ -13655,7 +13655,7 @@ LDR X1, [X3]        // Load shared data (guaranteed to see Actor A's store)
 // Source code
 fn complex_atomic_operation(
     counter: atomic_ref(R, atomic, int64),
-    flag: atomic_ref(R, atomic, bool)
+    flag: atomic_ref(R, atomic, boolean)
 ) -> int64 proc[mem(atomic), atomic] {
     // Relaxed increment (no ordering needed)
     old_count: int64 <- atomic_fetch_add(counter, 1, relaxed);
@@ -14013,7 +14013,7 @@ Editor integration for Silica syntax highlighting:
 
 ```silica
 keywords: fn, if, case, actor, effect, type
-types: int, bool, string, actor_ref
+types: int, boolean, string, actor_ref
 effects: [mem(normal)], [concurrency]
 ```
 
@@ -14092,8 +14092,8 @@ trait Display {
 }
 
 trait Comparable {
-    fn equals(self, other) -> bool
-    fn less_than(self, other) -> bool
+    fn equals(self, other) -> boolean
+    fn less_than(self, other) -> boolean
 }
 ```
 
@@ -14115,7 +14115,7 @@ trait Serializable {
 }
 
 trait Comparable {
-    fn equals(self, other) -> bool
+    fn equals(self, other) -> boolean
 }
 ```
 
@@ -14382,7 +14382,7 @@ impl ActorMessage for Request;
 impl ActorMessage for Response;
 
 // ActorMessage can be used as a type
-cast(actor_ref, message: ActorMessage) -> bool proc[concurrency]
+cast(actor_ref, message: ActorMessage) -> boolean proc[concurrency]
 ```
 
 #### 30.1.6 Trait Bounds
@@ -14414,7 +14414,7 @@ impl Debug for int {
     fn debug_string(self) = format("int: {}", self)
 }
 
-impl Printable for bool {
+impl Printable for boolean {
     fn to_string(self) = if self { "true" } else { "false" }
 }
 ```
