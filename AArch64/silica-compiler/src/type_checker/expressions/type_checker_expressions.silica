@@ -15,9 +15,69 @@ fn is_arithmetic_op_lexeme(op: string) -> bool {
     op == "+" or op == "-" or op == "*" or op == "/" or op == "%"
 }
 
-// Comparison: <, >, <=, >=, ==, != - operands int64, result bool
+// Comparison: <, >, <=, >=, ==, != - operands int64, int32, int16, int8, float32, float16, string, boolean; result bool
 fn is_comparison_op_lexeme(op: string) -> bool {
     op == "<" or op == ">" or op == "<=" or op == ">=" or op == "==" or op == "!="
+}
+
+// Try checking both operands with operand_type; return result if both ok.
+fn check_comparison_operands(expr: Expr, operand_type: string, context: TypeContext) -> TypeCheckResult {
+    left_result: TypeCheckResult <- check_expr(expr.inner, operand_type, context);
+    case left_result.is_ok of {
+        false -> left_result;
+        true -> check_expr(expr.right_expr, operand_type, context)
+    }
+}
+
+// Try each supported comparison operand type; first match wins.
+fn check_comparison_result(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+    r64: TypeCheckResult <- check_comparison_operands(expr, "int64", context);
+    case r64.is_ok of {
+        true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+        false -> do
+            r32: TypeCheckResult <- check_comparison_operands(expr, "int32", context);
+            case r32.is_ok of {
+                true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+                false -> do
+                    r16: TypeCheckResult <- check_comparison_operands(expr, "int16", context);
+                    case r16.is_ok of {
+                        true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+                        false -> do
+                            r8: TypeCheckResult <- check_comparison_operands(expr, "int8", context);
+                            case r8.is_ok of {
+                                true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+                                false -> do
+                                    rf32: TypeCheckResult <- check_comparison_operands(expr, "float32", context);
+                                    case rf32.is_ok of {
+                                        true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+                                        false -> do
+                                            rf16: TypeCheckResult <- check_comparison_operands(expr, "float16", context);
+                                            case rf16.is_ok of {
+                                                true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+                                                false -> do
+                                                    rs: TypeCheckResult <- check_comparison_operands(expr, "string", context);
+                                                    case rs.is_ok of {
+                                                        true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+                                                        false -> do
+                                                            rb: TypeCheckResult <- check_comparison_operands(expr, "boolean", context);
+                                                            case rb.is_ok of {
+                                                                true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+                                                                false -> r64
+                                                            }
+                                                        end
+                                                    }
+                                                end
+                                            }
+                                        end
+                                    }
+                                end
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
 }
 
 // Logical: and, or - operands boolean, result boolean
@@ -46,23 +106,7 @@ fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> T
             }
         end;
         false -> case is_comparison_op_lexeme(op) of {
-            true -> do
-                left_result: TypeCheckResult <- check_expr(expr.inner, "int64", context);
-                case left_result.is_ok of {
-                    false -> left_result;
-                    true -> do
-                        right_result: TypeCheckResult <- check_expr(expr.right_expr, "int64", context);
-                        case right_result.is_ok of {
-                            false -> right_result;
-                            true -> case expected_type of {
-                                "boolean" -> type_checker_core@type_check_ok();
-                                "discard" -> type_checker_core@type_check_ok();
-                                _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6")
-                            }
-                        }
-                    end
-                }
-            end;
+            true -> check_comparison_result(expr, expected_type, context);
             false -> case is_logical_op_lexeme(op) of {
                 true -> do
                     left_result: TypeCheckResult <- check_expr(expr.inner, "boolean", context);
