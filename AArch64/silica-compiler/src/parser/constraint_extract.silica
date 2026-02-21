@@ -337,6 +337,14 @@ fn slots_tail(slots: ListTokenSlot) -> ListTokenSlot {
     slots.tail
 }
 
+fn slots_is_nil(slots: ListTokenSlot) -> bool {
+    slots.is_nil
+}
+
+fn slots_head(slots: ListTokenSlot) -> TokenSlot {
+    slots.head
+}
+
 fn extract_binding(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
     ident_slot: TokenSlot <- slots.head;
     type_slot: TokenSlot <- slots.tail.tail.head;
@@ -410,10 +418,13 @@ fn extract_body(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
     case first_kind == kinds.identifier of {
         true -> case is_binding_start(slots) of {
             true -> extract_binding(slots);
-            false -> case rest.is_nil of {
+                false -> case rest.is_nil of {
                 true -> case is_operand_token(kinds, first_kind) of {
                     true -> (extract_operand_expr(first), rest);
-                    false -> (extract_body_expr(first), rest)
+                    false -> case first_kind == kinds.left_paren of {
+                        true -> extract_parenthesized_then_maybe_binary(slots);
+                        false -> (extract_body_expr(first), rest)
+                    }
                 };
                 false -> case rest.head.token.kind == kinds.left_paren of {
                     true -> extract_call(slots);
@@ -422,7 +433,10 @@ fn extract_body(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
                             true -> extract_binary(slots);
                             false -> (extract_operand_expr(first), rest)
                         };
-                        false -> (extract_body_expr(first), rest)
+            false -> case first_kind == kinds.left_paren of {
+                true -> extract_parenthesized_then_maybe_binary(slots);
+                false -> (extract_body_expr(first), rest)
+            }
                     }
                 }
             }
@@ -435,7 +449,42 @@ fn extract_body(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
                     false -> (extract_operand_expr(first), rest)
                 }
             };
-            false -> (extract_body_expr(first), rest)
+            false -> case first_kind == kinds.left_paren of {
+                true -> extract_parenthesized_then_maybe_binary(slots);
+                false -> (extract_body_expr(first), rest)
+            }
+        }
+    }
+}
+
+fn extract_parenthesized(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
+    lparen_slot: TokenSlot <- slots.head;
+    inner_slots: ListTokenSlot <- slots.tail;
+    (inner: Expr, rest_after_inner: ListTokenSlot) <- extract_body(inner_slots);
+    rest_after_rparen: ListTokenSlot <- slots_tail(rest_after_inner);
+    dummy: Expr <- parser_ast@dummy_expr();
+    paren_expr: Expr <- Expr { kind: 2, value: "", name: "", location: lparen_slot.token.location, inner: inner, right_expr: dummy };
+    (paren_expr, rest_after_rparen)
+}
+
+fn extract_binary_with_left(left: Expr, slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    op_slot: TokenSlot <- slots.head;
+    rest2: ListTokenSlot <- slots.tail;
+    (right: Expr, rest_after_right: ListTokenSlot) <- extract_body(rest2);
+    dummy: Expr <- parser_ast@dummy_expr();
+    binary: Expr <- Expr { kind: 3, value: op_slot.token.lexeme, name: "", location: op_slot.token.location, inner: left, right_expr: right };
+    (binary, rest_after_right)
+}
+
+fn extract_parenthesized_then_maybe_binary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    (paren_expr: Expr, rest: ListTokenSlot) <- extract_parenthesized(slots);
+    case slots_is_nil(rest) of {
+        true -> (paren_expr, rest);
+        false -> case is_op_token(kinds, slots_head(rest).token.kind) or is_logical_op_slot(slots_head(rest), kinds) of {
+            true -> extract_binary_with_left(paren_expr, rest);
+            false -> (paren_expr, rest)
         }
     }
 }
