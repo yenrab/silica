@@ -83,7 +83,6 @@ integrate:
 			[ -f "$$exe" ] || continue; \
 			base=$${exe%.sams}; \
 			if [ -x "$$base" ]; then \
-				echo "Running $$dir/$$base..."; \
 				{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
 				if [ -f "$$base.scout" ]; then \
 					if ! diff -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
