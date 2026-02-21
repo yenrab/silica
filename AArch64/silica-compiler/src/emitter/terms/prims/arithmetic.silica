@@ -1,39 +1,55 @@
-// int64 arithmetic prim emission: add, sub, mul, div, rem
+// int64/int32 arithmetic prim emission: add, sub, mul, div, rem
 // sir_emitter_pattern_spec §7.1: ADD/SUB/MUL/SDIV; rem = SDIV + MSUB (AArch64 has no SREM)
-// Operands in X1, X2; result to dest (term_emitter emits subterms before calling)
+// Operands in r1, r2; result to dest. reg_prefix is "X" (int64) or "W" (int32).
 
 use sir_ast;
 
-export emit_add_op/1;
-export emit_sub_op/1;
-export emit_mul_op/1;
-export emit_div_op/1;
-export emit_rem_op/1;
+export emit_add_op/2;
+export emit_sub_op/2;
+export emit_mul_op/2;
+export emit_div_op/2;
+export emit_rem_op/2;
 
-fn emit_add_op(dest: string) -> string {
-    concat(concat(concat("    ADD ", dest), ", X1, X2"), "")
+fn op_reg(prefix: string, n: string) -> string {
+    concat(prefix, n)
 }
 
-fn emit_sub_op(dest: string) -> string {
-    concat(concat(concat("    SUB ", dest), ", X1, X2"), "")
+fn emit_add_op(dest: string, reg_prefix: string) -> string {
+    r1: string <- op_reg(reg_prefix, "1");
+    r2: string <- op_reg(reg_prefix, "2");
+    concat(concat(concat(concat(concat("    ADD ", dest), ", "), r1), ", "), r2)
 }
 
-fn emit_mul_op(dest: string) -> string {
-    concat(concat(concat("    MUL ", dest), ", X1, X2"), "")
+fn emit_sub_op(dest: string, reg_prefix: string) -> string {
+    r1: string <- op_reg(reg_prefix, "1");
+    r2: string <- op_reg(reg_prefix, "2");
+    concat(concat(concat(concat(concat("    SUB ", dest), ", "), r1), ", "), r2)
 }
 
-fn emit_div_op(dest: string) -> string {
-    concat(concat(concat("    SDIV ", dest), ", X1, X2"), "")
+fn emit_mul_op(dest: string, reg_prefix: string) -> string {
+    r1: string <- op_reg(reg_prefix, "1");
+    r2: string <- op_reg(reg_prefix, "2");
+    concat(concat(concat(concat(concat("    MUL ", dest), ", "), r1), ", "), r2)
+}
+
+fn emit_div_op(dest: string, reg_prefix: string) -> string {
+    r1: string <- op_reg(reg_prefix, "1");
+    r2: string <- op_reg(reg_prefix, "2");
+    concat(concat(concat(concat(concat("    SDIV ", dest), ", "), r1), ", "), r2)
 }
 
 // AArch64 has no SREM; remainder = dividend - (quotient * divisor) via SDIV + MSUB
-// When dest is X1 or X2, SDIV would overwrite dividend/divisor before MSUB; use X0 as quotient temp
-fn emit_rem_op(dest: string) -> string {
-    case dest == concat("X", "1") of {
-        true -> concat(concat("    SDIV X0, X1, X2", "\n"), "    MSUB X1, X0, X2, X1");
-            false -> case dest == concat("X", "2") of {
-            true -> concat(concat("    SDIV X0, X1, X2", "\n"), "    MSUB X2, X0, X2, X1");
-            false -> concat(concat(concat(concat(concat(concat("    SDIV ", dest), ", X1, X2"), "\n"), "    MSUB "), concat(concat(dest, ", "), concat(dest, ", X2, X1"))), "")
+// When dest is r1 or r2, SDIV would overwrite dividend/divisor before MSUB; use r0 as quotient temp
+fn emit_rem_op(dest: string, reg_prefix: string) -> string {
+    r0: string <- op_reg(reg_prefix, "0");
+    r1: string <- op_reg(reg_prefix, "1");
+    r2: string <- op_reg(reg_prefix, "2");
+    sdiv_line: string <- concat(concat(concat(concat(concat("    SDIV ", r0), ", "), concat(r1, ", ")), r2), "\n");
+    case dest == r1 of {
+        true -> concat(sdiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", r1), ", "), concat(r0, ", ")), concat(r2, ", ")), r1), ""));
+        false -> case dest == r2 of {
+            true -> concat(sdiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", r2), ", "), concat(r0, ", ")), concat(r2, ", ")), r1), ""));
+            false -> concat(sdiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", dest), ", "), concat(dest, ", ")), concat(r2, ", ")), r1), ""))
         }
     }
 }
