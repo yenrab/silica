@@ -8,6 +8,8 @@ use emitter_effects;
 use atom_table;
 use atom_rodata;
 use boolean_rodata;
+use int64_rodata;
+use print_int64_inline;
 
 export emit_module/1;
 
@@ -18,10 +20,17 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
     do
     header: string <- asm_header(sir_module.module_name);
     table: AtomTable <- atom_table@build_atom_table(sir_module);
-    funcs: string <- emit_functions(sir_module.functions, table);
+    int64_table: Int64PrintTable <- int64_rodata@build_int64_print_table(sir_module);
+    funcs: string <- emit_functions(sir_module.functions, table, int64_table);
+    int64_helper: string <- case int64_rodata@module_uses_int64_print_var(sir_module) of {
+        true -> concat("\n", print_int64_inline@emit_print_int64_helper());
+        false -> ""
+    };
+    funcs_with_helper: string <- concat(funcs, int64_helper);
     atom_rodata_str: string <- atom_rodata@emit_atom_rodata_section(table);
     bool_rodata: string <- boolean_rodata@emit_boolean_rodata_section();
-    code_part: string <- concat(concat(header, "\n"), funcs);
+    int64_rodata_str: string <- int64_rodata@emit_int64_rodata_section(int64_table);
+    code_part: string <- concat(concat(header, "\n"), funcs_with_helper);
     with_atom: string <- case len(atom_rodata_str) > 0 of {
         true -> concat(concat(code_part, "\n"), atom_rodata_str);
         false -> code_part
@@ -30,7 +39,11 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
         true -> concat(concat(with_atom, "\n"), bool_rodata);
         false -> with_atom
     };
-    with_bool
+    with_int64: string <- case int64_rodata@module_uses_int64_print(sir_module) of {
+        true -> concat(concat(with_bool, "\n"), int64_rodata_str);
+        false -> with_bool
+    };
+    with_int64
     end
 }
 
@@ -38,13 +51,13 @@ fn asm_header(name: string) -> string {
     concat(".text\n", concat(concat(".global ", name), "\n"))
 }
 
-fn emit_functions(fns: ListSIRFunction, table: AtomTable) -> string proc[DeviceIO] {
+fn emit_functions(fns: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable) -> string proc[DeviceIO] {
     do
     case fns.is_nil of {
         true -> "";
         false -> do
-            fn_asm: string <- emit_sir_function(fns.head, table);
-            rest_asm: string <- emit_functions(fns.tail, table);
+            fn_asm: string <- emit_sir_function(fns.head, table, int64_table);
+            rest_asm: string <- emit_functions(fns.tail, table, int64_table);
             case rest_asm == "" of {
                 true -> fn_asm;
                 false -> concat(concat(fn_asm, "\n"), rest_asm)
@@ -54,12 +67,12 @@ fn emit_functions(fns: ListSIRFunction, table: AtomTable) -> string proc[DeviceI
     end
 }
 
-fn emit_sir_function(fn_val: SIRFunction, table: AtomTable) -> string proc[DeviceIO] {
+fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64PrintTable) -> string proc[DeviceIO] {
     do
     entry_label: string <- entry_point_label(fn_val.name);
     eff_comment: string <- emitter_effects@fn_effect_annotation(fn_val.effects);
     prologue: string <- control@function_prologue_with_effects(entry_label, fn_val.effects);
-    body: string <- term_emitter@term_to_asm(fn_val.body, "X0", table);
+    body: string <- term_emitter@term_to_asm(fn_val.body, "X0", table, int64_table);
     epilogue: string <- control@function_epilogue_with_effects(fn_val.effects);
     concat(concat(concat(eff_comment, "\n"), concat(prologue, "\n")), concat(concat(body, "\n"), epilogue))
     end
