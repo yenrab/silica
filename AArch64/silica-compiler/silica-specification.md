@@ -201,7 +201,7 @@ Silica source code is UTF-8 encoded. The language uses ASCII characters for keyw
 The following identifiers are reserved keywords:
 
 ```
-actor      actor_ref  as        atom      atomic    boolean      buf       case
+actor      actor_ref  atom      atomic    boolean      buf       case
 cast       char       concurrency core_id  core_set device_io do        effect
 efficiency_cores else end        enum      export    false     float16   float32
 float64    fn         for        from      if        impl      import    int8
@@ -421,7 +421,6 @@ expression ::= literal
              | tuple_literal
              | constructor_call
              | cast_expression
-             | as_type_expression
 ```
 
 #### 3.3.1 Literals
@@ -1803,18 +1802,6 @@ cast_expression ::= "cast" "(" expression "," expression ")"
 Example:
 ```silica
 cast(actor_ref, message)
-```
-
-#### 3.3.12 Type Cast Expressions
-```
-as_type_expression ::= expression "as" type
-```
-
-Example:
-```silica
-x as int
-value as string
-```
 ```
 
 ### 3.6 Pattern Matching Semantics
