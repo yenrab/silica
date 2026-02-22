@@ -35,11 +35,25 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
             }
         }
     };
+    needs_pu_helper: bool <- case int_rodata@module_uses_uint64_print_var(sir_module) of {
+        true -> true;
+        false -> case int_rodata@module_uses_uint32_print_var(sir_module) of {
+            true -> true;
+            false -> case int_rodata@module_uses_uint16_print_var(sir_module) of {
+                true -> true;
+                false -> int_rodata@module_uses_uint8_print_var(sir_module)
+            }
+        }
+    };
     pi_helper: string <- case needs_pi_helper of {
         true -> concat("\n", print_int64_inline@emit_print_int64_helper());
         false -> ""
     };
-    funcs_with_helper: string <- concat(funcs, pi_helper);
+    pu_helper: string <- case needs_pu_helper of {
+        true -> concat("\n", print_int64_inline@emit_print_uint64_helper());
+        false -> ""
+    };
+    funcs_with_helper: string <- concat(concat(funcs, pi_helper), pu_helper);
     atom_rodata_str: string <- atom_rodata@emit_atom_rodata_section(table);
     bool_rodata: string <- boolean_rodata@emit_boolean_rodata_section();
     int64_rodata_str: string <- int_rodata@emit_int64_rodata_section(int64_table);
@@ -100,7 +114,7 @@ fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64Pr
     entry_label: string <- entry_point_label(fn_val.name);
     eff_comment: string <- emitter_effects@fn_effect_annotation(fn_val.effects);
     prologue: string <- control@function_prologue_with_effects(entry_label, fn_val.effects);
-    dest_reg: string <- case fn_val.return_type == "int32" or fn_val.return_type == "int16" or fn_val.return_type == "int8" of {
+    dest_reg: string <- case fn_val.return_type == "int32" or fn_val.return_type == "int16" or fn_val.return_type == "int8" or fn_val.return_type == "uint32" or fn_val.return_type == "uint16" or fn_val.return_type == "uint8" of {
         true -> concat("W", "0");
         false -> "X0"
     };

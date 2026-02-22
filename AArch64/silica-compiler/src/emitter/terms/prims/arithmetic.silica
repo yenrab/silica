@@ -1,6 +1,7 @@
-// int64/int32 arithmetic prim emission: add, sub, mul, div, rem
+// int64/int32/uint64/uint32 arithmetic prim emission: add, sub, mul, div, rem
 // sir_emitter_pattern_spec §7.1: ADD/SUB/MUL/SDIV; rem = SDIV + MSUB (AArch64 has no SREM)
-// Operands in r1, r2; result to dest. reg_prefix is "X" (int64) or "W" (int32).
+// Unsigned: UDIV; urem = UDIV + MSUB. Operands in r1, r2; result to dest.
+// reg_prefix is "X" (int64/uint64) or "W" (int32/int16/int8/uint32/uint16/uint8).
 
 use sir_ast;
 
@@ -9,6 +10,8 @@ export emit_sub_op/2;
 export emit_mul_op/2;
 export emit_div_op/2;
 export emit_rem_op/2;
+export emit_udiv_op/2;
+export emit_urem_op/2;
 
 fn op_reg(prefix: string, n: string) -> string {
     concat(prefix, n)
@@ -50,6 +53,27 @@ fn emit_rem_op(dest: string, reg_prefix: string) -> string {
         false -> case dest == r2 of {
             true -> concat(sdiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", r2), ", "), concat(r0, ", ")), concat(r2, ", ")), r1), ""));
             false -> concat(sdiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", dest), ", "), concat(dest, ", ")), concat(r2, ", ")), r1), ""))
+        }
+    }
+}
+
+fn emit_udiv_op(dest: string, reg_prefix: string) -> string {
+    r1: string <- op_reg(reg_prefix, "1");
+    r2: string <- op_reg(reg_prefix, "2");
+    concat(concat(concat(concat(concat("    UDIV ", dest), ", "), r1), ", "), r2)
+}
+
+// AArch64 has no UREM; unsigned remainder = dividend - (quotient * divisor) via UDIV + MSUB
+fn emit_urem_op(dest: string, reg_prefix: string) -> string {
+    r0: string <- op_reg(reg_prefix, "0");
+    r1: string <- op_reg(reg_prefix, "1");
+    r2: string <- op_reg(reg_prefix, "2");
+    udiv_line: string <- concat(concat(concat(concat(concat("    UDIV ", r0), ", "), concat(r1, ", ")), r2), "\n");
+    case dest == r1 of {
+        true -> concat(udiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", r1), ", "), concat(r0, ", ")), concat(r2, ", ")), r1), ""));
+        false -> case dest == r2 of {
+            true -> concat(udiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", r2), ", "), concat(r0, ", ")), concat(r2, ", ")), r1), ""));
+            false -> concat(udiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", dest), ", "), concat(dest, ", ")), concat(r2, ", ")), r1), ""))
         }
     }
 }

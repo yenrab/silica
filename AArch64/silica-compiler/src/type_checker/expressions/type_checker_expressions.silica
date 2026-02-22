@@ -10,7 +10,7 @@ use boolean_type_checker_expressions;
 
 export check_expr/3;
 
-// Arithmetic: +, -, *, /, % (mod) - operands int64/int32/int16/int8, result matches operands
+// Arithmetic: +, -, *, /, % (mod) - operands int64/int32/int16/int8/uint64/uint32/uint16/uint8, result matches operands
 fn is_arithmetic_op_lexeme(op: string) -> bool {
     op == "+" or op == "-" or op == "*" or op == "/" or op == "%"
 }
@@ -30,39 +30,72 @@ fn check_comparison_operands(expr: Expr, operand_type: string, context: TypeCont
 }
 
 // Try each supported comparison operand type; first match wins.
+// Signed: int64, int32, int16, int8. Unsigned: uint64, uint32, uint16, uint8. Also float32, float16, string, boolean.
+fn bool_result(expected_type: string, location: SourceLocation) -> TypeCheckResult {
+    case expected_type of {
+        "boolean" -> type_checker_core@type_check_ok();
+        "discard" -> type_checker_core@type_check_ok();
+        _: string -> type_checker_core@type_check_err("E2003", location, concat("comparison op expects boolean result, got ", expected_type), "sect6")
+    }
+}
+
 fn check_comparison_result(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
     r64: TypeCheckResult <- check_comparison_operands(expr, "int64", context);
     case r64.is_ok of {
-        true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+        true -> bool_result(expected_type, expr.location);
         false -> do
             r32: TypeCheckResult <- check_comparison_operands(expr, "int32", context);
             case r32.is_ok of {
-                true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+                true -> bool_result(expected_type, expr.location);
                 false -> do
                     r16: TypeCheckResult <- check_comparison_operands(expr, "int16", context);
                     case r16.is_ok of {
-                        true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+                        true -> bool_result(expected_type, expr.location);
                         false -> do
                             r8: TypeCheckResult <- check_comparison_operands(expr, "int8", context);
                             case r8.is_ok of {
-                                true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+                                true -> bool_result(expected_type, expr.location);
                                 false -> do
-                                    rf32: TypeCheckResult <- check_comparison_operands(expr, "float32", context);
-                                    case rf32.is_ok of {
-                                        true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+                                    ru64: TypeCheckResult <- check_comparison_operands(expr, "uint64", context);
+                                    case ru64.is_ok of {
+                                        true -> bool_result(expected_type, expr.location);
                                         false -> do
-                                            rf16: TypeCheckResult <- check_comparison_operands(expr, "float16", context);
-                                            case rf16.is_ok of {
-                                                true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+                                            ru32: TypeCheckResult <- check_comparison_operands(expr, "uint32", context);
+                                            case ru32.is_ok of {
+                                                true -> bool_result(expected_type, expr.location);
                                                 false -> do
-                                                    rs: TypeCheckResult <- check_comparison_operands(expr, "string", context);
-                                                    case rs.is_ok of {
-                                                        true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
+                                                    ru16: TypeCheckResult <- check_comparison_operands(expr, "uint16", context);
+                                                    case ru16.is_ok of {
+                                                        true -> bool_result(expected_type, expr.location);
                                                         false -> do
-                                                            rb: TypeCheckResult <- check_comparison_operands(expr, "boolean", context);
-                                                            case rb.is_ok of {
-                                                                true -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); "discard" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("comparison op expects boolean result, got ", expected_type), "sect6") };
-                                                                false -> r64
+                                                            ru8: TypeCheckResult <- check_comparison_operands(expr, "uint8", context);
+                                                            case ru8.is_ok of {
+                                                                true -> bool_result(expected_type, expr.location);
+                                                                false -> do
+                                                                    rf32: TypeCheckResult <- check_comparison_operands(expr, "float32", context);
+                                                                    case rf32.is_ok of {
+                                                                        true -> bool_result(expected_type, expr.location);
+                                                                        false -> do
+                                                                            rf16: TypeCheckResult <- check_comparison_operands(expr, "float16", context);
+                                                                            case rf16.is_ok of {
+                                                                                true -> bool_result(expected_type, expr.location);
+                                                                                false -> do
+                                                                                    rs: TypeCheckResult <- check_comparison_operands(expr, "string", context);
+                                                                                    case rs.is_ok of {
+                                                                                        true -> bool_result(expected_type, expr.location);
+                                                                                        false -> do
+                                                                                            rb: TypeCheckResult <- check_comparison_operands(expr, "boolean", context);
+                                                                                            case rb.is_ok of {
+                                                                                                true -> bool_result(expected_type, expr.location);
+                                                                                                false -> r64
+                                                                                            }
+                                                                                        end
+                                                                                    }
+                                                                                end
+                                                                            }
+                                                                        end
+                                                                    }
+                                                                end
                                                             }
                                                         end
                                                     }
@@ -94,6 +127,10 @@ fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> T
                 "int32" -> "int32";
                 "int16" -> "int16";
                 "int8" -> "int8";
+                "uint64" -> "uint64";
+                "uint32" -> "uint32";
+                "uint16" -> "uint16";
+                "uint8" -> "uint8";
                 _: string -> "int64"
             };
             left_result: TypeCheckResult <- check_expr(expr.inner, operand_type, context);
@@ -108,8 +145,12 @@ fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> T
                             "int32" -> type_checker_core@type_check_ok();
                             "int16" -> type_checker_core@type_check_ok();
                             "int8" -> type_checker_core@type_check_ok();
+                            "uint64" -> type_checker_core@type_check_ok();
+                            "uint32" -> type_checker_core@type_check_ok();
+                            "uint16" -> type_checker_core@type_check_ok();
+                            "uint8" -> type_checker_core@type_check_ok();
                             "discard" -> type_checker_core@type_check_ok();
-                            _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("arithmetic op expects integer result (int64/int32/int16/int8), got ", expected_type), "sect6")
+                            _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("arithmetic op expects integer result (int64/int32/int16/int8/uint64/uint32/uint16/uint8), got ", expected_type), "sect6")
                         }
                     }
                 end
@@ -141,83 +182,67 @@ fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> T
     }
 }
 
-// Built-in: print_int64(int64:x), print_int32(int32:x), print_int16(int16:x), print_int8(int8:x) - arg matches, returns atom
+// Built-in: print_int64/32/16/8, print_uint64/32/16/8 - arg matches type, returns atom
 // Built-in: print_atom(atom:x) - arg atom, returns atom (:ok on success, :fail on failure)
+fn check_print_call(expr: Expr, arg_type: string, expected_type: string, context: TypeContext) -> TypeCheckResult {
+    arg_result: TypeCheckResult <- check_expr(expr.inner, arg_type, context);
+    case arg_result.is_ok of {
+        false -> arg_result;
+        true -> case expected_type of {
+            "atom" -> type_checker_core@type_check_ok();
+            "discard" -> type_checker_core@type_check_ok();
+            _: string -> type_checker_core@type_check_err("E2003", expr.location, concat(concat("print_", concat(arg_type, " expects atom result, got ")), expected_type), "sect6")
+        }
+    }
+}
+
 fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
     case expr.name == "print_int64" of {
-        true -> do
-            arg_result: TypeCheckResult <- check_expr(expr.inner, "int64", context);
-            case arg_result.is_ok of {
-                false -> arg_result;
-                true -> case expected_type of {
-                    "atom" -> type_checker_core@type_check_ok();
-                    "discard" -> type_checker_core@type_check_ok();
-                    _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("print_int64 expects atom result, got ", expected_type), "sect6")
-                }
-            }
-        end;
+        true -> check_print_call(expr, "int64", expected_type, context);
         false -> case expr.name == "print_int32" of {
-            true -> do
-                arg_result: TypeCheckResult <- check_expr(expr.inner, "int32", context);
-                case arg_result.is_ok of {
-                    false -> arg_result;
-                    true -> case expected_type of {
-                        "atom" -> type_checker_core@type_check_ok();
-                        "discard" -> type_checker_core@type_check_ok();
-                        _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("print_int32 expects atom result, got ", expected_type), "sect6")
-                    }
-                }
-            end;
+            true -> check_print_call(expr, "int32", expected_type, context);
             false -> case expr.name == "print_int16" of {
-                true -> do
-                    arg_result: TypeCheckResult <- check_expr(expr.inner, "int16", context);
-                    case arg_result.is_ok of {
-                        false -> arg_result;
-                        true -> case expected_type of {
-                            "atom" -> type_checker_core@type_check_ok();
-                            "discard" -> type_checker_core@type_check_ok();
-                            _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("print_int16 expects atom result, got ", expected_type), "sect6")
-                        }
-                    }
-                end;
+                true -> check_print_call(expr, "int16", expected_type, context);
                 false -> case expr.name == "print_int8" of {
-                    true -> do
-                        arg_result: TypeCheckResult <- check_expr(expr.inner, "int8", context);
-                        case arg_result.is_ok of {
-                            false -> arg_result;
-                            true -> case expected_type of {
-                                "atom" -> type_checker_core@type_check_ok();
-                                "discard" -> type_checker_core@type_check_ok();
-                                _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("print_int8 expects atom result, got ", expected_type), "sect6")
-                            }
-                        }
-                    end;
-                    false -> case expr.name == "print_bool" of {
-                        true -> do
-                            arg_result: TypeCheckResult <- check_expr(expr.inner, "boolean", context);
-                            case arg_result.is_ok of {
-                                false -> arg_result;
-                                true -> case expected_type of {
-                                    "boolean" -> type_checker_core@type_check_ok();
-                                    "atom" -> type_checker_core@type_check_ok();
-                                    "discard" -> type_checker_core@type_check_ok();
-                                    _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("print_bool expects boolean or atom result, got ", expected_type), "sect6")
-                                }
-                            }
-                        end;
-                        false -> case expr.name == "print_atom" of {
-                            true -> do
-                                arg_result: TypeCheckResult <- check_expr(expr.inner, "atom", context);
-                                case arg_result.is_ok of {
-                                    false -> arg_result;
-                                    true -> case expected_type of {
-                                        "atom" -> type_checker_core@type_check_ok();
-                                        "discard" -> type_checker_core@type_check_ok();
-                                        _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("print_atom expects atom result, got ", expected_type), "sect6")
+                    true -> check_print_call(expr, "int8", expected_type, context);
+                    false -> case expr.name == "print_uint64" of {
+                        true -> check_print_call(expr, "uint64", expected_type, context);
+                        false -> case expr.name == "print_uint32" of {
+                            true -> check_print_call(expr, "uint32", expected_type, context);
+                            false -> case expr.name == "print_uint16" of {
+                                true -> check_print_call(expr, "uint16", expected_type, context);
+                                false -> case expr.name == "print_uint8" of {
+                                    true -> check_print_call(expr, "uint8", expected_type, context);
+                                    false -> case expr.name == "print_bool" of {
+                                        true -> do
+                                            arg_result: TypeCheckResult <- check_expr(expr.inner, "boolean", context);
+                                            case arg_result.is_ok of {
+                                                false -> arg_result;
+                                                true -> case expected_type of {
+                                                    "boolean" -> type_checker_core@type_check_ok();
+                                                    "atom" -> type_checker_core@type_check_ok();
+                                                    "discard" -> type_checker_core@type_check_ok();
+                                                    _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("print_bool expects boolean or atom result, got ", expected_type), "sect6")
+                                                }
+                                            }
+                                        end;
+                                        false -> case expr.name == "print_atom" of {
+                                            true -> do
+                                                arg_result: TypeCheckResult <- check_expr(expr.inner, "atom", context);
+                                                case arg_result.is_ok of {
+                                                    false -> arg_result;
+                                                    true -> case expected_type of {
+                                                        "atom" -> type_checker_core@type_check_ok();
+                                                        "discard" -> type_checker_core@type_check_ok();
+                                                        _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("print_atom expects atom result, got ", expected_type), "sect6")
+                                                    }
+                                                }
+                                            end;
+                                            false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown or unsupported function: ", expr.name), "sect6")
+                                        }
                                     }
                                 }
-                            end;
-                            false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown or unsupported function: ", expr.name), "sect6")
+                            }
                         }
                     }
                 }

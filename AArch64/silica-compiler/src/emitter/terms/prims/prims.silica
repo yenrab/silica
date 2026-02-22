@@ -1,6 +1,6 @@
 // Prim dispatcher: SIRTerm.kind 6 -> emit op line only (operands in r1, r2)
 // term_emitter emits subterms to r1/r2 before calling this; avoids circular dep
-// int32 uses W registers, int64 uses X registers
+// int32/int16/int8/uint32/uint16/uint8 use W registers, int64/uint64 use X registers
 
 use sir_ast;
 use arithmetic;
@@ -9,32 +9,62 @@ use logical;
 
 export emit_prim_op/2;
 
+fn is_narrow_type(type_name: string) -> bool {
+    type_name == "int32" or type_name == "int16" or type_name == "int8" or type_name == "uint32" or type_name == "uint16" or type_name == "uint8"
+}
+
+fn is_unsigned_type(type_name: string) -> bool {
+    type_name == "uint64" or type_name == "uint32" or type_name == "uint16" or type_name == "uint8"
+}
+
 // Emit just the op line for a prim. Caller has already emitted left->r1, right->r2.
-// reg_prefix: "W" for int32/int16/int8, "X" for int64. dest_reg: W0/W1/W2 or X0/X1/X2.
+// reg_prefix: "W" for narrow types, "X" for int64/uint64. dest_reg: W0/W1/W2 or X0/X1/X2.
+// For div/rem: signed vs unsigned from result type. For lt/gt/le/ge: from operand type (inner).
+// For arithmetic: reg_prefix from result type. For comparison: reg_prefix from operand type.
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
-    is_narrow_int: bool <- term.type_name == "int32" or term.type_name == "int16" or term.type_name == "int8";
-    reg_prefix: string <- case is_narrow_int of {
-        true -> "W";
-        false -> "X"
-    };
-    dest_reg: string <- case is_narrow_int of {
-        true -> concat(reg_prefix, substring(dest, 1, len(dest)));
+    operand_type: string <- term.inner.type_name;
+    is_narrow_arith: bool <- is_narrow_type(term.type_name);
+    is_narrow_operand: bool <- is_narrow_type(operand_type);
+    is_unsigned_arith: bool <- is_unsigned_type(term.type_name);
+    is_unsigned_cmp: bool <- is_unsigned_type(operand_type);
+    reg_prefix_arith: string <- case is_narrow_arith of { true -> "W"; false -> "X" };
+    reg_prefix_cmp: string <- case is_narrow_operand of { true -> "W"; false -> "X" };
+    dest_reg: string <- case is_narrow_arith of {
+        true -> concat(reg_prefix_arith, substring(dest, 1, len(dest)));
         false -> dest
     };
     case term.name of {
-        "add" -> arithmetic@emit_add_op(dest_reg, reg_prefix);
-        "sub" -> arithmetic@emit_sub_op(dest_reg, reg_prefix);
-        "mul" -> arithmetic@emit_mul_op(dest_reg, reg_prefix);
-        "div" -> arithmetic@emit_div_op(dest_reg, reg_prefix);
-        "rem" -> arithmetic@emit_rem_op(dest_reg, reg_prefix);
-        "lt" -> comparison@emit_lt_op(dest_reg, reg_prefix);
-        "gt" -> comparison@emit_gt_op(dest_reg, reg_prefix);
-        "le" -> comparison@emit_le_op(dest_reg, reg_prefix);
-        "ge" -> comparison@emit_ge_op(dest_reg, reg_prefix);
-        "eq" -> comparison@emit_eq_op(dest_reg, reg_prefix);
-        "ne" -> comparison@emit_ne_op(dest_reg, reg_prefix);
-        "and" -> logical@emit_and_op(dest_reg, reg_prefix);
-        "or" -> logical@emit_or_op(dest_reg, reg_prefix);
+        "add" -> arithmetic@emit_add_op(dest_reg, reg_prefix_arith);
+        "sub" -> arithmetic@emit_sub_op(dest_reg, reg_prefix_arith);
+        "mul" -> arithmetic@emit_mul_op(dest_reg, reg_prefix_arith);
+        "div" -> case is_unsigned_arith of {
+            true -> arithmetic@emit_udiv_op(dest_reg, reg_prefix_arith);
+            false -> arithmetic@emit_div_op(dest_reg, reg_prefix_arith)
+        };
+        "rem" -> case is_unsigned_arith of {
+            true -> arithmetic@emit_urem_op(dest_reg, reg_prefix_arith);
+            false -> arithmetic@emit_rem_op(dest_reg, reg_prefix_arith)
+        };
+        "lt" -> case is_unsigned_cmp of {
+            true -> comparison@emit_ult_op(dest_reg, reg_prefix_cmp);
+            false -> comparison@emit_lt_op(dest_reg, reg_prefix_cmp)
+        };
+        "gt" -> case is_unsigned_cmp of {
+            true -> comparison@emit_ugt_op(dest_reg, reg_prefix_cmp);
+            false -> comparison@emit_gt_op(dest_reg, reg_prefix_cmp)
+        };
+        "le" -> case is_unsigned_cmp of {
+            true -> comparison@emit_ule_op(dest_reg, reg_prefix_cmp);
+            false -> comparison@emit_le_op(dest_reg, reg_prefix_cmp)
+        };
+        "ge" -> case is_unsigned_cmp of {
+            true -> comparison@emit_uge_op(dest_reg, reg_prefix_cmp);
+            false -> comparison@emit_ge_op(dest_reg, reg_prefix_cmp)
+        };
+        "eq" -> comparison@emit_eq_op(dest_reg, reg_prefix_cmp);
+        "ne" -> comparison@emit_ne_op(dest_reg, reg_prefix_cmp);
+        "and" -> logical@emit_and_op(dest_reg, reg_prefix_arith);
+        "or" -> logical@emit_or_op(dest_reg, reg_prefix_arith);
         _: string -> concat("    ; unsupported prim: ", term.name)
     }
 }
