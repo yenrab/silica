@@ -554,6 +554,31 @@ pub extern "C" fn silica_string_substring_until_char(str_ptr: *const u8, start: 
     create_silica_string_from_bytes(&buffer)
 }
 
+/// Convert a string representing an integer to int64
+/// Accepts either string constant pointers (i8* to string data) or SilicaString pointers (i8* to SilicaString struct)
+/// Parses decimal integers with optional leading +/- and whitespace (per Rust str::parse::<i64>)
+/// Returns 0 if the string is null, empty, or cannot be parsed as an integer
+#[no_mangle]
+pub extern "C" fn silica_string_to_int64(str_ptr: *const u8) -> i64 {
+    if str_ptr.is_null() {
+        return 0;
+    }
+
+    let (data, len) = unsafe { get_string_data_and_length(str_ptr).unwrap_or((std::ptr::null(), 0)) };
+    if data.is_null() || len == 0 {
+        return 0;
+    }
+
+    unsafe {
+        let slice = std::slice::from_raw_parts(data, len);
+        if let Ok(s) = std::str::from_utf8(slice) {
+            s.trim().parse::<i64>().unwrap_or(0)
+        } else {
+            0
+        }
+    }
+}
+
 /// Check if a string starts with a prefix
 /// Accepts either string constant pointers (i8* to string data) or SilicaString pointers (i8* to SilicaString struct)
 /// Returns true if the string starts with the prefix, false otherwise

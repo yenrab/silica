@@ -1,0 +1,121 @@
+// Fully inline emission for print_int32/print_uint32 built-in
+// Const arg: emit write(2) with L_pi32_N label. Var arg: extend W0->X0, BL L_pi_helper or L_pu_helper.
+
+use sir_ast;
+use atom_table;
+use int_rodata;
+use emitter_effects;
+
+export emit_print_int32_inline/4;
+export is_print_int32_const_arg/2;
+export is_print_uint32_const_arg/2;
+export emit_print_int32_var/3;
+export emit_print_uint32_var/3;
+
+fn is_print_int32_const_arg(term: SIRTerm, table: AtomTable) -> bool {
+    case term.name == "main.print_int32" of {
+        false -> false;
+        true -> case term.inner.kind of {
+            0 -> term.inner.type_name == "int32";
+            _: int64 -> false
+        }
+    }
+}
+
+fn is_print_uint32_const_arg(term: SIRTerm, table: AtomTable) -> bool {
+    case term.name == "main.print_uint32" of {
+        false -> false;
+        true -> case term.inner.kind of {
+            0 -> term.inner.type_name == "uint32";
+            _: int64 -> false
+        }
+    }
+}
+
+fn emit_print_int32_inline(term: SIRTerm, dest: string, table: AtomTable, int32_table: Int32PrintTable) -> string {
+    value: string <- term.inner.value;
+    index: int64 <- int_rodata@int32_value_to_index(int32_table, value);
+    index_str: string <- atom_table@int64_to_decimal_string(index);
+    lp: string <- concat("L_pi32", "_");
+    label: string <- concat(lp, index_str);
+    length: int64 <- len(value);
+    length_str: string <- atom_table@int64_to_decimal_string(length);
+    call_effects: string <- term.value;
+    eff_comment: string <- emitter_effects@effect_annotation(call_effects);
+    pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
+    post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
+    comment_line: string <- case len(eff_comment) > 0 of {
+        true -> concat(eff_comment, "\n");
+        false -> ""
+    };
+    mov_fd: string <- "    MOV X0, #1\n";
+    adrp_part: string <- concat(concat(concat("    ADRP X1, ", label), "@PAGE"), "\n");
+    add_part: string <- concat(concat(concat("    ADD X1, X1, ", label), "@PAGEOFF"), "\n");
+    mov_count: string <- concat(concat("    MOV X2, #", length_str), "\n");
+    syscall_line: string <- "\n    MOV X16, #4\n    SVC #0\n";
+    result_line: string <- concat(concat("    MOV ", dest), ", #0\n");
+    with_comment: string <- concat(comment_line, mov_fd);
+    with_adrp: string <- concat(with_comment, concat(concat(adrp_part, add_part), concat(mov_count, syscall_line)));
+    with_result: string <- concat(with_adrp, result_line);
+    with_post: string <- case len(post_barrier) > 0 of {
+        true -> concat(with_result, concat(concat("\n", post_barrier), "\n"));
+        false -> concat(with_result, "\n")
+    };
+    with_pre: string <- case len(pre_barrier) > 0 of {
+        true -> concat(pre_barrier, concat("\n", with_post));
+        false -> with_post
+    };
+    with_pre
+}
+
+fn emit_print_int32_var(term: SIRTerm, dest: string, table: AtomTable) -> string {
+    call_effects: string <- term.value;
+    eff_comment: string <- emitter_effects@effect_annotation(call_effects);
+    pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
+    post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
+    comment_line: string <- case len(eff_comment) > 0 of {
+        true -> concat(eff_comment, "\n");
+        false -> ""
+    };
+    ext_line: string <- "    SXTW X0, W0\n";
+    bl_line: string <- "    BL L_pi_helper\n";
+    mov_ret: string <- concat(concat("    MOV ", dest), ", #0\n");
+    with_comment: string <- concat(comment_line, ext_line);
+    with_bl: string <- concat(with_comment, bl_line);
+    with_ret: string <- concat(with_bl, mov_ret);
+    with_post: string <- case len(post_barrier) > 0 of {
+        true -> concat(with_ret, concat(concat("\n", post_barrier), "\n"));
+        false -> with_ret
+    };
+    with_pre: string <- case len(pre_barrier) > 0 of {
+        true -> concat(pre_barrier, concat("\n", with_post));
+        false -> with_post
+    };
+    with_pre
+}
+
+fn emit_print_uint32_var(term: SIRTerm, dest: string, table: AtomTable) -> string {
+    call_effects: string <- term.value;
+    eff_comment: string <- emitter_effects@effect_annotation(call_effects);
+    pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
+    post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
+    comment_line: string <- case len(eff_comment) > 0 of {
+        true -> concat(eff_comment, "\n");
+        false -> ""
+    };
+    ext_line: string <- "    UXTW X0, W0\n";
+    bl_line: string <- "    BL L_pu_helper\n";
+    mov_ret: string <- concat(concat("    MOV ", dest), ", #0\n");
+    with_comment: string <- concat(comment_line, ext_line);
+    with_bl: string <- concat(with_comment, bl_line);
+    with_ret: string <- concat(with_bl, mov_ret);
+    with_post: string <- case len(post_barrier) > 0 of {
+        true -> concat(with_ret, concat(concat("\n", post_barrier), "\n"));
+        false -> with_ret
+    };
+    with_pre: string <- case len(pre_barrier) > 0 of {
+        true -> concat(pre_barrier, concat("\n", with_post));
+        false -> with_post
+    };
+    with_pre
+}

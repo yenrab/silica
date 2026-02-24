@@ -1,0 +1,1104 @@
+// Integer print rodata: collect unique int/uint literal values from print_int64/print_int32/print_int16/print_int8
+// Emit .rodata section with L_pi_N, L_pi32_N, L_pi16_N, L_pi8_N labels for inline write(2) emission
+// Uses .byte to avoid bootstrap compiler issues with escaped quotes in strings
+
+use sir_ast;
+use bst;
+use atom_table;
+
+export Int64PrintTable/0;
+export Int32PrintTable/0;
+export Int16PrintTable/0;
+export Int8PrintTable/0;
+export build_int64_print_table/1;
+export build_int32_print_table/1;
+export build_int16_print_table/1;
+export build_int8_print_table/1;
+export int64_value_to_index/2;
+export int32_value_to_index/2;
+export int16_value_to_index/2;
+export int8_value_to_index/2;
+export emit_int64_rodata_section/1;
+export emit_int32_rodata_section/1;
+export emit_int16_rodata_section/1;
+export emit_int8_rodata_section/1;
+export module_uses_int64_print/1;
+export module_uses_int32_print/1;
+export module_uses_int16_print/1;
+export module_uses_int8_print/1;
+export module_uses_int64_print_var/1;
+export module_uses_int32_print_var/1;
+export module_uses_int16_print_var/1;
+export module_uses_int8_print_var/1;
+export module_uses_uint64_print_var/1;
+export module_uses_uint32_print_var/1;
+export module_uses_uint16_print_var/1;
+export module_uses_uint8_print_var/1;
+export module_uses_signed_print_var/1;
+export debug_int64_table_lookups/1;
+
+struct ListIntPrintValue {
+    is_nil: bool,
+    head: string,
+    tail: ListIntPrintValue
+}
+
+struct Int64PrintTable {
+    is_empty: bool,
+    root: BstNode,
+    values: ListIntPrintValue
+}
+
+struct Int32PrintTable {
+    is_empty: bool,
+    root: BstNode,
+    values: ListIntPrintValue
+}
+
+struct Int16PrintTable {
+    is_empty: bool,
+    root: BstNode,
+    values: ListIntPrintValue
+}
+
+struct Int8PrintTable {
+    is_empty: bool,
+    root: BstNode,
+    values: ListIntPrintValue
+}
+
+fn nil_values() -> ListIntPrintValue {
+    ph: ListIntPrintValue <- ListIntPrintValue { is_nil: true, head: "", tail: ph };
+    ph
+}
+
+fn cons_value(s: string, t: ListIntPrintValue) -> ListIntPrintValue {
+    ListIntPrintValue { is_nil: false, head: s, tail: t }
+}
+
+fn empty_int64_table() -> Int64PrintTable {
+    Int64PrintTable { is_empty: true, root: bst@empty_node(), values: nil_values() }
+}
+
+fn empty_int32_table() -> Int32PrintTable {
+    Int32PrintTable { is_empty: true, root: bst@empty_node(), values: nil_values() }
+}
+
+fn empty_int16_table() -> Int16PrintTable {
+    Int16PrintTable { is_empty: true, root: bst@empty_node(), values: nil_values() }
+}
+
+fn empty_int8_table() -> Int8PrintTable {
+    Int8PrintTable { is_empty: true, root: bst@empty_node(), values: nil_values() }
+}
+
+fn add_value_int64(table: Int64PrintTable, value: string, next_index: int64) -> (Int64PrintTable, int64) {
+    case table.is_empty of {
+        true -> do
+            (root: BstNode, idx: int64) <- bst@bst_insert(bst@empty_node(), value, next_index);
+            new_values: ListIntPrintValue <- case idx == next_index of {
+                true -> cons_value(value, table.values);
+                false -> table.values
+            };
+            (Int64PrintTable { is_empty: false, root: root, values: new_values }, idx)
+        end;
+        false -> do
+            (new_root: BstNode, idx: int64) <- bst@bst_insert(table.root, value, next_index);
+            new_values: ListIntPrintValue <- case idx == next_index of {
+                true -> cons_value(value, table.values);
+                false -> table.values
+            };
+            (Int64PrintTable { is_empty: false, root: new_root, values: new_values }, idx)
+        end
+    }
+}
+
+fn add_value_int32(table: Int32PrintTable, value: string, next_index: int64) -> (Int32PrintTable, int64) {
+    case table.is_empty of {
+        true -> do
+            (root: BstNode, idx: int64) <- bst@bst_insert(bst@empty_node(), value, next_index);
+            new_values: ListIntPrintValue <- case idx == next_index of {
+                true -> cons_value(value, table.values);
+                false -> table.values
+            };
+            (Int32PrintTable { is_empty: false, root: root, values: new_values }, idx)
+        end;
+        false -> do
+            (new_root: BstNode, idx: int64) <- bst@bst_insert(table.root, value, next_index);
+            new_values: ListIntPrintValue <- case idx == next_index of {
+                true -> cons_value(value, table.values);
+                false -> table.values
+            };
+            (Int32PrintTable { is_empty: false, root: new_root, values: new_values }, idx)
+        end
+    }
+}
+
+fn add_value_int16(table: Int16PrintTable, value: string, next_index: int64) -> (Int16PrintTable, int64) {
+    case table.is_empty of {
+        true -> do
+            (root: BstNode, idx: int64) <- bst@bst_insert(bst@empty_node(), value, next_index);
+            new_values: ListIntPrintValue <- case idx == next_index of {
+                true -> cons_value(value, table.values);
+                false -> table.values
+            };
+            (Int16PrintTable { is_empty: false, root: root, values: new_values }, idx)
+        end;
+        false -> do
+            (new_root: BstNode, idx: int64) <- bst@bst_insert(table.root, value, next_index);
+            new_values: ListIntPrintValue <- case idx == next_index of {
+                true -> cons_value(value, table.values);
+                false -> table.values
+            };
+            (Int16PrintTable { is_empty: false, root: new_root, values: new_values }, idx)
+        end
+    }
+}
+
+fn add_value_int8(table: Int8PrintTable, value: string, next_index: int64) -> (Int8PrintTable, int64) {
+    case table.is_empty of {
+        true -> do
+            (root: BstNode, idx: int64) <- bst@bst_insert(bst@empty_node(), value, next_index);
+            new_values: ListIntPrintValue <- case idx == next_index of {
+                true -> cons_value(value, table.values);
+                false -> table.values
+            };
+            (Int8PrintTable { is_empty: false, root: root, values: new_values }, idx)
+        end;
+        false -> do
+            (new_root: BstNode, idx: int64) <- bst@bst_insert(table.root, value, next_index);
+            new_values: ListIntPrintValue <- case idx == next_index of {
+                true -> cons_value(value, table.values);
+                false -> table.values
+            };
+            (Int8PrintTable { is_empty: false, root: new_root, values: new_values }, idx)
+        end
+    }
+}
+
+fn int64_value_to_index(table: Int64PrintTable, value: string) -> int64 {
+    case table.is_empty of {
+        true -> 0 - 1;
+        false -> bst@bst_lookup(table.root, value)
+    }
+}
+
+fn debug_int64_values_acc(values: ListIntPrintValue, table: Int64PrintTable, pos: int64, acc: string) -> string {
+    case values.is_nil of {
+        true -> acc;
+        false -> do
+            v: string <- values.head;
+            idx: int64 <- bst@bst_lookup(table.root, v);
+            pos_str: string <- atom_table@int64_to_decimal_string(pos);
+            idx_str: string <- atom_table@int64_to_decimal_string(idx);
+            entry: string <- concat(concat(concat(concat(concat(concat(" val=", v), " pos="), pos_str), " lookup="), idx_str), ",");
+            debug_int64_values_acc(values.tail, table, pos + 1, concat(acc, entry))
+        end
+    }
+}
+
+fn debug_int64_table_lookups(table: Int64PrintTable) -> string {
+    case table.is_empty of {
+        true -> "";
+        false -> do
+            in_order: ListIntPrintValue <- reverse_values(table.values);
+            body: string <- debug_int64_values_acc(in_order, table, 0, "    ; DEBUG table:");
+            struct_line: string <- concat(concat("    ; DEBUG bst struct: ", bst@bst_debug_structure(table.root)), "\n");
+            lookup1: string <- concat(concat("    ; DEBUG bst ", bst@bst_debug_lookup_path(table.root, "1")), "\n");
+            lookup2: string <- concat(concat("    ; DEBUG bst ", bst@bst_debug_lookup_path(table.root, "2")), "\n");
+            cmp12: string <- concat(concat("    ; DEBUG bst ", bst@bst_debug_string_compare("1", "2")), "\n");
+            cmp21: string <- concat(concat("    ; DEBUG bst ", bst@bst_debug_string_compare("2", "1")), "\n");
+            concat(concat(concat(concat(concat(concat(body, "\n"), struct_line), concat(lookup1, lookup2)), cmp12), cmp21), "")
+        end
+    }
+}
+
+fn int32_value_to_index(table: Int32PrintTable, value: string) -> int64 {
+    case table.is_empty of {
+        true -> 0 - 1;
+        false -> bst@bst_lookup(table.root, value)
+    }
+}
+
+fn int16_value_to_index(table: Int16PrintTable, value: string) -> int64 {
+    case table.is_empty of {
+        true -> 0 - 1;
+        false -> bst@bst_lookup(table.root, value)
+    }
+}
+
+fn int8_value_to_index(table: Int8PrintTable, value: string) -> int64 {
+    case table.is_empty of {
+        true -> 0 - 1;
+        false -> bst@bst_lookup(table.root, value)
+    }
+}
+
+fn char_to_ord(c: string) -> int64 {
+    case len(c) of {
+        0 -> 0;
+        _: int64 -> do
+            ch: string <- substring(c, 0, 1);
+            case ch of {
+                "0" -> 48;
+                "1" -> 49;
+                "2" -> 50;
+                "3" -> 51;
+                "4" -> 52;
+                "5" -> 53;
+                "6" -> 54;
+                "7" -> 55;
+                "8" -> 56;
+                "9" -> 57;
+                "-" -> 45;
+                _: string -> 63
+            }
+        end
+    }
+}
+
+fn int_to_hex(n: int64) -> string {
+    case n < 16 of {
+        true -> digit_hex(n);
+        false -> concat(int_to_hex(n / 16), digit_hex(n % 16))
+    }
+}
+
+fn digit_hex(d: int64) -> string {
+    case d of {
+        0 -> "0";
+        1 -> "1";
+        2 -> "2";
+        3 -> "3";
+        4 -> "4";
+        5 -> "5";
+        6 -> "6";
+        7 -> "7";
+        8 -> "8";
+        9 -> "9";
+        10 -> "a";
+        11 -> "b";
+        12 -> "c";
+        13 -> "d";
+        14 -> "e";
+        15 -> "f";
+        _: int64 -> "0"
+    }
+}
+
+fn emit_one_value_string(value: string, pos: int64, acc: string) -> string {
+    case pos >= len(value) of {
+        true -> concat(acc, " 0");
+        false -> do
+            c: string <- substring(value, pos, pos + 1);
+            code: int64 <- char_to_ord(c);
+            hex: string <- int_to_hex(code);
+            suffix: string <- concat(concat(" 0x", hex), ",");
+            emit_one_value_string(value, pos + 1, concat(acc, suffix))
+        end
+    }
+}
+
+fn rev_values_acc(values: ListIntPrintValue, acc: ListIntPrintValue) -> ListIntPrintValue {
+    case values.is_nil of {
+        true -> acc;
+        false -> rev_values_acc(values.tail, cons_value(values.head, acc))
+    }
+}
+
+fn reverse_values(values: ListIntPrintValue) -> ListIntPrintValue {
+    rev_values_acc(values, nil_values())
+}
+
+fn emit_int64_values_rodata(values: ListIntPrintValue, index: int64, label_prefix: string) -> string {
+    case values.is_nil of {
+        true -> "";
+        false -> do
+            rest: string <- emit_int64_values_rodata(values.tail, index + 1, label_prefix);
+            label_colon: string <- concat(concat(concat(label_prefix, "_"), atom_table@int64_to_decimal_string(index)), ":");
+            label_line: string <- concat(label_colon, "\n");
+            byte_prefix: string <- "    .byte ";
+            one: string <- concat(concat(label_line, byte_prefix), emit_one_value_string(values.head, 0, ""));
+            case len(rest) > 0 of {
+                true -> concat(concat(one, "\n"), rest);
+                false -> one
+            }
+        end
+    }
+}
+
+fn collect_int64_from_term(term: SIRTerm, table: Int64PrintTable, next_index: int64) -> (Int64PrintTable, int64) {
+    case term.kind < 0 of {
+        true -> (table, next_index);
+        false -> case term.kind of {
+            2 -> do
+                (t1: Int64PrintTable, i1: int64) <- collect_int64_from_term(term.inner, table, next_index);
+                (t2: Int64PrintTable, i2: int64) <- collect_int64_from_term(term.right_expr, t1, i1);
+                (t2, i2)
+            end;
+            4 -> case term.name == "main.print_int64" or term.name == "main.print_uint64" of {
+                true -> case term.inner.kind == 0 of {
+                    true -> case term.inner.type_name == "int64" or term.inner.type_name == "uint64" of {
+                        true -> do
+                            (t: Int64PrintTable, i: int64) <- add_value_int64(table, term.inner.value, next_index);
+                            new_next: int64 <- case i == next_index of {
+                                true -> next_index + 1;
+                                false -> next_index
+                            };
+                            collect_int64_from_term(term.inner, t, new_next)
+                        end;
+                        false -> collect_int64_from_term(term.inner, table, next_index)
+                    };
+                    false -> collect_int64_from_term(term.inner, table, next_index)
+                };
+                false -> collect_int64_from_term(term.inner, table, next_index)
+            };
+            6 -> do
+                (t1: Int64PrintTable, i1: int64) <- collect_int64_from_term(term.inner, table, next_index);
+                (t2: Int64PrintTable, i2: int64) <- collect_int64_from_term(term.right_expr, t1, i1);
+                (t2, i2)
+            end;
+            _: int64 -> (table, next_index)
+        }
+    }
+}
+
+fn collect_int32_from_term(term: SIRTerm, table: Int32PrintTable, next_index: int64) -> (Int32PrintTable, int64) {
+    case term.kind < 0 of {
+        true -> (table, next_index);
+        false -> case term.kind of {
+            2 -> do
+                (t1: Int32PrintTable, i1: int64) <- collect_int32_from_term(term.inner, table, next_index);
+                (t2: Int32PrintTable, i2: int64) <- collect_int32_from_term(term.right_expr, t1, i1);
+                (t2, i2)
+            end;
+            4 -> case term.name == "main.print_int32" or term.name == "main.print_uint32" of {
+                true -> case term.inner.kind == 0 of {
+                    true -> case term.inner.type_name == "int32" or term.inner.type_name == "uint32" of {
+                        true -> do
+                            (t: Int32PrintTable, i: int64) <- add_value_int32(table, term.inner.value, next_index);
+                            new_next: int64 <- case i == next_index of {
+                                true -> next_index + 1;
+                                false -> next_index
+                            };
+                            collect_int32_from_term(term.inner, t, new_next)
+                        end;
+                        false -> collect_int32_from_term(term.inner, table, next_index)
+                    };
+                    false -> collect_int32_from_term(term.inner, table, next_index)
+                };
+                false -> collect_int32_from_term(term.inner, table, next_index)
+            };
+            6 -> do
+                (t1: Int32PrintTable, i1: int64) <- collect_int32_from_term(term.inner, table, next_index);
+                (t2: Int32PrintTable, i2: int64) <- collect_int32_from_term(term.right_expr, t1, i1);
+                (t2, i2)
+            end;
+            _: int64 -> (table, next_index)
+        }
+    }
+}
+
+fn collect_int16_from_term(term: SIRTerm, table: Int16PrintTable, next_index: int64) -> (Int16PrintTable, int64) {
+    case term.kind < 0 of {
+        true -> (table, next_index);
+        false -> case term.kind of {
+            2 -> do
+                (t1: Int16PrintTable, i1: int64) <- collect_int16_from_term(term.inner, table, next_index);
+                (t2: Int16PrintTable, i2: int64) <- collect_int16_from_term(term.right_expr, t1, i1);
+                (t2, i2)
+            end;
+            4 -> case term.name == "main.print_int16" or term.name == "main.print_uint16" of {
+                true -> case term.inner.kind == 0 of {
+                    true -> case term.inner.type_name == "int16" or term.inner.type_name == "uint16" of {
+                        true -> do
+                            (t: Int16PrintTable, i: int64) <- add_value_int16(table, term.inner.value, next_index);
+                            new_next: int64 <- case i == next_index of {
+                                true -> next_index + 1;
+                                false -> next_index
+                            };
+                            collect_int16_from_term(term.inner, t, new_next)
+                        end;
+                        false -> collect_int16_from_term(term.inner, table, next_index)
+                    };
+                    false -> collect_int16_from_term(term.inner, table, next_index)
+                };
+                false -> collect_int16_from_term(term.inner, table, next_index)
+            };
+            6 -> do
+                (t1: Int16PrintTable, i1: int64) <- collect_int16_from_term(term.inner, table, next_index);
+                (t2: Int16PrintTable, i2: int64) <- collect_int16_from_term(term.right_expr, t1, i1);
+                (t2, i2)
+            end;
+            _: int64 -> (table, next_index)
+        }
+    }
+}
+
+fn collect_int8_from_term(term: SIRTerm, table: Int8PrintTable, next_index: int64) -> (Int8PrintTable, int64) {
+    case term.kind < 0 of {
+        true -> (table, next_index);
+        false -> case term.kind of {
+            2 -> do
+                (t1: Int8PrintTable, i1: int64) <- collect_int8_from_term(term.inner, table, next_index);
+                (t2: Int8PrintTable, i2: int64) <- collect_int8_from_term(term.right_expr, t1, i1);
+                (t2, i2)
+            end;
+            4 -> case term.name == "main.print_int8" or term.name == "main.print_uint8" of {
+                true -> case term.inner.kind == 0 of {
+                    true -> case term.inner.type_name == "int8" or term.inner.type_name == "uint8" of {
+                        true -> do
+                            (t: Int8PrintTable, i: int64) <- add_value_int8(table, term.inner.value, next_index);
+                            new_next: int64 <- case i == next_index of {
+                                true -> next_index + 1;
+                                false -> next_index
+                            };
+                            collect_int8_from_term(term.inner, t, new_next)
+                        end;
+                        false -> collect_int8_from_term(term.inner, table, next_index)
+                    };
+                    false -> collect_int8_from_term(term.inner, table, next_index)
+                };
+                false -> collect_int8_from_term(term.inner, table, next_index)
+            };
+            6 -> do
+                (t1: Int8PrintTable, i1: int64) <- collect_int8_from_term(term.inner, table, next_index);
+                (t2: Int8PrintTable, i2: int64) <- collect_int8_from_term(term.right_expr, t1, i1);
+                (t2, i2)
+            end;
+            _: int64 -> (table, next_index)
+        }
+    }
+}
+
+fn collect_int64_from_functions(fns: ListSIRFunction, table: Int64PrintTable, next_index: int64) -> (Int64PrintTable, int64) {
+    case fns.is_nil of {
+        true -> (table, next_index);
+        false -> do
+            (t1: Int64PrintTable, i1: int64) <- collect_int64_from_term(fns.head.body, table, next_index);
+            collect_int64_from_functions(fns.tail, t1, i1)
+        end
+    }
+}
+
+fn collect_int32_from_functions(fns: ListSIRFunction, table: Int32PrintTable, next_index: int64) -> (Int32PrintTable, int64) {
+    case fns.is_nil of {
+        true -> (table, next_index);
+        false -> do
+            (t1: Int32PrintTable, i1: int64) <- collect_int32_from_term(fns.head.body, table, next_index);
+            collect_int32_from_functions(fns.tail, t1, i1)
+        end
+    }
+}
+
+fn collect_int16_from_functions(fns: ListSIRFunction, table: Int16PrintTable, next_index: int64) -> (Int16PrintTable, int64) {
+    case fns.is_nil of {
+        true -> (table, next_index);
+        false -> do
+            (t1: Int16PrintTable, i1: int64) <- collect_int16_from_term(fns.head.body, table, next_index);
+            collect_int16_from_functions(fns.tail, t1, i1)
+        end
+    }
+}
+
+fn collect_int8_from_functions(fns: ListSIRFunction, table: Int8PrintTable, next_index: int64) -> (Int8PrintTable, int64) {
+    case fns.is_nil of {
+        true -> (table, next_index);
+        false -> do
+            (t1: Int8PrintTable, i1: int64) <- collect_int8_from_term(fns.head.body, table, next_index);
+            collect_int8_from_functions(fns.tail, t1, i1)
+        end
+    }
+}
+
+fn build_int64_print_table(sir_module: SIRModule) -> Int64PrintTable {
+    (table: Int64PrintTable, _: int64) <- collect_int64_from_functions(sir_module.functions, empty_int64_table(), 0);
+    table
+}
+
+fn build_int32_print_table(sir_module: SIRModule) -> Int32PrintTable {
+    (table: Int32PrintTable, _: int64) <- collect_int32_from_functions(sir_module.functions, empty_int32_table(), 0);
+    table
+}
+
+fn build_int16_print_table(sir_module: SIRModule) -> Int16PrintTable {
+    (table: Int16PrintTable, _: int64) <- collect_int16_from_functions(sir_module.functions, empty_int16_table(), 0);
+    table
+}
+
+fn build_int8_print_table(sir_module: SIRModule) -> Int8PrintTable {
+    (table: Int8PrintTable, _: int64) <- collect_int8_from_functions(sir_module.functions, empty_int8_table(), 0);
+    table
+}
+
+fn emit_int64_rodata_section(table: Int64PrintTable) -> string {
+    case table.is_empty of {
+        true -> "";
+        false -> do
+            header: string <- ".section __TEXT,__rodata\n.align\t8\n";
+            in_order: ListIntPrintValue <- reverse_values(table.values);
+            body: string <- emit_int64_values_rodata(in_order, 0, "L_pi");
+            concat(header, body)
+        end
+    }
+}
+
+fn emit_int32_rodata_section(table: Int32PrintTable) -> string {
+    case table.is_empty of {
+        true -> "";
+        false -> do
+            header: string <- ".section __TEXT,__rodata\n.align\t8\n";
+            in_order: ListIntPrintValue <- reverse_values(table.values);
+            body: string <- emit_int64_values_rodata(in_order, 0, "L_pi32");
+            concat(header, body)
+        end
+    }
+}
+
+fn emit_int16_rodata_section(table: Int16PrintTable) -> string {
+    case table.is_empty of {
+        true -> "";
+        false -> do
+            header: string <- ".section __TEXT,__rodata\n.align\t8\n";
+            in_order: ListIntPrintValue <- reverse_values(table.values);
+            body: string <- emit_int64_values_rodata(in_order, 0, "L_pi16");
+            concat(header, body)
+        end
+    }
+}
+
+fn emit_int8_rodata_section(table: Int8PrintTable) -> string {
+    case table.is_empty of {
+        true -> "";
+        false -> do
+            header: string <- ".section __TEXT,__rodata\n.align\t8\n";
+            in_order: ListIntPrintValue <- reverse_values(table.values);
+            body: string <- emit_int64_values_rodata(in_order, 0, "L_pi8");
+            concat(header, body)
+        end
+    }
+}
+
+fn term_has_int64_print(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> term.name == "main.print_int64" or term.name == "main.print_uint64";
+            2 -> case term_has_int64_print(term.inner) of {
+                true -> true;
+                false -> term_has_int64_print(term.right_expr)
+            };
+            6 -> case term_has_int64_print(term.inner) of {
+                true -> true;
+                false -> term_has_int64_print(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_int64_print_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_int64" or term.name == "main.print_uint64" of {
+                true -> term.inner.kind != 0;
+                false -> case term_has_int64_print_var(term.inner) of {
+                    true -> true;
+                    false -> false
+                }
+            };
+            2 -> case term_has_int64_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int64_print_var(term.right_expr)
+            };
+            6 -> case term_has_int64_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int64_print_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_int32_print(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> term.name == "main.print_int32" or term.name == "main.print_uint32";
+            2 -> case term_has_int32_print(term.inner) of {
+                true -> true;
+                false -> term_has_int32_print(term.right_expr)
+            };
+            6 -> case term_has_int32_print(term.inner) of {
+                true -> true;
+                false -> term_has_int32_print(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_int32_print_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_int32" or term.name == "main.print_uint32" of {
+                true -> term.inner.kind != 0;
+                false -> false
+            };
+            2 -> case term_has_int32_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int32_print_var(term.right_expr)
+            };
+            6 -> case term_has_int32_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int32_print_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_int16_print(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> term.name == "main.print_int16" or term.name == "main.print_uint16";
+            2 -> case term_has_int16_print(term.inner) of {
+                true -> true;
+                false -> term_has_int16_print(term.right_expr)
+            };
+            6 -> case term_has_int16_print(term.inner) of {
+                true -> true;
+                false -> term_has_int16_print(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_int16_print_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_int16" or term.name == "main.print_uint16" of {
+                true -> term.inner.kind != 0;
+                false -> false
+            };
+            2 -> case term_has_int16_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int16_print_var(term.right_expr)
+            };
+            6 -> case term_has_int16_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int16_print_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_int8_print(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> term.name == "main.print_int8" or term.name == "main.print_uint8";
+            2 -> case term_has_int8_print(term.inner) of {
+                true -> true;
+                false -> term_has_int8_print(term.right_expr)
+            };
+            6 -> case term_has_int8_print(term.inner) of {
+                true -> true;
+                false -> term_has_int8_print(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_int8_print_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_int8" or term.name == "main.print_uint8" of {
+                true -> term.inner.kind != 0;
+                false -> false
+            };
+            2 -> case term_has_int8_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int8_print_var(term.right_expr)
+            };
+            6 -> case term_has_int8_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int8_print_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_uint64_print_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_uint64" of {
+                true -> term.inner.kind != 0;
+                false -> case term_has_uint64_print_var(term.inner) of {
+                    true -> true;
+                    false -> false
+                }
+            };
+            2 -> case term_has_uint64_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_uint64_print_var(term.right_expr)
+            };
+            6 -> case term_has_uint64_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_uint64_print_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_uint32_print_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_uint32" of {
+                true -> term.inner.kind != 0;
+                false -> false
+            };
+            2 -> case term_has_uint32_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_uint32_print_var(term.right_expr)
+            };
+            6 -> case term_has_uint32_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_uint32_print_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_uint16_print_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_uint16" of {
+                true -> term.inner.kind != 0;
+                false -> false
+            };
+            2 -> case term_has_uint16_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_uint16_print_var(term.right_expr)
+            };
+            6 -> case term_has_uint16_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_uint16_print_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_uint8_print_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_uint8" of {
+                true -> term.inner.kind != 0;
+                false -> false
+            };
+            2 -> case term_has_uint8_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_uint8_print_var(term.right_expr)
+            };
+            6 -> case term_has_uint8_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_uint8_print_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn int64_print_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_int64_print(fns.head.body) of {
+            true -> true;
+            false -> int64_print_in_functions(fns.tail)
+        }
+    }
+}
+
+fn int64_print_var_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_int64_print_var(fns.head.body) of {
+            true -> true;
+            false -> int64_print_var_in_functions(fns.tail)
+        }
+    }
+}
+
+fn int32_print_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_int32_print(fns.head.body) of {
+            true -> true;
+            false -> int32_print_in_functions(fns.tail)
+        }
+    }
+}
+
+fn int32_print_var_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_int32_print_var(fns.head.body) of {
+            true -> true;
+            false -> int32_print_var_in_functions(fns.tail)
+        }
+    }
+}
+
+fn int16_print_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_int16_print(fns.head.body) of {
+            true -> true;
+            false -> int16_print_in_functions(fns.tail)
+        }
+    }
+}
+
+fn int16_print_var_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_int16_print_var(fns.head.body) of {
+            true -> true;
+            false -> int16_print_var_in_functions(fns.tail)
+        }
+    }
+}
+
+fn int8_print_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_int8_print(fns.head.body) of {
+            true -> true;
+            false -> int8_print_in_functions(fns.tail)
+        }
+    }
+}
+
+fn int8_print_var_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_int8_print_var(fns.head.body) of {
+            true -> true;
+            false -> int8_print_var_in_functions(fns.tail)
+        }
+    }
+}
+
+fn uint64_print_var_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_uint64_print_var(fns.head.body) of {
+            true -> true;
+            false -> uint64_print_var_in_functions(fns.tail)
+        }
+    }
+}
+
+fn uint32_print_var_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_uint32_print_var(fns.head.body) of {
+            true -> true;
+            false -> uint32_print_var_in_functions(fns.tail)
+        }
+    }
+}
+
+fn uint16_print_var_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_uint16_print_var(fns.head.body) of {
+            true -> true;
+            false -> uint16_print_var_in_functions(fns.tail)
+        }
+    }
+}
+
+fn uint8_print_var_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_uint8_print_var(fns.head.body) of {
+            true -> true;
+            false -> uint8_print_var_in_functions(fns.tail)
+        }
+    }
+}
+
+fn module_uses_int64_print(sir_module: SIRModule) -> bool {
+    int64_print_in_functions(sir_module.functions)
+}
+
+fn module_uses_int32_print(sir_module: SIRModule) -> bool {
+    int32_print_in_functions(sir_module.functions)
+}
+
+fn module_uses_int16_print(sir_module: SIRModule) -> bool {
+    int16_print_in_functions(sir_module.functions)
+}
+
+fn module_uses_int8_print(sir_module: SIRModule) -> bool {
+    int8_print_in_functions(sir_module.functions)
+}
+
+fn module_uses_int64_print_var(sir_module: SIRModule) -> bool {
+    int64_print_var_in_functions(sir_module.functions)
+}
+
+fn module_uses_int32_print_var(sir_module: SIRModule) -> bool {
+    int32_print_var_in_functions(sir_module.functions)
+}
+
+fn module_uses_int16_print_var(sir_module: SIRModule) -> bool {
+    int16_print_var_in_functions(sir_module.functions)
+}
+
+fn module_uses_int8_print_var(sir_module: SIRModule) -> bool {
+    int8_print_var_in_functions(sir_module.functions)
+}
+
+fn module_uses_uint64_print_var(sir_module: SIRModule) -> bool {
+    uint64_print_var_in_functions(sir_module.functions)
+}
+
+fn module_uses_uint32_print_var(sir_module: SIRModule) -> bool {
+    uint32_print_var_in_functions(sir_module.functions)
+}
+
+fn module_uses_uint16_print_var(sir_module: SIRModule) -> bool {
+    uint16_print_var_in_functions(sir_module.functions)
+}
+
+fn module_uses_uint8_print_var(sir_module: SIRModule) -> bool {
+    uint8_print_var_in_functions(sir_module.functions)
+}
+
+fn term_has_int64_signed_print_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_int64" of {
+                true -> term.inner.kind != 0;
+                false -> case term_has_int64_signed_print_var(term.inner) of {
+                    true -> true;
+                    false -> false
+                }
+            };
+            2 -> case term_has_int64_signed_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int64_signed_print_var(term.right_expr)
+            };
+            6 -> case term_has_int64_signed_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int64_signed_print_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_int32_signed_print_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_int32" of {
+                true -> term.inner.kind != 0;
+                false -> false
+            };
+            2 -> case term_has_int32_signed_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int32_signed_print_var(term.right_expr)
+            };
+            6 -> case term_has_int32_signed_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int32_signed_print_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_int16_signed_print_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_int16" of {
+                true -> term.inner.kind != 0;
+                false -> false
+            };
+            2 -> case term_has_int16_signed_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int16_signed_print_var(term.right_expr)
+            };
+            6 -> case term_has_int16_signed_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int16_signed_print_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn term_has_int8_signed_print_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_int8" of {
+                true -> term.inner.kind != 0;
+                false -> false
+            };
+            2 -> case term_has_int8_signed_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int8_signed_print_var(term.right_expr)
+            };
+            6 -> case term_has_int8_signed_print_var(term.inner) of {
+                true -> true;
+                false -> term_has_int8_signed_print_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn signed_print_var_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_int64_signed_print_var(fns.head.body) of {
+            true -> true;
+            false -> case term_has_int32_signed_print_var(fns.head.body) of {
+                true -> true;
+                false -> case term_has_int16_signed_print_var(fns.head.body) of {
+                    true -> true;
+                    false -> case term_has_int8_signed_print_var(fns.head.body) of {
+                        true -> true;
+                        false -> signed_print_var_in_functions(fns.tail)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn module_uses_signed_print_var(sir_module: SIRModule) -> bool {
+    signed_print_var_in_functions(sir_module.functions)
+}

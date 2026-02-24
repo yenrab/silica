@@ -364,6 +364,7 @@ impl<'a> TypeChecker<'a> {
             Expression::StringConcat(string_concat) => &string_concat.location,
             Expression::StringSubstring(string_substring) => &string_substring.location,
             Expression::StringSubstringUntilChar(string_substring_until_char) => &string_substring_until_char.location,
+            Expression::StringToInt64(string_to_int64) => &string_to_int64.location,
             Expression::StringStartsWith(string_starts_with) => &string_starts_with.location,
             Expression::StringEndsWith(string_ends_with) => &string_ends_with.location,
             Expression::StringContains(string_contains) => &string_contains.location,
@@ -387,6 +388,7 @@ impl<'a> TypeChecker<'a> {
             Expression::StringConcat(string_concat) => &string_concat.location,
             Expression::StringSubstring(string_substring) => &string_substring.location,
             Expression::StringSubstringUntilChar(string_substring_until_char) => &string_substring_until_char.location,
+            Expression::StringToInt64(string_to_int64) => &string_to_int64.location,
             Expression::StringStartsWith(string_starts_with) => &string_starts_with.location,
             Expression::StringEndsWith(string_ends_with) => &string_ends_with.location,
             Expression::StringContains(string_contains) => &string_contains.location,
@@ -1236,6 +1238,7 @@ impl<'a> TypeChecker<'a> {
             Expression::StringConcat(string_concat) => self.infer_string_concat(string_concat)?,
             Expression::StringSubstring(string_substring) => self.infer_string_substring(string_substring)?,
             Expression::StringSubstringUntilChar(string_substring_until_char) => self.infer_string_substring_until_char(string_substring_until_char)?,
+            Expression::StringToInt64(string_to_int64) => self.infer_string_to_int64(string_to_int64)?,
             Expression::StringStartsWith(string_starts_with) => self.infer_string_starts_with(string_starts_with)?,
             Expression::StringEndsWith(string_ends_with) => self.infer_string_ends_with(string_ends_with)?,
             Expression::StringContains(string_contains) => self.infer_string_contains(string_contains)?,
@@ -1501,6 +1504,7 @@ impl<'a> TypeChecker<'a> {
             Expression::StringConcat(string_concat) => Some(&string_concat.location),
             Expression::StringSubstring(string_substring) => Some(&string_substring.location),
             Expression::StringSubstringUntilChar(string_substring_until_char) => Some(&string_substring_until_char.location),
+            Expression::StringToInt64(string_to_int64) => Some(&string_to_int64.location),
             Expression::StringStartsWith(string_starts_with) => Some(&string_starts_with.location),
             Expression::StringEndsWith(string_ends_with) => Some(&string_ends_with.location),
             Expression::StringContains(string_contains) => Some(&string_contains.location),
@@ -1774,6 +1778,17 @@ impl<'a> TypeChecker<'a> {
                 let content_location = Self::try_get_expression_location(&call.arguments[1]).cloned();
                 self.unify_with_location(&content_type, &expected_string, content_location)?;
                 return Ok(Type::Named("Result".to_string()));
+            } else if func_name == "string_to_int64" {
+                if call.arguments.len() != 1 {
+                    return type_error(
+                        call.location.clone(),
+                        "string_to_int64 expects exactly 1 argument".to_string(),
+                    );
+                }
+                let expected_string = Type::String;
+                let arg_type = self.infer_expression_with_context(&call.arguments[0], Some(&expected_string))?;
+                self.add_constraint(arg_type, expected_string);
+                return Ok(Type::Int64);
             }
         }
 
@@ -3219,6 +3234,14 @@ impl<'a> TypeChecker<'a> {
         self.unify(&char_type, &Type::Char)?;
         // substring_until_char returns string
         Ok(Type::String)
+    }
+
+    fn infer_string_to_int64(&mut self, string_to_int64: &StringToInt64Expr) -> Result<Type> {
+        // Check that string argument is a string
+        let string_type = self.infer_expression(&string_to_int64.string)?;
+        self.unify(&string_type, &Type::String)?;
+        // string_to_int64 returns int64
+        Ok(Type::Int64)
     }
 
     fn infer_string_starts_with(&mut self, string_starts_with: &StringStartsWithExpr) -> Result<Type> {

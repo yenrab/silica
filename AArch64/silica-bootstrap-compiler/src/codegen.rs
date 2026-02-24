@@ -322,6 +322,7 @@ impl CodeGenerator {
             Expression::StringConcat(string_concat) => Some(&string_concat.location),
             Expression::StringSubstring(string_substring) => Some(&string_substring.location),
             Expression::StringSubstringUntilChar(string_substring_until_char) => Some(&string_substring_until_char.location),
+            Expression::StringToInt64(string_to_int64) => Some(&string_to_int64.location),
             Expression::StringStartsWith(string_starts_with) => Some(&string_starts_with.location),
             Expression::StringEndsWith(string_ends_with) => Some(&string_ends_with.location),
             Expression::StringContains(string_contains) => Some(&string_contains.location),
@@ -600,6 +601,7 @@ impl CodeGenerator {
         self.instructions.push("declare i8* @silica_string_concat(i8*, i8*)".to_string());
         self.instructions.push("declare i8* @silica_string_substring(i8*, i64, i64)".to_string());
         self.instructions.push("declare i8* @silica_string_substring_until_char(i8*, i64, i32)".to_string());
+        self.instructions.push("declare i64 @silica_string_to_int64(i8*)".to_string());
         self.instructions.push("declare i1 @silica_string_starts_with(i8*, i8*)".to_string());
         self.instructions.push("declare i1 @silica_string_ends_with(i8*, i8*)".to_string());
         self.instructions.push("declare i1 @silica_string_contains(i8*, i8*)".to_string());
@@ -1439,6 +1441,7 @@ impl CodeGenerator {
             Expression::StringConcat(string_concat) => self.generate_string_concat(string_concat),
             Expression::StringSubstring(string_substring) => self.generate_string_substring(string_substring),
             Expression::StringSubstringUntilChar(string_substring_until_char) => self.generate_string_substring_until_char(string_substring_until_char),
+            Expression::StringToInt64(string_to_int64) => self.generate_string_to_int64(string_to_int64),
             Expression::StringStartsWith(string_starts_with) => self.generate_string_starts_with(string_starts_with),
             Expression::StringEndsWith(string_ends_with) => self.generate_string_ends_with(string_ends_with),
             Expression::StringContains(string_contains) => self.generate_string_contains(string_contains),
@@ -2631,6 +2634,8 @@ impl CodeGenerator {
                 return self.generate_read_file_call(call);
             } else if func_name == "write_file" {
                 return self.generate_write_file_call(call);
+            } else if func_name == "string_to_int64" {
+                return self.generate_string_to_int64_call(call);
             }
 
             // Check if it's a function variable (stored function literal)
@@ -13334,6 +13339,54 @@ impl CodeGenerator {
         let result_reg = self.next_register();
         self.instructions.push(format!("  %{} = call i8* @silica_string_substring_until_char({}, {}, {})", result_reg, string_arg, start_arg, char_arg));
         
+        Ok(Some(result_reg))
+    }
+
+    /// Generate LLVM IR for string to int64 expression
+    fn generate_string_to_int64(&mut self, string_to_int64: &StringToInt64Expr) -> Result<Option<String>> {
+        let string_val = self.generate_expression(&string_to_int64.string)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid string in string_to_int64".to_string()))?;
+
+        // Format string argument - handle both string constants and runtime strings
+        let string_arg = if string_val.contains("@str_const_") || string_val.starts_with("getelementptr") {
+            // String constant - evaluate getelementptr first
+            let temp_reg = self.next_register();
+            let gep_instruction = self.convert_gep_to_instruction_format(&string_val);
+            self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+            format!("i8* %{}", temp_reg.trim_start_matches('%'))
+        } else {
+            // Runtime string
+            let val = Self::extract_value_from_typed_arg(&string_val);
+            format!("i8* {}", Self::format_llvm_value_ref(val))
+        };
+
+        // Call silica_string_to_int64 runtime function
+        let result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = call i64 @silica_string_to_int64({})", result_reg, string_arg));
+
+        Ok(Some(result_reg))
+    }
+
+    /// Generate LLVM IR for string_to_int64 when parsed as Call(Identifier, [arg])
+    fn generate_string_to_int64_call(&mut self, call: &CallExpr) -> Result<Option<String>> {
+        if call.arguments.len() != 1 {
+            return Err(CompilerError::codegen_error("string_to_int64 expects exactly 1 argument".to_string()));
+        }
+        let string_val = self.generate_expression(&call.arguments[0])?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid string in string_to_int64".to_string()))?;
+
+        let string_arg = if string_val.contains("@str_const_") || string_val.starts_with("getelementptr") {
+            let temp_reg = self.next_register();
+            let gep_instruction = self.convert_gep_to_instruction_format(&string_val);
+            self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
+            format!("i8* %{}", temp_reg.trim_start_matches('%'))
+        } else {
+            let val = Self::extract_value_from_typed_arg(&string_val);
+            format!("i8* {}", Self::format_llvm_value_ref(val))
+        };
+
+        let result_reg = self.next_register();
+        self.instructions.push(format!("  %{} = call i64 @silica_string_to_int64({})", result_reg, string_arg));
         Ok(Some(result_reg))
     }
 

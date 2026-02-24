@@ -1007,6 +1007,7 @@ impl Parser {
 
             self.advance(); // consume the identifier
 
+
             // Check for constructor syntax: TypeName::Constructor
             if self.match_token(TokenKind::DoubleColon) {
                 return self.parse_constructor_call(name, start_location);
@@ -1074,6 +1075,8 @@ impl Parser {
                 return self.parse_string_substring();
             } else if name == "substring_until_char" && self.match_token(TokenKind::LeftParen) {
                 return self.parse_string_substring_until_char();
+            } else if name == "string_to_int64" && self.match_token(TokenKind::LeftParen) {
+                return self.parse_string_to_int64();
             } else if name == "starts_with" && self.match_token(TokenKind::LeftParen) {
                 return self.parse_string_starts_with();
             } else if name == "ends_with" && self.match_token(TokenKind::LeftParen) {
@@ -1453,6 +1456,18 @@ impl Parser {
             string,
             start,
             char: char_expr,
+            location,
+        }))
+    }
+
+    /// Parse string to int64 expression: string_to_int64(s)
+    fn parse_string_to_int64(&mut self) -> Result<Expression> {
+        let location = self.previous().location.clone();
+        let string = Box::new(self.expression()?);
+        self.consume(TokenKind::RightParen, "Expected ')' after string argument in string_to_int64")?;
+
+        Ok(Expression::StringToInt64(StringToInt64Expr {
+            string,
             location,
         }))
     }

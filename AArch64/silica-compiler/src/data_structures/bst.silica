@@ -24,45 +24,26 @@ fn is_nil_node(node: BstNode) -> bool {
     node.value == "" and node.index < 0
 }
 
-// Lexicographic string comparison: 0 if a < b, 1 if a == b, 2 if a > b (avoids -1 in case patterns)
-fn string_compare(a: string, b: string) -> int64 {
-    case a == b of {
-        true -> 1;
-        false -> string_compare_at(a, b, 0)
-    }
-}
-
-fn string_compare_at(a: string, b: string, pos: int64) -> int64 {
-    len_a: int64 <- len(a);
-    len_b: int64 <- len(b);
-    case pos >= len_a of {
-        true -> case pos >= len_b of {
+// Numeric comparison: 0 if a < b, 1 if a == b, 2 if a > b (avoids -1 in case patterns)
+fn int64_compare(a: int64, b: int64) -> int64 {
+    case a < b of {
+        true -> 0;
+        false -> case a == b of {
             true -> 1;
-            false -> 0
-        };
-        false -> case pos >= len_b of {
-            true -> 2;
-            false -> do
-                ca: string <- substring(a, pos, pos + 1);
-                cb: string <- substring(b, pos, pos + 1);
-                case ca == cb of {
-                    true -> string_compare_at(a, b, pos + 1);
-                    false -> case ca < cb of {
-                        true -> 0;
-                        false -> 2
-                    }
-                }
-            end
+            false -> 2
         }
     }
 }
 
 // Insert or find: returns (updated_root, index). Index is assigned on first insert.
-// string_compare: 0=less, 1=equal, 2=greater
+// int64_compare: 0=less, 1=equal, 2=greater
 fn bst_insert(node: BstNode, lexeme: string, next_index: int64) -> (BstNode, int64) {
     case is_nil_node(node) of {
         true -> (BstNode { value: lexeme, index: next_index, next_left: empty_node(), next_right: empty_node() }, next_index);
-        false -> case string_compare(lexeme, node.value) of {
+        false -> do
+            na: int64 <- string_to_int64(lexeme);
+            nb: int64 <- string_to_int64(node.value);
+            case int64_compare(na, nb) of {
             1 -> (node, node.index);
             0 -> do
                 (new_left: BstNode, idx: int64) <- bst_insert(node.next_left, lexeme, next_index);
@@ -73,6 +54,7 @@ fn bst_insert(node: BstNode, lexeme: string, next_index: int64) -> (BstNode, int
                 (BstNode { value: node.value, index: node.index, next_left: node.next_left, next_right: new_right }, idx)
             end
         }
+    end
     }
 }
 
@@ -80,10 +62,92 @@ fn bst_insert(node: BstNode, lexeme: string, next_index: int64) -> (BstNode, int
 fn bst_lookup(node: BstNode, lexeme: string) -> int64 {
     case is_nil_node(node) of {
         true -> 0 - 1;
-        false -> case string_compare(lexeme, node.value) of {
+        false -> do
+            na: int64 <- string_to_int64(lexeme);
+            nb: int64 <- string_to_int64(node.value);
+            case int64_compare(na, nb) of {
             1 -> node.index;
             0 -> bst_lookup(node.next_left, lexeme);
             _: int64 -> bst_lookup(node.next_right, lexeme)
         }
+    end
     }
+}
+
+fn dbg_idx(i: int64) -> string {
+    case i of {
+        0 -> "0";
+        1 -> "1";
+        2 -> "2";
+        3 -> "3";
+        4 -> "4";
+        5 -> "5";
+        6 -> "6";
+        7 -> "7";
+        8 -> "8";
+        9 -> "9";
+        _: int64 -> "?"
+    }
+}
+
+fn dbg_cmp(c: int64) -> string {
+    case c of {
+        0 -> "L";
+        1 -> "E";
+        _: int64 -> "R"
+    }
+}
+
+fn bst_debug_lookup_path_acc(node: BstNode, lexeme: string, acc: string) -> string {
+    case is_nil_node(node) of {
+        true -> concat(acc, "nil");
+        false -> do
+            na: int64 <- string_to_int64(lexeme);
+            nb: int64 <- string_to_int64(node.value);
+            cmp: int64 <- int64_compare(na, nb);
+            step: string <- concat(concat(concat(concat(concat(concat(acc, "["), node.value), ":"), dbg_idx(node.index)), " cmp="), dbg_cmp(cmp));
+            case cmp of {
+                1 -> concat(concat(step, " FOUND idx="), dbg_idx(node.index));
+                0 -> bst_debug_lookup_path_acc(node.next_left, lexeme, concat(step, "->L "));
+                _: int64 -> bst_debug_lookup_path_acc(node.next_right, lexeme, concat(step, "->R "))
+            }
+        end
+    }
+}
+
+fn bst_debug_lookup_path(node: BstNode, lexeme: string) -> string {
+    prefix: string <- concat(concat("lookup(", lexeme), "): ");
+    concat(prefix, bst_debug_lookup_path_acc(node, lexeme, ""))
+}
+
+fn bst_debug_structure_acc(node: BstNode, depth: int64, acc: string) -> string {
+    case depth > 3 of {
+        true -> concat(acc, "...");
+        false -> case is_nil_node(node) of {
+            true -> concat(acc, "_");
+            false -> do
+                left_str: string <- bst_debug_structure_acc(node.next_left, depth + 1, "");
+                right_str: string <- bst_debug_structure_acc(node.next_right, depth + 1, "");
+                node_str: string <- concat(concat(concat(node.value, ":"), dbg_idx(node.index)), " ");
+                lpart: string <- concat(concat(node_str, "L="), left_str);
+                rpart: string <- concat(" R=", right_str);
+                concat(acc, concat(lpart, rpart))
+            end
+        }
+    }
+}
+
+fn bst_debug_structure(node: BstNode) -> string {
+    bst_debug_structure_acc(node, 0, "")
+}
+
+fn bst_debug_string_compare(a: string, b: string) -> string {
+    na: int64 <- string_to_int64(a);
+    nb: int64 <- string_to_int64(b);
+    cmp: int64 <- int64_compare(na, nb);
+    p1: string <- concat(concat("cmp(", a), " vs ");
+    p2: string <- concat(concat(p1, b), ") ");
+    p3: string <- concat(concat(p2, " => "), dbg_cmp(cmp));
+    p4: string <- concat(concat(concat(p3, " (na="), dbg_idx(na)), ",");
+    concat(concat(p4, " nb="), dbg_idx(nb))
 }

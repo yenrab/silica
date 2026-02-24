@@ -234,6 +234,7 @@ pub enum Expression {
     StringConcat(StringConcatExpr),
     StringSubstring(StringSubstringExpr),
     StringSubstringUntilChar(StringSubstringUntilCharExpr),
+    StringToInt64(StringToInt64Expr),
     StringStartsWith(StringStartsWithExpr),
     StringEndsWith(StringEndsWithExpr),
     StringContains(StringContainsExpr),
@@ -618,6 +619,13 @@ pub struct StringSubstringUntilCharExpr {
     pub string: Box<Expression>,
     pub start: Box<Expression>,
     pub char: Box<Expression>,
+    pub location: SourceLocation,
+}
+
+/// String to int64 expression: string_to_int64(s)
+#[derive(Debug, Clone)]
+pub struct StringToInt64Expr {
+    pub string: Box<Expression>,
     pub location: SourceLocation,
 }
 

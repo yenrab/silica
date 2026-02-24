@@ -365,6 +365,9 @@ impl EffectChecker {
                 effects.extend(self.collect_expression_effects(&string_substring_until_char.char)?);
                 Ok(effects)
             }
+            Expression::StringToInt64(string_to_int64) => {
+                self.collect_expression_effects(&string_to_int64.string)
+            }
             Expression::StringStartsWith(string_starts_with) => {
                 let mut effects = Vec::new();
                 effects.extend(self.collect_expression_effects(&string_starts_with.string)?);
@@ -868,6 +871,7 @@ impl EffectAnalyzer {
             Expression::StringConcat(string_concat) => Some(&string_concat.location),
             Expression::StringSubstring(string_substring) => Some(&string_substring.location),
             Expression::StringSubstringUntilChar(string_substring_until_char) => Some(&string_substring_until_char.location),
+            Expression::StringToInt64(string_to_int64) => Some(&string_to_int64.location),
             Expression::StringStartsWith(string_starts_with) => Some(&string_starts_with.location),
             Expression::StringEndsWith(string_ends_with) => Some(&string_ends_with.location),
             Expression::StringContains(string_contains) => Some(&string_contains.location),
