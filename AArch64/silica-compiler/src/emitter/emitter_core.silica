@@ -9,6 +9,7 @@ use atom_table;
 use atom_rodata;
 use boolean_rodata;
 use int_rodata;
+use int64_literal_pool;
 use print_int64_inline;
 
 export emit_module/1;
@@ -24,7 +25,8 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
     int32_table: Int32PrintTable <- int_rodata@build_int32_print_table(sir_module);
     int16_table: Int16PrintTable <- int_rodata@build_int16_print_table(sir_module);
     int8_table: Int8PrintTable <- int_rodata@build_int8_print_table(sir_module);
-    funcs: string <- emit_functions(sir_module.functions, table, int64_table, int32_table, int16_table, int8_table);
+    literal_table: Int64LiteralTable <- int64_literal_pool@build_int64_literal_table(sir_module);
+    funcs: string <- emit_functions(sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table);
     needs_pi_helper: bool <- int_rodata@module_uses_signed_print_var(sir_module);
     needs_pu_helper: bool <- case int_rodata@module_uses_uint64_print_var(sir_module) of {
         true -> true;
@@ -76,7 +78,12 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
         true -> concat(concat(with_int16, "\n"), int8_rodata_str);
         false -> with_int16
     };
-    with_int8
+    int64_literal_rodata: string <- int64_literal_pool@emit_int64_literal_rodata_section(literal_table);
+    with_literal_pool: string <- case int64_literal_pool@module_uses_int64_literal_pool(sir_module) of {
+        true -> concat(concat(with_int8, "\n"), int64_literal_rodata);
+        false -> with_int8
+    };
+    with_literal_pool
     end
 }
 
@@ -84,13 +91,13 @@ fn asm_header(name: string) -> string {
     concat(".text\n", concat(concat(".global ", name), "\n"))
 }
 
-fn emit_functions(fns: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable) -> string proc[DeviceIO] {
+fn emit_functions(fns: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable) -> string proc[DeviceIO] {
     do
     case fns.is_nil of {
         true -> "";
         false -> do
-            fn_asm: string <- emit_sir_function(fns.head, table, int64_table, int32_table, int16_table, int8_table);
-            rest_asm: string <- emit_functions(fns.tail, table, int64_table, int32_table, int16_table, int8_table);
+            fn_asm: string <- emit_sir_function(fns.head, table, int64_table, int32_table, int16_table, int8_table, literal_table);
+            rest_asm: string <- emit_functions(fns.tail, table, int64_table, int32_table, int16_table, int8_table, literal_table);
             case rest_asm == "" of {
                 true -> fn_asm;
                 false -> concat(concat(fn_asm, "\n"), rest_asm)
@@ -100,7 +107,7 @@ fn emit_functions(fns: ListSIRFunction, table: AtomTable, int64_table: Int64Prin
     end
 }
 
-fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable) -> string proc[DeviceIO] {
+fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable) -> string proc[DeviceIO] {
     do
     entry_label: string <- entry_point_label(fn_val.name);
     eff_comment: string <- emitter_effects@fn_effect_annotation(fn_val.effects);
@@ -109,7 +116,7 @@ fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64Pr
         true -> concat("W", "0");
         false -> "X0"
     };
-    body: string <- term_emitter@term_to_asm(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table);
+    body: string <- term_emitter@term_to_asm(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table);
     epilogue: string <- control@function_epilogue_with_effects(fn_val.effects);
     concat(concat(concat(eff_comment, "\n"), concat(prologue, "\n")), concat(concat(body, "\n"), epilogue))
     end
