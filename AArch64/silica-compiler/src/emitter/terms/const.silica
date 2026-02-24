@@ -6,13 +6,15 @@ use atom_table;
 use const_atoms;
 use constraints;
 use int64_literal_pool;
+use float64_literal_pool;
 
-export emit_const/4;
+export emit_const/5;
 
 // Emit MOV dest, #value for const term, or LDR from literal pool for large values.
 // For int64/uint64: if fits_mov_imm, use MOV; else ADRP+LDR from literal pool.
+// For float64: ADRP+LDR D from float64 literal pool.
 // For atom: value is lexeme (e.g. :ok); uses atom table to emit index.
-fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int64LiteralTable) -> string {
+fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable) -> string {
     case term.type_name of {
         "int64" -> case constraints@fits_mov_imm(string_to_int64(term.value)) of {
             true -> do
@@ -49,6 +51,17 @@ fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int6
                 _: string -> concat(concat(dest, ", #"), term.value)
             };
             concat("    MOV ", operand)
+        end;
+        "float64" -> do
+            idx: int64 <- float64_literal_pool@float64_literal_value_to_index(float64_literal_table, term.value);
+            label: string <- concat("L_f64_", atom_table@int64_to_decimal_string(idx));
+            ptr_reg: string <- case substring(dest, 0, 1) == "D" of {
+                true -> "X0";
+                false -> dest
+            };
+            adrp: string <- concat(concat(concat(concat("    ADRP ", ptr_reg), ", "), concat(label, "@PAGE")), "\n");
+            ldr: string <- concat(concat(concat(concat(concat("    LDR ", dest), ", ["), concat(ptr_reg, ", ")), concat(label, "@PAGEOFF")), "]");
+            concat(adrp, ldr)
         end;
         _: string -> do
             operand: string <- concat(concat(dest, ", #"), term.value);

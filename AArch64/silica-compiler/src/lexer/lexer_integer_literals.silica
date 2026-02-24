@@ -9,6 +9,7 @@ use lexer_core;
 
 // Export helper functions
 export is_decimal_digit_char/1;
+export read_decimal_digits_only/2;
 
 
 {-
@@ -307,6 +308,33 @@ fn read_decimal_digits(lexer: Lexer, start_location: SourceLocation, lexeme: str
                 "" -> (lexer_core@make_token(kinds.integer_literal, "0", start_location), lexer);
                 _: string -> (lexer_core@make_token(kinds.integer_literal, lexeme, start_location), lexer)
             }
+        }
+    }
+}
+
+
+{-
+- Consumes zero or more decimal digits from the lexer, appends them to the given lexeme, and returns the accumulated lexeme and the lexer at the first non-digit or EOF. Does not emit a token. Used by float64_lexer_literals to read the integer part of a float literal before checking for "." and fractional part.
+- Reuses the same digit-consumption logic as read_decimal_digits but returns (lexeme, lexer) without building a token. When lexeme is "" and no digits are consumed, returns ("", lexer).
+- Example: lexer at "42" with lexeme "" — consumes "4" then "2", returns ("42", lexer past "2").
+- Example: lexer at "3.14" with lexeme "" — consumes "3", then "." is non-digit so returns ("3", lexer at ".").
+- Time: O(k), Ω(1), Θ(k) where k is the number of decimal digits consumed. Space: O(k), Ω(1), Θ(k) for recursion depth and accumulated lexeme.
+- Last-date-modified: 2025-02-24
+-}
+fn read_decimal_digits_only(lexer: Lexer, lexeme: string) -> (string, Lexer) {
+    next: string <- lexer_core@peek_char(lexer);
+    case next of {
+        "" -> (lexeme, lexer);
+        _: string -> case is_decimal_digit_char(next) of {
+            true -> do
+                updated_lexer: Lexer <- lexer_core@advance(lexer);
+                updated_lexeme: string <- case lexeme of {
+                    "" -> next;
+                    _: string -> concat(lexeme, next)
+                };
+                read_decimal_digits_only(updated_lexer, updated_lexeme)
+            end;
+            false -> (lexeme, lexer)
         }
     }
 }

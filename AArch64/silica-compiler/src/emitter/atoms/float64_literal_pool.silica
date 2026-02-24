@@ -1,0 +1,159 @@
+// Float64 literal pool: collect float64 constants for .rodata
+// Emit .rodata section with L_f64_N labels; const emitter uses LDR D for float64 values
+
+use sir_ast;
+use bst;
+use atom_table;
+
+export Float64LiteralTable/0;
+export build_float64_literal_table/1;
+export float64_literal_value_to_index/2;
+export emit_float64_literal_rodata_section/1;
+export module_uses_float64_literal_pool/1;
+
+struct ListFloat64LiteralValue {
+    is_nil: bool,
+    head: string,
+    tail: ListFloat64LiteralValue
+}
+
+struct Float64LiteralTable {
+    is_empty: bool,
+    root: BstNode,
+    values: ListFloat64LiteralValue
+}
+
+fn nil_f64_values() -> ListFloat64LiteralValue {
+    ph: ListFloat64LiteralValue <- ListFloat64LiteralValue { is_nil: true, head: "", tail: ph };
+    ph
+}
+
+fn cons_f64_value(s: string, t: ListFloat64LiteralValue) -> ListFloat64LiteralValue {
+    ListFloat64LiteralValue { is_nil: false, head: s, tail: t }
+}
+
+fn empty_float64_literal_table() -> Float64LiteralTable {
+    Float64LiteralTable { is_empty: true, root: bst@empty_node(), values: nil_f64_values() }
+}
+
+fn add_f64_value(table: Float64LiteralTable, value: string, next_index: int64) -> (Float64LiteralTable, int64) {
+    case table.is_empty of {
+        true -> do
+            (root: BstNode, idx: int64) <- bst@bst_insert(bst@empty_node(), value, next_index);
+            new_values: ListFloat64LiteralValue <- case idx == next_index of {
+                true -> cons_f64_value(value, table.values);
+                false -> table.values
+            };
+            (Float64LiteralTable { is_empty: false, root: root, values: new_values }, idx)
+        end;
+        false -> do
+            (new_root: BstNode, idx: int64) <- bst@bst_insert(table.root, value, next_index);
+            new_values: ListFloat64LiteralValue <- case idx == next_index of {
+                true -> cons_f64_value(value, table.values);
+                false -> table.values
+            };
+            (Float64LiteralTable { is_empty: false, root: new_root, values: new_values }, idx)
+        end
+    }
+}
+
+fn float64_literal_value_to_index(table: Float64LiteralTable, value: string) -> int64 {
+    case table.is_empty of {
+        true -> 0 - 1;
+        false -> bst@bst_lookup(table.root, value)
+    }
+}
+
+fn collect_float64_literal_from_term(term: SIRTerm, table: Float64LiteralTable, next_index: int64) -> (Float64LiteralTable, int64) {
+    case term.kind < 0 of {
+        true -> (table, next_index);
+        false -> case term.kind of {
+            0 -> case term.type_name == "float64" of {
+                true -> do
+                    (t: Float64LiteralTable, i: int64) <- add_f64_value(table, term.value, next_index);
+                    new_next: int64 <- case i == next_index of {
+                        true -> next_index + 1;
+                        false -> next_index
+                    };
+                    (t, new_next)
+                end;
+                false -> (table, next_index)
+            };
+            1 -> (table, next_index);
+            2 -> do
+                (t1: Float64LiteralTable, i1: int64) <- collect_float64_literal_from_term(term.inner, table, next_index);
+                (t2: Float64LiteralTable, i2: int64) <- collect_float64_literal_from_term(term.right_expr, t1, i1);
+                (t2, i2)
+            end;
+            4 -> collect_float64_literal_from_term(term.inner, table, next_index);
+            6 -> do
+                (t1: Float64LiteralTable, i1: int64) <- collect_float64_literal_from_term(term.inner, table, next_index);
+                (t2: Float64LiteralTable, i2: int64) <- collect_float64_literal_from_term(term.right_expr, t1, i1);
+                (t2, i2)
+            end;
+            _: int64 -> (table, next_index)
+        }
+    }
+}
+
+fn collect_float64_literal_from_functions(fns: ListSIRFunction, table: Float64LiteralTable, next_index: int64) -> (Float64LiteralTable, int64) {
+    case fns.is_nil of {
+        true -> (table, next_index);
+        false -> do
+            (t1: Float64LiteralTable, i1: int64) <- collect_float64_literal_from_term(fns.head.body, table, next_index);
+            collect_float64_literal_from_functions(fns.tail, t1, i1)
+        end
+    }
+}
+
+fn build_float64_literal_table(sir_module: SIRModule) -> Float64LiteralTable {
+    (table: Float64LiteralTable, _: int64) <- collect_float64_literal_from_functions(sir_module.functions, empty_float64_literal_table(), 0);
+    table
+}
+
+fn rev_f64_values_acc(values: ListFloat64LiteralValue, acc: ListFloat64LiteralValue) -> ListFloat64LiteralValue {
+    case values.is_nil of {
+        true -> acc;
+        false -> rev_f64_values_acc(values.tail, cons_f64_value(values.head, acc))
+    }
+}
+
+fn reverse_f64_values(values: ListFloat64LiteralValue) -> ListFloat64LiteralValue {
+    rev_f64_values_acc(values, nil_f64_values())
+}
+
+fn emit_float64_literal_values_rodata(values: ListFloat64LiteralValue, index: int64) -> string {
+    case values.is_nil of {
+        true -> "";
+        false -> do
+            rest: string <- emit_float64_literal_values_rodata(values.tail, index + 1);
+            label_colon: string <- concat(concat(concat("L_f64_", atom_table@int64_to_decimal_string(index)), ":"), "\n");
+            double_line: string <- concat(concat("    .double ", values.head), "\n");
+            one: string <- concat(label_colon, double_line);
+            case len(rest) > 0 of {
+                true -> concat(concat(one, "\n"), rest);
+                false -> one
+            }
+        end
+    }
+}
+
+fn emit_float64_literal_rodata_section(table: Float64LiteralTable) -> string {
+    case table.is_empty of {
+        true -> "";
+        false -> do
+            header: string <- ".section __TEXT,__rodata\n.align\t8\n";
+            in_order: ListFloat64LiteralValue <- reverse_f64_values(table.values);
+            body: string <- emit_float64_literal_values_rodata(in_order, 0);
+            concat(header, body)
+        end
+    }
+}
+
+fn module_uses_float64_literal_pool(sir_module: SIRModule) -> bool {
+    table: Float64LiteralTable <- build_float64_literal_table(sir_module);
+    case table.is_empty of {
+        true -> false;
+        false -> true
+    }
+}
