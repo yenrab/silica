@@ -10,16 +10,23 @@ use float64_literal_pool;
 
 export emit_const/5;
 
+// Workaround: extract value via helper to avoid bootstrap concat bug with struct fields in case branches.
+fn const_value(t: SIRTerm) -> string {
+    t.value
+}
+
 // Emit MOV dest, #value for const term, or LDR from literal pool for large values.
 // For int64/uint64: if fits_mov_imm, use MOV; else ADRP+LDR from literal pool.
 // For float64: ADRP+LDR D from float64 literal pool.
 // For atom: value is lexeme (e.g. :ok); uses atom table to emit index.
 fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable) -> string {
+    val: string <- const_value(term);
     case term.type_name of {
         "int64" -> case constraints@fits_mov_imm(string_to_int64(term.value)) of {
             true -> do
-                operand: string <- concat(concat(dest, ", #"), term.value);
-                concat("    MOV ", operand)
+                prefix: string <- concat(concat("    MOV ", dest), ", ");
+                imm_part: string <- concat("#", val);
+                concat(prefix, imm_part)
             end;
             false -> do
                 idx: int64 <- int64_literal_pool@int64_literal_value_to_index(literal_table, term.value);
@@ -31,8 +38,9 @@ fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int6
         };
         "uint64" -> case constraints@fits_mov_imm(string_to_int64(term.value)) of {
             true -> do
-                operand: string <- concat(concat(dest, ", #"), term.value);
-                concat("    MOV ", operand)
+                prefix: string <- concat(concat("    MOV ", dest), ", ");
+                imm_part: string <- concat("#", val);
+                concat(prefix, imm_part)
             end;
             false -> do
                 idx: int64 <- int64_literal_pool@int64_literal_value_to_index(literal_table, term.value);
@@ -48,7 +56,11 @@ fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int6
             operand: string <- case term.value of {
                 "true" -> concat(dest, ", #1");
                 "false" -> concat(dest, ", #0");
-                _: string -> concat(concat(dest, ", #"), term.value)
+                _: string -> do
+                    prefix: string <- concat(dest, ", ");
+                    imm_part: string <- concat("#", val);
+                    concat(prefix, imm_part)
+                end
             };
             concat("    MOV ", operand)
         end;
@@ -64,8 +76,9 @@ fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int6
             concat(adrp, ldr)
         end;
         _: string -> do
-            operand: string <- concat(concat(dest, ", #"), term.value);
-            concat("    MOV ", operand)
+            prefix: string <- concat(concat("    MOV ", dest), ", ");
+            imm_part: string <- concat("#", val);
+            concat(prefix, imm_part)
         end
     }
 }
