@@ -6,6 +6,8 @@ export empty_node/0;
 export is_nil_node/1;
 export bst_insert/4;
 export bst_lookup/2;
+export bst_insert_string/4;
+export bst_lookup_string/2;
 
 // BST node: value (key), index (payload), left and right children
 struct BstNode {
@@ -71,6 +73,100 @@ fn bst_lookup(node: BstNode, lexeme: string) -> int64 {
             _: int64 -> bst_lookup(node.next_right, lexeme)
         }
     end
+    }
+}
+
+// Lexicographic string comparison: 0 if a < b, 1 if a == b, 2 if a > b.
+// Used for float64 literal keys (e.g. "40.5", "2.25") where string_to_int64 fails.
+fn string_compare(a: string, b: string) -> int64 {
+    string_compare_at(a, b, 0)
+}
+
+fn string_compare_at(a: string, b: string, pos: int64) -> int64 {
+    a_done: bool <- pos >= len(a);
+    b_done: bool <- pos >= len(b);
+    case a_done of {
+        true -> case b_done of {
+            true -> 1;
+            false -> 0
+        };
+        false -> case b_done of {
+            true -> 2;
+            false -> do
+                ca: string <- substring(a, pos, pos + 1);
+                cb: string <- substring(b, pos, pos + 1);
+                oa: int64 <- char_to_ord(ca);
+                ob: int64 <- char_to_ord(cb);
+                case int64_compare(oa, ob) of {
+                    1 -> string_compare_at(a, b, pos + 1);
+                    c: int64 -> c
+                }
+            end
+        }
+    }
+}
+
+// ASCII code for single-char string. Covers digits, '.', '-', 'e', 'E', '+' for float literals.
+fn char_to_ord(c: string) -> int64 {
+    case len(c) of {
+        0 -> 0;
+        _: int64 -> do
+            ch: string <- substring(c, 0, 1);
+            case ch of {
+                "0" -> 48;
+                "1" -> 49;
+                "2" -> 50;
+                "3" -> 51;
+                "4" -> 52;
+                "5" -> 53;
+                "6" -> 54;
+                "7" -> 55;
+                "8" -> 56;
+                "9" -> 57;
+                "." -> 46;
+                "-" -> 45;
+                "+" -> 43;
+                "e" -> 101;
+                "E" -> 69;
+                _: string -> 63
+            }
+        end
+    }
+}
+
+// Insert using string comparison (for float64 literals like "40.5", "2.25").
+fn bst_insert_string(node: BstNode, lexeme: string, next_index: int64) -> (BstNode, int64) {
+    case is_nil_node(node) of {
+        true -> (BstNode { value: lexeme, index: next_index, next_left: empty_node(), next_right: empty_node() }, next_index);
+        false -> do
+            cmp: int64 <- string_compare(lexeme, node.value);
+            case cmp of {
+                1 -> (node, node.index);
+                0 -> do
+                    (new_left: BstNode, idx: int64) <- bst_insert_string(node.next_left, lexeme, next_index);
+                    (BstNode { value: node.value, index: node.index, next_left: new_left, next_right: node.next_right }, idx)
+                end;
+                _: int64 -> do
+                    (new_right: BstNode, idx: int64) <- bst_insert_string(node.next_right, lexeme, next_index);
+                    (BstNode { value: node.value, index: node.index, next_left: node.next_left, next_right: new_right }, idx)
+                end
+            }
+        end
+    }
+}
+
+// Lookup using string comparison (for float64 literals).
+fn bst_lookup_string(node: BstNode, lexeme: string) -> int64 {
+    case is_nil_node(node) of {
+        true -> 0 - 1;
+        false -> do
+            cmp: int64 <- string_compare(lexeme, node.value);
+            case cmp of {
+                1 -> node.index;
+                0 -> bst_lookup_string(node.next_left, lexeme);
+                _: int64 -> bst_lookup_string(node.next_right, lexeme)
+            }
+        end
     }
 }
 

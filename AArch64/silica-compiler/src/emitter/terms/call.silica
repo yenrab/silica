@@ -9,6 +9,7 @@ use sir_ast;
 use emitter_effects;
 
 export emit_call_body/2;
+export emit_call_body_with_callee/3;
 
 // Emit call: load callee address (ADRP+ADD) then BLR; result in X0.
 // BLR takes a register on AArch64. Mach-O: sym@PAGE / sym@PAGEOFF.
@@ -19,6 +20,34 @@ fn emit_call_body(term: SIRTerm, dest: string) -> string {
     post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
     callee: string <- term.name;
+    adrp_part: string <- concat(concat(concat("    ADRP X8, ", callee), "@PAGE"), "\n");
+    add_part: string <- concat(concat(concat("    ADD X8, X8, ", callee), "@PAGEOFF"), "\n");
+    adrp_line: string <- concat(concat(adrp_part, add_part), "    BLR X8");
+    result_mov: string <- case dest == "X0" of {
+        true -> "";
+        false -> concat("\n", concat(concat(concat("    MOV ", dest), ", X0"), ""))
+    };
+    with_comment: string <- case len(eff_comment) > 0 of {
+        true -> concat(eff_comment, "\n");
+        false -> ""
+    };
+    with_pre: string <- case len(pre_barrier) > 0 of {
+        true -> concat(with_comment, concat(pre_barrier, concat("\n", adrp_line)));
+        false -> concat(with_comment, adrp_line)
+    };
+    with_post: string <- case len(post_barrier) > 0 of {
+        true -> concat(with_pre, concat("\n", post_barrier));
+        false -> with_pre
+    };
+    concat(with_post, result_mov)
+}
+
+// Emit call with explicit callee symbol (e.g. silica_print_float64 for print_float64).
+fn emit_call_body_with_callee(term: SIRTerm, dest: string, callee: string) -> string {
+    call_effects: string <- term.value;
+    pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
+    post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
+    eff_comment: string <- emitter_effects@effect_annotation(call_effects);
     adrp_part: string <- concat(concat(concat("    ADRP X8, ", callee), "@PAGE"), "\n");
     add_part: string <- concat(concat(concat("    ADD X8, X8, ", callee), "@PAGEOFF"), "\n");
     adrp_line: string <- concat(concat(adrp_part, add_part), "    BLR X8");

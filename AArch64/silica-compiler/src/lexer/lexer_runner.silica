@@ -71,44 +71,63 @@ fn tokenize(lexer: Lexer, tokens: ListToken) -> ListToken proc[DeviceIO] {//this
                 eof_token: Token <- lexer_core@make_token(kinds.eof, "", eof_location);
                 ListToken { is_nil: false, head: eof_token, tail: tokens }
             end;
-            false -> do
-                // Determine token type and read it
-                token_and_lexer: (Token, Lexer) <- case lexer_keywords@is_identifier_start(current) of {
-                    true -> lexer_keywords@read_identifier(after_comments);
-                    false -> case lexer_integer_literals@is_decimal_digit_char(current) of {
-                        true -> float64_lexer_literals@read_numeric_literal(after_comments);
-                        false -> case current of {
-                            ":" -> lexer_atom_literals@read_colon_or_atom_literal(after_comments);
-                            "-" -> lexer_operators@read_arrow(after_comments);
-                            "(" -> lexer_operators@read_grouping_operator(after_comments, "(");
-                            ")" -> lexer_operators@read_grouping_operator(after_comments, ")");
-                            "{" -> lexer_operators@read_grouping_operator(after_comments, "{");
-                            "}" -> lexer_operators@read_grouping_operator(after_comments, "}");
-                            "[" -> lexer_operators@read_grouping_operator(after_comments, "[");
-                            "]" -> lexer_operators@read_grouping_operator(after_comments, "]");
-                            "," -> lexer_operators@read_grouping_operator(after_comments, ",");
-                            "+" -> lexer_operators@read_single_char_arithmetic(after_comments, "+");
-                            "*" -> lexer_operators@read_single_char_arithmetic(after_comments, "*");
-                            "/" -> lexer_operators@read_single_char_arithmetic(after_comments, "/");
-                            "%" -> lexer_operators@read_single_char_arithmetic(after_comments, "%");
-                            "<" -> lexer_operators@read_less_than(after_comments);
-                            ">" -> lexer_operators@read_greater_than(after_comments);
-                            "=" -> lexer_operators@read_equal(after_comments);
-                            "!" -> lexer_operators@read_bang_equal(after_comments);
-                            _: string -> do
-                                // Unknown character - use distinct unknown_char kind (not eof)
-                                kinds: TokenKinds <- lexer_token_kind@token_kinds();
-                                error_location: SourceLocation <- lexer_core@current_location(after_comments);
-                                error_token: Token <- lexer_core@make_token(kinds.unknown_char, current, error_location);
-                                (error_token, lexer_core@advance(after_comments))
-                            end
+            false -> case current of {
+                " " -> do
+                    // Workaround: skip_whitespace sometimes doesn't skip space (bootstrap bug?)
+                    advanced: Lexer <- lexer_core@advance(after_comments);
+                    tokenize(advanced, tokens)
+                end;
+                "\t" -> do
+                    advanced: Lexer <- lexer_core@advance(after_comments);
+                    tokenize(advanced, tokens)
+                end;
+                "\n" -> do
+                    advanced: Lexer <- lexer_core@advance(after_comments);
+                    tokenize(advanced, tokens)
+                end;
+                "\r" -> do
+                    advanced: Lexer <- lexer_core@advance(after_comments);
+                    tokenize(advanced, tokens)
+                end;
+                _: string -> do
+                    // Determine token type and read it
+                    token_and_lexer: (Token, Lexer) <- case lexer_keywords@is_identifier_start(current) of {
+                        true -> lexer_keywords@read_identifier(after_comments);
+                        false -> case lexer_integer_literals@is_decimal_digit_char(current) of {
+                            true -> float64_lexer_literals@read_numeric_literal(after_comments);
+                            false -> case current of {
+                                ":" -> lexer_atom_literals@read_colon_or_atom_literal(after_comments);
+                                "-" -> lexer_operators@read_arrow(after_comments);
+                                "(" -> lexer_operators@read_grouping_operator(after_comments, "(");
+                                ")" -> lexer_operators@read_grouping_operator(after_comments, ")");
+                                "{" -> lexer_operators@read_grouping_operator(after_comments, "{");
+                                "}" -> lexer_operators@read_grouping_operator(after_comments, "}");
+                                "[" -> lexer_operators@read_grouping_operator(after_comments, "[");
+                                "]" -> lexer_operators@read_grouping_operator(after_comments, "]");
+                                "," -> lexer_operators@read_grouping_operator(after_comments, ",");
+                                ";" -> lexer_operators@read_grouping_operator(after_comments, ";");
+                                "+" -> lexer_operators@read_single_char_arithmetic(after_comments, "+");
+                                "*" -> lexer_operators@read_single_char_arithmetic(after_comments, "*");
+                                "/" -> lexer_operators@read_single_char_arithmetic(after_comments, "/");
+                                "%" -> lexer_operators@read_single_char_arithmetic(after_comments, "%");
+                                "<" -> lexer_operators@read_less_than(after_comments);
+                                ">" -> lexer_operators@read_greater_than(after_comments);
+                                "=" -> lexer_operators@read_equal(after_comments);
+                                "!" -> lexer_operators@read_bang_equal(after_comments);
+                                _: string -> do
+                                    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+                                    error_location: SourceLocation <- lexer_core@current_location(after_comments);
+                                    error_token: Token <- lexer_core@make_token(kinds.unknown_char, current, error_location);
+                                    (error_token, lexer_core@advance(after_comments))
+                                end
+                            }
                         }
-                    }
-                };
-                (token: Token, next_lexer: Lexer) <- token_and_lexer;
-                new_tokens: ListToken <- ListToken { is_nil: false, head: token, tail: tokens };
-                tokenize(next_lexer, new_tokens)
-            end
+                    };
+                    (token: Token, next_lexer: Lexer) <- token_and_lexer;
+                    new_tokens: ListToken <- ListToken { is_nil: false, head: token, tail: tokens };
+                    tokenize(next_lexer, new_tokens)
+                end
+            }
         }
     end
 }

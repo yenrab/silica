@@ -28,12 +28,39 @@ fn role_call_name() -> int64 { 14 }
 fn role_call_lparen() -> int64 { 15 }
 fn role_call_rparen() -> int64 { 16 }
 
+// Debug: check if Expr is const with value " " (space)
+fn debug_expr_has_space(expr: Expr, fn_name: string, path: string) -> int64 proc[DeviceIO] {
+    case expr.kind == 0 of {
+        true -> case expr.value == " " of {
+            true -> do
+                println(concat("DEBUG: Expr value=space in ", concat(fn_name, concat(" at ", path))));
+                0
+            end;
+            false -> 0
+        };
+        false -> case expr.kind of {
+            2 -> debug_expr_has_space(expr.inner, fn_name, concat(path, ".inner"));
+            3 -> do
+                _: int64 <- debug_expr_has_space(expr.inner, fn_name, concat(path, ".inner"));
+                debug_expr_has_space(expr.right_expr, fn_name, concat(path, ".right"))
+            end;
+            4 -> debug_expr_has_space(expr.inner, fn_name, concat(path, ".inner"));
+            6 -> do
+                _: int64 <- debug_expr_has_space(expr.inner, fn_name, concat(path, ".inner"));
+                debug_expr_has_space(expr.right_expr, fn_name, concat(path, ".right"))
+            end;
+            _: int64 -> 0
+        }
+    }
+}
+
 fn extract_function(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) proc[DeviceIO] {
     r1: ListTokenSlot <- slots.tail;
     fn_name: string <- r1.head.token.lexeme;
     fn_loc: SourceLocation <- r1.head.token.location;
     (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(r1.tail);
     (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(body_slots);
+    _: int64 <- debug_expr_has_space(body, fn_name, "body");
     decl: Declaration <- Declaration { tag: 0, name: fn_name, return_type_name: ret_type, return_type_location: ret_type_loc, location: fn_loc, body: body, declared_effects: effects };
     (decl, rest_after_body)
 }
@@ -172,12 +199,9 @@ fn is_op_token(kinds: TokenKinds, token_kind: int64) -> bool {
     token_kind == kinds.plus or token_kind == kinds.minus or token_kind == kinds.star or token_kind == kinds.slash or token_kind == kinds.percent or token_kind == kinds.less_than or token_kind == kinds.greater_than or token_kind == kinds.less_equal or token_kind == kinds.greater_equal or token_kind == kinds.equal_equal or token_kind == kinds.bang_equal
 }
 
-// Logical operators and/or are identifiers; treat them as binary ops when lexeme matches.
+// Logical operators and/or are keywords (and_keyword, or_keyword) or identifiers (legacy); treat as binary ops.
 fn is_logical_op_slot(slot: TokenSlot, kinds: TokenKinds) -> bool {
-    case slot.token.kind == kinds.identifier of {
-        true -> slot.token.lexeme == "and" or slot.token.lexeme == "or";
-        false -> false
-    }
+    slot.token.kind == kinds.and_keyword or slot.token.kind == kinds.or_keyword or (slot.token.kind == kinds.identifier and (slot.token.lexeme == "and" or slot.token.lexeme == "or"))
 }
 
 fn is_operand_token(kinds: TokenKinds, token_kind: int64) -> bool {
@@ -290,6 +314,18 @@ fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListEffe
                     (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(rest_after_type);
                     rest_after_lbrace: ListTokenSlot <- after_effects.tail;
                     body_slots: ListTokenSlot <- rest_after_lbrace;
+                    _: int64 <- case body_slots.is_nil of {
+                        false -> case body_slots.head.token.lexeme == " " of {
+                            true -> do
+                                println("DEBUG find_type_and_body: body_slots first token is SPACE kind=");
+                                print_int64(body_slots.head.token.kind);
+                                println("");
+                                0
+                            end;
+                            false -> 0
+                        };
+                        true -> 0
+                    };
                     from_kind: string <- kind_to_type_name(first.token.kind);
                     use_type: string <- case effects.is_nil of { true -> ret_type; false -> case from_kind of { "" -> ret_type; _: string -> from_kind } };
                     // Instrumentation: when use_type is empty, return debug string so E2001 shows which of ret_type/from_kind was empty

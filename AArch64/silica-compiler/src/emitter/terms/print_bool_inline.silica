@@ -1,6 +1,6 @@
 // Fully inline emission for print_bool(bool) built-in
-// Const arg: emit write(2) with "true" or "false" label. Var arg: branch on X0 (0=false, non-zero=true).
-// No external symbol required; similar to print_atom_inline.
+// Const arg: emit write(2) with "true" or "false" label. Var arg: BL L_pb_helper (shared helper).
+// Uses boolean_rodata for L_pb_true and L_pb_false.
 
 use sir_ast;
 use atom_table;
@@ -9,6 +9,7 @@ use emitter_effects;
 export emit_print_bool_inline/3;
 export is_print_bool_const_arg/2;
 export emit_print_bool_var/3;
+export emit_print_bool_helper/0;
 
 // True when term is a call to main.print_bool and the argument is a const bool.
 fn is_print_bool_const_arg(term: SIRTerm, table: AtomTable) -> bool {
@@ -65,7 +66,7 @@ fn emit_print_bool_inline(term: SIRTerm, dest: string, table: AtomTable) -> stri
 }
 
 // Emit inline for print_bool when argument is variable (e.g. var or comparison result).
-// X0 holds 0 (false) or non-zero (true). Branch: CMP X0, #0; B.eq L_pb_false_branch; emit "true" write; B L_pb_after; L_pb_false_branch: emit "false" write; L_pb_after:
+// X0 holds 0 (false) or non-zero (true). Call shared helper L_pb_helper (like print_int64).
 fn emit_print_bool_var(term: SIRTerm, dest: string, table: AtomTable) -> string {
     call_effects: string <- term.value;
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
@@ -75,34 +76,23 @@ fn emit_print_bool_var(term: SIRTerm, dest: string, table: AtomTable) -> string 
         true -> concat(eff_comment, "\n");
         false -> ""
     };
-    cmp_line: string <- "    CMP X0, #0\n";
-    b_eq: string <- "    B.eq L_pb_false_branch\n";
-    mov_fd_true: string <- "    MOV X0, #1\n";
-    adrp_true: string <- "    ADRP X1, L_pb_true@PAGE\n";
-    add_true: string <- "    ADD X1, X1, L_pb_true@PAGEOFF\n";
-    mov_count_true: string <- "    MOV X2, #4\n";
-    svc: string <- "    MOV X16, #4\n    SVC #0\n";
+    bl_line: string <- "    BL L_pb_helper\n";
     mov_ret: string <- concat(concat("    MOV ", dest), ", #0\n");
-    b_after: string <- "    B L_pb_after\n";
-    l_false: string <- "L_pb_false_branch:\n";
-    mov_fd_false: string <- "    MOV X0, #1\n";
-    adrp_false: string <- "    ADRP X1, L_pb_false@PAGE\n";
-    add_false: string <- "    ADD X1, X1, L_pb_false@PAGEOFF\n";
-    mov_count_false: string <- "    MOV X2, #5\n";
-    l_after: string <- "L_pb_after:\n";
-    true_part: string <- concat(concat(concat(concat(concat(concat(concat(mov_fd_true, adrp_true), add_true), mov_count_true), svc), mov_ret), b_after), l_false);
-    false_part: string <- concat(concat(concat(concat(concat(mov_fd_false, adrp_false), add_false), mov_count_false), svc), mov_ret);
-    true_block: string <- concat(true_part, false_part);
-    cmp_block: string <- concat(concat(cmp_line, b_eq), true_block);
-    switch_asm: string <- concat(cmp_block, l_after);
-    with_comment2: string <- concat(comment_line, switch_asm);
+    with_comment: string <- concat(comment_line, bl_line);
+    with_ret: string <- concat(with_comment, mov_ret);
     with_post: string <- case len(post_barrier) > 0 of {
-        true -> concat(with_comment2, concat(concat("\n", post_barrier), "\n"));
-        false -> with_comment2
+        true -> concat(with_ret, concat(concat("\n", post_barrier), "\n"));
+        false -> with_ret
     };
     with_pre: string <- case len(pre_barrier) > 0 of {
         true -> concat(pre_barrier, concat("\n", with_post));
         false -> with_post
     };
     with_pre
+}
+
+// Shared helper for print_bool(var). Expects X0 = 0 (false) or non-zero (true).
+// Labels L_pb_false_branch and L_pb_after are local to this helper.
+fn emit_print_bool_helper() -> string {
+    "L_pb_helper:\n    CMP X0, #0\n    B.eq L_pb_false_branch\n    MOV X0, #1\n    ADRP X1, L_pb_true@PAGE\n    ADD X1, X1, L_pb_true@PAGEOFF\n    MOV X2, #4\n    MOV X16, #4\n    SVC #0\n    B L_pb_after\nL_pb_false_branch:\n    MOV X0, #1\n    ADRP X1, L_pb_false@PAGE\n    ADD X1, X1, L_pb_false@PAGEOFF\n    MOV X2, #5\n    MOV X16, #4\n    SVC #0\nL_pb_after:\n    RET"
 }
