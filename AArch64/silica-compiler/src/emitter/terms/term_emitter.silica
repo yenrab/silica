@@ -47,29 +47,32 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         false -> "X"
                     }
                 };
-                rhs_reg: string <- case is_float64 of {
-                    true -> case bound_reg == "D0" of {
-                        true -> "D1";
-                        false -> case bound_reg == "D1" of {
-                            true -> "D2";
-                            false -> "D0"
-                        }
-                    };
-                    false -> case bound_reg == "X0" of {
-                        true -> case term.name == "%_" of {
-                            true -> concat(reg_prefix, "0");
-                            false -> concat(reg_prefix, "1")
+                rhs_reg: string <- case term.inner.kind != 0 and (term.right_expr.kind == 4 or (term.right_expr.kind == 1 and term.right_expr.name == term.name)) of {
+                    true -> dest;
+                    false -> case is_float64 of {
+                        true -> case bound_reg == "D0" of {
+                            true -> "D1";
+                            false -> case bound_reg == "D1" of {
+                                true -> "D2";
+                                false -> "D0"
+                            }
                         };
-                        false -> case bound_reg == concat("X", "1") of {
-                            true -> concat(reg_prefix, "2");
-                            false -> case bound_reg == "W0" of {
-                                true -> case term.name == "%_" of {
-                                    true -> concat(reg_prefix, "0");
-                                    false -> concat(reg_prefix, "1")
-                                };
-                                false -> case bound_reg == concat("W", "1") of {
-                                    true -> concat(reg_prefix, "2");
-                                    false -> concat(reg_prefix, "0")
+                        false -> case bound_reg == "X0" of {
+                            true -> case term.name == "%_" of {
+                                true -> concat(reg_prefix, "0");
+                                false -> concat(reg_prefix, "1")
+                            };
+                            false -> case bound_reg == concat("X", "1") of {
+                                true -> concat(reg_prefix, "2");
+                                false -> case bound_reg == "W0" of {
+                                    true -> case term.name == "%_" of {
+                                        true -> concat(reg_prefix, "0");
+                                        false -> concat(reg_prefix, "1")
+                                    };
+                                    false -> case bound_reg == concat("W", "1") of {
+                                        true -> concat(reg_prefix, "2");
+                                        false -> concat(reg_prefix, "0")
+                                    }
                                 }
                             }
                         }
@@ -83,8 +86,14 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 rhs_reg: string <- case term.inner.type_name == "float64" of {
                     true -> "D0";
                     false -> case term.inner.type_name == "int32" or term.inner.type_name == "int16" or term.inner.type_name == "int8" or term.inner.type_name == "uint32" or term.inner.type_name == "uint16" or term.inner.type_name == "uint8" of {
-                        true -> concat("W", "0");
-                        false -> "X0"
+                        true -> case bound_reg == "" of {
+                            true -> concat("W", "1");
+                            false -> concat("W", "0")
+                        };
+                        false -> case term.inner.kind == 0 of {
+                            true -> "X1";
+                            false -> dest
+                        }
                     }
                 };
                 rhs_asm: string <- term_to_asm_opt_bound(term.inner, rhs_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, bound_name, bound_reg, outer_reg);
@@ -280,7 +289,18 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                     false -> do
                                         l: string <- term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, bound_name, bound_reg, outer_reg);
                                         r: string <- term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, bound_name, bound_reg, outer_reg);
-                                        (l, r)
+                                        identity_moves: string <- case term.inner.kind == 0 and term.right_expr.kind == 0 and (term.name == "and" or term.name == "or") of {
+                                            true -> case is_float64 of {
+                                                true -> concat(concat(concat(concat("    FMOV ", right_reg), ", "), concat(right_reg, "\n")), concat(concat(concat(concat("    FMOV ", left_reg), ", "), left_reg), ""));
+                                                false -> concat(concat(concat(concat("    MOV ", right_reg), ", "), concat(right_reg, "\n")), concat(concat(concat(concat("    MOV ", left_reg), ", "), left_reg), ""))
+                                            };
+                                            false -> ""
+                                        };
+                                        second_with_id: string <- case len(identity_moves) > 0 of {
+                                            true -> concat(concat(r, "\n"), identity_moves);
+                                            false -> r
+                                        };
+                                        (l, second_with_id)
                                     end
                                 }
                             }

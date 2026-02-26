@@ -300,44 +300,38 @@ pub extern "C" fn silica_string_len_chars(silica_string_ptr: *const u8) -> usize
 /// Helper to extract string data and length from either a string constant pointer or SilicaString pointer.
 /// Public for use by runtime.rs silica_read_file_path.
 pub unsafe fn get_string_data_and_length(ptr: *const u8) -> Option<(*const u8, usize)> {
-    // eprintln!("[DEBUG] get_string_data_and_length: ptr = {:p}", ptr);
-    
     if ptr.is_null() {
-        // eprintln!("[DEBUG] get_string_data_and_length: ptr is null, returning None");
         return None;
     }
 
     // Try to interpret as SilicaString pointer first
     // SilicaString is { data: *mut u8, length: usize }
     let silica_string_ptr = ptr as *const usize;
-    // eprintln!("[DEBUG] get_string_data_and_length: silica_string_ptr = {:p}", silica_string_ptr);
-    
+
     // Read the first field (data pointer)
-    // eprintln!("[DEBUG] get_string_data_and_length: About to read data_ptr from struct...");
     let data_ptr = *silica_string_ptr as *const u8;
-    // eprintln!("[DEBUG] get_string_data_and_length: data_ptr = {:p}", data_ptr);
-    
+
     // Read the second field (length)
-    // eprintln!("[DEBUG] get_string_data_and_length: About to read length from struct...");
     let length = *(silica_string_ptr.add(1));
-    // eprintln!("[DEBUG] get_string_data_and_length: length = {}", length);
 
     // Heuristic: if data_ptr is not null and length is reasonable, assume it's a SilicaString
     // Also check that data_ptr is a reasonable pointer value (not too large, which would indicate
     // we're reading string data as if it were a pointer)
     let data_ptr_value = data_ptr as usize;
-    let ptr_value = ptr as usize;
-    
+
     // Check if data_ptr looks like a valid pointer:
     // - Not null
     // - Different from struct pointer
     // - Within reasonable memory range (typical user space addresses on 64-bit systems)
     // - Length is reasonable
-    let looks_like_valid_pointer = !data_ptr.is_null() 
+    // - data_ptr_value > 0x10000: heap pointers are typically much higher; raw string data
+    //   (e.g. "=" = 0x3D) when misinterpreted as a struct yields small values. Using 0x10000
+    //   avoids misclassifying string constant pointers as SilicaString (fixes substring == literal bug).
+    let looks_like_valid_pointer = !data_ptr.is_null()
         && data_ptr != ptr
         && data_ptr_value < 0x7fffffffffff  // Reasonable upper bound for user space
-        && data_ptr_value > 0x1000;  // Reasonable lower bound (avoid null page)
-    
+        && data_ptr_value > 0x10000;  // Heap pointers typically > 64K; string data yields small values
+
     if looks_like_valid_pointer && length < 1024 * 1024 * 1024 {
         return Some((data_ptr, length));
     }
