@@ -7,10 +7,9 @@ use const_atoms;
 use constraints;
 use int64_literal_pool;
 use float64_literal_pool;
-use string_literal_pool;
 use string_parse;
 
-export emit_const/6;
+export emit_const/5;
 
 // Workaround: extract value via helper to avoid bootstrap concat bug with struct fields in case branches.
 fn const_value(t: SIRTerm) -> string {
@@ -21,17 +20,10 @@ fn const_value(t: SIRTerm) -> string {
 // For int64/uint64: if fits_mov_imm, use MOV; else ADRP+LDR from literal pool.
 // For float64: ADRP+LDR D from float64 literal pool.
 // For atom: value is lexeme (e.g. :ok); uses atom table to emit index.
-// For string: ADRP+LDR from string literal pool (pointer to null-terminated bytes).
-fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, string_literal_table: StringLiteralTable) -> string {
+// String constants are handled in term_emitter (avoids 6-param bootstrap issue).
+fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable) -> string {
     val: string <- const_value(term);
     case term.type_name of {
-        "string" -> do
-            idx: int64 <- string_literal_pool@string_literal_value_to_index(string_literal_table, term.value);
-            label: string <- concat("L_str_", atom_table@int64_to_decimal_string(idx));
-            adrp: string <- concat(concat(concat(concat("    ADRP ", dest), ", "), concat(label, "@PAGE")), "\n");
-            add: string <- concat(concat(concat(concat("    ADD ", dest), ", "), concat(concat(dest, ", "), concat(label, "@PAGEOFF"))), "");
-            concat(adrp, add)
-        end;
         "int64" -> case constraints@fits_mov_imm(string_parse@string_to_int64(term.value)) of {
             true -> do
                 prefix: string <- concat(concat("    MOV ", dest), ", ");

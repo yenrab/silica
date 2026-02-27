@@ -21,6 +21,15 @@ use string_literal_pool;
 
 export term_to_asm/10;
 
+// Emit ADRP+ADD for string const (kept here to avoid 6-param emit_const bootstrap issue).
+fn emit_string_const(term: SIRTerm, dest: string, string_literal_table: StringLiteralTable) -> string {
+    idx: int64 <- string_literal_pool@string_literal_value_to_index(string_literal_table, term.value);
+    label: string <- concat("L_str_", atom_table@int64_to_decimal_string(idx));
+    adrp: string <- concat(concat(concat(concat("    ADRP ", dest), ", "), concat(label, "@PAGE")), "\n");
+    add: string <- concat(concat(concat(concat("    ADD ", dest), ", "), concat(concat(dest, ", "), concat(label, "@PAGEOFF"))), "");
+    concat(adrp, add)
+}
+
 // Emit AArch64 assembly for a SIR term. dest is the virtual register for the result.
 // Tables: int64, int32, int16, int8 for print_X const label lookup; literal_table for large int64 const; float64_literal_table for float64 const; string_literal_table for string const
 fn term_to_asm(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, string_literal_table: StringLiteralTable) -> string {
@@ -29,7 +38,10 @@ fn term_to_asm(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64
 
 fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string) -> string {
     case term.kind of {
-        0 -> const@emit_const(term, dest, table, literal_table, float64_literal_table, string_literal_table);
+        0 -> case term.type_name == "string" of {
+            true -> emit_string_const(term, dest, string_literal_table);
+            false -> const@emit_const(term, dest, table, literal_table, float64_literal_table)
+        };
         1 -> case term.name == bound_name of {
             true -> var@emit_var_reg(term, dest, bound_reg);
             false -> case len(outer_reg) > 0 of {

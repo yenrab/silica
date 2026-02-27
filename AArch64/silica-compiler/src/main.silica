@@ -3,6 +3,7 @@
 
 use lexer_runner;
 use lexer_core;
+use lexer_token_kind;
 use parser_core;
 use parser_runner;
 use parser_ast;
@@ -344,6 +345,50 @@ fn validate_config_files(files: ListString) -> int64 proc[DeviceIO] {
     }
 }
 
+// Debug: print tokens (kind and lexeme) for string_test/string_simple tracing
+fn debug_print_tokens(tokens: ListToken) -> int64 proc[DeviceIO] {
+    do
+        kinds: TokenKinds <- lexer_token_kind@token_kinds();
+        debug_print_tokens_acc(tokens, kinds)
+    end
+}
+
+fn debug_print_tokens_acc(tokens: ListToken, kinds: TokenKinds) -> int64 proc[DeviceIO] {
+    case tokens.is_nil of {
+        true -> 0;
+        false -> do
+            t: Token <- tokens.head;
+            kind_label: string <- case t.kind == kinds.string_literal of { true -> "string_literal"; false -> case t.kind == kinds.identifier of { true -> "identifier"; false -> case t.kind == kinds.string_keyword of { true -> "string_keyword"; false -> t.lexeme } } };
+            _: unit <- println(concat(concat(concat("  [DEBUG LEX] kind=", kind_label), " lexeme="), t.lexeme));
+            debug_print_tokens_acc(tokens.tail, kinds)
+        end
+    }
+}
+
+// Debug: print expr structure (kind, name, value) for body tracing
+fn debug_print_expr(expr: Expr, indent: string) -> int64 proc[DeviceIO] {
+    case expr.kind of {
+        0 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "literal value="), expr.value)); 0 end;
+        1 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "identifier name="), expr.name)); 0 end;
+        6 -> do
+            _: unit <- println(concat(concat(concat(concat("  [DEBUG EXPR] ", indent), "let "), expr.name), concat(": ", expr.value)));
+            _: int64 <- debug_print_expr(expr.inner, concat(indent, "  rhs:"));
+            _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  body:"));
+            0
+        end;
+        8 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "string_literal value="), expr.value)); 0 end;
+        _: int64 -> do
+            kind_str: string <- concat("kind=", expr.value);
+            _: unit <- println(concat(concat("  [DEBUG EXPR] ", indent), kind_str));
+            0
+        end
+    }
+}
+
+fn debug_compile(filename: string) -> bool {
+    false
+}
+
 // Compile a single file: lex -> parse -> type_check -> effect_check -> sir -> emit
 fn compile_file(filename: string) -> int64 proc[DeviceIO] {
     println("Compiling ");
@@ -351,8 +396,30 @@ fn compile_file(filename: string) -> int64 proc[DeviceIO] {
     println("...");
     println("  Lexing...");
     tokens: ListToken <- lexer_runner@lexer_runner(filename);
+    _: int64 <- case debug_compile(filename) of {
+        true -> do
+            _: unit <- println("  [DEBUG] Tokens for string file:");
+            _: int64 <- debug_print_tokens(tokens);
+            0
+        end;
+        false -> 0
+    };
     println("  Parsing...");
     parse_result: ParseResult <- parser_runner@parse_program(tokens);
+    _: int64 <- case debug_compile(filename) of {
+        true -> case parse_result.is_ok of {
+            true -> case parse_result.program.declarations.is_nil of {
+                false -> do
+                    first_decl: Declaration <- parse_result.program.declarations.head;
+                    _: unit <- println("  [DEBUG] main body AST:");
+                    debug_print_expr(first_decl.body, "")
+                end;
+                true -> 0
+            };
+            false -> 0
+        };
+        false -> 0
+    };
     case parse_result.is_ok of {
         true -> do
             println("  Type checking...");
