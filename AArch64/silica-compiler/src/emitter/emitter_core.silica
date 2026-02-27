@@ -12,6 +12,7 @@ use int_rodata;
 use float64_rodata;
 use int64_literal_pool;
 use float64_literal_pool;
+use string_literal_pool;
 use print_int64_inline;
 use print_bool_inline;
 use print_float64_inline;
@@ -31,7 +32,8 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
     int8_table: Int8PrintTable <- int_rodata@build_int8_print_table(sir_module);
     literal_table: Int64LiteralTable <- int64_literal_pool@build_int64_literal_table(sir_module);
     float64_literal_table: Float64LiteralTable <- float64_literal_pool@build_float64_literal_table(sir_module);
-    funcs: string <- emit_functions(sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table);
+    string_literal_table: StringLiteralTable <- string_literal_pool@build_string_literal_table(sir_module);
+    funcs: string <- emit_functions(sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table);
     needs_pi_helper: bool <- int_rodata@module_uses_signed_print_var(sir_module);
     needs_pu_helper: bool <- case int_rodata@module_uses_uint64_print_var(sir_module) of {
         true -> true;
@@ -104,11 +106,16 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
         false -> with_float64_helper
     };
     float64_literal_rodata: string <- float64_literal_pool@emit_float64_literal_rodata_section(float64_literal_table);
-    with_literal_pool: string <- case float64_literal_pool@module_uses_float64_literal_pool(sir_module) of {
+    with_float64_literal: string <- case float64_literal_pool@module_uses_float64_literal_pool(sir_module) of {
         true -> concat(concat(with_int64_literal, "\n"), float64_literal_rodata);
         false -> with_int64_literal
     };
-    with_literal_pool
+    string_literal_rodata: string <- string_literal_pool@emit_string_literal_rodata_section(string_literal_table);
+    with_string_literal: string <- case string_literal_pool@module_uses_string_literal_pool(sir_module) of {
+        true -> concat(concat(with_float64_literal, "\n"), string_literal_rodata);
+        false -> with_float64_literal
+    };
+    with_string_literal
     end
 }
 
@@ -116,13 +123,13 @@ fn asm_header(name: string) -> string {
     concat(".text\n", concat(concat(".global ", name), "\n"))
 }
 
-fn emit_functions(fns: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable) -> string proc[DeviceIO] {
+fn emit_functions(fns: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, string_literal_table: StringLiteralTable) -> string proc[DeviceIO] {
     do
     case fns.is_nil of {
         true -> "";
         false -> do
-            fn_asm: string <- emit_sir_function(fns.head, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table);
-            rest_asm: string <- emit_functions(fns.tail, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table);
+            fn_asm: string <- emit_sir_function(fns.head, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table);
+            rest_asm: string <- emit_functions(fns.tail, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table);
             case rest_asm == "" of {
                 true -> fn_asm;
                 false -> concat(concat(fn_asm, "\n"), rest_asm)
@@ -132,7 +139,7 @@ fn emit_functions(fns: ListSIRFunction, table: AtomTable, int64_table: Int64Prin
     end
 }
 
-fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable) -> string proc[DeviceIO] {
+fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, string_literal_table: StringLiteralTable) -> string proc[DeviceIO] {
     do
     entry_label: string <- entry_point_label(fn_val.name);
     eff_comment: string <- emitter_effects@fn_effect_annotation(fn_val.effects);
@@ -144,7 +151,7 @@ fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64Pr
             false -> "X0"
         }
     };
-    body: string <- term_emitter@term_to_asm(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table);
+    body: string <- term_emitter@term_to_asm(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table);
     float64_to_exit: string <- case main_returns_float64(fn_val.name, fn_val.return_type) of {
         true -> "    FCVTZS W0, D0\n";
         false -> ""

@@ -1,0 +1,49 @@
+// Resolve escape sequences in string literal content (per language spec §2.2)
+// Escapes: \\, \', \", \n, \t, \r
+// Strings are UTF-8 (Unicode); non-escape bytes pass through unchanged
+
+export resolve_string_escapes/1;
+
+// Resolve one escape sequence at position; returns (resolved_char, new_pos)
+fn resolve_one_escape(s: string, pos: int64) -> (string, int64) {
+    case pos >= len(s) of {
+        true -> ("", pos);
+        false -> do
+            c: string <- substring(s, pos, pos + 1);
+            case c of {
+                "\\" -> case pos + 1 >= len(s) of {
+                    true -> ("\\", pos + 1);
+                    false -> do
+                        next: string <- substring(s, pos + 1, pos + 2);
+                        case next of {
+                            "\\" -> ("\\", pos + 2);
+                            "'" -> ("'", pos + 2);
+                            "\"" -> ("\"", pos + 2);
+                            "n" -> ("\n", pos + 2);
+                            "t" -> ("\t", pos + 2);
+                            "r" -> ("\r", pos + 2);
+                            _: string -> (concat("\\", next), pos + 2)
+                        }
+                    end
+                };
+                _: string -> (c, pos + 1)
+            }
+        end
+    }
+}
+
+// Accumulate resolved string
+fn resolve_escapes_acc(s: string, pos: int64, acc: string) -> string {
+    case pos >= len(s) of {
+        true -> acc;
+        false -> do
+            (resolved: string, new_pos: int64) <- resolve_one_escape(s, pos);
+            resolve_escapes_acc(s, new_pos, concat(acc, resolved))
+        end
+    }
+}
+
+// Resolve escape sequences in string content (content = lexeme with quotes stripped)
+fn resolve_string_escapes(content: string) -> string {
+    resolve_escapes_acc(content, 0, "")
+}
