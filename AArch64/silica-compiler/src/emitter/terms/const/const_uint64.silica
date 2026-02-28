@@ -1,0 +1,34 @@
+// uint64 const emission (SIRTerm kind 0, type uint64)
+// Same as int64: MOV or literal pool
+
+use sir_ast;
+use atom_table;
+use constraints;
+use int64_literal_pool;
+use float64_literal_pool;
+use float32_literal_pool;
+use string_parse;
+
+export emit_const/6;
+
+fn const_value(t: SIRTerm) -> string {
+    t.value
+}
+
+fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable) -> string {
+    val: string <- const_value(term);
+    case constraints@fits_mov_imm(string_parse@string_to_int64(term.value)) of {
+        true -> do
+            prefix: string <- concat(concat("    MOV ", dest), ", ");
+            imm_part: string <- concat("#", val);
+            concat(prefix, imm_part)
+        end;
+        false -> do
+            idx: int64 <- int64_literal_pool@int64_literal_value_to_index(literal_table, term.value);
+            label: string <- concat("L_i64_", atom_table@int64_to_decimal_string(idx));
+            adrp: string <- concat(concat(concat(concat("    ADRP ", dest), ", "), concat(label, "@PAGE")), "\n");
+            ldr: string <- concat(concat(concat(concat(concat("    LDR ", dest), ", ["), concat(dest, ", ")), concat(label, "@PAGEOFF")), "]");
+            concat(adrp, ldr)
+        end
+    }
+}

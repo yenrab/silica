@@ -1,0 +1,53 @@
+// int64/uint64 let: rhs_reg computation for RHS type int64 or uint64
+// X registers
+
+use sir_ast;
+
+export compute_rhs_reg_in_let/5;
+export compute_rhs_reg_top_level/3;
+
+fn compute_rhs_reg_in_let(term: SIRTerm, dest: string, bound_name: string, bound_reg: string, outer_reg: string) -> string {
+    case term.name == "%_" of {
+        true -> "X0";
+        false -> case term.inner.kind != 0 and (term.right_expr.kind == 4 or (term.right_expr.kind == 1 and term.right_expr.name == term.name)) of {
+            true -> dest;
+            false -> case len(bound_reg) == 0 of {
+            // bound_reg empty: treat like top-level (e.g. body of let reached from top_level branch)
+            true -> case term.inner.kind == 0 of { true -> dest; false -> dest };
+                false -> case bound_name == "%_" and bound_reg == "X0" and term.name != "%_" of {
+                // Body of let %_ = X in (let %a = ...): use X1 for const to avoid clobbering, enable X2 for next let
+                true -> case term.inner.kind == 0 and dest == "X0" of { true -> "X1"; false -> dest };
+                false -> case bound_reg == "X0" of {
+                    true -> case term.name == "%_" of {
+                        true -> "X0";
+                        false -> "X1"
+                    };
+                    false -> case bound_reg == "X1" of {
+                        true -> "X2";
+                        false -> case bound_reg == "W0" of {
+                            true -> case term.name == "%_" of {
+                                true -> "W0";
+                                false -> "W1"
+                            };
+                            false -> case bound_reg == "W1" of {
+                                true -> "W2";
+                                false -> case term.inner.kind == 0 of {
+                                    true -> "X1";
+                                    false -> "X0"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    }
+}
+
+fn compute_rhs_reg_top_level(term: SIRTerm, bound_reg: string, dest: string) -> string {
+    case dest == "X0" and term.inner.kind == 0 and term.right_expr.kind != 4 of {
+        true -> "X1";
+        false -> dest
+    }
+}

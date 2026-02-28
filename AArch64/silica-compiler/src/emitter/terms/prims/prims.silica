@@ -1,142 +1,73 @@
-// Prim dispatcher: SIRTerm.kind 6 -> emit op line only (operands in r1, r2)
-// term_emitter emits subterms to r1/r2 before calling this; avoids circular dep
-// int32/int16/int8/uint32/uint16/uint8 use W registers, int64/uint64 use X registers
+// Prim dispatcher: case term.type_name -> type-specific emit_prim_op
+// term_emitter emits subterms to r1, r2 before calling this
+// Converts dest (X0/X1/X2) to D/S/W form for float/narrow types
 
 use sir_ast;
-use arithmetic;
-use comparison;
-use logical;
+use prims_float64;
+use prims_float32;
+use prims_int64;
+use prims_uint64;
+use prims_narrow;
+use prims_bool;
+use reg_conventions;
 
 export emit_prim_op/2;
 
-fn is_narrow_type(type_name: string) -> bool {
-    type_name == "int32" or type_name == "int16" or type_name == "int8" or type_name == "uint32" or type_name == "uint16" or type_name == "uint8"
-}
-
-fn is_unsigned_type(type_name: string) -> bool {
-    type_name == "uint64" or type_name == "uint32" or type_name == "uint16" or type_name == "uint8"
-}
-
-// Emit just the op line for a prim. Caller has already emitted left->r1, right->r2.
-// reg_prefix: "W" for narrow types, "X" for int64/uint64. dest_reg: W0/W1/W2 or X0/X1/X2.
-// For div/rem: signed vs unsigned from result type. For lt/gt/le/ge: from operand type (inner).
-// For arithmetic: reg_prefix from result type. For comparison: reg_prefix from operand type.
-fn emit_prim_op(term: SIRTerm, dest: string) -> string {
-    operand_type: string <- term.inner.type_name;
-    is_narrow_arith: bool <- is_narrow_type(term.type_name);
-    is_narrow_operand: bool <- is_narrow_type(operand_type);
-    is_unsigned_arith: bool <- is_unsigned_type(term.type_name);
-    is_unsigned_cmp: bool <- is_unsigned_type(operand_type);
-    reg_prefix_arith: string <- case is_narrow_arith of { true -> "W"; false -> "X" };
-    reg_prefix_cmp: string <- case is_narrow_operand of { true -> "W"; false -> "X" };
-    is_float64_arith: bool <- term.type_name == "float64";
-    is_float32_arith: bool <- term.type_name == "float32";
-    is_float_arith: bool <- is_float64_arith or is_float32_arith;
-    is_float64_cmp: bool <- operand_type == "float64";
-    is_float32_cmp: bool <- operand_type == "float32";
-    is_float_cmp: bool <- is_float64_cmp or is_float32_cmp;
-    float_prefix: string <- case is_float32_arith or is_float32_cmp of {
-        true -> "S";
-        false -> "D"
-    };
-    dest_reg: string <- case is_narrow_arith of {
-        true -> concat(reg_prefix_arith, substring(dest, 1, len(dest)));
-        false -> case is_float_arith of {
+fn dest_for_type(dest: string, type_name: string) -> string {
+    case reg_conventions@is_float64_type(type_name) of {
+        true -> case dest of {
+            "X0" -> "D0";
+            "X1" -> "D1";
+            "X2" -> "D2";
+            "D0" -> "D0";
+            "D1" -> "D1";
+            "D2" -> "D2";
+            _: string -> dest
+        };
+        false -> case reg_conventions@is_float32_type(type_name) of {
             true -> case dest of {
-                "X0" -> concat(float_prefix, "0");
-                "X1" -> concat(float_prefix, "1");
-                "X2" -> concat(float_prefix, "2");
-                "S" -> concat(float_prefix, "0");
+                "X0" -> "S0";
+                "X1" -> "S1";
+                "X2" -> "S2";
                 "S0" -> "S0";
                 "S1" -> "S1";
                 "S2" -> "S2";
-                "D" -> concat(float_prefix, "0");
-                "D0" -> "D0";
-                "D1" -> "D1";
-                "D2" -> "D2";
                 _: string -> dest
             };
-            false -> dest
-        }
-    };
-    case term.name of {
-        "add" -> case is_float64_arith of {
-            true -> arithmetic@emit_fadd_op(dest_reg);
-            false -> case is_float32_arith of {
-                true -> arithmetic@emit_fadd_s_op(dest_reg);
-                false -> arithmetic@emit_add_op(dest_reg, reg_prefix_arith)
-            }
-        };
-        "sub" -> case is_float64_arith of {
-            true -> arithmetic@emit_fsub_op(dest_reg);
-            false -> case is_float32_arith of {
-                true -> arithmetic@emit_fsub_s_op(dest_reg);
-                false -> arithmetic@emit_sub_op(dest_reg, reg_prefix_arith)
-            }
-        };
-        "mul" -> case is_float64_arith of {
-            true -> arithmetic@emit_fmul_op(dest_reg);
-            false -> case is_float32_arith of {
-                true -> arithmetic@emit_fmul_s_op(dest_reg);
-                false -> arithmetic@emit_mul_op(dest_reg, reg_prefix_arith)
-            }
-        };
-        "div" -> case is_float64_arith of {
-            true -> arithmetic@emit_fdiv_op(dest_reg);
-            false -> case is_float32_arith of {
-                true -> arithmetic@emit_fdiv_s_op(dest_reg);
-                false -> case is_unsigned_arith of {
-                    true -> arithmetic@emit_udiv_op(dest_reg, reg_prefix_arith);
-                    false -> arithmetic@emit_div_op(dest_reg, reg_prefix_arith)
-                }
-            }
-        };
-        "rem" -> case is_unsigned_arith of {
-            true -> arithmetic@emit_urem_op(dest_reg, reg_prefix_arith);
-            false -> arithmetic@emit_rem_op(dest_reg, reg_prefix_arith)
-        };
-        "lt" -> case is_float_cmp of {
-            true -> comparison@emit_fcmp_lt_op(dest_reg, float_prefix);
-            false -> case is_unsigned_cmp of {
-                true -> comparison@emit_ult_op(dest_reg, reg_prefix_cmp);
-                false -> comparison@emit_lt_op(dest_reg, reg_prefix_cmp)
-            }
-        };
-        "gt" -> case is_float_cmp of {
-            true -> comparison@emit_fcmp_gt_op(dest_reg, float_prefix);
-            false -> case is_unsigned_cmp of {
-                true -> comparison@emit_ugt_op(dest_reg, reg_prefix_cmp);
-                false -> comparison@emit_gt_op(dest_reg, reg_prefix_cmp)
-            }
-        };
-        "le" -> case is_float_cmp of {
-            true -> comparison@emit_fcmp_le_op(dest_reg, float_prefix);
-            false -> case is_unsigned_cmp of {
-                true -> comparison@emit_ule_op(dest_reg, reg_prefix_cmp);
-                false -> comparison@emit_le_op(dest_reg, reg_prefix_cmp)
-            }
-        };
-        "ge" -> case is_float_cmp of {
-            true -> comparison@emit_fcmp_ge_op(dest_reg, float_prefix);
-            false -> case is_unsigned_cmp of {
-                true -> comparison@emit_uge_op(dest_reg, reg_prefix_cmp);
-                false -> comparison@emit_ge_op(dest_reg, reg_prefix_cmp)
-            }
-        };
-        "and" -> logical@emit_and_op(dest_reg, reg_prefix_arith);
-        "or" -> logical@emit_or_op(dest_reg, reg_prefix_arith);
-        _: string -> case term.name == "nq" of {
-            true -> case is_float_cmp of {
-                true -> comparison@emit_fcmp_ne_op(dest_reg, float_prefix);
-                false -> comparison@emit_ne_op(dest_reg, reg_prefix_cmp)
-            };
-            false -> case term.name == "eq" of {
-                true -> case is_float_cmp of {
-                    true -> comparison@emit_fcmp_eq_op(dest_reg, float_prefix);
-                    false -> comparison@emit_eq_op(dest_reg, reg_prefix_cmp)
+            false -> case reg_conventions@is_narrow_type(type_name) of {
+                true -> case len(dest) > 0 of {
+                    true -> concat("W", substring(dest, 1, len(dest)));
+                    false -> dest
                 };
-                false -> concat("    ; unsupported prim: ", term.name)
+                false -> dest
             }
         }
+    }
+}
+
+fn is_comparison_prim(name: string) -> bool {
+    name == "lt" or name == "gt" or name == "le" or name == "ge"
+}
+
+fn emit_prim_op(term: SIRTerm, dest: string) -> string {
+    // Comparisons (lt, gt, le, ge) have result type "bool" but must dispatch on operand type
+    dispatch_type: string <- case term.type_name == "bool" and is_comparison_prim(term.name) of {
+        true -> term.inner.type_name;
+        false -> term.type_name
+    };
+    dest_reg: string <- dest_for_type(dest, dispatch_type);
+    case dispatch_type of {
+        "float64" -> prims_float64@emit_prim_op(term, dest_reg);
+        "float32" -> prims_float32@emit_prim_op(term, dest_reg);
+        "int64" -> prims_int64@emit_prim_op(term, dest_reg);
+        "uint64" -> prims_uint64@emit_prim_op(term, dest_reg);
+        "bool" -> prims_bool@emit_prim_op(term, dest_reg);
+        "int32" -> prims_narrow@emit_prim_op(term, dest_reg);
+        "int16" -> prims_narrow@emit_prim_op(term, dest_reg);
+        "int8" -> prims_narrow@emit_prim_op(term, dest_reg);
+        "uint32" -> prims_narrow@emit_prim_op(term, dest_reg);
+        "uint16" -> prims_narrow@emit_prim_op(term, dest_reg);
+        "uint8" -> prims_narrow@emit_prim_op(term, dest_reg);
+        _: string -> concat("    ; unsupported prim type: ", dispatch_type)
     }
 }

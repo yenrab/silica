@@ -1,0 +1,54 @@
+// Narrow int prim emission: int32, int16, int8, uint32, uint16, uint8
+// W registers. Signed vs unsigned from operand type (inner) for comparison, result type for div/rem.
+
+use sir_ast;
+use arithmetic;
+use comparison;
+use logical;
+use reg_conventions;
+
+export emit_prim_op/2;
+
+fn emit_prim_op(term: SIRTerm, dest: string) -> string {
+    operand_type: string <- term.inner.type_name;
+    is_unsigned: bool <- reg_conventions@is_unsigned_type(operand_type);
+    reg_prefix: string <- "W";
+    dest_w: string <- case len(dest) > 0 of {
+        true -> concat(reg_prefix, substring(dest, 1, len(dest)));
+        false -> dest
+    };
+    case term.name of {
+        "add" -> arithmetic@emit_add_op(dest_w, reg_prefix);
+        "sub" -> arithmetic@emit_sub_op(dest_w, reg_prefix);
+        "mul" -> arithmetic@emit_mul_op(dest_w, reg_prefix);
+        "div" -> case reg_conventions@is_unsigned_type(term.type_name) of {
+            true -> arithmetic@emit_udiv_op(dest_w, reg_prefix);
+            false -> arithmetic@emit_div_op(dest_w, reg_prefix)
+        };
+        "rem" -> case reg_conventions@is_unsigned_type(term.type_name) of {
+            true -> arithmetic@emit_urem_op(dest_w, reg_prefix);
+            false -> arithmetic@emit_rem_op(dest_w, reg_prefix)
+        };
+        "lt" -> case is_unsigned of {
+            true -> comparison@emit_ult_op(dest_w, reg_prefix);
+            false -> comparison@emit_lt_op(dest_w, reg_prefix)
+        };
+        "gt" -> case is_unsigned of {
+            true -> comparison@emit_ugt_op(dest_w, reg_prefix);
+            false -> comparison@emit_gt_op(dest_w, reg_prefix)
+        };
+        "le" -> case is_unsigned of {
+            true -> comparison@emit_ule_op(dest_w, reg_prefix);
+            false -> comparison@emit_le_op(dest_w, reg_prefix)
+        };
+        "ge" -> case is_unsigned of {
+            true -> comparison@emit_uge_op(dest_w, reg_prefix);
+            false -> comparison@emit_ge_op(dest_w, reg_prefix)
+        };
+        "eq" -> comparison@emit_eq_op(dest_w, reg_prefix);
+        "nq" -> comparison@emit_ne_op(dest_w, reg_prefix);
+        "and" -> logical@emit_and_op(dest_w, reg_prefix);
+        "or" -> logical@emit_or_op(dest_w, reg_prefix);
+        _: string -> concat("    ; unsupported narrow prim: ", term.name)
+    }
+}

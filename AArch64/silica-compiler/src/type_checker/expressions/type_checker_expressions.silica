@@ -41,6 +41,14 @@ fn bool_result(expected_type: string, location: SourceLocation) -> TypeCheckResu
 }
 
 fn check_comparison_result(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+    rb: TypeCheckResult <- check_comparison_operands(expr, "boolean", context);
+    case rb.is_ok of {
+        true -> bool_result(expected_type, expr.location);
+        false -> check_comparison_result_rest(expr, expected_type, context, rb)
+    }
+}
+
+fn check_comparison_result_rest(expr: Expr, expected_type: string, context: TypeContext, first_err: TypeCheckResult) -> TypeCheckResult {
     r64: TypeCheckResult <- check_comparison_operands(expr, "int64", context);
     case r64.is_ok of {
         true -> bool_result(expected_type, expr.location);
@@ -84,13 +92,7 @@ fn check_comparison_result(expr: Expr, expected_type: string, context: TypeConte
                                                                                     rs: TypeCheckResult <- check_comparison_operands(expr, "string", context);
                                                                                     case rs.is_ok of {
                                                                                         true -> bool_result(expected_type, expr.location);
-                                                                                        false -> do
-                                                                                            rb: TypeCheckResult <- check_comparison_operands(expr, "boolean", context);
-                                                                                            case rb.is_ok of {
-                                                                                                true -> bool_result(expected_type, expr.location);
-                                                                                                false -> r64
-                                                                                            }
-                                                                                        end
+                                                                                        false -> first_err
                                                                                     }
                                                                                 end
                                                                             }
@@ -298,11 +300,44 @@ fn check_let(expr: Expr, expected_type: string, context: TypeContext) -> TypeChe
     }
 }
 
+// true/false as identifiers: lexer may emit identifier; treat as boolean literal (spec: boolean values)
+fn is_true_or_false_identifier(expr: Expr) -> bool {
+    case len(expr.name) of {
+        4 -> case substring(expr.name, 0, 1) of {
+            "t" -> case substring(expr.name, 1, 2) of {
+                "r" -> case substring(expr.name, 2, 3) of {
+                    "u" -> case substring(expr.name, 3, 4) of { "e" -> true; _: string -> false };
+                    _: string -> false
+                };
+                _: string -> false
+            };
+            _: string -> false
+        };
+        5 -> case substring(expr.name, 0, 1) of {
+            "f" -> case substring(expr.name, 1, 2) of {
+                "a" -> case substring(expr.name, 2, 3) of {
+                    "l" -> case substring(expr.name, 3, 4) of {
+                        "s" -> case substring(expr.name, 4, 5) of { "e" -> true; _: string -> false };
+                        _: string -> false
+                    };
+                    _: string -> false
+                };
+                _: string -> false
+            };
+            _: string -> false
+        };
+        _: int64 -> false
+    }
+}
+
 // Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding, 7=boolean literal, 8=string literal
 fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
     case expr.kind of {
         0 -> type_checker_expressions_literals@check_expr(expr, expected_type, context);
-        1 -> type_checker_expressions_identifiers@check_expr(expr, expected_type, context);
+        1 -> case is_true_or_false_identifier(expr) of {
+            true -> boolean_type_checker_expressions@check_expr(expr, expected_type, context);
+            false -> type_checker_expressions_identifiers@check_expr(expr, expected_type, context)
+        };
         2 -> check_expr(expr.inner, expected_type, context);
         3 -> check_binary_op(expr, expected_type, context);
         4 -> check_call(expr, expected_type, context);

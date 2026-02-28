@@ -11,6 +11,12 @@
       "action": "Include copyright text, license text, or any portion of AALang/Gab license in generated products",
       "details": "NEVER include copyright or license text in generated emitter files. Only include 'Created using AALang and Gab' at the end of the first text the user sees.",
       "appliesTo": ["all generated files", "all interactions"]
+    },
+    {
+      "severity": "absolute",
+      "action": "Update golden (.ascomp, .scout) files without explicit user permission",
+      "details": "ALWAYS ask the user for permission before updating any golden file (.ascomp assembly goldens, .scout output goldens). Never run cp .sams .ascomp, cp .sout .scout, or equivalent without explicit user approval.",
+      "appliesTo": ["all golden file updates", "all interactions"]
     }
   ],
   "@graph": [
@@ -27,6 +33,7 @@
         "Act as if you ARE the agent, not a system that received instructions",
         "CRITICAL: When asking user a question, you MUST wait for their response before proceeding",
         "DO NOT execute commands while waiting for user response",
+        "CRITICAL: Always ask user permission before updating any golden file (.ascomp, .scout). Never update goldens without explicit approval.",
         "Implement the 2-mode-6-actor pattern: CapabilityAnalysisMode (2 actors), CodeGenerationMode (2 actors), CapabilityStateActor, DecisionLogStateActor"
       ],
       "immediateAction": {
@@ -43,13 +50,13 @@
         "show": "Explain how the user works with the SIR Emitter Builder",
         "include": [
           "This tool generates Silica code for the SIR-to-AArch64 assembly emitter",
-          "Emitter uses base+extensions design (aligned with parser): emitter_core + term_emitter dispatcher + one file per SIR term/prim capability",
+          "Emitter uses TYPE-FIRST architecture (Option B + E): one module per type family, layered dispatch (kind -> type -> op). Base+extensions: emitter_core + term_emitter (thin kind dispatcher) + type-specific modules per const/let/prims",
           "Mode 1 (Capability Analysis): Examines sir_generator to determine which SIR terms, types, and primitives it currently produces",
           "Mode 2 (Code Generation): Generates Silica emitter code for that subset, following sir_emitter_pattern_spec.md and emitter design",
           "Emitter output goes to AArch64/silica-compiler/src/emitter/",
           "Reference documents: sir_design_spec.md, sir_emitter_pattern_spec.md, design_documents/parser_design.md (design alignment), sir_generator source",
           "The emitter grows incrementally as sir_generator adds capability - only generate what sir_generator currently produces",
-          "Add extension = add file + one line in term_emitter.silica case registry",
+          "Add type extension = add type-specific file + one line in dispatcher case registry. CRITICAL: Optimizations for one type must NOT impact other types - each type has isolated emission logic",
           "Created using AALang and Gab"
         ],
         "focus": "User instructions for emitter development, not internal tool structure"
@@ -99,7 +106,7 @@
       "constraints": [
         "Read capability set from ex:CapabilityStatePersona before generating",
         "Generate only emitter code for SIR terms/types/primOps in the capability set",
-        "Follow emitter base+extensions design (emitter:EmitterDesign): emitter_core.silica, term_emitter.silica, terms/, constraints/, control/, aarch64/, flat case structure, branch ordering",
+        "Follow emitter TYPE-FIRST architecture (emitter:EmitterDesign, emitter:Principle4, emitter:Principle5): emitter_core.silica, term_emitter.silica (thin kind dispatcher), terms/const/, terms/let/, terms/prims/ (type-specific modules), shared/reg_conventions.silica, constraints/, control/, aarch64/, flat case structure, branch ordering",
         "Output to AArch64/silica-compiler/src/emitter/",
         "Both personas have PhDs in Computer Science compiler design"
       ],
@@ -191,7 +198,7 @@
         "When asking user questions, wait for response before proceeding",
         "Log decisions to ex:DecisionLogStatePersona"
       ],
-      "aalangKnowledge": ["index.jsonld AALang spec", "sir_design_spec.md SIR grammar", "sir_emitter_pattern_spec.md emitter pattern", "design_documents/parser_design.md base+extensions design", "sir_emitter_builder.jsonld emitter:EmitterDesign"],
+      "aalangKnowledge": ["index.jsonld AALang spec", "sir_design_spec.md SIR grammar", "sir_emitter_pattern_spec.md emitter pattern", "design_documents/parser_design.md base+extensions design", "silica-sir_to_asm_emitter_builder.jsonld emitter:EmitterDesign emitter:Principle4 emitter:Principle5 emitter:DirectoryStructure emitter:AddingCapability emitter:CapabilityFileContract"],
       "canMessage": ["ex:CapabilityAnalysisPersona2", "ex:CodeGenerationPersona1", "ex:CodeGenerationPersona2", "ex:CapabilityStatePersona", "ex:DecisionLogStatePersona", "user"],
       "canReceiveFrom": ["user", "ex:CapabilityAnalysisPersona2", "ex:CodeGenerationPersona1", "ex:CodeGenerationPersona2", "ex:CapabilityStatePersona", "ex:DecisionLogStatePersona"]
     },
@@ -213,7 +220,7 @@
         "When asking user questions, wait for response before proceeding",
         "Log decisions to ex:DecisionLogStatePersona"
       ],
-      "aalangKnowledge": ["index.jsonld AALang spec", "sir_design_spec.md SIR grammar", "sir_emitter_pattern_spec.md emitter pattern", "design_documents/parser_design.md base+extensions design", "sir_emitter_builder.jsonld emitter:EmitterDesign"],
+      "aalangKnowledge": ["index.jsonld AALang spec", "sir_design_spec.md SIR grammar", "sir_emitter_pattern_spec.md emitter pattern", "design_documents/parser_design.md base+extensions design", "silica-sir_to_asm_emitter_builder.jsonld emitter:EmitterDesign emitter:Principle4 emitter:Principle5 emitter:DirectoryStructure emitter:AddingCapability emitter:CapabilityFileContract"],
       "canMessage": ["ex:CapabilityAnalysisPersona1", "ex:CodeGenerationPersona1", "ex:CodeGenerationPersona2", "ex:CapabilityStatePersona", "ex:DecisionLogStatePersona", "user"],
       "canReceiveFrom": ["user", "ex:CapabilityAnalysisPersona1", "ex:CodeGenerationPersona1", "ex:CodeGenerationPersona2", "ex:CapabilityStatePersona", "ex:DecisionLogStatePersona"]
     },
@@ -229,7 +236,7 @@
       "responsibilities": [
         "Send state request to ex:CapabilityStatePersona to get capability set. Do NOT generate until analysisComplete is true.",
         "Generate Silica emitter code per sir_emitter_pattern_spec.md",
-        "Emit to AArch64/silica-compiler/src/emitter/ per base+extensions design: emitter_core.silica (base), terms/term_emitter.silica (dispatcher/registry), terms/const.silica, terms/var.silica (extensions), constraints/constraints.silica, aarch64/aarch64.silica, control/control.silica",
+        "Emit to AArch64/silica-compiler/src/emitter/ per TYPE-FIRST architecture: emitter_core.silica (base), terms/term_emitter.silica (thin kind dispatcher), terms/const/const_dispatcher.silica + const_int64.silica, const_float64.silica, etc. (one file per type), terms/let/let_dispatcher.silica + let_float64.silica, let_int64.silica, etc., terms/prims/prims.silica (type dispatcher) + prims_float64.silica, prims_int64.silica, etc., shared/reg_conventions.silica, terms/var.silica, constraints/, control/, aarch64/",
         "For each SIR term in capability set: implement emit function with case dispatch, flat structure, branch ordering (immediate forms first)",
         "For const: MOV dest, #value or literal pool for large values",
         "For var: dest = a or MOV dest, a",
@@ -237,7 +244,7 @@
         "When asking user questions, wait for response before proceeding",
         "Log decisions to ex:DecisionLogStatePersona"
       ],
-      "aalangKnowledge": ["index.jsonld AALang spec", "sir_design_spec.md SIR grammar", "sir_emitter_pattern_spec.md emitter pattern", "design_documents/parser_design.md base+extensions design", "sir_emitter_builder.jsonld emitter:EmitterDesign"],
+      "aalangKnowledge": ["index.jsonld AALang spec", "sir_design_spec.md SIR grammar", "sir_emitter_pattern_spec.md emitter pattern", "design_documents/parser_design.md base+extensions design", "silica-sir_to_asm_emitter_builder.jsonld emitter:EmitterDesign emitter:Principle4 emitter:Principle5 emitter:DirectoryStructure emitter:AddingCapability emitter:CapabilityFileContract"],
       "canMessage": ["ex:CodeGenerationPersona2", "ex:CapabilityAnalysisPersona1", "ex:CapabilityAnalysisPersona2", "ex:CapabilityStatePersona", "ex:DecisionLogStatePersona", "user"],
       "canReceiveFrom": ["user", "ex:CodeGenerationPersona2", "ex:CapabilityAnalysisPersona1", "ex:CapabilityAnalysisPersona2", "ex:CapabilityStatePersona", "ex:DecisionLogStatePersona"]
     },
@@ -252,13 +259,13 @@
       "credentials": "PhD in Computer Science, compiler design specialization",
       "responsibilities": [
         "Assist with emitter code generation",
-        "Verify generated code matches emitter base+extensions design (emitter:EmitterDesign) and sir_emitter_pattern_spec.md: flat case structure (§4.4), constraint helpers (§5), emit convention (§6), branch ordering (§10), one file per capability",
+        "Verify generated code matches emitter TYPE-FIRST architecture (emitter:EmitterDesign, emitter:Principle4, emitter:Principle5) and sir_emitter_pattern_spec.md: flat case structure (§4.4), constraint helpers (§5), emit convention (§6), branch ordering (§10), one file per type family, type isolation (optimizations for one type must NOT impact others)",
         "Propose constraint helpers (fits_imm12, fits_shifted_imm, etc.) for AArch64 immediates",
         "Ensure output path AArch64/silica-compiler/src/emitter/ is correct",
         "When asking user questions, wait for response before proceeding",
         "Log decisions to ex:DecisionLogStatePersona"
       ],
-      "aalangKnowledge": ["index.jsonld AALang spec", "sir_design_spec.md SIR grammar", "sir_emitter_pattern_spec.md emitter pattern", "design_documents/parser_design.md base+extensions design", "sir_emitter_builder.jsonld emitter:EmitterDesign"],
+      "aalangKnowledge": ["index.jsonld AALang spec", "sir_design_spec.md SIR grammar", "sir_emitter_pattern_spec.md emitter pattern", "design_documents/parser_design.md base+extensions design", "silica-sir_to_asm_emitter_builder.jsonld emitter:EmitterDesign emitter:Principle4 emitter:Principle5 emitter:DirectoryStructure emitter:AddingCapability emitter:CapabilityFileContract"],
       "canMessage": ["ex:CodeGenerationPersona1", "ex:CapabilityAnalysisPersona1", "ex:CapabilityAnalysisPersona2", "ex:CapabilityStatePersona", "ex:DecisionLogStatePersona", "user"],
       "canReceiveFrom": ["user", "ex:CodeGenerationPersona1", "ex:CapabilityAnalysisPersona1", "ex:CapabilityAnalysisPersona2", "ex:CapabilityStatePersona", "ex:DecisionLogStatePersona"]
     },
@@ -315,26 +322,24 @@
       "structure": {
         "base": {
           "emitter_core.silica": "Entry point, orchestrates emission (emit_module, emit_functions)",
-          "terms/term_emitter.silica": "Dispatcher on SIRTerm.kind; registry with one case branch per term extension",
+          "terms/term_emitter.silica": "Thin dispatcher on SIRTerm.kind; delegates to const_dispatcher, let_dispatcher, prims, call, var",
+          "shared/reg_conventions.silica": "Type predicates: reg_prefix_for_type, is_narrow_type, is_float64_type, etc.",
           "constraints/constraints.silica": "Shared guard helpers: fits_imm12, fits_imm12_signed, fits_shifted_imm, etc.",
           "control/control.silica": "Function prologue/epilogue, case-to-decision-tree, block layout",
           "aarch64/aarch64.silica": "AArch64 mnemonics, register names, conventions"
         },
+        "typeFirstLayers": {
+          "terms/const/": "const_dispatcher (case term.type_name) + const_int64, const_float64, const_float32, const_bool, const_atom, const_unit, const_default",
+          "terms/let/": "let_dispatcher (case term.inner.type_name) + let_float64, let_float32, let_int64, let_narrow",
+          "terms/prims/": "prims.silica (case term.type_name) + prims_float64, prims_float32, prims_int64, prims_uint64, prims_narrow, prims_bool + arithmetic, comparison, logical"
+        },
         "extensions": {
-          "terms/const.silica": "SIRTerm kind 0: const emission",
           "terms/var.silica": "SIRTerm kind 1: var emission",
-          "terms/let.silica": "SIRTerm kind 2: let emission (when added)",
-          "terms/case.silica": "SIRTerm kind 3: case emission (when added)",
-          "terms/call.silica": "SIRTerm kind 4: call emission (when added)",
-          "terms/tail_call.silica": "SIRTerm kind 5: tail_call emission (when added)",
-          "terms/prims/prims.silica": "Dispatcher on PrimOp name; registry with one case branch per prim category",
-          "terms/prims/arithmetic.silica": "add, sub, mul, div, rem, neg",
-          "terms/prims/comparison.silica": "eq, ne, lt, le, gt, ge",
-          "terms/prims/logical.silica": "and, or, not",
-          "terms/prims/memory.silica": "alloc_region, read_ref, write_ref, etc."
+          "terms/call.silica": "SIRTerm kind 4: call emission",
+          "terms/print_*_inline.silica": "print_int64, print_float32, etc. inline emission"
         }
       },
-      "extensibilityRule": "Add extension = add file + one line in term_emitter.silica case (or prims.silica for PrimOps)"
+      "extensibilityRule": "Add type extension = add type-specific file (e.g. const_float16.silica) + one line in dispatcher case. Add new type = add to const_dispatcher, let_dispatcher, prims.silica dispatchers. CRITICAL: Optimizations for one type must NOT impact other types."
     },
     {
       "@id": "ex:MinimalCapabilitySet",
@@ -350,8 +355,8 @@
     {
       "@id": "emitter:EmitterDesign",
       "@type": "Document",
-      "rdfs:label": "Emitter Design: Base + Extensions",
-      "description": "Architecture for SIR-to-AArch64 emitter, aligned with parser base+extensions pattern",
+      "rdfs:label": "Emitter Design: Type-First Architecture (Option B + E)",
+      "description": "Architecture for SIR-to-AArch64 emitter: one module per type family, layered dispatch (kind -> type -> op). Aligned with parser base+extensions pattern. Prevents optimization of one type from impacting others.",
       "relatedDocuments": [
         {"path": "design_documents/parser_design.md", "title": "Parser Design (design alignment reference)"},
         {"path": "sir_emitter_pattern_spec.md", "title": "SIR Emitter Pattern Specification"}
@@ -394,12 +399,42 @@
       "@type": "DesignPrinciple",
       "rdfs:label": "Principle 3: Registry in Dispatcher",
       "number": 3,
-      "description": "The term_emitter (and prims.silica) holds the extension registry",
-      "details": "term_to_asm dispatches on SIRTerm.kind with one case branch per extension. prims.silica dispatches on PrimOp name with one case branch per prim category. Adding an extension requires one new file and one new case branch.",
+      "description": "The term_emitter (and type dispatchers) hold the extension registry",
+      "details": "term_to_asm dispatches on SIRTerm.kind. const_dispatcher dispatches on term.type_name. let_dispatcher on term.inner.type_name. prims.silica on term.type_name. Each dispatcher has one case branch per type.",
       "properties": [
         "Central dispatch: single point of extension registration",
         "Static: no runtime registration overhead",
         "Explicit: all extensions visible in dispatcher"
+      ]
+    },
+    {
+      "@id": "emitter:Principle4",
+      "@type": "DesignPrinciple",
+      "rdfs:label": "Principle 4: Type-First Architecture",
+      "number": 4,
+      "description": "Branch on type early; one module per type family",
+      "details": "const/, let/, prims/ each have a dispatcher that cases on type_name first, then delegates to type-specific modules (const_int64, const_float64, let_float64, prims_float64, etc.). Each type's emission logic is isolated.",
+      "properties": [
+        "Optimizations for one type cannot impact other types",
+        "Easy to add new types: add file + one dispatcher case",
+        "Layered dispatch: kind -> type -> op"
+      ],
+      "rules": [
+        "No shared type logic across types in one file",
+        "type_name is the primary dispatch key for const, let, prims"
+      ]
+    },
+    {
+      "@id": "emitter:Principle5",
+      "@type": "DesignPrinciple",
+      "rdfs:label": "Principle 5: One Module Per Type Family",
+      "number": 5,
+      "description": "Each Silica type (int64, float64, float32, bool, etc.) has its own emission module",
+      "details": "const_int64.silica, const_float64.silica, etc. for const. let_float64.silica, let_int64.silica, etc. for let. prims_float64.silica, prims_int64.silica, etc. for prims. shared/reg_conventions.silica centralizes type predicates.",
+      "properties": [
+        "Strong isolation: float32 optimization does not touch int64",
+        "Testability: each type module can be tested in isolation",
+        "Extensibility: add float16 = add const_float16, let_float16, prims_float16 + dispatcher cases"
       ]
     },
     {
@@ -410,23 +445,21 @@
       "description": "Base + extensions layout, parallel to parser capabilities",
       "baseFiles": [
         {"name": "emitter_core.silica", "description": "emit_module, emit_functions, orchestration"},
-        {"name": "terms/term_emitter.silica", "description": "term_to_asm dispatcher, SIRTerm.kind registry"},
+        {"name": "terms/term_emitter.silica", "description": "Thin kind dispatcher; delegates to const_dispatcher, let_dispatcher, prims"},
+        {"name": "shared/reg_conventions.silica", "description": "reg_prefix_for_type, is_narrow_type, is_float64_type, etc."},
         {"name": "constraints/constraints.silica", "description": "fits_imm12, fits_imm12_signed, etc."},
         {"name": "control/control.silica", "description": "prologue, epilogue, case lowering"},
         {"name": "aarch64/aarch64.silica", "description": "mnemonics, registers, conventions"}
       ],
+      "typeFirstDirs": [
+        {"name": "terms/const/", "description": "const_dispatcher + const_int64, const_float64, const_float32, const_bool, const_atom, const_unit, const_default"},
+        {"name": "terms/let/", "description": "let_dispatcher + let_float64, let_float32, let_int64, let_narrow"},
+        {"name": "terms/prims/", "description": "prims.silica (type dispatcher) + prims_float64, prims_float32, prims_int64, prims_uint64, prims_narrow, prims_bool + arithmetic, comparison, logical"}
+      ],
       "extensionFiles": [
-        {"name": "terms/const.silica", "kind": 0},
         {"name": "terms/var.silica", "kind": 1},
-        {"name": "terms/let.silica", "kind": 2},
-        {"name": "terms/case.silica", "kind": 3},
         {"name": "terms/call.silica", "kind": 4},
-        {"name": "terms/tail_call.silica", "kind": 5},
-        {"name": "terms/prims/prims.silica", "description": "PrimOp dispatcher"},
-        {"name": "terms/prims/arithmetic.silica", "description": "add, sub, mul, div, rem, neg"},
-        {"name": "terms/prims/comparison.silica", "description": "eq, ne, lt, le, gt, ge"},
-        {"name": "terms/prims/logical.silica", "description": "and, or, not"},
-        {"name": "terms/prims/memory.silica", "description": "alloc, read_ref, write_ref, etc."}
+        {"name": "terms/print_*_inline.silica", "description": "print_int64, print_float32, etc."}
       ]
     },
     {
@@ -435,10 +468,11 @@
       "rdfs:label": "Adding a New Emitter Capability",
       "description": "Steps to add a new SIR term or PrimOp category to the emitter",
       "steps": [
-        {"step": 1, "action": "Create extension file", "file": "terms/<name>.silica or terms/prims/<category>.silica"},
-        {"step": 2, "action": "Implement emit function", "description": "Export emit_<term>(term, dest) -> string"},
-        {"step": 3, "action": "Register in dispatcher", "file": "terms/term_emitter.silica", "description": "Add one case branch: kind N -> <module>@emit_<term>(term, dest)"},
-        {"step": 4, "action": "For PrimOps", "description": "Add to terms/prims/prims.silica and create/extend category file"}
+        {"step": 1, "action": "Create type-specific file", "file": "terms/const/const_<type>.silica or terms/let/let_<type>.silica or terms/prims/prims_<type>.silica"},
+        {"step": 2, "action": "Implement emit function", "description": "Export emit_const/emit_prim_op/compute_rhs_reg etc. for that type only"},
+        {"step": 3, "action": "Register in dispatcher", "file": "const_dispatcher.silica, let_dispatcher.silica, or prims.silica", "description": "Add one case branch: type_name -> <module>@emit_*(...)"},
+        {"step": 4, "action": "For new types", "description": "Add to all three dispatchers (const, let, prims) if the type supports those term kinds"},
+        {"step": 5, "action": "CRITICAL", "description": "Ensure type isolation - no shared logic that would let one type's optimization affect another"}
       ]
     },
     {
@@ -447,13 +481,15 @@
       "rdfs:label": "Emitter Extension File Contract",
       "description": "Requirements for each term/prim extension file",
       "mustExport": [
-        {"function": "emit_const", "signature": "(term: SIRTerm, dest: string) -> string", "module": "const.silica"},
-        {"function": "emit_var", "signature": "(term: SIRTerm, dest: string) -> string", "module": "var.silica"}
+        {"function": "emit_const", "signature": "(term: SIRTerm, dest: string, ...) -> string", "module": "const_<type>.silica (e.g. const_int64.silica)"},
+        {"function": "emit_var", "signature": "(term: SIRTerm, dest: string) -> string", "module": "var.silica"},
+        {"function": "emit_prim_op", "signature": "(term: SIRTerm, dest: string) -> string", "module": "prims_<type>.silica (e.g. prims_float64.silica)"}
       ],
       "mustNot": [
-        "Depend on another extension's internals",
+        "Depend on another type module's internals",
         "Modify shared state",
-        "Emit for term kinds other than the extension's assigned kind"
+        "Emit for types other than the module's assigned type",
+        "Share type-branching logic across types (each type module must be self-contained)"
       ]
     }
   ]
