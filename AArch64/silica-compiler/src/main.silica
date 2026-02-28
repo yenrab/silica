@@ -396,28 +396,16 @@ fn compile_file(filename: string) -> int64 proc[DeviceIO] {
     println("...");
     println("  Lexing...");
     tokens: ListToken <- lexer_runner@lexer_runner(filename);
+    // Token debug disabled to reduce noise
     _: int64 <- case debug_compile(filename) of {
-        true -> do
-            _: unit <- println("  [DEBUG] Tokens for string file:");
-            _: int64 <- debug_print_tokens(tokens);
-            0
-        end;
+        true -> 0;
         false -> 0
     };
     println("  Parsing...");
     parse_result: ParseResult <- parser_runner@parse_program(tokens);
+    // AST debug disabled - can crash on some inputs
     _: int64 <- case debug_compile(filename) of {
-        true -> case parse_result.is_ok of {
-            true -> case parse_result.program.declarations.is_nil of {
-                false -> do
-                    first_decl: Declaration <- parse_result.program.declarations.head;
-                    _: unit <- println("  [DEBUG] main body AST:");
-                    debug_print_expr(first_decl.body, "")
-                end;
-                true -> 0
-            };
-            false -> 0
-        };
+        true -> 0;
         false -> 0
     };
     case parse_result.is_ok of {
@@ -433,8 +421,19 @@ fn compile_file(filename: string) -> int64 proc[DeviceIO] {
                         true -> do
                             println("  Generating SIR...");
                             sir_module: SIRModule <- sir_generator_core@emit_program(parse_result.program, checked_context);
+                            _: int64 <- case debug_compile(filename) of {
+                                true -> do
+                                    println("  [DEBUG SIR]:");
+                                    println(sir_ast@sir_module_to_text(sir_module));
+                                    0
+                                end;
+                                false -> 0
+                            };
                             println("  Emitting...");
-                            asm: string <- emitter_core@emit_module(sir_module);
+                            asm: string <- case debug_compile(filename) of {
+                                true -> emitter_core@emit_module_debug(sir_module, true);
+                                false -> emitter_core@emit_module(sir_module)
+                            };
                             build_output@write_assembly(filename, asm);
                             println(concat("✅ Successfully built ", module_from_path(filename)));
                             0

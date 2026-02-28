@@ -1,0 +1,124 @@
+.text
+.global main
+
+    ; effects [device_io]
+main:     STP X29, X30, [SP, #-16]!
+
+    ADRP X0, L_f32_0@PAGE
+    LDR S1, [X0, L_f32_0@PAGEOFF]
+    ADRP X0, L_f32_1@PAGE
+    LDR S2, [X0, L_f32_1@PAGEOFF]
+
+    FMUL S0, S1, S2
+
+    ; effects [device_io]
+    BL L_pf32_helper
+    MOV X0, #0
+
+
+
+    LDP X29, X30, [SP], #16
+    RET
+L_pf32_helper:
+    SUB SP, SP, #64
+    STR S0, [SP, #0]
+    FCMP S0, #0.0
+    B.ge L_pf32_pos
+    MOV X0, #1
+    ADRP X1, L_pf32_minus@PAGE
+    ADD X1, X1, L_pf32_minus@PAGEOFF
+    MOV X2, #1
+    MOV X16, #4
+    SVC #0
+    LDR S0, [SP, #0]
+    FNEG S0, S0
+    STR S0, [SP, #0]
+L_pf32_pos:
+    FCVTZS W0, S0
+    MOV X10, SP
+    ADD X10, X10, #48
+    MOV X11, #0
+    CMP X0, #0
+    B.ge L_pf32_ipos
+    MOV X11, #1
+    NEG X0, X0
+L_pf32_ipos:
+    MOV X8, X10
+    CMP X0, #0
+    B.eq L_pf32_izero
+    MOV X9, #10
+L_pf32_iloop:
+    UDIV X1, X0, X9
+    MSUB X2, X1, X9, X0
+    ADD X2, X2, #48
+    SUB X8, X8, #1
+    STRB W2, [X8]
+    MOV X0, X1
+    CBNZ X0, L_pf32_iloop
+    B L_pf32_imaybe_neg
+L_pf32_izero:
+    SUB X8, X8, #1
+    MOV X1, #48
+    STRB W1, [X8]
+L_pf32_imaybe_neg:
+    CBNZ X11, L_pf32_iprepend_minus
+    B L_pf32_ido_int
+L_pf32_iprepend_minus:
+    SUB X8, X8, #1
+    MOV X1, #45
+    STRB W1, [X8]
+L_pf32_ido_int:
+    SUB X2, X10, X8
+    MOV X0, #1
+    MOV X1, X8
+    MOV X16, #4
+    SVC #0
+    LDR S0, [SP, #0]
+    FRINTZ S1, S0
+    FSUB S2, S0, S1
+    ADRP X8, L_pf32_10@PAGE
+    LDR S3, [X8, L_pf32_10@PAGEOFF]
+    MOV X12, #7
+    MOV X9, X10
+    SUB X9, X9, #7
+    MOV X8, X9
+L_pf32_frac_loop:
+    CBZ X12, L_pf32_frac_done
+    FMUL S2, S2, S3
+    FCVTZS W0, S2
+    ADD X2, X0, #48
+    STRB W2, [X8]
+    ADD X8, X8, #1
+    SCVTF S4, W0
+    FSUB S2, S2, S4
+    SUB X12, X12, #1
+    FCMP S2, #0.0
+    B.eq L_pf32_frac_done
+    B L_pf32_frac_loop
+L_pf32_frac_done:
+    SUB X9, X9, #1
+    MOV X1, #46
+    STRB W1, [X9]
+    SUB X2, X8, X9
+    MOV X0, #1
+    MOV X1, X9
+    MOV X16, #4
+    SVC #0
+    ADD SP, SP, #64
+    RET
+
+.section __TEXT,__rodata
+.align	4
+L_pf32_10:
+    .single 10.0
+L_pf32_minus:
+    .byte 0x2d, 0
+
+.section __TEXT,__rodata
+.align	4
+L_f32_0:
+    .single 3.14
+
+L_f32_1:
+    .single 2.718
+

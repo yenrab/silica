@@ -1,0 +1,151 @@
+// Shared float literal parsing for Silica lexer (float32 and float64)
+// Supports decimal_float (digit+ "." digit+) and scientific_float (decimal_float ("e"|"E") ["+"|"-"] digit+)
+// Reuses is_decimal_digit_char and read_decimal_digits_only from lexer_integer_literals (int64/uint64 digit logic)
+
+// Import token kind
+use lexer_token_kind;
+
+// Import lexer core types
+use lexer_core;
+
+// Import integer literal helpers (reuse int64/uint64 digit logic)
+use lexer_integer_literals;
+
+// Export entry points
+export read_numeric_literal/1;
+export read_negative_numeric_literal/2;
+
+
+{-
+- Reads one numeric literal (integer or float) from the current lexer position. Dispatches to integer literal parsing for 0x/0b (hex/binary) or when no decimal point is found; otherwise parses as float literal per grammar: decimal_float | scientific_float. Shared by float32 and float64.
+- Reuses lexer_integer_literals@read_integer_literal for hex/binary and read_decimal_digits_only for digit consumption (same logic as int64/uint64 integer literals).
+- Example: lexer at "42" — returns (Token integer_literal "42", lexer past "2").
+- Example: lexer at "3.14" — returns (Token float_literal "3.14", lexer past "4").
+- Example: lexer at "1.0e10" — returns (Token float_literal "1.0e10", lexer past "0").
+- Time: O(k), Ω(1), Θ(k). Space: O(k), Ω(1), Θ(k).
+- Last-date-modified: 2025-02-27
+-}
+fn read_numeric_literal(lexer: Lexer) -> (Token, Lexer) {
+    start_location: SourceLocation <- lexer_core@current_location(lexer);
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    first_char: string <- lexer_core@peek_char(lexer);
+    second_char: string <- lexer_core@peek_next_char(lexer);
+    case first_char of {
+        "0" -> case second_char of {
+            "x" -> lexer_integer_literals@read_integer_literal(lexer);
+            "b" -> lexer_integer_literals@read_integer_literal(lexer);
+            _: string -> try_read_float_or_integer(lexer, start_location, kinds)
+        };
+        _: string -> try_read_float_or_integer(lexer, start_location, kinds)
+    }
+}
+
+{-
+- Reads a negative numeric literal. Call when lexer is positioned after "-" (e.g. at "1.414").
+- Consumes the following numeric literal and prepends "-" to the lexeme.
+- Example: lexer at "1.414" (after "-" consumed) — returns (Token float_literal "-1.414", lexer past "4").
+- Last-date-modified: 2025-02-27
+-}
+fn read_negative_numeric_literal(lexer: Lexer, start_location: SourceLocation) -> (Token, Lexer) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    (t: Token, next_lexer: Lexer) <- try_read_float_or_integer(lexer, start_location, kinds);
+    t_lexeme: string <- lexer_core@token_lexeme(t);
+    neg_lexeme: string <- concat("-", t_lexeme);
+    neg_token: Token <- lexer_core@make_token(lexer_core@token_get_kind(t), neg_lexeme, start_location);
+    (neg_token, next_lexer)
+}
+
+{-
+- Attempts to read a float literal (digit+ "." digit+ [exponent]); if the pattern does not match, emits an integer literal.
+- Last-date-modified: 2025-02-27
+-}
+fn try_read_float_or_integer(lexer: Lexer, start_location: SourceLocation, kinds: TokenKinds) -> (Token, Lexer) {
+    (int_part: string, after_int: Lexer) <- lexer_integer_literals@read_decimal_digits_only(lexer, "");
+    next: string <- lexer_core@peek_char(after_int);
+    next_next: string <- lexer_core@peek_next_char(after_int);
+    is_float_start: bool <- next == "." and lexer_integer_literals@is_decimal_digit_char(next_next);
+    case is_float_start of {
+        true -> do
+            (with_frac: string, after_frac: Lexer) <- read_float_fractional_part(after_int, int_part);
+            (final_lexeme: string, after_exp: Lexer) <- read_float_exponent_part(after_frac, with_frac);
+            token: Token <- lexer_core@make_token(kinds.float_literal, final_lexeme, start_location);
+            (token, after_exp)
+        end;
+        false -> do
+            lexeme: string <- case int_part of {
+                "" -> "0";
+                _: string -> int_part
+            };
+            token: Token <- lexer_core@make_token(kinds.integer_literal, lexeme, start_location);
+            (token, after_int)
+        end
+    }
+}
+
+
+{-
+- Reads the fractional part of a float literal: consumes ".", then one or more decimal digits, appending to the lexeme.
+- Grammar: "." digit+
+- Example: lexer at ".14" with lexeme "3" — consumes ".", "1", "4"; returns ("3.14", lexer past "4").
+- Time: O(k), Ω(1), Θ(k). Space: O(k), Ω(1), Θ(k).
+- Last-date-modified: 2025-02-27
+-}
+fn read_float_fractional_part(lexer: Lexer, lexeme: string) -> (string, Lexer) {
+    // Advance past '.'
+    after_dot: Lexer <- lexer_core@advance(lexer);
+    lexeme_with_dot: string <- concat(lexeme, ".");
+    (frac_lexeme: string, after_frac: Lexer) <- lexer_integer_literals@read_decimal_digits_only(after_dot, "");
+    case frac_lexeme of {
+        "" -> (lexeme_with_dot, after_dot);
+        _: string -> (concat(lexeme_with_dot, frac_lexeme), after_frac)
+    }
+}
+
+
+{-
+- Reads the optional exponent part of a float literal: ("e"|"E") ["+"|"-"] digit+
+- If current char is not 'e' or 'E', returns (lexeme, lexer) unchanged.
+- Example: lexer at "e10" with lexeme "1.0" — consumes "e","1","0"; returns ("1.0e10", lexer past "0").
+- Example: lexer at "E-3" with lexeme "2.5" — consumes "E","-","3"; returns ("2.5E-3", lexer past "3").
+- Time: O(k), Ω(1), Θ(k). Space: O(k), Ω(1), Θ(k).
+- Last-date-modified: 2025-02-27
+-}
+fn read_float_exponent_part(lexer: Lexer, lexeme: string) -> (string, Lexer) {
+    next: string <- lexer_core@peek_char(lexer);
+    case next of {
+        "e" -> read_float_exponent_digits(lexer, lexeme);
+        "E" -> read_float_exponent_digits(lexer, lexeme);
+        _: string -> (lexeme, lexer)
+    }
+}
+
+
+{-
+- Consumes "e" or "E", optional "+" or "-", then digit+; appends to lexeme.
+- Last-date-modified: 2025-02-27
+-}
+fn read_float_exponent_digits(lexer: Lexer, lexeme: string) -> (string, Lexer) {
+    consumed: string <- lexer_core@peek_char(lexer);
+    after_e: Lexer <- lexer_core@advance(lexer);
+    lexeme_with_e: string <- concat(lexeme, consumed);
+    next: string <- lexer_core@peek_char(after_e);
+    case next of {
+        "+" -> do
+            after_plus: Lexer <- lexer_core@advance(after_e);
+            (exp_lexeme: string, after_exp: Lexer) <- lexer_integer_literals@read_decimal_digits_only(after_plus, "");
+            (concat(lexeme_with_e, concat("+", exp_lexeme)), after_exp)
+        end;
+        "-" -> do
+            after_minus: Lexer <- lexer_core@advance(after_e);
+            (exp_lexeme: string, after_exp: Lexer) <- lexer_integer_literals@read_decimal_digits_only(after_minus, "");
+            (concat(lexeme_with_e, concat("-", exp_lexeme)), after_exp)
+        end;
+        _: string -> case lexer_integer_literals@is_decimal_digit_char(next) of {
+            true -> do
+                (exp_lexeme: string, after_exp: Lexer) <- lexer_integer_literals@read_decimal_digits_only(after_e, "");
+                (concat(lexeme_with_e, exp_lexeme), after_exp)
+            end;
+            false -> (lexeme_with_e, after_e)
+        }
+    }
+}

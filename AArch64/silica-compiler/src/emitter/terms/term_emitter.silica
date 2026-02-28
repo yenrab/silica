@@ -14,12 +14,15 @@ use print_int32_inline;
 use print_int16_inline;
 use print_int8_inline;
 use print_float64_inline;
+use print_float32_inline;
 use int_rodata;
 use int64_literal_pool;
 use float64_literal_pool;
+use float32_literal_pool;
 use string_literal_pool;
 
-export term_to_asm/10;
+export term_to_asm/11;
+export term_to_asm_debug/12;
 
 // Emit ADRP+ADD for string const (kept here to avoid 6-param emit_const bootstrap issue).
 fn emit_string_const(term: SIRTerm, dest: string, string_literal_table: StringLiteralTable) -> string {
@@ -32,15 +35,20 @@ fn emit_string_const(term: SIRTerm, dest: string, string_literal_table: StringLi
 
 // Emit AArch64 assembly for a SIR term. dest is the virtual register for the result.
 // Tables: int64, int32, int16, int8 for print_X const label lookup; literal_table for large int64 const; float64_literal_table for float64 const; string_literal_table for string const
-fn term_to_asm(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, string_literal_table: StringLiteralTable) -> string {
-    term_to_asm_opt_bound(term, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, "", "", "")
+fn term_to_asm(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable) -> string {
+    term_to_asm_opt_bound(term, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, "", "", "")
 }
 
-fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string) -> string {
+// Debug variant: when debug is true, prints branch/register info for let and var cases
+fn term_to_asm_debug(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool) -> string proc[DeviceIO] {
+    term_to_asm_opt_bound_debug(term, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, "", "", "", debug)
+}
+
+fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string) -> string {
     case term.kind of {
         0 -> case term.type_name == "string" of {
             true -> emit_string_const(term, dest, string_literal_table);
-            false -> const@emit_const(term, dest, table, literal_table, float64_literal_table)
+            false -> const@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table)
         };
         1 -> case term.name == bound_name of {
             true -> var@emit_var_reg(term, dest, bound_reg);
@@ -62,55 +70,137 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 };
                 rhs_reg: string <- case term.inner.kind != 0 and (term.right_expr.kind == 4 or (term.right_expr.kind == 1 and term.right_expr.name == term.name)) of {
                     true -> dest;
-                    false -> case is_float64 of {
-                        true -> case bound_reg == "D0" of {
-                            true -> "D1";
-                            false -> case bound_reg == "D1" of {
-                                true -> "D2";
-                                false -> "D0"
+                    false -> case is_narrow and term.right_expr.kind == 4 of {
+                        true -> case term.right_expr.inner.kind == 6 and term.right_expr.inner.right_expr.kind == 1 and term.right_expr.inner.right_expr.name == term.name of {
+                            true -> concat(reg_prefix, "2");
+                            false -> case term.right_expr.inner.kind == 6 and term.right_expr.inner.inner.kind == 1 and term.right_expr.inner.inner.name == term.name of {
+                                true -> concat(reg_prefix, "1");
+                                false -> case is_float64 of {
+                                    true -> case bound_reg == "D0" of {
+                                        true -> "D1";
+                                        false -> case bound_reg == "D1" of {
+                                            true -> "D2";
+                                            false -> "D0"
+                                        }
+                                    };
+                                    false -> case bound_reg == "X0" of {
+                                        true -> case term.name == "%_" of {
+                                            true -> concat(reg_prefix, "0");
+                                            false -> concat(reg_prefix, "1")
+                                        };
+                                        false -> case bound_reg == concat("X", "1") of {
+                                            true -> concat(reg_prefix, "2");
+                                            false -> case bound_reg == "W0" of {
+                                                true -> case term.name == "%_" of {
+                                                    true -> concat(reg_prefix, "0");
+                                                    false -> concat(reg_prefix, "1")
+                                                };
+                                                false -> case bound_reg == concat("W", "1") of {
+                                                    true -> concat(reg_prefix, "2");
+                                                    false -> concat(reg_prefix, "0")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         };
-                        false -> case bound_reg == "X0" of {
-                            true -> case term.name == "%_" of {
-                                true -> concat(reg_prefix, "0");
-                                false -> concat(reg_prefix, "1")
+                        false -> case is_narrow and term.right_expr.kind == 2 of {
+                            true -> case term.right_expr.right_expr.kind == 4 and term.right_expr.right_expr.inner.kind == 6 and term.right_expr.right_expr.inner.inner.kind == 1 and term.right_expr.right_expr.inner.inner.name == term.name of {
+                                true -> concat(reg_prefix, "1");
+                                false -> case is_float64 of {
+                                    true -> case bound_reg == "D0" of {
+                                        true -> "D1";
+                                        false -> case bound_reg == "D1" of {
+                                            true -> "D2";
+                                            false -> "D0"
+                                        }
+                                    };
+                                    false -> case bound_reg == "X0" of {
+                                        true -> case term.name == "%_" of {
+                                            true -> concat(reg_prefix, "0");
+                                            false -> concat(reg_prefix, "1")
+                                        };
+                                        false -> case bound_reg == concat("X", "1") of {
+                                            true -> concat(reg_prefix, "2");
+                                            false -> case bound_reg == "W0" of {
+                                                true -> case term.name == "%_" of {
+                                                    true -> concat(reg_prefix, "0");
+                                                    false -> concat(reg_prefix, "1")
+                                                };
+                                                false -> case bound_reg == concat("W", "1") of {
+                                                    true -> concat(reg_prefix, "2");
+                                                    false -> concat(reg_prefix, "0")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             };
-                            false -> case bound_reg == concat("X", "1") of {
-                                true -> concat(reg_prefix, "2");
-                                false -> case bound_reg == "W0" of {
+                            false -> case is_float64 of {
+                                true -> case bound_reg == "D0" of {
+                                    true -> "D1";
+                                    false -> case bound_reg == "D1" of {
+                                        true -> "D2";
+                                        false -> "D0"
+                                    }
+                                };
+                                false -> case bound_reg == "X0" of {
                                     true -> case term.name == "%_" of {
                                         true -> concat(reg_prefix, "0");
                                         false -> concat(reg_prefix, "1")
                                     };
-                                    false -> case bound_reg == concat("W", "1") of {
+                                    false -> case bound_reg == concat("X", "1") of {
                                         true -> concat(reg_prefix, "2");
-                                        false -> concat(reg_prefix, "0")
+                                        false -> case bound_reg == "W0" of {
+                                            true -> case term.name == "%_" of {
+                                                true -> concat(reg_prefix, "0");
+                                                false -> concat(reg_prefix, "1")
+                                            };
+                                            false -> case bound_reg == concat("W", "1") of {
+                                                true -> concat(reg_prefix, "2");
+                                                false -> concat(reg_prefix, "0")
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 };
-                rhs_asm: string <- term_to_asm_opt_bound(term.inner, rhs_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
-                body_asm: string <- term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, term.name, rhs_reg, bound_reg);
+                rhs_asm: string <- term_to_asm_opt_bound(term.inner, rhs_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                body_asm: string <- term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, rhs_reg, bound_reg);
                 concat(concat(rhs_asm, "\n"), body_asm)
             end;
             false -> do
+                // Top-level let (bound_name empty): first const goes to arg reg (W1/X1), not dest (W0/X0), so call/prim args are in correct registers
                 rhs_reg: string <- case term.inner.type_name == "float64" of {
                     true -> "D0";
-                    false -> case term.inner.type_name == "int32" or term.inner.type_name == "int16" or term.inner.type_name == "int8" or term.inner.type_name == "uint32" or term.inner.type_name == "uint16" or term.inner.type_name == "uint8" of {
+                    false -> case term.inner.type_name == "float32" of {
+                        true -> "S0";
+                        false -> case term.inner.type_name == "int32" or term.inner.type_name == "int16" or term.inner.type_name == "int8" or term.inner.type_name == "uint32" or term.inner.type_name == "uint16" or term.inner.type_name == "uint8" of {
                         true -> case bound_reg == "" of {
                             true -> concat("W", "1");
-                            false -> concat("W", "0")
+                            false -> case bound_reg == "X1" of {
+                                true -> case term.right_expr.kind == 2 of {
+                                    true -> case term.right_expr.right_expr.kind == 4 and term.right_expr.right_expr.inner.kind == 6 and term.right_expr.right_expr.inner.inner.kind == 1 and term.right_expr.right_expr.inner.inner.name == term.name of {
+                                        true -> concat("W", "1");
+                                        false -> concat("W", "0")
+                                    };
+                                    false -> concat("W", "0")
+                                };
+                                false -> concat("W", "0")
+                            }
                         };
                         false -> case term.inner.kind == 0 of {
                             true -> "X1";
                             false -> dest
                         }
                     }
+                    }
                 };
-                rhs_asm: string <- term_to_asm_opt_bound(term.inner, rhs_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
-                body_asm: string <- term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, term.name, rhs_reg, "");
+                rhs_asm: string <- term_to_asm_opt_bound(term.inner, rhs_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                body_asm: string <- term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, rhs_reg, "");
                 concat(concat(rhs_asm, "\n"), body_asm)
             end
         };
@@ -118,7 +208,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             true -> case print_atom_inline@is_print_atom_const_arg(term, table) of {
                 true -> print_atom_inline@emit_print_atom_inline(term, dest, table);
                 false -> do
-                    arg_asm: string <- term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                    arg_asm: string <- term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                     inline_asm: string <- print_atom_inline@emit_print_atom_by_index(term, dest, table);
                     concat(concat(arg_asm, "\n"), inline_asm)
                 end
@@ -127,22 +217,28 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 true -> case print_bool_inline@is_print_bool_const_arg(term, table) of {
                     true -> print_bool_inline@emit_print_bool_inline(term, dest, table);
                     false -> do
-                        arg_asm: string <- term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                        arg_asm: string <- term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                         inline_asm: string <- print_bool_inline@emit_print_bool_var(term, dest, table);
                         concat(concat(arg_asm, "\n"), inline_asm)
                     end
                 };
                 false -> case term.name == "main.print_float64" of {
                     true -> do
-                        arg_asm: string <- term_to_asm_opt_bound(term.inner, "D0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                        arg_asm: string <- term_to_asm_opt_bound(term.inner, "D0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                         inline_asm: string <- print_float64_inline@emit_print_float64_var(term, dest, table);
                         concat(concat(arg_asm, "\n"), inline_asm)
                     end;
-                    false -> case term.name == "main.print_int64" of {
+                    false -> case term.name == "main.print_float32" of {
+                        true -> do
+                            arg_asm: string <- term_to_asm_opt_bound(term.inner, "S0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                            inline_asm: string <- print_float32_inline@emit_print_float32_var(term, dest, table);
+                            concat(concat(arg_asm, "\n"), inline_asm)
+                        end;
+                        false -> case term.name == "main.print_int64" of {
                     true -> case print_int64_inline@is_print_int64_const_arg(term, table) of {
                         true -> print_int64_inline@emit_print_int64_inline(term, dest, table, int64_table);
                         false -> do
-                            arg_asm: string <- term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                            arg_asm: string <- term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                             inline_asm: string <- print_int64_inline@emit_print_int64_var(term, dest, table);
                             concat(concat(arg_asm, "\n"), inline_asm)
                         end
@@ -151,7 +247,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         true -> case print_int64_inline@is_print_uint64_const_arg(term, table) of {
                             true -> print_int64_inline@emit_print_int64_inline(term, dest, table, int64_table);
                             false -> do
-                                arg_asm: string <- term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                arg_asm: string <- term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                                 inline_asm: string <- print_int64_inline@emit_print_uint64_var(term, dest, table);
                                 concat(concat(arg_asm, "\n"), inline_asm)
                             end
@@ -164,7 +260,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                         true -> concat("W", "0");
                                         false -> "X0"
                                     };
-                                    arg_asm: string <- term_to_asm_opt_bound(term.inner, arg_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                    arg_asm: string <- term_to_asm_opt_bound(term.inner, arg_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                                     inline_asm: string <- print_int32_inline@emit_print_int32_var(term, dest, table);
                                     concat(concat(arg_asm, "\n"), inline_asm)
                                 end
@@ -177,7 +273,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                             true -> concat("W", "0");
                                             false -> "X0"
                                         };
-                                        arg_asm: string <- term_to_asm_opt_bound(term.inner, arg_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                        arg_asm: string <- term_to_asm_opt_bound(term.inner, arg_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                                         inline_asm: string <- print_int32_inline@emit_print_uint32_var(term, dest, table);
                                         concat(concat(arg_asm, "\n"), inline_asm)
                                     end
@@ -190,7 +286,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                                 true -> concat("W", "0");
                                                 false -> "X0"
                                             };
-                                            arg_asm: string <- term_to_asm_opt_bound(term.inner, arg_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                            arg_asm: string <- term_to_asm_opt_bound(term.inner, arg_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                                             inline_asm: string <- print_int16_inline@emit_print_int16_var(term, dest, table);
                                             concat(concat(arg_asm, "\n"), inline_asm)
                                         end
@@ -203,7 +299,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                                     true -> concat("W", "0");
                                                     false -> "X0"
                                                 };
-                                                arg_asm: string <- term_to_asm_opt_bound(term.inner, arg_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                                arg_asm: string <- term_to_asm_opt_bound(term.inner, arg_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                                                 inline_asm: string <- print_int16_inline@emit_print_uint16_var(term, dest, table);
                                                 concat(concat(arg_asm, "\n"), inline_asm)
                                             end
@@ -216,7 +312,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                                         true -> concat("W", "0");
                                                         false -> "X0"
                                                     };
-                                                    arg_asm: string <- term_to_asm_opt_bound(term.inner, arg_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                                    arg_asm: string <- term_to_asm_opt_bound(term.inner, arg_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                                                     inline_asm: string <- print_int8_inline@emit_print_int8_var(term, dest, table);
                                                     concat(concat(arg_asm, "\n"), inline_asm)
                                                 end
@@ -229,13 +325,13 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                                             true -> concat("W", "0");
                                                             false -> "X0"
                                                         };
-                                                        arg_asm: string <- term_to_asm_opt_bound(term.inner, arg_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                                        arg_asm: string <- term_to_asm_opt_bound(term.inner, arg_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                                                         inline_asm: string <- print_int8_inline@emit_print_uint8_var(term, dest, table);
                                                         concat(concat(arg_asm, "\n"), inline_asm)
                                                     end
                                                 };
                                                 false -> do
-                                                    arg_asm: string <- term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                                    arg_asm: string <- term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                                                     call_asm: string <- call@emit_call_body(term, dest);
                                                     concat(concat(arg_asm, "\n"), call_asm)
                                                 end
@@ -248,16 +344,21 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     }
                 }
                 }
+                }
             }
         };
         6 -> do
             is_float64: bool <- term.type_name == "float64";
+            is_float32: bool <- term.type_name == "float32";
             is_narrow: bool <- term.type_name == "int32" or term.type_name == "int16" or term.type_name == "int8" or term.type_name == "uint32" or term.type_name == "uint16" or term.type_name == "uint8";
             reg_prefix: string <- case is_float64 of {
                 true -> "D";
-                false -> case is_narrow of {
-                    true -> "W";
-                    false -> "X"
+                false -> case is_float32 of {
+                    true -> "S";
+                    false -> case is_narrow of {
+                        true -> "W";
+                        false -> "X"
+                    }
                 }
             };
             left_reg: string <- concat(reg_prefix, "1");
@@ -265,9 +366,9 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             case bound_name == "" of {
                 true -> case term.inner.kind == 6 and term.right_expr.kind == 6 of {
                     true -> do
-                        left_asm: string <- term_to_asm_opt_bound(term.inner, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
-                        right_asm: string <- term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
-                        mov_asm: string <- case is_float64 of {
+                        left_asm: string <- term_to_asm_opt_bound(term.inner, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                        right_asm: string <- term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                        mov_asm: string <- case is_float64 or is_float32 of {
                             true -> concat(concat(concat("    FMOV ", left_reg), ", "), concat(dest, "\n"));
                             false -> concat(concat(concat("    MOV ", left_reg), ", "), concat(dest, "\n"))
                         };
@@ -279,31 +380,31 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         right_is_prim: bool <- term.right_expr.kind == 6;
                         (first_asm: string, second_asm: string) <- case left_is_prim of {
                             true -> do
-                                l: string <- term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
-                                r: string <- term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                l: string <- term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                r: string <- term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                                 (l, r)
                             end;
                             false -> case right_is_prim of {
                                 true -> do
-                                    r: string <- term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
-                                    l: string <- term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                    r: string <- term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                    l: string <- term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                                     (r, l)
                                 end;
                                 false -> case term.inner.kind == 6 and term.right_expr.kind == 6 of {
                                     true -> do
-                                        l: string <- term_to_asm_opt_bound(term.inner, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
-                                        r: string <- term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
-                                        mov_asm: string <- case is_float64 of {
+                                        l: string <- term_to_asm_opt_bound(term.inner, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                        r: string <- term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                        mov_asm: string <- case is_float64 or is_float32 of {
                                             true -> concat(concat(concat("    FMOV ", left_reg), ", "), concat(dest, "\n"));
                                             false -> concat(concat(concat("    MOV ", left_reg), ", "), concat(dest, "\n"))
                                         };
                                         (concat(concat(concat(l, "\n"), r), "\n"), mov_asm)
                                     end;
                                     false -> do
-                                        l: string <- term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
-                                        r: string <- term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                        l: string <- term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                                        r: string <- term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                                         identity_moves: string <- case term.inner.kind == 0 and term.right_expr.kind == 0 and (term.name == "and" or term.name == "or") of {
-                                            true -> case is_float64 of {
+                                            true -> case is_float64 or is_float32 of {
                                                 true -> concat(concat(concat(concat("    FMOV ", right_reg), ", "), concat(right_reg, "\n")), concat(concat(concat(concat("    FMOV ", left_reg), ", "), left_reg), ""));
                                                 false -> concat(concat(concat(concat("    MOV ", right_reg), ", "), concat(right_reg, "\n")), concat(concat(concat(concat("    MOV ", left_reg), ", "), left_reg), ""))
                                             };
@@ -323,8 +424,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     end
                 };
                 false -> do
-                    right_asm: string <- term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
-                    left_asm: string <- term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                    right_asm: string <- term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
+                    left_asm: string <- term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg);
                     op_asm: string <- prims@emit_prim_op(term, dest);
                     concat(concat(concat(right_asm, "\n"), concat(left_asm, "\n")), op_asm)
                 end
@@ -332,4 +433,34 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
         end;
         _: int64 -> concat("    ; unsupported term kind ", "?")
     }
+}
+
+// Debug variant: prints bound_name, bound_reg, term structure for let and var at each recursion
+fn term_to_asm_opt_bound_debug(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string proc[DeviceIO] {
+    do
+    msg: string <- case debug and term.kind == 2 of {
+        true -> do
+            p1: string <- concat("  [EMITTER let] bound_name=", bound_name);
+            p2: string <- concat(p1, " bound_reg=");
+            p3: string <- concat(p2, bound_reg);
+            concat(p3, concat(" term.name=", term.name))
+        end;
+        false -> case debug and term.kind == 1 of {
+            true -> do
+                v1: string <- concat("  [EMITTER var] term.name=", term.name);
+                v2: string <- concat(v1, " bound_name=");
+                v3: string <- concat(v2, bound_name);
+                v4: string <- concat(v3, " bound_reg=");
+                v5: string <- concat(v4, bound_reg);
+                concat(v5, concat(" outer_reg=", outer_reg))
+            end;
+            false -> ""
+        }
+    };
+    _: int64 <- case len(msg) > 0 of {
+        true -> do println(msg); 0 end;
+        false -> 0
+    };
+    term_to_asm_opt_bound(term, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg)
+    end
 }

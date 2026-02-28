@@ -59,3 +59,69 @@ fn nil_sir_functions() -> ListSIRFunction {
     ph: ListSIRFunction <- ListSIRFunction { is_nil: true, head: dummy_sir_function(), tail: ph };
     ph
 }
+
+// Debug: convert SIR term/module to readable text (for debugging emitter branch logic)
+export sir_term_to_text/1;
+export sir_module_to_text/1;
+
+fn sir_term_to_text(term: SIRTerm) -> string {
+    case term.kind < 0 of {
+        true -> "dummy";
+        false -> case term.kind of {
+            0 -> do
+                c1: string <- concat("const(", term.type_name);
+                c2: string <- concat(", ", term.value);
+                concat(c1, concat(c2, ")"))
+            end;
+            1 -> concat("var(", concat(term.name, ")"));
+            2 -> do
+                inner_t: string <- sir_term_to_text(term.inner);
+                body_t: string <- sir_term_to_text(term.right_expr);
+                part1: string <- concat("let(", term.name);
+                part2: string <- concat(part1, concat(", ", inner_t));
+                part3: string <- concat(part2, concat(", ", body_t));
+                concat(part3, ")")
+            end;
+            4 -> do
+                arg_t: string <- sir_term_to_text(term.inner);
+                c1: string <- concat("call(", term.name);
+                c2: string <- concat(c1, concat(", ", arg_t));
+                concat(c2, ")")
+            end;
+            6 -> do
+                left_t: string <- sir_term_to_text(term.inner);
+                right_t: string <- sir_term_to_text(term.right_expr);
+                p1: string <- concat("prim(", term.name);
+                p2: string <- concat(p1, concat(", ", left_t));
+                p3: string <- concat(p2, concat(", ", right_t));
+                concat(p3, ")")
+            end;
+            _: int64 -> concat("term(kind=", "?)")
+        }
+    }
+}
+
+fn sir_function_to_text(fn_val: SIRFunction) -> string {
+    body_str: string <- sir_term_to_text(fn_val.body);
+    concat(concat(concat(concat(concat(concat("fn ", fn_val.name), " -> "), concat(fn_val.return_type, " ")), concat(fn_val.effects, " ")), "body: "), body_str)
+}
+
+fn sir_module_to_text_acc(fns: ListSIRFunction, acc: string) -> string {
+    case fns.is_nil of {
+        true -> acc;
+        false -> do
+            fn_str: string <- sir_function_to_text(fns.head);
+            rest: string <- sir_module_to_text_acc(fns.tail, acc);
+            case len(rest) > 0 of {
+                true -> concat(concat(fn_str, "\n"), rest);
+                false -> fn_str
+            }
+        end
+    }
+}
+
+fn sir_module_to_text(sir_module: SIRModule) -> string {
+    header: string <- concat(concat("SIRModule ", sir_module.module_name), "\n");
+    funcs: string <- sir_module_to_text_acc(sir_module.functions, "");
+    concat(header, funcs)
+}

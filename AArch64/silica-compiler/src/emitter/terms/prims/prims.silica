@@ -29,57 +29,112 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     is_unsigned_cmp: bool <- is_unsigned_type(operand_type);
     reg_prefix_arith: string <- case is_narrow_arith of { true -> "W"; false -> "X" };
     reg_prefix_cmp: string <- case is_narrow_operand of { true -> "W"; false -> "X" };
+    is_float64_arith: bool <- term.type_name == "float64";
+    is_float32_arith: bool <- term.type_name == "float32";
+    is_float_arith: bool <- is_float64_arith or is_float32_arith;
+    is_float64_cmp: bool <- operand_type == "float64";
+    is_float32_cmp: bool <- operand_type == "float32";
+    is_float_cmp: bool <- is_float64_cmp or is_float32_cmp;
+    float_prefix: string <- case is_float32_arith or is_float32_cmp of {
+        true -> "S";
+        false -> "D"
+    };
     dest_reg: string <- case is_narrow_arith of {
         true -> concat(reg_prefix_arith, substring(dest, 1, len(dest)));
-        false -> dest
+        false -> case is_float_arith of {
+            true -> case dest of {
+                "X0" -> concat(float_prefix, "0");
+                "X1" -> concat(float_prefix, "1");
+                "X2" -> concat(float_prefix, "2");
+                "S" -> concat(float_prefix, "0");
+                "S0" -> "S0";
+                "S1" -> "S1";
+                "S2" -> "S2";
+                "D" -> concat(float_prefix, "0");
+                "D0" -> "D0";
+                "D1" -> "D1";
+                "D2" -> "D2";
+                _: string -> dest
+            };
+            false -> dest
+        }
     };
-    is_float64_arith: bool <- term.type_name == "float64";
     case term.name of {
         "add" -> case is_float64_arith of {
             true -> arithmetic@emit_fadd_op(dest_reg);
-            false -> arithmetic@emit_add_op(dest_reg, reg_prefix_arith)
+            false -> case is_float32_arith of {
+                true -> arithmetic@emit_fadd_s_op(dest_reg);
+                false -> arithmetic@emit_add_op(dest_reg, reg_prefix_arith)
+            }
         };
         "sub" -> case is_float64_arith of {
             true -> arithmetic@emit_fsub_op(dest_reg);
-            false -> arithmetic@emit_sub_op(dest_reg, reg_prefix_arith)
+            false -> case is_float32_arith of {
+                true -> arithmetic@emit_fsub_s_op(dest_reg);
+                false -> arithmetic@emit_sub_op(dest_reg, reg_prefix_arith)
+            }
         };
         "mul" -> case is_float64_arith of {
             true -> arithmetic@emit_fmul_op(dest_reg);
-            false -> arithmetic@emit_mul_op(dest_reg, reg_prefix_arith)
+            false -> case is_float32_arith of {
+                true -> arithmetic@emit_fmul_s_op(dest_reg);
+                false -> arithmetic@emit_mul_op(dest_reg, reg_prefix_arith)
+            }
         };
         "div" -> case is_float64_arith of {
             true -> arithmetic@emit_fdiv_op(dest_reg);
-            false -> case is_unsigned_arith of {
-                true -> arithmetic@emit_udiv_op(dest_reg, reg_prefix_arith);
-                false -> arithmetic@emit_div_op(dest_reg, reg_prefix_arith)
+            false -> case is_float32_arith of {
+                true -> arithmetic@emit_fdiv_s_op(dest_reg);
+                false -> case is_unsigned_arith of {
+                    true -> arithmetic@emit_udiv_op(dest_reg, reg_prefix_arith);
+                    false -> arithmetic@emit_div_op(dest_reg, reg_prefix_arith)
+                }
             }
         };
         "rem" -> case is_unsigned_arith of {
             true -> arithmetic@emit_urem_op(dest_reg, reg_prefix_arith);
             false -> arithmetic@emit_rem_op(dest_reg, reg_prefix_arith)
         };
-        "lt" -> case is_unsigned_cmp of {
-            true -> comparison@emit_ult_op(dest_reg, reg_prefix_cmp);
-            false -> comparison@emit_lt_op(dest_reg, reg_prefix_cmp)
+        "lt" -> case is_float_cmp of {
+            true -> comparison@emit_fcmp_lt_op(dest_reg, float_prefix);
+            false -> case is_unsigned_cmp of {
+                true -> comparison@emit_ult_op(dest_reg, reg_prefix_cmp);
+                false -> comparison@emit_lt_op(dest_reg, reg_prefix_cmp)
+            }
         };
-        "gt" -> case is_unsigned_cmp of {
-            true -> comparison@emit_ugt_op(dest_reg, reg_prefix_cmp);
-            false -> comparison@emit_gt_op(dest_reg, reg_prefix_cmp)
+        "gt" -> case is_float_cmp of {
+            true -> comparison@emit_fcmp_gt_op(dest_reg, float_prefix);
+            false -> case is_unsigned_cmp of {
+                true -> comparison@emit_ugt_op(dest_reg, reg_prefix_cmp);
+                false -> comparison@emit_gt_op(dest_reg, reg_prefix_cmp)
+            }
         };
-        "le" -> case is_unsigned_cmp of {
-            true -> comparison@emit_ule_op(dest_reg, reg_prefix_cmp);
-            false -> comparison@emit_le_op(dest_reg, reg_prefix_cmp)
+        "le" -> case is_float_cmp of {
+            true -> comparison@emit_fcmp_le_op(dest_reg, float_prefix);
+            false -> case is_unsigned_cmp of {
+                true -> comparison@emit_ule_op(dest_reg, reg_prefix_cmp);
+                false -> comparison@emit_le_op(dest_reg, reg_prefix_cmp)
+            }
         };
-        "ge" -> case is_unsigned_cmp of {
-            true -> comparison@emit_uge_op(dest_reg, reg_prefix_cmp);
-            false -> comparison@emit_ge_op(dest_reg, reg_prefix_cmp)
+        "ge" -> case is_float_cmp of {
+            true -> comparison@emit_fcmp_ge_op(dest_reg, float_prefix);
+            false -> case is_unsigned_cmp of {
+                true -> comparison@emit_uge_op(dest_reg, reg_prefix_cmp);
+                false -> comparison@emit_ge_op(dest_reg, reg_prefix_cmp)
+            }
         };
         "and" -> logical@emit_and_op(dest_reg, reg_prefix_arith);
         "or" -> logical@emit_or_op(dest_reg, reg_prefix_arith);
         _: string -> case term.name == "nq" of {
-            true -> comparison@emit_ne_op(dest_reg, reg_prefix_cmp);
+            true -> case is_float_cmp of {
+                true -> comparison@emit_fcmp_ne_op(dest_reg, float_prefix);
+                false -> comparison@emit_ne_op(dest_reg, reg_prefix_cmp)
+            };
             false -> case term.name == "eq" of {
-                true -> comparison@emit_eq_op(dest_reg, reg_prefix_cmp);
+                true -> case is_float_cmp of {
+                    true -> comparison@emit_fcmp_eq_op(dest_reg, float_prefix);
+                    false -> comparison@emit_eq_op(dest_reg, reg_prefix_cmp)
+                };
                 false -> concat("    ; unsupported prim: ", term.name)
             }
         }
