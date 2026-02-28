@@ -692,7 +692,7 @@ impl CodeGenerator {
             for byte in content.bytes() {
                 match byte {
                     b'\\' => instruction.push_str(r#"\\"#),  // Write \\ which becomes \ in LLVM IR
-                    b'"' => instruction.push_str(r#"\""#),  // Write \" which becomes " in LLVM IR
+                    b'"' => instruction.push_str(r#"\22"#), // LLVM IR: use \22 for quote; \" ends the string (LangRef)
                     b if b >= 32 && b < 127 && b != b'\\' && b != b'"' => {
                         // Printable ASCII (excluding backslash and quote which are handled above)
                         instruction.push(byte as char)
