@@ -1,0 +1,58 @@
+// String call and literal type checking (print_string, string literal)
+// Kept separate from core type checker for modular string support.
+// Uses character-by-character comparison to avoid bootstrap string pattern-match issues.
+
+use type_checker_core;
+
+export check_print_string_result_type/2;
+export check_string_literal/3;
+export check_concatenate_call/5;
+
+// Robust check: expected_type is "string" (avoids case pattern match on string literal)
+fn is_string_type_name(s: string) -> bool {
+    len(s) == 6 and substring(s, 0, 1) == "s" and substring(s, 1, 2) == "t" and substring(s, 2, 3) == "r" and substring(s, 3, 4) == "i" and substring(s, 4, 5) == "n" and substring(s, 5, 6) == "g"
+}
+
+// Robust check: expected_type is "discard"
+fn is_discard_type_name(s: string) -> bool {
+    len(s) == 7 and substring(s, 0, 1) == "d" and substring(s, 1, 2) == "i" and substring(s, 2, 3) == "s" and substring(s, 3, 4) == "c" and substring(s, 4, 5) == "a" and substring(s, 5, 6) == "r" and substring(s, 6, 7) == "d"
+}
+
+// print_string(string) -> atom. Validates expected_type is atom or discard.
+// Caller must check expr.inner has type string before calling.
+fn check_print_string_result_type(expected_type: string, location: SourceLocation) -> TypeCheckResult {
+    case expected_type of {
+        "atom" -> type_checker_core@type_check_ok();
+        "discard" -> type_checker_core@type_check_ok();
+        _: string -> type_checker_core@type_check_err("E2003", location, concat("print_string expects atom result, got ", expected_type), "sect6")
+    }
+}
+
+// concatenate/2 (concat) - two string args, returns string. Args can be string literals or bound string variables.
+// Caller passes arg1_result = check_expr(expr.inner, "string", context), arg2_result = check_expr(expr.right_expr, "string", context).
+fn check_concatenate_call(expr: Expr, expected_type: string, arg1_result: TypeCheckResult, arg2_result: TypeCheckResult) -> TypeCheckResult {
+    case arg1_result.is_ok of {
+        false -> arg1_result;
+        true -> case arg2_result.is_ok of {
+            false -> arg2_result;
+            true -> case is_string_type_name(expected_type) of {
+                true -> type_checker_core@type_check_ok();
+                false -> case is_discard_type_name(expected_type) of {
+                    true -> type_checker_core@type_check_ok();
+                    false -> type_checker_core@type_check_err("E2003", expr.location, concat("concatenate/2 returns string, got expected type ", expected_type), "sect6")
+                }
+            }
+        }
+    }
+}
+
+// String literal (Expr kind 8). Validates expected_type is string or discard.
+fn check_string_literal(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+    case is_string_type_name(expected_type) of {
+        true -> type_checker_core@type_check_ok();
+        false -> case is_discard_type_name(expected_type) of {
+            true -> type_checker_core@type_check_ok();
+            false -> type_checker_core@type_check_err("E2001", expr.location, concat("string literal requires string type, got ", case expected_type of { "" -> "[EMPTY]"; _: string -> expected_type }), "sect6")
+        }
+    }
+}
