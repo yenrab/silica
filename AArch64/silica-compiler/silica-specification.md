@@ -3514,7 +3514,7 @@ Function application has the form `function(arg1, arg2, ..., argN)`:
 
 ```
 add(3, 4)           // applies add function to 3 and 4
-length("hello")     // applies length function to string
+len("hello")        // applies len built-in to string (byte length)
 f()                 // applies nullary function
 ```
 
@@ -10040,7 +10040,6 @@ fn pow(base: int, exp: int) -> int
 
 #### 20.2.2 String Functions
 ```
-fn length(s: string) -> int
 fn concat(s1: string, s2: string) -> string
 fn substring(s: string, start: int, len: int) -> string
 fn contains(s: string, substr: string) -> boolean
