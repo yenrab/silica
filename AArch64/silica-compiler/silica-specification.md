@@ -204,9 +204,9 @@ The following identifiers are reserved keywords:
 actor      actor_ref  atom      atomic    boolean      buf       case
 cast       char       concurrency core_id  core_set device_io do        effect
 efficiency_cores else end        enum      export    false     float16   float32
-float64    fn         for        from      if        impl      import    int8
-int16      int32      int64      mailbox  mem       module    normal    not
-of         performance_cores proc      pub       recv      ref       region    return
+float64    fn         for        from      hot_swap   if        impl      import    int8
+int16      int32      int64      mailbox  mem       module    network_io normal    not
+of         performance_cores proc      pub       recv      ref       region    register_rwr return
 self       send       spawn      string    struct    trait     true      type
 underscore unit       use        where
 ```
@@ -2913,7 +2913,7 @@ Silica provides a comprehensive set of built-in functions and language primitive
 
 ### 5.1 Print Functions
 
-All print functions require the `device_io` effect.
+All print functions require the `device_io` effect. The `device_io` effect is limited to: print (stdout), read from file, write to file, and read from console.
 
 #### 5.1.1 String Printing
 ```
@@ -2952,7 +2952,7 @@ Print boolean and character values to stdout. Returns `:ok` on success.
 
 ### 5.2 File I/O Functions
 
-All file I/O functions require the `device_io` effect.
+All file I/O functions (read, write, directory operations) require the `device_io` effect.
 
 #### 5.2.1 File Reading
 ```
@@ -4126,7 +4126,10 @@ Silica defines several built-in effects that track different kinds of side effec
 - `mailbox` - Message passing (messages must implement `ActorMessage` trait)
 - `concurrency` - Actor spawning and scheduling
 - `atomic` - Atomic memory operations
-- `device_io` - Device input/output operations
+- `device_io` - Limited to: print (stdout), read from file, write to file, read from console
+- `network_io` - Network communications of all kinds (sockets, HTTP, etc.)
+- `hot_swap` - Code loading (dynamic loading, JIT, self-modifying code). On AArch64, requires `ISB` barrier to ensure instruction fetch sees code writes.
+- `register_rwr` - Direct device register access via mmap (read and write). On AArch64, requires `DSB SY` before and `ISB` after for device ordering.
 
 **Note**: The `mailbox` effect is untyped. Type safety for actor messages is ensured through:
 1. Function parameter types (behavior functions receive typed messages)
@@ -4140,6 +4143,9 @@ Effects can be aliased for convenience and abstraction:
 effect actor_eff = [mailbox, concurrency]
 effect io_eff = [mem(normal), device_io]
 effect atomic_eff = [mem(atomic), atomic]
+effect network_eff = [network_io]
+effect hot_swap_eff = [hot_swap]
+effect register_rwr_eff = [register_rwr]
 ```
 
 **Note**: Effect aliases use untyped `mailbox` effect. Message type safety is ensured through function parameter types and the `ActorMessage` trait.
@@ -8797,7 +8803,14 @@ The compiler selects between DMB (Data Memory Barrier), DSB (Data Synchronizatio
 - **ISB (Instruction Synchronization Barrier)**: Used when instruction fetch must see effects of prior operations
   - **Use Case**: Ensuring instruction fetch sees memory writes (e.g., self-modifying code, code loading)
   - **Performance**: Highest overhead - flushes instruction pipeline
-  - **When to Use**: Code loading, self-modifying code, security-sensitive instruction updates
+  - **When to Use**: Code loading (`hot_swap` effect), self-modifying code, security-sensitive instruction updates
+
+**Effect-to-Barrier Mapping:**
+
+- `device_io` (print, file I/O, console read): Syscall-based I/O; kernel handles ordering; typically no explicit barriers required in user space
+- `network_io`: Network communications; kernel handles device access; typically no explicit barriers required in user space
+- `hot_swap`: Code loading requires `ISB` to ensure instruction fetch sees code writes
+- `register_rwr`: Direct device register access via mmap requires `DSB SY` before and `ISB` after for device ordering
 
 **Barrier Scope Selection:**
 
@@ -8931,7 +8944,7 @@ The following tables provide comprehensive guidance for selecting appropriate ba
 | Sequential consistency | `DMB ISH` + `LDAR`/`STLR` | `DSB ISH` + `LDAR`/`STLR` | Full ordering with minimal barrier overhead |
 | Device register access | `DSB SY` | `DMB SY` | Ensure device writes complete before continuing |
 | Cache maintenance | `DSB ISH` | `DMB ISH` | Ensure cache operations complete before memory access |
-| Code loading | `ISB` | `DSB SY` + `ISB` | Ensure instruction fetch sees code writes |
+| Code loading (`hot_swap` effect) | `ISB` | `DSB SY` + `ISB` | Ensure instruction fetch sees code writes |
 | Cross-NUMA synchronization | `DMB ISH` | `DMB SY` | Inner shareable sufficient for NUMA domains |
 | Single-core ordering | `DMB NSH` | No barrier (if ordering not required) | Minimal overhead for single-core scenarios |
 

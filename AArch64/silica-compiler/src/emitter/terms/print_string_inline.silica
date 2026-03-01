@@ -1,0 +1,89 @@
+// Inline emission for print_string(string) built-in.
+// Const arg: emit write(2) with L_str_N label from string_literal_table.
+// Var arg: BL L_ps_helper (strlen + write).
+
+use sir_ast;
+use atom_table;
+use string_literal_pool;
+use emitter_effects;
+
+export emit_print_string_inline/4;
+export is_print_string_const_arg/2;
+export emit_print_string_var/3;
+export emit_print_string_helper/0;
+
+fn is_print_string_const_arg(term: SIRTerm, _table: AtomTable) -> bool {
+    case term.name == "main.print_string" of {
+        false -> false;
+        true -> case term.inner.kind of {
+            0 -> term.inner.type_name == "string";
+            _: int64 -> false
+        }
+    }
+}
+
+// Emit fully inline assembly for print_string(const string).
+// Precondition: term.name == "main.print_string" and term.inner is const string.
+fn emit_print_string_inline(term: SIRTerm, dest: string, _table: AtomTable, string_literal_table: StringLiteralTable) -> string {
+    idx: int64 <- string_literal_pool@string_literal_value_to_index(string_literal_table, term.inner.value);
+    label: string <- concat("L_str_", atom_table@int64_to_decimal_string(idx));
+    length: int64 <- len(term.inner.value);
+    length_str: string <- atom_table@int64_to_decimal_string(length);
+    call_effects: string <- term.value;
+    eff_comment: string <- emitter_effects@effect_annotation(call_effects);
+    pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
+    post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
+    comment_line: string <- case len(eff_comment) > 0 of {
+        true -> concat(eff_comment, "\n");
+        false -> ""
+    };
+    mov_fd: string <- "    MOV X0, #1\n";
+    adrp_part: string <- concat(concat(concat("    ADRP X1, ", label), "@PAGE"), "\n");
+    add_part: string <- concat(concat(concat("    ADD X1, X1, ", label), "@PAGEOFF"), "\n");
+    mov_count: string <- concat(concat("    MOV X2, #", length_str), "\n");
+    syscall_line: string <- "\n    MOV X16, #4\n    SVC #0\n";
+    result_line: string <- concat(concat("    MOV ", dest), ", #0\n");
+    with_comment: string <- concat(comment_line, mov_fd);
+    with_adrp: string <- concat(with_comment, concat(concat(adrp_part, add_part), concat(mov_count, syscall_line)));
+    with_result: string <- concat(with_adrp, result_line);
+    with_post: string <- case len(post_barrier) > 0 of {
+        true -> concat(with_result, concat(concat("\n", post_barrier), "\n"));
+        false -> concat(with_result, "\n")
+    };
+    with_pre: string <- case len(pre_barrier) > 0 of {
+        true -> concat(pre_barrier, concat("\n", with_post));
+        false -> with_post
+    };
+    with_pre
+}
+
+// Emit inline for print_string when argument is variable (e.g. var or let-bound).
+// X0 holds pointer to null-terminated string. Call L_ps_helper (strlen + write).
+fn emit_print_string_var(term: SIRTerm, dest: string, _table: AtomTable) -> string {
+    call_effects: string <- term.value;
+    eff_comment: string <- emitter_effects@effect_annotation(call_effects);
+    pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
+    post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
+    comment_line: string <- case len(eff_comment) > 0 of {
+        true -> concat(eff_comment, "\n");
+        false -> ""
+    };
+    bl_line: string <- "    BL L_ps_helper\n";
+    mov_ret: string <- concat(concat("    MOV ", dest), ", #0\n");
+    with_comment: string <- concat(comment_line, bl_line);
+    with_ret: string <- concat(with_comment, mov_ret);
+    with_post: string <- case len(post_barrier) > 0 of {
+        true -> concat(with_ret, concat(concat("\n", post_barrier), "\n"));
+        false -> with_ret
+    };
+    with_pre: string <- case len(pre_barrier) > 0 of {
+        true -> concat(pre_barrier, concat("\n", with_post));
+        false -> with_post
+    };
+    with_pre
+}
+
+// L_ps_helper: X0 = pointer to null-terminated string. Computes strlen, then write(1, buf, len).
+fn emit_print_string_helper() -> string {
+    "L_ps_helper:\n    MOV X9, X0\n    MOV X2, #0\nL_ps_loop:\n    LDRB W1, [X0]\n    CBZ W1, L_ps_do_write\n    ADD X2, X2, #1\n    ADD X0, X0, #1\n    B L_ps_loop\nL_ps_do_write:\n    MOV X0, #1\n    MOV X1, X9\n    MOV X16, #4\n    SVC #0\n    RET"
+}

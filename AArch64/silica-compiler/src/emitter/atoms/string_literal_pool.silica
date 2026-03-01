@@ -1,6 +1,6 @@
 // String literal pool: collect string constants for .rodata
 // Emit .rodata section with L_str_N labels; const emitter uses ADRP+LDR for string pointers
-// Self-contained string support - uses .byte emission to avoid bootstrap escape issues
+// Uses .ascii directives with raw UTF-8 bytes for full Unicode support
 
 use sir_ast;
 use bst;
@@ -86,7 +86,15 @@ fn collect_string_literal_from_term(term: SIRTerm, table: StringLiteralTable, ne
                 (t2: StringLiteralTable, i2: int64) <- collect_string_literal_from_term(term.right_expr, t1, i1);
                 (t2, i2)
             end;
-            4 -> collect_string_literal_from_term(term.inner, table, next_index);
+            4 -> case term.name == "main.println" of {
+                true -> do
+                    (t1: StringLiteralTable, i1: int64) <- collect_string_literal_from_term(term.inner, table, next_index);
+                    (t2: StringLiteralTable, i2: int64) <- add_str_value(t1, "\n", i1);
+                    new_next: int64 <- case i2 == i1 of { true -> i1 + 1; false -> i1 };
+                    (t2, new_next)
+                end;
+                false -> collect_string_literal_from_term(term.inner, table, next_index)
+            };
             6 -> do
                 (t1: StringLiteralTable, i1: int64) <- collect_string_literal_from_term(term.inner, table, next_index);
                 (t2: StringLiteralTable, i2: int64) <- collect_string_literal_from_term(term.right_expr, t1, i1);
@@ -123,151 +131,27 @@ fn reverse_str_values(values: ListStringLiteralValue) -> ListStringLiteralValue 
     rev_str_values_acc(values, nil_str_literal_values())
 }
 
-// Byte-to-ord for string emission. Uses .byte to avoid bootstrap escape issues.
-// Covers ASCII printable, control chars (\n \t \r), space, backslash, quotes.
-fn string_byte_to_ord(c: string) -> int64 {
-    case len(c) of {
-        0 -> 0;
-        _: int64 -> do
-            ch: string <- substring(c, 0, 1);
-            case ch of {
-                "0" -> 48;
-                "1" -> 49;
-                "2" -> 50;
-                "3" -> 51;
-                "4" -> 52;
-                "5" -> 53;
-                "6" -> 54;
-                "7" -> 55;
-                "8" -> 56;
-                "9" -> 57;
-                "a" -> 97;
-                "b" -> 98;
-                "c" -> 99;
-                "d" -> 100;
-                "e" -> 101;
-                "f" -> 102;
-                "g" -> 103;
-                "h" -> 104;
-                "i" -> 105;
-                "j" -> 106;
-                "k" -> 107;
-                "l" -> 108;
-                "m" -> 109;
-                "n" -> 110;
-                "o" -> 111;
-                "p" -> 112;
-                "q" -> 113;
-                "r" -> 114;
-                "s" -> 115;
-                "t" -> 116;
-                "u" -> 117;
-                "v" -> 118;
-                "w" -> 119;
-                "x" -> 120;
-                "y" -> 121;
-                "z" -> 122;
-                "A" -> 65;
-                "B" -> 66;
-                "C" -> 67;
-                "D" -> 68;
-                "E" -> 69;
-                "F" -> 70;
-                "G" -> 71;
-                "H" -> 72;
-                "I" -> 73;
-                "J" -> 74;
-                "K" -> 75;
-                "L" -> 76;
-                "M" -> 77;
-                "N" -> 78;
-                "O" -> 79;
-                "P" -> 80;
-                "Q" -> 81;
-                "R" -> 82;
-                "S" -> 83;
-                "T" -> 84;
-                "U" -> 85;
-                "V" -> 86;
-                "W" -> 87;
-                "X" -> 88;
-                "Y" -> 89;
-                "Z" -> 90;
-                "_" -> 95;
-                "-" -> 45;
-                "." -> 46;
-                ":" -> 58;
-                " " -> 32;
-                "\n" -> 10;
-                "\t" -> 9;
-                "\r" -> 13;
-                "!" -> 33;
-                "\"" -> 34;
-                "'" -> 39;
-                "(" -> 40;
-                ")" -> 41;
-                "*" -> 42;
-                "+" -> 43;
-                "," -> 44;
-                "/" -> 47;
-                ";" -> 59;
-                "<" -> 60;
-                "=" -> 61;
-                ">" -> 62;
-                "?" -> 63;
-                "[" -> 91;
-                "\\" -> 92;
-                "]" -> 93;
-                "^" -> 94;
-                "{" -> 123;
-                "|" -> 124;
-                "}" -> 125;
-                "~" -> 126;
-                _: string -> 63
-            }
-        end
+// Escape a single byte for use inside an assembler .ascii directive.
+// Only assembler-interpreted characters need escaping; all other bytes
+// (including multi-byte UTF-8 continuation bytes > 0x7F) pass through as-is.
+fn escape_char_for_ascii(c: string) -> string {
+    case c of {
+        "\n" -> "\\n";
+        "\t" -> "\\t";
+        "\r" -> "\\r";
+        "\"" -> "\\\"";
+        "\\" -> "\\\\";
+        _: string -> c
     }
 }
 
-fn int_to_hex_str(n: int64) -> string {
-    case n < 16 of {
-        true -> digit_hex_str(n);
-        false -> concat(int_to_hex_str(n / 16), digit_hex_str(n % 16))
-    }
-}
-
-fn digit_hex_str(d: int64) -> string {
-    case d of {
-        0 -> "0";
-        1 -> "1";
-        2 -> "2";
-        3 -> "3";
-        4 -> "4";
-        5 -> "5";
-        6 -> "6";
-        7 -> "7";
-        8 -> "8";
-        9 -> "9";
-        10 -> "a";
-        11 -> "b";
-        12 -> "c";
-        13 -> "d";
-        14 -> "e";
-        15 -> "f";
-        _: int64 -> "0"
-    }
-}
-
-// Emit .byte 0xNN, 0xNN, ... 0 for null-terminated string. Avoids .asciz escape issues.
-fn emit_string_bytes(content: string, pos: int64, acc: string) -> string {
+fn escape_string_for_ascii(content: string, pos: int64, acc: string) -> string {
     case pos >= len(content) of {
-        true -> concat(acc, " 0");
+        true -> acc;
         false -> do
             c: string <- substring(content, pos, pos + 1);
-            code: int64 <- string_byte_to_ord(c);
-            hex: string <- int_to_hex_str(code);
-            suffix: string <- concat(concat(" 0x", hex), ",");
-            emit_string_bytes(content, pos + 1, concat(acc, suffix))
+            escaped: string <- escape_char_for_ascii(c);
+            escape_string_for_ascii(content, pos + 1, concat(acc, escaped))
         end
     }
 }
@@ -278,13 +162,14 @@ fn emit_string_literal_values_rodata(values: ListStringLiteralValue, index: int6
         false -> do
             rest: string <- emit_string_literal_values_rodata(values.tail, index + 1);
             label_colon: string <- concat(concat(concat("L_str_", atom_table@int64_to_decimal_string(index)), ":"), "\n");
-            dot_byte: string <- concat(".", "byte");
             indent: string <- concat(concat(concat(" ", " "), " "), " ");
-            byte_prefix: string <- concat(concat(indent, dot_byte), " ");
-            one: string <- concat(concat(label_colon, byte_prefix), emit_string_bytes(values.head, 0, ""));
+            escaped: string <- escape_string_for_ascii(values.head, 0, "");
+            ascii_line: string <- concat(concat(concat(indent, ".ascii \""), escaped), "\"\n");
+            null_line: string <- concat(indent, ".byte 0");
+            one: string <- concat(label_colon, concat(ascii_line, null_line));
             case len(rest) > 0 of {
                 true -> concat(concat(one, "\n"), rest);
-                false -> one
+                false -> concat(one, "\n")
             }
         end
     }

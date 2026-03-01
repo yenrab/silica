@@ -5,6 +5,7 @@
 
 export is_pure/1;
 export has_device_io/1;
+export has_register_rwr/1;
 export has_mem_atomic/1;
 export has_mem_normal/1;
 export has_any_mem/1;
@@ -25,6 +26,10 @@ fn is_pure(effects: string) -> bool {
 
 fn has_device_io(effects: string) -> bool {
     string_contains(effects, "device_io")
+}
+
+fn has_register_rwr(effects: string) -> bool {
+    string_contains(effects, "register_rwr")
 }
 
 fn has_mem_atomic(effects: string) -> bool {
@@ -48,14 +53,15 @@ fn has_mailbox(effects: string) -> bool {
 }
 
 // --- Barrier selection ---
-// AArch64 barrier placement per spec §17.2.6 and sir_design_spec §4.2:
-//   device_io  -> DSB SY before syscall (device ordering)
+// AArch64 barrier placement per spec §9.1.1 Effect-to-Barrier Mapping:
+//   device_io   -> no barriers (syscall-based; kernel handles ordering)
+//   register_rwr -> DSB SY before, ISB after (direct mmap device access)
 //   mem(atomic) -> DMB ISH (inner-shareable barrier for cross-core visibility)
 //   mem(normal) -> no barrier (program order sufficient)
 //   pure ([])   -> no barrier
 
 fn barrier_before_call(effects: string) -> string {
-    case has_device_io(effects) of {
+    case has_register_rwr(effects) of {
         true -> "    DSB SY";
         false -> case has_mem_atomic(effects) of {
             true -> "    DMB ISH";
@@ -65,7 +71,7 @@ fn barrier_before_call(effects: string) -> string {
 }
 
 fn barrier_after_call(effects: string) -> string {
-    case has_device_io(effects) of {
+    case has_register_rwr(effects) of {
         true -> "    ISB";
         false -> case has_mem_atomic(effects) of {
             true -> "    DMB ISH";

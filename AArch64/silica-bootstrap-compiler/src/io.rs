@@ -8,9 +8,17 @@
 
 use std::io::Write;
 
-/// SilicaString structure matching runtime.rs
+/// Tag value stored as the first field of every SilicaString struct.
+/// The low byte is 0xFF, which never appears in valid UTF-8, so reading the
+/// first byte of the pointer target reliably distinguishes a SilicaString
+/// struct from a raw null-terminated C string constant.
+pub const SILICA_STRING_TAG: usize = usize::MAX; // 0xFFFFFFFFFFFFFFFF
+
+/// SilicaString structure matching runtime.rs.
+/// Layout: {tag, data, length} — tag is always SILICA_STRING_TAG.
 #[repr(C)]
 pub struct SilicaString {
+    pub tag: usize,
     pub data: *mut u8,
     pub length: usize,
 }
@@ -233,61 +241,47 @@ mod tests {
     }
 }
 
-/// Get the byte length of a SilicaString
-/// Takes a pointer to a SilicaString struct and returns its byte length field
+/// Get the byte length of a string.
+/// Accepts EITHER a SilicaString struct pointer OR a raw string constant pointer.
 #[no_mangle]
-pub extern "C" fn silica_string_len(silica_string_ptr: *const u8) -> usize {
-    if silica_string_ptr.is_null() {
+pub extern "C" fn silica_string_len(ptr: *const u8) -> usize {
+    if ptr.is_null() {
         return 0;
     }
-
     unsafe {
-        // SilicaString is { data: *mut u8, length: usize }
-        // Cast to pointer to usize to access the length field (second field)
-        let ptr = silica_string_ptr as *const usize;
-        let length_ptr = ptr.add(1); // length is at offset 1 (after data pointer)
-        *length_ptr
+        let (_, len) = get_string_data_and_length(ptr).unwrap_or((std::ptr::null(), 0));
+        len
     }
 }
 
-/// Get the character count of a SilicaString
-/// Takes a pointer to a SilicaString struct and returns the number of Unicode characters
+/// Get the character (Unicode scalar) count of a string.
+/// Accepts EITHER a SilicaString struct pointer OR a raw string constant pointer.
 #[no_mangle]
-pub extern "C" fn silica_string_len_chars(silica_string_ptr: *const u8) -> usize {
-    if silica_string_ptr.is_null() {
+pub extern "C" fn silica_string_len_chars(ptr: *const u8) -> usize {
+    if ptr.is_null() {
         return 0;
     }
 
     unsafe {
-        // SilicaString is { data: *mut u8, length: usize }
-        // Read the struct fields
-        let ptr = silica_string_ptr as *const usize;
-        let data_ptr = *ptr as *const u8; // First field: data pointer
-        let byte_length = *(ptr.add(1)); // Second field: byte length
+        let (data_ptr, byte_length) = get_string_data_and_length(ptr).unwrap_or((std::ptr::null(), 0));
 
         if data_ptr.is_null() || byte_length == 0 {
             return 0;
         }
 
-        // Create a slice from the raw pointer and length
         let slice = std::slice::from_raw_parts(data_ptr, byte_length);
-        
-        // Convert to &str and count characters
+
         match std::str::from_utf8(slice) {
             Ok(s) => s.chars().count(),
             Err(_) => {
-                // Invalid UTF-8 - count valid UTF-8 sequences
-                // This is a fallback for malformed strings
                 let mut count = 0;
                 let mut i = 0;
                 while i < byte_length {
-                    // Try to decode a UTF-8 character
                     if let Some((_, len)) = std::str::from_utf8(&slice[i..]).ok()
                         .and_then(|s| s.chars().next().map(|c| (c, c.len_utf8()))) {
                         count += 1;
                         i += len;
                     } else {
-                        // Skip invalid byte
                         i += 1;
                     }
                 }
@@ -297,47 +291,34 @@ pub extern "C" fn silica_string_len_chars(silica_string_ptr: *const u8) -> usize
     }
 }
 
-/// Helper to extract string data and length from either a string constant pointer or SilicaString pointer.
-/// Public for use by runtime.rs silica_read_file_path.
+/// Extract string data pointer and byte length from either representation.
+///
+/// Detection: the first field of a SilicaString is `tag == SILICA_STRING_TAG`
+/// whose low byte is 0xFF — a value that never appears in valid UTF-8.
+/// If the first byte of `ptr` is 0xFF we verify the full tag and read the
+/// struct; otherwise we treat the pointer as a null-terminated C string.
+///
+/// Public for use by runtime.rs (silica_read_file_path, etc.).
 pub unsafe fn get_string_data_and_length(ptr: *const u8) -> Option<(*const u8, usize)> {
     if ptr.is_null() {
         return None;
     }
 
-    // Try to interpret as SilicaString pointer first
-    // SilicaString is { data: *mut u8, length: usize }
-    let silica_string_ptr = ptr as *const usize;
-
-    // Read the first field (data pointer)
-    let data_ptr = *silica_string_ptr as *const u8;
-
-    // Read the second field (length)
-    let length = *(silica_string_ptr.add(1));
-
-    // Heuristic: if data_ptr is not null and length is reasonable, assume it's a SilicaString
-    // Also check that data_ptr is a reasonable pointer value (not too large, which would indicate
-    // we're reading string data as if it were a pointer)
-    let data_ptr_value = data_ptr as usize;
-
-    // Check if data_ptr looks like a valid pointer:
-    // - Not null
-    // - Different from struct pointer
-    // - Within reasonable memory range (typical user space addresses on 64-bit systems)
-    // - Length is reasonable
-    // - data_ptr_value > 0x10000: heap pointers are typically much higher; raw string data
-    //   (e.g. "=" = 0x3D) when misinterpreted as a struct yields small values. Using 0x10000
-    //   avoids misclassifying string constant pointers as SilicaString (fixes substring == literal bug).
-    let looks_like_valid_pointer = !data_ptr.is_null()
-        && data_ptr != ptr
-        && data_ptr_value < 0x7fffffffffff  // Reasonable upper bound for user space
-        && data_ptr_value > 0x10000;  // Heap pointers typically > 64K; string data yields small values
-
-    if looks_like_valid_pointer && length < 1024 * 1024 * 1024 {
-        return Some((data_ptr, length));
+    // Fast check: 0xFF never starts a valid UTF-8 sequence
+    if *ptr == 0xFF {
+        let words = ptr as *const usize;
+        let tag = *words;
+        if tag == SILICA_STRING_TAG {
+            let data_ptr = *(words.add(1)) as *const u8;
+            let length = *(words.add(2));
+            if length < 1024 * 1024 * 1024 {
+                return Some((data_ptr, length));
+            }
+        }
     }
 
-    // Otherwise, treat as a null-terminated C string
-    let mut len = 0;
+    // Treat as a null-terminated C string
+    let mut len: usize = 0;
     let mut p = ptr;
     while *p != 0 {
         len += 1;
@@ -401,24 +382,22 @@ fn create_empty_silica_string() -> *mut u8 {
 
 /// Create a SilicaString from a byte slice
 fn create_silica_string_from_bytes(bytes: &[u8]) -> *mut u8 {
-    // Allocate memory for the string data
     let data_ptr = if bytes.is_empty() {
         std::ptr::null_mut()
     } else {
         let mut data = Vec::with_capacity(bytes.len());
         data.extend_from_slice(bytes);
         let ptr = data.as_mut_ptr();
-        std::mem::forget(data); // Leak the Vec to keep the data alive
+        std::mem::forget(data);
         ptr
     };
 
-    // Create SilicaString struct
     let silica_string = Box::new(SilicaString {
+        tag: SILICA_STRING_TAG,
         data: data_ptr,
         length: bytes.len(),
     });
 
-    // Return pointer to SilicaString (cast to i8* for C compatibility)
     Box::into_raw(silica_string) as *mut u8
 }
 

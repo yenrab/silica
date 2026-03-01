@@ -1,0 +1,44 @@
+// String rodata: detect if module uses print_string or println with var arg (needs L_ps_helper).
+// String literals themselves are emitted by string_literal_pool.
+
+use sir_ast;
+
+export module_uses_print_string_var/1;
+
+fn term_has_print_string_var(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> case term.name == "main.print_string" of {
+                true -> term.inner.kind != 0;
+                false -> case term.name == "main.println" of {
+                    true -> term.inner.kind != 0;
+                    false -> term_has_print_string_var(term.inner)
+                }
+            };
+            2 -> case term_has_print_string_var(term.inner) of {
+                true -> true;
+                false -> term_has_print_string_var(term.right_expr)
+            };
+            6 -> case term_has_print_string_var(term.inner) of {
+                true -> true;
+                false -> term_has_print_string_var(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn print_string_var_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_print_string_var(fns.head.body) of {
+            true -> true;
+            false -> print_string_var_in_functions(fns.tail)
+        }
+    }
+}
+
+fn module_uses_print_string_var(sir_module: SIRModule) -> bool {
+    print_string_var_in_functions(sir_module.functions)
+}

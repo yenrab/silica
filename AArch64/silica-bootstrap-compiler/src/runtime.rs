@@ -1078,6 +1078,7 @@ pub extern "C" fn silica_actor_cast(actor: *mut SilicaActor, message: *mut u8) -
 // Note: Struct layouts follow LLVM/C conventions for IR compatibility
 #[repr(C)]
 pub struct SilicaString {
+    pub tag: usize,
     pub data: *mut u8,
     pub length: usize,
 }
@@ -1128,8 +1129,8 @@ pub extern "C" fn silica_read_file(path: *const u8, path_len: usize) -> SilicaRe
     // Read the file
     match fs::read(path_str) {
         Ok(content) => {
-            // Create a SilicaString with the file content
             let silica_string = Box::new(SilicaString {
+                tag: crate::io::SILICA_STRING_TAG,
                 data: content.as_ptr() as *mut u8,
                 length: content.len(),
             });
@@ -1211,6 +1212,7 @@ pub extern "C" fn silica_write_file(path: *const u8, path_len: usize, content: *
 
 fn create_error_string(message: &str) -> *mut u8 {
     let error_string = Box::new(SilicaString {
+        tag: crate::io::SILICA_STRING_TAG,
         data: message.as_ptr() as *mut u8,
         length: message.len(),
     });
@@ -1295,6 +1297,7 @@ pub extern "C" fn silica_exec_command(
 // Helper functions
 fn create_silica_string(data: &[u8]) -> SilicaString {
     let silica_string = SilicaString {
+        tag: crate::io::SILICA_STRING_TAG,
         data: data.as_ptr() as *mut u8,
         length: data.len(),
     };
@@ -1307,6 +1310,7 @@ fn create_silica_string(data: &[u8]) -> SilicaString {
 
 fn create_error_process_result(message: &str) -> *mut ProcessResult {
     let error_string = SilicaString {
+        tag: crate::io::SILICA_STRING_TAG,
         data: message.as_ptr() as *mut u8,
         length: message.len(),
     };
