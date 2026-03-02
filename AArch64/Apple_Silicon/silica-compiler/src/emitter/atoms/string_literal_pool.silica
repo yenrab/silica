@@ -1,9 +1,9 @@
 // String literal pool: collect string constants for .rodata
 // Emit .rodata section with L_str_N labels; const emitter uses ADRP+LDR for string pointers
 // Uses .ascii directives with raw UTF-8 bytes for full Unicode support
+// List-based deduplication with string equality (not BST) so Unicode/UTF-8 works correctly.
 
 use sir_ast;
-use bst;
 use atom_table;
 
 export StringLiteralTable/0;
@@ -20,7 +20,6 @@ struct ListStringLiteralValue {
 
 struct StringLiteralTable {
     is_empty: bool,
-    root: BstNode,
     values: ListStringLiteralValue
 }
 
@@ -34,26 +33,28 @@ fn cons_str_literal_value(s: string, t: ListStringLiteralValue) -> ListStringLit
 }
 
 fn empty_string_literal_table() -> StringLiteralTable {
-    StringLiteralTable { is_empty: true, root: bst@empty_node(), values: nil_str_literal_values() }
+    StringLiteralTable { is_empty: true, values: nil_str_literal_values() }
+}
+
+fn find_index_in_list(list: ListStringLiteralValue, value: string, pos: int64) -> int64 {
+    case list.is_nil of {
+        true -> 0 - 1;
+        false -> case list.head == value of {
+            true -> pos;
+            false -> find_index_in_list(list.tail, value, pos + 1)
+        }
+    }
 }
 
 fn add_str_value(table: StringLiteralTable, value: string, next_index: int64) -> (StringLiteralTable, int64) {
-    case table.is_empty of {
-        true -> do
-            (root: BstNode, idx: int64) <- bst@bst_insert_string(bst@empty_node(), value, next_index);
-            new_values: ListStringLiteralValue <- case idx == next_index of {
-                true -> cons_str_literal_value(value, table.values);
-                false -> table.values
-            };
-            (StringLiteralTable { is_empty: false, root: root, values: new_values }, idx)
-        end;
+    in_order: ListStringLiteralValue <- reverse_str_values(table.values);
+    existing: int64 <- find_index_in_list(in_order, value, 0);
+    case existing >= 0 of {
+        true -> (table, existing);
         false -> do
-            (new_root: BstNode, idx: int64) <- bst@bst_insert_string(table.root, value, next_index);
-            new_values: ListStringLiteralValue <- case idx == next_index of {
-                true -> cons_str_literal_value(value, table.values);
-                false -> table.values
-            };
-            (StringLiteralTable { is_empty: false, root: new_root, values: new_values }, idx)
+            new_values: ListStringLiteralValue <- cons_str_literal_value(value, table.values);
+            new_table: StringLiteralTable <- StringLiteralTable { is_empty: false, values: new_values };
+            (new_table, next_index)
         end
     }
 }
@@ -61,7 +62,10 @@ fn add_str_value(table: StringLiteralTable, value: string, next_index: int64) ->
 fn string_literal_value_to_index(table: StringLiteralTable, value: string) -> int64 {
     case table.is_empty of {
         true -> 0 - 1;
-        false -> bst@bst_lookup_string(table.root, value)
+        false -> do
+            in_order: ListStringLiteralValue <- reverse_str_values(table.values);
+            find_index_in_list(in_order, value, 0)
+        end
     }
 }
 
