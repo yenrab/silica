@@ -1,0 +1,21 @@
+// String substring and substring_until_char helpers: non-MTE fallback for Apple Silicon (macOS ARM64).
+// Per silica-specification §21.3: software-based bounds checking when MTE unavailable.
+//
+// L_substring_helper: X0 = ptr (null-term UTF-8), X1 = start (int64), X2 = end (int64).
+// Returns X0 = ptr to newly allocated substring [start, end). Clamps indices to valid range.
+//
+// L_substring_until_char_helper: X0 = ptr, X1 = start (int64), X2 = char (int64, low byte used).
+// Returns X0 = ptr to substring from start until (exclusive) first occurrence of char, or rest of string.
+//
+// Uses mmap syscall (no libc). Targets: Apple Silicon, macOS ARM64.
+
+export emit_string_substring_helper/0;
+export emit_string_substring_until_char_helper/0;
+
+fn emit_string_substring_helper() -> string {
+    "L_substring_helper:\n    STP X19, X20, [SP, #-48]!\n    STP X21, X22, [SP, #16]\n    STR X23, [SP, #32]\n    MOV X19, X0\n    MOV X20, X1\n    MOV X21, X2\n    MOV X9, X19\n    MOV X22, #0\nL_ss_len:\n    LDRB W10, [X9]\n    CBZ W10, L_ss_len_done\n    ADD X22, X22, #1\n    ADD X9, X9, #1\n    B L_ss_len\nL_ss_len_done:\n    CMP X20, #0\n    CSEL X20, XZR, X20, LT\n    CMP X20, X22\n    CSEL X20, X22, X20, GT\n    CMP X21, #0\n    CSEL X21, XZR, X21, LT\n    CMP X21, X22\n    CSEL X21, X22, X21, GT\n    CMP X20, X21\n    CSEL X20, X21, X20, GT\n    SUB X11, X21, X20\n    CBZ X11, L_ss_empty\n    ADD X0, X11, #1\n    MOV X1, X0\n    MOV X0, #0\n    MOV X2, #3\n    MOV X3, #0x1002\n    MOV X4, #-1\n    MOV X5, #0\n    MOVZ X16, #0xC5\n    MOVK X16, #0x200, LSL #16\n    SVC #0x80\n    MOV X23, X0\n    MOV X9, X23\n    ADD X10, X19, X20\n    MOV X12, X11\nL_ss_cp:\n    CBZ X12, L_ss_cp_done\n    LDRB W13, [X10]\n    STRB W13, [X9]\n    ADD X9, X9, #1\n    ADD X10, X10, #1\n    SUB X12, X12, #1\n    B L_ss_cp\nL_ss_cp_done:\n    STRB WZR, [X9]\n    MOV X0, X23\n    B L_ss_ret\nL_ss_empty:\n    MOV X0, #1\n    MOV X1, X0\n    MOV X0, #0\n    MOV X2, #3\n    MOV X3, #0x1002\n    MOV X4, #-1\n    MOV X5, #0\n    MOVZ X16, #0xC5\n    MOVK X16, #0x200, LSL #16\n    SVC #0x80\n    STRB WZR, [X0]\nL_ss_ret:\n    LDR X23, [SP, #32]\n    LDP X21, X22, [SP, #16]\n    LDP X19, X20, [SP], #48\n    RET"
+}
+
+fn emit_string_substring_until_char_helper() -> string {
+    "L_substring_until_char_helper:\n    STP X19, X20, [SP, #-48]!\n    STP X21, X22, [SP, #16]\n    STR X23, [SP, #32]\n    MOV X19, X0\n    MOV X20, X1\n    MOV X21, X2\n    MOV X9, X19\n    MOV X22, #0\nL_suc_len:\n    LDRB W10, [X9]\n    CBZ W10, L_suc_len_done\n    ADD X22, X22, #1\n    ADD X9, X9, #1\n    B L_suc_len\nL_suc_len_done:\n    CMP X20, #0\n    CSEL X20, XZR, X20, LT\n    CMP X20, X22\n    CSEL X20, X22, X20, GT\n    MOV X23, X20\n    ADD X9, X19, X20\nL_suc_scan:\n    CMP X20, X22\n    B.GE L_suc_scan_done\n    LDRB W10, [X9]\n    CMP W10, W21\n    B.EQ L_suc_scan_done\n    ADD X9, X9, #1\n    ADD X20, X20, #1\n    B L_suc_scan\nL_suc_scan_done:\n    SUB X11, X20, X23\n    CBZ X11, L_suc_empty\n    ADD X10, X19, X23\n    ADD X0, X11, #1\n    MOV X1, X0\n    MOV X0, #0\n    MOV X2, #3\n    MOV X3, #0x1002\n    MOV X4, #-1\n    MOV X5, #0\n    MOVZ X16, #0xC5\n    MOVK X16, #0x200, LSL #16\n    SVC #0x80\n    MOV X23, X0\n    MOV X9, X23\n    MOV X12, X11\nL_suc_cp:\n    CBZ X12, L_suc_cp_done\n    LDRB W13, [X10]\n    STRB W13, [X9]\n    ADD X9, X9, #1\n    ADD X10, X10, #1\n    SUB X12, X12, #1\n    B L_suc_cp\nL_suc_cp_done:\n    STRB WZR, [X9]\n    MOV X0, X23\n    B L_suc_ret\nL_suc_empty:\n    MOV X0, #1\n    MOV X1, X0\n    MOV X0, #0\n    MOV X2, #3\n    MOV X3, #0x1002\n    MOV X4, #-1\n    MOV X5, #0\n    MOVZ X16, #0xC5\n    MOVK X16, #0x200, LSL #16\n    SVC #0x80\n    STRB WZR, [X0]\nL_suc_ret:\n    LDR X23, [SP, #32]\n    LDP X21, X22, [SP, #16]\n    LDP X19, X20, [SP], #48\n    RET"
+}

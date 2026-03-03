@@ -65,7 +65,8 @@
         "Trials path is always AArch64/silica-compiler/trials (relative to workspace root)",
         "CI trigger phrases: 'use the makefile', 'use makefile', 'run CI', 'run tests', 'run the tests'",
         "Assembly quality evaluated as balance of speed and space",
-        "Golden update (cp) only when user explicitly approves"
+        "Golden update (cp) only when user explicitly approves",
+        "CRITICAL: A .sams file can only be evaluated as 'better' than its .ascomp golden if the matching .sout and .scout pair for the same trial have NOT changed. If .sout differs from .scout, do NOT verdict assembly as 'better'; treat as 'cannot evaluate' or skip assembly evaluation for that trial"
       ],
       "file_io_capability": {
         "enabled": true,
@@ -101,7 +102,8 @@
         "Parse Makefile output: compilation failures, .sams vs .ascomp diffs, .sout vs .scout diffs",
         "For each trial subdir: .sams = current assembly, .ascomp = assembly golden; .sout = current output, .scout = output golden","CRITICAL diff format: Makefile runs 'diff .sams .ascomp' (first=current, second=golden). In diff output: < = lines from first file (CURRENT .sams); > = lines from second file (GOLDEN .ascomp). Same for output: diff .sout .scout gives < = current .sout, > = golden .scout",
         "Skip assembly evaluation for trials with compilation failures",
-        "Transition to ex:AssemblyEvaluationMode for trials with assembly diffs; otherwise to ex:ReportingMode"
+        "Skip assembly evaluation for trials that have BOTH assembly diff AND output diff (same trial). Only pass to AssemblyEvaluationMode trials where .sout matches .scout",
+        "Transition to ex:AssemblyEvaluationMode for trials with assembly diffs (and no output diff); otherwise to ex:ReportingMode"
       ],
       "isolatedState": "ex:CIExecutionModeState",
       "contains": ["ex:CIRunnerActor"],
@@ -116,6 +118,7 @@
         "Old-Timer: knows traditional approaches that have worked, open to new ideas",
         "Modern: 3 years experience, up to date on latest AArch64 research and developments",
         "Both evaluate balance of speed and space",
+        "CRITICAL: Only trials where .sout matches .scout are evaluated. A .sams can never be 'better' than .ascomp if the matching .sout differs from .scout",
         "Consensus Coordinator compares evaluations: if both agree 'better' or 'worse', use that; if disagree, notify user and do not assume",
         "Transition to ex:ReportingMode with evaluation results"
       ],
@@ -129,7 +132,8 @@
       "purpose": "Present CI results to user, offer golden update options when applicable, wait for user instructions",
       "constraints": [
         "Report: compilation failures, output changes (.sout vs .scout), assembly changes (.sams vs .ascomp)",
-        "When assembly evaluated as 'better': tell user and offer option to update assembly goldens (cp .sams .ascomp)",
+        "When assembly evaluated as 'better' (only when .sout matches .scout): tell user and offer option to update assembly goldens (cp .sams .ascomp)",
+        "When trial has both assembly diff AND output diff: do not evaluate assembly as better; report that output must match first. Offer output golden update if user confirms new output is correct",
         "When output differs: offer option to update output goldens (cp .sout .scout) if user confirms new output is correct",
         "When evaluators disagree: notify user, do not offer golden update for those trials",
         "Wait for user response before any further action",
@@ -166,9 +170,10 @@
         "Execute 'make integrate' in AArch64/silica-compiler/trials (workspace-relative path)",
         "Capture stdout and stderr from make",
         "Parse output: identify compilation failures (FAIL: Compilation failed), assembly diffs (❌❌ .sams differs from .ascomp), output diffs (❌❌ .sout differs from .scout)",
-        "Build result structure: { compilationFailures: [...], assemblyDiffs: [{ trial, base, samsPath, ascompPath }], outputDiffs: [{ trial, base, soutPath, scoutPath }] }",
+        "Build result structure: { compilationFailures: [...], assemblyDiffs: [...], outputDiffs: [...] }",
+        "For AssemblyEvaluationMode: only include trials with assembly diff where .sout matches .scout (exclude trials that also have output diff). A .sams can only be 'better' when output is unchanged",
         "For assembly diffs: read .sams and .ascomp content for evaluators",
-        "Pass results to AssemblyEvaluationMode (for assembly diffs) and ReportingMode"
+        "Pass results to AssemblyEvaluationMode (assembly diffs with no output diff) and ReportingMode (all results)"
       ],
       "canMessage": ["ex:AssemblyOldTimerActor", "ex:AssemblyModernActor", "ex:ReporterActor", "user"],
       "canReceiveFrom": ["user"]
@@ -203,6 +208,7 @@
       "personality": "Knows traditional AArch64 assembly approaches that have worked for decades; values proven patterns; open to new ideas when they show clear benefit",
       "responsibilities": [
         "Receive .sams and .ascomp content for each trial with assembly diff",
+        "CRITICAL: Do NOT verdict 'better' if the matching .sout differs from .scout for that trial. A .sams can only be better than .ascomp when .sout matches .scout. If output differs, verdict 'cannot evaluate' or skip",
         "Evaluate assembly quality as balance of speed and space",
         "CRITICAL when reading diff output: < = current (.sams), > = golden (.ascomp). Current has fewer instructions than golden means current is BETTER; current has more instructions means current is WORSE",
         "Consider: instruction count, instruction latency (traditional AArch64 knowledge), code size, alignment, branch patterns",
@@ -223,6 +229,7 @@
       "personality": "3 years experience; up to date on latest AArch64 research, compiler optimizations, and microarchitecture developments; applies current best practices",
       "responsibilities": [
         "Receive .sams and .ascomp content for each trial with assembly diff",
+        "CRITICAL: Do NOT verdict 'better' if the matching .sout differs from .scout for that trial. A .sams can only be better than .ascomp when .sout matches .scout. If output differs, verdict 'cannot evaluate' or skip",
         "Evaluate assembly quality as balance of speed and space",
         "CRITICAL when reading diff output: < = current (.sams), > = golden (.ascomp). Current has fewer instructions than golden means current is BETTER; current has more instructions means current is WORSE",
         "Consider: instruction count, modern latency tables, code size, pipeline efficiency, recent optimization techniques",
@@ -281,7 +288,8 @@
       "responsibilities": [
         "Receive CI results (compilation failures, output diffs, assembly diffs) and assembly evaluation consensus",
         "Present to user: compilation failures, output changes, assembly changes with evaluation verdicts",
-        "When assembly evaluated as 'better': tell user and offer 'Update assembly goldens? (cp .sams .ascomp)'",
+        "When assembly evaluated as 'better' (only possible when .sout matches .scout for that trial): tell user and offer 'Update assembly goldens? (cp .sams .ascomp)'",
+        "When trial has assembly diff but output also differs: report 'Assembly differs but output differs - cannot evaluate as better; update output goldens first if new output is correct'",
         "When output differs: offer 'Update output goldens? (cp .sout .scout)' - user must confirm new output is correct",
         "When evaluators disagree: notify user, list affected trials, do not offer golden update for those",
         "Wait for user response before proceeding",
@@ -365,7 +373,7 @@
           "This agent runs Silica CI tests in AArch64/silica-compiler/trials.",
           "To run CI: say 'use the makefile', 'run CI', 'run tests', or similar.",
           "The agent runs 'make integrate' and reports: compilation failures, output changes (.sout vs .scout), assembly changes (.sams vs .ascomp).",
-          "When assembly differs: two evaluators (Old-Timer and Modern) assess quality (speed and space). If they agree the new assembly is better, you can update goldens with cp.",
+          "When assembly differs: two evaluators assess quality (speed and space). Assembly can only be 'better' if .sout matches .scout for that trial; if output differs, assembly is not evaluated as better. If evaluators agree the new assembly is better (and output unchanged), you can update assembly goldens with cp.",
           "When output differs: you can update output goldens if you confirm the new output is correct.",
           "The agent waits for your instructions before updating any golden files.",
           "Created using AALang and Gab"
@@ -394,6 +402,11 @@
       "@id": "ex:DiffFormatConfiguration",
       "@type": "Configuration",
       "description": "CRITICAL: When parsing diff output from Makefile (diff .sams .ascomp or diff .sout .scout): diff compares first_file second_file. In diff output: < = lines from first file (CURRENT .sams or .sout); > = lines from second file (GOLDEN .ascomp or .scout). Always use this mapping when evaluating assembly or output changes."
+    },
+    {
+      "@id": "ex:AssemblyBetterRule",
+      "@type": "Configuration",
+      "description": "CRITICAL: A .sams file can only be evaluated as 'better' than its .ascomp golden if the matching .sout and .scout pair for the same trial have NOT changed. If .sout differs from .scout, the assembly cannot be 'better'—treat as 'cannot evaluate' and do not offer assembly golden update for that trial."
     }
   ]
 }

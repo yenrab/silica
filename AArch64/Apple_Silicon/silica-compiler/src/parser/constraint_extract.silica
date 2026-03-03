@@ -421,7 +421,7 @@ fn extract_binding(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
     bind_loc: SourceLocation <- ident_slot.token.location;
     (rhs: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
     after_semicolons: ListTokenSlot <- skip_semicolons(rest_after_rhs);
-    (body: Expr, rest_after_body: ListTokenSlot) <- extract_body(after_semicolons);
+    (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(after_semicolons);
     dummy: Expr <- parser_ast@dummy_expr();
     let_expr: Expr <- Expr { kind: 6, value: bind_type, name: bind_name, location: bind_loc, inner: rhs, right_expr: body };
     (let_expr, rest_after_body)
@@ -552,7 +552,7 @@ fn extract_call(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
     rest1: ListTokenSlot <- slots.tail;
     arg_slots: ListTokenSlot <- rest1.tail;
     (arg1: Expr, rest_after_arg1: ListTokenSlot) <- extract_body(arg_slots);
-    (arg2: Expr, rest_after_rparen: ListTokenSlot) <- case slots_is_nil(rest_after_arg1) of {
+    (arg2: Expr, rest_after_arg2: ListTokenSlot) <- case slots_is_nil(rest_after_arg1) of {
         true -> do
             d: Expr <- parser_ast@dummy_expr();
             (d, slots_tail(rest_after_arg1))
@@ -561,7 +561,7 @@ fn extract_call(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
             true -> do
                 arg2_slots: ListTokenSlot <- slots_tail(rest_after_arg1);
                 (a2: Expr, rest2: ListTokenSlot) <- extract_body(arg2_slots);
-                (a2, slots_tail(rest2))
+                (a2, rest2)
             end;
             false -> do
                 d: Expr <- parser_ast@dummy_expr();
@@ -569,9 +569,36 @@ fn extract_call(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
             end
         }
     };
+    (has_arg3: bool, arg3: Expr, rest_after_rparen: ListTokenSlot) <- case slots_is_nil(rest_after_arg2) of {
+        true -> do
+            d: Expr <- parser_ast@dummy_expr();
+            (false, d, rest_after_arg2)
+        end;
+        false -> case slots_head(rest_after_arg2).token.kind == kinds.comma of {
+            true -> do
+                arg3_slots: ListTokenSlot <- slots_tail(rest_after_arg2);
+                (a3: Expr, rest3: ListTokenSlot) <- extract_body(arg3_slots);
+                (true, a3, slots_tail(rest3))
+            end;
+            false -> do
+                d: Expr <- parser_ast@dummy_expr();
+                rest_after_close: ListTokenSlot <- case slots_head(rest_after_arg2).token.kind == kinds.right_paren of {
+                    true -> slots_tail(rest_after_arg2);
+                    false -> rest_after_arg2
+                };
+                (false, d, rest_after_close)
+            end
+        }
+    };
     call_name: string <- first.token.lexeme;
     call_loc: SourceLocation <- first.token.location;
-    call_expr: Expr <- Expr { kind: 4, value: "", name: call_name, location: call_loc, inner: arg1, right_expr: arg2 };
+    call_expr: Expr <- case has_arg3 of {
+        true -> do
+            pair: Expr <- Expr { kind: 4, value: "", name: "", location: call_loc, inner: arg2, right_expr: arg3 };
+            Expr { kind: 4, value: "", name: call_name, location: call_loc, inner: arg1, right_expr: pair }
+        end;
+        false -> Expr { kind: 4, value: "", name: call_name, location: call_loc, inner: arg1, right_expr: arg2 }
+    };
     (call_expr, rest_after_rparen)
 }
 
@@ -590,7 +617,10 @@ fn extract_operand_expr(slot: TokenSlot) -> Expr {
                         true -> Expr { kind: 7, value: "false", name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
                         false -> case slot.token.kind == kinds.string_literal of {
                             true -> Expr { kind: 8, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
-                            false -> Expr { kind: 1, value: "", name: slot.token.lexeme, location: slot.token.location, inner: dummy, right_expr: dummy }
+                            false -> case slot.token.kind == kinds.char_literal of {
+                                true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+                                false -> Expr { kind: 1, value: "", name: slot.token.lexeme, location: slot.token.location, inner: dummy, right_expr: dummy }
+                            }
                         }
                     }
                 }
@@ -616,7 +646,10 @@ fn extract_body_expr(slot: TokenSlot) -> Expr {
                             true -> Expr { kind: 7, value: "false", name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
                             false -> case slot.token.kind == kinds.string_literal of {
                                 true -> Expr { kind: 8, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
-                                false -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy }
+                                false -> case slot.token.kind == kinds.char_literal of {
+                                    true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+                                    false -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy }
+                                }
                             }
                         }
                     }

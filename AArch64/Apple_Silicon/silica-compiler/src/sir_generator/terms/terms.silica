@@ -43,6 +43,7 @@ fn literal_type_for_expected(expected_type: string) -> string {
         "float64" -> "float64";
         "float32" -> "float32";
         "float16" -> "float16";
+        "char" -> "char";
         _: string -> "int64"
     }
 }
@@ -78,31 +79,60 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                     arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, "string");
                     string_calls@build_concatenate_from_sir(arg1, arg2)
                 end;
-                false -> do
-                    arg: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_expected_type(expr.name, expected_type));
-                    case expr.name == "print_atom" of {
-                        true -> atoms@build_print_atom_from_sir(expr.name, arg);
-                        false -> case expr.name == "print_int32" of {
-                    true -> int32_calls@build_print_int32_from_sir(expr.name, arg);
-                    false -> case expr.name == "print_uint32" of {
-                        true -> int32_calls@build_print_int32_from_sir(expr.name, arg);
-                        false -> case expr.name == "print_int16" of {
-                            true -> int16_calls@build_print_int16_from_sir(expr.name, arg);
-                            false -> case expr.name == "print_uint16" of {
-                                true -> int16_calls@build_print_int16_from_sir(expr.name, arg);
-                                false -> case expr.name == "print_int8" of {
-                                    true -> int8_calls@build_print_int8_from_sir(expr.name, arg);
-                                    false -> case expr.name == "print_uint8" of {
-                                        true -> int8_calls@build_print_int8_from_sir(expr.name, arg);
-                                        false -> case expr.name == "print_float32" of {
-                                            true -> float32_calls@build_print_float32_from_sir(expr.name, arg);
-                                            false -> case expr.name == "print_string" of {
-                                                true -> string_calls@build_print_string_from_sir(expr.name, arg);
-                                                false -> case expr.name == "println" of {
-                                                    true -> string_calls@build_println_from_sir(expr.name, arg);
-                                                    false -> int64_calls@build_call_from_sir(expr.name, arg)
-                                                }
-                                            }
+                false -> case expr.name == "substring" of {
+                    true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                        true -> do
+                            arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "string");
+                            arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, "int64");
+                            arg3: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.right_expr, bound_name, bound_type, "int64");
+                            string_calls@build_substring_from_sir(arg1, arg2, arg3)
+                        end;
+                        false -> sir_ast@dummy_sir_term()
+                    };
+                    false -> case expr.name == "substring_until_char" of {
+                        true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                            true -> do
+                                arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "string");
+                                arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, "int64");
+                                arg3: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.right_expr, bound_name, bound_type, "char");
+                                string_calls@build_substring_until_char_from_sir(arg1, arg2, arg3)
+                            end;
+                            false -> sir_ast@dummy_sir_term()
+                        };
+                        false -> do
+                            arg: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_expected_type(expr.name, expected_type));
+                            build_single_arg_call(context, expr, arg);
+                        end
+                    }
+                }
+            }
+        end;
+        _: int64 -> sir_ast@dummy_sir_term()
+    }
+}
+
+fn build_single_arg_call(context: TypeContext, expr: Expr, arg: SIRTerm) -> SIRTerm {
+    case expr.name == "print_atom" of {
+        true -> atoms@build_print_atom_from_sir(expr.name, arg);
+        false -> case expr.name == "print_int32" of {
+            true -> int32_calls@build_print_int32_from_sir(expr.name, arg);
+            false -> case expr.name == "print_uint32" of {
+                true -> int32_calls@build_print_int32_from_sir(expr.name, arg);
+                false -> case expr.name == "print_int16" of {
+                    true -> int16_calls@build_print_int16_from_sir(expr.name, arg);
+                    false -> case expr.name == "print_uint16" of {
+                        true -> int16_calls@build_print_int16_from_sir(expr.name, arg);
+                        false -> case expr.name == "print_int8" of {
+                            true -> int8_calls@build_print_int8_from_sir(expr.name, arg);
+                            false -> case expr.name == "print_uint8" of {
+                                true -> int8_calls@build_print_int8_from_sir(expr.name, arg);
+                                false -> case expr.name == "print_float32" of {
+                                    true -> float32_calls@build_print_float32_from_sir(expr.name, arg);
+                                    false -> case expr.name == "print_string" of {
+                                        true -> string_calls@build_print_string_from_sir(expr.name, arg);
+                                        false -> case expr.name == "println" of {
+                                            true -> string_calls@build_println_from_sir(expr.name, arg);
+                                            false -> int64_calls@build_call_from_sir(expr.name, arg)
                                         }
                                     }
                                 }
@@ -111,16 +141,15 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                     }
                 }
             }
-        end
-    }
-end;
-        _: int64 -> sir_ast@dummy_sir_term()
+        }
     }
 }
 
 fn arg_expected_type(call_name: string, expected_type: string) -> string {
     case call_name of {
         "concatenate" -> "string";
+        "substring" -> "string";
+        "substring_until_char" -> "string";
         "print_string" -> "string";
         "println" -> "string";
         "print_int32" -> "int32";
@@ -181,43 +210,35 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
                     arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, "string");
                     string_calls@build_concatenate_from_sir(arg1, arg2)
                 end;
-                false -> do
-                    arg_type: string <- arg_expected_type(expr.name, expected_type);
-                    arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type);
-                    case expr.name == "print_atom" of {
-                        true -> atoms@build_print_atom_from_sir(expr.name, arg);
-                        false -> case expr.name == "print_int32" of {
-                    true -> int32_calls@build_print_int32_from_sir(expr.name, arg);
-                    false -> case expr.name == "print_uint32" of {
-                        true -> int32_calls@build_print_int32_from_sir(expr.name, arg);
-                        false -> case expr.name == "print_int16" of {
-                            true -> int16_calls@build_print_int16_from_sir(expr.name, arg);
-                            false -> case expr.name == "print_uint16" of {
-                                true -> int16_calls@build_print_int16_from_sir(expr.name, arg);
-                                false -> case expr.name == "print_int8" of {
-                                    true -> int8_calls@build_print_int8_from_sir(expr.name, arg);
-                                    false -> case expr.name == "print_uint8" of {
-                                        true -> int8_calls@build_print_int8_from_sir(expr.name, arg);
-                                        false -> case expr.name == "print_float32" of {
-                                            true -> float32_calls@build_print_float32_from_sir(expr.name, arg);
-                                            false -> case expr.name == "print_string" of {
-                                                true -> string_calls@build_print_string_from_sir(expr.name, arg);
-                                                false -> case expr.name == "println" of {
-                                                    true -> string_calls@build_println_from_sir(expr.name, arg);
-                                                    false -> int64_calls@build_call_from_sir(expr.name, arg)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                false -> case expr.name == "substring" of {
+                    true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                        true -> do
+                            arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "string");
+                            arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "int64");
+                            arg3: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr, "int64");
+                            string_calls@build_substring_from_sir(arg1, arg2, arg3)
+                        end;
+                        false -> sir_ast@dummy_sir_term()
+                    };
+                    false -> case expr.name == "substring_until_char" of {
+                        true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                            true -> do
+                                arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "string");
+                                arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "int64");
+                                arg3: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr, "char");
+                                string_calls@build_substring_until_char_from_sir(arg1, arg2, arg3)
+                            end;
+                            false -> sir_ast@dummy_sir_term()
+                        };
+                        false -> do
+                            arg_type: string <- arg_expected_type(expr.name, expected_type);
+                            arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type);
+                            build_single_arg_call(context, expr, arg);
+                        end;
                     }
                 }
-            }
-        end
-    }
-end;
+            };
+        end;
         _: int64 -> sir_ast@dummy_sir_term()
     }
 }
