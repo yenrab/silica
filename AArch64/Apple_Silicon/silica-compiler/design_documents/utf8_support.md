@@ -2,70 +2,105 @@
 
 ## Problem
 
-The `char_lexeme_to_int64_string` function in `sir_generator/terms/literals.silica` converts char literal lexemes (e.g. `"' '"`, `"','"`) to decimal strings for the `substring_until_char` helper. Currently it uses a hardcoded lookup table covering only a few ASCII characters (` `, `,`, `x`, `z`, `\n`, `\t`). Unlisted characters fall through to `"0"`, producing incorrect behavior.
+The `char_lexeme_to_int64_string` function in `sir_generator/terms/literals.silica` converts char literal lexemes (e.g. `"' '"`, `"','"`) to decimal strings for the `substring_until_char` helper. Currently it uses a hardcoded lookup table covering only a few ASCII characters (` `, `,`, `x`, `z`, `\n`, `\t`). Unlisted characters fall through to `"0"`, producing incorrect behavior. Multi-byte UTF-8 characters (e.g. `'é'`) are not handled correctly.
 
 ## Constraint
 
 **No calls out to Rust runtime functions.** All logic must be implemented in pure Silica that the bootstrap compiler can compile. We cannot add new built-ins like `byte_at` or `ord` that invoke the Rust runtime.
 
-## Solution
+## Solution by Compiler Phase
 
-### 1. Lexer: UTF-8-Aware Character Advancement
+### Lexer
+
+**File:** `src/lexer/lexer_string_literals.silica`
+
+**Change:** Add UTF-8-aware advance in `read_char_literal` for normal (non-escape) characters.
 
 The lexer's `advance` advances by one byte (`position + 1`). For multi-byte UTF-8 characters (e.g. `'é'`), the lexer would treat the second byte as the closing quote and fail.
 
-**Change:** Add UTF-8-aware advance in `read_char_literal` (or a shared helper in `lexer_string_literals.silica`):
+Add `advance_utf8_char(lexer)` or equivalent logic that advances by the full UTF-8 character length based on the first byte of `peek_char`:
 
 - 1-byte: `0x00–0x7F` → advance 1
 - 2-byte: `0xC2–0xDF` → advance 2
 - 3-byte: `0xE0–0xEF` → advance 3
 - 4-byte: `0xF0–0xF7` → advance 4
 
-Use the first byte of `peek_char` to determine how many bytes to advance so the lexeme spans the full character.
+Use this in the normal-character branch (around line 166) instead of a single `advance`.
 
-### 2. char_lexeme_to_int64_string: 256-Case Lookup Table
+**Effect:** Lexemes like `'é'` span the full UTF-8 sequence instead of a single byte.
 
-We need to convert the first byte of the character to its numeric value (0–255) using only Silica primitives.
+---
 
-**Approach:** Add a `byte_to_decimal` function with a 256-case lookup table that maps each possible single-byte string to its decimal representation:
+### Parser
 
-```silica
-// Maps single-byte string to decimal string 0-255. No runtime calls.
-fn byte_to_decimal(byte_str: string) -> string {
-    case len(byte_str) of {
-        0 -> "0";
-        _: int64 -> case substring(byte_str, 0, 1) of {
-            "\x00" -> "0";
-            "\x01" -> "1";
-            "\x02" -> "2";
-            // ... 253 more cases ...
-            "\xFF" -> "255";
-            _: string -> "0"
-        }
-    }
-}
-```
+**No changes.** Char literals are already parsed; the parser consumes the token produced by the lexer.
 
-Then update `char_lexeme_to_int64_string`:
+---
 
-```silica
-fn char_lexeme_to_int64_string(lexeme: string) -> string {
-    inner: string <- case len(lexeme) >= 3 of { true -> substring(lexeme, 1, len(lexeme) - 1); false -> "" };
-    first_byte: string <- case len(inner) >= 1 of { true -> substring(inner, 0, 1); false -> "" };
-    byte_to_decimal(first_byte)
-}
-```
+### Type Checker
 
-For multi-byte characters, `inner` is the full character (1–4 bytes). We take only the first byte (`substring(inner, 0, 1)`) because the `substring_until_char` helper uses byte-by-byte comparison (`LDRB` / `CMP`) and compares against the first byte of the UTF-8 encoding.
+**No changes.** `substring_until_char(s: string, start: int64, char: char)` already type-checks the third argument as `char`.
 
-### 3. Optional: substring_until_char Semantics
+---
 
-The assembly helper uses `LDRB` and compares single bytes. For multi-byte characters, passing the first byte of the UTF-8 encoding correctly stops at the start of that character (e.g. `'é'` → first byte `0xC3`). If full Unicode code-point matching were desired instead, the helper would need to be rewritten to compare UTF-8 sequences rather than single bytes.
+### SIR Generator
 
-## Summary
+**File:** `src/sir_generator/terms/literals.silica`
 
-| Component | Change |
-|-----------|--------|
-| **Lexer** | Make `read_char_literal` advance by full UTF-8 character length (1–4 bytes) |
-| **literals.silica** | Add `byte_to_decimal` (256-case lookup) and use it in `char_lexeme_to_int64_string` |
-| **No Rust runtime** | All logic stays in pure Silica; no new built-ins or runtime calls |
+**Changes:**
+
+1. **Add `byte_to_int64(byte_str: string) -> int64`** — 256-case lookup mapping each single-byte string to 0–255. Uses `case substring(byte_str, 0, 1) of { "\x00" -> 0; "\x01" -> 1; ... "\xFF" -> 255 }`.
+
+2. **Add `char_lexeme_to_utf8_encoded(lexeme: string) -> int64`** — Produces full UTF-8 encoding for the helper:
+   - `inner = substring(lexeme, 1, len(lexeme) - 1)`
+   - `len = len(inner)` (1–4)
+   - `packed = Σᵢ byte_to_int64(substring(inner, i, i+1)) × 256^i`
+   - `return (len << 56) | packed`
+
+3. **Update `expr_to_sir_with_type` for `type_name == "char"`** — Replace `char_lexeme_to_int64_string` with `char_lexeme_to_utf8_encoded`; convert result to decimal string (e.g. via `int64_to_decimal_string` from a shared module); produce `SIRTerm { kind: 0, type_name: "int64", value: decimal_string, ... }`.
+
+**Effect:** Char literals are represented as `(len << 56) | packed` in the SIR, enabling full code-point matching in the assembly helper.
+
+---
+
+### Emitter
+
+**File:** `src/emitter/terms/string_substring_mmap_nomte.silica`
+
+**Change:** Rewrite `emit_string_substring_until_char_helper` to perform full UTF-8 code-point matching.
+
+**Interface (unchanged):** X0 = string ptr, X1 = start byte offset, X2 = encoded char `(len << 56) | packed`.
+
+**Helper logic:**
+
+1. Decode: `len = X2 >> 56`, `packed = X2 & 0xFFFFFFFF`.
+2. Compute byte length of the string (existing logic).
+3. Clamp `start` to valid byte range.
+4. Scan from `start`:
+   - At each byte, compute UTF-8 length of the character at that position.
+   - Compare the next `len` bytes with `packed` (byte0, byte1, …).
+   - If they match, stop.
+   - Otherwise advance by that UTF-8 length (never advance by 1 inside a multi-byte character).
+5. Copy bytes from `start` to the found position (or end of string) into a new allocation.
+
+**UTF-8 length from lead byte:**
+
+- `< 0x80` → 1
+- `0xC2–0xDF` → 2
+- `0xE0–0xEF` → 3
+- `0xF0–0xF7` → 4
+- Otherwise → 1 (fallback)
+
+**Effect:** `substring_until_char(s, 0, 'é')` stops only at the exact UTF-8 sequence for `'é'`, not at `'ê'` or other characters sharing the same lead byte.
+
+---
+
+## Summary Table
+
+| Phase | File | Change |
+|-------|------|--------|
+| **Lexer** | `lexer_string_literals.silica` | UTF-8-aware advance in `read_char_literal` |
+| **Parser** | — | No changes |
+| **Type checker** | — | No changes |
+| **SIR generator** | `sir_generator/terms/literals.silica` | `byte_to_int64`, `char_lexeme_to_utf8_encoded`, use encoded value for char literals |
+| **Emitter** | `string_substring_mmap_nomte.silica` | Full UTF-8 sequence comparison in `L_substring_until_char_helper` |

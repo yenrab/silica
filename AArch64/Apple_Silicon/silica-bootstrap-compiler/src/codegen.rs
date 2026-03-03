@@ -74,7 +74,7 @@ pub struct CodeGenerator {
     variable_scopes: Vec<HashMap<String, String>>, // Scope stack for text IR variables
     function_variable_scopes: Vec<HashMap<String, (Vec<Type>, Type)>>, // Function signatures for variables
     register_counter: u32, // Counter for generating unique register names
-    string_constants: HashMap<String, (String, usize)>, // String content -> (constant name, length) mapping
+    string_constants: HashMap<Vec<u8>, (String, usize)>, // Byte content -> (constant name, length) mapping
     in_behavior_function: bool, // Whether we're currently generating code for a behavior function
     /// Variable names that are currently bound to a self-referential placeholder (undefined until patch); use null when generating.
     self_ref_placeholders: std::collections::HashSet<String>,
@@ -677,19 +677,8 @@ impl CodeGenerator {
 
         for (content, (const_name, _)) in constants {
             let len = content.len() + 1; // +1 for null terminator
-            // Build LLVM IR string literal with proper escaping
-            // The key insight: In LLVM IR, \n is an escape sequence (1 byte), not literal \ + n (2 bytes)
-            // When we write instruction.push_str("\\n"), we're writing literal \ + n (2 characters)
-            // But in the file, this becomes \n (2 characters), which LLVM should interpret as 1 byte
-            // However, the issue is that when we use format! with {}, it writes the string as-is
-            // So if escaped_content = "\\n" (2 bytes), format!("c\"{}\\00\"", escaped_content) becomes c"\\n\00"
-            // In LLVM IR, \\n means: \\ (escaped backslash, 1 byte) + n (1 byte) = 2 bytes, plus null = 3 bytes total
-            // We need c"\n\00" which means: \n (escape sequence, 1 byte) + null (1 byte) = 2 bytes total
-            // Solution: Write the escape sequences directly in the format string, not through string substitution
-            // Build LLVM IR string literal: write bytes directly using hexadecimal escape sequences
-            // Use \XX format where XX is the hexadecimal byte value (e.g., \0A for newline)
             let mut instruction = format!("{} = private unnamed_addr constant [{} x i8] c\"", const_name, len);
-            for byte in content.bytes() {
+            for byte in content.iter().copied() {
                 match byte {
                     b'\\' => instruction.push_str(r#"\\"#),  // Write \\ which becomes \ in LLVM IR
                     b'"' => instruction.push_str(r#"\22"#), // LLVM IR: use \22 for quote; \" ends the string (LangRef)
@@ -4557,7 +4546,7 @@ impl CodeGenerator {
                 }
                 Literal::String(s) => {
                     // For now, create a global string constant
-                    let string_val = (*self.context).const_string(s.as_bytes(), false);
+                    let string_val = (*self.context).const_string(&s, false);
                     string_val.into()
                 }
             };
@@ -13062,10 +13051,9 @@ impl CodeGenerator {
         #[cfg(not(feature = "llvm_backend"))]
         {
             // Text backend: create named constants
-            let empty_string = String::new();
+            let empty_string: Vec<u8> = vec![];
             if !self.string_constants.contains_key(&empty_string) {
                 let const_name = format!("@str_const_{}", self.string_constants.len());
-                // Store length including null terminator to match constant declaration
                 let length = empty_string.len() + 1;
                 self.string_constants.insert(empty_string.clone(), (const_name, length));
             }
@@ -13113,7 +13101,7 @@ impl CodeGenerator {
                 // Find the string content by constant name
                 self.string_constants.iter()
                     .find(|(_, (name, _))| name == &const_name)
-                    .map(|(content, _)| content.chars().count())
+                    .map(|(content, _)| String::from_utf8_lossy(content).chars().count())
                     .unwrap_or(0)
             } else {
                 0

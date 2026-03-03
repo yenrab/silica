@@ -261,7 +261,7 @@ pub enum Literal {
     Int(i64),
     Float(f64),
     Char(char),
-    String(String),
+    String(Vec<u8>),
 }
 
 /// If expression

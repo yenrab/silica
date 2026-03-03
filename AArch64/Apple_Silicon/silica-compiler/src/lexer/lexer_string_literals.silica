@@ -1,7 +1,8 @@
 // String and character literal parsing for Silica lexer
-// Supports string literals with Unicode and escape sequences: \\, \', \", \n, \t, \r
+// Supports string literals with Unicode and escape sequences: \\, \', \", \n, \t, \r, \xNN
 // Per language spec §2.2: string_literal ::= "\"" {character | escape_sequence} "\""
 // Character literals use same escape sequences per character_literal grammar
+// UTF-8: advance_utf8_char advances by full character length (1-4 bytes) for multi-byte sequences
 
 // Import token kind
 use lexer_token_kind;
@@ -12,6 +13,40 @@ use lexer_core;
 // Export entry points
 export read_string_literal/1;
 export read_char_literal/1;
+
+
+{-
+- Returns UTF-8 byte length (1-4) from lead byte. Used to advance past multi-byte characters.
+- 1-byte: 0x00-0x7F; 2-byte: 0xC2-0xDF; 3-byte: 0xE0-0xEF; 4-byte: 0xF0-0xF7; else 1 (fallback).
+- Last-date-modified: 2025-03-03
+-}
+fn utf8_lead_byte_length(lead: string) -> int64 {
+    case lead of {
+        "\xC2" -> 2; "\xC3" -> 2; "\xC4" -> 2; "\xC5" -> 2; "\xC6" -> 2; "\xC7" -> 2; "\xC8" -> 2; "\xC9" -> 2;
+        "\xCA" -> 2; "\xCB" -> 2; "\xCC" -> 2; "\xCD" -> 2; "\xCE" -> 2; "\xCF" -> 2; "\xD0" -> 2; "\xD1" -> 2;
+        "\xD2" -> 2; "\xD3" -> 2; "\xD4" -> 2; "\xD5" -> 2; "\xD6" -> 2; "\xD7" -> 2; "\xD8" -> 2; "\xD9" -> 2;
+        "\xDA" -> 2; "\xDB" -> 2; "\xDC" -> 2; "\xDD" -> 2; "\xDE" -> 2; "\xDF" -> 2;
+        "\xE0" -> 3; "\xE1" -> 3; "\xE2" -> 3; "\xE3" -> 3; "\xE4" -> 3; "\xE5" -> 3; "\xE6" -> 3; "\xE7" -> 3;
+        "\xE8" -> 3; "\xE9" -> 3; "\xEA" -> 3; "\xEB" -> 3; "\xEC" -> 3; "\xED" -> 3; "\xEE" -> 3; "\xEF" -> 3;
+        "\xF0" -> 4; "\xF1" -> 4; "\xF2" -> 4; "\xF3" -> 4; "\xF4" -> 4; "\xF5" -> 4; "\xF6" -> 4; "\xF7" -> 4;
+        _: string -> 1
+    }
+}
+
+
+{-
+- Advances the lexer past one UTF-8 character (1-4 bytes). Uses utf8_lead_byte_length on peek_char.
+- For n=1, use advance() to handle newline in column/line. For n>1, use advance_by (no newline in continuation bytes).
+- Last-date-modified: 2025-03-03
+-}
+fn advance_utf8_char(lexer: Lexer) -> Lexer {
+    lead: string <- lexer_core@peek_char(lexer);
+    n: int64 <- utf8_lead_byte_length(lead);
+    case n of {
+        1 -> lexer_core@advance(lexer);
+        _: int64 -> lexer_core@advance_by(lexer, n)
+    }
+}
 
 
 {-
@@ -87,8 +122,8 @@ fn read_string_content(lexer: Lexer, start_pos: int64, kinds: TokenKinds, start_
             }
         end;
         _: string -> do
-            // Normal character (including Unicode) - advance and continue
-            advanced: Lexer <- lexer_core@advance(lexer);
+            // Normal character (including Unicode) - advance by full UTF-8 sequence and continue
+            advanced: Lexer <- advance_utf8_char(lexer);
             read_string_content(advanced, start_pos, kinds, start_location)
         end
     }
@@ -163,8 +198,8 @@ fn read_char_literal(lexer: Lexer) -> (Token, Lexer) {
             }
         end;
         _: string -> do
-            // Normal character - advance past it, expect closing quote
-            after_char: Lexer <- lexer_core@advance(after_open);
+            // Normal character (including multi-byte UTF-8) - advance past full character, expect closing quote
+            after_char: Lexer <- advance_utf8_char(after_open);
             closing: string <- lexer_core@peek_char(after_char);
             case closing of {
                 "'" -> do

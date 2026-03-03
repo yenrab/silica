@@ -34,7 +34,7 @@ pub enum TokenKind {
     // Literals
     IntegerLiteral(i64),
     FloatLiteral(f64),
-    StringLiteral(String),
+    StringLiteral(Vec<u8>),  // Byte vector to support \xNN for UTF-8 lead byte matching
     CharLiteral(char),
 
     // Identifiers
@@ -594,7 +594,7 @@ impl Lexer {
 
         self.advance(); // skip opening quote
 
-        let mut result = String::new();
+        let mut result = Vec::new();
         let mut escaped = false;
 
         while let Some(c) = self.peek_char() {
@@ -602,15 +602,38 @@ impl Lexer {
 
             if escaped {
                 match c {
-                    'n' => result.push('\n'),
-                    't' => result.push('\t'),
-                    'r' => result.push('\r'),
-                    '\\' => result.push('\\'),
-                    '"' => result.push('"'),
-                    '\'' => result.push('\''),
+                    'n' => result.extend_from_slice("\n".as_bytes()),
+                    't' => result.extend_from_slice("\t".as_bytes()),
+                    'r' => result.extend_from_slice("\r".as_bytes()),
+                    '\\' => result.extend_from_slice("\\".as_bytes()),
+                    '"' => result.extend_from_slice("\"".as_bytes()),
+                    '\'' => result.extend_from_slice("'".as_bytes()),
+                    'x' => {
+                        let mut hex_str = String::new();
+                        for _ in 0..2 {
+                            if let Some(d) = self.peek_char() {
+                                if d.is_ascii_hexdigit() {
+                                    hex_str.push(d);
+                                    self.advance();
+                                } else { break; }
+                            }
+                        }
+                        if hex_str.len() == 2 {
+                            result.push(u8::from_str_radix(&hex_str, 16).unwrap_or(0));
+                        } else {
+                            let metadata = self.build_error_metadata("E0002", &start_location, Some("spec:§2.2.3"))
+                                .suggestion("\\x must be followed by exactly two hex digits (0-9, a-f, A-F)".to_string())
+                                .build();
+                            return lexer_error_with_metadata(
+                                start_location,
+                                format!("Invalid hex escape: \\x{} (expected 2 hex digits)", hex_str),
+                                metadata,
+                            );
+                        }
+                    }
                     _ => {
                         let metadata = self.build_error_metadata("E0002", &start_location, Some("spec:§2.2.3"))
-                            .suggestion("Valid escape sequences are: \\n, \\t, \\r, \\\\, \\\", \\'".to_string())
+                            .suggestion("Valid escape sequences are: \\n, \\t, \\r, \\\\, \\\", \\', \\xNN".to_string())
                             .build();
                         return lexer_error_with_metadata(
                             start_location,
@@ -623,14 +646,13 @@ impl Lexer {
             } else if c == '\\' {
                 escaped = true;
             } else if c == '"' {
-                // End of string
                 return Ok(Some(Token::new(
                     TokenKind::StringLiteral(result),
                     self.source[start..self.position].to_string(),
                     start_location,
                 )));
             } else {
-                result.push(c);
+                result.extend_from_slice(c.to_string().as_bytes());
             }
         }
 

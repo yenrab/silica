@@ -3007,7 +3007,7 @@ substring(s: string, start: int64, end: int64) -> string
 substring_until_char(s: string, start: int64, char: char) -> string
 ```
 
-Concatenate strings and extract substrings.
+Concatenate strings and extract substrings. `substring` uses **character-based** indices (UTF-8 code points), not byte offsets. E.g. `substring("Hi🙂!", 2, 3)` returns `"🙂"`.
 
 #### 5.3.3 String Predicates
 ```
@@ -12633,7 +12633,7 @@ len_chars(s: string) -> int64              // character count
 #### 22.7.2 String Manipulation
 ```
 concat(a: string, b: string) -> string
-substring(s: string, start: int64, end: int64) -> string
+substring(s: string, start: int64, end: int64) -> string   // character-based indices
 substring_until_char(s: string, start: int64, char: char) -> string
 ```
 
