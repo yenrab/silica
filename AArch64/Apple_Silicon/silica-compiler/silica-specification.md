@@ -787,7 +787,7 @@ fn guarded_pattern_matching(msg: Message) -> int {
         AllocateMsg {size} if size > 0 and size < 1000 -> size * 2
         AllocateMsg {size} if size >= 1000 -> size
         AllocateMsg {size} if size <= 0 -> 0
-        PrintMsg {text} if text != "" -> string_length(text)
+        PrintMsg {text} if text != "" -> length_chars(text)
         PrintMsg {text} if text == "" -> 0
         _: Message -> -1
         // Exhaustive: all Message variants covered with guards
@@ -2994,11 +2994,11 @@ String operations are pure functions (no effects required).
 
 #### 5.3.1 String Length
 ```
-len(s: string) -> int64
-len_chars(s: string) -> int64
+length_bytes(s: string) -> int64
+length_chars(s: string) -> int64
 ```
 
-Get byte length or character count of a string.
+These are the only user-available functions for finding the length of strings. `length_bytes` returns the byte length (UTF-8 encoded size); `length_chars` returns the character count (number of Unicode scalar values).
 
 #### 5.3.2 String Manipulation
 ```
@@ -3514,7 +3514,7 @@ Function application has the form `function(arg1, arg2, ..., argN)`:
 
 ```
 add(3, 4)           // applies add function to 3 and 4
-len("hello")        // applies len built-in to string (byte length)
+length_bytes("hello")   // applies length_bytes built-in to string (byte length)
 f()                 // applies nullary function
 ```
 
@@ -12626,9 +12626,11 @@ String operations are pure functions (no effects required).
 
 #### 22.7.1 String Length
 ```
-len(s: string) -> int64                    // byte length
-len_chars(s: string) -> int64              // character count
+length_bytes(s: string) -> int64            // byte length (UTF-8 encoded size)
+length_chars(s: string) -> int64           // character count (Unicode scalar values)
 ```
+
+These are the only user-available functions for finding the length of strings.
 
 #### 22.7.2 String Manipulation
 ```
@@ -12814,7 +12816,8 @@ hash<T>(value: T) -> int               // stable hash function
 
 ### 22.15 String Operations
 ```
-string_length(s: string) -> int
+length_bytes(s: string) -> int64            // byte length; one of two user-available string length functions
+length_chars(s: string) -> int64           // character count; one of two user-available string length functions
 string_concat(s1: string, s2: string) -> string
 string_slice(s: string, start: int, end: int) -> string
 string_to_int(s: string) -> option<int>

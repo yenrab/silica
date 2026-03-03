@@ -324,7 +324,16 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 op_asm: string <- prims@emit_prim_op(term, dest);
                 concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), concat(arg3_asm, "\n")), op_asm)
             end;
-            false -> do
+            false -> case term.type_name == "int64" and (term.name == "string_length_bytes" or term.name == "string_length_chars") of {
+                true -> do
+                    arg_asm: string <- case debug of {
+                        true -> do term_to_asm_opt_bound_debug(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                        false -> term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                    };
+                    op_asm: string <- prims@emit_prim_op(term, dest);
+                    concat(concat(arg_asm, "\n"), op_asm)
+                end;
+                false -> do
             // Comparisons (lt, gt, le, ge) have result type "bool" but operands determine reg size
             is_cmp: bool <- term.type_name == "bool" and (term.name == "lt" or term.name == "gt" or term.name == "le" or term.name == "ge");
             prim_type: string <- case is_cmp of { true -> term.inner.type_name; false -> term.type_name };
@@ -465,6 +474,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 end
             }
             end
+            }
         };
         _: int64 -> concat("    ; unsupported term kind ", "?")
     }
