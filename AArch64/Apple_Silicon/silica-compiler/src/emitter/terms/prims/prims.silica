@@ -52,7 +52,12 @@ fn is_comparison_prim(name: string) -> bool {
 }
 
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
-    // Comparisons (lt, gt, le, ge) have result type "bool" but must dispatch on operand type
+    // Tuple types must dispatch to prims_tuple first (before narrow/float checks)
+    // so "(int16,...)" etc. don't match "int16" and route to prims_narrow.
+    // Fallback: any tuple_make (even with malformed type) goes to prims_tuple.
+    case term.name == "tuple_make" of {
+        true -> prims_tuple@emit_prim_op(term, dest);
+        false -> do
     dispatch_type: string <- case term.type_name == "bool" and is_comparison_prim(term.name) of {
         true -> term.inner.type_name;
         false -> term.type_name
@@ -71,9 +76,8 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
         "uint16" -> prims_narrow@emit_prim_op(term, dest_reg);
         "uint8" -> prims_narrow@emit_prim_op(term, dest_reg);
         "string" -> prims_string@emit_prim_op(term, dest_reg);
-        _: string -> case reg_conventions@is_tuple_type(dispatch_type) and term.name == "tuple_make" of {
-            true -> prims_tuple@emit_prim_op(term, dest);
-            false -> concat("    ; unsupported prim type: ", dispatch_type)
-        }
+        _: string -> concat("    ; unsupported prim type: ", dispatch_type)
+    }
+    end
     }
 }

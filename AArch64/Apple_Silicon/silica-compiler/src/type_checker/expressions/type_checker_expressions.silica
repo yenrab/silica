@@ -23,7 +23,7 @@ fn is_comparison_op_lexeme(op: string) -> bool {
 }
 
 // Try checking both operands with operand_type; return result if both ok.
-fn check_comparison_operands(expr: Expr, operand_type: string, context: TypeContext) -> TypeCheckResult {
+fn check_comparison_operands(expr: Expr, operand_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     left_result: TypeCheckResult <- check_expr(expr.inner, operand_type, context);
     case left_result.is_ok of {
         false -> left_result;
@@ -41,7 +41,7 @@ fn bool_result(expected_type: string, location: SourceLocation) -> TypeCheckResu
     }
 }
 
-fn check_comparison_result(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+fn check_comparison_result(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     rb: TypeCheckResult <- check_comparison_operands(expr, "boolean", context);
     case rb.is_ok of {
         true -> bool_result(expected_type, expr.location);
@@ -49,7 +49,7 @@ fn check_comparison_result(expr: Expr, expected_type: string, context: TypeConte
     }
 }
 
-fn check_comparison_result_rest(expr: Expr, expected_type: string, context: TypeContext, first_err: TypeCheckResult) -> TypeCheckResult {
+fn check_comparison_result_rest(expr: Expr, expected_type: string, context: TypeContext, first_err: TypeCheckResult) -> TypeCheckResult proc[DeviceIO] {
     r64: TypeCheckResult <- check_comparison_operands(expr, "int64", context);
     case r64.is_ok of {
         true -> bool_result(expected_type, expr.location);
@@ -122,7 +122,7 @@ fn is_logical_op_lexeme(op: string) -> bool {
     op == "and" or op == "or"
 }
 
-fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     op: string <- expr.value;
     case is_arithmetic_op_lexeme(op) of {
         true -> do
@@ -194,7 +194,7 @@ fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> T
 
 // Built-in: print_int64/32/16/8, print_uint64/32/16/8 - arg matches type, returns atom
 // Built-in: print_atom(atom:x) - arg atom, returns atom (:ok on success, :fail on failure)
-fn check_print_call(expr: Expr, arg_type: string, expected_type: string, context: TypeContext) -> TypeCheckResult {
+fn check_print_call(expr: Expr, arg_type: string, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     arg_result: TypeCheckResult <- check_expr(expr.inner, arg_type, context);
     case arg_result.is_ok of {
         false -> arg_result;
@@ -206,7 +206,7 @@ fn check_print_call(expr: Expr, arg_type: string, expected_type: string, context
     }
 }
 
-fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case expr.name == "print_int64" of {
         true -> check_print_call(expr, "int64", expected_type, context);
         false -> case expr.name == "print_int32" of {
@@ -251,29 +251,56 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
                                             false -> case expr.name == "print_float64" of {
                                                 true -> check_print_call(expr, "float64", expected_type, context);
                                                 false -> case expr.name == "print_float32" of {
-                                                    true -> type_checker_expressions_float32_calls@check_print_float32_call(expr, expected_type, check_expr(expr.inner, "float32", context));
+                                                    true -> do
+                                                        arg_result: TypeCheckResult <- check_expr(expr.inner, "float32", context);
+                                                        type_checker_expressions_float32_calls@check_print_float32_call(expr, expected_type, arg_result)
+                                                    end;
                                                     false -> case expr.name == "print_string" of {
                                                         true -> check_print_call(expr, "string", expected_type, context);
                                                         false -> case expr.name == "println" of {
                                                             true -> check_print_call(expr, "string", expected_type, context);
                                                             false -> case expr.name == "concat" of {
-                                                                true -> type_checker_expressions_string_calls@check_concatenate_call(expr, expected_type, check_expr(expr.inner, "string", context), check_expr(expr.right_expr, "string", context));
-                                                                false -> case expr.name == "concatenate" of {
-                                                                    true -> type_checker_expressions_string_calls@check_concatenate_call(expr, expected_type, check_expr(expr.inner, "string", context), check_expr(expr.right_expr, "string", context));
+                                                                true -> do
+                                                                    a1: TypeCheckResult <- check_expr(expr.inner, "string", context);
+                                                                    a2: TypeCheckResult <- check_expr(expr.right_expr, "string", context);
+                                                                    type_checker_expressions_string_calls@check_concatenate_call(expr, expected_type, a1, a2)
+                                                                end;
+                                                                    false -> case expr.name == "concatenate" of {
+                                                                    true -> do
+                                                                        a1: TypeCheckResult <- check_expr(expr.inner, "string", context);
+                                                                        a2: TypeCheckResult <- check_expr(expr.right_expr, "string", context);
+                                                                        type_checker_expressions_string_calls@check_concatenate_call(expr, expected_type, a1, a2)
+                                                                    end;
                                                                     false -> case expr.name == "substring" of {
                                                                         true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
-                                                                            true -> type_checker_expressions_string_calls@check_substring_call(expr, expected_type, check_expr(expr.inner, "string", context), check_expr(expr.right_expr.inner, "int64", context), check_expr(expr.right_expr.right_expr, "int64", context));
+                                                                            true -> do
+                                                                                s1: TypeCheckResult <- check_expr(expr.inner, "string", context);
+                                                                                s2: TypeCheckResult <- check_expr(expr.right_expr.inner, "int64", context);
+                                                                                s3: TypeCheckResult <- check_expr(expr.right_expr.right_expr, "int64", context);
+                                                                                type_checker_expressions_string_calls@check_substring_call(expr, expected_type, s1, s2, s3)
+                                                                            end;
                                                                             false -> type_checker_core@type_check_err("E2005", expr.location, "substring requires 3 arguments: (s: string, start: int64, end: int64)", "sect6")
                                                                         };
                                                                         false -> case expr.name == "substring_until_char" of {
                                                                             true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
-                                                                                true -> type_checker_expressions_string_calls@check_substring_until_char_call(expr, expected_type, check_expr(expr.inner, "string", context), check_expr(expr.right_expr.inner, "int64", context), check_expr(expr.right_expr.right_expr, "char", context));
+                                                                                true -> do
+                                                                                    u1: TypeCheckResult <- check_expr(expr.inner, "string", context);
+                                                                                    u2: TypeCheckResult <- check_expr(expr.right_expr.inner, "int64", context);
+                                                                                    u3: TypeCheckResult <- check_expr(expr.right_expr.right_expr, "char", context);
+                                                                                    type_checker_expressions_string_calls@check_substring_until_char_call(expr, expected_type, u1, u2, u3)
+                                                                                end;
                                                                                 false -> type_checker_core@type_check_err("E2005", expr.location, "substring_until_char requires 3 arguments: (s: string, start: int64, char: char)", "sect6")
                                                                             };
                                                                             false -> case expr.name == "length_bytes" of {
-                                                                                true -> type_checker_expressions_string_calls@check_length_bytes_call(expr, expected_type, check_expr(expr.inner, "string", context));
+                                                                                true -> do
+                                                                                    lb: TypeCheckResult <- check_expr(expr.inner, "string", context);
+                                                                                    type_checker_expressions_string_calls@check_length_bytes_call(expr, expected_type, lb)
+                                                                                end;
                                                                                 false -> case expr.name == "length_chars" of {
-                                                                                    true -> type_checker_expressions_string_calls@check_length_chars_call(expr, expected_type, check_expr(expr.inner, "string", context));
+                                                                                    true -> do
+                                                                                        lc: TypeCheckResult <- check_expr(expr.inner, "string", context);
+                                                                                        type_checker_expressions_string_calls@check_length_chars_call(expr, expected_type, lc)
+                                                                                    end;
                                                                                     false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown or unsupported function: ", expr.name), "sect6")
                                                                                 }
                                                                             }
@@ -299,7 +326,7 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
 
 // Let binding: name: type <- rhs; body. Check rhs has declared type, add to env, check body.
 // Reject unit for named variables; allow _ : unit <- expr (discard pattern for expression statements).
-fn check_let(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+fn check_let(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     bind_type: string <- expr.value;
     case bind_type == "unit" of {
         true -> case expr.name == "_" of {
@@ -307,7 +334,10 @@ fn check_let(expr: Expr, expected_type: string, context: TypeContext) -> TypeChe
                 rhs_result: TypeCheckResult <- check_expr(expr.inner, "discard", context);
                 case rhs_result.is_ok of {
                     false -> rhs_result;
-                    true -> check_expr(expr.right_expr, expected_type, context)
+                    true -> do
+                        body_result: TypeCheckResult <- check_expr(expr.right_expr, expected_type, context);
+                        body_result
+                    end
                 }
             end;
             false -> type_checker_core@type_check_err("E2006", expr.location, "unit is not a valid type for variables or parameters", "sect4")
@@ -321,7 +351,8 @@ fn check_let(expr: Expr, expected_type: string, context: TypeContext) -> TypeChe
                 true -> do
                     new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, bind_type, parser_ast@empty_effect_name_list());
                     new_context: TypeContext <- TypeContext { env: new_env };
-                    check_expr(expr.right_expr, expected_type, new_context)
+                    body_result: TypeCheckResult <- check_expr(expr.right_expr, expected_type, new_context);
+                    body_result
                 end
             }
         end
@@ -329,7 +360,7 @@ fn check_let(expr: Expr, expected_type: string, context: TypeContext) -> TypeChe
 }
 
 // Tuple literal (kind 9): check against expected tuple type "(T1, T2)"
-fn check_tuple_literal_inline(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+fn check_tuple_literal_inline(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case len(expected_type) == 7 and substring(expected_type, 0, 1) == "d" and substring(expected_type, 1, 2) == "i" and substring(expected_type, 2, 3) == "s" and substring(expected_type, 3, 4) == "c" and substring(expected_type, 4, 5) == "a" and substring(expected_type, 5, 6) == "r" and substring(expected_type, 6, 7) == "d" of {
         true -> type_checker_core@type_check_ok();
         false -> case len(expected_type) < 2 of {
@@ -338,22 +369,33 @@ fn check_tuple_literal_inline(expr: Expr, expected_type: string, context: TypeCo
                 true -> case substring(expected_type, len(expected_type) - 1, len(expected_type)) == ")" of {
                     true -> do
                         inner: string <- substring(expected_type, 1, len(expected_type) - 1);
-                        comma_pos: int64 <- tuple_find_comma(inner, 0);
-                        first_type: string <- substring(inner, 0, comma_pos);
+                        comma_pos: int64 <- case expr.inner.kind == 9 of {
+                            true -> tuple_find_last_top_level_comma(inner);
+                            false -> tuple_find_top_level_comma(inner, 0)
+                        };
+                        first_type_raw: string <- substring(inner, 0, comma_pos);
+                        first_type: string <- tuple_trim_leading(first_type_raw);
+                        first_type_wrapped: string <- case tuple_find_top_level_comma(first_type, 0) < len(first_type) of {
+                            true -> concat(concat("(", first_type), ")");
+                            false -> first_type
+                        };
                         rest_start: int64 <- comma_pos + 1;
                         second_type_raw: string <- case rest_start < len(inner) of {
                             true -> substring(inner, rest_start, len(inner));
                             false -> ""
                         };
                         second_type: string <- tuple_trim_leading(second_type_raw);
-                        second_type_wrapped: string <- case tuple_find_comma(second_type, 0) < len(second_type) of {
+                        second_type_wrapped: string <- case tuple_find_top_level_comma(second_type, 0) < len(second_type) of {
                             true -> concat(concat("(", second_type), ")");
                             false -> second_type
                         };
-                        first_result: TypeCheckResult <- check_expr(expr.inner, first_type, context);
+                        first_result: TypeCheckResult <- check_expr(expr.inner, first_type_wrapped, context);
                         case first_result.is_ok of {
                             false -> first_result;
-                            true -> check_expr(expr.right_expr, second_type_wrapped, context)
+                            true -> do
+                                second_result: TypeCheckResult <- check_expr(expr.right_expr, second_type_wrapped, context);
+                                second_result
+                            end
                         }
                     end;
                     false -> type_checker_core@type_check_err("E2005", expr.location, concat("tuple literal requires tuple type, got ", expected_type), "sect4")
@@ -378,12 +420,56 @@ fn tuple_trim_leading_from(s: string, i: int64) -> string {
     }
 }
 
-fn tuple_find_comma(s: string, i: int64) -> int64 {
+// Find first comma at top level (not inside parentheses). Handles nested tuples recursively.
+fn tuple_find_top_level_comma(s: string, i: int64) -> int64 {
+    tuple_find_top_level_comma_from(s, i, 0)
+}
+
+fn tuple_find_top_level_comma_from(s: string, i: int64, depth: int64) -> int64 {
     case i >= len(s) of {
         true -> len(s);
-        false -> case substring(s, i, i + 1) == "," of {
-            true -> i;
-            false -> tuple_find_comma(s, i + 1)
+        false -> case substring(s, i, i + 1) == "(" of {
+            true -> tuple_find_top_level_comma_from(s, i + 1, depth + 1);
+            false -> case substring(s, i, i + 1) == ")" of {
+                true -> case depth <= 0 of {
+                    true -> len(s);
+                    false -> tuple_find_top_level_comma_from(s, i + 1, depth - 1)
+                };
+                false -> case substring(s, i, i + 1) == "," of {
+                    true -> case depth == 0 of {
+                        true -> i;
+                        false -> tuple_find_top_level_comma_from(s, i + 1, depth)
+                    };
+                    false -> tuple_find_top_level_comma_from(s, i + 1, depth)
+                }
+            }
+        }
+    }
+}
+
+// Find last comma at top level. For right-nested (a,(b,c)), inner has type (A,B), right_expr has type C.
+fn tuple_find_last_top_level_comma(s: string) -> int64 {
+    tuple_find_last_top_level_comma_from(s, 0, 0, -1)
+}
+
+fn tuple_find_last_top_level_comma_from(s: string, i: int64, depth: int64, last: int64) -> int64 {
+    case i >= len(s) of {
+        true -> case last < 0 of { true -> len(s); false -> last };
+        false -> case substring(s, i, i + 1) == "(" of {
+            true -> tuple_find_last_top_level_comma_from(s, i + 1, depth + 1, last);
+            false -> case substring(s, i, i + 1) == ")" of {
+                true -> case depth <= 0 of {
+                    true -> case last < 0 of { true -> len(s); false -> last };
+                    false -> tuple_find_last_top_level_comma_from(s, i + 1, depth - 1, last)
+                };
+                false -> case substring(s, i, i + 1) == "," of {
+                    true -> case depth == 0 of {
+                        true -> tuple_find_last_top_level_comma_from(s, i + 1, depth, i);
+                        false -> tuple_find_last_top_level_comma_from(s, i + 1, depth, last)
+                    };
+                    false -> tuple_find_last_top_level_comma_from(s, i + 1, depth, last)
+                }
+            }
         }
     }
 }
@@ -419,7 +505,7 @@ fn is_true_or_false_identifier(expr: Expr) -> bool {
 }
 
 // Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding, 7=boolean literal, 8=string literal
-fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case expr.kind of {
         0 -> type_checker_expressions_literals@check_expr(expr, expected_type, context);
         1 -> case is_true_or_false_identifier(expr) of {

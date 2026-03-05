@@ -8,6 +8,7 @@ use constraint_core;
 export TupleTypeResult/0;
 export extract_tuple_type_from_slots/1;
 export is_tuple_type_binding_start/1;
+export is_single_element_tuple_type/1;
 
 struct TupleTypeResult {
     type_str: string,
@@ -80,15 +81,17 @@ fn append_type_to_tuple_string(acc: string, token: Token) -> string {
 }
 
 // Extract tuple type string from slots starting with (. Returns TupleTypeResult.
-fn extract_tuple_type_from_slots(slots: ListTokenSlot) -> TupleTypeResult {
-    kinds: TokenKinds <- lexer_token_kind@token_kinds();
-    acc: string <- "(";
-    rest: ListTokenSlot <- slots.tail;
-    result: TupleTypeResult <- extract_tuple_type_loop(rest, acc);
-    result
+fn extract_tuple_type_from_slots(slots: ListTokenSlot) -> TupleTypeResult proc[DeviceIO] {
+    do
+        kinds: TokenKinds <- lexer_token_kind@token_kinds();
+        acc: string <- "(";
+        rest: ListTokenSlot <- slots.tail;
+        result: TupleTypeResult <- extract_tuple_type_loop(rest, acc);
+        result
+    end
 }
 
-fn extract_tuple_type_loop(slots: ListTokenSlot, acc: string) -> TupleTypeResult {
+fn extract_tuple_type_loop(slots: ListTokenSlot, acc: string) -> TupleTypeResult proc[DeviceIO] {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     case slots.is_nil of {
         true -> TupleTypeResult { type_str: concat(acc, ")"), rest_slots: slots };
@@ -96,12 +99,59 @@ fn extract_tuple_type_loop(slots: ListTokenSlot, acc: string) -> TupleTypeResult
             true -> TupleTypeResult { type_str: concat(acc, ")"), rest_slots: slots.tail };
             false -> case slots.head.token.kind == kinds.comma of {
                 true -> extract_tuple_type_loop(slots.tail, concat(acc, ","));
-                false -> case is_type_keyword(kinds, slots.head.token.kind) or slots.head.token.kind == kinds.identifier of {
+                false -> case slots.head.token.kind == kinds.left_paren of {
                     true -> do
-                        new_acc: string <- append_type_to_tuple_string(acc, slots.head.token);
-                        extract_tuple_type_loop(slots.tail, new_acc)
+                        nested: TupleTypeResult <- extract_tuple_type_from_slots(slots);
+                        new_acc: string <- concat(acc, nested.type_str);
+                        extract_tuple_type_loop(nested.rest_slots, new_acc)
                     end;
-                    false -> TupleTypeResult { type_str: concat(acc, ")"), rest_slots: slots }
+                    false -> case is_type_keyword(kinds, slots.head.token.kind) or slots.head.token.kind == kinds.identifier of {
+                        true -> do
+                            new_acc: string <- append_type_to_tuple_string(acc, slots.head.token);
+                            extract_tuple_type_loop(slots.tail, new_acc)
+                        end;
+                        false -> TupleTypeResult { type_str: concat(acc, ")"), rest_slots: slots }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// True if type string is a single-element tuple like (T) with no comma at top level.
+fn is_single_element_tuple_type(type_str: string) -> bool {
+    case len(type_str) < 3 of {
+        true -> false;
+        false -> case substring(type_str, 0, 1) == "(" of {
+            true -> case substring(type_str, len(type_str) - 1, len(type_str)) == ")" of {
+                true -> tuple_find_top_level_comma(substring(type_str, 1, len(type_str) - 1), 0) >= len(substring(type_str, 1, len(type_str) - 1));
+                false -> false
+            };
+            false -> false
+        }
+    }
+}
+
+fn tuple_find_top_level_comma(s: string, i: int64) -> int64 {
+    tuple_find_top_level_comma_from(s, i, 0)
+}
+
+fn tuple_find_top_level_comma_from(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) == "(" of {
+            true -> tuple_find_top_level_comma_from(s, i + 1, depth + 1);
+            false -> case substring(s, i, i + 1) == ")" of {
+                true -> case depth <= 0 of {
+                    true -> len(s);
+                    false -> tuple_find_top_level_comma_from(s, i + 1, depth - 1)
+                };
+                false -> case substring(s, i, i + 1) == "," of {
+                    true -> case depth == 0 of {
+                        true -> i;
+                        false -> tuple_find_top_level_comma_from(s, i + 1, depth)
+                    };
+                    false -> tuple_find_top_level_comma_from(s, i + 1, depth)
                 }
             }
         }
