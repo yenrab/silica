@@ -31,6 +31,113 @@ use types;
 export expr_to_sir/2;
 export expr_to_sir_with_expected/3;
 
+fn expr_to_sir_tuple_inline(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    first_type: string <- tuple_first_element_type(expected_type);
+    rest_type: string <- tuple_rest_element_type(expected_type);
+    first: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, first_type);
+    second: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, rest_type);
+    sir_type: string <- types@type_name_to_sir(expected_type);
+    SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: first, right_expr: second }
+}
+
+fn tuple_first_element_type(tuple_type: string) -> string {
+    elements: string <- tuple_inner_str(tuple_type);
+    (first: string, _: string) <- tuple_split_first(elements);
+    tuple_trim_ws(first)
+}
+
+fn tuple_rest_element_type(tuple_type: string) -> string {
+    elements: string <- tuple_inner_str(tuple_type);
+    (first: string, rest: string) <- tuple_split_first(elements);
+    trimmed: string <- tuple_trim_ws(rest);
+    case len(trimmed) == 0 of {
+        true -> "";
+        false -> case tuple_contains_comma(trimmed) of {
+            true -> concat("(", concat(trimmed, ")"));
+            false -> trimmed
+        }
+    }
+}
+
+fn tuple_inner_str(type_str: string) -> string {
+    len_ts: int64 <- len(type_str);
+    case len_ts < 2 of {
+        true -> "";
+        false -> case substring(type_str, 0, 1) == "(" of {
+            true -> case substring(type_str, len_ts - 1, len_ts) == ")" of {
+                true -> substring(type_str, 1, len_ts - 1);
+                false -> ""
+            };
+            false -> ""
+        }
+    }
+}
+
+fn tuple_split_first(s: string) -> (string, string) {
+    idx: int64 <- tuple_find_comma(s, 0);
+    first: string <- substring(s, 0, idx);
+    rest: string <- case idx < len(s) of {
+        true -> substring(s, idx + 1, len(s));
+        false -> ""
+    };
+    (first, rest)
+}
+
+fn tuple_find_comma(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) == "," of {
+            true -> i;
+            false -> tuple_find_comma(s, i + 1)
+        }
+    }
+}
+
+fn tuple_contains_comma(s: string) -> bool {
+    tuple_contains_comma_at(s, 0)
+}
+
+fn tuple_contains_comma_at(s: string, i: int64) -> bool {
+    case i >= len(s) of {
+        true -> false;
+        false -> case substring(s, i, i + 1) == "," of {
+            true -> true;
+            false -> tuple_contains_comma_at(s, i + 1)
+        }
+    }
+}
+
+fn tuple_trim_ws(s: string) -> string {
+    start: int64 <- tuple_trim_start(s, 0);
+    len_s: int64 <- len(s);
+    one_less: int64 <- len_s - 1;
+    end_idx: int64 <- tuple_trim_end(s, one_less);
+    case start <= end_idx of {
+        true -> substring(s, start, end_idx + 1);
+        false -> ""
+    }
+}
+
+fn tuple_trim_start(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> tuple_trim_start(s, i + 1);
+            false -> i
+        }
+    }
+}
+
+fn tuple_trim_end(s: string, i: int64) -> int64 {
+    case i < 0 of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> tuple_trim_end(s, i - 1);
+            false -> i
+        }
+    }
+}
+
 fn literal_type_for_expected(expected_type: string) -> string {
     case expected_type of {
         "int32" -> "int32";
@@ -58,6 +165,7 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
         5 -> atoms@expr_to_sir(context, expr);
         7 -> boolean_terms@expr_to_sir(context, expr);
         8 -> string_literals@expr_to_sir(context, expr);
+        9 -> expr_to_sir_tuple_inline(context, expr, expected_type);
         6 -> do
             rhs: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, expr.value);
             bind_type: string <- types@type_name_to_sir(expr.value);
@@ -197,6 +305,7 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
         5 -> atoms@expr_to_sir(context, expr);
         7 -> boolean_terms@expr_to_sir(context, expr);
         8 -> string_literals@expr_to_sir(context, expr);
+        9 -> expr_to_sir_tuple_inline(context, expr, expected_type);
         6 -> do
             rhs: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, expr.value);
             bind_type: string <- types@type_name_to_sir(expr.value);

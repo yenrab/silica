@@ -7,6 +7,7 @@ use const_dispatcher;
 use var;
 use call;
 use prims;
+use prims_tuple;
 use let_dispatcher;
 use print_atom_inline;
 use print_bool_inline;
@@ -22,6 +23,7 @@ use int64_literal_pool;
 use float64_literal_pool;
 use float32_literal_pool;
 use string_literal_pool;
+use reg_conventions;
 
 export term_to_asm/11;
 export term_to_asm_debug/12;
@@ -90,7 +92,15 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> do term_to_asm_opt_bound_debug(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, rhs_reg, rhs_reg, true) end;
                     false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, rhs_reg, rhs_reg, false)
                 };
-                concat(concat(rhs_asm, "\n"), body_asm)
+                n: int64 <- prims_tuple@count_tuple_allocations(term.inner);
+                dealloc: string <- case n > 0 of {
+                    true -> case n == 1 of {
+                        true -> "    ADD SP, SP, #16\n";
+                        false -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(n * 16), "\n"))
+                    };
+                    false -> ""
+                };
+                concat(concat(concat(rhs_asm, "\n"), concat(body_asm, "\n")), dealloc)
             end
         };
         4 -> case term.name == "main.print_atom" of {
@@ -333,7 +343,27 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     op_asm: string <- prims@emit_prim_op(term, dest);
                     concat(concat(arg_asm, "\n"), op_asm)
                 end;
-                false -> do
+                false -> case term.name == "tuple_make" and reg_conventions@is_tuple_type(term.type_name) of {
+                    true -> do
+                        left_prefix: string <- reg_conventions@reg_prefix_for_type(term.inner.type_name);
+                        right_prefix: string <- case term.right_expr.kind == 6 and term.right_expr.name == "tuple_make" of {
+                            true -> "X";
+                            false -> reg_conventions@reg_prefix_for_type(term.right_expr.type_name)
+                        };
+                        left_reg: string <- concat(left_prefix, "1");
+                        right_reg: string <- concat(right_prefix, "2");
+                        left_asm: string <- case debug of {
+                            true -> do term_to_asm_opt_bound_debug(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                            false -> term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                        };
+                        right_asm: string <- case debug of {
+                            true -> do term_to_asm_opt_bound_debug(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                            false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                        };
+                        op_asm: string <- prims@emit_prim_op(term, dest);
+                        concat(concat(concat(concat(left_asm, "\n"), right_asm), "\n"), op_asm)
+                    end;
+                    false -> do
             // Comparisons (lt, gt, le, ge) have result type "bool" but operands determine reg size
             is_cmp: bool <- term.type_name == "bool" and (term.name == "lt" or term.name == "gt" or term.name == "le" or term.name == "ge");
             prim_type: string <- case is_cmp of { true -> term.inner.type_name; false -> term.type_name };
@@ -474,6 +504,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 end
             }
             end
+            }
             }
         };
         _: int64 -> concat("    ; unsupported term kind ", "?")

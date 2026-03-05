@@ -1,0 +1,64 @@
+// Tuple prim emission: tuple_make
+// sir_design_spec §7.6: tuple_make (T1, T2, ...) | (v1, v2, ...) | []
+// Layout: stack-allocate, store elements at [SP, #0], [SP, #8], ...; result = SP (pointer)
+// Term structure: inner = first element, right_expr = second element or nested tuple_make
+// term_emitter emits first to X1/W1/D1/S1, second to X2/W2/D2/S2 per element types
+
+use sir_ast;
+use reg_conventions;
+
+export emit_prim_op/2;
+export count_tuple_allocations/1;
+
+// Count SUB SP allocations in a tuple_make tree (each tuple_make does one SUB SP)
+fn count_tuple_allocations(term: SIRTerm) -> int64 {
+    case term.kind == 6 and term.name == "tuple_make" of {
+        true -> case term.right_expr.kind == 6 and term.right_expr.name == "tuple_make" of {
+            true -> 1 + count_tuple_allocations(term.right_expr);
+            false -> 1
+        };
+        false -> 0
+    }
+}
+
+fn store_for_type(type_name: string, reg_num: string, offset: string) -> string {
+    prefix: string <- case reg_conventions@is_float64_type(type_name) of {
+        true -> "D";
+        false -> case reg_conventions@is_float32_type(type_name) of {
+            true -> "S";
+            false -> case reg_conventions@is_narrow_type(type_name) of {
+                true -> "W";
+                false -> "X"
+            }
+        }
+    };
+    reg: string <- concat(prefix, reg_num);
+    concat(concat(concat(concat(concat("    STR ", reg), ", [SP, "), offset), "]"), "")
+}
+
+fn emit_tuple_make_2(term: SIRTerm, dest: string) -> string {
+    first_type: string <- term.inner.type_name;
+    is_nested: bool <- term.right_expr.kind == 6 and term.right_expr.name == "tuple_make";
+    second_type: string <- case is_nested of {
+        true -> "pointer";
+        false -> term.right_expr.type_name
+    };
+    sub_sp: string <- "    SUB SP, SP, #16\n";
+    store_first: string <- store_for_type(first_type, "1", "#0");
+    store_second: string <- case is_nested of {
+        true -> "    STR X2, [SP, #8]";
+        false -> store_for_type(second_type, "2", "#8")
+    };
+    mov_dest: string <- case dest == "SP" of {
+        true -> "";
+        false -> concat(concat(concat("\n    MOV ", dest), ", SP"), "")
+    };
+    concat(concat(concat(concat(concat(sub_sp, store_first), "\n"), store_second), mov_dest), "")
+}
+
+fn emit_prim_op(term: SIRTerm, dest: string) -> string {
+    case term.name of {
+        "tuple_make" -> emit_tuple_make_2(term, dest);
+        _: string -> concat(concat("    ; unsupported tuple prim: ", term.name), "")
+    }
+}

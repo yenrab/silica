@@ -1,0 +1,130 @@
+// Tuple type extraction helpers
+// Used by constraint_extract for bindings with tuple types
+
+use lexer_core;
+use lexer_token_kind;
+use constraint_core;
+
+export TupleTypeResult/0;
+export extract_tuple_type_from_slots/1;
+export is_tuple_type_binding_start/1;
+
+struct TupleTypeResult {
+    type_str: string,
+    rest_slots: ListTokenSlot
+}
+
+fn is_type_keyword(kinds: TokenKinds, token_kind: int64) -> bool {
+    token_kind == kinds.int8_keyword or token_kind == kinds.int16_keyword or token_kind == kinds.int32_keyword or token_kind == kinds.int64_keyword or token_kind == kinds.uint8_keyword or token_kind == kinds.uint16_keyword or token_kind == kinds.uint32_keyword or token_kind == kinds.uint64_keyword or token_kind == kinds.float16_keyword or token_kind == kinds.float32_keyword or token_kind == kinds.float64_keyword or token_kind == kinds.bool_keyword or token_kind == kinds.char_keyword or token_kind == kinds.string_keyword or token_kind == kinds.unit_keyword or token_kind == kinds.atom_keyword
+}
+
+fn kind_to_type_name(token_kind: int64) -> string {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case token_kind == kinds.int64_keyword of {
+        true -> "int64";
+        false -> case token_kind == kinds.int32_keyword of {
+            true -> "int32";
+            false -> case token_kind == kinds.int16_keyword of {
+                true -> "int16";
+                false -> case token_kind == kinds.int8_keyword of {
+                    true -> "int8";
+                    false -> case token_kind == kinds.uint64_keyword of {
+                        true -> "uint64";
+                        false -> case token_kind == kinds.uint32_keyword of {
+                            true -> "uint32";
+                            false -> case token_kind == kinds.uint16_keyword of {
+                                true -> "uint16";
+                                false -> case token_kind == kinds.uint8_keyword of {
+                                    true -> "uint8";
+                                    false -> case token_kind == kinds.float64_keyword of {
+                                        true -> "float64";
+                                        false -> case token_kind == kinds.float32_keyword of {
+                                            true -> "float32";
+                                            false -> case token_kind == kinds.float16_keyword of {
+                                                true -> "float16";
+                                                false -> case token_kind == kinds.bool_keyword of {
+                                                    true -> "boolean";
+                                                    false -> case token_kind == kinds.unit_keyword of {
+                                                        true -> "unit";
+                                                        false -> case token_kind == kinds.atom_keyword of {
+                                                            true -> "atom";
+                                                            false -> case token_kind == kinds.string_keyword of {
+                                                                true -> "string";
+                                                                false -> ""
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn append_type_to_tuple_string(acc: string, token: Token) -> string {
+    type_part: string <- case len(token.lexeme) > 0 of {
+        true -> token.lexeme;
+        false -> kind_to_type_name(token.kind)
+    };
+    case len(acc) == 1 of {
+        true -> concat(acc, type_part);
+        false -> concat(concat(acc, " "), type_part)
+    }
+}
+
+// Extract tuple type string from slots starting with (. Returns TupleTypeResult.
+fn extract_tuple_type_from_slots(slots: ListTokenSlot) -> TupleTypeResult {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    acc: string <- "(";
+    rest: ListTokenSlot <- slots.tail;
+    result: TupleTypeResult <- extract_tuple_type_loop(rest, acc);
+    result
+}
+
+fn extract_tuple_type_loop(slots: ListTokenSlot, acc: string) -> TupleTypeResult {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> TupleTypeResult { type_str: concat(acc, ")"), rest_slots: slots };
+        false -> case slots.head.token.kind == kinds.right_paren of {
+            true -> TupleTypeResult { type_str: concat(acc, ")"), rest_slots: slots.tail };
+            false -> case slots.head.token.kind == kinds.comma of {
+                true -> extract_tuple_type_loop(slots.tail, concat(acc, ","));
+                false -> case is_type_keyword(kinds, slots.head.token.kind) or slots.head.token.kind == kinds.identifier of {
+                    true -> do
+                        new_acc: string <- append_type_to_tuple_string(acc, slots.head.token);
+                        extract_tuple_type_loop(slots.tail, new_acc)
+                    end;
+                    false -> TupleTypeResult { type_str: concat(acc, ")"), rest_slots: slots }
+                }
+            }
+        }
+    }
+}
+
+// Check if slots start with ident : ( (tuple type binding)
+fn is_tuple_type_binding_start(slots: ListTokenSlot) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> false;
+        false -> case slots.tail.is_nil of {
+            true -> false;
+            false -> case slots.tail.tail.is_nil of {
+                true -> false;
+                false -> case slots.head.token.kind == kinds.identifier of {
+                    true -> case slots.tail.head.token.kind == kinds.colon of {
+                        true -> slots.tail.tail.head.token.kind == kinds.left_paren;
+                        false -> false
+                    };
+                    false -> false
+                }
+            }
+        }
+    }
+}

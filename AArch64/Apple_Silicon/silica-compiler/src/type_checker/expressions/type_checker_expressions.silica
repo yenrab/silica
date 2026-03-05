@@ -328,6 +328,66 @@ fn check_let(expr: Expr, expected_type: string, context: TypeContext) -> TypeChe
     }
 }
 
+// Tuple literal (kind 9): check against expected tuple type "(T1, T2)"
+fn check_tuple_literal_inline(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult {
+    case len(expected_type) == 7 and substring(expected_type, 0, 1) == "d" and substring(expected_type, 1, 2) == "i" and substring(expected_type, 2, 3) == "s" and substring(expected_type, 3, 4) == "c" and substring(expected_type, 4, 5) == "a" and substring(expected_type, 5, 6) == "r" and substring(expected_type, 6, 7) == "d" of {
+        true -> type_checker_core@type_check_ok();
+        false -> case len(expected_type) < 2 of {
+            true -> type_checker_core@type_check_err("E2005", expr.location, concat("tuple literal requires tuple type, got ", expected_type), "sect4");
+            false -> case substring(expected_type, 0, 1) == "(" of {
+                true -> case substring(expected_type, len(expected_type) - 1, len(expected_type)) == ")" of {
+                    true -> do
+                        inner: string <- substring(expected_type, 1, len(expected_type) - 1);
+                        comma_pos: int64 <- tuple_find_comma(inner, 0);
+                        first_type: string <- substring(inner, 0, comma_pos);
+                        rest_start: int64 <- comma_pos + 1;
+                        second_type_raw: string <- case rest_start < len(inner) of {
+                            true -> substring(inner, rest_start, len(inner));
+                            false -> ""
+                        };
+                        second_type: string <- tuple_trim_leading(second_type_raw);
+                        second_type_wrapped: string <- case tuple_find_comma(second_type, 0) < len(second_type) of {
+                            true -> concat(concat("(", second_type), ")");
+                            false -> second_type
+                        };
+                        first_result: TypeCheckResult <- check_expr(expr.inner, first_type, context);
+                        case first_result.is_ok of {
+                            false -> first_result;
+                            true -> check_expr(expr.right_expr, second_type_wrapped, context)
+                        }
+                    end;
+                    false -> type_checker_core@type_check_err("E2005", expr.location, concat("tuple literal requires tuple type, got ", expected_type), "sect4")
+                };
+                false -> type_checker_core@type_check_err("E2005", expr.location, concat("tuple literal requires tuple type, got ", expected_type), "sect4")
+            }
+        }
+    }
+}
+
+fn tuple_trim_leading(s: string) -> string {
+    tuple_trim_leading_from(s, 0)
+}
+
+fn tuple_trim_leading_from(s: string, i: int64) -> string {
+    case i >= len(s) of {
+        true -> "";
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> tuple_trim_leading_from(s, i + 1);
+            false -> substring(s, i, len(s))
+        }
+    }
+}
+
+fn tuple_find_comma(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) == "," of {
+            true -> i;
+            false -> tuple_find_comma(s, i + 1)
+        }
+    }
+}
+
 // true/false as identifiers: lexer may emit identifier; treat as boolean literal (spec: boolean values)
 fn is_true_or_false_identifier(expr: Expr) -> bool {
     case len(expr.name) of {
@@ -379,6 +439,7 @@ fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
                 false -> type_checker_core@type_check_err("E2001", expr.location, concat("string literal requires string type, got ", case expected_type of { "" -> "[EMPTY]"; _: string -> expected_type }), "sect6")
             }
         };
+        9 -> check_tuple_literal_inline(expr, expected_type, context);
         _: int64 -> type_checker_core@type_check_ok()
     }
 }

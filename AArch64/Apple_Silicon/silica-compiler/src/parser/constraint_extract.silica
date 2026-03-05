@@ -5,6 +5,7 @@ use lexer_core;
 use lexer_token_kind;
 use constraint_core;
 use parser_ast;
+use parser_tuples;
 use capability_fn_decl;
 use capability_expr_literal;
 
@@ -347,7 +348,7 @@ fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListEffe
     end
 }
 
-// Check if slots start with binding pattern: ident : type <- (at least 4 tokens)
+// Check if slots start with binding pattern: ident : type <- or ident : ( tuple type
 fn is_binding_start(slots: ListTokenSlot) -> bool {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     case slots.is_nil of {
@@ -356,18 +357,18 @@ fn is_binding_start(slots: ListTokenSlot) -> bool {
             true -> false;
             false -> case slots.tail.tail.is_nil of {
                 true -> false;
-                false -> case slots.tail.tail.tail.is_nil of {
-                    true -> false;
-                    false -> case slots.head.token.kind == kinds.identifier of {
-                        true -> case slots.tail.head.token.kind == kinds.colon of {
-                            true -> case is_type_keyword(kinds, slots.tail.tail.head.token.kind) of {
-                                true -> slots.tail.tail.tail.head.token.kind == kinds.left_arrow;
-                                false -> false
+                false -> case slots.head.token.kind == kinds.identifier of {
+                    true -> case slots.tail.head.token.kind == kinds.colon of {
+                        true -> case is_type_keyword(kinds, slots.tail.tail.head.token.kind) of {
+                            true -> case slots.tail.tail.tail.is_nil of {
+                                true -> false;
+                                false -> slots.tail.tail.tail.head.token.kind == kinds.left_arrow
                             };
-                            false -> false
+                            false -> parser_tuples@is_tuple_type_binding_start(slots)
                         };
                         false -> false
-                    }
+                    };
+                    false -> false
                 }
             }
         }
@@ -410,6 +411,29 @@ fn op_precedence(lexeme: string) -> int64 {
 }
 
 fn extract_binding(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
+    case parser_tuples@is_tuple_type_binding_start(slots) of {
+        true -> extract_binding_tuple(slots);
+        false -> extract_binding_simple(slots)
+    }
+}
+
+fn extract_binding_tuple(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
+    ident_slot: TokenSlot <- slots.head;
+    tuple_slots: ListTokenSlot <- slots.tail.tail;
+    tr: TupleTypeResult <- parser_tuples@extract_tuple_type_from_slots(tuple_slots);
+    bind_name: string <- ident_slot.token.lexeme;
+    bind_type: string <- tr.type_str;
+    bind_loc: SourceLocation <- ident_slot.token.location;
+    rhs_slots: ListTokenSlot <- tr.rest_slots.tail;
+    (rhs_expr: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
+    after_semicolons: ListTokenSlot <- skip_semicolons(rest_after_rhs);
+    (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(after_semicolons);
+    dummy: Expr <- parser_ast@dummy_expr();
+    let_expr: Expr <- Expr { kind: 6, value: bind_type, name: bind_name, location: bind_loc, inner: rhs_expr, right_expr: body };
+    (let_expr, rest_after_body)
+}
+
+fn extract_binding_simple(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
     ident_slot: TokenSlot <- slots.head;
     type_slot: TokenSlot <- slots.tail.tail.head;
     rhs_slots: ListTokenSlot <- slots.tail.tail.tail.tail;
@@ -419,11 +443,11 @@ fn extract_binding(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
         false -> kind_to_type_name(type_slot.token.kind)
     };
     bind_loc: SourceLocation <- ident_slot.token.location;
-    (rhs: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
+    (rhs_expr: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
     after_semicolons: ListTokenSlot <- skip_semicolons(rest_after_rhs);
     (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(after_semicolons);
     dummy: Expr <- parser_ast@dummy_expr();
-    let_expr: Expr <- Expr { kind: 6, value: bind_type, name: bind_name, location: bind_loc, inner: rhs, right_expr: body };
+    let_expr: Expr <- Expr { kind: 6, value: bind_type, name: bind_name, location: bind_loc, inner: rhs_expr, right_expr: body };
     (let_expr, rest_after_body)
 }
 
@@ -488,13 +512,66 @@ fn extract_body(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
 }
 
 fn extract_parenthesized(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
     lparen_slot: TokenSlot <- slots.head;
     inner_slots: ListTokenSlot <- slots.tail;
-    (inner: Expr, rest_after_inner: ListTokenSlot) <- extract_body(inner_slots);
-    rest_after_rparen: ListTokenSlot <- slots_tail(rest_after_inner);
-    dummy: Expr <- parser_ast@dummy_expr();
-    paren_expr: Expr <- Expr { kind: 2, value: "", name: "", location: lparen_slot.token.location, inner: inner, right_expr: dummy };
-    (paren_expr, rest_after_rparen)
+    (first: Expr, rest_after_first: ListTokenSlot) <- extract_body(inner_slots);
+    (result: Expr, rest_after_rparen: ListTokenSlot) <- extract_parenthesized_tail(lparen_slot, first, rest_after_first, kinds);
+    (result, rest_after_rparen)
+}
+
+fn extract_parenthesized_tail(lparen_slot: TokenSlot, first: Expr, rest_after_first: ListTokenSlot, kinds: TokenKinds) -> (Expr, ListTokenSlot) {
+    case rest_after_first.is_nil of {
+        true -> do
+            dummy: Expr <- parser_ast@dummy_expr();
+            single: Expr <- Expr { kind: 2, value: "", name: "", location: lparen_slot.token.location, inner: first, right_expr: dummy };
+            (single, rest_after_first)
+        end;
+        false -> case rest_after_first.head.token.kind == kinds.comma of {
+            true -> do
+                second_slots: ListTokenSlot <- rest_after_first.tail;
+                (second: Expr, rest_after_second: ListTokenSlot) <- extract_body(second_slots);
+                (rest_expr: Expr, rest_final: ListTokenSlot) <- extract_tuple_elements_tail(second, rest_after_second, kinds);
+                tuple_expr: Expr <- Expr { kind: 9, value: "", name: "", location: lparen_slot.token.location, inner: first, right_expr: rest_expr };
+                (tuple_expr, rest_final)
+            end;
+            false -> do
+                dummy: Expr <- parser_ast@dummy_expr();
+                single: Expr <- Expr { kind: 2, value: "", name: "", location: lparen_slot.token.location, inner: first, right_expr: dummy };
+                (single, slots_tail(rest_after_first))
+            end
+        }
+    }
+}
+
+// Recursively parse comma-separated tuple elements; build right-nested (a, (b, (c, d)))
+fn extract_tuple_elements_tail(first: Expr, rest: ListTokenSlot, kinds: TokenKinds) -> (Expr, ListTokenSlot) {
+    case rest.is_nil of {
+        true -> (first, rest);
+        false -> case rest.head.token.kind == kinds.right_paren of {
+            true -> (first, rest.tail);
+            false -> case rest.head.token.kind == kinds.comma of {
+                true -> do
+                    second_slots: ListTokenSlot <- rest.tail;
+                    (second: Expr, rest_after_second: ListTokenSlot) <- extract_body(second_slots);
+                    (rest_expr: Expr, rest_final: ListTokenSlot) <- extract_tuple_elements_tail(second, rest_after_second, kinds);
+                    tuple_expr: Expr <- Expr { kind: 9, value: "", name: "", location: first.location, inner: first, right_expr: rest_expr };
+                    (tuple_expr, rest_final)
+                end;
+                false -> (first, rest)
+            }
+        }
+    }
+}
+
+fn extract_skip_to_rparen(rest: ListTokenSlot, kinds: TokenKinds) -> ListTokenSlot {
+    case rest.is_nil of {
+        true -> rest;
+        false -> case rest.head.token.kind == kinds.right_paren of {
+            true -> rest.tail;
+            false -> rest
+        }
+    }
 }
 
 fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) {
