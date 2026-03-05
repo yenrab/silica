@@ -26,10 +26,51 @@ use int32_calls;
 use int16_calls;
 use int8_calls;
 use string_calls;
+use tuple_decompose;
 use types;
 
 export expr_to_sir/2;
 export expr_to_sir_with_expected/3;
+
+fn expr_to_sir_tuple_decompose(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    rhs_type: string <- tuple_decompose@expr_type_of(expr.inner, context);
+    case len(rhs_type) < 2 or substring(rhs_type, 0, 1) != "(" of {
+        true -> sir_ast@dummy_sir_term();
+        false -> do
+            bindings: ListTupleDecomposeBinding <- tuple_decompose@parse_pattern_and_type(expr.value, rhs_type);
+            rhs_term: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, rhs_type);
+            extended_context: TypeContext <- add_bindings_to_context(context, bindings);
+            body: SIRTerm <- expr_to_sir_in_let_body(extended_context, expr.right_expr, "", "", expected_type);
+            tuple_decompose@build_decompose_lets(rhs_term, bindings, body, context, rhs_type)
+        end
+    }
+}
+
+fn expr_to_sir_tuple_decompose_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    rhs_type: string <- tuple_decompose@expr_type_of(expr.inner, context);
+    case len(rhs_type) < 2 or substring(rhs_type, 0, 1) != "(" of {
+        true -> sir_ast@dummy_sir_term();
+        false -> do
+            bindings: ListTupleDecomposeBinding <- tuple_decompose@parse_pattern_and_type(expr.value, rhs_type);
+            rhs_term: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, rhs_type);
+            extended_context: TypeContext <- add_bindings_to_context(context, bindings);
+            body: SIRTerm <- expr_to_sir_in_let_body(extended_context, expr.right_expr, "", "", expected_type);
+            tuple_decompose@build_decompose_lets(rhs_term, bindings, body, context, rhs_type)
+        end
+    }
+}
+
+fn add_bindings_to_context(context: TypeContext, bindings: ListTupleDecomposeBinding) -> TypeContext {
+    case bindings.is_nil of {
+        true -> context;
+        false -> do
+            b: TupleDecomposeBinding <- bindings.head;
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, b.name, b.type_str, parser_ast@empty_effect_name_list());
+            new_context: TypeContext <- TypeContext { env: new_env };
+            add_bindings_to_context(new_context, bindings.tail)
+        end
+    }
+}
 
 fn expr_to_sir_tuple_inline(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
     first_type: string <- tuple_first_element_type(expected_type);
@@ -179,6 +220,7 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
         7 -> boolean_terms@expr_to_sir(context, expr);
         8 -> string_literals@expr_to_sir(context, expr);
         9 -> expr_to_sir_tuple_inline(context, expr, expected_type);
+        10 -> expr_to_sir_tuple_decompose_in_body(context, expr, bound_name, bound_type, expected_type);
         6 -> do
             rhs: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, expr.value);
             bind_type: string <- types@type_name_to_sir(expr.value);
@@ -319,6 +361,7 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
         7 -> boolean_terms@expr_to_sir(context, expr);
         8 -> string_literals@expr_to_sir(context, expr);
         9 -> expr_to_sir_tuple_inline(context, expr, expected_type);
+        10 -> expr_to_sir_tuple_decompose(context, expr, expected_type);
         6 -> do
             rhs: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, expr.value);
             bind_type: string <- types@type_name_to_sir(expr.value);
