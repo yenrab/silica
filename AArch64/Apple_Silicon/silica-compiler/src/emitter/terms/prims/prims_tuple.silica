@@ -1,30 +1,80 @@
-// Tuple prim emission: tuple_make
+// Tuple prim emission: flat tuple layout
 // sir_design_spec §7.6: tuple_make (T1, T2, ...) | (v1, v2, ...) | []
-// Layout: stack-allocate, store elements at [SP, #0], [SP, #8], ...; result = SP (pointer)
-// Term structure: inner = first element, right_expr = second element or nested tuple_make
-// term_emitter emits first to X1/W1/D1/S1, second to X2/W2/D2/S2 per element types
+// Flat layout: single stack allocation, elements at [SP, #0], [SP, #8], ...
+// SIR chain: tuple_make(e0, tuple_make(e1, ... tuple_make(eN-2, eN-1)))
+// Emitter flattens this chain into one contiguous allocation.
 
 use sir_ast;
 use reg_conventions;
 
 export emit_prim_op/2;
 export count_tuple_allocations/1;
+export count_flat_elements/1;
+export count_type_elements/1;
+export flat_alloc_size/1;
+export flat_alloc_size_str/1;
+export emit_flat_store/3;
+export emit_flat_mov_dest/1;
+export index_to_offset/1;
+export ldr_prefix_for_type/1;
 
-// Count SUB SP allocations in a tuple_make tree (each tuple_make does one SUB SP)
-// Must recurse on both inner (left) and right_expr (right) when they are nested tuple_make
+fn count_flat_elements(term: SIRTerm) -> int64 {
+    type_count: int64 <- count_type_elements(term.type_name);
+    case type_count < 2 and term.kind == 6 and term.name == "tuple_make" of {
+        true -> count_chain_elements(term);
+        false -> type_count
+    }
+}
+
+fn count_chain_elements(term: SIRTerm) -> int64 {
+    case term.kind == 6 and term.name == "tuple_make" of {
+        true -> 1 + count_chain_elements(term.right_expr);
+        false -> 1
+    }
+}
+
+fn count_type_elements(type_name: string) -> int64 {
+    case len(type_name) < 2 of {
+        true -> 1;
+        false -> case substring(type_name, 0, 1) == "(" of {
+            true -> 1 + count_top_level_commas(substring(type_name, 1, len(type_name) - 1), 0, 0);
+            false -> 1
+        }
+    }
+}
+
+fn count_top_level_commas(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> 0;
+        false -> case substring(s, i, i + 1) of {
+            "(" -> count_top_level_commas(s, i + 1, depth + 1);
+            ")" -> count_top_level_commas(s, i + 1, depth - 1);
+            "," -> case depth == 0 of {
+                true -> 1 + count_top_level_commas(s, i + 1, depth);
+                false -> count_top_level_commas(s, i + 1, depth)
+            };
+            _: string -> count_top_level_commas(s, i + 1, depth)
+        }
+    }
+}
+
+fn flat_alloc_size(count: int64) -> int64 {
+    (count + 1) / 2 * 16
+}
+
+fn flat_alloc_size_str(count: int64) -> string {
+    size: int64 <- flat_alloc_size(count);
+    case size of {
+        16 -> "16"; 32 -> "32"; 48 -> "48"; 64 -> "64"; 80 -> "80";
+        96 -> "96"; 112 -> "112"; 128 -> "128"; 144 -> "144"; 160 -> "160";
+        _: int64 -> "16"
+    }
+}
+
+// Flat layout: one allocation per tuple chain
 fn count_tuple_allocations(term: SIRTerm) -> int64 {
     case term.kind == 6 and term.name == "tuple_make" of {
-        true -> do
-            inner_count: int64 <- case term.inner.kind == 6 and term.inner.name == "tuple_make" of {
-                true -> count_tuple_allocations(term.inner);
-                false -> 0
-            };
-            right_count: int64 <- case term.right_expr.kind == 6 and term.right_expr.name == "tuple_make" of {
-                true -> count_tuple_allocations(term.right_expr);
-                false -> 0
-            };
-            1 + inner_count + right_count
-        end;
+        true -> 1;
         false -> 0
     }
 }
@@ -44,37 +94,38 @@ fn store_for_type(type_name: string, reg_num: string, offset: string) -> string 
     concat(concat(concat(concat(concat("    STR ", reg), ", [SP, "), offset), "]"), "")
 }
 
-fn emit_tuple_make_2(term: SIRTerm, dest: string) -> string {
-    first_type: string <- term.inner.type_name;
-    is_nested: bool <- term.right_expr.kind == 6 and term.right_expr.name == "tuple_make";
-    second_type: string <- case is_nested of {
-        true -> "pointer";
-        false -> term.right_expr.type_name
-    };
-    sub_sp: string <- "    SUB SP, SP, #16\n";
-    store_first: string <- store_for_type(first_type, "1", "#0");
-    store_second: string <- case is_nested of {
-        true -> "    STR X2, [SP, #8]";
-        false -> store_for_type(second_type, "2", "#8")
-    };
-    // Tuple result is always a 64-bit pointer; W registers are invalid for MOV dest, SP
+fn emit_flat_store(type_name: string, reg_num: string, idx: int64) -> string {
+    store_for_type(type_name, reg_num, index_to_offset_int(idx))
+}
+
+fn emit_flat_mov_dest(dest: string) -> string {
     dest_ptr: string <- case len(dest) > 0 and substring(dest, 0, 1) == "W" of {
         true -> concat("X", substring(dest, 1, len(dest)));
         false -> dest
     };
-    mov_dest: string <- case dest == "SP" of {
+    case dest == "SP" of {
         true -> "";
-        false -> concat(concat(concat("\n    MOV ", dest_ptr), ", SP"), "")
-    };
-    concat(concat(concat(concat(concat(sub_sp, store_first), "\n"), store_second), mov_dest), "")
+        false -> concat(concat("    MOV ", dest_ptr), ", SP")
+    }
 }
 
 fn index_to_offset(idx_str: string) -> string {
     case idx_str of {
         "0" -> "#0"; "1" -> "#8"; "2" -> "#16"; "3" -> "#24";
         "4" -> "#32"; "5" -> "#40"; "6" -> "#48"; "7" -> "#56";
-        "8" -> "#64"; "9" -> "#72";
+        "8" -> "#64"; "9" -> "#72"; "10" -> "#80"; "11" -> "#88";
+        "12" -> "#96"; "13" -> "#104"; "14" -> "#112"; "15" -> "#120";
         _: string -> "#0"
+    }
+}
+
+fn index_to_offset_int(idx: int64) -> string {
+    case idx of {
+        0 -> "#0"; 1 -> "#8"; 2 -> "#16"; 3 -> "#24";
+        4 -> "#32"; 5 -> "#40"; 6 -> "#48"; 7 -> "#56";
+        8 -> "#64"; 9 -> "#72"; 10 -> "#80"; 11 -> "#88";
+        12 -> "#96"; 13 -> "#104"; 14 -> "#112"; 15 -> "#120";
+        _: int64 -> "#0"
     }
 }
 
@@ -104,7 +155,6 @@ fn emit_tuple_proj(term: SIRTerm, dest: string) -> string {
 
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     case term.name of {
-        "tuple_make" -> emit_tuple_make_2(term, dest);
         "tuple_proj" -> emit_tuple_proj(term, dest);
         _: string -> concat(concat("    ; unsupported tuple prim: ", term.name), "")
     }

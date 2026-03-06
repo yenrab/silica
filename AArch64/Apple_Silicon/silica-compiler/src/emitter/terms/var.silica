@@ -2,6 +2,7 @@
 // sir_emitter_pattern_spec §7.4: var -> dest = a (or MOV dest, a if needed)
 
 use sir_ast;
+use atom_table;
 
 export emit_var/2;
 export emit_var_reg/3;
@@ -10,9 +11,11 @@ export emit_var_with_sp_check/3;
 export find_sp_binding/2;
 export base_reg_of/1;
 export sp_offset_for_index/1;
-export tuple_proj_body_bound/2;
-export new_tp_binding/2;
-export build_outer_with_sp/5;
+export tuple_proj_body_bound/3;
+export new_tp_binding/3;
+export build_outer_with_sp/6;
+export sp_offset_for_index_adj/2;
+export extract_sp_bindings/1;
 
 fn find_pipe(s: string, i: int64) -> int64 {
     case i >= len(s) of {
@@ -86,13 +89,30 @@ fn sp_offset_for_index(idx_str: string) -> string {
     case idx_str of {
         "0" -> "[SP, #0]"; "1" -> "[SP, #8]"; "2" -> "[SP, #16]"; "3" -> "[SP, #24]";
         "4" -> "[SP, #32]"; "5" -> "[SP, #40]"; "6" -> "[SP, #48]"; "7" -> "[SP, #56]";
+        "8" -> "[SP, #64]"; "9" -> "[SP, #72]"; "10" -> "[SP, #80]"; "11" -> "[SP, #88]";
+        "12" -> "[SP, #96]"; "13" -> "[SP, #104]"; "14" -> "[SP, #112]"; "15" -> "[SP, #120]";
         _: string -> "[SP, #0]"
     }
 }
 
-fn tuple_proj_body_bound(inner_term: SIRTerm, rhs_reg: string) -> string {
+fn index_to_int(idx_str: string) -> int64 {
+    case idx_str of {
+        "0" -> 0; "1" -> 1; "2" -> 2; "3" -> 3;
+        "4" -> 4; "5" -> 5; "6" -> 6; "7" -> 7;
+        "8" -> 8; "9" -> 9; "10" -> 10; "11" -> 11;
+        "12" -> 12; "13" -> 13; "14" -> 14; "15" -> 15;
+        _: string -> 0
+    }
+}
+
+fn sp_offset_for_index_adj(idx_str: string, adj: int64) -> string {
+    offset: int64 <- index_to_int(idx_str) * 8 + adj;
+    concat("[SP, #", concat(atom_table@int64_to_decimal_string(offset), "]"))
+}
+
+fn tuple_proj_body_bound(inner_term: SIRTerm, rhs_reg: string, sp_adj: int64) -> string {
     case inner_term.kind == 6 and inner_term.name == "tuple_proj" of {
-        true -> sp_offset_for_index(inner_term.right_expr.value);
+        true -> sp_offset_for_index_adj(inner_term.right_expr.value, sp_adj);
         false -> rhs_reg
     }
 }
@@ -104,18 +124,22 @@ fn enclosing_sp_binding(bound_name: string, base_bound_reg: string) -> string {
     }
 }
 
-fn new_tp_binding(let_name: string, inner_term: SIRTerm) -> string {
+fn new_tp_binding(let_name: string, inner_term: SIRTerm, sp_adj: int64) -> string {
     case inner_term.kind == 6 and inner_term.name == "tuple_proj" of {
-        true -> concat("|", concat(let_name, concat("=", sp_offset_for_index(inner_term.right_expr.value))));
+        true -> concat("|", concat(let_name, concat("=", sp_offset_for_index_adj(inner_term.right_expr.value, sp_adj))));
         false -> ""
     }
 }
 
-fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer: string, let_name: string, inner_term: SIRTerm) -> string {
-    base: string <- base_reg_of(base_bound_reg);
+fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer: string, let_name: string, inner_term: SIRTerm, sp_adj: int64) -> string {
+    raw_base: string <- base_reg_of(base_bound_reg);
+    base: string <- case len(raw_base) == 0 of {
+        true -> base_reg_of(current_outer);
+        false -> raw_base
+    };
     sp_part: string <- extract_sp_bindings(current_outer);
     enc: string <- enclosing_sp_binding(bound_name, base_bound_reg);
-    nb: string <- new_tp_binding(let_name, inner_term);
+    nb: string <- new_tp_binding(let_name, inner_term, sp_adj);
     concat(base, concat(sp_part, concat(enc, nb)))
 }
 

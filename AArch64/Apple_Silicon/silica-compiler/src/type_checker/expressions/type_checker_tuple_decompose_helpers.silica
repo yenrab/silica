@@ -173,10 +173,37 @@ fn build_pattern_type_at_prefix(bindings: ListTupleDecomposeBinding, prefix: str
         true -> "()";
         false -> case rest.is_nil of {
             true -> first_type;
-            false -> do
-                rest_type: string <- build_pattern_type_at_prefix(rest, prefix, idx + 1);
-                concat("(", concat(concat(first_type, ","), concat(rest_type, ")")))
-            end
+            false -> case rest_has_nested_sibling(rest, prefix, idx + 1) of {
+                true -> do
+                    rest_type: string <- build_pattern_type_at_prefix(rest, prefix, idx + 1);
+                    concat("(", concat(concat(first_type, ","), concat(rest_type, ")")))
+                end;
+                false -> build_flat_tuple_from_siblings(first_type, rest, prefix, idx + 1)
+            }
+        }
+    }
+}
+
+// True if rest's first element has nested children (path like "1,0"); false if flat siblings (path "1", "2", ...).
+fn rest_has_nested_sibling(bindings: ListTupleDecomposeBinding, prefix: string, next_idx: int64) -> bool {
+    case bindings.is_nil of {
+        true -> false;
+        false -> path_starts_with(bindings.head.path, make_path(prefix, next_idx))
+    }
+}
+
+// Build (t1, t2, t3, ...) when all elements are flat siblings (no nesting).
+fn build_flat_tuple_from_siblings(first_type: string, rest: ListTupleDecomposeBinding, prefix: string, next_idx: int64) -> string {
+    inner: string <- collect_flat_sibling_types(rest, prefix, next_idx, first_type);
+    concat("(", concat(inner, ")"))
+}
+
+fn collect_flat_sibling_types(bindings: ListTupleDecomposeBinding, prefix: string, idx: int64, acc: string) -> string {
+    case bindings.is_nil of {
+        true -> acc;
+        false -> case bindings.head.path == make_path(prefix, idx) of {
+            true -> collect_flat_sibling_types(bindings.tail, prefix, idx + 1, concat(concat(acc, ","), bindings.head.type_str));
+            false -> acc
         }
     }
 }
