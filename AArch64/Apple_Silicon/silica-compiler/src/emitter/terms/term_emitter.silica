@@ -55,16 +55,18 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             false -> const_dispatcher@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table)
         };
         1 -> case term.name == bound_name or term.name == concat("%", bound_name) of {
-            true -> var@emit_var_reg(term, dest, bound_reg);
-            false -> case len(outer_reg) > 0 of {
-                true -> var@emit_var_reg(term, dest, outer_reg);
-                false -> var@emit_var(term, dest)
-            }
+            true -> case len(bound_reg) > 0 and substring(bound_reg, 0, 1) == "[" of {
+                true -> var@emit_var_sp_load(dest, bound_reg);
+                false -> var@emit_var_reg(term, dest, bound_reg)
+            };
+            false -> var@emit_var_with_sp_check(term, dest, outer_reg)
         };
         2 -> case len(bound_name) > 0 and len(bound_reg) > 0 of {
             true -> do
-                base_rhs: string <- let_dispatcher@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg);
-                rhs_reg: string <- case term.inner.kind == 0 and term.inner.type_name == "int64" and dest == "X0" and bound_reg == "X1" of {
+                clean_bound: string <- var@base_reg_of(bound_reg);
+                clean_outer: string <- var@base_reg_of(outer_reg);
+                base_rhs: string <- let_dispatcher@compute_rhs_reg_in_let(term, dest, bound_name, clean_bound, clean_outer);
+                rhs_reg: string <- case term.inner.kind == 0 and term.inner.type_name == "int64" and dest == "X0" and clean_bound == "X1" of {
                     true -> "X2";
                     false -> base_rhs
                 };
@@ -72,9 +74,11 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> do term_to_asm_opt_bound_debug(term.inner, rhs_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                     false -> term_to_asm_opt_bound(term.inner, rhs_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                 };
+                body_bound: string <- var@tuple_proj_body_bound(term.inner, rhs_reg);
+                new_outer: string <- var@build_outer_with_sp(bound_name, bound_reg, outer_reg, term.name, term.inner);
                 body_asm: string <- case debug of {
-                    true -> do term_to_asm_opt_bound_debug(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, rhs_reg, bound_reg, true) end;
-                    false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, rhs_reg, bound_reg, false)
+                    true -> do term_to_asm_opt_bound_debug(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound, new_outer, true) end;
+                    false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound, new_outer, false)
                 };
                 n: int64 <- prims_tuple@count_tuple_allocations(term.inner);
                 dealloc: string <- case reg_conventions@is_tuple_type(term.inner.type_name) and n > 0 of {
@@ -103,9 +107,12 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> do term_to_asm_opt_bound_debug(term.inner, rhs_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                     false -> term_to_asm_opt_bound(term.inner, rhs_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                 };
+                body_bound_tl: string <- var@tuple_proj_body_bound(term.inner, rhs_reg);
+                tp_binding_tl: string <- var@new_tp_binding(term.name, term.inner);
+                new_outer_tl: string <- concat(rhs_reg, tp_binding_tl);
                 body_asm: string <- case debug of {
-                    true -> do term_to_asm_opt_bound_debug(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, rhs_reg, rhs_reg, true) end;
-                    false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, rhs_reg, rhs_reg, false)
+                    true -> do term_to_asm_opt_bound_debug(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound_tl, new_outer_tl, true) end;
+                    false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound_tl, new_outer_tl, false)
                 };
                 n: int64 <- prims_tuple@count_tuple_allocations(term.inner);
                 dealloc: string <- case n > 0 of {
@@ -359,6 +366,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 op_asm: string <- prims@emit_prim_op(term, dest);
                 concat(concat(concat(concat(left_asm, "\n"), right_asm), "\n"), op_asm)
             end;
+            false -> case term.name == "tuple_proj" of {
+            true -> prims_tuple@emit_prim_op(term, dest);
             false -> case term.type_name == "string" and (term.name == "string_substring" or term.name == "string_substring_until_char") and term.right_expr.kind == 6 of {
             true -> do
                 arg1_asm: string <- case debug of {
@@ -526,6 +535,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 end
             }
             end
+            }
             }
             }
         };

@@ -4,6 +4,7 @@
 use lexer_core;
 use lexer_token_kind;
 use constraint_core;
+use parser_ast;
 
 export TupleTypeResult/0;
 export extract_tuple_type_from_slots/1;
@@ -11,6 +12,7 @@ export is_tuple_type_binding_start/1;
 export is_single_element_tuple_type/1;
 export TupleDecomposeResult/0;
 export extract_tuple_decompose_pattern_from_slots/1;
+export get_bindings_for_ast/1;
 
 struct TupleTypeResult {
     type_str: string,
@@ -162,42 +164,93 @@ fn tuple_find_top_level_comma_from(s: string, i: int64, depth: int64) -> int64 {
 
 struct TupleDecomposeResult {
     pattern_str: string,
+    bindings: ListTupleDecomposeBinding,
     rest_slots: ListTokenSlot
 }
 
-// Extract tuple decomposition pattern ( ident { , ident | ( nested ) } ) from slots.
-// Returns pattern string and slots after the closing ).
+fn get_bindings_for_ast(r: TupleDecomposeResult) -> ListTupleDecomposeBinding {
+    r.bindings
+}
+
+fn int64_to_str(n: int64) -> string {
+    case n < 0 of {
+        true -> "0";
+        false -> case n < 10 of {
+            true -> digit_char(n);
+            false -> concat(int64_to_str(n / 10), digit_char(n % 10))
+        }
+    }
+}
+
+fn digit_char(d: int64) -> string {
+    case d of {
+        0 -> "0"; 1 -> "1"; 2 -> "2"; 3 -> "3"; 4 -> "4";
+        5 -> "5"; 6 -> "6"; 7 -> "7"; 8 -> "8"; 9 -> "9";
+        _: int64 -> "0"
+    }
+}
+
+fn append_bindings(a: ListTupleDecomposeBinding, b: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
+    case a.is_nil of {
+        true -> b;
+        false -> parser_ast@cons_tuple_decompose_binding(a.head, append_bindings(a.tail, b))
+    }
+}
+
+fn prefix_binding_paths(bindings: ListTupleDecomposeBinding, prefix: string) -> ListTupleDecomposeBinding {
+    case bindings.is_nil of {
+        true -> bindings;
+        false -> do
+            b: TupleDecomposeBinding <- bindings.head;
+            new_path: string <- case len(prefix) == 0 of {
+                true -> b.path;
+                false -> concat(concat(prefix, ","), b.path)
+            };
+            new_binding: TupleDecomposeBinding <- parser_ast@make_tuple_decompose_binding(b.name, new_path, b.type_str);
+            parser_ast@cons_tuple_decompose_binding(new_binding, prefix_binding_paths(bindings.tail, prefix))
+        end
+    }
+}
+
+// Extract tuple decomposition pattern ( ident : type { , ident : type | ( nested ) } ) from slots.
+// Returns pattern string, structured bindings list, and slots after the closing ).
+// All elements must be typed (ident : type); untyped elements get type_str "" and type checker will error.
 fn extract_tuple_decompose_pattern_from_slots(slots: ListTokenSlot) -> TupleDecomposeResult proc[DeviceIO] {
     do
         kinds: TokenKinds <- lexer_token_kind@token_kinds();
         acc: string <- "(";
         rest: ListTokenSlot <- slots.tail;
-        result: TupleDecomposeResult <- extract_tuple_decompose_loop(rest, acc, kinds);
+        result: TupleDecomposeResult <- extract_tuple_decompose_loop(rest, acc, parser_ast@nil_tuple_decompose_bindings(), 0, kinds);
         result
     end
 }
 
-fn extract_tuple_decompose_loop(slots: ListTokenSlot, acc: string, kinds: TokenKinds) -> TupleDecomposeResult proc[DeviceIO] {
+fn extract_tuple_decompose_loop(slots: ListTokenSlot, acc: string, bindings_so_far: ListTupleDecomposeBinding, elem_idx: int64, kinds: TokenKinds) -> TupleDecomposeResult proc[DeviceIO] {
     case slots.is_nil of {
-        true -> TupleDecomposeResult { pattern_str: concat(acc, ")"), rest_slots: slots };
+        true -> TupleDecomposeResult { pattern_str: concat(acc, ")"), bindings: bindings_so_far, rest_slots: slots };
         false -> case slots.head.token.kind == kinds.right_paren of {
-            true -> TupleDecomposeResult { pattern_str: concat(acc, ")"), rest_slots: slots.tail };
+            true -> TupleDecomposeResult { pattern_str: concat(acc, ")"), bindings: bindings_so_far, rest_slots: slots.tail };
             false -> case slots.head.token.kind == kinds.comma of {
-                true -> extract_tuple_decompose_loop(slots.tail, concat(acc, ","), kinds);
+                true -> extract_tuple_decompose_loop(slots.tail, concat(acc, ","), bindings_so_far, elem_idx, kinds);
                 false -> case slots.head.token.kind == kinds.left_paren of {
                     true -> do
                         nested: TupleDecomposeResult <- extract_tuple_decompose_pattern_from_slots(slots);
                         new_acc: string <- concat(acc, nested.pattern_str);
-                        extract_tuple_decompose_loop(nested.rest_slots, new_acc, kinds)
+                        path_prefix: string <- int64_to_str(elem_idx);
+                        prefixed: ListTupleDecomposeBinding <- prefix_binding_paths(nested.bindings, path_prefix);
+                        extract_tuple_decompose_loop(nested.rest_slots, new_acc, append_bindings(bindings_so_far, prefixed), elem_idx + 1, kinds)
                     end;
                     false -> case slots.head.token.kind == kinds.identifier of {
                         true -> do
-                            elem_acc: string <- concat(acc, slots.head.token.lexeme);
+                            ident_lexeme: string <- slots.head.token.lexeme;
+                            elem_acc: string <- concat(acc, ident_lexeme);
                             after_ident: ListTokenSlot <- slots.tail;
-                            elem_result: TupleDecomposeResult <- extract_tuple_decompose_typed_elem(after_ident, elem_acc, kinds);
-                            extract_tuple_decompose_loop(elem_result.rest_slots, elem_result.pattern_str, kinds)
+                            path_str: string <- int64_to_str(elem_idx);
+                            elem_result: TupleDecomposeResult <- extract_tuple_decompose_typed_elem(after_ident, elem_acc, ident_lexeme, path_str, kinds);
+                            new_bindings: ListTupleDecomposeBinding <- append_bindings(bindings_so_far, elem_result.bindings);
+                            extract_tuple_decompose_loop(elem_result.rest_slots, elem_result.pattern_str, new_bindings, elem_idx + 1, kinds)
                         end;
-                        false -> TupleDecomposeResult { pattern_str: concat(acc, ")"), rest_slots: slots }
+                        false -> TupleDecomposeResult { pattern_str: concat(acc, ")"), bindings: bindings_so_far, rest_slots: slots }
                     }
                 }
             }
@@ -205,18 +258,26 @@ fn extract_tuple_decompose_loop(slots: ListTokenSlot, acc: string, kinds: TokenK
     }
 }
 
-// After ident, optionally consume ": type" for typed pattern element. Returns updated acc and rest_slots.
-fn extract_tuple_decompose_typed_elem(slots: ListTokenSlot, acc: string, kinds: TokenKinds) -> TupleDecomposeResult proc[DeviceIO] {
+// After ident, optionally consume ": type" for typed pattern element. Returns updated acc, binding(s), and rest_slots.
+// For typed: one binding. For untyped: one binding with type_str "" (type checker will error).
+fn extract_tuple_decompose_typed_elem(slots: ListTokenSlot, acc: string, ident_name: string, path_str: string, kinds: TokenKinds) -> TupleDecomposeResult proc[DeviceIO] {
     case slots.is_nil of {
-        true -> TupleDecomposeResult { pattern_str: acc, rest_slots: slots };
+        true -> do
+            binding: TupleDecomposeBinding <- parser_ast@make_tuple_decompose_binding(ident_name, path_str, "");
+            TupleDecomposeResult { pattern_str: acc, bindings: parser_ast@cons_tuple_decompose_binding(binding, parser_ast@nil_tuple_decompose_bindings()), rest_slots: slots }
+        end;
         false -> case slots.head.token.kind == kinds.colon of {
             true -> do
                 after_colon: ListTokenSlot <- slots.tail;
                 (type_str: string, rest_after_type: ListTokenSlot) <- extract_tuple_decompose_type_inline(after_colon, kinds);
                 new_acc: string <- concat(concat(acc, ":"), type_str);
-                TupleDecomposeResult { pattern_str: new_acc, rest_slots: rest_after_type }
+                binding: TupleDecomposeBinding <- parser_ast@make_tuple_decompose_binding(ident_name, path_str, type_str);
+                TupleDecomposeResult { pattern_str: new_acc, bindings: parser_ast@cons_tuple_decompose_binding(binding, parser_ast@nil_tuple_decompose_bindings()), rest_slots: rest_after_type }
             end;
-            false -> TupleDecomposeResult { pattern_str: acc, rest_slots: slots }
+            false -> do
+                binding: TupleDecomposeBinding <- parser_ast@make_tuple_decompose_binding(ident_name, path_str, "");
+                TupleDecomposeResult { pattern_str: acc, bindings: parser_ast@cons_tuple_decompose_binding(binding, parser_ast@nil_tuple_decompose_bindings()), rest_slots: slots }
+            end
         }
     }
 }

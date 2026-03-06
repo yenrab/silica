@@ -1,6 +1,5 @@
-// Tuple decomposition (Expr kind 10): (a, b, (c, d)) <- expr; body
-// Supports tuples of any elements, any types, any recursive depth.
-// Emits nested lets with tuple_proj primitives.
+// Tuple decomposition (Expr kind 10): (a: T, b: U) <- expr; body
+// Uses structured pattern_bindings from AST. Emits nested lets with tuple_proj primitives.
 
 use parser_ast;
 use type_checker_core;
@@ -8,32 +7,7 @@ use sir_ast;
 use types;
 
 export expr_type_of/2;
-export parse_pattern_and_type/2;
 export build_decompose_lets/5;
-export TupleDecomposeBinding/0;
-export ListTupleDecomposeBinding/0;
-
-// Binding: (name, path_str, type_str). path_str is "0" or "1,0" for projection indices.
-struct TupleDecomposeBinding {
-    name: string,
-    path: string,
-    type_str: string
-}
-
-struct ListTupleDecomposeBinding {
-    is_nil: bool,
-    head: TupleDecomposeBinding,
-    tail: ListTupleDecomposeBinding
-}
-
-fn nil_bindings() -> ListTupleDecomposeBinding {
-    ph: ListTupleDecomposeBinding <- ListTupleDecomposeBinding { is_nil: true, head: TupleDecomposeBinding { name: "", path: "", type_str: "" }, tail: ph };
-    ph
-}
-
-fn cons_binding(b: TupleDecomposeBinding, rest: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
-    ListTupleDecomposeBinding { is_nil: false, head: b, tail: rest }
-}
 
 // Get type of expression. For identifier: lookup. For paren: recurse. For tuple literal: build from structure.
 fn expr_type_of(expr: Expr, context: TypeContext) -> string {
@@ -62,124 +36,6 @@ fn expr_type_of(expr: Expr, context: TypeContext) -> string {
 
 fn tuple_needs_parens(type_str: string) -> bool {
     len(type_str) >= 2 and substring(type_str, 0, 1) == "("
-}
-
-// Parse pattern and type in parallel. Pattern like "(a,(b,c))", type like "(T1,(T2,T3))".
-fn parse_pattern_and_type(pattern_str: string, type_str: string) -> ListTupleDecomposeBinding {
-    case len(pattern_str) < 2 of {
-        true -> nil_bindings();
-        false -> case substring(pattern_str, 0, 1) == "(" and substring(pattern_str, len(pattern_str) - 1, len(pattern_str)) == ")" of {
-            true -> case len(type_str) < 2 of {
-                true -> nil_bindings();
-                false -> case substring(type_str, 0, 1) == "(" and substring(type_str, len(type_str) - 1, len(type_str)) == ")" of {
-                    true -> parse_elements(substring(pattern_str, 1, len(pattern_str) - 1), substring(type_str, 1, len(type_str) - 1), "");
-                    false -> nil_bindings()
-                }
-            };
-            false -> nil_bindings()
-        }
-    }
-}
-
-// Parse elements at current level. path_prefix is "" or "1," for nested. Returns bindings in order.
-fn parse_elements(pattern_inner: string, type_inner: string, path_prefix: string) -> ListTupleDecomposeBinding {
-    case len(pattern_inner) == 0 of {
-        true -> nil_bindings();
-        false -> do
-            (first_pat: string, rest_pat: string) <- split_first_element(pattern_inner);
-            (first_type: string, rest_type: string) <- split_first_element(type_inner);
-            elem_path: string <- case len(path_prefix) == 0 of {
-                true -> "0";
-                false -> concat(path_prefix, "0")
-            };
-            first_trimmed: string <- tuple_trim(first_pat);
-            first_bindings: ListTupleDecomposeBinding <- case len(first_trimmed) >= 1 and substring(first_trimmed, 0, 1) == "(" of {
-                true -> parse_elements(substring(first_pat, 1, len(first_pat) - 1), substring(first_type, 1, len(first_type) - 1), concat(elem_path, ","));
-                false -> cons_binding(TupleDecomposeBinding { name: extract_binding_name(first_trimmed), path: elem_path, type_str: tuple_trim(first_type) }, nil_bindings())
-            };
-            rest_bindings: ListTupleDecomposeBinding <- case len(rest_pat) == 0 of {
-                true -> nil_bindings();
-                false -> parse_rest_elements(rest_pat, rest_type, path_prefix, 1)
-            };
-            append_bindings(first_bindings, rest_bindings)
-        end
-    }
-}
-
-fn parse_rest_elements(rest_pat: string, rest_type: string, path_prefix: string, elem_idx: int64) -> ListTupleDecomposeBinding {
-    case len(rest_pat) == 0 of {
-        true -> nil_bindings();
-        false -> do
-            (first_pat: string, after_rest: string) <- split_first_element(rest_pat);
-            (first_type: string, after_type: string) <- split_first_element(rest_type);
-            elem_path: string <- case len(path_prefix) == 0 of {
-                true -> int64_to_str(elem_idx);
-                false -> concat(path_prefix, int64_to_str(elem_idx))
-            };
-            first_trimmed: string <- tuple_trim(first_pat);
-            first_bindings: ListTupleDecomposeBinding <- case len(first_trimmed) >= 1 and substring(first_trimmed, 0, 1) == "(" of {
-                true -> parse_elements(substring(first_pat, 1, len(first_pat) - 1), substring(first_type, 1, len(first_type) - 1), concat(elem_path, ","));
-                false -> cons_binding(TupleDecomposeBinding { name: extract_binding_name(first_trimmed), path: elem_path, type_str: tuple_trim(first_type) }, nil_bindings())
-            };
-            rest_bindings: ListTupleDecomposeBinding <- parse_rest_elements(after_rest, after_type, path_prefix, elem_idx + 1);
-            append_bindings(first_bindings, rest_bindings)
-        end
-    }
-}
-
-fn append_bindings(a: ListTupleDecomposeBinding, b: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
-    case a.is_nil of {
-        true -> b;
-        false -> cons_binding(a.head, append_bindings(a.tail, b))
-    }
-}
-
-// Extract variable name from pattern element. "a_value:atom" -> "a_value", "a_value" -> "a_value".
-fn extract_binding_name(pat_elem: string) -> string {
-    colon_pos: int64 <- find_colon(pat_elem, 0);
-    case colon_pos >= 0 of {
-        true -> tuple_trim(substring(pat_elem, 0, colon_pos));
-        false -> pat_elem
-    }
-}
-
-fn find_colon(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
-        true -> -1;
-        false -> case substring(s, i, i + 1) == ":" of {
-            true -> i;
-            false -> find_colon(s, i + 1)
-        }
-    }
-}
-
-fn split_first_element(s: string) -> (string, string) {
-    idx: int64 <- find_top_level_comma(s, 0);
-    first: string <- substring(s, 0, idx);
-    rest: string <- case idx < len(s) of {
-        true -> substring(s, idx + 1, len(s));
-        false -> ""
-    };
-    (first, rest)
-}
-
-fn find_top_level_comma(s: string, i: int64) -> int64 {
-    find_top_level_comma_at(s, i, 0)
-}
-
-fn find_top_level_comma_at(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
-        true -> len(s);
-        false -> case substring(s, i, i + 1) of {
-            "(" -> find_top_level_comma_at(s, i + 1, depth + 1);
-            ")" -> find_top_level_comma_at(s, i + 1, depth - 1);
-            "," -> case depth == 0 of {
-                true -> i;
-                false -> find_top_level_comma_at(s, i + 1, depth)
-            };
-            _: string -> find_top_level_comma_at(s, i + 1, depth)
-        }
-    }
 }
 
 fn tuple_trim(s: string) -> string {
@@ -317,6 +173,25 @@ fn tuple_element_at_index(tuple_type: string, idx: int64) -> string {
         false -> case substring(tuple_type, 0, 1) == "(" of {
             true -> tuple_element_at_index_inner(substring(tuple_type, 1, len(tuple_type) - 1), idx);
             false -> "int64"
+        }
+    }
+}
+
+fn find_top_level_comma(s: string, i: int64) -> int64 {
+    find_top_level_comma_at(s, i, 0)
+}
+
+fn find_top_level_comma_at(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) of {
+            "(" -> find_top_level_comma_at(s, i + 1, depth + 1);
+            ")" -> find_top_level_comma_at(s, i + 1, depth - 1);
+            "," -> case depth == 0 of {
+                true -> i;
+                false -> find_top_level_comma_at(s, i + 1, depth)
+            };
+            _: string -> find_top_level_comma_at(s, i + 1, depth)
         }
     }
 }

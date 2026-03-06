@@ -1,43 +1,13 @@
 // Helpers for tuple decomposition type checking. No dependency on type_checker_expressions.
+// Uses parser_ast's TupleDecomposeBinding and ListTupleDecomposeBinding from the structured pattern.
 
 use parser_ast;
 use type_checker_core;
 
 export infer_expr_type/2;
-export parse_pattern_and_type/2;
 export add_bindings_to_context/2;
-export pattern_has_multiple_elements/1;
-export TupleDecomposeBinding/0;
-export ListTupleDecomposeBinding/0;
-
-struct TupleDecomposeBinding {
-    name: string,
-    path: string,
-    type_str: string
-}
-
-struct ListTupleDecomposeBinding {
-    is_nil: bool,
-    head: TupleDecomposeBinding,
-    tail: ListTupleDecomposeBinding
-}
-
-fn nil_bindings() -> ListTupleDecomposeBinding {
-    dummy: TupleDecomposeBinding <- TupleDecomposeBinding { name: "", path: "", type_str: "" };
-    nil_placeholder: ListTupleDecomposeBinding <- ListTupleDecomposeBinding { is_nil: true, head: dummy, tail: nil_placeholder };
-    nil_placeholder
-}
-
-fn cons_binding(b: TupleDecomposeBinding, rest: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
-    ListTupleDecomposeBinding { is_nil: false, head: b, tail: rest }
-}
-
-fn append_bindings(a: ListTupleDecomposeBinding, b: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
-    case a.is_nil of {
-        true -> b;
-        false -> cons_binding(a.head, append_bindings(a.tail, b))
-    }
-}
+export pattern_bindings_valid/2;
+export pattern_types_match_rhs/2;
 
 fn tuple_needs_parens(type_str: string) -> bool {
     len(type_str) >= 2 and substring(type_str, 0, 1) == "("
@@ -97,35 +67,6 @@ fn infer_expr_type(expr: Expr, context: TypeContext) -> string {
     }
 }
 
-fn split_first_element(s: string) -> (string, string) {
-    idx: int64 <- find_top_level_comma(s, 0);
-    first: string <- substring(s, 0, idx);
-    rest: string <- case idx < len(s) of {
-        true -> substring(s, idx + 1, len(s));
-        false -> ""
-    };
-    (first, rest)
-}
-
-fn find_top_level_comma(s: string, i: int64) -> int64 {
-    find_top_level_comma_at(s, i, 0)
-}
-
-fn find_top_level_comma_at(s: string, i: int64, depth: int64) -> int64 {
-    case i >= len(s) of {
-        true -> len(s);
-        false -> case substring(s, i, i + 1) of {
-            "(" -> find_top_level_comma_at(s, i + 1, depth + 1);
-            ")" -> find_top_level_comma_at(s, i + 1, depth - 1);
-            "," -> case depth == 0 of {
-                true -> i;
-                false -> find_top_level_comma_at(s, i + 1, depth)
-            };
-            _: string -> find_top_level_comma_at(s, i + 1, depth)
-        }
-    }
-}
-
 fn tuple_trim(s: string) -> string {
     start: int64 <- trim_start(s, 0);
     end_pos: int64 <- trim_end(s, len(s) - 1);
@@ -173,100 +114,6 @@ fn digit_char(d: int64) -> string {
     }
 }
 
-// Extract variable name from pattern element. "a_value:atom" -> "a_value", "a_value" -> "a_value".
-fn extract_binding_name(pat_elem: string) -> string {
-    colon_pos: int64 <- find_colon(pat_elem, 0);
-    case colon_pos >= 0 of {
-        true -> tuple_trim(substring(pat_elem, 0, colon_pos));
-        false -> pat_elem
-    }
-}
-
-fn find_colon(s: string, i: int64) -> int64 {
-    case i >= len(s) of {
-        true -> -1;
-        false -> case substring(s, i, i + 1) == ":" of {
-            true -> i;
-            false -> find_colon(s, i + 1)
-        }
-    }
-}
-
-fn parse_elements(pattern_inner: string, type_inner: string, path_prefix: string) -> ListTupleDecomposeBinding {
-    case len(pattern_inner) == 0 of {
-        true -> nil_bindings();
-        false -> do
-            (first_pat: string, rest_pat: string) <- split_first_element(pattern_inner);
-            (first_type: string, rest_type: string) <- split_first_element(type_inner);
-            elem_path: string <- case len(path_prefix) == 0 of {
-                true -> "0";
-                false -> concat(path_prefix, "0")
-            };
-            first_trimmed: string <- tuple_trim(first_pat);
-            first_bindings: ListTupleDecomposeBinding <- case len(first_trimmed) >= 1 and substring(first_trimmed, 0, 1) == "(" of {
-                true -> parse_elements(substring(first_pat, 1, len(first_pat) - 1), substring(first_type, 1, len(first_type) - 1), concat(elem_path, ","));
-                false -> cons_binding(TupleDecomposeBinding { name: extract_binding_name(first_trimmed), path: elem_path, type_str: tuple_trim(first_type) }, nil_bindings())
-            };
-            rest_bindings: ListTupleDecomposeBinding <- case len(rest_pat) == 0 of {
-                true -> nil_bindings();
-                false -> parse_rest_elements(rest_pat, rest_type, path_prefix, 1)
-            };
-            append_bindings(first_bindings, rest_bindings)
-        end
-    }
-}
-
-fn parse_rest_elements(rest_pat: string, rest_type: string, path_prefix: string, elem_idx: int64) -> ListTupleDecomposeBinding {
-    case len(rest_pat) == 0 of {
-        true -> nil_bindings();
-        false -> do
-            (first_pat: string, after_rest: string) <- split_first_element(rest_pat);
-            (first_type: string, after_type: string) <- split_first_element(rest_type);
-            elem_path: string <- case len(path_prefix) == 0 of {
-                true -> int64_to_str(elem_idx);
-                false -> concat(path_prefix, int64_to_str(elem_idx))
-            };
-            first_trimmed: string <- tuple_trim(first_pat);
-            first_bindings: ListTupleDecomposeBinding <- case len(first_trimmed) >= 1 and substring(first_trimmed, 0, 1) == "(" of {
-                true -> parse_elements(substring(first_pat, 1, len(first_pat) - 1), substring(first_type, 1, len(first_type) - 1), concat(elem_path, ","));
-                false -> cons_binding(TupleDecomposeBinding { name: extract_binding_name(first_trimmed), path: elem_path, type_str: tuple_trim(first_type) }, nil_bindings())
-            };
-            rest_bindings: ListTupleDecomposeBinding <- parse_rest_elements(after_rest, after_type, path_prefix, elem_idx + 1);
-            append_bindings(first_bindings, rest_bindings)
-        end
-    }
-}
-
-fn parse_pattern_and_type(pattern_str: string, type_str: string) -> ListTupleDecomposeBinding {
-    case len(pattern_str) < 2 of {
-        true -> nil_bindings();
-        false -> case substring(pattern_str, 0, 1) == "(" and substring(pattern_str, len(pattern_str) - 1, len(pattern_str)) == ")" of {
-            true -> case len(type_str) < 2 of {
-                true -> nil_bindings();
-                false -> case substring(type_str, 0, 1) == "(" and substring(type_str, len(type_str) - 1, len(type_str)) == ")" of {
-                    true -> parse_elements(substring(pattern_str, 1, len(pattern_str) - 1), substring(type_str, 1, len(type_str) - 1), "");
-                    false -> nil_bindings()
-                }
-            };
-            false -> nil_bindings()
-        }
-    }
-}
-
-fn pattern_has_multiple_elements(pattern_str: string) -> bool {
-    case len(pattern_str) < 2 of {
-        true -> false;
-        false -> case substring(pattern_str, 0, 1) == "(" and substring(pattern_str, len(pattern_str) - 1, len(pattern_str)) == ")" of {
-            true -> do
-                inner: string <- substring(pattern_str, 1, len(pattern_str) - 1);
-                comma_pos: int64 <- find_top_level_comma(inner, 0);
-                comma_pos < len(inner)
-            end;
-            false -> false
-        }
-    }
-}
-
 fn add_bindings_to_context(context: TypeContext, bindings: ListTupleDecomposeBinding) -> TypeContext {
     case bindings.is_nil of {
         true -> context;
@@ -277,4 +124,127 @@ fn add_bindings_to_context(context: TypeContext, bindings: ListTupleDecomposeBin
             add_bindings_to_context(new_context, bindings.tail)
         end
     }
+}
+
+// Check bindings are valid: at least two elements, all typed (no empty type_str).
+fn pattern_bindings_valid(bindings: ListTupleDecomposeBinding, location: SourceLocation) -> TypeCheckResult proc[DeviceIO] {
+    case bindings.is_nil of {
+        true -> type_checker_core@type_check_err("E2006", location, "tuple decomposition pattern must have at least two elements", "sect4");
+        false -> case bindings.tail.is_nil of {
+            true -> type_checker_core@type_check_err("E2006", location, "tuple decomposition pattern must have at least two elements", "sect4");
+            false -> check_all_typed(bindings, location)
+        }
+    }
+}
+
+fn check_all_typed(bindings: ListTupleDecomposeBinding, location: SourceLocation) -> TypeCheckResult proc[DeviceIO] {
+    case bindings.is_nil of {
+        true -> type_checker_core@type_check_ok();
+        false -> case len(bindings.head.type_str) == 0 of {
+            true -> type_checker_core@type_check_err("E2006", location, "tuple decomposition pattern elements must be typed (ident : type)", "sect4");
+            false -> check_all_typed(bindings.tail, location)
+        }
+    }
+}
+
+// Build pattern type from bindings and check it matches rhs_type. Types are compared after trimming.
+fn pattern_types_match_rhs(bindings: ListTupleDecomposeBinding, rhs_type: string, location: SourceLocation) -> TypeCheckResult proc[DeviceIO] {
+    pattern_type: string <- build_pattern_type_from_bindings(bindings);
+    rhs_trimmed: string <- tuple_trim(rhs_type);
+    pattern_trimmed: string <- tuple_trim(pattern_type);
+    case types_equal(rhs_trimmed, pattern_trimmed) of {
+        true -> type_checker_core@type_check_ok();
+        false -> type_checker_core@type_check_err("E2005", location, concat(concat("tuple decomposition pattern type ", concat(pattern_trimmed, " does not match RHS type ")), rhs_trimmed), "sect4")
+    }
+}
+
+fn build_pattern_type_from_bindings(bindings: ListTupleDecomposeBinding) -> string {
+    case bindings.is_nil of {
+        true -> "()";
+        false -> build_pattern_type_at_prefix(bindings, "", 0)
+    }
+}
+
+fn build_pattern_type_at_prefix(bindings: ListTupleDecomposeBinding, prefix: string, idx: int64) -> string {
+    result: CollectTypeResult <- collect_type_at_prefix(bindings, prefix, idx);
+    first_type: string <- result.first_type;
+    rest: ListTupleDecomposeBinding <- result.rest;
+    case len(first_type) == 0 of {
+        true -> "()";
+        false -> case rest.is_nil of {
+            true -> first_type;
+            false -> do
+                rest_type: string <- build_pattern_type_at_prefix(rest, prefix, idx + 1);
+                concat("(", concat(concat(first_type, ","), concat(rest_type, ")")))
+            end
+        }
+    }
+}
+
+fn make_path(prefix: string, idx: int64) -> string {
+    idx_str: string <- int64_to_str(idx);
+    case len(prefix) == 0 of {
+        true -> idx_str;
+        false -> concat(concat(prefix, ","), idx_str)
+    }
+}
+
+fn collect_type_at_prefix(bindings: ListTupleDecomposeBinding, prefix: string, idx: int64) -> CollectTypeResult {
+    path: string <- make_path(prefix, idx);
+    collect_type_at_prefix_with_path(bindings, prefix, idx, path)
+}
+
+fn collect_type_at_prefix_with_path(bindings: ListTupleDecomposeBinding, prefix: string, idx: int64, path: string) -> CollectTypeResult {
+    case bindings.is_nil of {
+        true -> CollectTypeResult { first_type: "", rest: bindings };
+        false -> case bindings.head.path == path of {
+            true -> CollectTypeResult { first_type: bindings.head.type_str, rest: bindings.tail };
+            false -> case path_starts_with(bindings.head.path, path) of {
+                true -> do
+                    nested: string <- build_pattern_type_at_prefix(bindings, path, 0);
+                    rest: ListTupleDecomposeBinding <- skip_bindings_with_prefix(bindings, path);
+                    CollectTypeResult { first_type: nested, rest: rest }
+                end;
+                false -> collect_type_at_prefix(bindings.tail, prefix, idx + 1)
+            }
+        }
+    }
+}
+
+fn path_starts_with(full: string, prefix: string) -> bool {
+    len(full) > len(prefix) and substring(full, 0, len(prefix)) == prefix and (len(full) == len(prefix) or substring(full, len(prefix), len(prefix) + 1) == ",")
+}
+
+fn skip_bindings_with_prefix(bindings: ListTupleDecomposeBinding, prefix: string) -> ListTupleDecomposeBinding {
+    case bindings.is_nil of {
+        true -> bindings;
+        false -> case path_starts_with(bindings.head.path, prefix) or bindings.head.path == prefix of {
+            true -> skip_bindings_with_prefix(bindings.tail, prefix);
+            false -> bindings
+        }
+    }
+}
+
+fn types_equal(a: string, b: string) -> bool {
+    strip_spaces(a) == strip_spaces(b)
+}
+
+fn strip_spaces(s: string) -> string {
+    strip_spaces_from(s, 0, "")
+}
+
+fn strip_spaces_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> strip_spaces_from(s, i + 1, acc);
+            false -> strip_spaces_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+// Result of collect_type_at_prefix - avoids tuple decomposition (bootstrap compiler bug with tuple bindings)
+struct CollectTypeResult {
+    first_type: string,
+    rest: ListTupleDecomposeBinding
 }

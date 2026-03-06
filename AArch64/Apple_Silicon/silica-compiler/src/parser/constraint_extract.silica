@@ -432,7 +432,7 @@ fn extract_binding_tuple(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[Dev
         case parser_tuples@is_single_element_tuple_type(bind_type) of {
             true -> do
                 dummy: Expr <- parser_ast@dummy_expr();
-                sentinel: Expr <- Expr { kind: 998, value: "single_tuple_type", name: "", location: bind_loc, inner: dummy, right_expr: dummy };
+                sentinel: Expr <- Expr { kind: 998, value: "single_tuple_type", name: "", location: bind_loc, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                 rhs_slots: ListTokenSlot <- tr.rest_slots.tail;
                 (_: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
                 after_semicolons: ListTokenSlot <- skip_semicolons(rest_after_rhs);
@@ -445,7 +445,7 @@ fn extract_binding_tuple(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[Dev
                 after_semicolons: ListTokenSlot <- skip_semicolons(rest_after_rhs);
                 (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(after_semicolons);
                 dummy: Expr <- parser_ast@dummy_expr();
-                let_expr: Expr <- Expr { kind: 6, value: bind_type, name: bind_name, location: bind_loc, inner: rhs_expr, right_expr: body };
+                let_expr: Expr <- Expr { kind: 6, value: bind_type, name: bind_name, location: bind_loc, inner: rhs_expr, right_expr: body, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                 (let_expr, rest_after_body)
             end
         }
@@ -467,7 +467,7 @@ fn extract_binding_simple(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[De
         after_semicolons: ListTokenSlot <- skip_semicolons(rest_after_rhs);
         (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(after_semicolons);
         dummy: Expr <- parser_ast@dummy_expr();
-        let_expr: Expr <- Expr { kind: 6, value: bind_type, name: bind_name, location: bind_loc, inner: rhs_expr, right_expr: body };
+        let_expr: Expr <- Expr { kind: 6, value: bind_type, name: bind_name, location: bind_loc, inner: rhs_expr, right_expr: body, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
         (let_expr, rest_after_body)
     end
 }
@@ -478,14 +478,14 @@ fn wrap_let_or_return(expr: Expr, rest_body: Expr) -> Expr {
     case expr.kind == 6 of {
         true -> do
             new_continuation: Expr <- wrap_let_or_return(expr.right_expr, rest_body);
-            Expr { kind: 6, value: expr.value, name: expr.name, location: expr.location, inner: expr.inner, right_expr: new_continuation }
+            Expr { kind: 6, value: expr.value, name: expr.name, location: expr.location, inner: expr.inner, right_expr: new_continuation, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() }
         end;
         false -> case expr.kind == 10 of {
             true -> do
                 new_continuation: Expr <- wrap_let_or_return(expr.right_expr, rest_body);
-                Expr { kind: 10, value: expr.value, name: expr.name, location: expr.location, inner: expr.inner, right_expr: new_continuation }
+                Expr { kind: 10, value: expr.value, name: expr.name, location: expr.location, inner: expr.inner, right_expr: new_continuation, pattern_bindings: parser_ast@as_list_tuple_decompose_bindings(expr.pattern_bindings) }
             end;
-            false -> Expr { kind: 6, value: "unit", name: "_", location: expr.location, inner: expr, right_expr: rest_body }
+            false -> Expr { kind: 6, value: "unit", name: "_", location: expr.location, inner: expr, right_expr: rest_body, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() }
         }
     }
 }
@@ -556,7 +556,7 @@ fn extract_tuple_decompose(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[D
                     (rhs_expr: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
                     after_semicolons: ListTokenSlot <- skip_semicolons(rest_after_rhs);
                     (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(after_semicolons);
-                    td_expr: Expr <- Expr { kind: 10, value: td_result.pattern_str, name: "", location: lparen_slot.token.location, inner: rhs_expr, right_expr: body };
+                    td_expr: Expr <- Expr { kind: 10, value: "", name: "", location: lparen_slot.token.location, inner: rhs_expr, right_expr: body, pattern_bindings: parser_tuples@get_bindings_for_ast(td_result) };
                     (td_expr, rest_after_body)
                 end;
                 false -> do
@@ -609,34 +609,34 @@ fn extract_parenthesized_tail(lparen_slot: TokenSlot, first: Expr, rest_after_fi
     case rest_after_first.is_nil of {
         true -> do
             dummy: Expr <- parser_ast@dummy_expr();
-            single: Expr <- Expr { kind: 2, value: "", name: "", location: lparen_slot.token.location, inner: first, right_expr: dummy };
+            single: Expr <- Expr { kind: 2, value: "", name: "", location: lparen_slot.token.location, inner: first, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
             (single, rest_after_first)
         end;
         false -> case rest_after_first.head.token.kind == kinds.comma of {
             true -> case rest_after_first.tail.is_nil of {
                 true -> do
                     dummy: Expr <- parser_ast@dummy_expr();
-                    sentinel: Expr <- Expr { kind: 999, value: "single_tuple", name: "", location: lparen_slot.token.location, inner: dummy, right_expr: dummy };
+                    sentinel: Expr <- Expr { kind: 999, value: "single_tuple", name: "", location: lparen_slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                     (sentinel, rest_after_first)
                 end;
                 false -> case rest_after_first.tail.head.token.kind == kinds.right_paren of {
                     true -> do
                         dummy: Expr <- parser_ast@dummy_expr();
-                        sentinel: Expr <- Expr { kind: 999, value: "single_tuple", name: "", location: lparen_slot.token.location, inner: dummy, right_expr: dummy };
+                        sentinel: Expr <- Expr { kind: 999, value: "single_tuple", name: "", location: lparen_slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                         (sentinel, rest_after_first.tail)
                     end;
                     false -> do
                         second_slots: ListTokenSlot <- rest_after_first.tail;
                         (second: Expr, rest_after_second: ListTokenSlot) <- extract_body(second_slots);
                         (rest_expr: Expr, rest_final: ListTokenSlot) <- extract_tuple_elements_tail(second, rest_after_second, kinds);
-                        tuple_expr: Expr <- Expr { kind: 9, value: "", name: "", location: lparen_slot.token.location, inner: first, right_expr: rest_expr };
+                        tuple_expr: Expr <- Expr { kind: 9, value: "", name: "", location: lparen_slot.token.location, inner: first, right_expr: rest_expr, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                         (tuple_expr, rest_final)
                     end
                 }
             };
             false -> do
                 dummy: Expr <- parser_ast@dummy_expr();
-                single: Expr <- Expr { kind: 2, value: "", name: "", location: lparen_slot.token.location, inner: first, right_expr: dummy };
+                single: Expr <- Expr { kind: 2, value: "", name: "", location: lparen_slot.token.location, inner: first, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                 (single, slots_tail(rest_after_first))
             end
         }
@@ -653,20 +653,20 @@ fn extract_tuple_elements_tail(first: Expr, rest: ListTokenSlot, kinds: TokenKin
                 true -> case rest.tail.is_nil of {
                     true -> do
                         dummy: Expr <- parser_ast@dummy_expr();
-                        sentinel: Expr <- Expr { kind: 999, value: "single_tuple", name: "", location: first.location, inner: dummy, right_expr: dummy };
+                        sentinel: Expr <- Expr { kind: 999, value: "single_tuple", name: "", location: first.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                         (sentinel, rest)
                     end;
                     false -> case rest.tail.head.token.kind == kinds.right_paren of {
                         true -> do
                             dummy: Expr <- parser_ast@dummy_expr();
-                            sentinel: Expr <- Expr { kind: 999, value: "single_tuple", name: "", location: first.location, inner: dummy, right_expr: dummy };
+                            sentinel: Expr <- Expr { kind: 999, value: "single_tuple", name: "", location: first.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                             (sentinel, rest.tail)
                         end;
                         false -> do
                             second_slots: ListTokenSlot <- rest.tail;
                             (second: Expr, rest_after_second: ListTokenSlot) <- extract_body(second_slots);
                             (rest_expr: Expr, rest_final: ListTokenSlot) <- extract_tuple_elements_tail(second, rest_after_second, kinds);
-                            tuple_expr: Expr <- Expr { kind: 9, value: "", name: "", location: first.location, inner: first, right_expr: rest_expr };
+                            tuple_expr: Expr <- Expr { kind: 9, value: "", name: "", location: first.location, inner: first, right_expr: rest_expr, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                             (tuple_expr, rest_final)
                         end
                     }
@@ -723,7 +723,7 @@ fn extract_binary_tail(left: Expr, rest: ListTokenSlot, min_prec: int64) -> (Exp
                     rest_after_op: ListTokenSlot <- slots_tail(rest);
                     (right: Expr, rest_after_right: ListTokenSlot) <- extract_expr_with_precedence(rest_after_op, op_precedence(op_slot.token.lexeme) + 1);
                     dummy: Expr <- parser_ast@dummy_expr();
-                    binary: Expr <- Expr { kind: 3, value: op_slot.token.lexeme, name: "", location: op_slot.token.location, inner: left, right_expr: right };
+                    binary: Expr <- Expr { kind: 3, value: op_slot.token.lexeme, name: "", location: op_slot.token.location, inner: left, right_expr: right, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                     extract_binary_tail(binary, rest_after_right, min_prec)
                 end
             }
@@ -786,10 +786,10 @@ fn extract_call(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
     call_loc: SourceLocation <- first.token.location;
     call_expr: Expr <- case has_arg3 of {
         true -> do
-            pair: Expr <- Expr { kind: 4, value: "", name: "", location: call_loc, inner: arg2, right_expr: arg3 };
-            Expr { kind: 4, value: "", name: call_name, location: call_loc, inner: arg1, right_expr: pair }
+            pair: Expr <- Expr { kind: 4, value: "", name: "", location: call_loc, inner: arg2, right_expr: arg3, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
+            Expr { kind: 4, value: "", name: call_name, location: call_loc, inner: arg1, right_expr: pair, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() }
         end;
-        false -> Expr { kind: 4, value: "", name: call_name, location: call_loc, inner: arg1, right_expr: arg2 }
+        false -> Expr { kind: 4, value: "", name: call_name, location: call_loc, inner: arg1, right_expr: arg2, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() }
     };
     (call_expr, rest_after_rparen)
 }
@@ -798,20 +798,20 @@ fn extract_operand_expr(slot: TokenSlot) -> Expr {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     dummy: Expr <- parser_ast@dummy_expr();
     case slot.token.kind == kinds.integer_literal of {
-        true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+        true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
         false -> case slot.token.kind == kinds.float_literal of {
-            true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+            true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
             false -> case slot.token.kind == kinds.atom_literal of {
-                true -> Expr { kind: 5, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+                true -> Expr { kind: 5, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                 false -> case slot.token.kind == kinds.true_literal of {
-                    true -> Expr { kind: 7, value: "true", name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+                    true -> Expr { kind: 7, value: "true", name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                     false -> case slot.token.kind == kinds.false_literal of {
-                        true -> Expr { kind: 7, value: "false", name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+                        true -> Expr { kind: 7, value: "false", name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                         false -> case slot.token.kind == kinds.string_literal of {
-                            true -> Expr { kind: 8, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+                            true -> Expr { kind: 8, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                             false -> case slot.token.kind == kinds.char_literal of {
-                                true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
-                                false -> Expr { kind: 1, value: "", name: slot.token.lexeme, location: slot.token.location, inner: dummy, right_expr: dummy }
+                                true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
+                                false -> Expr { kind: 1, value: "", name: slot.token.lexeme, location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() }
                             }
                         }
                     }
@@ -825,22 +825,22 @@ fn extract_body_expr(slot: TokenSlot) -> Expr {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     dummy: Expr <- parser_ast@dummy_expr();
     case slot.token.kind == kinds.integer_literal of {
-        true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+        true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
         false -> case slot.token.kind == kinds.float_literal of {
-            true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+            true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
             false -> case slot.token.kind == kinds.identifier of {
-                true -> Expr { kind: 1, value: "", name: slot.token.lexeme, location: slot.token.location, inner: dummy, right_expr: dummy };
+                true -> Expr { kind: 1, value: "", name: slot.token.lexeme, location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                 false -> case slot.token.kind == kinds.atom_literal of {
-                    true -> Expr { kind: 5, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+                    true -> Expr { kind: 5, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                     false -> case slot.token.kind == kinds.true_literal of {
-                        true -> Expr { kind: 7, value: "true", name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+                        true -> Expr { kind: 7, value: "true", name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                         false -> case slot.token.kind == kinds.false_literal of {
-                            true -> Expr { kind: 7, value: "false", name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+                            true -> Expr { kind: 7, value: "false", name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                             false -> case slot.token.kind == kinds.string_literal of {
-                                true -> Expr { kind: 8, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
+                                true -> Expr { kind: 8, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
                                 false -> case slot.token.kind == kinds.char_literal of {
-                                    true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy };
-                                    false -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy }
+                                    true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
+                                    false -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() }
                                 }
                             }
                         }

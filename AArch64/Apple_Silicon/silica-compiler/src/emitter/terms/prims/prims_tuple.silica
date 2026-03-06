@@ -69,9 +69,43 @@ fn emit_tuple_make_2(term: SIRTerm, dest: string) -> string {
     concat(concat(concat(concat(concat(sub_sp, store_first), "\n"), store_second), mov_dest), "")
 }
 
+fn index_to_offset(idx_str: string) -> string {
+    case idx_str of {
+        "0" -> "#0"; "1" -> "#8"; "2" -> "#16"; "3" -> "#24";
+        "4" -> "#32"; "5" -> "#40"; "6" -> "#48"; "7" -> "#56";
+        "8" -> "#64"; "9" -> "#72";
+        _: string -> "#0"
+    }
+}
+
+fn ldr_prefix_for_type(type_name: string) -> string {
+    case reg_conventions@is_float64_type(type_name) of {
+        true -> "D";
+        false -> case reg_conventions@is_float32_type(type_name) of {
+            true -> "S";
+            false -> case reg_conventions@is_narrow_type(type_name) of {
+                true -> "W";
+                false -> "X"
+            }
+        }
+    }
+}
+
+fn emit_tuple_proj(term: SIRTerm, dest: string) -> string {
+    offset_str: string <- index_to_offset(term.right_expr.value);
+    prefix: string <- ldr_prefix_for_type(term.type_name);
+    dest_num: string <- case len(dest) > 0 of {
+        true -> substring(dest, 1, len(dest));
+        false -> "0"
+    };
+    ldr_reg: string <- concat(prefix, dest_num);
+    concat(concat(concat(concat("    LDR ", ldr_reg), ", [SP, "), offset_str), "]")
+}
+
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     case term.name of {
         "tuple_make" -> emit_tuple_make_2(term, dest);
+        "tuple_proj" -> emit_tuple_proj(term, dest);
         _: string -> concat(concat("    ; unsupported tuple prim: ", term.name), "")
     }
 }

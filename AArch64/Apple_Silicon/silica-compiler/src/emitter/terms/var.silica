@@ -5,6 +5,134 @@ use sir_ast;
 
 export emit_var/2;
 export emit_var_reg/3;
+export emit_var_sp_load/2;
+export emit_var_with_sp_check/3;
+export find_sp_binding/2;
+export base_reg_of/1;
+export sp_offset_for_index/1;
+export tuple_proj_body_bound/2;
+export new_tp_binding/2;
+export build_outer_with_sp/5;
+
+fn find_pipe(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "|" of {
+            true -> i;
+            false -> find_pipe(s, i + 1)
+        }
+    }
+}
+
+fn base_reg_raw(outer: string) -> string {
+    pipe: int64 <- find_pipe(outer, 0);
+    case pipe < 0 of {
+        true -> outer;
+        false -> substring(outer, 0, pipe)
+    }
+}
+
+fn base_reg_check(raw: string) -> string {
+    case len(raw) > 0 and substring(raw, 0, 1) == "[" of {
+        true -> "";
+        false -> raw
+    }
+}
+
+fn base_reg_of(outer: string) -> string {
+    base_reg_check(base_reg_raw(outer))
+}
+
+fn find_str_at(haystack: string, needle: string, start: int64) -> int64 {
+    case start + len(needle) > len(haystack) of {
+        true -> -1;
+        false -> case substring(haystack, start, start + len(needle)) == needle of {
+            true -> start;
+            false -> find_str_at(haystack, needle, start + 1)
+        }
+    }
+}
+
+fn extract_sp_bindings(outer: string) -> string {
+    pipe: int64 <- find_pipe(outer, 0);
+    case pipe < 0 of {
+        true -> "";
+        false -> substring(outer, pipe, len(outer))
+    }
+}
+
+fn find_sp_binding_extract(outer_reg: string, val_start: int64) -> string {
+    val_end: int64 <- find_pipe(outer_reg, val_start);
+    case val_end < 0 of {
+        true -> substring(outer_reg, val_start, len(outer_reg));
+        false -> substring(outer_reg, val_start, val_end)
+    }
+}
+
+fn find_sp_binding(outer_reg: string, var_name: string) -> string {
+    key: string <- concat("|", concat(var_name, "="));
+    pos: int64 <- find_str_at(outer_reg, key, 0);
+    case pos < 0 of {
+        true -> "";
+        false -> find_sp_binding_extract(outer_reg, pos + len(key))
+    }
+}
+
+fn emit_var_sp_load(dest: string, sp_ref: string) -> string {
+    concat(concat("    LDR ", dest), concat(", ", sp_ref))
+}
+
+fn sp_offset_for_index(idx_str: string) -> string {
+    case idx_str of {
+        "0" -> "[SP, #0]"; "1" -> "[SP, #8]"; "2" -> "[SP, #16]"; "3" -> "[SP, #24]";
+        "4" -> "[SP, #32]"; "5" -> "[SP, #40]"; "6" -> "[SP, #48]"; "7" -> "[SP, #56]";
+        _: string -> "[SP, #0]"
+    }
+}
+
+fn tuple_proj_body_bound(inner_term: SIRTerm, rhs_reg: string) -> string {
+    case inner_term.kind == 6 and inner_term.name == "tuple_proj" of {
+        true -> sp_offset_for_index(inner_term.right_expr.value);
+        false -> rhs_reg
+    }
+}
+
+fn enclosing_sp_binding(bound_name: string, base_bound_reg: string) -> string {
+    case len(base_bound_reg) > 0 and substring(base_bound_reg, 0, 1) == "[" of {
+        true -> concat("|", concat(bound_name, concat("=", base_bound_reg)));
+        false -> ""
+    }
+}
+
+fn new_tp_binding(let_name: string, inner_term: SIRTerm) -> string {
+    case inner_term.kind == 6 and inner_term.name == "tuple_proj" of {
+        true -> concat("|", concat(let_name, concat("=", sp_offset_for_index(inner_term.right_expr.value))));
+        false -> ""
+    }
+}
+
+fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer: string, let_name: string, inner_term: SIRTerm) -> string {
+    base: string <- base_reg_of(base_bound_reg);
+    sp_part: string <- extract_sp_bindings(current_outer);
+    enc: string <- enclosing_sp_binding(bound_name, base_bound_reg);
+    nb: string <- new_tp_binding(let_name, inner_term);
+    concat(base, concat(sp_part, concat(enc, nb)))
+}
+
+fn emit_var_with_base_reg(term: SIRTerm, dest: string, base: string) -> string {
+    case len(base) > 0 of {
+        true -> emit_var_reg(term, dest, base);
+        false -> emit_var(term, dest)
+    }
+}
+
+fn emit_var_with_sp_check(term: SIRTerm, dest: string, outer_reg: string) -> string {
+    sp_match: string <- find_sp_binding(outer_reg, term.name);
+    case len(sp_match) > 0 of {
+        true -> emit_var_sp_load(dest, sp_match);
+        false -> emit_var_with_base_reg(term, dest, base_reg_of(outer_reg))
+    }
+}
 
 // Emit MOV dest, name for var term.
 // The variable (e.g. %x) is already in a register; we copy to dest.
