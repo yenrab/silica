@@ -2,11 +2,14 @@
    Traverses Expr trees to collect effects from function calls,
    computes effect set unions, and expands effect aliases.
    Implements spec §9.3.1 (Effect Propagation, Effect Set Union Algorithm).
+   Memory region ops (alloc_region, alloc_ref, read_ref, write_ref, alloc_rec, build)
+   require mem(Space) per spec §4.4; Space from alloc_region arg or binding type.
 -}
 
 use parser_ast;
 use lexer_core;
 use effect_checker_core;
+use effect_checker_memory_regions;
 
 export collect_expr_effects/2;
 export resolve_call_effects/2;
@@ -19,35 +22,42 @@ export expand_single_effect/2;
 
 {- Traverse an Expr tree and collect the union of all effects from function calls.
    Expr kinds: 0=integer literal, 1=identifier, 2=parenthesized, 3=binary_op, 4=call, 5=atom literal, 6=let binding, -1=dummy.
-   For calls (kind 4): resolve callee effects, union with effects from argument subtree.
-   For binary ops (kind 3): union effects from both operands.
-   For let bindings (kind 6): union effects from RHS (inner) and continuation (right_expr).
-   Pure expressions (integer literal, atom literal, identifier) contribute no effects (spec §9.3.1). -}
+   For calls (kind 4): resolve callee effects (region ops use binding_type for Space), union with arg subtree.
+   For let bindings (kind 6): pass expr.value (binding type) when recursing into RHS for region op effect extraction.
+   Pure expressions contribute no effects (spec §9.3.1). -}
 fn collect_expr_effects(expr: Expr, ctx: EffectContext) -> ListEffectName {
+    collect_expr_effects_with_binding(expr, ctx, "")
+}
+
+fn collect_expr_effects_with_binding(expr: Expr, ctx: EffectContext, binding_type: string) -> ListEffectName {
     case expr.kind == 4 of {
         true -> do
-            callee_effects: ListEffectName <- resolve_call_effects(expr.name, ctx);
-            arg_effects: ListEffectName <- collect_expr_effects(expr.inner, ctx);
+            callee_effects: ListEffectName <- resolve_call_effects_with_binding(expr.name, ctx, expr.inner, binding_type, expr.location);
+            arg_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, "");
             union_effect_lists(callee_effects, arg_effects)
         end;
         false -> case expr.kind == 3 of {
             true -> do
-                left_effects: ListEffectName <- collect_expr_effects(expr.inner, ctx);
-                right_effects: ListEffectName <- collect_expr_effects(expr.right_expr, ctx);
+                left_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, "");
+                right_effects: ListEffectName <- collect_expr_effects_with_binding(expr.right_expr, ctx, "");
                 union_effect_lists(left_effects, right_effects)
             end;
             false -> case expr.kind == 6 of {
                 true -> do
-                    rhs_effects: ListEffectName <- collect_expr_effects(expr.inner, ctx);
-                    body_effects: ListEffectName <- collect_expr_effects(expr.right_expr, ctx);
+                    rhs_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, expr.value);
+                    body_effects: ListEffectName <- collect_expr_effects_with_binding(expr.right_expr, ctx, "");
                     union_effect_lists(rhs_effects, body_effects)
                 end;
                 false -> case expr.kind == 2 of {
-                    true -> collect_expr_effects(expr.inner, ctx);
-                    false -> do
-                        // kind 0 (integer literal), 1 (identifier), 5 (atom literal), -1 (dummy): pure, empty effect set per spec §9.3.1
-                        parser_ast@empty_effect_name_list()
-                    end
+                    true -> collect_expr_effects_with_binding(expr.inner, ctx, binding_type);
+                    false -> case expr.kind == 10 of {
+                        true -> do
+                            rhs_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, "");
+                            body_effects: ListEffectName <- collect_expr_effects_with_binding(expr.right_expr, ctx, "");
+                            union_effect_lists(rhs_effects, body_effects)
+                        end;
+                        false -> parser_ast@empty_effect_name_list()
+                    }
                 }
             }
         }
@@ -55,17 +65,32 @@ fn collect_expr_effects(expr: Expr, ctx: EffectContext) -> ListEffectName {
 }
 
 {- Resolve the effects of a called function by name.
-   Lookup order: user-defined function env, then built-in functions.
+   Lookup order: region builtins (alloc_region, alloc_ref, etc.), user-defined, then other builtins.
    Unknown functions are treated as pure (empty effects). -}
 fn resolve_call_effects(fn_name: string, ctx: EffectContext) -> ListEffectName {
-    (found_user: bool, user_effects: ListEffectName) <- effect_checker_core@lookup_fn_effects(ctx.fn_env, fn_name);
-    case found_user of {
-        true -> expand_effect_list(user_effects, ctx.alias_env);
-        false -> do
-            (found_builtin: bool, builtin_effects: ListEffectName) <- effect_checker_core@builtin_fn_effects(fn_name);
-            case found_builtin of {
-                true -> builtin_effects;
+    resolve_call_effects_with_binding(fn_name, ctx, parser_ast@dummy_expr(), "", parser_ast@zero_location())
+}
+
+fn resolve_call_effects_with_binding(fn_name: string, ctx: EffectContext, first_arg: Expr, binding_type: string, location: SourceLocation) -> ListEffectName {
+    case effect_checker_memory_regions@is_region_builtin_fn(fn_name) of {
+        true -> do
+            (handled: bool, region_effects: ListEffectName) <- effect_checker_memory_regions@get_region_call_effects(fn_name, first_arg, binding_type, location);
+            case handled of {
+                true -> region_effects;
                 false -> parser_ast@empty_effect_name_list()
+            }
+        end;
+        false -> do
+            (found_user: bool, user_effects: ListEffectName) <- effect_checker_core@lookup_fn_effects(ctx.fn_env, fn_name);
+            case found_user of {
+                true -> expand_effect_list(user_effects, ctx.alias_env);
+                false -> do
+                    (found_builtin: bool, builtin_effects: ListEffectName) <- effect_checker_core@builtin_fn_effects(fn_name);
+                    case found_builtin of {
+                        true -> builtin_effects;
+                        false -> parser_ast@empty_effect_name_list()
+                    }
+                end
             }
         end
     }

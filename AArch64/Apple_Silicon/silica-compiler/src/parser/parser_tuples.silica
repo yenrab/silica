@@ -8,7 +8,9 @@ use parser_ast;
 
 export TupleTypeResult/0;
 export extract_tuple_type_from_slots/1;
+export extract_parametrized_type_from_slots/1;
 export is_tuple_type_binding_start/1;
+export is_memory_region_type_binding_start/1;
 export is_single_element_tuple_type/1;
 export TupleDecomposeResult/0;
 export extract_tuple_decompose_pattern_from_slots/1;
@@ -20,7 +22,42 @@ struct TupleTypeResult {
 }
 
 fn is_type_keyword(kinds: TokenKinds, token_kind: int64) -> bool {
-    token_kind == kinds.int8_keyword or token_kind == kinds.int16_keyword or token_kind == kinds.int32_keyword or token_kind == kinds.int64_keyword or token_kind == kinds.uint8_keyword or token_kind == kinds.uint16_keyword or token_kind == kinds.uint32_keyword or token_kind == kinds.uint64_keyword or token_kind == kinds.float16_keyword or token_kind == kinds.float32_keyword or token_kind == kinds.float64_keyword or token_kind == kinds.bool_keyword or token_kind == kinds.char_keyword or token_kind == kinds.string_keyword or token_kind == kinds.unit_keyword or token_kind == kinds.atom_keyword
+    token_kind == kinds.int8_keyword or token_kind == kinds.int16_keyword or token_kind == kinds.int32_keyword or token_kind == kinds.int64_keyword or token_kind == kinds.uint8_keyword or token_kind == kinds.uint16_keyword or token_kind == kinds.uint32_keyword or token_kind == kinds.uint64_keyword or token_kind == kinds.float16_keyword or token_kind == kinds.float32_keyword or token_kind == kinds.float64_keyword or token_kind == kinds.bool_keyword or token_kind == kinds.char_keyword or token_kind == kinds.string_keyword or token_kind == kinds.unit_keyword or token_kind == kinds.atom_keyword or token_kind == kinds.ref_keyword or token_kind == kinds.region_keyword or token_kind == kinds.buf_keyword or token_kind == kinds.atomic_keyword or token_kind == kinds.normal_keyword or token_kind == kinds.normal_writeback_keyword or token_kind == kinds.normal_writethrough_keyword or token_kind == kinds.normal_noncacheable_keyword or token_kind == kinds.device_keyword
+}
+
+fn is_memory_region_type_binding_start(slots: ListTokenSlot) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> false;
+        false -> case slots.tail.is_nil of {
+            true -> false;
+            false -> case slots.tail.tail.is_nil of {
+                true -> false;
+                false -> case slots.head.token.kind == kinds.identifier of {
+                    true -> case slots.tail.head.token.kind == kinds.colon of {
+                        true -> case slots.tail.tail.head.token.kind == kinds.ref_keyword or slots.tail.tail.head.token.kind == kinds.region_keyword or slots.tail.tail.head.token.kind == kinds.buf_keyword of {
+                            true -> case slots.tail.tail.tail.is_nil of {
+                                true -> false;
+                                false -> slots.tail.tail.tail.head.token.kind == kinds.left_paren
+                            };
+                            false -> case slots.tail.tail.head.token.kind == kinds.atomic_keyword of {
+                                true -> case slots.tail.tail.tail.is_nil of {
+                                    true -> false;
+                                    false -> case slots.tail.tail.tail.tail.is_nil of {
+                                        true -> false;
+                                        false -> slots.tail.tail.tail.head.token.kind == kinds.ref_keyword and slots.tail.tail.tail.tail.head.token.kind == kinds.left_paren
+                                    }
+                                };
+                                false -> false
+                            }
+                        };
+                        false -> false
+                    };
+                    false -> false
+                }
+            }
+        }
+    }
 }
 
 fn kind_to_type_name(token_kind: int64) -> string {
@@ -55,7 +92,34 @@ fn kind_to_type_name(token_kind: int64) -> string {
                                                             true -> "atom";
                                                             false -> case token_kind == kinds.string_keyword of {
                                                                 true -> "string";
-                                                                false -> ""
+                                                                false -> case token_kind == kinds.ref_keyword of {
+                                                                    true -> "ref";
+                                                                    false -> case token_kind == kinds.region_keyword of {
+                                                                        true -> "region";
+                                                                        false -> case token_kind == kinds.buf_keyword of {
+                                                                            true -> "buf";
+                                                                            false -> case token_kind == kinds.atomic_keyword of {
+                                                                                true -> "atomic";
+                                                                                false -> case token_kind == kinds.normal_keyword of {
+                                                                                    true -> "normal";
+                                                                                    false -> case token_kind == kinds.normal_writeback_keyword of {
+                                                                                        true -> "normal_writeback";
+                                                                                        false -> case token_kind == kinds.normal_writethrough_keyword of {
+                                                                                            true -> "normal_writethrough";
+                                                                                            false -> case token_kind == kinds.normal_noncacheable_keyword of {
+                                                                                                true -> "normal_noncacheable";
+                                                                                                false -> case token_kind == kinds.device_keyword of {
+                                                                                                    true -> "device";
+                                                                                                    false -> ""
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -81,6 +145,50 @@ fn append_type_to_tuple_string(acc: string, token: Token) -> string {
     case len(acc) == 1 of {
         true -> concat(acc, type_part);
         false -> concat(concat(acc, " "), type_part)
+    }
+}
+
+// Extract parametrized type (ref/region/buf/atomic_ref) from slots. Returns TupleTypeResult.
+fn extract_parametrized_type_from_slots(slots: ListTokenSlot) -> TupleTypeResult proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> TupleTypeResult { type_str: "", rest_slots: slots };
+        false -> case slots.head.token.kind == kinds.atomic_keyword of {
+            true -> case slots.tail.is_nil of {
+                true -> TupleTypeResult { type_str: "", rest_slots: slots };
+                false -> case slots.tail.head.token.kind == kinds.ref_keyword of {
+                    true -> case slots.tail.tail.is_nil of {
+                        true -> TupleTypeResult { type_str: "", rest_slots: slots };
+                        false -> case slots.tail.tail.head.token.kind == kinds.left_paren of {
+                            true -> do
+                                tr: TupleTypeResult <- extract_tuple_type_from_slots(slots.tail.tail);
+                                full: string <- concat("atomic_ref", tr.type_str);
+                                rest: ListTokenSlot <- tr.rest_slots;
+                                TupleTypeResult { type_str: full, rest_slots: rest }
+                            end;
+                            false -> TupleTypeResult { type_str: "", rest_slots: slots }
+                        }
+                    };
+                    false -> TupleTypeResult { type_str: "", rest_slots: slots }
+                }
+            };
+            false -> case slots.head.token.kind == kinds.ref_keyword or slots.head.token.kind == kinds.region_keyword or slots.head.token.kind == kinds.buf_keyword of {
+                true -> case slots.tail.is_nil of {
+                    true -> TupleTypeResult { type_str: "", rest_slots: slots };
+                    false -> case slots.tail.head.token.kind == kinds.left_paren of {
+                        true -> do
+                            prefix: string <- slots.head.token.lexeme;
+                            tr: TupleTypeResult <- extract_tuple_type_from_slots(slots.tail);
+                            full: string <- concat(prefix, tr.type_str);
+                            rest: ListTokenSlot <- tr.rest_slots;
+                            TupleTypeResult { type_str: full, rest_slots: rest }
+                        end;
+                        false -> TupleTypeResult { type_str: "", rest_slots: slots }
+                    }
+                };
+                false -> TupleTypeResult { type_str: "", rest_slots: slots }
+            }
+        }
     }
 }
 
@@ -290,13 +398,25 @@ fn extract_tuple_decompose_type_inline(slots: ListTokenSlot, kinds: TokenKinds) 
                 tr: TupleTypeResult <- extract_tuple_type_from_slots(slots);
                 (tr.type_str, tr.rest_slots)
             end;
-            false -> do
-                type_part: string <- case len(slots.head.token.lexeme) > 0 of {
-                    true -> slots.head.token.lexeme;
-                    false -> kind_to_type_name(slots.head.token.kind)
-                };
-                (type_part, slots.tail)
-            end
+            false -> case slots.head.token.kind == kinds.ref_keyword or slots.head.token.kind == kinds.region_keyword or slots.head.token.kind == kinds.buf_keyword of {
+                true -> do
+                    tr: TupleTypeResult <- extract_parametrized_type_from_slots(slots);
+                    (tr.type_str, tr.rest_slots)
+                end;
+                false -> case slots.head.token.kind == kinds.atomic_keyword of {
+                    true -> do
+                        tr: TupleTypeResult <- extract_parametrized_type_from_slots(slots);
+                        (tr.type_str, tr.rest_slots)
+                    end;
+                    false -> do
+                        type_part: string <- case len(slots.head.token.lexeme) > 0 of {
+                            true -> slots.head.token.lexeme;
+                            false -> kind_to_type_name(slots.head.token.kind)
+                        };
+                        (type_part, slots.tail)
+                    end
+                }
+            }
         }
     }
 }

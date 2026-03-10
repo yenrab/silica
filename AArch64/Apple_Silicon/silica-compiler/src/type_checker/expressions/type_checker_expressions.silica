@@ -10,6 +10,7 @@ use type_checker_expressions_float32_calls;
 use type_checker_expressions_string_calls;
 use boolean_type_checker_expressions;
 use type_checker_tuple_decompose_helpers;
+use type_checker_memory_regions;
 
 export check_expr/3;
 
@@ -327,8 +328,24 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
 
 // Let binding: name: type <- rhs; body. Check rhs has declared type, add to env, check body.
 // Reject unit for named variables; allow _ : unit <- expr (discard pattern for expression statements).
+// Memory region types (ref, region, buf, atomic_ref) are validated before type checking.
 fn check_let(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     bind_type: string <- expr.value;
+    case type_checker_memory_regions@is_memory_region_type(bind_type) of {
+        true -> check_let_memory_region(expr, expected_type, context, bind_type);
+        false -> check_let_after_validation(expr, expected_type, context, bind_type)
+    }
+}
+
+fn check_let_memory_region(expr: Expr, expected_type: string, context: TypeContext, bind_type: string) -> TypeCheckResult proc[DeviceIO] {
+    mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(bind_type, expr.location);
+    case mem_result.is_ok of {
+        false -> mem_result;
+        true -> check_let_after_validation(expr, expected_type, context, bind_type)
+    }
+}
+
+fn check_let_after_validation(expr: Expr, expected_type: string, context: TypeContext, bind_type: string) -> TypeCheckResult proc[DeviceIO] {
     case bind_type == "unit" of {
         true -> case expr.name == "_" of {
             true -> do

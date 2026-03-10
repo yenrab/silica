@@ -1,0 +1,82 @@
+// Memory region prim emission: alloc_region, alloc_ref, read_ref, write_ref, alloc_buf, buf_load, buf_store
+// sir_design_spec §7.4, sir_emitter_pattern_spec §7.3
+// Stack-based allocation for minimal implementation; region = arena on stack
+
+use sir_ast;
+
+export is_memory_prim/1;
+export emit_prim_op/2;
+
+fn is_memory_prim(name: string) -> bool {
+    name == "alloc_region" or name == "alloc_ref" or name == "read_ref" or name == "write_ref" or name == "alloc_buf" or name == "buf_load" or name == "buf_store"
+}
+
+// alloc_region(space): allocate minimal region on stack, return base pointer
+// Arg: inner = space (const/var). For stack alloc we ignore space.
+// Operands: X1 = space (unused for stack)
+fn emit_alloc_region(dest: string) -> string {
+    region_size: string <- "8";
+    sub_sp: string <- concat(concat("    SUB SP, SP, #", region_size), "\n");
+    mov_dest: string <- concat(concat("    MOV ", dest), ", SP");
+    concat(sub_sp, mov_dest)
+}
+
+// alloc_ref(region, value): allocate one cell in region, store value, return ref (pointer)
+// Operands: X1 = region base, X2 = value
+fn emit_alloc_ref(dest: string) -> string {
+    sub_sp: string <- "    SUB SP, SP, #8\n";
+    str_val: string <- "    STR X2, [SP]\n";
+    mov_dest: string <- concat(concat("    MOV ", dest), ", SP");
+    concat(concat(sub_sp, str_val), mov_dest)
+}
+
+// read_ref(ref): load value from ref
+// Operands: X1 = ref (pointer)
+fn emit_read_ref(dest: string) -> string {
+    concat(concat(concat("    LDR ", dest), ", [X1]"), "")
+}
+
+// write_ref(ref, value): store value at ref
+// Operands: X1 = ref, X2 = value. Returns unit.
+fn emit_write_ref(dest: string) -> string {
+    concat("    STR X2, [X1]", "")
+}
+
+// alloc_buf(region, N): allocate buffer of N int64 elements on stack
+// Operands: X1 = region, X2 = N (element count)
+// Size = N * 8 bytes
+fn emit_alloc_buf(dest: string) -> string {
+    sub_sp: string <- "    SUB SP, SP, X2, LSL #3\n";
+    mov_dest: string <- concat(concat("    MOV ", dest), ", SP");
+    concat(sub_sp, mov_dest)
+}
+
+// buf_load(buf, index): load from buf[index]
+// Operands: X1 = buf base, X2 = index
+// LDR dest, [buf, index, LSL #3] for int64
+fn emit_buf_load(dest: string) -> string {
+    concat(concat(concat(concat("    LDR ", dest), ", [X1, X2, LSL #3]"), ""), "")
+}
+
+// buf_store(buf, index, value): store value at buf[index]
+// Operands: X1 = buf, X2 = pointer to tuple(index, value) from tuple_make
+// Load value from [X2,#8], index from [X2], then STR value, [buf, index, LSL #3]
+fn emit_buf_store(dest: string) -> string {
+    ldr_val: string <- "    LDR X3, [X2, #8]\n";
+    ldr_idx: string <- "    LDR X2, [X2]\n";
+    str_asm: string <- "    STR X3, [X1, X2, LSL #3]";
+    concat(concat(ldr_val, ldr_idx), str_asm)
+}
+
+fn emit_prim_op(term: SIRTerm, dest: string) -> string {
+    case term.name of {
+        "alloc_region" -> emit_alloc_region(dest);
+        "alloc_ref" -> emit_alloc_ref(dest);
+        "read_ref" -> emit_read_ref(dest);
+        "write_ref" -> emit_write_ref(dest);
+        "alloc_buf" -> emit_alloc_buf(dest);
+        "buf_load" -> emit_buf_load(dest);
+        "buf_store" -> emit_buf_store(dest);
+        _: string -> concat(concat("    ; unsupported memory prim: ", term.name), "")
+    }
+}

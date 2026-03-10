@@ -1,0 +1,208 @@
+{- Memory region effect support for the effect checker.
+   Extracts mem(Space) effects from region operations: alloc_region, alloc_ref,
+   read_ref, write_ref, alloc_rec, build.
+   Implements spec §9.1.1 (mem effects), §4.4 (region types), §9.3.1 (effect propagation).
+   Space extraction from type strings (no dependency on type_checker_memory_regions).
+-}
+
+use parser_ast;
+
+export is_region_builtin_fn/1;
+export get_region_call_effects/4;
+export extract_space_from_region_type/1;
+
+// Valid memory spaces per spec §4.4.1, §9.1.1
+fn is_valid_memory_space(space: string) -> bool {
+    space == "normal" or space == "normal_writeback" or space == "normal_writethrough" or space == "normal_noncacheable" or space == "atomic" or space == "device"
+}
+
+// Trim leading/trailing whitespace
+fn trim_space(s: string) -> string {
+    trim_space_from(s, 0, len(s) - 1)
+}
+
+fn trim_space_from(s: string, start: int64, last_idx: int64) -> string {
+    case start > last_idx of {
+        true -> "";
+        false -> case substring(s, start, start + 1) == " " of {
+            true -> trim_space_from(s, start + 1, last_idx);
+            false -> case substring(s, last_idx, last_idx + 1) == " " of {
+                true -> trim_space_from(s, start, last_idx - 1);
+                false -> substring(s, start, last_idx + 1)
+            }
+        }
+    }
+}
+
+// Split by top-level commas (respecting nested parens). Returns list of strings.
+struct ListString {
+    is_nil: bool,
+    head: string,
+    tail: ListString
+}
+
+fn nil_list_string() -> ListString {
+    dummy: ListString <- ListString { is_nil: true, head: "", tail: dummy };
+    dummy
+}
+
+fn cons_string(s: string, rest: ListString) -> ListString {
+    ListString { is_nil: false, head: s, tail: rest }
+}
+
+fn split_params_loop(s: string, i: int64, depth: int64, acc: string, result: ListString) -> ListString {
+    case i >= len(s) of {
+        true -> case len(acc) > 0 of {
+            true -> cons_string(trim_space(acc), result);
+            false -> result
+        };
+        false -> case substring(s, i, i + 1) == "(" of {
+            true -> split_params_loop(s, i + 1, depth + 1, concat(acc, "("), result);
+            false -> case substring(s, i, i + 1) == ")" of {
+                true -> split_params_loop(s, i + 1, depth - 1, concat(acc, ")"), result);
+                false -> case substring(s, i, i + 1) == "," of {
+                    true -> case depth == 0 of {
+                        true -> do
+                            trimmed: string <- trim_space(acc);
+                            new_result: ListString <- cons_string(trimmed, result);
+                            split_params_loop(s, i + 1, 0, "", new_result)
+                        end;
+                        false -> split_params_loop(s, i + 1, depth, concat(acc, ","), result)
+                    };
+                    false -> split_params_loop(s, i + 1, depth, concat(acc, substring(s, i, i + 1)), result)
+                }
+            }
+        }
+    }
+}
+
+fn reverse_list_string(lst: ListString) -> ListString {
+    reverse_list_string_acc(lst, nil_list_string())
+}
+
+fn reverse_list_string_acc(lst: ListString, acc: ListString) -> ListString {
+    case lst.is_nil of {
+        true -> acc;
+        false -> reverse_list_string_acc(lst.tail, cons_string(lst.head, acc))
+    }
+}
+
+fn list_string_nth(lst: ListString, n: int64) -> string {
+    case lst.is_nil of {
+        true -> "";
+        false -> case n == 0 of {
+            true -> lst.head;
+            false -> list_string_nth(lst.tail, n - 1)
+        }
+    }
+}
+
+// True if fn_name is a region built-in (alloc_region, alloc_ref, read_ref, write_ref, alloc_rec, build)
+fn is_region_builtin_fn(fn_name: string) -> bool {
+    fn_name == "alloc_region" or fn_name == "alloc_ref" or fn_name == "read_ref" or fn_name == "write_ref" or fn_name == "alloc_rec" or fn_name == "build"
+}
+
+// Extract Space from memory region type string.
+// region(R, Space) -> Space; ref(R, Space, T) -> Space; buf(R, Space, T, N) -> Space; atomic_ref(R, Space, T) -> Space.
+// Returns (true, space) if type is a region type with valid space, (false, "") otherwise.
+fn extract_space_from_region_type(type_str: string) -> (bool, string) {
+    (has_type: bool, inner: string) <- extract_region_type_inner(type_str);
+    case has_type of {
+        true -> do
+            params: ListString <- reverse_list_string(split_params_loop(inner, 0, 0, "", nil_list_string()));
+            space: string <- trim_space(list_string_nth(params, 1));
+            case is_valid_memory_space(space) of {
+                true -> (true, space);
+                false -> (false, "")
+            }
+        end;
+        false -> (false, "")
+    }
+}
+
+// Extract inner content of region type: "region(R, normal)" -> "R, normal"
+fn extract_region_type_inner(type_str: string) -> (bool, string) {
+    case len(type_str) >= 10 and substring(type_str, 0, 10) == "atomic_ref" of {
+        true -> case len(type_str) >= 11 and substring(type_str, 10, 11) == "(" of {
+            true -> (true, substring(type_str, 11, len(type_str) - 1));
+            false -> (false, "")
+        };
+        false -> case len(type_str) >= 6 and substring(type_str, 0, 6) == "region" of {
+            true -> case len(type_str) >= 7 and substring(type_str, 6, 7) == "(" of {
+                true -> (true, substring(type_str, 7, len(type_str) - 1));
+                false -> (false, "")
+            };
+            false -> case len(type_str) >= 3 and substring(type_str, 0, 3) == "buf" of {
+                true -> case len(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
+                    true -> (true, substring(type_str, 4, len(type_str) - 1));
+                    false -> (false, "")
+                };
+                false -> case len(type_str) >= 3 and substring(type_str, 0, 3) == "ref" of {
+                    true -> case len(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
+                        true -> (true, substring(type_str, 4, len(type_str) - 1));
+                        false -> (false, "")
+                    };
+                    false -> (false, "")
+                }
+            }
+        }
+    }
+}
+
+// Extract Space from alloc_region's first argument. alloc_region(Space) - Space is identifier.
+// first_arg: Expr for the first argument. For identifier (kind 1), use name.
+fn space_from_alloc_region_arg(first_arg: Expr) -> (bool, string) {
+    case first_arg.kind == 1 of {
+        true -> do
+            space: string <- first_arg.name;
+            case is_valid_memory_space(space) of {
+                true -> (true, space);
+                false -> (false, "")
+            }
+        end;
+        false -> (false, "")
+    }
+}
+
+{- Get effects for a region built-in call.
+   alloc_region: Space from first arg (expr.inner).
+   alloc_ref, alloc_rec, build: Space from binding_type (result type contains region/ref/rec).
+   read_ref, write_ref: Space from binding_type if it's a ref type; else mem(normal) as fallback.
+   Returns (true, effects) if handled, (false, empty) if not a region op or Space unknown. -}
+fn get_region_call_effects(fn_name: string, first_arg: Expr, binding_type: string, location: SourceLocation) -> (bool, ListEffectName) {
+    zero: SourceLocation <- parser_ast@zero_location();
+    loc: SourceLocation <- case len(location.file) > 0 of { true -> location; false -> zero };
+    case fn_name == "alloc_region" of {
+        true -> do
+            (ok: bool, space: string) <- space_from_alloc_region_arg(first_arg);
+            space_to_use: string <- case ok of { true -> space; false -> "normal" };
+            eff: EffectName <- EffectName { name: "mem", parameter: space_to_use, location: loc };
+            (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
+        end;
+        false -> case fn_name == "alloc_ref" or fn_name == "alloc_rec" or fn_name == "build" of {
+            true -> do
+                (ok: bool, space: string) <- extract_space_from_region_type(binding_type);
+                space_to_use: string <- case ok of { true -> space; false -> "normal" };
+                eff: EffectName <- EffectName { name: "mem", parameter: space_to_use, location: loc };
+                (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
+            end;
+            false -> case fn_name == "read_ref" or fn_name == "write_ref" of {
+                true -> do
+                    (ok: bool, space: string) <- extract_space_from_region_type(binding_type);
+                    case ok of {
+                        true -> do
+                            eff: EffectName <- EffectName { name: "mem", parameter: space, location: loc };
+                            (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
+                        end;
+                        false -> do
+                            // read_ref/write_ref: binding_type is typically T or atom, not ref. Use mem(normal) as fallback.
+                            eff: EffectName <- EffectName { name: "mem", parameter: "normal", location: loc };
+                            (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
+                        end
+                    }
+                end;
+                false -> (false, parser_ast@empty_effect_name_list())
+            }
+        }
+    }
+}

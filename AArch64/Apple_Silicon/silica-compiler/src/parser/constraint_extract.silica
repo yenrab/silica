@@ -150,7 +150,7 @@ fn is_effect_decl_start(slots: ListTokenSlot) -> bool {
 }
 
 fn is_type_keyword(kinds: TokenKinds, token_kind: int64) -> bool {
-    token_kind == kinds.int8_keyword or token_kind == kinds.int16_keyword or token_kind == kinds.int32_keyword or token_kind == kinds.int64_keyword or token_kind == kinds.uint8_keyword or token_kind == kinds.uint16_keyword or token_kind == kinds.uint32_keyword or token_kind == kinds.uint64_keyword or token_kind == kinds.float16_keyword or token_kind == kinds.float32_keyword or token_kind == kinds.float64_keyword or token_kind == kinds.bool_keyword or token_kind == kinds.char_keyword or token_kind == kinds.string_keyword or token_kind == kinds.unit_keyword or token_kind == kinds.atom_keyword
+    token_kind == kinds.int8_keyword or token_kind == kinds.int16_keyword or token_kind == kinds.int32_keyword or token_kind == kinds.int64_keyword or token_kind == kinds.uint8_keyword or token_kind == kinds.uint16_keyword or token_kind == kinds.uint32_keyword or token_kind == kinds.uint64_keyword or token_kind == kinds.float16_keyword or token_kind == kinds.float32_keyword or token_kind == kinds.float64_keyword or token_kind == kinds.bool_keyword or token_kind == kinds.char_keyword or token_kind == kinds.string_keyword or token_kind == kinds.unit_keyword or token_kind == kinds.atom_keyword or token_kind == kinds.ref_keyword or token_kind == kinds.region_keyword or token_kind == kinds.buf_keyword or token_kind == kinds.atomic_keyword or token_kind == kinds.normal_keyword or token_kind == kinds.normal_writeback_keyword or token_kind == kinds.normal_writethrough_keyword or token_kind == kinds.normal_noncacheable_keyword or token_kind == kinds.device_keyword
 }
 
 fn kind_to_type_name(token_kind: int64) -> string {
@@ -314,14 +314,52 @@ fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListEffe
         false -> do
             first: TokenSlot <- slots.head;
             rest: ListTokenSlot <- slots.tail;
-            case is_type_keyword(kinds, first.token.kind) of {
+            case first.token.kind == kinds.ref_keyword or first.token.kind == kinds.region_keyword or first.token.kind == kinds.buf_keyword of {
                 true -> do
-                    ret_type: string <- first.token.lexeme;
+                    tr: TupleTypeResult <- parser_tuples@extract_parametrized_type_from_slots(slots);
+                    ret_type: string <- tr.type_str;
                     ret_type_loc: SourceLocation <- first.token.location;
-                    rest_after_type: ListTokenSlot <- rest;
-                    (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(rest_after_type);
+                    (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(tr.rest_slots);
                     rest_after_lbrace: ListTokenSlot <- after_effects.tail;
                     body_slots: ListTokenSlot <- rest_after_lbrace;
+                    from_kind: string <- "";
+                    use_type: string <- ret_type;
+                    ret_empty: string <- case ret_type of { "" -> "ret_empty"; _: string -> "ret_ok" };
+                    from_empty: string <- "from_ok";
+                    use_type_instrumented: string <- case use_type of { "" -> concat("DEBUG:", concat(ret_empty, concat(",", from_empty))); _: string -> use_type };
+                    (use_type_instrumented, ret_type_loc, effects, body_slots)
+                end;
+                false -> case first.token.kind == kinds.atomic_keyword of {
+                    true -> case rest.is_nil of {
+                        true -> do
+                            (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(rest);
+                            (ret_type, ret_type_loc, effects, body_slots)
+                        end;
+                        false -> case rest.head.token.kind == kinds.ref_keyword of {
+                            true -> do
+                                tr: TupleTypeResult <- parser_tuples@extract_parametrized_type_from_slots(slots);
+                                ret_type: string <- tr.type_str;
+                                ret_type_loc: SourceLocation <- first.token.location;
+                                (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(tr.rest_slots);
+                                rest_after_lbrace: ListTokenSlot <- after_effects.tail;
+                                body_slots: ListTokenSlot <- rest_after_lbrace;
+                                use_type_instrumented: string <- case ret_type of { "" -> "DEBUG:atomic_ref_empty"; _: string -> ret_type };
+                                (use_type_instrumented, ret_type_loc, effects, body_slots)
+                            end;
+                            false -> do
+                                (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(rest);
+                                (ret_type, ret_type_loc, effects, body_slots)
+                            end
+                        }
+                    };
+                    false -> case is_type_keyword(kinds, first.token.kind) of {
+                        true -> do
+                            ret_type: string <- first.token.lexeme;
+                            ret_type_loc: SourceLocation <- first.token.location;
+                            rest_after_type: ListTokenSlot <- rest;
+                            (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(rest_after_type);
+                            rest_after_lbrace: ListTokenSlot <- after_effects.tail;
+                            body_slots: ListTokenSlot <- rest_after_lbrace;
                     _: int64 <- case body_slots.is_nil of {
                         false -> case body_slots.head.token.lexeme == " " of {
                             true -> do
@@ -347,6 +385,8 @@ fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListEffe
                     (ret_type, ret_type_loc, effects, body_slots)
                 end
             }
+        }
+        }
         end
     }
     end
@@ -368,7 +408,10 @@ fn is_binding_start(slots: ListTokenSlot) -> bool {
                                 true -> false;
                                 false -> slots.tail.tail.tail.head.token.kind == kinds.left_arrow
                             };
-                            false -> parser_tuples@is_tuple_type_binding_start(slots)
+                            false -> case parser_tuples@is_memory_region_type_binding_start(slots) of {
+                                true -> true;
+                                false -> parser_tuples@is_tuple_type_binding_start(slots)
+                            }
                         };
                         false -> false
                     };
@@ -415,9 +458,12 @@ fn op_precedence(lexeme: string) -> int64 {
 }
 
 fn extract_binding(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
-    case parser_tuples@is_tuple_type_binding_start(slots) of {
-        true -> extract_binding_tuple(slots);
-        false -> extract_binding_simple(slots)
+    case parser_tuples@is_memory_region_type_binding_start(slots) of {
+        true -> extract_binding_memory_region(slots);
+        false -> case parser_tuples@is_tuple_type_binding_start(slots) of {
+            true -> extract_binding_tuple(slots);
+            false -> extract_binding_simple(slots)
+        }
     }
 }
 
@@ -449,6 +495,24 @@ fn extract_binding_tuple(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[Dev
                 (let_expr, rest_after_body)
             end
         }
+    end
+}
+
+fn extract_binding_memory_region(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
+    do
+        ident_slot: TokenSlot <- slots.head;
+        type_slots: ListTokenSlot <- slots.tail.tail;
+        tr: TupleTypeResult <- parser_tuples@extract_parametrized_type_from_slots(type_slots);
+        bind_name: string <- ident_slot.token.lexeme;
+        bind_type: string <- tr.type_str;
+        bind_loc: SourceLocation <- ident_slot.token.location;
+        rhs_slots: ListTokenSlot <- tr.rest_slots.tail;
+        (rhs_expr: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
+        after_semicolons: ListTokenSlot <- skip_semicolons(rest_after_rhs);
+        (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(after_semicolons);
+        dummy: Expr <- parser_ast@dummy_expr();
+        let_expr: Expr <- Expr { kind: 6, value: bind_type, name: bind_name, location: bind_loc, inner: rhs_expr, right_expr: body, pattern_bindings: parser_ast@nil_tuple_decompose_bindings() };
+        (let_expr, rest_after_body)
     end
 }
 

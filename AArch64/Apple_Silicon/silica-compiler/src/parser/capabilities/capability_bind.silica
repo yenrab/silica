@@ -10,8 +10,11 @@ export initial_roles/1;
 
 // Role codes for binding (40-46). Shared: left_brace 7, right_brace 8 (fn_decl), role_stmt_sep 55 (tuple_decompose).
 // Tuple type: role_tuple_type_lparen 44, role_tuple_type_rparen 45.
+// Memory region: role_memory_type_start 60, role_atomic_prefix 61 (from capability_memory_region).
 // Other capability roles: atom_literal 17 (expr_atom), call_name 14, role_operand 12 (expr_int64_ops).
 fn role_bind_ident() -> int64 { 40 }
+fn role_memory_type_start() -> int64 { 60 }
+fn role_atomic_prefix() -> int64 { 61 }
 fn role_stmt_sep() -> int64 { 55 }
 fn role_bind_colon() -> int64 { 41 }
 fn role_bind_type() -> int64 { 42 }
@@ -46,33 +49,33 @@ fn constraints() -> ListConstraint {
     c1: Constraint <- Constraint { trigger_role: role_left_brace(), next_token_roles: single_role(role_bind_ident()), prev_token_roles: constraint_core@empty_list_int(), constraint_id: 40 };
     // bind_ident: after left_brace or stmt_sep, before colon
     c2: Constraint <- Constraint { trigger_role: role_bind_ident(), next_token_roles: single_role(role_bind_colon()), prev_token_roles: two_roles(role_left_brace(), role_stmt_sep()), constraint_id: 41 };
-    // bind_colon: after ident, before type (simple) or tuple type (
-    c3: Constraint <- Constraint { trigger_role: role_bind_colon(), next_token_roles: two_roles(role_bind_type(), role_tuple_type_lparen()), prev_token_roles: single_role(role_bind_ident()), constraint_id: 42 };
+    // bind_colon: after ident, before type (simple), tuple type (, or memory region type (ref/region/buf/atomic)
+    c3: Constraint <- Constraint { trigger_role: role_bind_colon(), next_token_roles: four_roles(role_bind_type(), role_tuple_type_lparen(), role_memory_type_start(), role_atomic_prefix()), prev_token_roles: single_role(role_bind_ident()), constraint_id: 42 };
     // bind_type: after colon (simple) or tuple elem, before <- or comma or )
-    c4: Constraint <- Constraint { trigger_role: role_bind_type(), next_token_roles: three_roles(role_bind_arrow(), role_tuple_type_rparen(), role_tuple_type_comma()), prev_token_roles: three_roles(role_bind_colon(), role_tuple_type_lparen(), role_tuple_type_comma()), constraint_id: 43 };
+    c4: Constraint <- Constraint { trigger_role: role_bind_type(), next_token_roles: three_roles(role_bind_arrow(), role_tuple_type_rparen(), role_tuple_type_comma()), prev_token_roles: four_roles(role_bind_colon(), role_tuple_type_lparen(), role_tuple_type_comma(), role_memory_type_start()), constraint_id: 43 };
     // bind_arrow: after type or tuple ), before RHS
-    c5: Constraint <- Constraint { trigger_role: role_bind_arrow(), next_token_roles: three_roles(role_atom_literal(), role_call_name(), role_operand()), prev_token_roles: two_roles(role_bind_type(), role_tuple_type_rparen()), constraint_id: 44 };
+    c5: Constraint <- Constraint { trigger_role: role_bind_arrow(), next_token_roles: three_roles(role_atom_literal(), role_call_name(), role_operand()), prev_token_roles: three_roles(role_bind_type(), role_tuple_type_rparen(), role_memory_type_start()), constraint_id: 44 };
     // atom_literal can follow bind_arrow (e.g. worked:atom <- :ok)
     c6: Constraint <- Constraint { trigger_role: role_atom_literal(), next_token_roles: constraint_core@empty_list_int(), prev_token_roles: single_role(role_bind_arrow()), constraint_id: 45 };
-    // tuple_type_lparen: ( starts tuple type, next is first type (or nested ( for ((T1,T2),T3))
-    c7: Constraint <- Constraint { trigger_role: role_tuple_type_lparen(), next_token_roles: two_roles(role_bind_type(), role_tuple_type_lparen()), prev_token_roles: two_roles(role_bind_colon(), role_tuple_type_lparen()), constraint_id: 46 };
-    // tuple_type_comma: comma in tuple type, next is type; prev can be type or ) for nested ((T1,T2),T3)
-    c8: Constraint <- Constraint { trigger_role: role_tuple_type_comma(), next_token_roles: two_roles(role_bind_type(), role_tuple_type_lparen()), prev_token_roles: two_roles(role_bind_type(), role_tuple_type_rparen()), constraint_id: 47 };
-    // tuple_type_rparen: ) ends tuple type, next is <- or comma or ) for nested ((T1,T2),T3)
-    c9: Constraint <- Constraint { trigger_role: role_tuple_type_rparen(), next_token_roles: three_roles(role_bind_arrow(), role_tuple_type_comma(), role_tuple_type_rparen()), prev_token_roles: single_role(role_bind_type()), constraint_id: 48 };
+    // tuple_type_lparen: ( starts tuple type or parametrized type (ref/region/buf), next is first type
+    c7: Constraint <- Constraint { trigger_role: role_tuple_type_lparen(), next_token_roles: three_roles(role_bind_type(), role_tuple_type_lparen(), role_memory_type_start()), prev_token_roles: four_roles(role_bind_colon(), role_tuple_type_lparen(), role_memory_type_start(), role_atomic_prefix()), constraint_id: 46 };
+    // tuple_type_comma: comma in tuple type, next is type; prev can be type or ) for nested ((T1,T2),T3) or ref(R, Space, T)
+    c8: Constraint <- Constraint { trigger_role: role_tuple_type_comma(), next_token_roles: three_roles(role_bind_type(), role_tuple_type_lparen(), role_memory_type_start()), prev_token_roles: two_roles(role_bind_type(), role_tuple_type_rparen()), constraint_id: 47 };
+    // tuple_type_rparen: ) ends tuple type or parametrized type, next is <- or comma or ) for nested
+    c9: Constraint <- Constraint { trigger_role: role_tuple_type_rparen(), next_token_roles: three_roles(role_bind_arrow(), role_tuple_type_comma(), role_tuple_type_rparen()), prev_token_roles: three_roles(role_bind_type(), role_tuple_type_rparen(), role_memory_type_start()), constraint_id: 48 };
     // role_operand (shared) can follow bind_arrow: allows <- ( tuple literal RHS
     c10: Constraint <- Constraint { trigger_role: role_operand(), next_token_roles: constraint_core@empty_list_int(), prev_token_roles: single_role(role_bind_arrow()), constraint_id: 49 };
     constraint_core@cons_constraint(c1, constraint_core@cons_constraint(c2, constraint_core@cons_constraint(c3, constraint_core@cons_constraint(c4, constraint_core@cons_constraint(c5, constraint_core@cons_constraint(c6, constraint_core@cons_constraint(c7, constraint_core@cons_constraint(c8, constraint_core@cons_constraint(c9, constraint_core@cons_constraint(c10, constraint_core@empty_list_constraint()))))))))))
 }
 
 fn is_type_keyword(kinds: TokenKinds, token_kind: int64) -> bool {
-    token_kind == kinds.int8_keyword or token_kind == kinds.int16_keyword or token_kind == kinds.int32_keyword or token_kind == kinds.int64_keyword or token_kind == kinds.uint8_keyword or token_kind == kinds.uint16_keyword or token_kind == kinds.uint32_keyword or token_kind == kinds.uint64_keyword or token_kind == kinds.float16_keyword or token_kind == kinds.float32_keyword or token_kind == kinds.float64_keyword or token_kind == kinds.bool_keyword or token_kind == kinds.char_keyword or token_kind == kinds.string_keyword or token_kind == kinds.unit_keyword or token_kind == kinds.atom_keyword
+    token_kind == kinds.int8_keyword or token_kind == kinds.int16_keyword or token_kind == kinds.int32_keyword or token_kind == kinds.int64_keyword or token_kind == kinds.uint8_keyword or token_kind == kinds.uint16_keyword or token_kind == kinds.uint32_keyword or token_kind == kinds.uint64_keyword or token_kind == kinds.float16_keyword or token_kind == kinds.float32_keyword or token_kind == kinds.float64_keyword or token_kind == kinds.bool_keyword or token_kind == kinds.char_keyword or token_kind == kinds.string_keyword or token_kind == kinds.unit_keyword or token_kind == kinds.atom_keyword or token_kind == kinds.normal_keyword or token_kind == kinds.normal_writeback_keyword or token_kind == kinds.normal_writethrough_keyword or token_kind == kinds.normal_noncacheable_keyword or token_kind == kinds.atomic_keyword or token_kind == kinds.device_keyword
 }
 
 fn initial_roles(token_kind: int64) -> ListInt {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     case token_kind == kinds.identifier of {
-        true -> single_role(role_bind_ident());
+        true -> two_roles(role_bind_ident(), role_bind_type());
         false -> case token_kind == kinds.colon of {
             true -> single_role(role_bind_colon());
             false -> case is_type_keyword(kinds, token_kind) of {

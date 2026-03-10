@@ -1,0 +1,139 @@
+// Memory region built-in calls to SIR prim terms (Expr kind 4, extension)
+// alloc_region, alloc_ref, read_ref, write_ref, alloc_buf, buf_load, buf_store
+// Implements sir_design_spec §7.4 Memory primitives
+
+use sir_ast;
+use types;
+
+export is_region_builtin/1;
+export build_region_prim_from_sir/4;
+
+// Valid memory spaces per spec §4.4.1
+fn is_valid_memory_space(space: string) -> bool {
+    space == "normal" or space == "normal_writeback" or space == "normal_writethrough" or space == "normal_noncacheable" or space == "atomic" or space == "device"
+}
+
+// True if call_name is a region built-in
+fn is_region_builtin(call_name: string) -> bool {
+    call_name == "alloc_region" or call_name == "alloc_ref" or call_name == "read_ref" or call_name == "write_ref" or call_name == "alloc_buf" or call_name == "buf_load" or call_name == "buf_store"
+}
+
+// Extract Space from memory region type string (ref, region, buf, atomic_ref)
+fn extract_space_from_region_type(type_str: string) -> (bool, string) {
+    (has_type: bool, inner: string) <- extract_region_type_inner(type_str);
+    case has_type of {
+        true -> do
+            space: string <- trim_space(nth_param(inner, 1));
+            case is_valid_memory_space(space) of {
+                true -> (true, space);
+                false -> (false, "")
+            }
+        end;
+        false -> (false, "")
+    }
+}
+
+fn extract_region_type_inner(type_str: string) -> (bool, string) {
+    case len(type_str) >= 10 and substring(type_str, 0, 10) == "atomic_ref" of {
+        true -> case len(type_str) >= 11 and substring(type_str, 10, 11) == "(" of {
+            true -> (true, substring(type_str, 11, len(type_str) - 1));
+            false -> (false, "")
+        };
+        false -> case len(type_str) >= 6 and substring(type_str, 0, 6) == "region" of {
+            true -> case len(type_str) >= 7 and substring(type_str, 6, 7) == "(" of {
+                true -> (true, substring(type_str, 7, len(type_str) - 1));
+                false -> (false, "")
+            };
+            false -> case len(type_str) >= 3 and substring(type_str, 0, 3) == "buf" of {
+                true -> case len(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
+                    true -> (true, substring(type_str, 4, len(type_str) - 1));
+                    false -> (false, "")
+                };
+                false -> case len(type_str) >= 3 and substring(type_str, 0, 3) == "ref" of {
+                    true -> case len(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
+                        true -> (true, substring(type_str, 4, len(type_str) - 1));
+                        false -> (false, "")
+                    };
+                    false -> (false, "")
+                }
+            }
+        }
+    }
+}
+
+fn trim_space(s: string) -> string {
+    trim_space_from(s, 0, len(s) - 1)
+}
+
+fn trim_space_from(s: string, start: int64, last_idx: int64) -> string {
+    case start > last_idx of {
+        true -> "";
+        false -> case substring(s, start, start + 1) == " " of {
+            true -> trim_space_from(s, start + 1, last_idx);
+            false -> case substring(s, last_idx, last_idx + 1) == " " of {
+                true -> trim_space_from(s, start, last_idx - 1);
+                false -> substring(s, start, last_idx + 1)
+            }
+        }
+    }
+}
+
+fn nth_param(inner: string, n: int64) -> string {
+    start: int64 <- case n == 0 of { true -> 0; false -> find_nth_comma(inner, 0, 0, n) + 1 };
+    end_idx: int64 <- find_nth_comma(inner, 0, 0, n + 1);
+    trimmed: string <- substring(inner, start, end_idx);
+    trim_space(trimmed)
+}
+
+fn find_nth_comma(s: string, i: int64, depth: int64, target: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) of {
+            "(" -> find_nth_comma(s, i + 1, depth + 1, target);
+            ")" -> find_nth_comma(s, i + 1, depth - 1, target);
+            "," -> case depth == 0 of {
+                true -> case target == 1 of {
+                    true -> i;
+                    false -> find_nth_comma(s, i + 1, 0, target - 1)
+                };
+                false -> find_nth_comma(s, i + 1, depth, target)
+            };
+            _: string -> find_nth_comma(s, i + 1, depth, target)
+        }
+    }
+}
+
+// Effect string for mem(Space)
+fn mem_effect(space: string) -> string {
+    concat("[mem(", concat(space, ")]"))
+}
+
+// Build SIR prim term for region built-in. context/expr_to_sir used for recursive conversion.
+// expected_type: result type for effect extraction (region(R, Space), ref(R, Space, T), etc.)
+fn build_region_prim_from_sir(call_name: string, arg1: SIRTerm, arg2: SIRTerm, expected_type: string) -> SIRTerm {
+    space: string <- extract_space_from_expected(expected_type);
+    eff: string <- mem_effect(space);
+    sir_type: string <- types@type_name_to_sir(result_type_for_prim(call_name, expected_type));
+    SIRTerm { kind: 6, type_name: sir_type, value: eff, name: call_name, inner: arg1, right_expr: arg2 }
+}
+
+fn extract_space_from_expected(expected_type: string) -> string {
+    (ok: bool, space: string) <- extract_space_from_region_type(expected_type);
+    case ok of {
+        true -> space;
+        false -> "normal"
+    }
+}
+
+fn result_type_for_prim(call_name: string, expected_type: string) -> string {
+    case call_name of {
+        "alloc_region" -> "region(R, normal)";
+        "alloc_ref" -> expected_type;
+        "read_ref" -> expected_type;
+        "write_ref" -> "unit";
+        "alloc_buf" -> expected_type;
+        "buf_load" -> expected_type;
+        "buf_store" -> "unit";
+        _: string -> expected_type
+    }
+}

@@ -1,9 +1,11 @@
 // Capability: check function declaration (Declaration tag 0)
 // Adds function to symbol table, checks body expression
+// Future: when parser adds parameters, call type_checker_memory_regions@validate_type_for_parameter for each param type
 
 use parser_ast;
 use type_checker_core;
 use type_checker_expressions;
+use type_checker_memory_regions;
 
 export add_function/2;
 export check_body/2;
@@ -17,9 +19,21 @@ fn add_function(decl: Declaration, context: TypeContext) -> TypeContext {
 // Check function body. Context must already include all declarations (for mutual recursion).
 // For proc return types (T proc[E]), the body's expected type is T. The parser stores return_type_name as T.
 // Reject unit: not a valid return type per language design.
+// Validate memory region return types (ref, region, buf, atomic_ref) before checking body.
 fn check_body(decl: Declaration, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case decl.return_type_name == "unit" of {
         true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
-        false -> type_checker_expressions@check_expr(decl.body, decl.return_type_name, context)
+        false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
+            true -> check_body_memory_region_return(decl, context);
+            false -> type_checker_expressions@check_expr(decl.body, decl.return_type_name, context)
+        }
+    }
+}
+
+fn check_body_memory_region_return(decl: Declaration, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(decl.return_type_name, decl.return_type_location);
+    case mem_result.is_ok of {
+        false -> mem_result;
+        true -> type_checker_expressions@check_expr(decl.body, decl.return_type_name, context)
     }
 }
