@@ -81,11 +81,45 @@ fn tokens_to_slots(tokens: ListToken) -> ListTokenSlot {
     }
 }
 
+fn is_type_keyword(kinds: TokenKinds, token_kind: int64) -> bool {
+    token_kind == kinds.int8_keyword or token_kind == kinds.int16_keyword or token_kind == kinds.int32_keyword or token_kind == kinds.int64_keyword or token_kind == kinds.uint8_keyword or token_kind == kinds.uint16_keyword or token_kind == kinds.uint32_keyword or token_kind == kinds.uint64_keyword or token_kind == kinds.float16_keyword or token_kind == kinds.float32_keyword or token_kind == kinds.float64_keyword or token_kind == kinds.bool_keyword or token_kind == kinds.char_keyword or token_kind == kinds.string_keyword or token_kind == kinds.unit_keyword or token_kind == kinds.atom_keyword or token_kind == kinds.ref_keyword or token_kind == kinds.region_keyword or token_kind == kinds.buf_keyword or token_kind == kinds.atomic_keyword or token_kind == kinds.normal_keyword or token_kind == kinds.normal_writeback_keyword or token_kind == kinds.normal_writethrough_keyword or token_kind == kinds.normal_noncacheable_keyword or token_kind == kinds.device_keyword
+}
+
+// Detect proc after return type: -> type_name proc[...] is invalid (spec §9.3.1)
+fn has_proc_after_return_type(slots: ListTokenSlot) -> (bool, SourceLocation) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> case slots.tail.is_nil of {
+            true -> (false, parser_ast@zero_location());
+            false -> case slots.tail.tail.is_nil of {
+                true -> (false, parser_ast@zero_location());
+                false -> case slots.head.token.kind == kinds.right_arrow of {
+                    true -> case is_type_keyword(kinds, slots.tail.head.token.kind) of {
+                        true -> case slots.tail.tail.head.token.kind == kinds.proc_keyword of {
+                            true -> (true, slots.tail.tail.head.token.location);
+                            false -> has_proc_after_return_type(slots.tail)
+                        };
+                        false -> has_proc_after_return_type(slots.tail)
+                    };
+                    false -> has_proc_after_return_type(slots.tail)
+                }
+            }
+        }
+    }
+}
+
 fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
     reversed: ListToken <- reverse_tokens(lexer_runner@empty_token_list(), tokens);
     slots: ListTokenSlot <- tokens_to_slots(reversed);
     all_c: ListConstraint <- all_constraints();
     propagated: ListTokenSlot <- constraint_core@propagate_until_fixed(slots, all_c);
-    program: Program <- constraint_extract@slots_to_program(propagated);
-    constraint_extract@validate_no_single_element_tuples(program)
+    (has_proc_error: bool, err_loc: SourceLocation) <- has_proc_after_return_type(propagated);
+    case has_proc_error of {
+        true -> parser_core@parse_err("E3009", err_loc, "proc[...] is only allowed on sequence clauses directly after the sequence keyword, not on function return types", "sect9.3.1");
+        false -> do
+            program: Program <- constraint_extract@slots_to_program(propagated);
+            constraint_extract@validate_no_single_element_tuples(program)
+        end
+    }
 }

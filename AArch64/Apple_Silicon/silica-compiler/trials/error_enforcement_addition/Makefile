@@ -21,7 +21,6 @@ all:
 	for silica in $(SILICA_FILES); do \
 		[ -f "$$silica" ] || continue; \
 		base=$${silica%.silica}; \
-		echo "=== $$base.silica ==="; \
 		if [ ! -f "$$base.golden_fail" ]; then \
 			echo "❌❌ $$base has no .golden_fail file"; \
 			failed=1; \

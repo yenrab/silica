@@ -136,6 +136,20 @@ fn e3001_message(fn_name: string, eff: EffectName) -> string {
     }
 }
 
+{- E3001 message for effectful code outside a sequence block.
+   The fix is to wrap in a do proc[effect] ... end block, not to add proc to the function signature. -}
+fn e3001_outside_sequence_message(fn_name: string, eff: EffectName) -> string {
+    base: string <- concat("Function '", concat(fn_name, concat("' uses effect ", concat(effect_checker_core@effect_name_to_string(eff), " but the effectful code is not inside a sequence block"))));
+    norm: EffectName <- effect_checker_core@normalize_effect(eff);
+    case norm.name == "device_io" of {
+        true -> concat(base, ". Add proc[device_io] to a sequence-produces pure-end block (do proc[device_io] ... end)");
+        false -> case norm.name == "mem" of {
+            true -> concat(base, concat(". Add proc[mem(", concat(norm.parameter, ")] to a sequence-produces pure-end block for region operations (alloc_region, alloc_ref, read_ref, write_ref, alloc_rec, build)")));
+            false -> concat(base, ". Add the appropriate effect to a sequence-produces pure-end block")
+        }
+    }
+}
+
 {- Check that all body effects are declared. Produces E3001 for the first missing effect
    with context about which function is missing the declaration. -}
 fn check_body_effects(body_effects: ListEffectName, declared: ListEffectName, fn_name: string, fn_loc: SourceLocation) -> EffectCheckResult {
@@ -154,16 +168,40 @@ fn check_body_effects(body_effects: ListEffectName, declared: ListEffectName, fn
 }
 
 {- Check all function declarations (tag 0) in a list.
-   Returns the first error, or effect_check_ok if all pass. -}
+   Returns the first error, or effect_check_ok if all pass.
+   Effectful code must be inside a do proc[...] ... end block; bare effectful calls at function body level fail. -}
 fn check_all_fn_decls(decls: ListDeclaration, ctx: EffectContext) -> EffectCheckResult {
     case decls.is_nil of {
         true -> effect_checker_core@effect_check_ok();
         false -> case decls.head.tag == 0 of {
             true -> do
-                seq_result: EffectCheckResult <- check_sequence_blocks_in_expr(decls.head.body, ctx);
-                case seq_result.is_ok of {
-                    true -> check_all_fn_decls(decls.tail, ctx);
-                    false -> seq_result
+                body: Expr <- decls.head.body;
+                case body.kind == 11 of {
+                    true -> do
+                        seq_result: EffectCheckResult <- check_sequence_blocks_in_expr(body, ctx);
+                        case seq_result.is_ok of {
+                            true -> check_all_fn_decls(decls.tail, ctx);
+                            false -> seq_result
+                        }
+                    end;
+                    false -> do
+                        body_effects: ListEffectName <- effect_checker_propagation@collect_expr_effects(body, ctx);
+                        case body_effects.is_nil of {
+                            true -> do
+                                inner_result: EffectCheckResult <- check_sequence_blocks_in_expr(body, ctx);
+                                case inner_result.is_ok of {
+                                    true -> check_all_fn_decls(decls.tail, ctx);
+                                    false -> inner_result
+                                }
+                            end;
+                            false -> effect_checker_core@effect_check_err(
+                                "E3001",
+                                body.location,
+                                e3001_outside_sequence_message(decls.head.name, body_effects.head),
+                                "sect9.3.1"
+                            )
+                        }
+                    end
                 }
             end;
             false -> check_all_fn_decls(decls.tail, ctx)
