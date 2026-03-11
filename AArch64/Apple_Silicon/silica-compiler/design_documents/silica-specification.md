@@ -14078,6 +14078,49 @@ The compiler invalidates cached modules when:
 - **Cache Corruption Handling**: Corrupted cache files are automatically regenerated
 - **Cache Size Management**: Old cache entries are evicted when cache size exceeds limits
 
+### 28.2 Multiple-Pass Architecture
+
+The Silica compiler uses a **multiple-pass** architecture rather than a single-pass descent-based design. This choice affects parsing, type checking, and optimization.
+
+#### 28.2.1 Rationale
+
+- **Separation of concerns**: Each pass has a single responsibility. Parsing produces structure; type checking validates semantics; optimization improves performance. Keeping these phases distinct simplifies reasoning, testing, and incremental development.
+- **Cross-module analysis**: Type checking and effect checking require visibility into all declarations before validating bodies. A two-pass approach (add declarations, then check bodies) enables forward references and cross-module resolution without ad-hoc workarounds.
+- **Optimization flexibility**: SIR (Silica Intermediate Representation) optimization applies a fixed sequence of passes (constant folding, constant propagation, CSE, dead code elimination, inlining, etc.). Multiple passes allow each optimization to run to a fixed point and to depend on the results of earlier passes.
+
+#### 28.2.2 Parser: Constraint Propagation
+
+The parser does **not** use conventional recursive descent. It uses **constraint propagation**:
+
+- Each token starts with a set of possible roles; grammar rules are expressed as constraints between adjacent tokens.
+- Parsing iterates until each token has exactly one role (or a contradiction is found).
+- Structure emerges from the final role sequence; there is no explicit recursive descent.
+
+This design supports incremental capability addition and strong modularity. See [parser_design.md](parser_design.md) for details.
+
+#### 28.2.3 Type Checker: Two-Pass
+
+The type checker runs in two passes:
+
+1. **Declaration pass**: Add all function and effect declarations to the symbol table.
+2. **Body pass**: Check all function bodies against the populated context.
+
+This ordering allows functions to reference each other and enables cross-module type resolution before any body is validated.
+
+#### 28.2.4 Pipeline Overview
+
+The full compilation pipeline consists of sequential phases:
+
+1. **Lexer** → token stream
+2. **Parser** → AST (via constraint propagation)
+3. **Type checker** → type-checked AST (two-pass)
+4. **Effect checker** → effect-validated AST
+5. **SIR generator** → SIR
+6. **Optimization** → optimized SIR (multiple passes: constant folding, propagation, CSE, DCE, inlining, etc.)
+7. **Code generation** → assembly
+
+Each phase consumes the output of the previous phase. Parallelization is possible within phases (e.g., parsing multiple modules concurrently) but not across phases. See [silica-compiler-creation-order.md](../silica-compiler-creation-order.md) for the complete data flow.
+
 ## 29. IDE & Developer Experience
 
 ### 29.1 Language Server

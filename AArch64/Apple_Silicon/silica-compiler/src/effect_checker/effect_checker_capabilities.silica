@@ -117,10 +117,10 @@ fn all_effects_subsumed(required: ListEffectName, declared: ListEffectName) -> E
    2. Collect all effects used in the function body (from calls).
    3. Verify every body effect is subsumed by a declared effect.
    Returns effect_check_ok or E3001/E3002 error. -}
-fn check_function_decl(decl: Declaration, ctx: EffectContext) -> EffectCheckResult {
-    expanded_declared: ListEffectName <- effect_checker_propagation@expand_effect_list(decl.declared_effects, ctx.alias_env);
-    body_effects: ListEffectName <- effect_checker_propagation@collect_expr_effects(decl.body, ctx);
-    check_body_effects(body_effects, expanded_declared, decl.name, decl.location)
+{- Functions no longer have function-scope effect declarations.
+   Effect checking is done at sequence block level in check_sequence_blocks_in_expr. -}
+fn check_function_decl(decl: Declaration, _ctx: EffectContext) -> EffectCheckResult {
+    effect_checker_core@effect_check_ok()
 }
 
 {- Build E3001 message; when the missing effect is device_io or mem, add a suggestion. -}
@@ -160,14 +160,125 @@ fn check_all_fn_decls(decls: ListDeclaration, ctx: EffectContext) -> EffectCheck
         true -> effect_checker_core@effect_check_ok();
         false -> case decls.head.tag == 0 of {
             true -> do
-                result: EffectCheckResult <- check_function_decl(decls.head, ctx);
-                case result.is_ok of {
+                seq_result: EffectCheckResult <- check_sequence_blocks_in_expr(decls.head.body, ctx);
+                case seq_result.is_ok of {
                     true -> check_all_fn_decls(decls.tail, ctx);
-                    false -> result
+                    false -> seq_result
                 }
             end;
             false -> check_all_fn_decls(decls.tail, ctx)
         }
+    }
+}
+
+{- Check that every declared effect in a sequence block is used by some function in the block.
+   E3010 UnusedEffectDeclaration: effect declared but no function in block requires it.
+   A declared effect D is "used" if some effect in used subsumes D (i.e. D <: U for some U in used). -}
+fn check_sequence_unused_effects(declared: ListEffectName, used: ListEffectName, _location: SourceLocation) -> EffectCheckResult {
+    case declared.is_nil of {
+        true -> effect_checker_core@effect_check_ok();
+        false -> case is_effect_subsumed(declared.head, used) of {
+            true -> check_sequence_unused_effects(declared.tail, used, _location);
+            false -> effect_checker_core@effect_check_err(
+                "E3010",
+                declared.head.location,
+                concat("Unused effect declaration: ", concat(effect_checker_core@effect_name_to_string(declared.head), " - no function in sequence block requires this effect")),
+                "sect9.3.1"
+            )
+        }
+    }
+}
+
+{- Recurse through expr and validate each sequence block (kind 11).
+   For each: (a) used effects subsumed by declared, (b) every declared effect is used. -}
+fn check_sequence_blocks_in_expr(expr: Expr, ctx: EffectContext) -> EffectCheckResult {
+    case expr.kind == 11 of {
+        true -> do
+            name_validation: EffectCheckResult <- effect_checker_declarations@validate_declared_effects(expr.sequence_effects, ctx.alias_env);
+            case name_validation.is_ok of {
+                false -> name_validation;
+                true -> do
+                    expanded_declared: ListEffectName <- effect_checker_propagation@expand_effect_list(expr.sequence_effects, ctx.alias_env);
+                    used: ListEffectName <- effect_checker_propagation@collect_expr_effects(expr, ctx);
+                    subsumed_result: EffectCheckResult <- all_effects_subsumed(used, expanded_declared);
+                    case subsumed_result.is_ok of {
+                        true -> do
+                            unused_result: EffectCheckResult <- check_sequence_unused_effects(expanded_declared, used, expr.location);
+                            case unused_result.is_ok of {
+                                true -> do
+                                    inner_result: EffectCheckResult <- check_sequence_blocks_in_expr(expr.inner, ctx);
+                                    case inner_result.is_ok of {
+                                        true -> check_sequence_blocks_in_expr(expr.right_expr, ctx);
+                                        false -> inner_result;
+                                    }
+                                end;
+                                false -> unused_result
+                            }
+                        end;
+                        false -> subsumed_result
+                    }
+                end;
+            }
+        end;
+        false -> check_sequence_blocks_in_expr_default(expr, ctx)
+    }
+}
+
+fn check_sequence_blocks_in_expr_default(expr: Expr, ctx: EffectContext) -> EffectCheckResult {
+    case expr.kind == 4 of {
+        true -> do
+            arg_result: EffectCheckResult <- check_sequence_blocks_in_expr(expr.inner, ctx);
+            case arg_result.is_ok of {
+                true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                    true -> do
+                        r2: EffectCheckResult <- check_sequence_blocks_in_expr(expr.right_expr.inner, ctx);
+                        case r2.is_ok of {
+                            true -> check_sequence_blocks_in_expr(expr.right_expr.right_expr, ctx);
+                            false -> r2;
+                        }
+                    end;
+                    false -> check_sequence_blocks_in_expr(expr.right_expr, ctx);
+                };
+                false -> arg_result;
+            }
+        end;
+        false -> case expr.kind == 3 of {
+            true -> check_sequence_binop_3(expr, ctx);
+            false -> case expr.kind == 6 of {
+                true -> check_sequence_binop_6(expr, ctx);
+                false -> case expr.kind == 2 of {
+                    true -> check_sequence_blocks_in_expr(expr.inner, ctx);
+                    false -> case expr.kind == 10 of {
+                        true -> check_sequence_binop_10(expr, ctx);
+                        false -> effect_checker_core@effect_check_ok();
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn check_sequence_binop_3(expr: Expr, ctx: EffectContext) -> EffectCheckResult {
+    left_result: EffectCheckResult <- check_sequence_blocks_in_expr(expr.inner, ctx);
+    case left_result.is_ok of {
+        true -> check_sequence_blocks_in_expr(expr.right_expr, ctx);
+        false -> left_result;
+    }
+}
+
+fn check_sequence_binop_6(expr: Expr, ctx: EffectContext) -> EffectCheckResult {
+    rhs_result: EffectCheckResult <- check_sequence_blocks_in_expr(expr.inner, ctx);
+    case rhs_result.is_ok of {
+        true -> check_sequence_blocks_in_expr(expr.right_expr, ctx);
+        false -> rhs_result;
+    }
+}
+
+fn check_sequence_binop_10(expr: Expr, ctx: EffectContext) -> EffectCheckResult {
+    rhs_result: EffectCheckResult <- check_sequence_blocks_in_expr(expr.inner, ctx);
+    case rhs_result.is_ok of {
+        true -> check_sequence_blocks_in_expr(expr.right_expr, ctx);
+        false -> rhs_result;
     }
 }
 

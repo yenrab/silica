@@ -210,6 +210,60 @@ fn literal_type_for_expected(expected_type: string) -> string {
     }
 }
 
+// Sequence block (kind 11): lower sequence ... produces pure expr end to SIR let chain.
+// Body (inner) = chain of let/tuple_decompose or dummy if empty. One let per step, pure expr as innermost.
+// Emits only standard SIR terms (let, var, const, call, prim, case); no sequence/produces/pure in SIR.
+fn lower_sequence_block_with_expected(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    lower_sequence_body_to_lets(context, expr.inner, expr.right_expr, expected_type, false, "", "")
+}
+
+fn lower_sequence_block_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    lower_sequence_body_to_lets(context, expr.inner, expr.right_expr, expected_type, true, bound_name, bound_type)
+}
+
+fn lower_sequence_body_to_lets(context: TypeContext, body_expr: Expr, result_expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    case body_expr.kind == -1 of {
+        true -> case in_body of {
+            true -> expr_to_sir_in_let_body(context, result_expr, bound_name, bound_type, expected_type);
+            false -> expr_to_sir_with_expected(context, result_expr, expected_type)
+        };
+        false -> case body_expr.kind == 6 of {
+            true -> do
+                rhs: SIRTerm <- case in_body of {
+                    true -> expr_to_sir_in_let_body(context, body_expr.inner, bound_name, bound_type, body_expr.value);
+                    false -> expr_to_sir_with_expected(context, body_expr.inner, body_expr.value)
+                };
+                bind_type: string <- types@type_name_to_sir(body_expr.value);
+                prefixed: string <- concat("%", body_expr.name);
+                new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, body_expr.name, body_expr.value, parser_ast@empty_effect_name_list());
+                new_context: TypeContext <- TypeContext { env: new_env };
+                inner_body: SIRTerm <- lower_sequence_body_to_lets(new_context, body_expr.right_expr, result_expr, expected_type, true, body_expr.name, body_expr.value);
+                SIRTerm { kind: 2, type_name: bind_type, value: "", name: prefixed, inner: rhs, right_expr: inner_body }
+            end;
+            false -> case body_expr.kind == 10 of {
+                true -> do
+                    rhs_type: string <- tuple_decompose@expr_type_of(body_expr.inner, context);
+                    case len(rhs_type) < 2 or substring(rhs_type, 0, 1) != "(" of {
+                        true -> sir_ast@dummy_sir_term();
+                        false -> do
+                            bindings: ListTupleDecomposeBinding <- body_expr.pattern_bindings;
+                            rhs_term: SIRTerm <- case in_body of {
+                                true -> expr_to_sir_in_let_body(context, body_expr.inner, bound_name, bound_type, rhs_type);
+                                false -> expr_to_sir_with_expected(context, body_expr.inner, rhs_type)
+                            };
+                            extended_context: TypeContext <- add_bindings_to_context(context, bindings);
+                            body: SIRTerm <- lower_sequence_body_to_lets(extended_context, body_expr.right_expr, result_expr, expected_type, true, "", "");
+                            decompose_lets: SIRTerm <- tuple_decompose@build_decompose_lets(rhs_term, bindings, body, context, rhs_type);
+                            decompose_lets
+                        end
+                    }
+                end;
+                false -> sir_ast@dummy_sir_term()
+            }
+        }
+    }
+}
+
 // Convert Expr to SIRTerm when inside a let body. Uses bound_name/bound_type for identifiers.
 // expected_type: function return type for body expressions.
 fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
@@ -222,6 +276,7 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
         8 -> string_literals@expr_to_sir(context, expr);
         9 -> expr_to_sir_tuple_inline(context, expr, expected_type);
         10 -> expr_to_sir_tuple_decompose_in_body(context, expr, bound_name, bound_type, expected_type);
+        11 -> lower_sequence_block_in_body(context, expr, bound_name, bound_type, expected_type);
         6 -> do
             rhs: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, expr.value);
             bind_type: string <- types@type_name_to_sir(expr.value);
@@ -443,6 +498,7 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
         8 -> string_literals@expr_to_sir(context, expr);
         9 -> expr_to_sir_tuple_inline(context, expr, expected_type);
         10 -> expr_to_sir_tuple_decompose(context, expr, expected_type);
+        11 -> lower_sequence_block_with_expected(context, expr, expected_type);
         6 -> do
             rhs: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, expr.value);
             bind_type: string <- types@type_name_to_sir(expr.value);
