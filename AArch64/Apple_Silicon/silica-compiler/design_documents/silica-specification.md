@@ -188,8 +188,11 @@ See specification: spec:§6.1
 - **Effect Errors**: Missing effect declarations, invalid effect usage
 - **Pattern Matching Errors**: Non-exhaustive patterns, type mismatches
 - **Module Errors**: Missing imports, circular dependencies, etc.
+- **Lifetime Errors (E21xx)**: Reference outlives region, region not in scope. See spec:§12.1.4.
+- **Region Isolation Errors (E21xx)**: Region mismatch (ref(L1, ...) used with region(L2, ...) when L1 ≠ L2). See spec:§12.4.1.
+- **Bounds Errors (E21xx)**: Buffer index out of bounds. See spec:§12.3.3.
 
-Each error category has a specific error code range and includes relevant metadata for LLM parsing.
+Each error category has a specific error code range and includes relevant metadata for LLM parsing. Memory region errors follow the format in §1.6.1 with `spec:§12.1.4`, `spec:§12.4.1`, or `spec:§12.3.3` as appropriate.
 
 ## 2. Lexical Structure
 
@@ -2728,6 +2731,23 @@ Examples:
 ()                                   // unit (empty tuple)
 ```
 
+**Recursive Tuple Types (Extension):**
+
+Tuple types may contain the keyword `rec` in type positions. `rec` refers to the enclosing tuple type. Recursive positions are represented as `ref(R, Space, rec) | :none` (optional region reference). The shorthand `ref?(R, Space, T)` denotes `ref(R, Space, T) | :none`.
+
+Examples:
+```
+(int64, ref?(R, normal, (int64, rec, rec)), ref?(R, normal, (int64, rec, rec)))   // BST node
+(int64, ref?(R, normal, (int64, rec)))                                            // linked list node
+```
+
+- **Base case:** The atom `:none` denotes an empty recursive position.
+- **Construction:** `alloc_rec(region, (value, ...))` allocates a recursive tuple in a region; returns `ref(R, Space, tuple_type)`. Effect: `mem(Space)`.
+- **Decomposition:** Use `read_ref(ref)` to obtain the tuple value, then decompose with `(pattern) <- expr`. Pattern match on `ref?` slots: `case slot of { :none -> ...; ref_var: ref(R, rec) -> ... }`.
+- **Type checking:** Structural equality with `rec`-scoped occurs check. `rec` is valid only inside a tuple type.
+
+See [recursive_tuple_specification.md](recursive_tuple_specification.md) for full design.
+
 #### 4.2.3 Record Types
 Record types have the form `{field1: Type1, field2: Type2, ..., fieldN: TypeN}`.
 
@@ -2779,8 +2799,16 @@ proc[concurrency] actor_ref(msg)     // computation spawning an actor
 
 ### 4.4 Region and Memory Types
 
-#### 4.4.1 Region Types
-Region types represent memory regions: `region(R, Space)` where R is a region identifier and Space is a memory space.
+#### 4.4.1 Lifetime Type and Lifetime Identifiers
+
+**Lifetime Type:** The built-in type `lifetime` represents a lifetime identifier. Values of type `lifetime` are obtained from the built-in function `fresh_lifetime()` (see §22.1). Each call to `fresh_lifetime()` returns a unique lifetime value.
+
+**Lifetime Identifiers (L*):** Region types use lifetime identifiers (e.g. `L1`, `L2`) to track region scope. The first parameter of `region`, `ref`, `buf`, and `atomic_ref` types is a lifetime identifier. Programmers obtain lifetime values via `fresh_lifetime()` and pass them to region-allocating functions. This ensures unique lifetimes when composing multiple regions in the same scope.
+
+**Allocation Scope:** Region allocation (`alloc_region`, `alloc_ref`, `alloc_buf`, `alloc_atomic`) is permitted only within sequence blocks (`sequence ... produces ... end`), not in function scope or plain `do` blocks.
+
+#### 4.4.2 Region Types
+Region types represent memory regions: `region(L, Space)` where L is a lifetime identifier and Space is a memory space.
 
 **Memory Space Types:**
 
@@ -2805,33 +2833,35 @@ device                              // Device memory (reserved for future driver
 - **device**: Memory-mapped I/O space for device registers. Reserved for future device driver library. Application code should use normal memory variants.
 
 ```
-region(normal)                      // normal memory region (write-back)
-region(normal_writeback)            // explicit write-back (same as normal)
-region(normal_writethrough)         // write-through cacheable
-region(normal_noncacheable)         // non-cacheable
-region(atomic)                      // atomic memory region
-region(device)                      // device memory (driver library only)
+region(L1, normal)                  // normal memory region (write-back), lifetime L1
+region(L1, normal_writeback)       // explicit write-back (same as normal)
+region(L1, normal_writethrough)     // write-through cacheable
+region(L1, normal_noncacheable)     // non-cacheable
+region(L1, atomic)                  // atomic memory region
+region(L1, device)                  // device memory (driver library only)
 ```
 
-#### 4.4.2 Reference Types
-Reference types represent pointers to memory: `ref(R, Space, T)`.
+The lifetime identifier (e.g. `L1`) is obtained from `fresh_lifetime()` and must be unique among region allocations in the same or composable scope.
+
+#### 4.4.3 Reference Types
+Reference types represent pointers to memory: `ref(L, Space, T)`.
 
 ```
-ref(R, normal, int)                  // reference to int in region R
+ref(L1, normal, int)                  // reference to int in region with lifetime L1
 ```
 
-#### 4.4.3 Buffer Types
-Buffer types represent contiguous arrays: `buf(R, Space, T, N)`.
+#### 4.4.4 Buffer Types
+Buffer types represent contiguous arrays: `buf(L, Space, T, N)`.
 
 ```
-buf(R, normal, int, 1024)            // buffer of 1024 ints
+buf(L1, normal, int, 1024)            // buffer of 1024 ints
 ```
 
-#### 4.4.4 Atomic Types
-Atomic reference types: `atomic_ref(R, Space, T)`.
+#### 4.4.5 Atomic Types
+Atomic reference types: `atomic_ref(L, Space, T)`.
 
 ```
-atomic_ref(R, normal, int)           // atomic reference to int
+atomic_ref(L1, normal, int)           // atomic reference to int
 ```
 
 ### 4.5 Actor Types
@@ -4201,6 +4231,7 @@ Silica provides built-in memory operations as primitive language constructs that
 
 ```
 alloc_region(Space) -> region(R, Space) proc[mem(Space)]
+// R is taken from the binding's explicit type annotation (e.g. region(R1, Space)); no implicit typing
 alloc_ref(Region, Value) -> ref(R, Space, T) proc[mem(Space)]
 read_ref(Ref) -> T proc[mem(Space)]
 write_ref(Ref, Value) -> atom proc[mem(Space)]
@@ -6083,21 +6114,31 @@ The specification provides latency ranges as **guidelines** rather than strict g
 - Performance-critical code should benchmark on target hardware
 - Latency ranges are intended to help developers choose appropriate memory spaces
 
-#### 12.1.2 Region Lifetime
-Regions exist until explicitly deallocated or process termination:
+#### 12.1.2 Region Lifetime and Allocation Strategy
+
+**Allocation Strategy:** Regions are heap-allocated with scope-tied deallocation. When a sequence block exits, all regions allocated within that scope are deallocated (unless returned). This enables returning regions and references when the lifetime analysis permits.
+
+**Region Lifetime:** Regions exist until scope exit or process termination:
 
 ```
-r: region(R, normal) <- alloc_region(normal)    // region created
-refs: list<ref(R, normal, int)> <- allocate_in_region(r) // allocate references in region
-// implicit deallocation when r goes out of scope
+sequence proc[mem(normal)]
+    L1: lifetime <- fresh_lifetime();
+    r: region(L1, normal) <- alloc_region(normal)    // region created (heap)
+    ref1: ref(L1, normal, int64) <- alloc_ref(r, 42)
+    // implicit deallocation when sequence exits (unless r is returned)
+produces pure () end
 ```
+
+**Region Return Lifetime Extension:** A region is *not* deallocated when a region reference is returned. When a sequence, block, or function returns a value of type `region(L, Space)`, the region's lifetime extends to the caller's scope. The region remains allocated as long as the returned value is in use.
 
 #### 12.1.3 Region Isolation
 Regions provide memory isolation:
 
 ```
-r1: region(R1, normal) <- alloc_region(normal)
-r2: region(R2, normal) <- alloc_region(normal)
+L1: lifetime <- fresh_lifetime();
+L2: lifetime <- fresh_lifetime();
+r1: region(L1, normal) <- alloc_region(normal)
+r2: region(L2, normal) <- alloc_region(normal)
 // r1 and r2 are separate memory pools
 // no aliasing between different regions
 ```
@@ -6106,171 +6147,184 @@ r2: region(R2, normal) <- alloc_region(normal)
 The compiler performs static analysis to verify region lifetimes and ensure memory safety:
 
 **Lifetime Tracking:**
-- Regions are tracked through their lexical scope
+- Regions are tracked through their lexical scope (sequence blocks)
+- Lifetime identifiers are obtained via `fresh_lifetime()`; functions may take `L: lifetime` as a parameter for polymorphism
+- Each distinct region allocation must use a distinct lifetime; duplicate lifetimes across composable scopes are a compile error
 - References cannot outlive their containing region
 - Region deallocation is verified to occur after all references are no longer accessible
 
 **Formal Lifetime Analysis Rules:**
 
-The lifetime analysis uses a formal judgment system to track region lifetimes and reference dependencies.
+The lifetime analysis uses a formal judgment system to track region lifetimes and reference scope dependencies.
 
 **Lifetime Environment:**
 ```
-L ::= ∅ | L, R:scope
+L ::= ∅ | L, Lᵢ:scope
 ```
-A lifetime environment `L` maps region identifiers `R` to their lexical scopes.
+A lifetime environment `L` maps lifetime identifiers `Lᵢ` to their lexical scopes.
 
-**Reference Dependency Tracking:**
+**Scope Dependency Set (ScopDep):**
 ```
-D ::= ∅ | D, ref(R, Space, T):scope
+ScopDep ::= ∅ | ScopDep, ref(Lᵢ, Space, T):scope
 ```
-A dependency set `D` tracks all references and their creation scopes.
+The scope dependency set ScopDep tracks all references and their creation scopes.
 
 **Lifetime Analysis Judgment:**
 ```
-Γ; L; D ⊢ e : T; L'; D'
+Γ; L; ScopDep ⊢ e : T; L'; ScopDep'
 ```
-This judgment states that expression `e` has type `T` in type environment `Γ`, lifetime environment `L`, and dependency set `D`, producing updated environments `L'` and `D'`.
+This judgment states that expression `e` has type `T` in type environment `Γ`, lifetime environment `L`, and scope dependency set `ScopDep`, producing updated environments `L'` and `ScopDep'`.
 
 **Region Allocation Rule:**
 ```
-Γ; L; D ⊢ alloc_region(Space) : proc[mem(Space)] region(R, Space); L, R:scope_current; D
+Γ; L; ScopDep ⊢ x: region(Lᵢ, Space) <- alloc_region(Space) : proc[mem(Space)] region(Lᵢ, Space); L, Lᵢ:scope_current; ScopDep
 ```
-When a region is allocated, it is added to the lifetime environment with the current scope.
+When a region is allocated, the lifetime identifier Lᵢ is taken from the explicit type annotation on the binding (e.g. `region(L1, Space)`). Lᵢ is added to the lifetime environment with the current scope. The same identifier must not be used for a different allocation in an overlapping or composable scope.
 
 **Reference Allocation Rule:**
 ```
-Γ; L, R:scope_r; D ⊢ alloc_ref(r, v) : proc[mem(Space)] ref(R, Space, T); L, R:scope_r; D, ref(R, Space, T):scope_current
+Γ; L, Lᵢ:scope_r; ScopDep ⊢ alloc_ref(r, v) : proc[mem(Space)] ref(Lᵢ, Space, T); L, Lᵢ:scope_r; ScopDep, ref(Lᵢ, Space, T):scope_current
 ```
-When a reference is allocated in region `R`, the reference is added to the dependency set. The region `R` must exist in the lifetime environment.
+When a reference is allocated in region `Lᵢ`, the reference is added to the scope dependency set. The region `Lᵢ` must exist in the lifetime environment.
 
 **Reference Usage Rule:**
 ```
-Γ; L, R:scope_r; D, ref(R, Space, T):scope_ref ⊢ read_ref(ref) : proc[mem(Space)] T; L, R:scope_r; D, ref(R, Space, T):scope_ref
+Γ; L, Lᵢ:scope_r; ScopDep, ref(Lᵢ, Space, T):scope_ref ⊢ read_ref(ref) : proc[mem(Space)] T; L, Lᵢ:scope_r; ScopDep, ref(Lᵢ, Space, T):scope_ref
 ```
 A reference can only be used if:
-1. The region `R` exists in the lifetime environment
-2. The reference exists in the dependency set
+1. The region `Lᵢ` exists in the lifetime environment
+2. The reference exists in the scope dependency set
 3. The current scope is within the region's scope: `scope_current ≤ scope_r`
 4. The current scope is within the reference's creation scope: `scope_current ≤ scope_ref`
 
 **Scope Exit Rule:**
 ```
-Γ; L, R:scope_r; D, ref(R, Space, T):scope_ref ⊢ end_scope : unit; L'; D'
+Γ; L, Lᵢ:scope_r; ScopDep, ref(Lᵢ, Space, T):scope_ref ⊢ end_scope : unit; L'; ScopDep'
 ```
 When exiting a scope:
-1. All regions allocated in the current scope are removed: `L' = L \ {R | scope_r = scope_current}`
-2. All references allocated in the current scope are removed: `D' = D \ {ref(R, Space, T) | scope_ref = scope_current}`
-3. Safety check: No references to deallocated regions remain: `∀ ref(R, Space, T) ∈ D'. R ∈ L'`
+1. All regions allocated in the current scope are removed, *except* those that are returned (escape to the caller): `L' = L \ {Lᵢ | scope_r = scope_current and Lᵢ ∉ returned_regions}`. Returned regions have their scope extended to the caller.
+2. All references allocated in the current scope are removed: `ScopDep' = ScopDep \ {ref(Lᵢ, Space, T) | scope_ref = scope_current}`
+3. Safety check: No references to deallocated regions remain: `∀ ref(Lᵢ, Space, T) ∈ ScopDep'. Lᵢ ∈ L'`
+
+A region is considered *returned* when the scope's return value has type `region(Lᵢ, Space)` or contains such a type (e.g., in a tuple or record).
+
+**Region Isolation Enforcement:** The type checker verifies L matching at creation (`alloc_ref`, `alloc_buf`) and at use (`read_ref`, `write_ref`, `buf_load`, `buf_store`). A `ref(L1, ...)` cannot be used with a `region(L2, ...)` when L1 ≠ L2.
 
 **Cross-Function Analysis:**
 
 **Function Parameter Lifetime Extension:**
 ```
-fn f(r: region(R, Space)) -> T proc[mem(Space)]
+fn f(L1: lifetime, r: region(L1, Space)) -> T proc[mem(Space)]
 ```
 When a region is passed as a function parameter, its lifetime extends to at least the function's return scope.
 
 **Function Return Lifetime Constraint:**
 ```
-fn f(...) -> ref(R, Space, T) proc[mem(Space)]
+fn f(...) -> ref(Lᵢ, Space, T) proc[mem(Space)]
 ```
-When a function returns a reference, the region `R` must outlive the function call:
+When a function returns a reference, the region `Lᵢ` must outlive the function call:
 ```
 scope_return ≤ scope_r
 ```
 
+**Region Return Lifetime Extension:**
+```
+fn f(...) -> region(Lᵢ, Space) proc[mem(Space)]
+```
+When a function or sequence returns a region reference, the region is *not* deallocated at scope exit. Its lifetime extends to the caller's scope. The region remains allocated as long as the returned value is in use.
+
 **Function Call Lifetime Propagation:**
 ```
-Γ; L; D ⊢ f(args) : T proc[E]; L'; D'
+Γ; L; ScopDep ⊢ f(args) : T proc[E]; L'; ScopDep'
 ```
 Function calls propagate lifetime constraints:
 - Regions passed as arguments extend their lifetimes to the call site
 - References returned from functions require their regions to outlive the call
+- Regions returned from functions or sequences extend their lifetimes to the caller (they are not deallocated at scope exit)
 
 **Analysis Algorithm:**
 
-The lifetime analysis algorithm processes expressions and statements to compute updated lifetime environments `L'` and dependency sets `D'`:
+The lifetime analysis algorithm processes expressions and statements to compute updated lifetime environments `L'` and scope dependency sets `ScopDep'`:
 
 **Algorithm: Compute Lifetime Environments**
 
 ```pseudocode
-function analyze_lifetime(expr, Γ, L, D):
+function analyze_lifetime(expr, Γ, L, ScopDep):
     // Initialize result environments
     L' = L
-    D' = D
+    ScopDep' = ScopDep
     
     case expr of:
-        // Region allocation: add region to L
+        // Region allocation: Lᵢ from explicit type annotation on binding (no implicit)
         alloc_region(Space):
-            R = fresh_region_id()
+            Lᵢ = region_id_from_binding_type()  // From binding's type annotation, e.g. region(L1, Space)
             scope_current = current_scope()
-            L' = L ∪ {R:scope_current}
-            D' = D
-            return (region(R, Space), L', D')
+            L' = L ∪ {Lᵢ:scope_current}
+            ScopDep' = ScopDep
+            return (region(Lᵢ, Space), L', ScopDep')
         
-        // Reference allocation: add reference to D, verify region exists
+        // Reference allocation: add reference to ScopDep, verify region exists
         alloc_ref(r, v):
             // Analyze region parameter
-            (τ_r, L_r, D_r) = analyze_lifetime(r, Γ, L, D)
+            (τ_r, L_r, ScopDep_r) = analyze_lifetime(r, Γ, L, ScopDep)
             // Verify r is a region type
-            if τ_r != region(R, Space):
+            if τ_r != region(Lᵢ, Space):
                 error("Expected region type")
             // Verify region exists in lifetime environment
-            if R ∉ L_r:
-                error("Region R not in scope")
+            if Lᵢ ∉ L_r:
+                error("Region Lᵢ not in scope")
             // Analyze value
-            (τ_v, L_v, D_v) = analyze_lifetime(v, Γ, L_r, D_r)
-            // Add reference to dependency set
+            (τ_v, L_v, ScopDep_v) = analyze_lifetime(v, Γ, L_r, ScopDep_r)
+            // Add reference to scope dependency set
             scope_current = current_scope()
-            D' = D_v ∪ {ref(R, Space, τ_v):scope_current}
+            ScopDep' = ScopDep_v ∪ {ref(Lᵢ, Space, τ_v):scope_current}
             L' = L_v
-            return (ref(R, Space, τ_v), L', D')
+            return (ref(Lᵢ, Space, τ_v), L', ScopDep')
         
         // Reference read: verify reference and region exist
         read_ref(ref_expr):
             // Analyze reference expression
-            (τ_ref, L_ref, D_ref) = analyze_lifetime(ref_expr, Γ, L, D)
+            (τ_ref, L_ref, ScopDep_ref) = analyze_lifetime(ref_expr, Γ, L, ScopDep)
             // Verify ref_expr is a reference type
-            if τ_ref != ref(R, Space, T):
+            if τ_ref != ref(Lᵢ, Space, T):
                 error("Expected reference type")
             // Verify region exists
-            if R ∉ L_ref:
-                error("Region R not in scope")
-            // Verify reference exists in dependency set
-            if ref(R, Space, T) ∉ D_ref:
-                error("Reference not in dependency set")
+            if Lᵢ ∉ L_ref:
+                error("Region Lᵢ not in scope")
+            // Verify reference exists in scope dependency set
+            if ref(Lᵢ, Space, T) ∉ ScopDep_ref:
+                error("Reference not in scope dependency set")
             // Verify scope constraints
             scope_current = current_scope()
-            scope_r = L_ref[R]
-            scope_ref = D_ref[ref(R, Space, T)]
+            scope_r = L_ref[Lᵢ]
+            scope_ref = ScopDep_ref[ref(Lᵢ, Space, T)]
             if scope_current > scope_r:
                 error("Reference used after region deallocation")
             if scope_current > scope_ref:
                 error("Reference used after creation scope")
             // Reference read doesn't modify environments
-            return (T, L_ref, D_ref)
+            return (T, L_ref, ScopDep_ref)
         
         // Reference write: verify reference and region exist
         write_ref(ref_expr, value):
             // Analyze reference (same as read_ref)
-            (τ_ref, L_ref, D_ref) = analyze_lifetime(ref_expr, Γ, L, D)
-            if τ_ref != ref(R, Space, T):
+            (τ_ref, L_ref, ScopDep_ref) = analyze_lifetime(ref_expr, Γ, L, ScopDep)
+            if τ_ref != ref(Lᵢ, Space, T):
                 error("Expected reference type")
-            if R ∉ L_ref or ref(R, Space, T) ∉ D_ref:
+            if Lᵢ ∉ L_ref or ref(Lᵢ, Space, T) ∉ ScopDep_ref:
                 error("Reference or region not in scope")
             // Verify scope constraints (same as read_ref)
             scope_current = current_scope()
-            scope_r = L_ref[R]
-            scope_ref = D_ref[ref(R, Space, T)]
+            scope_r = L_ref[Lᵢ]
+            scope_ref = ScopDep_ref[ref(Lᵢ, Space, T)]
             if scope_current > scope_r or scope_current > scope_ref:
                 error("Reference used after deallocation")
             // Analyze value
-            (τ_v, L_v, D_v) = analyze_lifetime(value, Γ, L_ref, D_ref)
+            (τ_v, L_v, ScopDep_v) = analyze_lifetime(value, Γ, L_ref, ScopDep_ref)
             // Verify value type matches reference type
             if τ_v != T:
                 error("Type mismatch in write_ref")
-            return (atom, L_v, D_v)
+            return (atom, L_v, ScopDep_v)
         
         // Function call: propagate lifetime constraints
         function_call(f, args):
@@ -6278,40 +6332,42 @@ function analyze_lifetime(expr, Γ, L, D):
             τ_f = lookup_function_type(f, Γ)
             // Analyze arguments and collect lifetime constraints
             L_args = L
-            D_args = D
+            ScopDep_args = ScopDep
             for each arg in args:
-                (τ_arg, L_arg, D_arg) = analyze_lifetime(arg, Γ, L_args, D_args)
+                (τ_arg, L_arg, ScopDep_arg) = analyze_lifetime(arg, Γ, L_args, ScopDep_args)
                 L_args = L_arg
-                D_args = D_arg
+                ScopDep_args = ScopDep_arg
             // Function call doesn't extend lifetimes (regions passed as args extend via parameter rules)
-            return (return_type(τ_f), L_args, D_args)
+            return (return_type(τ_f), L_args, ScopDep_args)
         
-        // Scope exit: remove scoped regions and references
+        // Scope exit: remove scoped regions and references (except returned regions)
         end_scope(scope_id):
             scope_current = scope_id
-            // Remove regions allocated in this scope
-            L' = {R:scope_r | R:scope_r ∈ L and scope_r != scope_current}
+            // Remove regions allocated in this scope; do NOT remove regions that are returned
+            // (returned regions extend to caller scope — see Region Return Lifetime Extension)
+            L' = {Lᵢ:scope_r | Lᵢ:scope_r ∈ L and (scope_r != scope_current or Lᵢ ∈ returned_regions)}
+            // returned_regions = lifetime IDs in the scope's return value type
             // Remove references allocated in this scope
-            D' = {ref(R, Space, T):scope_ref | ref(R, Space, T):scope_ref ∈ D and scope_ref != scope_current}
+            ScopDep' = {ref(Lᵢ, Space, T):scope_ref | ref(Lᵢ, Space, T):scope_ref ∈ ScopDep and scope_ref != scope_current}
             // Safety check: verify no references to deallocated regions
-            for each ref(R, Space, T) in D':
-                if R ∉ L':
+            for each ref(Lᵢ, Space, T) in ScopDep':
+                if Lᵢ ∉ L':
                     error("Reference to deallocated region")
-            return (atom, L', D')
+            return (atom, L', ScopDep')
         
         // Do expression: sequential composition
         do_expr(stmts):
             L_current = L
-            D_current = D
+            ScopDep_current = ScopDep
             for each stmt in stmts:
-                (τ_stmt, L_stmt, D_stmt) = analyze_lifetime(stmt, Γ, L_current, D_current)
+                (τ_stmt, L_stmt, ScopDep_stmt) = analyze_lifetime(stmt, Γ, L_current, ScopDep_current)
                 L_current = L_stmt
-                D_current = D_stmt
-            return (return_type(last_stmt), L_current, D_current)
+                ScopDep_current = ScopDep_stmt
+            return (return_type(last_stmt), L_current, ScopDep_current)
         
         // Other expressions: no lifetime effects
         default:
-            return (type_of(expr), L, D)
+            return (type_of(expr), L, ScopDep)
     end case
 end function
 ```
@@ -6319,50 +6375,80 @@ end function
 **Detailed Algorithm Steps:**
 
 1. **Region Creation Points**: Identify all `alloc_region()` calls and their lexical scopes
-   - For each `alloc_region(Space)` at scope `s`, add `R:s` to `L`
-   - Algorithm: `L' = L ∪ {R:current_scope()}`
+   - For each `alloc_region(Space)` at scope `s`, add `Lᵢ:s` to `L`
+   - Algorithm: `L' = L ∪ {Lᵢ:current_scope()}`
 
 2. **Reference Dependencies**: Track all `alloc_ref()` calls and their region parameters
-   - For each `alloc_ref(r, v)` at scope `s`, verify `r` exists in `L` and add `ref(R, Space, T):s` to `D`
-   - Algorithm: Verify `R ∈ L`, then `D' = D ∪ {ref(R, Space, T):current_scope()}`
+   - For each `alloc_ref(r, v)` at scope `s`, verify `r` exists in `L` and add `ref(Lᵢ, Space, T):s` to `ScopDep`
+   - Algorithm: Verify `Lᵢ ∈ L`, then `ScopDep' = ScopDep ∪ {ref(Lᵢ, Space, T):current_scope()}`
 
 3. **Lifetime Bounds**: Compute the minimum lifetime for each region based on reference usage
-   - For each reference `ref(R, Space, T)` in `D`, ensure `scope_ref ≤ scope_r` where `R:scope_r ∈ L`
-   - Algorithm: At each reference use, check `current_scope() ≤ L[R]` and `current_scope() ≤ D[ref(R, Space, T)]`
+   - For each reference `ref(Lᵢ, Space, T)` in `ScopDep`, ensure `scope_ref ≤ scope_r` where `Lᵢ:scope_r ∈ L`
+   - Algorithm: At each reference use, check `current_scope() ≤ L[Lᵢ]` and `current_scope() ≤ ScopDep[ref(Lᵢ, Space, T)]`
 
 4. **Safety Verification**: Ensure no references are used after region deallocation
-   - At each scope exit, verify: `∀ ref(R, Space, T) ∈ D'. R ∈ L'`
+   - At each scope exit, verify: `∀ ref(Lᵢ, Space, T) ∈ ScopDep'. Lᵢ ∈ L'`
    - At each reference use, verify: `scope_current ≤ scope_r` and `scope_current ≤ scope_ref`
    - Algorithm: Check constraints before allowing reference operations
 
 **Environment Update Rules:**
 
-The algorithm computes `L'` and `D'` as follows:
+The algorithm computes `L'` and `ScopDep'` as follows:
 
 - **L' (Updated Lifetime Environment)**:
-  - **Region Allocation**: `L' = L ∪ {R:current_scope()}`
-  - **Scope Exit**: `L' = {R:scope_r | R:scope_r ∈ L and scope_r != exited_scope}`
+  - **Region Allocation**: `L' = L ∪ {Lᵢ:current_scope()}`
+  - **Scope Exit**: `L' = {Lᵢ:scope_r | Lᵢ:scope_r ∈ L and scope_r != exited_scope}` for regions not returned; returned regions extend to caller scope and are not removed
   - **Other Operations**: `L' = L` (no change)
 
-- **D' (Updated Dependency Set)**:
-  - **Reference Allocation**: `D' = D ∪ {ref(R, Space, T):current_scope()}`
-  - **Scope Exit**: `D' = {ref(R, Space, T):scope_ref | ref(R, Space, T):scope_ref ∈ D and scope_ref != exited_scope}`
-  - **Reference Use**: `D' = D` (no change, but verify constraints)
-  - **Other Operations**: `D' = D` (no change)
+- **ScopDep' (Updated Scope Dependency Set)**:
+  - **Reference Allocation**: `ScopDep' = ScopDep ∪ {ref(Lᵢ, Space, T):current_scope()}`
+  - **Scope Exit**: `ScopDep' = {ref(Lᵢ, Space, T):scope_ref | ref(Lᵢ, Space, T):scope_ref ∈ ScopDep and scope_ref != exited_scope}`
+  - **Reference Use**: `ScopDep' = ScopDep` (no change, but verify constraints)
+  - **Other Operations**: `ScopDep' = ScopDep` (no change)
 
-**Example:**
+**Example (region not returned):**
 ```silica
-fn example() -> atom {
-    do
-        r: region(R, normal) <- alloc_region(normal);  // L = {R:scope_do}
-        ref1: ref(R, normal, int64) <- alloc_ref(r, 42);  // D = {ref1:scope_do}
-        // ref1 is valid here: scope_current = scope_do, scope_r = scope_do, scope_ref = scope_do
-        value: int64 <- read_ref(ref1);  // ✓ Valid: scope_do ≤ scope_do
-        // Region r and ref1 are deallocated at end of scope
-    end  // L' = ∅, D' = ∅, safety check: ✓ No references remain
+fn example() -> int64 proc[mem(normal)] {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);  // L = {L1:scope_seq}
+        ref1: ref(L1, normal, int64) <- alloc_ref(r, 42);  // ScopDep = {ref1:scope_seq}
+        // ref1 is valid here: scope_current = scope_seq, scope_r = scope_seq, scope_ref = scope_seq
+        value: int64 <- read_ref(ref1);  // ✓ Valid: scope_seq ≤ scope_seq
+        // Region r and ref1 are deallocated at end of scope (r not returned)
+    produces pure value end  // L' = ∅, ScopDep' = ∅, safety check: ✓ No references remain
     // ERROR: Cannot use ref1 here - region r is deallocated
-    // read_ref(ref1) would fail: R ∉ L'
+    // read_ref(ref1) would fail: L1 ∉ L'
 }
+```
+
+**Example (region returned — lifetime extends):**
+```silica
+fn alloc_and_return() -> region(L1, normal) proc[mem(normal)] {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+    produces
+        pure r   // r is returned: region is NOT deallocated, lifetime extends to caller
+    end
+}
+```
+
+**Example (multiple regions — fresh_lifetime for distinct identifiers):**
+```silica
+// Correct: use fresh_lifetime() for each region when composing
+sequence proc[mem(normal)]
+    L1: lifetime <- fresh_lifetime();
+    L2: lifetime <- fresh_lifetime();
+    x: region(L1, normal) <- alloc_region(normal);
+    y: region(L2, normal) <- alloc_region(normal);
+    // x and y have distinct types region(L1, normal) and region(L2, normal)
+produces pure () end
+
+// Error: using same L for both would cause confusion
+// L1: lifetime <- fresh_lifetime();
+// x: region(L1, normal) <- alloc_region(normal);
+// y: region(L1, normal) <- alloc_region(normal);  // ERROR: duplicate L1 for different regions
 ```
 
 **Recursive Data Structures:**
@@ -6375,7 +6461,7 @@ struct Node {
     next: OptionRefNode
 }
 
-type OptionRefNode = Some(ref(R, normal, Node)) | None
+type OptionRefNode = Some(ref(L, normal, Node)) | None
 ```
 
 When analyzing recursive structures:
@@ -6386,6 +6472,7 @@ When analyzing recursive structures:
 The compiler analyzes region lifetimes across function boundaries:
 - Function parameters containing regions extend the region lifetime
 - Return values containing references must ensure the region outlives the return
+- Return values containing regions extend the region lifetime to the caller (regions are not deallocated when returned)
 - Function calls propagate region lifetime constraints
 
 ### 12.2 Reference Semantics
@@ -6432,37 +6519,47 @@ write_buf(buffer, index, value) -> atom proc[mem(Space)]
 ```
 
 #### 12.3.3 Bounds Checking
-Buffer access is bounds-checked:
+Buffer access is bounds-checked. The compiler emits bounds checks before every `buf_load` and `buf_store`:
+
+- **MTE (Memory Tagging Extensions)**: When MTE hardware is available (see §21.3), the implementation may use hardware-assisted bounds checking.
+- **Software fallback**: When MTE is not available, the compiler emits a comparison and conditional branch before each load/store: compare index against buffer size N (from `buf(L, Space, T, N)`), trap on out-of-bounds.
 
 ```
-buf: buf(R, normal, int, 10) <- alloc_buf(region, 10)  // buffer of size 10
+buf: buf(L1, normal, int, 10) <- alloc_buf(region, 10)  // buffer of size 10
 x: int <- read_buf(buf, 5)           // ✓ valid index
-y: int <- read_buf(buf, 15)          // ✗ runtime bounds error
+y: int <- read_buf(buf, 15)          // ✗ runtime bounds error (traps)
 ```
 
 ### 12.4 Memory Safety Guarantees
 
 #### 12.4.1 Region Isolation
-No cross-region references:
+No cross-region references. The type checker enforces region isolation at two points:
+
+1. **At creation**: When type-checking `alloc_ref(region_expr, value)` or `alloc_buf(region_expr, n)`, the region expression's lifetime L must match the result type's L.
+2. **At use**: When type-checking `read_ref`, `write_ref`, `buf_load`, or `buf_store`, the ref/buf's L must be in the lifetime environment and must match the region it was allocated in.
 
 ```
-r1: region(R1, normal) <- alloc_region(normal)
-r2: region(R2, normal) <- alloc_region(normal)
-ref1: ref(R1, normal, int) <- alloc_ref(r1, 42)
+L1: lifetime <- fresh_lifetime();
+L2: lifetime <- fresh_lifetime();
+r1: region(L1, normal) <- alloc_region(normal)
+r2: region(L2, normal) <- alloc_region(normal)
+ref1: ref(L1, normal, int) <- alloc_ref(r1, 42)
 
 // Cannot create reference in r2 pointing to r1's memory
-// Type system prevents: ref(R2, normal, ref(R1, normal, int))
+// Type system prevents: ref(L2, normal, ref(L1, normal, int))
+// alloc_ref(r2, ref1) would fail: region has L2, ref has L1
 ```
 
 #### 12.4.2 Lifetime Safety
 References cannot outlive their regions:
 
 ```
-{
-    r: region(R, normal) <- alloc_region(normal)
-    ref: ref(R, normal, int) <- alloc_ref(r, 42)
+sequence proc[mem(normal)]
+    L1: lifetime <- fresh_lifetime();
+    r: region(L1, normal) <- alloc_region(normal)
+    ref: ref(L1, normal, int) <- alloc_ref(r, 42)
     // ref is valid here
-}
+produces pure () end
 // r deallocated here
 // ref is now invalid (use would be memory error)
 ```
@@ -6471,8 +6568,8 @@ References cannot outlive their regions:
 Memory operations preserve types:
 
 ```
-ref_int: ref(R, normal, int) <- alloc_ref(r, 42)
-ref_str: ref(R, normal, string) <- alloc_ref(r, "hello")
+ref_int: ref(L1, normal, int) <- alloc_ref(r, 42)
+ref_str: ref(L1, normal, string) <- alloc_ref(r, "hello")
 
 x: int <- read_ref(ref_int)    // x : int
 y: string <- read_ref(ref_str)    // y : string
@@ -6643,8 +6740,10 @@ Reference lifetimes are bounded by region lifetimes:
     ref: ref(R, normal, int) <- alloc_ref(r, 42)
     // ref is valid here
 }
-// r and ref are deallocated together
+// r and ref are deallocated together (when r is not returned)
 ```
+
+When a region reference is returned, the region is *not* deallocated at scope exit; its lifetime extends to the caller.
 
 #### 14.1.3 No Use-After-Free
 Attempting to use a reference after its region is deallocated is a type error:
@@ -12564,13 +12663,22 @@ module arch.apple.amx {
 This section documents all built-in functions and primitives available in Silica. These are always available without requiring imports.
 
 ### 22.1 Memory Management Primitives
+
+**Lifetime Factory:**
 ```
-alloc_region(space: memory_space) -> region(R, space) proc[mem(space)]
-alloc_ref(region, initial_value) -> ref(region, space, T) proc[mem(space)]
-alloc_buf(region, capacity) -> buf(region, space, T, capacity) proc[mem(space)]
-alloc_atomic(region, initial_value) -> atomic_ref(region, space, T) proc[mem(space), atomic]
-alloc_region_on_numa_node(numa_node: int, space: memory_space) -> region(R, space) proc[mem(space)]
+fresh_lifetime() -> lifetime
 ```
+Returns a unique lifetime value. Each call produces a distinct lifetime. Use when allocating multiple regions in the same scope to avoid lifetime collisions. See §4.4.1, §12.1.4.
+
+**Region Allocation:**
+```
+alloc_region(space: memory_space) -> region(L, space) proc[mem(space)]
+alloc_ref(region, initial_value) -> ref(L, space, T) proc[mem(space)]
+alloc_buf(region, capacity) -> buf(L, space, T, capacity) proc[mem(space)]
+alloc_atomic(region, initial_value) -> atomic_ref(L, space, T) proc[mem(space), atomic]
+alloc_region_on_numa_node(numa_node: int, space: memory_space) -> region(L, space) proc[mem(space)]
+```
+The lifetime L is taken from the binding's explicit type annotation (e.g. `region(L1, Space)`). L is typically obtained from `fresh_lifetime()`. Region allocation is permitted only within sequence blocks.
 
 **Memory Space Types:**
 - `normal` or `normal_writeback` - Write-back cacheable memory (default)
@@ -12584,19 +12692,22 @@ The `alloc_region_on_numa_node()` function allocates a memory region on a specif
 
 **Example Usage:**
 ```silica
-// Standard write-back cacheable memory (most common)
-region1: region(R1, normal) <- alloc_region(normal);
-
-// Write-through for immediate visibility
-region2: region(R2, normal_writethrough) <- alloc_region(normal_writethrough);
-
-// Non-cacheable for DMA buffers
-dma_region: region(R3, normal_noncacheable) <- alloc_region(normal_noncacheable);
-dma_buffer: buf(R3, normal_noncacheable, byte, 4096) <- alloc_buf(dma_region, 4096);
-
-// Atomic memory for shared counters
-atomic_region: region(R4, atomic) <- alloc_region(atomic);
-counter: atomic_ref(R4, atomic, int64) <- alloc_atomic(atomic_region, 0);
+sequence proc[mem(normal)]
+    L1: lifetime <- fresh_lifetime();
+    L2: lifetime <- fresh_lifetime();
+    L3: lifetime <- fresh_lifetime();
+    L4: lifetime <- fresh_lifetime();
+    // Standard write-back cacheable memory (most common)
+    region1: region(L1, normal) <- alloc_region(normal);
+    // Write-through for immediate visibility
+    region2: region(L2, normal_writethrough) <- alloc_region(normal_writethrough);
+    // Non-cacheable for DMA buffers
+    dma_region: region(L3, normal_noncacheable) <- alloc_region(normal_noncacheable);
+    dma_buffer: buf(L3, normal_noncacheable, byte, 4096) <- alloc_buf(dma_region, 4096);
+    // Atomic memory for shared counters
+    atomic_region: region(L4, atomic) <- alloc_region(atomic);
+    counter: atomic_ref(L4, atomic, int64) <- alloc_atomic(atomic_region, 0);
+produces pure () end
 ```
 
 ### 22.2 Reference Operations

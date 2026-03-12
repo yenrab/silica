@@ -134,7 +134,8 @@ SIRType ::=
 
 Space ::= normal | normal_writeback | normal_writethrough | normal_noncacheable | atomic | device
 
-R     ::= region identifier (e.g. R1, R2)
+R     ::= region identifier (e.g. R1, R2) — must be explicit in source; no implicit typing.
+       Each distinct region allocation must use a distinct identifier to avoid confusion and generation errors.
 
 space ::= Space  // type of space literals, used as argument to alloc_region
 
@@ -359,11 +360,14 @@ The guard term must have type `bool`. If the pattern matches, the guard is evalu
 |--------|---------|------|--------|
 | alloc_region | region(R, Space) | (space) | [mem(Space)] |
 | alloc_ref | ref(R, Space, T) | (region, value) | [mem(Space)] |
+| alloc_rec | ref(R, Space, T) | (region, tuple_value) | [mem(Space)] |
 | read_ref | T | (ref) | [mem(Space)] |
 | write_ref | unit | (ref, value) | [mem(Space)] |
 | alloc_buf | buf(R, Space, T, N) | (region, N) | [mem(Space)] |
 | buf_load | T | (buf, index) | [mem(Space)] |
 | buf_store | unit | (buf, index, value) | [mem(Space)] |
+
+**alloc_rec**: Allocates a recursive tuple in the region. T must be a recursive tuple type (contains `rec`). tuple_value is (v1, v2, ...) where recursive slots are `:none` or refs. See [recursive_tuple_specification.md](design_documents/recursive_tuple_specification.md).
 
 ### 7.5 Atomic
 
