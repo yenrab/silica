@@ -4,6 +4,7 @@
 
 use parser_ast;
 use type_checker_core;
+use type_checker_tuple_decompose_helpers;
 use sir_ast;
 use literals;
 use identifiers;
@@ -34,7 +35,11 @@ export expr_to_sir/2;
 export expr_to_sir_with_expected/3;
 
 fn expr_to_sir_tuple_decompose(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
-    rhs_type: string <- tuple_decompose@expr_type_of(expr.inner, context);
+    rhs_type_lookup: string <- tuple_decompose@expr_type_of(expr.inner, context);
+    rhs_type: string <- case len(rhs_type_lookup) < 2 or substring(rhs_type_lookup, 0, 1) != "(" of {
+        true -> type_checker_tuple_decompose_helpers@build_pattern_type_from_bindings(expr.pattern_bindings);
+        false -> rhs_type_lookup
+    };
     case len(rhs_type) < 2 or substring(rhs_type, 0, 1) != "(" of {
         true -> sir_ast@dummy_sir_term();
         false -> do
@@ -48,7 +53,11 @@ fn expr_to_sir_tuple_decompose(context: TypeContext, expr: Expr, expected_type: 
 }
 
 fn expr_to_sir_tuple_decompose_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
-    rhs_type: string <- tuple_decompose@expr_type_of(expr.inner, context);
+    rhs_type_lookup: string <- tuple_decompose@expr_type_of(expr.inner, context);
+    rhs_type: string <- case len(rhs_type_lookup) < 2 or substring(rhs_type_lookup, 0, 1) != "(" of {
+        true -> type_checker_tuple_decompose_helpers@build_pattern_type_from_bindings(expr.pattern_bindings);
+        false -> rhs_type_lookup
+    };
     case len(rhs_type) < 2 or substring(rhs_type, 0, 1) != "(" of {
         true -> sir_ast@dummy_sir_term();
         false -> do
@@ -242,7 +251,11 @@ fn lower_sequence_body_to_lets(context: TypeContext, body_expr: Expr, result_exp
             end;
             false -> case body_expr.kind == 10 of {
                 true -> do
-                    rhs_type: string <- tuple_decompose@expr_type_of(body_expr.inner, context);
+                    rhs_type_lookup: string <- tuple_decompose@expr_type_of(body_expr.inner, context);
+                    rhs_type: string <- case len(rhs_type_lookup) < 2 or substring(rhs_type_lookup, 0, 1) != "(" of {
+                        true -> type_checker_tuple_decompose_helpers@build_pattern_type_from_bindings(body_expr.pattern_bindings);
+                        false -> rhs_type_lookup
+                    };
                     case len(rhs_type) < 2 or substring(rhs_type, 0, 1) != "(" of {
                         true -> sir_ast@dummy_sir_term();
                         false -> do
@@ -258,7 +271,17 @@ fn lower_sequence_body_to_lets(context: TypeContext, body_expr: Expr, result_exp
                         end
                     }
                 end;
-                false -> sir_ast@dummy_sir_term()
+                false -> do
+                    rhs: SIRTerm <- case in_body of {
+                        true -> expr_to_sir_in_let_body(context, body_expr, bound_name, bound_type, expected_type);
+                        false -> expr_to_sir_with_expected(context, body_expr, expected_type)
+                    };
+                    result: SIRTerm <- case in_body of {
+                        true -> expr_to_sir_in_let_body(context, result_expr, bound_name, bound_type, expected_type);
+                        false -> expr_to_sir_with_expected(context, result_expr, expected_type)
+                    };
+                    SIRTerm { kind: 2, type_name: types@type_name_to_sir(expected_type), value: "", name: "%_", inner: rhs, right_expr: result }
+                end
             }
         }
     }

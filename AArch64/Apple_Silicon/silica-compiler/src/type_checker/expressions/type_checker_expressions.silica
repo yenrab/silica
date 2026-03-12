@@ -377,13 +377,39 @@ fn check_let_after_validation(expr: Expr, expected_type: string, context: TypeCo
     }
 }
 
+// Build context with all bindings from sequence body (let chain and tuple decomposes).
+// The produces pure expr sees variables bound in the body.
+fn context_after_sequence_body(body: Expr, context: TypeContext) -> TypeContext {
+    case body.kind == 6 of {
+        true -> do
+            is_discard: bool <- body.value == "unit" and body.name == "_";
+            new_context: TypeContext <- case is_discard of {
+                true -> context;
+                false -> TypeContext { env: type_checker_core@add_symbol(context.env, body.name, body.value, parser_ast@empty_effect_name_list()) }
+            };
+            context_after_sequence_body(body.right_expr, new_context)
+        end;
+        false -> case body.kind == 10 of {
+            true -> do
+                extended: TypeContext <- type_checker_tuple_decompose_helpers@add_bindings_to_context(context, body.pattern_bindings);
+                context_after_sequence_body(body.right_expr, extended)
+            end;
+            false -> context
+        }
+    }
+}
+
 // Sequence block (kind 11): sequence [proc[ε]] {statements} produces pure expr end
 // inner = body (statements before produces), right_expr = result (pure expr); sequence_effects validated by effect checker
+// The produces expr is in scope of all bindings from the body.
 fn check_sequence_block(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     body_result: TypeCheckResult <- check_expr(expr.inner, "discard", context);
     case body_result.is_ok of {
         false -> body_result;
-        true -> check_expr(expr.right_expr, expected_type, context)
+        true -> do
+            result_context: TypeContext <- context_after_sequence_body(expr.inner, context);
+            check_expr(expr.right_expr, expected_type, result_context)
+        end
     }
 }
 
