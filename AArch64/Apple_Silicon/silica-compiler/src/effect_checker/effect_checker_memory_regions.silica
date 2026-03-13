@@ -1,7 +1,9 @@
 {- Memory region effect support for the effect checker.
    Extracts mem(Space) effects from region operations: alloc_region, alloc_ref,
-   read_ref, write_ref, alloc_rec, build.
-   Implements spec §9.1.1 (mem effects), §4.4 (region types), §9.3.1 (effect propagation).
+   alloc_buf, alloc_atomic, read_ref, write_ref, read_buf, write_buf,
+   buf_load, buf_store, alloc_rec, build, alloc_region_on_numa_node.
+   Implements spec §4.4 (region types), §9.1.1 (mem effects), §9.3.1 (effect propagation),
+   §17.1.2 (alloc_atomic: mem(Space)+atomic), §22.1-22.3 (region/buffer ops).
    Space extraction from type strings (no dependency on type_checker_memory_regions).
 -}
 
@@ -97,9 +99,9 @@ fn list_string_nth(lst: ListString, n: int64) -> string {
     }
 }
 
-// True if fn_name is a region built-in (alloc_region, alloc_ref, read_ref, write_ref, alloc_rec, build)
+// True if fn_name is a region built-in per spec §4.4, §22.1-22.3
 fn is_region_builtin_fn(fn_name: string) -> bool {
-    fn_name == "alloc_region" or fn_name == "alloc_ref" or fn_name == "read_ref" or fn_name == "write_ref" or fn_name == "alloc_rec" or fn_name == "build"
+    fn_name == "alloc_region" or fn_name == "alloc_region_on_numa_node" or fn_name == "alloc_ref" or fn_name == "alloc_buf" or fn_name == "alloc_atomic" or fn_name == "read_ref" or fn_name == "write_ref" or fn_name == "read_buf" or fn_name == "write_buf" or fn_name == "buf_load" or fn_name == "buf_store" or fn_name == "alloc_rec" or fn_name == "build"
 }
 
 // Extract Space from memory region type string.
@@ -166,8 +168,10 @@ fn space_from_alloc_region_arg(first_arg: Expr) -> (bool, string) {
 
 {- Get effects for a region built-in call.
    alloc_region: Space from first arg (expr.inner).
-   alloc_ref, alloc_rec, build: Space from binding_type (result type contains region/ref/rec).
-   read_ref, write_ref: Space from binding_type if it's a ref type; else mem(normal) as fallback.
+   alloc_region_on_numa_node: Space from second arg (not available here); fallback mem(normal).
+   alloc_ref, alloc_buf, alloc_rec, build: Space from binding_type (result type).
+   alloc_atomic: Space from binding_type (atomic_ref); also requires atomic effect (§17.1.2).
+   read_ref, write_ref, read_buf, write_buf, buf_load, buf_store: Space from binding_type if ref/buf; else mem(normal).
    Returns (true, effects) if handled, (false, empty) if not a region op or Space unknown. -}
 fn get_region_call_effects(fn_name: string, first_arg: Expr, binding_type: string, location: SourceLocation) -> (bool, ListEffectName) {
     zero: SourceLocation <- parser_ast@zero_location();
@@ -179,29 +183,45 @@ fn get_region_call_effects(fn_name: string, first_arg: Expr, binding_type: strin
             eff: EffectName <- EffectName { name: "mem", parameter: space_to_use, location: loc };
             (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
         end;
-        false -> case fn_name == "alloc_ref" or fn_name == "alloc_rec" or fn_name == "build" of {
+        false -> case fn_name == "alloc_region_on_numa_node" of {
             true -> do
-                (ok: bool, space: string) <- extract_space_from_region_type(binding_type);
-                space_to_use: string <- case ok of { true -> space; false -> "normal" };
-                eff: EffectName <- EffectName { name: "mem", parameter: space_to_use, location: loc };
+                // First arg is numa_node (int); Space is second arg. Fallback to mem(normal).
+                eff: EffectName <- EffectName { name: "mem", parameter: "normal", location: loc };
                 (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
             end;
-            false -> case fn_name == "read_ref" or fn_name == "write_ref" of {
+            false -> case fn_name == "alloc_ref" or fn_name == "alloc_buf" or fn_name == "alloc_rec" or fn_name == "build" of {
                 true -> do
                     (ok: bool, space: string) <- extract_space_from_region_type(binding_type);
-                    case ok of {
-                        true -> do
-                            eff: EffectName <- EffectName { name: "mem", parameter: space, location: loc };
-                            (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
-                        end;
-                        false -> do
-                            // read_ref/write_ref: binding_type is typically T or atom, not ref. Use mem(normal) as fallback.
-                            eff: EffectName <- EffectName { name: "mem", parameter: "normal", location: loc };
-                            (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
-                        end
-                    }
+                    space_to_use: string <- case ok of { true -> space; false -> "normal" };
+                    eff: EffectName <- EffectName { name: "mem", parameter: space_to_use, location: loc };
+                    (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
                 end;
-                false -> (false, parser_ast@empty_effect_name_list())
+                false -> case fn_name == "alloc_atomic" of {
+                    true -> do
+                        (ok: bool, space: string) <- extract_space_from_region_type(binding_type);
+                        space_to_use: string <- case ok of { true -> space; false -> "normal" };
+                        mem_eff: EffectName <- EffectName { name: "mem", parameter: space_to_use, location: loc };
+                        atomic_eff: EffectName <- EffectName { name: "atomic", parameter: "", location: loc };
+                        (true, parser_ast@cons_effect_name(mem_eff, parser_ast@cons_effect_name(atomic_eff, parser_ast@empty_effect_name_list())))
+                    end;
+                    false -> case fn_name == "read_ref" or fn_name == "write_ref" or fn_name == "read_buf" or fn_name == "write_buf" or fn_name == "buf_load" or fn_name == "buf_store" of {
+                        true -> do
+                            (ok: bool, space: string) <- extract_space_from_region_type(binding_type);
+                            case ok of {
+                                true -> do
+                                    eff: EffectName <- EffectName { name: "mem", parameter: space, location: loc };
+                                    (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
+                                end;
+                                false -> do
+                                    // binding_type is typically T or atom, not ref/buf. Use mem(normal) as fallback.
+                                    eff: EffectName <- EffectName { name: "mem", parameter: "normal", location: loc };
+                                    (true, parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list()))
+                                end
+                            }
+                        end;
+                        false -> (false, parser_ast@empty_effect_name_list())
+                    }
+                }
             }
         }
     }

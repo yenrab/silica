@@ -2843,6 +2843,8 @@ region(L1, device)                  // device memory (driver library only)
 
 The lifetime identifier (e.g. `L1`) is obtained from `fresh_lifetime()` and must be unique among region allocations in the same or composable scope.
 
+**Region Handle Move Semantics:** Region handles are move-only; they cannot be copied. When a region handle is passed to any function, ownership transfers (the handle is moved). The function must return the handle to the caller. This ensures exactly one handle exists per region at any time. See §12.1.5 for the special case of `spawn`.
+
 #### 4.4.3 Reference Types
 Reference types represent pointers to memory: `ref(L, Space, T)`.
 
@@ -6475,6 +6477,27 @@ The compiler analyzes region lifetimes across function boundaries:
 - Return values containing regions extend the region lifetime to the caller (regions are not deallocated when returned)
 - Function calls propagate region lifetime constraints
 
+#### 12.1.5 Region Handles and Actor Spawn
+
+When a region handle is passed to an actor via `spawn(initial_state, behavior_fn)`, the handle is moved (see §4.4.2). The actor may outlive the spawner, so the spawner must receive the handle back. `spawn` obeys the same rule as any function: the handle is moved in and must be returned.
+
+**Region Copy and Return Semantics:** When `spawn` is invoked with an `initial_state` that contains a region handle:
+
+1. **Handle is moved**: Ownership of the handle transfers to `spawn`.
+2. **Copy the region**: Allocate a new region and copy its contents (all allocated cells and their values) into the new region.
+3. **Actor receives handle to the copy**: The actor's `initial_state` receives a handle to the newly allocated copy.
+4. **Spawn returns the original handle**: `spawn` returns the original handle to the spawner (along with the `actor_ref`). The spawner regains ownership.
+
+This ensures that both the spawner and the actor have valid handles to distinct regions. For spawning multiple actors with the same region, the spawner passes the handle to each `spawn` call and receives it back each time; each actor receives its own handle to its own copy.
+
+**Trade-offs:**
+- **Correctness**: No dangling handles; each owner has a distinct region.
+- **Cost**: Each spawn performs a region copy (allocation plus copying all contents).
+- **Semantics**: Regions diverge after spawn; changes in one do not affect the others.
+- **Use case**: Use when each actor should have its own independent copy of the data.
+
+See §15.1.1 (Actor Creation) for the `spawn` function signature.
+
 ### 12.2 Reference Semantics
 
 #### 12.2.1 Reference Creation
@@ -6850,11 +6873,15 @@ Actors are created with initial state and behavior function:
 spawn(initial_state, behavior_fn [, core_affinity]) -> actor_ref proc[concurrency]
 ```
 
+When `initial_state` contains a region handle, `spawn` returns `(actor_ref, initial_state)` so the caller receives the moved handle back. The actor's state receives a handle to a copy of the region.
+
 The `spawn()` function is the execution point for actor creation. It returns an `actor_ref` handle that can be used with other functions such as `cast()`, `send()`, and `pin_actor_to_core()`. The actor begins executing immediately when `spawn()` is called.
 
 The behavior function has type: `(Msg, State) -> State`. The effects required by the behavior function are declared on sequence blocks inside it.
 
 The `initial_state` parameter must implement the `ActorState` trait (for named types only). The `actor_ref` return type is a primitive type (like `int` or `boolean`), not parameterized by message type.
+
+**Region handles in initial state:** When `initial_state` contains a region handle, the handle is moved into `spawn` and must be returned (see §4.4.2, §12.1.5). The runtime copies the region; the actor receives a handle to the copy. `spawn` returns the original handle to the spawner (along with the `actor_ref`). Each actor has its own handle to its own copy.
 
 **Important**: `spawn()` creates and immediately starts executing the actor. The returned `actor_ref` is a handle to the running actor that can be used for message passing and control operations.
 

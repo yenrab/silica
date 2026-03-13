@@ -194,6 +194,165 @@ fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> T
     }
 }
 
+// Memory region built-ins per spec §4.4, §9.2.2, §12, §22
+fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    case expr.name == "alloc_region" of {
+        true -> do
+            mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(expected_type, expr.location);
+            case mem_result.is_ok of {
+                false -> mem_result;
+                true -> case expr.inner.kind == 1 of {
+                    true -> do
+                        arg_space: string <- expr.inner.name;
+                        expected_space: string <- type_checker_memory_regions@get_space_from_region_type(expected_type);
+                        case type_checker_memory_regions@is_valid_memory_space(arg_space) of {
+                            false -> type_checker_core@type_check_err("E2010", expr.location, concat(concat("alloc_region: invalid memory space '", arg_space), "'"), "sect4.4.1");
+                            true -> case arg_space == expected_space of {
+                                false -> type_checker_core@type_check_err("E2010", expr.location, concat(concat("alloc_region: space '", arg_space), concat("' does not match expected type ", expected_type)), "sect4.4.1");
+                                true -> type_checker_core@type_check_ok()
+                            }
+                        }
+                    end;
+                    false -> type_checker_core@type_check_err("E2010", expr.location, "alloc_region: argument must be memory space identifier", "sect4.4.1")
+                }
+            }
+        end;
+        false -> case expr.name == "alloc_ref" of {
+            true -> do
+                region_type: string <- type_checker_memory_regions@ref_type_to_region_type(expected_type);
+                elem_type: string <- type_checker_memory_regions@extract_element_type_from_ref(expected_type);
+                case len(region_type) == 0 of {
+                    true -> type_checker_core@type_check_err("E2010", expr.location, concat("alloc_ref result must be ref(R, Space, T), got ", expected_type), "sect4.4.2");
+                    false -> do
+                        r1: TypeCheckResult <- check_expr(expr.inner, region_type, context);
+                        case r1.is_ok of { false -> r1; true -> check_expr(expr.right_expr, elem_type, context) }
+                    end
+                }
+            end;
+            false -> case expr.name == "read_ref" of {
+                true -> do
+                    ref_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                    elem_type: string <- type_checker_memory_regions@extract_element_type_from_ref(ref_type);
+                    case len(elem_type) == 0 of {
+                        true -> type_checker_core@type_check_err("E2010", expr.location, "read_ref: argument must have ref(R, Space, T) type", "sect4.4.2");
+                        false -> case elem_type == expected_type of {
+                            false -> type_checker_core@type_check_err("E2010", expr.location, concat(concat("read_ref: element type ", elem_type), concat(" does not match expected ", expected_type)), "sect4.4.2");
+                            true -> check_expr(expr.inner, ref_type, context)
+                        }
+                    }
+                end;
+                false -> case expr.name == "write_ref" of {
+                    true -> do
+                        ref_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                        elem_type: string <- type_checker_memory_regions@extract_element_type_from_ref(ref_type);
+                        case len(elem_type) == 0 of {
+                            true -> type_checker_core@type_check_err("E2010", expr.location, "write_ref: first argument must have ref(R, Space, T) type", "sect4.4.2");
+                            false -> do
+                                r1: TypeCheckResult <- check_expr(expr.inner, ref_type, context);
+                                case r1.is_ok of {
+                                    false -> r1;
+                                    true -> do
+                                        r2: TypeCheckResult <- check_expr(expr.right_expr, elem_type, context);
+                                        case r2.is_ok of {
+                                            false -> r2;
+                                            true -> case expected_type == "atom" or expected_type == "discard" of {
+                                                true -> type_checker_core@type_check_ok();
+                                                false -> type_checker_core@type_check_err("E2003", expr.location, "write_ref returns atom", "sect4.4.2")
+                                            }
+                                        }
+                                    end
+                                }
+                            end
+                        }
+                    end;
+                    false -> case expr.name == "alloc_buf" of {
+                        true -> do
+                            region_type: string <- type_checker_memory_regions@buf_type_to_region_type(expected_type);
+                            case len(region_type) == 0 of {
+                                true -> type_checker_core@type_check_err("E2010", expr.location, concat("alloc_buf result must be buf(R, Space, T, N), got ", expected_type), "sect4.4.3");
+                                false -> do
+                                    r1: TypeCheckResult <- check_expr(expr.inner, region_type, context);
+                                    case r1.is_ok of { false -> r1; true -> check_expr(expr.right_expr, "int64", context) }
+                                end
+                            }
+                        end;
+                        false -> case expr.name == "read_buf" or expr.name == "buf_load" of {
+                            true -> do
+                                buf_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                                elem_type: string <- type_checker_memory_regions@extract_element_type_from_buf(buf_type);
+                                case len(elem_type) == 0 of {
+                                    true -> type_checker_core@type_check_err("E2010", expr.location, "read_buf/buf_load: first argument must have buf(R, Space, T, N) type", "sect4.4.3");
+                                    false -> case elem_type == expected_type of {
+                                        false -> type_checker_core@type_check_err("E2010", expr.location, concat(concat("read_buf/buf_load: element type ", elem_type), concat(" does not match expected ", expected_type)), "sect4.4.3");
+                                        true -> do
+                                            r1: TypeCheckResult <- check_expr(expr.inner, buf_type, context);
+                                            case r1.is_ok of { false -> r1; true -> check_expr(expr.right_expr, "int64", context) }
+                                        end
+                                    }
+                                }
+                            end;
+                            false -> case expr.name == "write_buf" or expr.name == "buf_store" of {
+                                true -> do
+                                    buf_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                                    elem_type: string <- type_checker_memory_regions@extract_element_type_from_buf(buf_type);
+                                    case len(elem_type) == 0 of {
+                                        true -> type_checker_core@type_check_err("E2010", expr.location, "write_buf/buf_store: first argument must have buf(R, Space, T, N) type", "sect4.4.3");
+                                        false -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+                                            false -> type_checker_core@type_check_err("E2005", expr.location, "write_buf/buf_store requires 3 arguments: (buf, index, value)", "sect12.3.2");
+                                            true -> do
+                                                r1: TypeCheckResult <- check_expr(expr.inner, buf_type, context);
+                                                case r1.is_ok of {
+                                                    false -> r1;
+                                                    true -> do
+                                                        r2: TypeCheckResult <- check_expr(expr.right_expr.inner, "int64", context);
+                                                        case r2.is_ok of {
+                                                            false -> r2;
+                                                            true -> do
+                                                                r3: TypeCheckResult <- check_expr(expr.right_expr.right_expr, elem_type, context);
+                                                                case r3.is_ok of {
+                                                                    false -> r3;
+                                                                    true -> case expected_type == "atom" or expected_type == "discard" of {
+                                                                        true -> type_checker_core@type_check_ok();
+                                                                        false -> type_checker_core@type_check_err("E2003", expr.location, "write_buf/buf_store returns atom", "sect12.3.2")
+                                                                    }
+                                                                }
+                                                            end
+                                                        }
+                                                    end
+                                                }
+                                            end
+                                        }
+                                    }
+                                end;
+                                false -> case expr.name == "alloc_atomic" of {
+                                    true -> do
+                                        region_type: string <- type_checker_memory_regions@atomic_ref_type_to_region_type(expected_type);
+                                        elem_type: string <- type_checker_memory_regions@extract_element_type_from_atomic_ref(expected_type);
+                                        case len(region_type) == 0 of {
+                                            true -> type_checker_core@type_check_err("E2010", expr.location, concat("alloc_atomic result must be atomic_ref(R, Space, T), got ", expected_type), "sect4.4.4");
+                                            false -> do
+                                                r1: TypeCheckResult <- check_expr(expr.inner, region_type, context);
+                                                case r1.is_ok of { false -> r1; true -> check_expr(expr.right_expr, elem_type, context) }
+                                            end
+                                        }
+                                    end;
+                                    false -> case expr.name == "fresh_lifetime" of {
+                                        true -> case expected_type == "lifetime" of {
+                                            true -> type_checker_core@type_check_ok();
+                                            false -> type_checker_core@type_check_err("E2003", expr.location, concat("fresh_lifetime returns lifetime, got ", expected_type), "sect22.1")
+                                        };
+                                        false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown region built-in: ", expr.name), "sect22")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Built-in: print_int64/32/16/8, print_uint64/32/16/8 - arg matches type, returns atom
 // Built-in: print_atom(atom:x) - arg atom, returns atom (:ok on success, :fail on failure)
 fn check_print_call(expr: Expr, arg_type: string, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
@@ -209,7 +368,9 @@ fn check_print_call(expr: Expr, arg_type: string, expected_type: string, context
 }
 
 fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
-    case expr.name == "print_int64" of {
+    case type_checker_memory_regions@is_region_builtin_call(expr.name) of {
+        true -> check_region_builtin_call(expr, expected_type, context);
+        false -> case expr.name == "print_int64" of {
         true -> check_print_call(expr, "int64", expected_type, context);
         false -> case expr.name == "print_int32" of {
             true -> check_print_call(expr, "int32", expected_type, context);
@@ -323,6 +484,7 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
                 }
             }
         }
+    }
     }
 }
 
