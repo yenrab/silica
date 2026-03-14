@@ -12,7 +12,23 @@ This document specifies the formal verification framework for Silica, including 
 
 ---
 
-## 2. Curry–Howard Foundation
+## 2. Language Semantics (Relevant to Verification)
+
+### 2.1 Function Return Semantics
+
+User-defined functions return the result of the last expression in the function body. There is no `return` keyword; the value of the final expression is implicitly the return value. No semicolon is required for the final expression. For example, `fn main() -> int64 { 42 }` returns 42.
+
+### 2.2 Module-Qualified Function Calls
+
+The `@` operator discriminates between the module name and the function name for any function that exists in a different module: `ModuleName@function_name(args)`.
+
+### 2.3 Atom Literals
+
+The `@` character is never used as an indicator of the end of an atom name; it is reserved for module@function qualified calls.
+
+---
+
+## 3. Curry–Howard Foundation
 
 Silica's type system corresponds to a logical calculus via the Curry–Howard isomorphism:
 
@@ -22,9 +38,9 @@ Silica's type system corresponds to a logical calculus via the Curry–Howard is
 
 ---
 
-## 3. Layer 1: Value Calculus (λΠ + Sums and Products)
+## 4. Layer 1: Value Calculus (λΠ + Sums and Products)
 
-### 3.1 Product Types (Existing)
+### 4.1 Product Types (Existing)
 
 Product type A × B corresponds to conjunction A ∧ B.
 
@@ -44,13 +60,13 @@ Product type A × B corresponds to conjunction A ∧ B.
 
 ---
 
-## 4. Recursive Product Types (Extension)
+## 5. Recursive Product Types (Extension)
 
-### 4.1 Formation
+### 5.1 Formation
 
 A recursive tuple type `(T₁, rec, rec)` has `rec` referring to the enclosing tuple type. The type checker resolves `rec` via structural equality with occurs check.
 
-### 4.2 Introduction Rule
+### 5.2 Introduction Rule
 
 ```
 Γ ⊢ e₁ : T₁
@@ -62,7 +78,7 @@ A recursive tuple type `(T₁, rec, rec)` has `rec` referring to the enclosing t
 
 Where `T₂[rec ↦ (T₁, rec, rec)]` denotes substitution of `rec` by the enclosing tuple type.
 
-### 4.3 Elimination Rule
+### 5.3 Elimination Rule
 
 ```
 Γ ⊢ e : (T₁, rec, rec)
@@ -70,7 +86,7 @@ Where `T₂[rec ↦ (T₁, rec, rec)]` denotes substitution of `rec` by the encl
 Γ ⊢ πᵢ(e) : Tᵢ[rec ↦ (T₁, rec, rec)]
 ```
 
-### 4.4 Occurs Check
+### 5.4 Occurs Check
 
 When comparing recursive types, the type checker:
 1. Maintains a mapping: `rec` → enclosing tuple type.
@@ -78,13 +94,13 @@ When comparing recursive types, the type checker:
 3. On cycle (rec encountered again during expansion), treats as equal when structures match.
 4. Ensures decidability.
 
-### 4.5 Well-Foundedness
+### 5.5 Well-Foundedness
 
 Recursive structures are finite: the base case `:none` ensures termination. All recursive positions are either `:none` or a ref to a region-allocated node; no infinite unfoldings at runtime.
 
 ---
 
-## 5. Region Lifetime Analysis (Extension)
+## 6. Region Lifetime Analysis (Extension)
 
 The typing judgment is extended with a lifetime environment L and scope dependency set ScopDep for region-based memory:
 
@@ -113,7 +129,7 @@ See silica-specification.md §12.1.4 for the full algorithm and rules.
 
 ---
 
-## 6. Reference
+## 7. Reference
 
 - [recursive_tuple_specification.md](recursive_tuple_specification.md) — Full design, syntax, and examples.
 - [silica-specification.md](silica-specification.md) §12 — Memory Model, lifetime analysis.
