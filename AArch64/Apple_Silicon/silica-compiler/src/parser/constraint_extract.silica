@@ -37,9 +37,9 @@ fn extract_function(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) proc[D
     r1: ListTokenSlot <- slots.tail;
     fn_name: string <- r1.head.token.lexeme;
     fn_loc: SourceLocation <- r1.head.token.location;
-    (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(r1.tail);
+    (params: ListParam, ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- collect_params_and_find_type_and_body(r1.tail);
     (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(body_slots);
-    decl: Declaration <- Declaration { tag: 0, name: fn_name, return_type_name: ret_type, return_type_location: ret_type_loc, location: fn_loc, body: body, declared_effects: effects };
+    decl: Declaration <- Declaration { tag: 0, name: fn_name, parameters: params, return_type_name: ret_type, return_type_location: ret_type_loc, location: fn_loc, body: body, declared_effects: effects };
     (decl, rest_after_body)
 }
 
@@ -68,7 +68,7 @@ fn extract_effect_declaration(slots: ListTokenSlot) -> (Declaration, ListTokenSl
                                     (effects: ListEffectName, rest_after_effects: ListTokenSlot) <- collect_effects_until_right_bracket(after_equal.tail, parser_ast@empty_effect_name_list());
                                     dummy: Expr <- parser_ast@dummy_expr();
                                     zero_loc: SourceLocation <- parser_ast@zero_location();
-                                    decl: Declaration <- Declaration { tag: 1, name: name_slot.token.lexeme, return_type_name: "", return_type_location: zero_loc, location: kw_slot.token.location, body: dummy, declared_effects: effects };
+                                    decl: Declaration <- Declaration { tag: 1, name: name_slot.token.lexeme, parameters: parser_ast@nil_list_param(), return_type_name: "", return_type_location: zero_loc, location: kw_slot.token.location, body: dummy, declared_effects: effects };
                                     (decl, rest_after_effects)
                                 end;
                                 false -> (parser_ast@dummy_decl(), after_equal)
@@ -268,6 +268,108 @@ fn collect_optional_proc_effects(slots: ListTokenSlot) -> (ListEffectName, ListT
                 }
             };
             false -> (parser_ast@empty_effect_name_list(), slots)
+        }
+    }
+}
+
+// Collect params from ( param_name : param_type , ... ) and find return type/body. Slots start with left_paren.
+fn collect_params_and_find_type_and_body(slots: ListTokenSlot) -> (ListParam, string, SourceLocation, ListEffectName, ListTokenSlot) proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (parser_ast@nil_list_param(), "", parser_ast@zero_location(), parser_ast@empty_effect_name_list(), constraint_core@empty_list_slot());
+        false -> case slots.head.token.kind == kinds.left_paren of {
+            true -> case slots.tail.is_nil of {
+                true -> (parser_ast@nil_list_param(), "", parser_ast@zero_location(), parser_ast@empty_effect_name_list(), constraint_core@empty_list_slot());
+                false -> case slots.tail.head.token.kind == kinds.right_paren of {
+                    true -> do
+                        rest_after_rparen: ListTokenSlot <- slots.tail.tail;
+                        (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(rest_after_rparen);
+                        (parser_ast@nil_list_param(), ret_type, ret_type_loc, effects, body_slots)
+                    end;
+                    false -> do
+                        (params: ListParam, rest_after_params: ListTokenSlot) <- collect_params_loop(slots.tail, parser_ast@nil_list_param());
+                        (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(rest_after_params);
+                        (params, ret_type, ret_type_loc, effects, body_slots)
+                    end
+                }
+            };
+            false -> do
+                (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(slots);
+                (parser_ast@nil_list_param(), ret_type, ret_type_loc, effects, body_slots)
+            end
+        }
+    }
+}
+
+fn collect_params_loop(slots: ListTokenSlot, acc: ListParam) -> (ListParam, ListTokenSlot) proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (acc, slots);
+        false -> case slots.head.token.kind == kinds.right_paren of {
+            true -> (acc, slots.tail);
+            false -> case slots.head.token.kind == kinds.identifier of {
+                true -> case slots.tail.is_nil of {
+                    true -> (acc, slots);
+                    false -> case slots.tail.tail.is_nil of {
+                        true -> (acc, slots);
+                        false -> case slots.tail.head.token.kind == kinds.colon of {
+                            true -> do
+                                param_name: string <- slots.head.token.lexeme;
+                                param_loc: SourceLocation <- slots.head.token.location;
+                                type_slots: ListTokenSlot <- slots.tail.tail;
+                                (param_type_str: string, rest_after_type: ListTokenSlot) <- extract_single_param_type(type_slots);
+                                p: Param <- Param { name: param_name, type_name: param_type_str, location: param_loc };
+                                new_acc: ListParam <- parser_ast@cons_param(p, acc);
+                                case rest_after_type.is_nil of {
+                                    true -> (new_acc, rest_after_type);
+                                    false -> case rest_after_type.head.token.kind == kinds.comma of {
+                                        true -> collect_params_loop(rest_after_type.tail, new_acc);
+                                        false -> case rest_after_type.head.token.kind == kinds.right_paren of {
+                                            true -> (new_acc, rest_after_type.tail);
+                                            false -> (new_acc, rest_after_type)
+                                        }
+                                    }
+                                }
+                            end;
+                            false -> (acc, slots)
+                        };
+                        false -> (acc, slots)
+                    }
+                };
+                false -> (acc, slots)
+            }
+        }
+    }
+}
+
+fn extract_single_param_type(slots: ListTokenSlot) -> (string, ListTokenSlot) proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> ("", slots);
+        false -> case slots.head.token.kind == kinds.ref_keyword or slots.head.token.kind == kinds.region_keyword or slots.head.token.kind == kinds.buf_keyword of {
+            true -> do
+                tr: TupleTypeResult <- parser_tuples@extract_parametrized_type_from_slots(slots);
+                (tr.type_str, tr.rest_slots)
+            end;
+            false -> case slots.head.token.kind == kinds.atomic_keyword of {
+                true -> case slots.tail.is_nil of {
+                    true -> ("", slots);
+                    false -> case slots.tail.head.token.kind == kinds.ref_keyword of {
+                        true -> do
+                            tr: TupleTypeResult <- parser_tuples@extract_parametrized_type_from_slots(slots);
+                            (tr.type_str, tr.rest_slots)
+                        end;
+                        false -> (kind_to_type_name(slots.head.token.kind), slots.tail)
+                    }
+                };
+                false -> case is_type_keyword(kinds, slots.head.token.kind) of {
+                    true -> (kind_to_type_name(slots.head.token.kind), slots.tail);
+                    false -> case slots.head.token.kind == kinds.identifier of {
+                        true -> (slots.head.token.lexeme, slots.tail);
+                        false -> ("", slots)
+                    }
+                }
+            }
         }
     }
 }

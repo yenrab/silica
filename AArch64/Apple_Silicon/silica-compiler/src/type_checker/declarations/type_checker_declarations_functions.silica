@@ -1,6 +1,6 @@
 // Capability: check function declaration (Declaration tag 0)
 // Adds function to symbol table, checks body expression
-// Future: when parser adds parameters, call type_checker_memory_regions@validate_type_for_parameter for each param type
+// User-defined functions: store full function type (params -> return) for call resolution
 
 use parser_ast;
 use type_checker_core;
@@ -10,22 +10,85 @@ use type_checker_memory_regions;
 export add_function/2;
 export check_body/2;
 
-// Add function name, return type, and declared effects to context. Used for first pass (all decls).
+// Build function type string "(T1,T2) -> R" from declaration. ListParam order: head=last param, tail=earlier params.
+fn param_types_str(params: ListParam) -> string {
+    case params.is_nil of {
+        true -> "";
+        false -> case params.tail.is_nil of {
+            true -> params.head.type_name;
+            false -> concat(concat(param_types_str(params.tail), ","), params.head.type_name)
+        }
+    }
+}
+
+fn build_function_type(decl: Declaration) -> string {
+    params_str: string <- param_types_str(decl.parameters);
+    case decl.parameters.is_nil of {
+        true -> concat("() -> ", decl.return_type_name);
+        false -> concat(concat(concat("(", params_str), ") -> "), decl.return_type_name)
+    }
+}
+
+// Add function name with full function type (params -> return) for call resolution. Used for first pass (all decls).
 fn add_function(decl: Declaration, context: TypeContext) -> TypeContext {
-    new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, decl.name, decl.return_type_name, decl.declared_effects);
+    func_type: string <- build_function_type(decl);
+    new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, decl.name, func_type, decl.declared_effects);
     TypeContext { env: new_env }
 }
 
+fn add_params_to_context_loop(params: ListParam, context: TypeContext) -> TypeContext {
+    case params.is_nil of {
+        true -> context;
+        false -> do
+            p: Param <- params.head;
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, p.name, p.type_name, parser_ast@empty_effect_name_list());
+            add_params_to_context_loop(params.tail, TypeContext { env: new_env })
+        end
+    }
+}
+
+fn add_params_to_context(decl: Declaration, context: TypeContext) -> TypeContext {
+    add_params_to_context_loop(decl.parameters, context)
+}
+
+// Validate each param type (memory region types must be valid). Return first error or ok.
+fn validate_params_loop(params: ListParam) -> TypeCheckResult proc[DeviceIO] {
+    case params.is_nil of {
+        true -> type_checker_core@type_check_ok();
+        false -> case type_checker_memory_regions@is_memory_region_type(params.head.type_name) of {
+            true -> do
+                mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(params.head.type_name, params.head.location);
+                case mem_result.is_ok of {
+                    false -> mem_result;
+                    true -> validate_params_loop(params.tail)
+                }
+            end;
+            false -> validate_params_loop(params.tail)
+        }
+    }
+}
+
 // Check function body. Context must already include all declarations (for mutual recursion).
+// Add parameters to context before checking body so param names are in scope.
 // For proc return types (T proc[E]), the body's expected type is T. The parser stores return_type_name as T.
 // Reject unit: not a valid return type per language design.
 // Validate memory region return types (ref, region, buf, atomic_ref) before checking body.
+// Validate param types (memory region params) before checking body.
 fn check_body(decl: Declaration, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    params_result: TypeCheckResult <- validate_params_loop(decl.parameters);
+    case params_result.is_ok of {
+        false -> params_result;
+        true -> check_body_after_params(decl, context)
+    }
+}
+
+fn check_body_after_params(decl: Declaration, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    context_with_params: TypeContext <- add_params_to_context(decl, context);
     case decl.return_type_name == "unit" of {
         true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
         false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
-            true -> check_body_memory_region_return(decl, context);
-            false -> type_checker_expressions@check_expr(decl.body, decl.return_type_name, context)
+            true -> check_body_memory_region_return(decl, context_with_params);
+            false -> type_checker_expressions@check_expr(decl.body, decl.return_type_name, context_with_params)
         }
     }
 }

@@ -9,8 +9,40 @@ use effect_serializer;
 
 export emit_function/2;
 
+fn add_params_to_context_loop(params: ListParam, context: TypeContext) -> TypeContext {
+    case params.is_nil of {
+        true -> context;
+        false -> do
+            p: Param <- params.head;
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, p.name, p.type_name, parser_ast@empty_effect_name_list());
+            add_params_to_context_loop(params.tail, TypeContext { env: new_env })
+        end
+    }
+}
+
+fn add_params_to_context(decl: Declaration, context: TypeContext) -> TypeContext {
+    add_params_to_context_loop(decl.parameters, context)
+}
+
+fn param_names_from_list_loop(params: ListParam, acc: string) -> string {
+    case params.is_nil of {
+        true -> acc;
+        false -> do
+            p: Param <- params.head;
+            sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
+            next: string <- concat(acc, concat(sep, p.name));
+            param_names_from_list_loop(params.tail, next)
+        end
+    }
+}
+
+fn param_names_from_list(params: ListParam) -> string {
+    param_names_from_list_loop(params, "")
+}
+
 // Build SIRFunction for a Declaration (tag 0)
 // Uses decl.body when present (kind >= 0); otherwise placeholder for empty body
+// Adds parameters to context so body can reference param names
 fn emit_function(decl: Declaration, context: TypeContext) -> SIRFunction proc[mem(normal)] {
     case decl.tag of {
         0 -> do
@@ -20,11 +52,13 @@ fn emit_function(decl: Declaration, context: TypeContext) -> SIRFunction proc[me
                 true -> "";
                 false -> effect_serializer@serialize_effects(decl.declared_effects)
             };
+            context_with_params: TypeContext <- add_params_to_context(decl, context);
             body: SIRTerm <- case decl.body.kind >= 0 of {
-                true -> terms@expr_to_sir_with_expected(context, decl.body, decl.return_type_name);
+                true -> terms@expr_to_sir_with_expected(context_with_params, decl.body, decl.return_type_name);
                 false -> placeholder_body(decl.return_type_name)
             };
-            SIRFunction { name: fn_name, return_type: ret_type, effects: eff_str, body: body }
+            param_names_str: string <- param_names_from_list(decl.parameters);
+            SIRFunction { name: fn_name, return_type: ret_type, effects: eff_str, body: body, param_names: param_names_str }
         end;
         _: int64 -> sir_ast@dummy_sir_function()
     }
