@@ -42,9 +42,17 @@ This is a minimal prototype. Stack allocation means regions are implicitly "free
 
 **Specification**: §12.1.4 Static Region Lifetime Analysis
 
-**Status**: ❌ Not implemented
+**Status**: ⚠️ Phase A implemented; Phases B and C pending
 
-**Required**: The compiler must perform static analysis to verify that:
+**Phase A (implemented)**: Single-scope lifetime analysis in `type_checker_memory_regions.silica`:
+- When a sequence returns, any `ref(L,...)`, `buf(L,...)`, or `atomic_ref(L,...)` in the return type must have `region(L,...)` in the return type (scope exit rule).
+- Error E2100: "reference outlives region" when returning references without the region.
+
+**Phases B and C (not yet implemented)**: Must be implemented after functions are fully supported:
+- **Phase B**: Nested scopes — extend L and ScopDep across nested blocks and sequences.
+- **Phase C**: Cross-function analysis — function parameter lifetime extension, function return lifetime constraint, region return lifetime extension.
+
+**Required** (full implementation): The compiler must perform static analysis to verify that:
 
 1. References cannot outlive their containing region
 2. Region deallocation occurs only after all references are no longer accessible

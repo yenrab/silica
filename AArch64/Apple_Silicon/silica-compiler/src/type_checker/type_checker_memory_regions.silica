@@ -15,6 +15,7 @@ export atomic_ref_type_to_region_type/1;
 export extract_element_type_from_atomic_ref/1;
 export get_space_from_region_type/1;
 export is_region_builtin_call/1;
+export check_sequence_return_lifetime/2;
 
 // Valid memory space keywords per spec §4.4.1
 fn is_valid_memory_space(space: string) -> bool {
@@ -360,4 +361,221 @@ fn get_space_from_region_type(region_type: string) -> string {
 // True if call_name is a region built-in (alloc_region, alloc_ref, read_ref, write_ref, alloc_buf, buf_load, buf_store, read_buf, write_buf, alloc_atomic, fresh_lifetime)
 fn is_region_builtin_call(call_name: string) -> bool {
     call_name == "alloc_region" or call_name == "alloc_ref" or call_name == "read_ref" or call_name == "write_ref" or call_name == "alloc_buf" or call_name == "buf_load" or call_name == "buf_store" or call_name == "read_buf" or call_name == "write_buf" or call_name == "alloc_atomic" or call_name == "fresh_lifetime"
+}
+
+// Phase A: Static Region Lifetime Analysis (single scope)
+// Spec §12.1.4 Scope Exit Rule: references cannot outlive their containing region.
+// When a sequence returns, any ref(L,...)/buf(L,...)/atomic_ref(L,...) in the return type must have region(L,...) in the return type.
+// Phases B (nested scopes) and C (cross-function) require implementation after functions are fully supported.
+fn check_sequence_return_lifetime(return_type: string, location: SourceLocation) -> TypeCheckResult proc[DeviceIO] {
+    t: string <- trim_type(return_type);
+    ref_ids: ListString <- collect_lifetime_ids_from_ref_types(t);
+    region_ids: ListString <- collect_lifetime_ids_from_region_types(t);
+    check_ref_lifetimes_covered(ref_ids, region_ids, location)
+}
+
+fn check_ref_lifetimes_covered(ref_ids: ListString, region_ids: ListString, location: SourceLocation) -> TypeCheckResult proc[DeviceIO] {
+    case ref_ids.is_nil of {
+        true -> type_checker_core@type_check_ok();
+        false -> case list_contains_string(trim_type(ref_ids.head), region_ids) of {
+            true -> check_ref_lifetimes_covered(ref_ids.tail, region_ids, location);
+            false -> type_checker_core@type_check_err("E2100", location, concat(concat("reference outlives region: return type contains ref/buf/atomic_ref for lifetime '", trim_type(ref_ids.head)), "' but region is not returned; region must be in return value when returning references into it (spec §12.1.4)"), "sect12.1.4")
+        }
+    }
+}
+
+fn list_contains_string(s: string, lst: ListString) -> bool {
+    case lst.is_nil of {
+        true -> false;
+        false -> case trim_type(lst.head) == s of {
+            true -> true;
+            false -> list_contains_string(s, lst.tail)
+        }
+    }
+}
+
+// Recursively collect lifetime IDs from ref(R,...), buf(R,...), atomic_ref(R,...) in type string.
+fn collect_lifetime_ids_from_ref_types(type_str: string) -> ListString {
+    t: string <- trim_type(type_str);
+    case len(t) < 4 of {
+        true -> nil_list_string();
+        false -> case len(t) >= 11 and substring(t, 0, 10) == "atomic_ref" and substring(t, 10, 11) == "(" of {
+            true -> collect_from_atomic_ref(t);
+            false -> case len(t) >= 6 and substring(t, 0, 6) == "region" and substring(t, 6, 7) == "(" of {
+                true -> nil_list_string();
+                false -> case len(t) >= 4 and substring(t, 0, 3) == "buf" and substring(t, 3, 4) == "(" of {
+                    true -> collect_from_buf(t);
+                    false -> case len(t) >= 4 and substring(t, 0, 3) == "ref" and substring(t, 3, 4) == "(" of {
+                        true -> collect_from_ref(t);
+                        false -> collect_from_tuple_or_union(t)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_from_ref(type_str: string) -> ListString {
+    inner: string <- substring(type_str, 4, len(type_str) - 1);
+    params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+    case list_string_length(params) < 3 of {
+        true -> nil_list_string();
+        false -> do
+            r: string <- trim_type(list_string_nth(params, 0));
+            elem_type: string <- trim_type(list_string_nth(params, 2));
+            rest: ListString <- collect_lifetime_ids_from_ref_types(elem_type);
+            cons_string(r, rest)
+        end
+    }
+}
+
+fn collect_from_buf(type_str: string) -> ListString {
+    inner: string <- substring(type_str, 4, len(type_str) - 1);
+    params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+    case list_string_length(params) < 4 of {
+        true -> nil_list_string();
+        false -> do
+            r: string <- trim_type(list_string_nth(params, 0));
+            elem_type: string <- trim_type(list_string_nth(params, 2));
+            rest: ListString <- collect_lifetime_ids_from_ref_types(elem_type);
+            cons_string(r, rest)
+        end
+    }
+}
+
+fn collect_from_atomic_ref(type_str: string) -> ListString {
+    inner: string <- substring(type_str, 11, len(type_str) - 1);
+    params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+    case list_string_length(params) < 3 of {
+        true -> nil_list_string();
+        false -> do
+            r: string <- trim_type(list_string_nth(params, 0));
+            elem_type: string <- trim_type(list_string_nth(params, 2));
+            rest: ListString <- collect_lifetime_ids_from_ref_types(elem_type);
+            cons_string(r, rest)
+        end
+    }
+}
+
+// Recursively collect lifetime IDs from region(R,...) in type string.
+fn collect_lifetime_ids_from_region_types(type_str: string) -> ListString {
+    t: string <- trim_type(type_str);
+    case len(t) < 8 of {
+        true -> nil_list_string();
+        false -> case len(t) >= 7 and substring(t, 0, 6) == "region" and substring(t, 6, 7) == "(" of {
+            true -> do
+                inner: string <- substring(t, 7, len(t) - 1);
+                params: ListString <- reverse_list_string(split_params_at_top_level(inner));
+                case list_string_length(params) < 1 of {
+                    true -> nil_list_string();
+                    false -> cons_string(trim_type(list_string_nth(params, 0)), nil_list_string())
+                }
+            end;
+            false -> collect_region_ids_from_tuple_or_union(t)
+        }
+    }
+}
+
+fn collect_from_tuple_or_union(type_str: string) -> ListString {
+    t: string <- trim_type(type_str);
+    case len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
+        true -> collect_from_tuple_contents(substring(t, 1, len(t) - 1));
+        false -> case find_union_separator(t, 0, 0) >= 0 of {
+            true -> collect_from_union(t);
+            false -> nil_list_string()
+        }
+    }
+}
+
+fn collect_region_ids_from_tuple_or_union(type_str: string) -> ListString {
+    t: string <- trim_type(type_str);
+    case len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
+        true -> collect_region_from_tuple_contents(substring(t, 1, len(t) - 1));
+        false -> case find_union_separator(t, 0, 0) >= 0 of {
+            true -> collect_region_from_union(t);
+            false -> nil_list_string()
+        }
+    }
+}
+
+fn find_union_separator(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case depth == 0 and i + 1 < len(s) and substring(s, i, i + 2) == " |" of {
+            true -> i;
+            false -> case substring(s, i, i + 1) == "(" of {
+                true -> find_union_separator(s, i + 1, depth + 1);
+                false -> case substring(s, i, i + 1) == ")" of {
+                    true -> find_union_separator(s, i + 1, depth - 1);
+                    false -> find_union_separator(s, i + 1, depth)
+                }
+            }
+        }
+    }
+}
+
+fn collect_from_tuple_contents(inner: string) -> ListString {
+    parts: ListString <- reverse_list_string(split_params_at_top_level(inner));
+    collect_from_parts(parts)
+}
+
+fn collect_from_parts(parts: ListString) -> ListString {
+    case parts.is_nil of {
+        true -> nil_list_string();
+        false -> union_list_string(collect_lifetime_ids_from_ref_types(parts.head), collect_from_parts(parts.tail))
+    }
+}
+
+fn collect_region_from_tuple_contents(inner: string) -> ListString {
+    parts: ListString <- reverse_list_string(split_params_at_top_level(inner));
+    collect_region_from_parts(parts)
+}
+
+fn collect_region_from_parts(parts: ListString) -> ListString {
+    case parts.is_nil of {
+        true -> nil_list_string();
+        false -> union_list_string(collect_lifetime_ids_from_region_types(parts.head), collect_region_from_parts(parts.tail))
+    }
+}
+
+fn collect_from_union(type_str: string) -> ListString {
+    sep: int64 <- find_union_separator(type_str, 0, 0);
+    case sep < 0 of {
+        true -> collect_lifetime_ids_from_ref_types(type_str);
+        false -> do
+            left: string <- trim_type(substring(type_str, 0, sep));
+            right_start: int64 <- sep + 2;
+            right: string <- case right_start < len(type_str) of {
+                true -> trim_type(substring(type_str, right_start, len(type_str)));
+                false -> ""
+            };
+            union_list_string(collect_lifetime_ids_from_ref_types(left), collect_from_union(right))
+        end
+    }
+}
+
+fn collect_region_from_union(type_str: string) -> ListString {
+    sep: int64 <- find_union_separator(type_str, 0, 0);
+    case sep < 0 of {
+        true -> collect_lifetime_ids_from_region_types(type_str);
+        false -> do
+            left: string <- trim_type(substring(type_str, 0, sep));
+            right_start: int64 <- sep + 2;
+            right: string <- case right_start < len(type_str) of {
+                true -> trim_type(substring(type_str, right_start, len(type_str)));
+                false -> ""
+            };
+            union_list_string(collect_lifetime_ids_from_region_types(left), collect_region_from_union(right))
+        end
+    }
+}
+
+fn union_list_string(a: ListString, b: ListString) -> ListString {
+    case a.is_nil of {
+        true -> b;
+        false -> case list_contains_string(a.head, b) of {
+            true -> union_list_string(a.tail, b);
+            false -> cons_string(a.head, union_list_string(a.tail, b))
+        }
+    }
 }

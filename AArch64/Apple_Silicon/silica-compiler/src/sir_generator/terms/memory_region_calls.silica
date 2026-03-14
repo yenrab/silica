@@ -1,6 +1,7 @@
 // Memory region built-in calls to SIR prim terms (Expr kind 4, extension)
-// alloc_region, alloc_ref, read_ref, write_ref, alloc_buf, buf_load, buf_store
-// Implements sir_design_spec §7.4 Memory primitives
+// alloc_region, alloc_ref, alloc_rec, read_ref, write_ref, alloc_buf, buf_load, buf_store,
+// read_buf, write_buf (aliases), alloc_atomic, fresh_lifetime
+// Implements sir_design_spec §7.4 Memory, §7.5 Atomic; design_documents/silica-compiler&language-specification.jsonld §4.4
 
 use sir_ast;
 use types;
@@ -15,7 +16,16 @@ fn is_valid_memory_space(space: string) -> bool {
 
 // True if call_name is a region built-in
 fn is_region_builtin(call_name: string) -> bool {
-    call_name == "alloc_region" or call_name == "alloc_ref" or call_name == "read_ref" or call_name == "write_ref" or call_name == "alloc_buf" or call_name == "buf_load" or call_name == "buf_store"
+    call_name == "alloc_region" or call_name == "alloc_ref" or call_name == "alloc_rec" or call_name == "read_ref" or call_name == "write_ref" or call_name == "alloc_buf" or call_name == "buf_load" or call_name == "buf_store" or call_name == "read_buf" or call_name == "write_buf" or call_name == "alloc_atomic" or call_name == "fresh_lifetime"
+}
+
+// Map source call name to SIR prim name (read_buf->buf_load, write_buf->buf_store)
+fn sir_prim_name(call_name: string) -> string {
+    case call_name of {
+        "read_buf" -> "buf_load";
+        "write_buf" -> "buf_store";
+        _: string -> call_name
+    }
 }
 
 // Extract Space from memory region type string (ref, region, buf, atomic_ref)
@@ -111,10 +121,27 @@ fn mem_effect(space: string) -> string {
 // Build SIR prim term for region built-in. context/expr_to_sir used for recursive conversion.
 // expected_type: result type for effect extraction (region(R, Space), ref(R, Space, T), etc.)
 fn build_region_prim_from_sir(call_name: string, arg1: SIRTerm, arg2: SIRTerm, expected_type: string) -> SIRTerm {
-    space: string <- extract_space_from_expected(expected_type);
-    eff: string <- mem_effect(space);
+    prim: string <- sir_prim_name(call_name);
+    eff: string <- effect_for_prim(call_name, expected_type);
     sir_type: string <- types@type_name_to_sir(result_type_for_prim(call_name, expected_type));
-    SIRTerm { kind: 6, type_name: sir_type, value: eff, name: call_name, inner: arg1, right_expr: arg2 }
+    SIRTerm { kind: 6, type_name: sir_type, value: eff, name: prim, inner: arg1, right_expr: arg2 }
+}
+
+// Effect set for prim: fresh_lifetime has []; alloc_atomic has [mem(Space), atomic]; others [mem(Space)]
+fn effect_for_prim(call_name: string, expected_type: string) -> string {
+    case call_name == "fresh_lifetime" of {
+        true -> "[]";
+        false -> case call_name == "alloc_atomic" of {
+            true -> do
+                space: string <- extract_space_from_expected(expected_type);
+                concat(concat("[mem(", space), "), atomic]")
+            end;
+            false -> do
+                space: string <- extract_space_from_expected(expected_type);
+                mem_effect(space)
+            end
+        }
+    }
 }
 
 fn extract_space_from_expected(expected_type: string) -> string {
@@ -129,11 +156,16 @@ fn result_type_for_prim(call_name: string, expected_type: string) -> string {
     case call_name of {
         "alloc_region" -> "region(R, normal)";
         "alloc_ref" -> expected_type;
+        "alloc_rec" -> expected_type;
         "read_ref" -> expected_type;
         "write_ref" -> "unit";
         "alloc_buf" -> expected_type;
         "buf_load" -> expected_type;
+        "read_buf" -> expected_type;
         "buf_store" -> "unit";
+        "write_buf" -> "unit";
+        "alloc_atomic" -> expected_type;
+        "fresh_lifetime" -> "lifetime";
         _: string -> expected_type
     }
 }

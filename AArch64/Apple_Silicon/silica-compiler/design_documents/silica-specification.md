@@ -197,7 +197,7 @@ Each error category has a specific error code range and includes relevant metada
 ## 2. Lexical Structure
 
 ### 2.1 Character Set
-Silica source code is UTF-8 encoded. The language uses ASCII characters for keywords, operators, and punctuation. Unicode is allowed in string literals, character literals, and comments.
+Silica source code is UTF-8 encoded. The language uses ASCII characters for keywords, operators, and punctuation. Unicode is allowed in string literals, character literals, atom literals, and comments.
 
 ### 2.2 Tokens
 
@@ -205,14 +205,14 @@ Silica source code is UTF-8 encoded. The language uses ASCII characters for keyw
 The following identifiers are reserved keywords:
 
 ```
-actor      actor_ref  atom      atomic    boolean      buf       case
+actor      actor_ref  atom      atomic    boolean      buf       byte      case
 cast       char       concurrency core_id  core_set device_io effect
 efficiency_cores else end        enum      export    false     float16   float32
 float64    fn         for        from      hot_swap   if        impl      import    int8
-int16      int32      int64      mailbox  mem       module    network_io normal    not
+int16      int32      int64      lifetime  mailbox  mem       module    network_io normal    not
 of         performance_cores proc      produces  pub       pure      recv      ref       region    register_rwr return
 self       send       sequence   spawn     string    struct    trait     true      type
-underscore unit       use        where
+uint8      uint16     uint32     uint64    underscore unit       use        where
 ```
 
 #### 2.2.2 Identifiers
@@ -2604,11 +2604,27 @@ type boolean = true | false
 #### 4.1.3 Integer Types
 Silica provides multiple integer types with different bit widths:
 
+**Signed integers:**
 ```
 type int8   // 8-bit signed integer (-128 to 127)
 type int16  // 16-bit signed integer (-32,768 to 32,767)
 type int32  // 32-bit signed integer (-2,147,483,648 to 2,147,483,647)
 type int64  // 64-bit signed integer (-9,223,372,036,854,775,808 to 9,223,372,036,854,775,807)
+```
+
+**Unsigned integers:**
+```
+type uint8   // 8-bit unsigned integer (0 to 255)
+type uint16  // 16-bit unsigned integer (0 to 65,535)
+type uint32  // 32-bit unsigned integer (0 to 4,294,967,295)
+type uint64  // 64-bit unsigned integer (0 to 18,446,744,073,709,551,615)
+```
+
+**Byte type:**
+The `byte` type is an alias for `uint8`, representing a single byte. It is commonly used for buffer element types (e.g., `buf(L, Space, byte, N)`).
+
+```
+type byte   // 8-bit unsigned byte (same as uint8)
 ```
 
 #### 4.1.4 Floating-Point Types
@@ -6147,6 +6163,8 @@ r2: region(L2, normal) <- alloc_region(normal)
 
 #### 12.1.4 Static Region Lifetime Analysis
 The compiler performs static analysis to verify region lifetimes and ensure memory safety:
+
+**Implementation status**: Phase A (single scope) is implemented. Phases B (nested scopes) and C (cross-function analysis) require implementation after functions are fully supported.
 
 **Lifetime Tracking:**
 - Regions are tracked through their lexical scope (sequence blocks)

@@ -564,13 +564,18 @@ fn context_after_sequence_body(body: Expr, context: TypeContext) -> TypeContext 
 // Sequence block (kind 11): sequence [proc[ε]] {statements} produces pure expr end
 // inner = body (statements before produces), right_expr = result (pure expr); sequence_effects validated by effect checker
 // The produces expr is in scope of all bindings from the body.
+// Phase A lifetime analysis: when return type contains ref/buf/atomic_ref, region must be returned (spec §12.1.4).
 fn check_sequence_block(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     body_result: TypeCheckResult <- check_expr(expr.inner, "discard", context);
     case body_result.is_ok of {
         false -> body_result;
         true -> do
             result_context: TypeContext <- context_after_sequence_body(expr.inner, context);
-            check_expr(expr.right_expr, expected_type, result_context)
+            expr_result: TypeCheckResult <- check_expr(expr.right_expr, expected_type, result_context);
+            case expr_result.is_ok of {
+                false -> expr_result;
+                true -> type_checker_memory_regions@check_sequence_return_lifetime(expected_type, expr.right_expr.location)
+            }
         end
     }
 }

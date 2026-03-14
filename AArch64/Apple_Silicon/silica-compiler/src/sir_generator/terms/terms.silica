@@ -5,6 +5,7 @@
 use parser_ast;
 use type_checker_core;
 use type_checker_tuple_decompose_helpers;
+use type_checker_memory_regions;
 use sir_ast;
 use literals;
 use identifiers;
@@ -331,7 +332,7 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                             arg3: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.right_expr, bound_name, bound_type, "int64");
                             string_calls@build_substring_from_sir(arg1, arg2, arg3)
                         end;
-                            false -> sir_ast@dummy_sir_term()
+                            false -> sir_ast@dummy_sir_term();
                         };
                         false -> case expr.name == "substring_until_char" of {
                             true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
@@ -341,18 +342,18 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                                     arg3: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.right_expr, bound_name, bound_type, "char");
                                     string_calls@build_substring_until_char_from_sir(arg1, arg2, arg3)
                                 end;
-                                false -> sir_ast@dummy_sir_term()
+                                false -> sir_ast@dummy_sir_term();
                             };
                             false -> do
                                 arg: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_expected_type(expr.name, expected_type));
                                 build_single_arg_call(context, expr, arg);
-                            end
+                            end;
                         }
                     }
                 }
             }
         end;
-        _: int64 -> sir_ast@dummy_sir_term()
+        _: int64 -> sir_ast@dummy_sir_term();
     }
 }
 
@@ -397,79 +398,132 @@ fn build_single_arg_call(context: TypeContext, expr: Expr, arg: SIRTerm) -> SIRT
 }
 
 fn build_region_prim_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
-    case expr.name == "alloc_region" or expr.name == "read_ref" of {
-        true -> do
-            arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_type_for_region_prim(expr.name, 0, expected_type));
-            memory_region_calls@build_region_prim_from_sir(expr.name, arg1, sir_ast@dummy_sir_term(), expected_type)
-        end;
-        false -> case expr.name == "alloc_ref" or expr.name == "alloc_buf" or expr.name == "buf_load" or expr.name == "write_ref" of {
-            true -> do
-                arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_type_for_region_prim(expr.name, 0, expected_type));
-                arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, arg_type_for_region_prim(expr.name, 1, expected_type));
-                memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type)
-            end;
-            false -> case expr.name == "buf_store" of {
-                true -> do
-                    arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_type_for_region_prim(expr.name, 0, expected_type));
-                    arg2: SIRTerm <- case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
-                        true -> do
-                            idx: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, "int64");
-                            val: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.right_expr, bound_name, bound_type, arg_type_for_region_prim(expr.name, 2, expected_type));
-                            sir_type: string <- types@type_name_to_sir(arg_type_for_region_prim(expr.name, 2, expected_type));
-                            SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: idx, right_expr: val }
-                        end;
-                        false -> sir_ast@dummy_sir_term()
-                    };
-                    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type)
-                end;
-                false -> sir_ast@dummy_sir_term()
+    case expr.name == "fresh_lifetime" of {
+        true -> build_region_prim_fresh_lifetime(expr.name, expected_type);
+        false -> case expr.name == "alloc_region" or expr.name == "read_ref" of {
+            true -> build_region_prim_in_body_1arg(context, expr, bound_name, bound_type, expected_type);
+            false -> case expr.name == "alloc_ref" or expr.name == "alloc_rec" or expr.name == "alloc_atomic" or expr.name == "alloc_buf" or expr.name == "buf_load" or expr.name == "read_buf" or expr.name == "write_ref" of {
+                true -> build_region_prim_in_body_2arg(context, expr, bound_name, bound_type, expected_type);
+                false -> case expr.name == "buf_store" or expr.name == "write_buf" of {
+                    true -> build_region_prim_in_body_buf_store(context, expr, bound_name, bound_type, expected_type);
+                    false -> sir_ast@dummy_sir_term()
+                }
             }
         }
     }
 }
 
-fn build_region_prim(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
-    case expr.name == "alloc_region" or expr.name == "read_ref" of {
+fn build_region_prim_fresh_lifetime(call_name: string, expected_type: string) -> SIRTerm {
+    memory_region_calls@build_region_prim_from_sir(call_name, sir_ast@dummy_sir_term(), sir_ast@dummy_sir_term(), expected_type)
+}
+
+fn build_region_prim_in_body_1arg(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_type_for_region_prim(expr.name, 0, expected_type));
+    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, sir_ast@dummy_sir_term(), expected_type)
+}
+
+fn build_region_prim_in_body_2arg(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_type_for_region_prim_inferred(expr.name, 0, expected_type, expr, context));
+    arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, arg_type_for_region_prim_inferred(expr.name, 1, expected_type, expr, context));
+    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type)
+}
+
+fn build_region_prim_in_body_buf_store(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_type_for_region_prim_inferred(expr.name, 0, expected_type, expr, context));
+    arg2: SIRTerm <- build_buf_store_arg2_in_body(context, expr, bound_name, bound_type, expected_type);
+    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type)
+}
+
+fn build_buf_store_arg2_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
         true -> do
-            arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type_for_region_prim(expr.name, 0, expected_type));
-            memory_region_calls@build_region_prim_from_sir(expr.name, arg1, sir_ast@dummy_sir_term(), expected_type)
+            idx: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, "int64");
+            val_type: string <- arg_type_for_region_prim_inferred(expr.name, 2, expected_type, expr, context);
+            val: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.right_expr, bound_name, bound_type, val_type);
+            sir_type: string <- types@type_name_to_sir(val_type);
+            SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: idx, right_expr: val }
         end;
-        false -> case expr.name == "alloc_ref" or expr.name == "alloc_buf" or expr.name == "buf_load" or expr.name == "write_ref" of {
-            true -> do
-                arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type_for_region_prim(expr.name, 0, expected_type));
-                arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, arg_type_for_region_prim(expr.name, 1, expected_type));
-                memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type)
-            end;
-            false -> case expr.name == "buf_store" of {
-                true -> do
-                    arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type_for_region_prim(expr.name, 0, expected_type));
-                    arg2: SIRTerm <- case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
-                        true -> do
-                            idx: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "int64");
-                            val: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr, arg_type_for_region_prim(expr.name, 2, expected_type));
-                            sir_type: string <- types@type_name_to_sir(arg_type_for_region_prim(expr.name, 2, expected_type));
-                            SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: idx, right_expr: val }
-                        end;
-                        false -> sir_ast@dummy_sir_term()
-                    };
-                    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type)
-                end;
-                false -> sir_ast@dummy_sir_term()
+        false -> sir_ast@dummy_sir_term()
+    }
+}
+
+fn build_region_prim(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    case expr.name == "fresh_lifetime" of {
+        true -> build_region_prim_fresh_lifetime(expr.name, expected_type);
+        false -> case expr.name == "alloc_region" or expr.name == "read_ref" of {
+            true -> build_region_prim_1arg(context, expr, expected_type);
+            false -> case expr.name == "alloc_ref" or expr.name == "alloc_rec" or expr.name == "alloc_atomic" or expr.name == "alloc_buf" or expr.name == "buf_load" or expr.name == "read_buf" or expr.name == "write_ref" of {
+                true -> build_region_prim_2arg(context, expr, expected_type);
+                false -> case expr.name == "buf_store" or expr.name == "write_buf" of {
+                    true -> build_region_prim_buf_store(context, expr, expected_type);
+                    false -> sir_ast@dummy_sir_term()
+                }
             }
         }
+    }
+}
+
+fn build_region_prim_1arg(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type_for_region_prim(expr.name, 0, expected_type));
+    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, sir_ast@dummy_sir_term(), expected_type)
+}
+
+fn build_region_prim_2arg(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type_for_region_prim_inferred(expr.name, 0, expected_type, expr, context));
+    arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, arg_type_for_region_prim_inferred(expr.name, 1, expected_type, expr, context));
+    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type)
+}
+
+fn build_region_prim_buf_store(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type_for_region_prim_inferred(expr.name, 0, expected_type, expr, context));
+    arg2: SIRTerm <- build_buf_store_arg2(context, expr, expected_type);
+    memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type)
+}
+
+fn build_buf_store_arg2(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> do
+            idx: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "int64");
+            val_type: string <- arg_type_for_region_prim_inferred(expr.name, 2, expected_type, expr, context);
+            val: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr, val_type);
+            sir_type: string <- types@type_name_to_sir(val_type);
+            SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: idx, right_expr: val }
+        end;
+        false -> sir_ast@dummy_sir_term()
     }
 }
 
 fn arg_type_for_region_prim(call_name: string, arg_idx: int64, expected_type: string) -> string {
     case call_name of {
         "alloc_region" -> "space";
-        "alloc_ref" -> case arg_idx of { 0 -> "region(R, normal)"; 1 -> "int64"; _: int64 -> "int64" };
+        "alloc_ref" -> case arg_idx of { 0 -> type_checker_memory_regions@ref_type_to_region_type(expected_type); 1 -> type_checker_memory_regions@extract_element_type_from_ref(expected_type); _: int64 -> expected_type };
+        "alloc_rec" -> case arg_idx of { 0 -> type_checker_memory_regions@ref_type_to_region_type(expected_type); 1 -> type_checker_memory_regions@extract_element_type_from_ref(expected_type); _: int64 -> expected_type };
         "read_ref" -> expected_type;
         "write_ref" -> case arg_idx of { 0 -> "ref(R, normal, int64)"; 1 -> expected_type; _: int64 -> "int64" };
-        "alloc_buf" -> case arg_idx of { 0 -> "region(R, normal)"; 1 -> "int64"; _: int64 -> "int64" };
-        "buf_load" -> case arg_idx of { 0 -> "buf(R, normal, int64, 1)"; 1 -> "int64"; _: int64 -> "int64" };
-        "buf_store" -> case arg_idx of { 0 -> "buf(R, normal, int64, 1)"; 1 -> "int64"; 2 -> expected_type; _: int64 -> "int64" };
+        "alloc_buf" -> case arg_idx of { 0 -> type_checker_memory_regions@buf_type_to_region_type(expected_type); 1 -> "int64"; _: int64 -> "int64" };
+        "buf_load" -> case arg_idx of { 0 -> expected_type; 1 -> "int64"; _: int64 -> "int64" };
+        "read_buf" -> case arg_idx of { 0 -> expected_type; 1 -> "int64"; _: int64 -> "int64" };
+        "buf_store" -> case arg_idx of { 0 -> expected_type; 1 -> "int64"; 2 -> expected_type; _: int64 -> "int64" };
+        "write_buf" -> case arg_idx of { 0 -> expected_type; 1 -> "int64"; 2 -> expected_type; _: int64 -> "int64" };
+        "alloc_atomic" -> case arg_idx of { 0 -> type_checker_memory_regions@atomic_ref_type_to_region_type(expected_type); 1 -> type_checker_memory_regions@extract_element_type_from_atomic_ref(expected_type); _: int64 -> expected_type };
+        "fresh_lifetime" -> "lifetime";
         _: string -> expected_type
+    }
+}
+
+// Arg type when inference from expr is needed (buf_load, read_buf, buf_store, write_buf)
+fn arg_type_for_region_prim_inferred(call_name: string, arg_idx: int64, expected_type: string, expr: Expr, context: TypeContext) -> string {
+    case call_name == "buf_load" or call_name == "read_buf" of {
+        true -> case arg_idx of { 0 -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context); 1 -> "int64"; _: int64 -> expected_type };
+        false -> case call_name == "buf_store" or call_name == "write_buf" of {
+            true -> case arg_idx of {
+                0 -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                1 -> "int64";
+                2 -> type_checker_memory_regions@extract_element_type_from_buf(type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context));
+                _: int64 -> expected_type
+            };
+            false -> arg_type_for_region_prim(call_name, arg_idx, expected_type)
+        }
     }
 }
 
@@ -553,7 +607,7 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
                                 arg3: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr, "int64");
                                 string_calls@build_substring_from_sir(arg1, arg2, arg3)
                             end;
-                            false -> sir_ast@dummy_sir_term()
+                            false -> sir_ast@dummy_sir_term();
                         };
                         false -> case expr.name == "substring_until_char" of {
                         true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
@@ -563,7 +617,7 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
                                 arg3: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr, "char");
                                 string_calls@build_substring_until_char_from_sir(arg1, arg2, arg3)
                             end;
-                            false -> sir_ast@dummy_sir_term()
+                            false -> sir_ast@dummy_sir_term();
                         };
                         false -> do
                             arg_type: string <- arg_expected_type(expr.name, expected_type);
@@ -575,7 +629,7 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
             }
         }
     end;
-        _: int64 -> sir_ast@dummy_sir_term()
+        _: int64 -> sir_ast@dummy_sir_term();
     }
 }
 

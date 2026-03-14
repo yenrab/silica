@@ -1,33 +1,58 @@
-// Memory region prim emission: alloc_region, alloc_ref, read_ref, write_ref, alloc_buf, buf_load, buf_store
-// sir_design_spec §7.4, sir_emitter_pattern_spec §7.3
-// Stack-based allocation for minimal implementation; region = arena on stack
+// Memory region prim emission: alloc_region, alloc_ref, alloc_rec, read_ref, write_ref,
+// alloc_buf, buf_load, buf_store, read_buf, write_buf, alloc_atomic, fresh_lifetime
+// sir_design_spec §7.4, §7.5; silica-specification §12.1.2
+// Heap-based allocation per spec: regions are heap-allocated with scope-tied deallocation.
+// Arena layout: [0:8]=bump, [8:16]=end; data at offset 16. Size 4096+16=4112 bytes.
+// If allocation would exceed arena capacity, raise runtime error (BL _abort).
 
 use sir_ast;
 
 export is_memory_prim/1;
 export emit_prim_op/2;
+export module_uses_region_allocation/1;
+export emit_region_overflow_helper/0;
 
 fn is_memory_prim(name: string) -> bool {
-    name == "alloc_region" or name == "alloc_ref" or name == "read_ref" or name == "write_ref" or name == "alloc_buf" or name == "buf_load" or name == "buf_store"
+    name == "alloc_region" or name == "alloc_ref" or name == "alloc_rec" or name == "read_ref" or name == "write_ref" or name == "alloc_buf" or name == "buf_load" or name == "buf_store" or name == "read_buf" or name == "write_buf" or name == "alloc_atomic" or name == "fresh_lifetime"
 }
 
-// alloc_region(space): allocate minimal region on stack, return base pointer
-// Arg: inner = space (const/var). For stack alloc we ignore space.
-// Operands: X1 = space (unused for stack)
+// alloc_region(space): allocate arena on heap via malloc, return region base.
+// Region layout: [base+0]=bump (starts at base+16), [base+8]=end.
+// Operands: X1 = space (unused; memory space would configure MAIR at runtime)
 fn emit_alloc_region(dest: string) -> string {
-    region_size: string <- "8";
-    sub_sp: string <- concat(concat("    SUB SP, SP, #", region_size), "\n");
-    mov_dest: string <- concat(concat("    MOV ", dest), ", SP");
-    concat(sub_sp, mov_dest)
+    mov_size: string <- "    MOV X0, #4112\n";
+    bl_malloc: string <- "    BL _malloc\n";
+    add_bump: string <- "    ADD X4, X0, #16\n";
+    str_bump: string <- "    STR X4, [X0]\n";
+    add_end: string <- "    ADD X4, X0, #4112\n";
+    str_end: string <- "    STR X4, [X0, #8]\n";
+    mov_dest: string <- concat(concat("    MOV ", dest), ", X0");
+    part1: string <- concat(mov_size, bl_malloc);
+    part2: string <- concat(part1, concat(add_bump, str_bump));
+    part3: string <- concat(part2, concat(add_end, str_end));
+    concat(part3, mov_dest)
 }
 
-// alloc_ref(region, value): allocate one cell in region, store value, return ref (pointer)
-// Operands: X1 = region base, X2 = value
+// alloc_ref(region, value): bump-allocate one cell in region, store value, return ref.
+// Operands: X1 = region base, X2 = value. Region [X1]=bump, [X1+8]=end.
+// Bounds check: if bump+8 > end, branch to L_region_overflow (runtime error).
 fn emit_alloc_ref(dest: string) -> string {
-    sub_sp: string <- "    SUB SP, SP, #8\n";
-    str_val: string <- "    STR X2, [SP]\n";
-    mov_dest: string <- concat(concat("    MOV ", dest), ", SP");
-    concat(concat(sub_sp, str_val), mov_dest)
+    ldr_bump: string <- "    LDR X3, [X1]\n";
+    ldr_end: string <- "    LDR X4, [X1, #8]\n";
+    add_new: string <- "    ADD X5, X3, #8\n";
+    cmp: string <- "    CMP X5, X4\n";
+    b_overflow: string <- "    B.HI L_region_overflow\n";
+    mov_ref: string <- "    MOV X4, X3\n";
+    str_val: string <- "    STR X2, [X3]\n";
+    add_bump: string <- "    ADD X3, X3, #8\n";
+    str_bump: string <- "    STR X3, [X1]\n";
+    mov_dest: string <- concat(concat("    MOV ", dest), ", X4");
+    check1: string <- concat(concat(ldr_bump, ldr_end), add_new);
+    check: string <- concat(concat(check1, cmp), b_overflow);
+    alloc1: string <- concat(concat(mov_ref, str_val), add_bump);
+    alloc2: string <- concat(alloc1, str_bump);
+    alloc: string <- concat(alloc2, mov_dest);
+    concat(check, alloc)
 }
 
 // read_ref(ref): load value from ref
@@ -42,13 +67,24 @@ fn emit_write_ref(dest: string) -> string {
     concat("    STR X2, [X1]", "")
 }
 
-// alloc_buf(region, N): allocate buffer of N int64 elements on stack
-// Operands: X1 = region, X2 = N (element count)
-// Size = N * 8 bytes
+// alloc_buf(region, N): bump-allocate buffer of N int64 elements within region
+// Operands: X1 = region, X2 = N (element count). Size = N * 8 bytes.
+// Bounds check: if bump+(N*8) > end, branch to L_region_overflow (runtime error).
 fn emit_alloc_buf(dest: string) -> string {
-    sub_sp: string <- "    SUB SP, SP, X2, LSL #3\n";
-    mov_dest: string <- concat(concat("    MOV ", dest), ", SP");
-    concat(sub_sp, mov_dest)
+    ldr_bump: string <- "    LDR X3, [X1]\n";
+    ldr_end: string <- "    LDR X4, [X1, #8]\n";
+    add_new: string <- "    ADD X5, X3, X2, LSL #3\n";
+    cmp: string <- "    CMP X5, X4\n";
+    b_overflow: string <- "    B.HI L_region_overflow\n";
+    mov_buf: string <- "    MOV X4, X3\n";
+    add_bump: string <- "    ADD X3, X3, X2, LSL #3\n";
+    str_bump: string <- "    STR X3, [X1]\n";
+    mov_dest: string <- concat(concat("    MOV ", dest), ", X4");
+    check1: string <- concat(concat(ldr_bump, ldr_end), add_new);
+    check: string <- concat(concat(check1, cmp), b_overflow);
+    alloc1: string <- concat(concat(mov_buf, add_bump), str_bump);
+    alloc: string <- concat(alloc1, mov_dest);
+    concat(check, alloc)
 }
 
 // buf_load(buf, index): load from buf[index]
@@ -68,15 +104,87 @@ fn emit_buf_store(dest: string) -> string {
     concat(concat(ldr_val, ldr_idx), str_asm)
 }
 
+// fresh_lifetime(): returns unique lifetime value. No args.
+// Stack-based: use SP as unique identifier (each call has distinct SP).
+fn emit_fresh_lifetime(dest: string) -> string {
+    concat(concat("    MOV ", dest), ", SP")
+}
+
+// alloc_rec(region, tuple_value): same as alloc_ref - allocate one cell, store value
+fn emit_alloc_rec(dest: string) -> string {
+    emit_alloc_ref(dest)
+}
+
+// alloc_atomic(region, initial_value): same as alloc_ref for stack-based impl
+// Full atomic semantics would use LDAR/STLR; minimal impl uses STR
+fn emit_alloc_atomic(dest: string) -> string {
+    emit_alloc_ref(dest)
+}
+
+fn term_has_region_allocation(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            6 -> case term.name == "alloc_ref" or term.name == "alloc_buf" or term.name == "alloc_rec" or term.name == "alloc_atomic" of {
+                true -> true;
+                false -> case term_has_region_allocation(term.inner) of {
+                    true -> true;
+                    false -> term_has_region_allocation(term.right_expr)
+                }
+            };
+            2 -> case term_has_region_allocation(term.inner) of {
+                true -> true;
+                false -> term_has_region_allocation(term.right_expr)
+            };
+            4 -> case term_has_region_allocation(term.inner) of {
+                true -> true;
+                false -> term_has_region_allocation(term.right_expr)
+            };
+            3 -> case term_has_region_allocation(term.inner) of {
+                true -> true;
+                false -> term_has_region_allocation(term.right_expr)
+            };
+            5 -> case term_has_region_allocation(term.inner) of {
+                true -> true;
+                false -> term_has_region_allocation(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn region_allocation_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_region_allocation(fns.head.body) of {
+            true -> true;
+            false -> region_allocation_in_functions(fns.tail)
+        }
+    }
+}
+
+fn module_uses_region_allocation(sir_module: SIRModule) -> bool {
+    region_allocation_in_functions(sir_module.functions)
+}
+
+fn emit_region_overflow_helper() -> string {
+    "L_region_overflow:\n    BL _abort\n"
+}
+
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     case term.name of {
         "alloc_region" -> emit_alloc_region(dest);
         "alloc_ref" -> emit_alloc_ref(dest);
+        "alloc_rec" -> emit_alloc_rec(dest);
         "read_ref" -> emit_read_ref(dest);
         "write_ref" -> emit_write_ref(dest);
         "alloc_buf" -> emit_alloc_buf(dest);
         "buf_load" -> emit_buf_load(dest);
         "buf_store" -> emit_buf_store(dest);
+        "read_buf" -> emit_buf_load(dest);
+        "write_buf" -> emit_buf_store(dest);
+        "alloc_atomic" -> emit_alloc_atomic(dest);
+        "fresh_lifetime" -> emit_fresh_lifetime(dest);
         _: string -> concat(concat("    ; unsupported memory prim: ", term.name), "")
     }
 }
