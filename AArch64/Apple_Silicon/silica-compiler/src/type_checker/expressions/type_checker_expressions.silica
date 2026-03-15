@@ -503,12 +503,14 @@ fn is_function_type_user_call(type_str: string) -> bool {
     find_arrow_pos_user_call(type_str, 0) >= 0
 }
 
+// Find first comma at depth 0 (top level). Respects parentheses and brackets in type strings
+// so that a single tuple parameter like (int64, int64) or ref(R, Space, T) counts as 1 param.
 fn find_top_level_comma_user_call(s: string, i: int64, depth: int64) -> int64 {
     case i >= len(s) of {
         true -> len(s);
-        false -> case substring(s, i, i + 1) == "(" of {
+        false -> case substring(s, i, i + 1) == "(" or substring(s, i, i + 1) == "[" of {
             true -> find_top_level_comma_user_call(s, i + 1, depth + 1);
-            false -> case substring(s, i, i + 1) == ")" of {
+            false -> case substring(s, i, i + 1) == ")" or substring(s, i, i + 1) == "]" of {
                 true -> case depth <= 0 of {
                     true -> len(s);
                     false -> find_top_level_comma_user_call(s, i + 1, depth - 1)
@@ -565,10 +567,9 @@ fn parse_param_count_inner(inner: string) -> int64 {
         true -> 1;
         false -> do
             rest: string <- trim_leading_user_call(substring(inner, comma1 + 1, len(inner)));
-            comma2: int64 <- find_top_level_comma_user_call(rest, 0, 0);
-            case comma2 >= len(rest) of {
+            case len(rest) == 0 of {
                 true -> 2;
-                false -> 3
+                false -> 1 + parse_param_count_inner(rest)
             }
         end
     }
@@ -582,7 +583,7 @@ fn parse_function_return_type(func_type: string) -> string {
     }
 }
 
-fn parse_function_param1(func_type: string) -> string {
+fn get_params_inner_from_func_type(func_type: string) -> string {
     arrow_pos: int64 <- find_arrow_pos_user_call(func_type, 0);
     case arrow_pos < 0 of {
         true -> "";
@@ -590,68 +591,23 @@ fn parse_function_param1(func_type: string) -> string {
             params_part: string <- substring(func_type, 0, arrow_pos);
             case len(params_part) < 2 of {
                 true -> "";
-                false -> do
-                    inner: string <- trim_leading_user_call(substring(params_part, 1, len(params_part) - 1));
-                    case len(inner) == 0 of {
-                        true -> "";
-                        false -> trim_leading_user_call(substring(inner, 0, find_top_level_comma_user_call(inner, 0, 0)))
-                    }
-                end
+                false -> trim_leading_user_call(substring(params_part, 1, len(params_part) - 1))
             }
         end
     }
 }
 
-fn parse_function_param2(func_type: string) -> string {
-    arrow_pos: int64 <- find_arrow_pos_user_call(func_type, 0);
-    case arrow_pos < 0 of {
-        true -> "";
+fn get_first_param_type(params_inner: string) -> (string, string) {
+    case len(params_inner) == 0 of {
+        true -> ("", "");
         false -> do
-            params_part: string <- substring(func_type, 0, arrow_pos);
-            case len(params_part) < 2 of {
-                true -> "";
+            comma_pos: int64 <- find_top_level_comma_user_call(params_inner, 0, 0);
+            case comma_pos >= len(params_inner) of {
+                true -> (trim_leading_user_call(params_inner), "");
                 false -> do
-                    inner: string <- trim_leading_user_call(substring(params_part, 1, len(params_part) - 1));
-                    comma1: int64 <- find_top_level_comma_user_call(inner, 0, 0);
-                    case comma1 >= len(inner) of {
-                        true -> "";
-                        false -> do
-                            rest: string <- trim_leading_user_call(substring(inner, comma1 + 1, len(inner)));
-                            comma2: int64 <- find_top_level_comma_user_call(rest, 0, 0);
-                            case comma2 >= len(rest) of {
-                                true -> rest;
-                                false -> trim_leading_user_call(substring(rest, 0, comma2))
-                            }
-                        end
-                    }
-                end
-            }
-        end
-    }
-}
-
-fn parse_function_param3(func_type: string) -> string {
-    arrow_pos: int64 <- find_arrow_pos_user_call(func_type, 0);
-    case arrow_pos < 0 of {
-        true -> "";
-        false -> do
-            params_part: string <- substring(func_type, 0, arrow_pos);
-            case len(params_part) < 2 of {
-                true -> "";
-                false -> do
-                    inner: string <- trim_leading_user_call(substring(params_part, 1, len(params_part) - 1));
-                    comma1: int64 <- find_top_level_comma_user_call(inner, 0, 0);
-                    case comma1 >= len(inner) of {
-                        true -> "";
-                        false -> do
-                            rest: string <- trim_leading_user_call(substring(inner, comma1 + 1, len(inner)));
-                            comma2: int64 <- find_top_level_comma_user_call(rest, 0, 0);
-                            case comma2 >= len(rest) of {
-                                true -> "";
-                                false -> trim_leading_user_call(substring(rest, comma2 + 1, len(rest)))
-                            }
-                        end
-                    }
+                    first: string <- trim_leading_user_call(substring(params_inner, 0, comma_pos));
+                    rest: string <- trim_leading_user_call(substring(params_inner, comma_pos + 1, len(params_inner)));
+                    (first, rest)
                 end
             }
         end
@@ -664,7 +620,7 @@ fn count_call_args_user_call(expr: Expr) -> int64 {
         false -> case expr.right_expr.kind == -1 of {
             true -> 1;
             false -> case expr.right_expr.kind == 4 of {
-                true -> 3;
+                true -> 1 + count_call_args_user_call(expr.right_expr);
                 false -> 2
             }
         }
@@ -681,50 +637,52 @@ fn check_user_call_result_user_call(expr: Expr, expected_type: string, return_ty
     }
 }
 
-fn check_user_call_args_and_result(expr: Expr, expected_type: string, context: TypeContext, expected_arg_count: int64, p1: string, p2: string, p3: string, return_type: string) -> TypeCheckResult proc[DeviceIO] {
-    case expected_arg_count of {
-        0 -> check_user_call_result_user_call(expr, expected_type, return_type);
-        1 -> do
-            r1: TypeCheckResult <- check_expr(expr.inner, p1, context);
-            case r1.is_ok of {
-                false -> r1;
-                true -> check_user_call_result_user_call(expr, expected_type, return_type)
-            }
-        end;
-        2 -> do
-            r1: TypeCheckResult <- check_expr(expr.inner, p1, context);
-            case r1.is_ok of {
-                false -> r1;
-                true -> do
-                    r2: TypeCheckResult <- check_expr(expr.right_expr, p2, context);
-                    case r2.is_ok of {
-                        false -> r2;
-                        true -> check_user_call_result_user_call(expr, expected_type, return_type)
-                    }
-                end
-            }
-        end;
-        _: int64 -> do
-            r1: TypeCheckResult <- check_expr(expr.inner, p1, context);
-            case r1.is_ok of {
-                false -> r1;
-                true -> do
-                    r2: TypeCheckResult <- check_expr(expr.right_expr.inner, p2, context);
-                    case r2.is_ok of {
-                        false -> r2;
-                        true -> do
-                            r3: TypeCheckResult <- check_expr(expr.right_expr.right_expr, p3, context);
-                            case r3.is_ok of {
-                                false -> r3;
-                                true -> check_user_call_result_user_call(expr, expected_type, return_type)
+fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_type: string, return_type: string, context: TypeContext, call_expr: Expr) -> TypeCheckResult proc[DeviceIO] {
+    case expr.inner.kind == -1 of {
+        true -> case len(params_inner) == 0 of {
+            true -> check_user_call_result_user_call(call_expr, expected_type, return_type);
+            false -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6")
+        };
+        false -> do
+            (first_param: string, rest_params: string) <- get_first_param_type(params_inner);
+            case len(first_param) == 0 of {
+                true -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6");
+                false -> do
+                    r1: TypeCheckResult <- check_expr(expr.inner, first_param, context);
+                    case r1.is_ok of {
+                        false -> r1;
+                        true -> case expr.right_expr.kind == -1 of {
+                            true -> case len(rest_params) == 0 of {
+                                true -> check_user_call_result_user_call(call_expr, expected_type, return_type);
+                                false -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6")
+                            };
+                            false -> case expr.right_expr.kind == 4 of {
+                                true -> case len(rest_params) == 0 of {
+                                    true -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6");
+                                    false -> check_user_call_args_recursive(expr.right_expr, rest_params, expected_type, return_type, context, call_expr)
+                                };
+                                false -> do
+                                    (second_param: string, rest_rest: string) <- get_first_param_type(rest_params);
+                                    case len(second_param) == 0 or len(rest_rest) > 0 of {
+                                        true -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6");
+                                        false -> do
+                                            r2: TypeCheckResult <- check_expr(expr.right_expr, second_param, context);
+                                            case r2.is_ok of {
+                                                false -> r2;
+                                                true -> check_user_call_result_user_call(call_expr, expected_type, return_type)
+                                            }
+                                        end
+                                    }
+                                end
                             }
-                        end
+                        };
                     }
                 end
             }
         end
     }
 }
+
 
 fn check_user_defined_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     (found: bool, resolved_type: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
@@ -739,14 +697,75 @@ fn check_user_defined_call(expr: Expr, expected_type: string, context: TypeConte
 
 fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: TypeContext, func_type: string) -> TypeCheckResult proc[DeviceIO] {
     expected_arg_count: int64 <- parse_function_param_count(func_type);
-    p1: string <- parse_function_param1(func_type);
-    p2: string <- parse_function_param2(func_type);
-    p3: string <- parse_function_param3(func_type);
+    params_inner: string <- get_params_inner_from_func_type(func_type);
     return_type: string <- parse_function_return_type(func_type);
     arg_count: int64 <- count_call_args_user_call(expr);
     case arg_count != expected_arg_count of {
+        true -> case expected_arg_count == 1 of {
+            true -> case arg_count == 2 of {
+                true -> case len(params_inner) >= 2 of {
+                    true -> case substring(params_inner, 0, 1) == "(" of {
+                        true -> case substring(params_inner, len(params_inner) - 1, len(params_inner)) == ")" of {
+                            true -> check_user_call_two_args_as_tuple(expr, params_inner, expected_type, return_type, context);
+                            false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
+                        };
+                        false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
+                    };
+                    false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
+                };
+                false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
+            };
+            false -> case expected_arg_count == 2 of {
+                true -> case arg_count == 1 of {
+                    true -> case expr.inner.kind == 9 of {
+                        true -> check_user_call_one_tuple_as_two_args(expr, params_inner, expected_type, return_type, context);
+                        false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
+                    };
+                    false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
+                };
+                false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
+            }
+        };
+        false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr)
+    }
+}
+
+fn check_user_call_one_tuple_as_two_args(expr: Expr, params_inner: string, expected_type: string, return_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    (first_param: string, rest_params: string) <- get_first_param_type(params_inner);
+    (second_param: string, _: string) <- get_first_param_type(rest_params);
+    case len(first_param) == 0 or len(second_param) == 0 of {
         true -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6");
-        false -> check_user_call_args_and_result(expr, expected_type, context, expected_arg_count, p1, p2, p3, return_type)
+        false -> do
+            tuple_type: string <- concat(concat(concat(concat("(", first_param), ","), second_param), ")");
+            r1: TypeCheckResult <- check_expr(expr.inner, tuple_type, context);
+            case r1.is_ok of {
+                false -> r1;
+                true -> check_user_call_result_user_call(expr, expected_type, return_type)
+            }
+        end
+    }
+}
+
+fn check_user_call_two_args_as_tuple(expr: Expr, tuple_param: string, expected_type: string, return_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    inner: string <- trim_leading_user_call(substring(tuple_param, 1, len(tuple_param) - 1));
+    comma_pos: int64 <- find_top_level_comma_user_call(inner, 0, 0);
+    case comma_pos >= len(inner) of {
+        true -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6");
+        false -> do
+            first_type: string <- trim_leading_user_call(substring(inner, 0, comma_pos));
+            second_type: string <- trim_leading_user_call(substring(inner, comma_pos + 1, len(inner)));
+            r1: TypeCheckResult <- check_expr(expr.inner, first_type, context);
+            case r1.is_ok of {
+                false -> r1;
+                true -> do
+                    r2: TypeCheckResult <- check_expr(expr.right_expr, second_type, context);
+                    case r2.is_ok of {
+                        false -> r2;
+                        true -> check_user_call_result_user_call(expr, expected_type, return_type)
+                    }
+                end
+            }
+        end
     }
 }
 

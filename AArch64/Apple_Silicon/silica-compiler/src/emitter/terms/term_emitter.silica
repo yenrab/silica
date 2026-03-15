@@ -31,6 +31,78 @@ export term_to_asm/11;
 export term_to_asm_debug/12;
 export term_to_asm_debug_with_outer/13;
 
+fn check_dot_from(value: string, pos: int64, length: int64) -> bool {
+    case pos >= length of {
+        true -> false;
+        false -> case substring(value, pos, pos + 1) == "." of {
+            true -> true;
+            false -> check_dot_from(value, pos + 1, length)
+        }
+    }
+}
+
+fn value_has_dot(value: string) -> bool {
+    check_dot_from(value, 0, len(value))
+}
+
+fn arg_reg_for_index(idx: int64, type_name: string) -> string {
+    prefix: string <- case type_name == "float64" of {
+        true -> "D";
+        false -> case type_name == "float32" of {
+            true -> "S";
+            false -> "X"
+        }
+    };
+    case idx of {
+        0 -> concat(prefix, "0");
+        1 -> concat(prefix, "1");
+        2 -> concat(prefix, "2");
+        3 -> concat(prefix, "3");
+        4 -> concat(prefix, "4");
+        5 -> concat(prefix, "5");
+        6 -> concat(prefix, "6");
+        7 -> concat(prefix, "7");
+        _: int64 -> concat(prefix, "0")
+    }
+}
+
+fn emit_rest_args(rest: SIRTerm, idx: int64, type_name: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
+    reg: string <- arg_reg_for_index(idx, type_name);
+    case rest.name == "user_call_rest" of {
+        true -> do
+            arg_asm: string <- case debug of {
+                true -> do term_to_asm_opt_bound_debug(rest.inner, reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                false -> term_to_asm_opt_bound(rest.inner, reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+            };
+            rest_asm: string <- emit_rest_args(rest.right_expr, idx + 1, type_name, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+            concat(concat(arg_asm, "\n"), rest_asm)
+        end;
+        false -> case debug of {
+            true -> do term_to_asm_opt_bound_debug(rest, reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+            false -> term_to_asm_opt_bound(rest, reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+        }
+    }
+}
+
+fn is_inline_float_var(name: string, dest: string) -> bool {
+    case len(name) > 1 of {
+        true -> case substring(name, 0, 1) == "#" of {
+            true -> case len(dest) > 0 of {
+                true -> case substring(dest, 0, 1) == "S" of {
+                    true -> true;
+                    false -> case substring(dest, 0, 1) == "D" of {
+                        true -> true;
+                        false -> false
+                    }
+                };
+                false -> false
+            };
+            false -> false
+        };
+        false -> false
+    }
+}
+
 // Emit ADRP+ADD for string const (kept here to avoid 6-param emit_const bootstrap issue).
 fn emit_string_const(term: SIRTerm, dest: string, string_literal_table: StringLiteralTable) -> string {
     idx: int64 <- string_literal_pool@string_literal_value_to_index(string_literal_table, term.value);
@@ -62,12 +134,20 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             true -> emit_string_const(term, dest, string_literal_table);
             false -> const_dispatcher@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table)
         };
-        1 -> case term.name == bound_name or term.name == concat("%", bound_name) of {
-            true -> case len(bound_reg) > 0 and substring(bound_reg, 0, 1) == "[" of {
-                true -> var@emit_var_sp_load(dest, bound_reg);
-                false -> var@emit_var_reg(term, dest, bound_reg)
-            };
-            false -> var@emit_var_with_sp_check(term, dest, outer_reg)
+        1 -> case is_inline_float_var(term.name, dest) of {
+            true -> do
+                float_val: string <- substring(term.name, 1, len(term.name));
+                float_type: string <- case substring(dest, 0, 1) == "S" of { true -> "float32"; false -> "float64" };
+                synthetic_const: SIRTerm <- SIRTerm { kind: 0, type_name: float_type, value: float_val, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+                const_dispatcher@emit_const(synthetic_const, dest, table, literal_table, float64_literal_table, float32_literal_table)
+            end;
+            false -> case term.name == bound_name or term.name == concat("%", bound_name) of {
+                true -> case len(bound_reg) > 0 and substring(bound_reg, 0, 1) == "[" of {
+                    true -> var@emit_var_sp_load(dest, bound_reg);
+                    false -> var@emit_var_reg(term, dest, bound_reg)
+                };
+                false -> var@emit_var_with_sp_check(term, dest, outer_reg)
+            }
         };
         2 -> case len(bound_name) > 0 and len(bound_reg) > 0 of {
             true -> do
@@ -419,55 +499,24 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                                             concat(concat(first_asm, "\n"), newline_asm)
                                                         end;
                                                         false -> do
-                                                            // User-defined call: choose arg regs by result type (AArch64 AAPCS64: float64->D0-D7, float32->S0-S7, int->X0-X7)
-                                                            arg1_reg: string <- case term.type_name == "float64" of {
-                                                                true -> "D0";
-                                                                false -> case term.type_name == "float32" of {
-                                                                    true -> "S0";
-                                                                    false -> "X0"
-                                                                }
-                                                            };
-                                                            arg2_reg: string <- case term.type_name == "float64" of {
-                                                                true -> "D1";
-                                                                false -> case term.type_name == "float32" of {
-                                                                    true -> "S1";
-                                                                    false -> "X1"
-                                                                }
-                                                            };
-                                                            arg3_reg: string <- case term.type_name == "float64" of {
-                                                                true -> "D2";
-                                                                false -> case term.type_name == "float32" of {
-                                                                    true -> "S2";
-                                                                    false -> "X2"
-                                                                }
-                                                            };
+                                                            arg1_reg: string <- arg_reg_for_index(0, term.type_name);
                                                             arg1_asm: string <- case debug of {
                                                                 true -> do term_to_asm_opt_bound_debug(term.inner, arg1_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                                                 false -> term_to_asm_opt_bound(term.inner, arg1_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                                             };
-                                                            arg2_asm: string <- case term.right_expr.kind >= 0 of {
+                                                            rest_asm: string <- case term.right_expr.kind >= 0 of {
                                                                 true -> case term.right_expr.name == "user_call_rest" of {
-                                                                    true -> do
-                                                                        a2: string <- case debug of {
-                                                                            true -> do term_to_asm_opt_bound_debug(term.right_expr.inner, arg2_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
-                                                                            false -> term_to_asm_opt_bound(term.right_expr.inner, arg2_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
-                                                                        };
-                                                                        a3: string <- case debug of {
-                                                                            true -> do term_to_asm_opt_bound_debug(term.right_expr.right_expr, arg3_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
-                                                                            false -> term_to_asm_opt_bound(term.right_expr.right_expr, arg3_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
-                                                                        };
-                                                                        concat(concat(a2, "\n"), a3)
-                                                                    end;
+                                                                    true -> emit_rest_args(term.right_expr, 1, term.type_name, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
                                                                     false -> case debug of {
-                                                                        true -> do term_to_asm_opt_bound_debug(term.right_expr, arg2_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
-                                                                        false -> term_to_asm_opt_bound(term.right_expr, arg2_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                                                                        true -> do term_to_asm_opt_bound_debug(term.right_expr, arg_reg_for_index(1, term.type_name), table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                                                        false -> term_to_asm_opt_bound(term.right_expr, arg_reg_for_index(1, term.type_name), table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                                                     }
                                                                 };
                                                                 false -> ""
                                                             };
                                                             call_asm: string <- call@emit_call_body(term, dest);
-                                                            args_asm: string <- case len(arg2_asm) > 0 of {
-                                                                true -> concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n"));
+                                                            args_asm: string <- case len(rest_asm) > 0 of {
+                                                                true -> concat(concat(arg1_asm, "\n"), concat(rest_asm, "\n"));
                                                                 false -> concat(arg1_asm, "\n")
                                                             };
                                                             concat(args_asm, call_asm)
@@ -842,9 +891,13 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
         true -> do
             elem: SIRTerm <- term.inner;
             elem_is_tuple: bool <- elem.kind == 6 and elem.name == "tuple_make";
+            type_prefix: string <- reg_conventions@reg_prefix_for_type(elem.type_name);
             elem_prefix: string <- case elem_is_tuple of {
                 true -> "X";
-                false -> reg_conventions@reg_prefix_for_type(elem.type_name)
+                false -> case type_prefix == "X" and elem.kind == 0 and value_has_dot(elem.value) of {
+                    true -> "D";
+                    false -> type_prefix
+                }
             };
             temp_reg: string <- concat(elem_prefix, "1");
             elem_asm: string <- case debug of {
@@ -863,9 +916,13 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
         end;
         false -> do
             elem_is_tuple: bool <- term.kind == 6 and term.name == "tuple_make";
+            type_prefix2: string <- reg_conventions@reg_prefix_for_type(term.type_name);
             elem_prefix: string <- case elem_is_tuple of {
                 true -> "X";
-                false -> reg_conventions@reg_prefix_for_type(term.type_name)
+                false -> case type_prefix2 == "X" and term.kind == 0 and value_has_dot(term.value) of {
+                    true -> "D";
+                    false -> type_prefix2
+                }
             };
             temp_reg: string <- concat(elem_prefix, "1");
             elem_asm: string <- case debug of {

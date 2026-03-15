@@ -64,11 +64,32 @@ fn float32_literal_value_to_index(table: Float32LiteralTable, value: string) -> 
     }
 }
 
+fn value_has_dot_from(value: string, pos: int64, length: int64) -> bool {
+    case pos >= length of {
+        true -> false;
+        false -> case substring(value, pos, pos + 1) == "." of {
+            true -> true;
+            false -> value_has_dot_from(value, pos + 1, length)
+        }
+    }
+}
+
+fn value_looks_like_float(value: string) -> bool {
+    value_has_dot_from(value, 0, len(value))
+}
+
+fn is_float_const(term: SIRTerm) -> bool {
+    case term.type_name == "float32" or term.type_name == "float" or term.type_name == "float64" of {
+        true -> true;
+        false -> value_looks_like_float(term.value)
+    }
+}
+
 fn collect_float32_literal_from_term(term: SIRTerm, table: Float32LiteralTable, next_index: int64) -> (Float32LiteralTable, int64) {
     case term.kind < 0 of {
         true -> (table, next_index);
         false -> case term.kind of {
-            0 -> case term.type_name == "float32" of {
+            0 -> case is_float_const(term) of {
                 true -> do
                     (t: Float32LiteralTable, i: int64) <- add_f32_value(table, term.value, next_index);
                     new_next: int64 <- case i == next_index of {
@@ -85,7 +106,10 @@ fn collect_float32_literal_from_term(term: SIRTerm, table: Float32LiteralTable, 
                 (t2: Float32LiteralTable, i2: int64) <- collect_float32_literal_from_term(term.right_expr, t1, i1);
                 (t2, i2)
             end;
-            4 -> collect_float32_literal_from_term(term.inner, table, next_index);
+            4 -> do
+                (t1: Float32LiteralTable, i1: int64) <- collect_float32_literal_from_term(term.inner, table, next_index);
+                collect_float32_literal_from_term(term.right_expr, t1, i1)
+            end;
             6 -> do
                 (t1: Float32LiteralTable, i1: int64) <- collect_float32_literal_from_term(term.inner, table, next_index);
                 (t2: Float32LiteralTable, i2: int64) <- collect_float32_literal_from_term(term.right_expr, t1, i1);

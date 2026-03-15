@@ -200,6 +200,47 @@ fn tuple_trim_end(s: string, i: int64) -> int64 {
     }
 }
 
+fn sir_find_arrow_pos(s: string, i: int64) -> int64 {
+    case i + 4 > len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 4) == " -> " of {
+            true -> i;
+            false -> sir_find_arrow_pos(s, i + 1)
+        }
+    }
+}
+
+fn sir_params_inner_from_func_type(func_type: string) -> string {
+    arrow_pos: int64 <- sir_find_arrow_pos(func_type, 0);
+    case arrow_pos < 0 of {
+        true -> "";
+        false -> do
+            params_part: string <- substring(func_type, 0, arrow_pos);
+            case len(params_part) < 2 of {
+                true -> "";
+                false -> substring(params_part, 1, len(params_part) - 1)
+            }
+        end
+    }
+}
+
+fn user_call_expects_single_tuple_param(context: TypeContext, name: string) -> bool {
+    (found: bool, func_type: string) <- type_checker_core@lookup_symbol_found(context.env, name);
+    case found of {
+        false -> false;
+        true -> do
+            params_inner: string <- sir_params_inner_from_func_type(func_type);
+            case len(params_inner) < 2 of {
+                true -> false;
+                false -> case substring(params_inner, 0, 1) == "(" and substring(params_inner, len(params_inner) - 1, len(params_inner)) == ")" of {
+                    true -> tuple_contains_comma(substring(params_inner, 1, len(params_inner) - 1));
+                    false -> false
+                }
+            }
+        end
+    }
+}
+
 fn literal_type_for_expected(expected_type: string) -> string {
     case expected_type of {
         "" -> "int64";
@@ -531,6 +572,21 @@ fn arg_type_for_region_prim_inferred(call_name: string, arg_idx: int64, expected
     }
 }
 
+fn build_rest_chain_in_body(context: TypeContext, curried: Expr, bound_name: string, bound_type: string) -> SIRTerm {
+    case curried.kind == 4 and curried.name == "" of {
+        true -> do
+            arg_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(curried.inner, context);
+            arg: SIRTerm <- expr_to_sir_in_let_body(context, curried.inner, bound_name, bound_type, arg_type);
+            rest: SIRTerm <- build_rest_chain_in_body(context, curried.right_expr, bound_name, bound_type);
+            SIRTerm { kind: 6, type_name: "unit", value: "", name: "user_call_rest", inner: arg, right_expr: rest }
+        end;
+        false -> do
+            arg_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(curried, context);
+            expr_to_sir_in_let_body(context, curried, bound_name, bound_type, arg_type)
+        end
+    }
+}
+
 fn build_user_call_from_expr_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
     case expr.inner.kind < 0 of {
         true -> user_calls@build_user_call_0(expr.name, expected_type);
@@ -543,22 +599,47 @@ fn build_user_call_from_expr_in_body(context: TypeContext, expr: Expr, bound_nam
             false -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
                 true -> do
                     arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
-                    arg2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr.inner, context);
-                    arg3_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr.right_expr, context);
                     arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg1_type);
-                    arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, arg2_type);
-                    arg3: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.right_expr, bound_name, bound_type, arg3_type);
-                    user_calls@build_user_call_3(expr.name, arg1, arg2, arg3, expected_type)
+                    rest: SIRTerm <- build_rest_chain_in_body(context, expr.right_expr, bound_name, bound_type);
+                    user_calls@build_user_call_with_rest(expr.name, arg1, rest, expected_type)
                 end;
-                false -> do
-                    arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
-                    arg2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr, context);
-                    arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg1_type);
-                    arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, arg2_type);
-                    user_calls@build_user_call_2(expr.name, arg1, arg2, expected_type)
-                end
+                false -> case user_call_expects_single_tuple_param(context, expr.name) of {
+                    true -> do
+                        (found: bool, func_type: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
+                        tuple_param: string <- sir_params_inner_from_func_type(func_type);
+                        first_type: string <- tuple_first_element_type(tuple_param);
+                        second_type: string <- tuple_rest_element_type(tuple_param);
+                        arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, first_type);
+                        arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, second_type);
+                        sir_type: string <- types@type_name_to_sir(tuple_param);
+                        tuple_arg: SIRTerm <- SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: arg1, right_expr: arg2 };
+                        user_calls@build_user_call_1(expr.name, tuple_arg, expected_type)
+                    end;
+                    false -> do
+                        arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                        arg2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr, context);
+                        arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg1_type);
+                        arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, arg2_type);
+                        user_calls@build_user_call_2(expr.name, arg1, arg2, expected_type)
+                    end
+                }
             }
         }
+    }
+}
+
+fn build_rest_chain(context: TypeContext, curried: Expr) -> SIRTerm {
+    case curried.kind == 4 and curried.name == "" of {
+        true -> do
+            arg_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(curried.inner, context);
+            arg: SIRTerm <- expr_to_sir_with_expected(context, curried.inner, arg_type);
+            rest: SIRTerm <- build_rest_chain(context, curried.right_expr);
+            SIRTerm { kind: 6, type_name: "unit", value: "", name: "user_call_rest", inner: arg, right_expr: rest }
+        end;
+        false -> do
+            arg_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(curried, context);
+            expr_to_sir_with_expected(context, curried, arg_type)
+        end
     }
 }
 
@@ -574,20 +655,30 @@ fn build_user_call_from_expr(context: TypeContext, expr: Expr, expected_type: st
             false -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
                 true -> do
                     arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
-                    arg2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr.inner, context);
-                    arg3_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr.right_expr, context);
                     arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
-                    arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, arg2_type);
-                    arg3: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr, arg3_type);
-                    user_calls@build_user_call_3(expr.name, arg1, arg2, arg3, expected_type)
+                    rest: SIRTerm <- build_rest_chain(context, expr.right_expr);
+                    user_calls@build_user_call_with_rest(expr.name, arg1, rest, expected_type)
                 end;
-                false -> do
-                    arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
-                    arg2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr, context);
-                    arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
-                    arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, arg2_type);
-                    user_calls@build_user_call_2(expr.name, arg1, arg2, expected_type)
-                end
+                false -> case user_call_expects_single_tuple_param(context, expr.name) of {
+                    true -> do
+                        (found: bool, func_type: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
+                        tuple_param: string <- sir_params_inner_from_func_type(func_type);
+                        first_type: string <- tuple_first_element_type(tuple_param);
+                        second_type: string <- tuple_rest_element_type(tuple_param);
+                        arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, first_type);
+                        arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, second_type);
+                        sir_type: string <- types@type_name_to_sir(tuple_param);
+                        tuple_arg: SIRTerm <- SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: arg1, right_expr: arg2 };
+                        user_calls@build_user_call_1(expr.name, tuple_arg, expected_type)
+                    end;
+                    false -> do
+                        arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                        arg2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr, context);
+                        arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
+                        arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, arg2_type);
+                        user_calls@build_user_call_2(expr.name, arg1, arg2, expected_type)
+                    end
+                }
             }
         }
     }
