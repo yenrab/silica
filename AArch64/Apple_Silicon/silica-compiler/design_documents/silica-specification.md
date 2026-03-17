@@ -1465,6 +1465,8 @@ If you need to define a helper function that is only used within another functio
 - **Move the function to top-level**: Declare it at the module level and pass any needed context as parameters
 - **Use function literals (lambdas)**: Anonymous functions created with `fn(...) { ... }` can be used within expressions and can capture variables from their enclosing scope
 
+**Restriction: A function may have at most 8 parameters.** The AArch64 architecture provides 8 argument registers (X0–X7) per procedure call. Arguments beyond the first 8 must be passed on the stack, which is less efficient than register passing. Silica enforces this limit at parse time (error E3010) so that all parameters are passed in registers and code generation remains efficient. Functions requiring more than 8 arguments should be refactored to use tuples or records to group related parameters.
+
 **Example - Invalid (nested function):**
 ```silica
 fn outer() -> int {

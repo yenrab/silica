@@ -628,14 +628,13 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     }
                 }
             };
-            left_reg: string <- case is_string_prim of { true -> "X0"; false -> concat(reg_prefix, "1") };
-            right_reg: string <- case is_string_prim of { true -> "X1"; false -> concat(reg_prefix, "2") };
+            left_reg: string <- case is_string_prim of { true -> "X0"; false -> case is_float64 or is_float32 of { true -> concat(reg_prefix, "1"); false -> concat(reg_prefix, "9") } };
+            right_reg: string <- case is_string_prim of { true -> "X1"; false -> case is_float64 or is_float32 of { true -> concat(reg_prefix, "2"); false -> concat(reg_prefix, "10") } };
             case bound_name == "" of {
                 true -> case term.inner.kind == 6 and term.right_expr.kind == 6 of {
                     true -> do
-                        // Both operands are prims: left prim loads into S1,S2, right prim loads into S1,S2.
-                        // Emit left into temp (reg 0) to avoid overwrite when right loads its operands.
-                        // For string_concat: right also needs X0,X1, so save left to stack before right.
+                        // Both operands are prims: left prim loads into reg 0, right prim may use reg 0 (calls use X0 for args/result).
+                        // Must save left to stack before right eval; right can overwrite temp_reg (X0/D0/S0) via calls or nested prims.
                         temp_reg: string <- concat(reg_prefix, "0");
                         left_asm: string <- case debug of {
                             true -> do term_to_asm_opt_bound_debug(term.inner, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
@@ -643,7 +642,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         };
                         save_left: string <- case is_string_prim of {
                             true -> "    STR X0, [SP, #-16]!\n";
-                            false -> ""
+                            false -> case is_float64 or is_float32 of {
+                                true -> concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n");
+                                false -> "    STR X0, [SP, #-16]!\n"
+                            }
                         };
                         right_asm: string <- case debug of {
                             true -> do term_to_asm_opt_bound_debug(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
@@ -652,8 +654,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         restore_left: string <- case is_string_prim of {
                             true -> "    LDR X0, [SP], #16\n";
                             false -> case is_float64 or is_float32 of {
-                                true -> concat(concat(concat(concat("    FMOV ", left_reg), ", "), temp_reg), "\n");
-                                false -> concat(concat(concat(concat("    MOV ", left_reg), ", "), temp_reg), "\n")
+                                true -> concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                false -> concat(concat("    LDR ", left_reg), ", [SP], #16\n")
                             }
                         };
                         op_asm: string <- prims@emit_prim_op(term, dest);
@@ -687,8 +689,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                             end;
                             false -> case right_is_prim of {
                                 true -> do
-                                    // Left is var, right is prim. Right's evaluation overwrites right_reg (and left_reg).
-                                    // If left var is bound to right_reg (e.g. %c=X2), we lose it. Save left to temp first.
+                                    // Left is var/call, right is prim. Right's evaluation overwrites temp_reg (X0/D0/S0) via calls.
+                                    // Must save left to stack before right eval; right can overwrite temp_reg.
                                     temp_reg: string <- concat(reg_prefix, "0");
                                     left_asm: string <- case debug of {
                                         true -> do term_to_asm_opt_bound_debug(term.inner, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
@@ -696,7 +698,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                     };
                                     save_left: string <- case is_string_prim of {
                                         true -> "    STR X0, [SP, #-16]!\n";
-                                        false -> ""
+                                        false -> case is_float64 or is_float32 of {
+                                            true -> concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n");
+                                            false -> "    STR X0, [SP, #-16]!\n"
+                                        }
                                     };
                                     right_asm: string <- case debug of {
                                         true -> do term_to_asm_opt_bound_debug(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
@@ -705,8 +710,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                     restore_left: string <- case is_string_prim of {
                                         true -> "    LDR X0, [SP], #16\n";
                                         false -> case is_float64 or is_float32 of {
-                                            true -> concat(concat(concat(concat("    FMOV ", left_reg), ", "), temp_reg), "\n");
-                                            false -> concat(concat(concat(concat("    MOV ", left_reg), ", "), temp_reg), "\n")
+                                            true -> concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                            false -> concat(concat("    LDR ", left_reg), ", [SP], #16\n")
                                         }
                                     };
                                     combined: string <- concat(concat(concat(concat(concat(concat(left_asm, "\n"), save_left), right_asm), "\n"), restore_left), "");
@@ -744,8 +749,34 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                             true -> concat(concat(r, "\n"), identity_moves);
                                             false -> r
                                         };
-                                        // Emit right first, then left. Avoids overwriting right var when it's in left_reg (e.g. add(a,b) with a=X0, b=X1).
-                                        (second_with_id, l)
+                                        // Emit right first, then left. Left may be a call (kind 4) which overwrites right_reg (X10).
+                                        // Save right to stack before left eval, restore before op.
+                                        left_is_call: bool <- term.inner.kind == 4;
+                                        save_right: string <- case left_is_call of {
+                                            true -> case is_string_prim of {
+                                                true -> "    STR X1, [SP, #-16]!\n";
+                                                false -> case is_float64 or is_float32 of {
+                                                    true -> concat(concat("    STR ", right_reg), ", [SP, #-16]!\n");
+                                                    false -> concat(concat("    STR ", right_reg), ", [SP, #-16]!\n")
+                                                }
+                                            };
+                                            false -> ""
+                                        };
+                                        restore_right: string <- case left_is_call of {
+                                            true -> case is_string_prim of {
+                                                true -> "    LDR X1, [SP], #16\n";
+                                                false -> case is_float64 or is_float32 of {
+                                                    true -> concat(concat("    LDR ", right_reg), ", [SP], #16\n");
+                                                    false -> concat(concat("    LDR ", right_reg), ", [SP], #16\n")
+                                                }
+                                            };
+                                            false -> ""
+                                        };
+                                        first_combined: string <- case left_is_call of {
+                                            true -> concat(concat(concat(concat(concat(concat(second_with_id, "\n"), save_right), l), "\n"), restore_right), "");
+                                            false -> concat(concat(second_with_id, "\n"), l)
+                                        };
+                                        (first_combined, "")
                                     end
                                 }
                             }
@@ -776,7 +807,13 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                     true -> do term_to_asm_opt_bound_debug(term.inner, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                     false -> term_to_asm_opt_bound(term.inner, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                 };
-                                save: string <- case is_string_prim of { true -> "    STR X0, [SP, #-16]!\n"; false -> "" };
+                                save: string <- case is_string_prim of {
+                                    true -> "    STR X0, [SP, #-16]!\n";
+                                    false -> case is_float64 or is_float32 of {
+                                        true -> concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n");
+                                        false -> "    STR X0, [SP, #-16]!\n"
+                                    }
+                                };
                                 r: string <- case debug of {
                                     true -> do term_to_asm_opt_bound_debug(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                     false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
@@ -784,8 +821,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 restore: string <- case is_string_prim of {
                                     true -> "    LDR X0, [SP], #16\n";
                                     false -> case is_float64 or is_float32 of {
-                                        true -> concat(concat(concat(concat("    FMOV ", left_reg), ", "), temp_reg), "\n");
-                                        false -> concat(concat(concat(concat("    MOV ", left_reg), ", "), temp_reg), "\n")
+                                        true -> concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                        false -> concat(concat("    LDR ", left_reg), ", [SP], #16\n")
                                     }
                                 };
                                 left_combined: string <- concat(concat(concat(concat(concat(concat(l, "\n"), save), r), "\n"), restore), "");
@@ -802,7 +839,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                     true -> do term_to_asm_opt_bound_debug(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                     false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                 };
-                                (r, l)
+                                // (l, r): left_asm puts left in left_reg, right_asm puts right in right_reg -> X9=left, X10=right
+                                (l, r)
                             end
                         }
                     };

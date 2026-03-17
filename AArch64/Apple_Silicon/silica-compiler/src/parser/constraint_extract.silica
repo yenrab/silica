@@ -14,6 +14,7 @@ use constraint_core;
 
 export slots_to_program/1;
 export validate_no_single_element_tuples/1;
+export validate_max_params/1;
 
 // Role codes (must match capabilities)
 fn role_fn_keyword() -> int64 { 1 }
@@ -1360,6 +1361,44 @@ fn decls_has_single_tuple_error(decls: ListDeclaration) -> (bool, SourceLocation
                 false -> decls_has_single_tuple_error(decls.tail)
             }
         end
+    }
+}
+
+fn param_count(params: ListParam) -> int64 {
+    case params.is_nil of {
+        true -> 0;
+        false -> 1 + param_count(params.tail)
+    }
+}
+
+fn decl_has_too_many_params(decl: Declaration) -> (bool, SourceLocation, string) {
+    case decl.tag == 0 of {
+        true -> case param_count(decl.parameters) > 8 of {
+            true -> (true, decl.location, decl.name);
+            false -> (false, parser_ast@zero_location(), "")
+        };
+        false -> (false, parser_ast@zero_location(), "")
+    }
+}
+
+fn decls_has_too_many_params(decls: ListDeclaration) -> (bool, SourceLocation, string) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> do
+            (head_found: bool, head_loc: SourceLocation, head_name: string) <- decl_has_too_many_params(decls.head);
+            case head_found of {
+                true -> (true, head_loc, head_name);
+                false -> decls_has_too_many_params(decls.tail)
+            }
+        end
+    }
+}
+
+fn validate_max_params(program: Program) -> ParseResult {
+    (found: bool, err_loc: SourceLocation, fn_name: string) <- decls_has_too_many_params(program.declarations);
+    case found of {
+        true -> parser_core@parse_err("E3010", err_loc, concat(concat("function '", fn_name), "' has more than 8 parameters; AArch64 calling convention supports at most 8 register arguments"), "sect4.1");
+        false -> parser_core@parse_ok(program)
     }
 }
 

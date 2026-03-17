@@ -26,6 +26,10 @@ The `@` operator discriminates between the module name and the function name for
 
 The `@` character is never used as an indicator of the end of an atom name; it is reserved for module@function qualified calls.
 
+### 2.4 Parameter Limit (AArch64)
+
+A function may have at most 8 parameters. The AArch64 architecture provides 8 argument registers (X0–X7) per procedure call. Arguments beyond the first 8 must be passed on the stack, which is less efficient than register passing. Silica enforces this limit at parse time (error E3010). Functions requiring more than 8 arguments should be refactored to use tuples or records to group related parameters. See silica-specification.md §3.4.1.
+
 ---
 
 ## 3. Curry–Howard Foundation
