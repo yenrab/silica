@@ -745,6 +745,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                     true -> do
                                         // Both operands are simple (var or const). Calls (kind 4) overwrite X9/X10; must use save/restore.
                                         // Arithmetic expects left in r1, right in r2 (same as add/mul).
+                                        // For float32/float64: left_reg=S1/D1, right_reg=S2/D2. If right operand lives in left_reg (e.g. %b=S1),
+                                        // emitting left first would overwrite it. Emit right first, then left.
                                         l: string <- case debug of {
                                             true -> do term_to_asm_opt_bound_debug(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                             false -> term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
@@ -753,7 +755,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                             true -> do term_to_asm_opt_bound_debug(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                             false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                         };
-                                        (concat(concat(concat(l, "\n"), r), "\n"), "")
+                                        (concat(concat(concat(r, "\n"), l), "\n"), "")
                                     end;
                                     false -> do
                                         // Arithmetic expects left in r1, right in r2 (same as add/mul). For non-string: left to left_reg, right to right_reg.
@@ -883,6 +885,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                             end;
                             false -> do
                                 // left->left_reg, right->right_reg (same as bound_name=="") for arithmetic.
+                                // For float32/float64: emit right first, then left. If left is emitted first and overwrites left_reg,
+                                // right (which may live in left_reg, e.g. %b=S1) would be lost.
                                 l: string <- case is_string_prim of {
                                     true -> case debug of {
                                         true -> do term_to_asm_opt_bound_debug(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
@@ -903,7 +907,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                         false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                     }
                                 };
-                                (l, r)
+                                (r, l)
                             end
                         }
                     };
