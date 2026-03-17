@@ -13182,46 +13182,51 @@ impl CodeGenerator {
 
     /// Generate LLVM IR for string concatenation expression
     fn generate_string_concat(&mut self, string_concat: &StringConcatExpr) -> Result<Option<String>> {
-        let a_val = self.generate_expression(&string_concat.a)?
+        let a_val_raw = self.generate_expression(&string_concat.a)?
             .ok_or_else(|| CompilerError::codegen_error("Invalid first string in concat".to_string()))?;
-        let b_val = self.generate_expression(&string_concat.b)?
+        let b_val_raw = self.generate_expression(&string_concat.b)?
             .ok_or_else(|| CompilerError::codegen_error("Invalid second string in concat".to_string()))?;
 
-        // Strip type prefixes so we don't double-prefix (e.g. "i8* %lexeme" -> "%lexeme")
-        let a_val = a_val.trim_start_matches("i8* ").trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").to_string();
-        let b_val = b_val.trim_start_matches("i8* ").trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").to_string();
+        // Strip type prefixes for downstream logic (e.g. "i8* %lexeme" -> "%lexeme")
+        let a_val = a_val_raw.trim_start_matches("i8* ").trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").to_string();
+        let b_val = b_val_raw.trim_start_matches("i8* ").trim_start_matches("i64 ").trim_start_matches("i32 ").trim_start_matches("i1 ").to_string();
 
         // Both arguments need to be i8* pointers
-        // For string constants (getelementptr expressions), they need to be evaluated and formatted
+        // Value may be i64 from case expression or field load (pointer-as-integer); convert with inttoptr
+        // For string constants (getelementptr expressions), evaluate and format
         // For runtime strings, they're already i8* pointers to SilicaString structs
-        
+
         // Handle first argument (a)
-        let a_arg = if a_val.starts_with('%') {
-            // Already a register
+        let a_arg = if a_val_raw.starts_with("i64 ") {
+            let i64_reg = a_val_raw.strip_prefix("i64 ").unwrap().trim();
+            let ptr_reg = self.next_register();
+            self.instructions.push(format!("  %{} = inttoptr i64 {} to i8*", ptr_reg, i64_reg));
+            format!("i8* %{}", ptr_reg.trim_start_matches('%'))
+        } else if a_val.starts_with('%') {
             format!("i8* {}", a_val)
         } else if a_val.starts_with("getelementptr") {
-            // String constant - evaluate getelementptr first, then use in function call
             let temp_reg = self.next_register();
             let gep_instruction = self.convert_gep_to_instruction_format(&a_val);
             self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
             format!("i8* %{}", temp_reg.trim_start_matches('%'))
         } else {
-            // Register name without % prefix - add it
             format!("i8* %{}", a_val)
         };
 
         // Handle second argument (b)
-        let b_arg = if b_val.starts_with('%') {
-            // Already a register
+        let b_arg = if b_val_raw.starts_with("i64 ") {
+            let i64_reg = b_val_raw.strip_prefix("i64 ").unwrap().trim();
+            let ptr_reg = self.next_register();
+            self.instructions.push(format!("  %{} = inttoptr i64 {} to i8*", ptr_reg, i64_reg));
+            format!("i8* %{}", ptr_reg.trim_start_matches('%'))
+        } else if b_val.starts_with('%') {
             format!("i8* {}", b_val)
         } else if b_val.starts_with("getelementptr") {
-            // String constant - evaluate getelementptr first, then use in function call
             let temp_reg = self.next_register();
             let gep_instruction = self.convert_gep_to_instruction_format(&b_val);
             self.instructions.push(format!("  %{} = {}", temp_reg, gep_instruction));
             format!("i8* %{}", temp_reg.trim_start_matches('%'))
         } else {
-            // Register name without % prefix - add it
             format!("i8* %{}", b_val)
         };
 

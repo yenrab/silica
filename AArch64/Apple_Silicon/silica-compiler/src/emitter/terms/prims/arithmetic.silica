@@ -34,8 +34,8 @@ fn emit_add_op(dest: string, reg_prefix: string) -> string {
 fn emit_sub_op(dest: string, reg_prefix: string) -> string {
     r1: string <- op_reg(reg_prefix, "9");
     r2: string <- op_reg(reg_prefix, "10");
-    // term_emitter emits left->r2, right->r1 (operands swapped). SUB rd,rn,rm = rn-rm. Use r2,r1 so dest=r2-r1=left-right.
-    concat(concat(concat(concat(concat("    SUB ", dest), ", "), r2), ", "), r1)
+    // term_emitter emits left->r1, right->r2 (same as add/mul). SUB rd,rn,rm = rn-rm. Use r1,r2 so dest=r1-r2=left-right.
+    concat(concat(concat(concat(concat("    SUB ", dest), ", "), r1), ", "), r2)
 }
 
 fn emit_mul_op(dest: string, reg_prefix: string) -> string {
@@ -47,22 +47,22 @@ fn emit_mul_op(dest: string, reg_prefix: string) -> string {
 fn emit_div_op(dest: string, reg_prefix: string) -> string {
     r1: string <- op_reg(reg_prefix, "9");
     r2: string <- op_reg(reg_prefix, "10");
-    // term_emitter emits left->r2, right->r1. SDIV rd,rn,rm = rn/rm. Use r2,r1 so dest=r2/r1=left/right.
-    concat(concat(concat(concat(concat("    SDIV ", dest), ", "), r2), ", "), r1)
+    // term_emitter emits left->r1, right->r2. SDIV rd,rn,rm = rn/rm. Use r1,r2 so dest=r1/r2=left/right.
+    concat(concat(concat(concat(concat("    SDIV ", dest), ", "), r1), ", "), r2)
 }
 
 // AArch64 has no SREM; remainder = dividend - (quotient * divisor) via SDIV + MSUB
-// term_emitter: left->r2, right->r1. SDIV r0,r2,r1; MSUB rd,r0,r1,r2 = rd = r2 - r0*r1.
+// term_emitter: left->r1, right->r2. SDIV r0,r1,r2; MSUB rd,r1,r0,r2 = rd = r1 - r0*r2.
 fn emit_rem_op(dest: string, reg_prefix: string) -> string {
     r0: string <- op_reg(reg_prefix, "0");
     r1: string <- op_reg(reg_prefix, "9");
     r2: string <- op_reg(reg_prefix, "10");
-    sdiv_line: string <- concat(concat(concat(concat(concat("    SDIV ", r0), ", "), concat(r2, ", ")), r1), "\n");
+    sdiv_line: string <- concat(concat(concat(concat(concat("    SDIV ", r0), ", "), concat(r1, ", ")), r2), "\n");
     case dest == r1 of {
-        true -> concat(sdiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", r1), ", "), concat(r0, ", ")), concat(r1, ", ")), r2), ""));
+        true -> concat(sdiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", r1), ", "), concat(r1, ", ")), concat(r0, ", ")), r2), ""));
         false -> case dest == r2 of {
-            true -> concat(sdiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", r2), ", "), concat(r0, ", ")), concat(r1, ", ")), r2), ""));
-            false -> concat(sdiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", dest), ", "), concat(r0, ", ")), concat(r1, ", ")), r2), ""))
+            true -> concat(sdiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", r2), ", "), concat(r1, ", ")), concat(r0, ", ")), r2), ""));
+            false -> concat(sdiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", dest), ", "), concat(r1, ", ")), concat(r0, ", ")), r2), ""))
         }
     }
 }
@@ -70,8 +70,8 @@ fn emit_rem_op(dest: string, reg_prefix: string) -> string {
 fn emit_udiv_op(dest: string, reg_prefix: string) -> string {
     r1: string <- op_reg(reg_prefix, "9");
     r2: string <- op_reg(reg_prefix, "10");
-    // term_emitter: left->r2, right->r1. UDIV rd,r2,r1.
-    concat(concat(concat(concat(concat("    UDIV ", dest), ", "), r2), ", "), r1)
+    // term_emitter: left->r1, right->r2. UDIV rd,r1,r2.
+    concat(concat(concat(concat(concat("    UDIV ", dest), ", "), r1), ", "), r2)
 }
 
 fn emit_fadd_op(dest: string) -> string {
@@ -107,17 +107,17 @@ fn emit_fdiv_s_op(dest: string) -> string {
 }
 
 // AArch64 has no UREM; unsigned remainder = dividend - (quotient * divisor) via UDIV + MSUB
-// term_emitter: left->r2, right->r1. UDIV r0,r2,r1; MSUB rd,r0,r1,r2.
+// term_emitter: left->r1, right->r2. UDIV r0,r1,r2; MSUB rd,r1,r0,r2.
 fn emit_urem_op(dest: string, reg_prefix: string) -> string {
     r0: string <- op_reg(reg_prefix, "0");
     r1: string <- op_reg(reg_prefix, "9");
     r2: string <- op_reg(reg_prefix, "10");
-    udiv_line: string <- concat(concat(concat(concat(concat("    UDIV ", r0), ", "), concat(r2, ", ")), r1), "\n");
+    udiv_line: string <- concat(concat(concat(concat(concat("    UDIV ", r0), ", "), concat(r1, ", ")), r2), "\n");
     case dest == r1 of {
-        true -> concat(udiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", r1), ", "), concat(r0, ", ")), concat(r1, ", ")), r2), ""));
+        true -> concat(udiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", r1), ", "), concat(r1, ", ")), concat(r0, ", ")), r2), ""));
         false -> case dest == r2 of {
-            true -> concat(udiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", r2), ", "), concat(r0, ", ")), concat(r1, ", ")), r2), ""));
-            false -> concat(udiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", dest), ", "), concat(r0, ", ")), concat(r1, ", ")), r2), ""))
+            true -> concat(udiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", r2), ", "), concat(r1, ", ")), concat(r0, ", ")), r2), ""));
+            false -> concat(udiv_line, concat(concat(concat(concat(concat(concat("    MSUB ", dest), ", "), concat(r1, ", ")), concat(r0, ", ")), r2), ""))
         }
     }
 }
