@@ -361,15 +361,22 @@ fn emit_functions(fns: ListSIRFunction, table: AtomTable, int64_table: Int64Prin
 }
 
 // AArch64 AAPCS64: int args X0-X7 (or W0-W7 for narrow), float64 D0-D7, float32 S0-S7
-fn param_reg_for_index(i: int64, return_type: string) -> string {
-    is_narrow: bool <- return_type == "int32" or return_type == "int16" or return_type == "int8" or return_type == "uint32" or return_type == "uint16" or return_type == "uint8" or return_type == "bool";
-    is_float64: bool <- return_type == "float64";
-    is_float32: bool <- return_type == "float32";
+// param_type: use actual param type so tuple/string/pointer params get X (64-bit), not W
+fn param_reg_for_index(i: int64, param_type: string) -> string {
+    is_tuple: bool <- len(param_type) >= 2 and substring(param_type, 0, 1) == "(";
+    is_string: bool <- param_type == "string";
+    is_pointer: bool <- is_tuple or is_string;
+    is_narrow: bool <- param_type == "int32" or param_type == "int16" or param_type == "int8" or param_type == "uint32" or param_type == "uint16" or param_type == "uint8" or param_type == "bool";
+    is_float64: bool <- param_type == "float64";
+    is_float32: bool <- param_type == "float32";
     prefix: string <- case is_float64 of {
         true -> "D";
         false -> case is_float32 of {
             true -> "S";
-            false -> case is_narrow of { true -> "W"; false -> "X" }
+            false -> case is_pointer of {
+                true -> "X";
+                false -> case is_narrow of { true -> "W"; false -> "X" }
+            }
         }
     };
     case i of {
@@ -385,14 +392,26 @@ fn param_reg_for_index(i: int64, return_type: string) -> string {
     }
 }
 
-fn build_param_outer_reg_loop(param_names: string, idx: int64, acc: string, return_type: string) -> string {
+fn param_type_at_index(param_types: string, idx: int64) -> string {
+    pipe: int64 <- find_pipe_in_param_names(param_types, 0);
+    case pipe < 0 of {
+        true -> param_types;
+        false -> case idx of {
+            0 -> substring(param_types, 0, pipe);
+            _: int64 -> param_type_at_index(substring(param_types, pipe + 1, len(param_types)), idx - 1)
+        }
+    }
+}
+
+fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int64, acc: string) -> string {
     pipe: int64 <- find_pipe_in_param_names(param_names, 0);
+    ptype: string <- param_type_at_index(param_types, idx);
     case pipe < 0 of {
         true -> case len(param_names) == 0 of {
             true -> acc;
             false -> do
                 prefixed: string <- concat("%", param_names);
-                reg: string <- param_reg_for_index(idx, return_type);
+                reg: string <- param_reg_for_index(idx, ptype);
                 sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
                 concat(acc, concat(sep, concat(prefixed, concat("=", reg))))
             end
@@ -400,13 +419,14 @@ fn build_param_outer_reg_loop(param_names: string, idx: int64, acc: string, retu
         false -> do
             first: string <- substring(param_names, 0, pipe);
             rest: string <- case pipe + 1 < len(param_names) of { true -> substring(param_names, pipe + 1, len(param_names)); false -> "" };
+            rest_types: string <- case pipe + 1 < len(param_types) of { true -> substring(param_types, pipe + 1, len(param_types)); false -> "" };
             prefixed: string <- concat("%", first);
-            reg: string <- param_reg_for_index(idx, return_type);
+            reg: string <- param_reg_for_index(idx, ptype);
             sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
             part: string <- concat(sep, concat(prefixed, concat("=", reg)));
-            base: string <- case len(acc) == 0 of { true -> param_reg_for_index(0, return_type); false -> acc };
+            base: string <- case len(acc) == 0 of { true -> param_reg_for_index(0, ptype); false -> acc };
             next_acc: string <- concat(base, part);
-            build_param_outer_reg_loop(rest, idx + 1, next_acc, return_type)
+            build_param_outer_reg_loop(rest, rest_types, idx + 1, next_acc)
         end
     }
 }
@@ -421,12 +441,13 @@ fn find_pipe_in_param_names(s: string, start: int64) -> int64 {
     }
 }
 
-fn build_param_outer_reg(param_names: string, return_type: string) -> string {
+fn build_param_outer_reg(param_names: string, param_types: string) -> string {
     case len(param_names) == 0 of {
         true -> "";
         false -> do
-            first_reg: string <- param_reg_for_index(0, return_type);
-            build_param_outer_reg_loop(param_names, 0, first_reg, return_type)
+            first_ptype: string <- param_type_at_index(param_types, 0);
+            first_reg: string <- param_reg_for_index(0, first_ptype);
+            build_param_outer_reg_loop(param_names, param_types, 0, first_reg)
         end
     }
 }
@@ -446,7 +467,7 @@ fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64Pr
             }
         }
     };
-    param_outer: string <- build_param_outer_reg(fn_val.param_names, fn_val.return_type);
+    param_outer: string <- build_param_outer_reg(fn_val.param_names, fn_val.param_types);
     body: string <- term_emitter@term_to_asm_debug_with_outer(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer, debug);
     float_to_exit: string <- case main_returns_float64(fn_val.name, fn_val.return_type) of {
         true -> "    FCVTZS W0, D0\n";

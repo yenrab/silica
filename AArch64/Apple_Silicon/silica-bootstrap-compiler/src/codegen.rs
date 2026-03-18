@@ -1699,15 +1699,60 @@ impl CodeGenerator {
                 let left_val = self.ensure_gep_in_register(&lhs, "lhs");
                 let right_val = self.ensure_gep_in_register(&rhs, "rhs");
 
+                // Normalize arguments to i8* for the runtime call. Values may be pointer-as-integer (i64).
                 let left_arg = if left_val.starts_with("i8* ") {
                     Self::format_llvm_value_ref(left_val[4..].trim())
+                } else if left_val.starts_with("i64 ") {
+                    let i64_reg = left_val[4..].trim().trim_start_matches('%');
+                    let ptr_reg = format!("%str_eq_lhs_ptr_{}", self.instructions.len());
+                    self.instructions.push(format!(
+                        "  {} = inttoptr i64 {} to i8*",
+                        ptr_reg,
+                        Self::format_llvm_value_ref(i64_reg)
+                    ));
+                    ptr_reg
                 } else {
                     Self::format_llvm_value_ref(&left_val)
                 };
                 let right_arg = if right_val.starts_with("i8* ") {
                     Self::format_llvm_value_ref(right_val[4..].trim())
+                } else if right_val.starts_with("i64 ") {
+                    let i64_reg = right_val[4..].trim().trim_start_matches('%');
+                    let ptr_reg = format!("%str_eq_rhs_ptr_{}", self.instructions.len());
+                    self.instructions.push(format!(
+                        "  {} = inttoptr i64 {} to i8*",
+                        ptr_reg,
+                        Self::format_llvm_value_ref(i64_reg)
+                    ));
+                    ptr_reg
                 } else {
                     Self::format_llvm_value_ref(&right_val)
+                };
+
+                // Extra safety: some values may still carry an "i64 " prefix; normalize here as well.
+                let left_arg = if left_arg.starts_with("i64 ") {
+                    let i64_reg = left_arg[4..].trim().trim_start_matches('%');
+                    let ptr_reg = format!("%str_eq_lhs_ptr_{}", self.instructions.len());
+                    self.instructions.push(format!(
+                        "  {} = inttoptr i64 {} to i8*",
+                        ptr_reg,
+                        Self::format_llvm_value_ref(i64_reg)
+                    ));
+                    ptr_reg
+                } else {
+                    left_arg
+                };
+                let right_arg = if right_arg.starts_with("i64 ") {
+                    let i64_reg = right_arg[4..].trim().trim_start_matches('%');
+                    let ptr_reg = format!("%str_eq_rhs_ptr_{}", self.instructions.len());
+                    self.instructions.push(format!(
+                        "  {} = inttoptr i64 {} to i8*",
+                        ptr_reg,
+                        Self::format_llvm_value_ref(i64_reg)
+                    ));
+                    ptr_reg
+                } else {
+                    right_arg
                 };
 
                 let cmp_reg = format!("%cmp_str_{}", self.instructions.len());
@@ -6504,6 +6549,13 @@ impl CodeGenerator {
                         } else if scrutinee_reg.starts_with("i64 ") {
                             // Scrutinee is i64 (boxed pointer from preceding case) - convert to i8* for string comparison
                             let reg_name = scrutinee_reg[4..].trim();
+                            let ptr_reg = format!("%str_scrutinee_ptr_{}", self.instructions.len());
+                            self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, Self::format_llvm_value_ref(reg_name)));
+                            ptr_reg
+                        } else if scrutinee_reg_clean.contains("case_final_") {
+                            // Heuristic: case expressions in this backend often yield pointer-as-integer without a type prefix.
+                            // Treat case_final_* as i64 and convert to i8* for string comparison.
+                            let reg_name = scrutinee_reg_clean.trim_start_matches('%');
                             let ptr_reg = format!("%str_scrutinee_ptr_{}", self.instructions.len());
                             self.instructions.push(format!("  {} = inttoptr i64 {} to i8*", ptr_reg, Self::format_llvm_value_ref(reg_name)));
                             ptr_reg
@@ -13076,14 +13128,33 @@ impl CodeGenerator {
             self.instructions.push(format!("  %{} = add i64 {}, 0", result_reg, length));
             Ok(Some(result_reg))
         } else {
-            // string_val is an i8* pointer to a SilicaString struct (for runtime strings)
-            // Strip type prefix (e.g. "i8* %call_3504" -> "call_3504") to avoid "i8* %i8* %call_3504"
-            let string_ptr_reg = self.clean_register_for_instruction(&string_val).trim_start_matches('%').to_string();
-            let string_ptr_reg = if string_ptr_reg.is_empty() { string_val.trim_start_matches('%').to_string() } else { string_ptr_reg };
+            // string_val is a pointer to a string value, but it might be:
+            //   1) "i8* %reg"          — plain pointer
+            //   2) "i64 %case_final…"  — pointer-as-integer from a case expression
+            //
+            // Handle the i64-as-pointer case first by emitting an inttoptr.
+            let (string_ptr_reg, needs_percent) = if string_val.starts_with("i64 ") {
+                // Example: "i64 %case_final_123"
+                let i64_reg = string_val.trim_start_matches("i64 ").trim_start_matches('%').to_string();
+                let ptr_reg = self.next_register();
+                self.instructions.push(format!("  %{} = inttoptr i64 %{} to i8*", ptr_reg, i64_reg));
+                (ptr_reg, false)
+            } else {
+                // string_val is an i8* pointer to a SilicaString struct (for runtime strings)
+                // Strip type prefix (e.g. "i8* %call_3504" -> "call_3504") to avoid "i8* %i8* %call_3504"
+                let cleaned = self.clean_register_for_instruction(&string_val).trim_start_matches('%').to_string();
+                let reg = if cleaned.is_empty() { string_val.trim_start_matches('%').to_string() } else { cleaned };
+                (reg, true)
+            };
             
             // Call silica_string_len runtime function
             let result_reg = self.next_register();
-            self.instructions.push(format!("  %{} = call i64 @silica_string_len(i8* %{})", result_reg, string_ptr_reg));
+            if needs_percent {
+                self.instructions.push(format!("  %{} = call i64 @silica_string_len(i8* %{})", result_reg, string_ptr_reg));
+            } else {
+                // string_ptr_reg is already a bare register name produced by next_register()
+                self.instructions.push(format!("  %{} = call i64 @silica_string_len(i8* %{})", result_reg, string_ptr_reg));
+            }
             
             Ok(Some(result_reg))
         }
@@ -13111,14 +13182,26 @@ impl CodeGenerator {
             self.instructions.push(format!("  %{} = add i64 {}, 0", result_reg, char_count));
             Ok(Some(result_reg))
         } else {
-            // string_val is an i8* pointer to a SilicaString struct (for runtime strings)
-            // Strip type prefix (e.g. "i8* %call_3504" -> "call_3504") to avoid "i8* %i8* %call_3504"
-            let string_ptr_reg = self.clean_register_for_instruction(&string_val).trim_start_matches('%').to_string();
-            let string_ptr_reg = if string_ptr_reg.is_empty() { string_val.trim_start_matches('%').to_string() } else { string_ptr_reg };
+            // string_val is a pointer to a string value, possibly as i8* or i64 (pointer-as-integer).
+            let (string_ptr_reg, needs_percent) = if string_val.starts_with("i64 ") {
+                let i64_reg = string_val.trim_start_matches("i64 ").trim_start_matches('%').to_string();
+                let ptr_reg = self.next_register();
+                self.instructions.push(format!("  %{} = inttoptr i64 %{} to i8*", ptr_reg, i64_reg));
+                (ptr_reg, false)
+            } else {
+                // Plain i8* case
+                let cleaned = self.clean_register_for_instruction(&string_val).trim_start_matches('%').to_string();
+                let reg = if cleaned.is_empty() { string_val.trim_start_matches('%').to_string() } else { cleaned };
+                (reg, true)
+            };
             
             // Call silica_string_len_chars runtime function
             let result_reg = self.next_register();
-            self.instructions.push(format!("  %{} = call i64 @silica_string_len_chars(i8* %{})", result_reg, string_ptr_reg));
+            if needs_percent {
+                self.instructions.push(format!("  %{} = call i64 @silica_string_len_chars(i8* %{})", result_reg, string_ptr_reg));
+            } else {
+                self.instructions.push(format!("  %{} = call i64 @silica_string_len_chars(i8* %{})", result_reg, string_ptr_reg));
+            }
             
             Ok(Some(result_reg))
         }

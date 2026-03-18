@@ -31,6 +31,18 @@ export term_to_asm/11;
 export term_to_asm_debug/12;
 export term_to_asm_debug_with_outer/13;
 
+// Total stack bytes to deallocate for tuple-constructed call arguments.
+// tuple_make allocates on SP; callers must restore SP after the call returns.
+fn call_tuple_args_dealloc_bytes(term: SIRTerm) -> int64 {
+    case term.kind < 0 of {
+        true -> 0;
+        false -> case term.name == "user_call_rest" of {
+            true -> flat_tuple_dealloc_size(term.inner) + call_tuple_args_dealloc_bytes(term.right_expr);
+            false -> flat_tuple_dealloc_size(term)
+        }
+    }
+}
+
 fn check_dot_from(value: string, pos: int64, length: int64) -> bool {
     case pos >= length of {
         true -> false;
@@ -286,7 +298,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 };
                 body_bound_tl: string <- var@tuple_proj_body_bound(term.inner, rhs_reg, 0);
                 tp_binding_tl: string <- var@new_tp_binding(term.name, term.inner, 0);
-                new_outer_tl: string <- concat(rhs_reg, concat(tp_binding_tl, concat(adj_binding_tl, concat(iap_tl, vab_tl))));
+                reg_binding_tl: string <- var@reg_binding(term.name, rhs_reg);
+                new_outer_tl: string <- concat(rhs_reg, concat(reg_binding_tl, concat(tp_binding_tl, concat(adj_binding_tl, concat(iap_tl, vab_tl)))));
                 body_asm: string <- case debug of {
                     true -> do term_to_asm_opt_bound_debug(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound_tl, new_outer_tl, true) end;
                     false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound_tl, new_outer_tl, false)
@@ -519,7 +532,15 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                                                 true -> concat(concat(arg1_asm, "\n"), concat(rest_asm, "\n"));
                                                                 false -> concat(arg1_asm, "\n")
                                                             };
-                                                            concat(args_asm, call_asm)
+                                                            // If any argument evaluation used tuple_make (SUB SP, SP, #...), restore SP after the call.
+                                                            // This is required so the function epilogue restores LR/FP from the correct address.
+                                                            dealloc_bytes_call: int64 <- call_tuple_args_dealloc_bytes(term.inner)
+                                                                + call_tuple_args_dealloc_bytes(term.right_expr);
+                                                            dealloc_asm_call: string <- case dealloc_bytes_call > 0 of {
+                                                                true -> concat("\n    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(dealloc_bytes_call), ""));
+                                                                false -> ""
+                                                            };
+                                                            concat(concat(args_asm, call_asm), dealloc_asm_call)
                                                         end
                                                     };
                                                 };
@@ -559,18 +580,34 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 tp_var: string <- case term.inner.kind == 1 of { true -> term.inner.name; false -> "" };
                 va_key: string <- concat("_va.", tp_var);
                 va_str: string <- case len(tp_var) > 0 of { true -> var@find_sp_binding(outer_reg, va_key); false -> "" };
-                sp_adj: int64 <- case len(va_str) > 0 of {
-                    true -> string_parse@string_to_int64(va_str);
+                var_binding: string <- case len(tp_var) > 0 of { true -> var@find_sp_binding(outer_reg, tp_var); false -> "" };
+                tuple_in_reg: bool <- len(var_binding) > 0 and var@is_memory_ref(var_binding) == false;
+                tuple_base_reg: string <- case tuple_in_reg of {
+                    true -> var_binding;
+                    false -> case tp_var == bound_name of { true -> bound_reg; false -> "" }
+                };
+                // If the tuple base is currently in X0 (common for function params), projecting elements into
+                // registers can clobber X0 and break subsequent projections. Preserve the base in X11 and
+                // use X11 as the effective base for reg-relative loads.
+                effective_base: string <- case tuple_in_reg and tuple_base_reg == "X0" of { true -> "X11"; false -> tuple_base_reg };
+                proj_mem_ref: string <- case len(tuple_base_reg) > 0 of {
+                    true -> var@reg_offset_for_index(effective_base, term.right_expr.value);
                     false -> do
-                        adj_str: string <- var@find_sp_binding(outer_reg, "_adj");
-                        case len(adj_str) > 0 of { true -> string_parse@string_to_int64(adj_str); false -> 0 }
+                        sp_adj: int64 <- case len(va_str) > 0 of {
+                            true -> string_parse@string_to_int64(va_str);
+                            false -> do
+                                adj_str: string <- var@find_sp_binding(outer_reg, "_adj");
+                                case len(adj_str) > 0 of { true -> string_parse@string_to_int64(adj_str); false -> 0 }
+                            end
+                        };
+                        var@sp_offset_for_index_adj(term.right_expr.value, sp_adj)
                     end
                 };
-                proj_sp_ref: string <- var@sp_offset_for_index_adj(term.right_expr.value, sp_adj);
                 proj_prefix: string <- prims_tuple@ldr_prefix_for_type(term.type_name);
                 proj_dest_num: string <- case len(dest) > 0 of { true -> substring(dest, 1, len(dest)); false -> "0" };
                 proj_ldr_reg: string <- concat(proj_prefix, proj_dest_num);
-                concat("    LDR ", concat(proj_ldr_reg, concat(", ", proj_sp_ref)))
+                preserve_base: string <- case effective_base == "X11" of { true -> "    MOV X11, X0\n"; false -> "" };
+                concat(preserve_base, concat("    LDR ", concat(proj_ldr_reg, concat(", ", proj_mem_ref))))
             end;
             false -> case term.type_name == "string" and (term.name == "string_substring" or term.name == "string_substring_until_char") and term.right_expr.kind == 6 of {
             true -> do
@@ -637,7 +674,12 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         // Must save left to stack before right eval; right can overwrite temp_reg (X0/D0/S0) via calls or nested prims.
                         // Arithmetic expects left in r1, right in r2. For non-string: put right in right_reg, restore left to left_reg.
                         // String concat expects X0=left, X1=right; keep original layout for is_string_prim.
-                        temp_reg: string <- concat(reg_prefix, "0");
+                        // Important: avoid using X0 as a scratch reg for integer prims because tuple_proj may use X0
+                        // as the tuple base pointer (function param), and clobbering it breaks subsequent projections.
+                        temp_reg: string <- case is_string_prim or is_float64 or is_float32 of {
+                            true -> concat(reg_prefix, "0");
+                            false -> left_reg
+                        };
                         left_asm: string <- case debug of {
                             true -> do term_to_asm_opt_bound_debug(term.inner, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                             false -> term_to_asm_opt_bound(term.inner, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
@@ -646,7 +688,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                             true -> "    STR X0, [SP, #-16]!\n";
                             false -> case is_float64 or is_float32 of {
                                 true -> concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n");
-                                false -> "    STR X0, [SP, #-16]!\n"
+                                false -> concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n")
                             }
                         };
                         right_asm: string <- case is_string_prim of {
@@ -745,8 +787,6 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                     true -> do
                                         // Both operands are simple (var or const). Calls (kind 4) overwrite X9/X10; must use save/restore.
                                         // Arithmetic expects left in r1, right in r2 (same as add/mul).
-                                        // For float32/float64: left_reg=S1/D1, right_reg=S2/D2. If right operand lives in left_reg (e.g. %b=S1),
-                                        // emitting left first would overwrite it. Emit right first, then left.
                                         l: string <- case debug of {
                                             true -> do term_to_asm_opt_bound_debug(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                             false -> term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
@@ -755,7 +795,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                             true -> do term_to_asm_opt_bound_debug(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                             false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                         };
-                                        (concat(concat(concat(r, "\n"), l), "\n"), "")
+                                        (concat(concat(concat(l, "\n"), r), "\n"), "")
                                     end;
                                     false -> do
                                         // Arithmetic expects left in r1, right in r2 (same as add/mul). For non-string: left to left_reg, right to right_reg.
@@ -885,8 +925,6 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                             end;
                             false -> do
                                 // left->left_reg, right->right_reg (same as bound_name=="") for arithmetic.
-                                // For float32/float64: emit right first, then left. If left is emitted first and overwrites left_reg,
-                                // right (which may live in left_reg, e.g. %b=S1) would be lost.
                                 l: string <- case is_string_prim of {
                                     true -> case debug of {
                                         true -> do term_to_asm_opt_bound_debug(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
@@ -907,7 +945,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                         false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                     }
                                 };
-                                (r, l)
+                                (l, r)
                             end
                         }
                     };
