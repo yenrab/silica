@@ -40,7 +40,19 @@ fn extract_function(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) proc[D
     fn_loc: SourceLocation <- r1.head.token.location;
     (params: ListParam, ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- collect_params_and_find_type_and_body(r1.tail);
     (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(body_slots);
-    decl: Declaration <- Declaration { tag: 0, name: fn_name, parameters: params, return_type_name: ret_type, return_type_location: ret_type_loc, location: fn_loc, body: body, declared_effects: effects };
+    td_bindings: ListTupleDecomposeBinding <- extract_td_bindings_from_params(r1.tail);
+    (final_params: ListParam, final_body: Expr) <- case td_bindings.is_nil of {
+        true -> (params, body);
+        false -> do
+            tuple_type: string <- build_tuple_type_from_td_bindings(td_bindings);
+            synth_param: Param <- Param { name: "_td_p0", type_name: tuple_type, location: fn_loc };
+            synth_params: ListParam <- parser_ast@cons_param(synth_param, parser_ast@nil_list_param());
+            rhs_expr: Expr <- Expr { kind: 1, value: "", name: "_td_p0", location: fn_loc, inner: parser_ast@dummy_expr(), right_expr: parser_ast@dummy_expr(), pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+            wrapped: Expr <- Expr { kind: 10, value: "", name: "", location: fn_loc, inner: rhs_expr, right_expr: body, pattern_bindings: td_bindings, sequence_effects: parser_ast@empty_effect_name_list() };
+            (synth_params, wrapped)
+        end
+    };
+    decl: Declaration <- Declaration { tag: 0, name: fn_name, parameters: final_params, return_type_name: ret_type, return_type_location: ret_type_loc, location: fn_loc, body: final_body, declared_effects: effects };
     (decl, rest_after_body)
 }
 
@@ -309,6 +321,55 @@ fn bindings_to_params(bindings: ListTupleDecomposeBinding) -> ListParam {
             b: TupleDecomposeBinding <- bindings.head;
             p: Param <- Param { name: b.name, type_name: b.type_str, location: parser_ast@zero_location() };
             parser_ast@cons_param(p, bindings_to_params(bindings.tail))
+        end
+    }
+}
+
+// Detect tuple decomposition pattern in function param slots.
+// slots = ( ( a : T , b : U ) ) -> ... for the TD case.
+// Returns the bindings if found, nil otherwise.
+fn extract_td_bindings_from_params(slots: ListTokenSlot) -> ListTupleDecomposeBinding proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> parser_ast@nil_tuple_decompose_bindings();
+        false -> case slots.head.token.kind == kinds.left_paren of {
+            true -> case slots.tail.is_nil of {
+                true -> parser_ast@nil_tuple_decompose_bindings();
+                false -> case slots.tail.head.token.kind == kinds.left_paren of {
+                    true -> case slots.tail.tail.is_nil of {
+                        true -> parser_ast@nil_tuple_decompose_bindings();
+                        false -> case slots.tail.tail.head.token.kind == kinds.identifier of {
+                            true -> do
+                                td_result: TupleDecomposeResult <- parser_tuples@extract_tuple_decompose_pattern_from_slots(slots.tail);
+                                td_result.bindings
+                            end;
+                            false -> parser_ast@nil_tuple_decompose_bindings()
+                        }
+                    };
+                    false -> parser_ast@nil_tuple_decompose_bindings()
+                }
+            };
+            false -> parser_ast@nil_tuple_decompose_bindings()
+        }
+    }
+}
+
+// Build tuple type string from decomposition bindings, e.g. "(int64,int64)"
+fn build_tuple_type_from_td_bindings(bindings: ListTupleDecomposeBinding) -> string {
+    inner: string <- build_tuple_type_inner(bindings);
+    concat("(", concat(inner, ")"))
+}
+
+fn build_tuple_type_inner(bindings: ListTupleDecomposeBinding) -> string {
+    case bindings.is_nil of {
+        true -> "";
+        false -> do
+            b: TupleDecomposeBinding <- bindings.head;
+            rest: string <- build_tuple_type_inner(bindings.tail);
+            case len(rest) == 0 of {
+                true -> b.type_str;
+                false -> concat(b.type_str, concat(",", rest))
+            }
         end
     }
 }
