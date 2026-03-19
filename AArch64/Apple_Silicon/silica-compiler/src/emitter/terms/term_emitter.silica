@@ -33,6 +33,16 @@ export term_to_asm_debug_with_outer/13;
 
 // Total stack bytes to deallocate for tuple-constructed call arguments.
 // tuple_make allocates on SP; callers must restore SP after the call returns.
+// Convert an integer offset to a # prefixed string for AArch64 immediates
+fn chase_offset_str(byte_offset: int64) -> string {
+    case byte_offset of {
+        0 -> "#0"; 8 -> "#8"; 16 -> "#16"; 24 -> "#24";
+        32 -> "#32"; 40 -> "#40"; 48 -> "#48"; 56 -> "#56";
+        64 -> "#64"; 72 -> "#72"; 80 -> "#80"; 88 -> "#88";
+        _: int64 -> "#0"
+    }
+}
+
 fn call_tuple_args_dealloc_bytes(term: SIRTerm) -> int64 {
     case term.kind < 0 of {
         true -> 0;
@@ -256,8 +266,16 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> rhs_reg;
                     false -> var@tuple_proj_body_bound(term.inner, rhs_reg, proj_sp_adj)
                 };
+                tuple_elem_count_b: int64 <- case term.inner.kind == 1 and reg_conventions@is_tuple_type(term.type_name) of { true -> prims_tuple@count_type_elements(term.type_name); false -> 0 };
                 ptr_binding_inner: string <- case term.inner.kind == 1 and reg_conventions@is_tuple_type(term.type_name) and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
-                    true -> concat("|_ptr.", concat(term.name, concat("=", rhs_reg)));
+                    true -> case tuple_elem_count_b > 2 of {
+                        true -> concat("|_ptr.", concat(term.name, "=X12"));
+                        false -> concat("|_ptr.", concat(term.name, concat("=", rhs_reg)))
+                    };
+                    false -> ""
+                };
+                save_base_b: string <- case tuple_elem_count_b > 2 and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
+                    true -> concat("    MOV X12, ", concat(rhs_reg, "\n"));
                     false -> ""
                 };
                 reg_binding_inner: string <- case tp_is_reg_b of {
@@ -291,10 +309,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> "";
                     false -> "\n"
                 };
-                concat(concat(rhs_asm, rhs_sep), case len(dealloc) > 0 of {
+                concat(concat(rhs_asm, rhs_sep), concat(save_base_b, case len(dealloc) > 0 of {
                     true -> concat(concat(body_asm, "\n"), dealloc);
                     false -> body_asm
-                })
+                }))
             end;
             false -> do
                 base_rhs: string <- let_dispatcher@compute_rhs_reg_top_level(term, bound_reg, dest);
@@ -332,8 +350,16 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 body_bound_tl: string <- var@tuple_proj_body_bound(term.inner, rhs_reg, 0);
                 tp_binding_tl: string <- var@new_tp_binding(term.name, term.inner, 0);
                 reg_binding_tl: string <- var@reg_binding(term.name, rhs_reg);
+                tuple_elem_count_tl: int64 <- case term.inner.kind == 1 and reg_conventions@is_tuple_type(term.type_name) of { true -> prims_tuple@count_type_elements(term.type_name); false -> 0 };
                 ptr_binding_tl: string <- case term.inner.kind == 1 and reg_conventions@is_tuple_type(term.type_name) and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
-                    true -> concat("|_ptr.", concat(term.name, concat("=", rhs_reg)));
+                    true -> case tuple_elem_count_tl > 2 of {
+                        true -> concat("|_ptr.", concat(term.name, "=X12"));
+                        false -> concat("|_ptr.", concat(term.name, concat("=", rhs_reg)))
+                    };
+                    false -> ""
+                };
+                save_base_tl: string <- case tuple_elem_count_tl > 2 and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
+                    true -> concat("    MOV X12, ", concat(rhs_reg, "\n"));
                     false -> ""
                 };
                 new_outer_tl: string <- concat(rhs_reg, concat(reg_binding_tl, concat(tp_binding_tl, concat(adj_binding_tl, concat(iap_tl, concat(vab_tl, ptr_binding_tl))))));
@@ -350,10 +376,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> "";
                     false -> "\n"
                 };
-                concat(concat(rhs_asm, rhs_sep), case len(dealloc) > 0 of {
+                concat(concat(rhs_asm, rhs_sep), concat(save_base_tl, case len(dealloc) > 0 of {
                     true -> concat(concat(body_asm, "\n"), dealloc);
                     false -> body_asm
-                })
+                }))
             end
         };
         4 -> case term.name == "main.print_atom" of {
@@ -626,25 +652,42 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 // If the tuple base is currently in X0 (common for function params), projecting elements into
                 // registers can clobber X0 and break subsequent projections. Preserve the base in X11 and
                 // use X11 as the effective base for reg-relative loads.
-                effective_base: string <- case tuple_in_reg and tuple_base_reg == "X0" of { true -> "X11"; false -> tuple_base_reg };
-                proj_mem_ref: string <- case len(tuple_base_reg) > 0 of {
-                    true -> var@reg_offset_for_index(effective_base, term.right_expr.value);
-                    false -> do
-                        sp_adj: int64 <- case len(va_str) > 0 of {
-                            true -> string_parse@string_to_int64(va_str);
-                            false -> do
-                                adj_str: string <- var@find_sp_binding(outer_reg, "_adj");
-                                case len(adj_str) > 0 of { true -> string_parse@string_to_int64(adj_str); false -> 0 }
-                            end
-                        };
-                        var@sp_offset_for_index_adj(term.right_expr.value, sp_adj)
-                    end
+                effective_base: string <- case len(tuple_base_reg) > 0 and tuple_base_reg == "X0" of { true -> "X11"; false -> tuple_base_reg };
+                proj_index: int64 <- string_parse@string_to_int64(term.right_expr.value);
+                proj_count: int64 <- case len(term.value) > 0 of { true -> string_parse@string_to_int64(term.value); false -> 0 };
+                // Right-nested binary pairs: for 3+ element tuples, indices > 0 need pointer chasing
+                needs_chase: bool <- len(tuple_base_reg) > 0 and proj_index > 0 and proj_count > 2;
+                proj_mem_ref: string <- case needs_chase of {
+                    true -> "";
+                    false -> case len(tuple_base_reg) > 0 of {
+                        true -> var@reg_offset_for_index(effective_base, term.right_expr.value);
+                        false -> do
+                            sp_adj: int64 <- case len(va_str) > 0 of {
+                                true -> string_parse@string_to_int64(va_str);
+                                false -> do
+                                    adj_str: string <- var@find_sp_binding(outer_reg, "_adj");
+                                    case len(adj_str) > 0 of { true -> string_parse@string_to_int64(adj_str); false -> 0 }
+                                end
+                            };
+                            var@sp_offset_for_index_adj(term.right_expr.value, sp_adj)
+                        end
+                    }
                 };
                 proj_prefix: string <- prims_tuple@ldr_prefix_for_type(term.type_name);
                 proj_dest_num: string <- case len(dest) > 0 of { true -> substring(dest, 1, len(dest)); false -> "0" };
                 proj_ldr_reg: string <- concat(proj_prefix, proj_dest_num);
                 preserve_base: string <- case effective_base == "X11" of { true -> "    MOV X11, X0\n"; false -> "" };
-                concat(preserve_base, concat("    LDR ", concat(proj_ldr_reg, concat(", ", proj_mem_ref))))
+                case needs_chase of {
+                    true -> do
+                        // For 3+ element tuples stored as (first, ptr_to_flat_rest):
+                        // Follow one pointer at [base+8], then flat access at [(index-1)*8]
+                        ptr_follow: string <- concat("    LDR X11, [", concat(effective_base, ", #8]\n"));
+                        rest_offset: string <- chase_offset_str((proj_index - 1) * 8);
+                        final_ldr: string <- concat("    LDR ", concat(proj_ldr_reg, concat(", [X11, ", concat(rest_offset, "]"))));
+                        concat(preserve_base, concat(ptr_follow, final_ldr))
+                    end;
+                    false -> concat(preserve_base, concat("    LDR ", concat(proj_ldr_reg, concat(", ", proj_mem_ref))))
+                }
             end;
             false -> case term.type_name == "string" and (term.name == "string_substring" or term.name == "string_substring_until_char") and term.right_expr.kind == 6 of {
             true -> do
