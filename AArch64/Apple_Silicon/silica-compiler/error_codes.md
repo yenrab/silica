@@ -50,6 +50,7 @@ Per silica-error-code-scheme.jsonld and silica-specification.md §1.6.
 - E2009 MissingTraitImplementation
 - E2010 TypeInferenceNotImplemented
 - E2011 FunctionLiteralMissingEffectDeclaration
+- E2012 TupleDecomposeBindingOverflow
 
 ### Effect checker (E3000-E3999)
 - E3000 EffectErrorDefault

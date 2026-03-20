@@ -11,10 +11,12 @@ use capability_fn_decl;
 use capability_expr_literal;
 use capability_tuple_decompose;
 use constraint_core;
+use atom_table;
 
 export slots_to_program/1;
 export validate_no_single_element_tuples/1;
 export validate_max_params/1;
+export validate_max_tuple_decompose_bindings/1;
 
 // Role codes (must match capabilities)
 fn role_fn_keyword() -> int64 { 1 }
@@ -1467,6 +1469,71 @@ fn validate_no_single_element_tuples(program: Program) -> ParseResult {
     (found: bool, err_loc: SourceLocation) <- decls_has_single_tuple_error(program.declarations);
     case found of {
         true -> parser_core@parse_err("E2006", err_loc, "single-element tuples are not allowed; use at least two elements", "sect4");
+        false -> parser_core@parse_ok(program)
+    }
+}
+
+// --- E2012: tuple decomposition binding count exceeds register file capacity ---
+
+fn count_decompose_bindings(bindings: ListTupleDecomposeBinding) -> int64 {
+    case bindings.is_nil of {
+        true -> 0;
+        false -> 1 + count_decompose_bindings(bindings.tail)
+    }
+}
+
+fn expr_has_too_many_decompose_bindings(expr: Expr) -> (bool, SourceLocation, int64) {
+    case expr.kind == 10 of {
+        true -> do
+            n: int64 <- count_decompose_bindings(expr.pattern_bindings);
+            case n > 14 of {
+                true -> (true, expr.location, n);
+                false -> do
+                    (r_found: bool, r_loc: SourceLocation, r_n: int64) <- expr_has_too_many_decompose_bindings(expr.right_expr);
+                    case r_found of {
+                        true -> (true, r_loc, r_n);
+                        false -> (false, parser_ast@zero_location(), 0)
+                    }
+                end
+            }
+        end;
+        false -> case expr.kind == -1 of {
+            true -> (false, parser_ast@zero_location(), 0);
+            false -> do
+                (inner_found: bool, inner_loc: SourceLocation, inner_n: int64) <- expr_has_too_many_decompose_bindings(expr.inner);
+                case inner_found of {
+                    true -> (true, inner_loc, inner_n);
+                    false -> expr_has_too_many_decompose_bindings(expr.right_expr)
+                }
+            end
+        }
+    }
+}
+
+fn decl_has_too_many_decompose_bindings(decl: Declaration) -> (bool, SourceLocation, int64) {
+    case decl.tag == 0 of {
+        true -> expr_has_too_many_decompose_bindings(decl.body);
+        false -> (false, parser_ast@zero_location(), 0)
+    }
+}
+
+fn decls_has_too_many_decompose_bindings(decls: ListDeclaration) -> (bool, SourceLocation, int64) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@zero_location(), 0);
+        false -> do
+            (head_found: bool, head_loc: SourceLocation, head_n: int64) <- decl_has_too_many_decompose_bindings(decls.head);
+            case head_found of {
+                true -> (true, head_loc, head_n);
+                false -> decls_has_too_many_decompose_bindings(decls.tail)
+            }
+        end
+    }
+}
+
+fn validate_max_tuple_decompose_bindings(program: Program) -> ParseResult {
+    (found: bool, err_loc: SourceLocation, n: int64) <- decls_has_too_many_decompose_bindings(program.declarations);
+    case found of {
+        true -> parser_core@parse_err("E2012", err_loc, concat("tuple decomposition pattern has ", concat(atom_table@int64_to_decimal_string(n), " elements; the AArch64 register file supports at most 14 simultaneous bindings (X0-X15 excluding X8, X12)")), "sect4.2");
         false -> parser_core@parse_ok(program)
     }
 }
