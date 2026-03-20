@@ -32,6 +32,10 @@ integrate:
 	for dir in $(SUBDIRS); do \
 		dir=$${dir%/}; \
 		echo "=== $$dir ==="; \
+		if [ "$$dir" = "error_enforcement_addition" ]; then \
+			$(MAKE) -C $$dir || failed=1; \
+			continue; \
+		fi; \
 		cd $$dir && \
 		if [ ! -f silica.config ]; then \
 			ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true; \
@@ -107,6 +111,10 @@ clean:
 	@for dir in $(SUBDIRS); do \
 		dir=$${dir%/}; \
 		echo "Cleaning $$dir..."; \
+		if [ "$$dir" = "error_enforcement_addition" ]; then \
+			$(MAKE) -C $$dir clean; \
+			continue; \
+		fi; \
 		cd $$dir && \
 		rm -f *.sout && \
 		for f in *.sams; do \
