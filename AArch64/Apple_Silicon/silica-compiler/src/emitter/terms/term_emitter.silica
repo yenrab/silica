@@ -39,6 +39,11 @@ fn chase_offset_str(byte_offset: int64) -> string {
         0 -> "#0"; 8 -> "#8"; 16 -> "#16"; 24 -> "#24";
         32 -> "#32"; 40 -> "#40"; 48 -> "#48"; 56 -> "#56";
         64 -> "#64"; 72 -> "#72"; 80 -> "#80"; 88 -> "#88";
+        96 -> "#96"; 104 -> "#104"; 112 -> "#112"; 120 -> "#120";
+        128 -> "#128"; 136 -> "#136"; 144 -> "#144"; 152 -> "#152";
+        160 -> "#160"; 168 -> "#168"; 176 -> "#176"; 184 -> "#184";
+        192 -> "#192"; 200 -> "#200"; 208 -> "#208"; 216 -> "#216";
+        224 -> "#224"; 232 -> "#232"; 240 -> "#240"; 248 -> "#248";
         _: int64 -> "#0"
     }
 }
@@ -175,7 +180,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             true -> do
                 clean_bound: string <- var@base_reg_of(bound_reg);
                 clean_outer: string <- var@base_reg_of(outer_reg);
-                base_rhs: string <- let_dispatcher@compute_rhs_reg_in_let(term, dest, bound_name, clean_bound, clean_outer);
+                base_rhs: string <- let_dispatcher@compute_rhs_reg_in_let(term, dest, bound_name, clean_bound, outer_reg);
                 rhs_reg: string <- case term.inner.kind == 0 and term.inner.type_name == "int64" and dest == "X0" and clean_bound == "X1" of {
                     true -> "X2";
                     false -> base_rhs
@@ -644,10 +649,27 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 va_key: string <- concat("_va.", tp_var);
                 va_str: string <- case len(tp_var) > 0 of { true -> var@find_sp_binding(outer_reg, va_key); false -> "" };
                 var_binding: string <- case len(tp_var) > 0 of { true -> var@find_sp_binding(outer_reg, tp_var); false -> "" };
+                // Look up the saved tuple pointer using find_last_sp_binding to get the INNERMOST binding.
+                // When nested tuple decompositions reuse the same root variable (e.g. %_td_0 for both
+                // outer and inner destructuring), outer_reg accumulates multiple _ptr.%_td_0=... entries.
+                // find_last_sp_binding returns the last (most recently added, innermost) occurrence,
+                // which is the correct register for the current scope rather than a stale outer binding.
+                saved_ptr_reg: string <- case len(tp_var) > 0 of { true -> var@find_last_sp_binding(outer_reg, concat("_ptr.", tp_var)); false -> "" };
                 tuple_in_reg: bool <- len(var_binding) > 0 and var@is_memory_ref(var_binding) == false;
-                tuple_base_reg: string <- case tuple_in_reg of {
-                    true -> var_binding;
-                    false -> case tp_var == bound_name of { true -> bound_reg; false -> "" }
+                // Priority order for the base register:
+                // 1. bound_reg when tp_var == bound_name and bound_reg is a real register (most up-to-date)
+                // 2. saved_ptr_reg from _ptr. binding in outer_reg (for function params and cross-scope refs)
+                // 3. var_binding from outer_reg
+                // 4. bound_reg fallback (even if memory ref) when tp_var == bound_name
+                tuple_base_reg: string <- case tp_var == bound_name and len(bound_reg) > 0 and var@is_memory_ref(bound_reg) == false of {
+                    true -> bound_reg;
+                    false -> case len(saved_ptr_reg) > 0 of {
+                        true -> saved_ptr_reg;
+                        false -> case tuple_in_reg of {
+                            true -> var_binding;
+                            false -> case tp_var == bound_name of { true -> bound_reg; false -> "" }
+                        }
+                    }
                 };
                 // If the tuple base is currently in X0 (common for function params), projecting elements into
                 // registers can clobber X0 and break subsequent projections. Preserve the base in X11 and
@@ -680,11 +702,14 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 case needs_chase of {
                     true -> do
                         // For 3+ element tuples stored as (first, ptr_to_flat_rest):
-                        // Follow one pointer at [base+8], then flat access at [(index-1)*8]
+                        // Follow one pointer at [base+8], then flat access at [(index-1)*8].
+                        // saved_ptr_reg (e.g. X12 for top-level params, or the actual reg for nested tuples)
+                        // is already incorporated into effective_base via tuple_base_reg above.
+                        setup_chase: string <- case effective_base == "X11" of { true -> preserve_base; false -> "" };
                         ptr_follow: string <- concat("    LDR X11, [", concat(effective_base, ", #8]\n"));
                         rest_offset: string <- chase_offset_str((proj_index - 1) * 8);
                         final_ldr: string <- concat("    LDR ", concat(proj_ldr_reg, concat(", [X11, ", concat(rest_offset, "]"))));
-                        concat(preserve_base, concat(ptr_follow, final_ldr))
+                        concat(setup_chase, concat(ptr_follow, final_ldr))
                     end;
                     false -> concat(preserve_base, concat("    LDR ", concat(proj_ldr_reg, concat(", ", proj_mem_ref))))
                 }

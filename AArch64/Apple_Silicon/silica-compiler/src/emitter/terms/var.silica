@@ -19,6 +19,9 @@ export sp_offset_for_index_adj/2;
 export reg_offset_for_index/2;
 export reg_binding/2;
 export extract_sp_bindings/1;
+export is_reg_bound/2;
+export next_free_int_reg/1;
+export find_last_sp_binding/2;
 
 fn find_pipe(s: string, i: int64) -> int64 {
     case i >= len(s) of {
@@ -225,4 +228,85 @@ fn emit_var_reg(term: SIRTerm, dest: string, reg: string) -> string {
             }
         end
     }
+}
+
+// Check if a register appears as a bound value in outer_reg.
+// Uses "|" delimited format: |varname=REGNAME. Matches exact register name only
+// (e.g. "X1" won't match "X10" or "X11" because those have extra digits before the next | or end).
+fn is_reg_bound(outer_reg: string, reg: string) -> bool {
+    key_mid: string <- concat(concat("=", reg), "|");
+    key_end: string <- concat("=", reg);
+    end_pos: int64 <- len(outer_reg) - len(key_end);
+    case find_str_at(outer_reg, key_mid, 0) >= 0 of {
+        true -> true;
+        false -> case end_pos >= 0 of {
+            true -> substring(outer_reg, end_pos, len(outer_reg)) == key_end;
+            false -> false
+        }
+    }
+}
+
+// Return the first integer register not already bound in outer_reg.
+// Scans X0-X7 then X9-X11, X13-X15 (skipping X8 = indirect call scratch, X12 = saved tuple ptr).
+fn next_free_int_reg(outer_reg: string) -> string {
+    case is_reg_bound(outer_reg, "X0") == false of {
+        true -> "X0";
+        false -> case is_reg_bound(outer_reg, "X1") == false of {
+            true -> "X1";
+            false -> case is_reg_bound(outer_reg, "X2") == false of {
+                true -> "X2";
+                false -> case is_reg_bound(outer_reg, "X3") == false of {
+                    true -> "X3";
+                    false -> case is_reg_bound(outer_reg, "X4") == false of {
+                        true -> "X4";
+                        false -> case is_reg_bound(outer_reg, "X5") == false of {
+                            true -> "X5";
+                            false -> case is_reg_bound(outer_reg, "X6") == false of {
+                                true -> "X6";
+                                false -> case is_reg_bound(outer_reg, "X7") == false of {
+                                    true -> "X7";
+                                    false -> case is_reg_bound(outer_reg, "X9") == false of {
+                                        true -> "X9";
+                                        false -> case is_reg_bound(outer_reg, "X10") == false of {
+                                            true -> "X10";
+                                            false -> case is_reg_bound(outer_reg, "X11") == false of {
+                                                true -> "X11";
+                                                false -> case is_reg_bound(outer_reg, "X13") == false of {
+                                                    true -> "X13";
+                                                    false -> case is_reg_bound(outer_reg, "X14") == false of {
+                                                        true -> "X14";
+                                                        false -> "X15"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Return the last occurrence of var_name= in outer_reg (last = innermost/most-recent scope).
+// When nested decompositions reuse the same root variable (e.g. %_td_0 in both outer and inner
+// tuple destructuring), outer_reg accumulates multiple bindings with the same key. The last
+// binding is always from the innermost scope and should take precedence over the earlier ones.
+fn find_last_sp_binding_rec(outer_reg: string, key: string, start: int64, last_pos: int64) -> string {
+    pos: int64 <- find_str_at(outer_reg, key, start);
+    case pos < 0 of {
+        true -> case last_pos < 0 of {
+            true -> "";
+            false -> find_sp_binding_extract(outer_reg, last_pos + len(key))
+        };
+        false -> find_last_sp_binding_rec(outer_reg, key, pos + 1, pos)
+    }
+}
+
+fn find_last_sp_binding(outer_reg: string, var_name: string) -> string {
+    key: string <- concat("|", concat(var_name, "="));
+    find_last_sp_binding_rec(outer_reg, key, 0, -1)
 }
