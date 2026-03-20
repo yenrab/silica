@@ -890,7 +890,13 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                             true -> do term_to_asm_opt_bound_debug(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                             false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                         };
-                                        (concat(concat(concat(l, "\n"), r), "\n"), "")
+                                        // For float32/float64: emit right before left. Left writes to S1/D1 (left_reg),
+                                        // which may be the source register for the right var (if bound to S1/D1).
+                                        // Emitting right first preserves the right operand before left clobbers its source.
+                                        case is_float32 or is_float64 of {
+                                            true -> (concat(concat(concat(r, "\n"), l), "\n"), "");
+                                            false -> (concat(concat(concat(l, "\n"), r), "\n"), "")
+                                        }
                                     end;
                                     false -> do
                                         // Arithmetic expects left in r1, right in r2 (same as add/mul). For non-string: left to left_reg, right to right_reg.
@@ -1040,7 +1046,12 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                         false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                     }
                                 };
-                                (l, r)
+                                // For float32/float64: emit right before left. Left writes to S1/D1 (left_reg),
+                                // which may be the source register for the right var. Emit right first to preserve it.
+                                case is_float32 or is_float64 of {
+                                    true -> (r, l);
+                                    false -> (l, r)
+                                }
                             end
                         }
                     };
