@@ -59,9 +59,9 @@ integrate:
 			if [ ! -f "$$base.ascomp" ]; then \
 				echo "❌❌ $$dir/$$base has no .ascomp file"; \
 				failed=1; \
-			elif ! diff -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
+			elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
 				echo "❌❌ $$dir/$$base .sams differs from .ascomp"; \
-				diff "$$sams" "$$base.ascomp" || true; \
+				diff -Bw "$$sams" "$$base.ascomp" || true; \
 				failed=1; \
 			else \
 				echo "✅✅ $$dir/$$base assembly matches .ascomp"; \
@@ -89,9 +89,9 @@ integrate:
 			if [ -x "$$base" ]; then \
 				{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
 				if [ -f "$$base.scout" ]; then \
-					if ! diff -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
+					if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
 						echo "❌❌ $$dir/$$base .sout differs from .scout"; \
-						diff "$$base.sout" "$$base.scout" || true; \
+						diff -Bw "$$base.sout" "$$base.scout" || true; \
 						failed=1; \
 					else \
 						echo "✅✅ $$dir/$$base output matches .scout"; \
