@@ -259,7 +259,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 tp_is_reg_b: bool <- len(tp_ptr_reg_b) > 0;
                 body_bound: string <- case tp_is_reg_b of {
                     true -> rhs_reg;
-                    false -> var@tuple_proj_body_bound(term.inner, rhs_reg, proj_sp_adj)
+                    false -> case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(proj_tvs) > 0 of {
+                        true -> var@sp_offset_for_index_adj(term.inner.right_expr.value, proj_sp_adj);
+                        false -> var@tuple_proj_body_bound(term.inner, rhs_reg, proj_sp_adj)
+                    }
                 };
                 tuple_elem_count_b: int64 <- case term.inner.kind == 1 and reg_conventions@is_tuple_type(term.type_name) of { true -> prims_tuple@count_type_elements(term.type_name); false -> 0 };
                 ptr_binding_inner: string <- case term.inner.kind == 1 and reg_conventions@is_tuple_type(term.type_name) and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
@@ -274,7 +277,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     false -> ""
                 };
                 reg_binding_inner: string <- case tp_is_reg_b of {
-                    true -> concat("|", concat(term.name, concat("=", rhs_reg)));
+                    true -> case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(proj_tvs) > 0 of {
+                        true -> concat("|", concat(term.name, concat("=", var@sp_offset_for_index_adj(term.inner.right_expr.value, proj_sp_adj))));
+                        false -> concat("|", concat(term.name, concat("=", rhs_reg)))
+                    };
                     false -> ""
                 };
                 new_outer_raw: string <- case tp_is_reg_b of {
@@ -342,9 +348,16 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> concat("|_va.", concat(term.name, concat("=", atom_table@int64_to_decimal_string(tm_adj_tl))));
                     false -> ""
                 };
-                body_bound_tl: string <- var@tuple_proj_body_bound(term.inner, rhs_reg, 0);
+                is_simple_tuple_make: bool <- term.inner.kind == 6 and term.inner.name == "tuple_make" and tm_adj_tl == 0;
+                body_bound_tl: string <- case is_simple_tuple_make of {
+                    true -> "SP";
+                    false -> var@tuple_proj_body_bound(term.inner, rhs_reg, 0)
+                };
                 tp_binding_tl: string <- var@new_tp_binding(term.name, term.inner, 0);
-                reg_binding_tl: string <- var@reg_binding(term.name, rhs_reg);
+                reg_binding_tl: string <- case is_simple_tuple_make of {
+                    true -> concat("|", concat(term.name, "=SP"));
+                    false -> var@reg_binding(term.name, rhs_reg)
+                };
                 tuple_elem_count_tl: int64 <- case term.inner.kind == 1 and reg_conventions@is_tuple_type(term.type_name) of { true -> prims_tuple@count_type_elements(term.type_name); false -> 0 };
                 ptr_binding_tl: string <- case term.inner.kind == 1 and reg_conventions@is_tuple_type(term.type_name) and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
                     true -> case tuple_elem_count_tl > 2 of {
@@ -357,7 +370,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> concat("    MOV X12, ", concat(rhs_reg, "\n"));
                     false -> ""
                 };
-                new_outer_tl: string <- concat(rhs_reg, concat(reg_binding_tl, concat(tp_binding_tl, concat(adj_binding_tl, concat(iap_tl, concat(vab_tl, ptr_binding_tl))))));
+                outer_base_tl: string <- case is_simple_tuple_make of { true -> "SP"; false -> rhs_reg };
+                new_outer_tl: string <- concat(outer_base_tl, concat(reg_binding_tl, concat(tp_binding_tl, concat(adj_binding_tl, concat(iap_tl, concat(vab_tl, ptr_binding_tl))))));
                 body_asm: string <- case debug of {
                     true -> do term_to_asm_opt_bound_debug(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound_tl, new_outer_tl, true) end;
                     false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound_tl, new_outer_tl, false)
@@ -651,7 +665,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 // 2. saved_ptr_reg from _ptr. binding in outer_reg (for function params and cross-scope refs)
                 // 3. var_binding from outer_reg
                 // 4. bound_reg fallback (even if memory ref) when tp_var == bound_name
-                tuple_base_reg: string <- case tp_var == bound_name and len(bound_reg) > 0 and var@is_memory_ref(bound_reg) == false of {
+                tuple_base_reg_raw: string <- case tp_var == bound_name and len(bound_reg) > 0 and var@is_memory_ref(bound_reg) == false of {
                     true -> bound_reg;
                     false -> case len(saved_ptr_reg) > 0 of {
                         true -> saved_ptr_reg;
@@ -661,14 +675,14 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         }
                     }
                 };
-                // If the tuple base is currently in X0 (common for function params), projecting elements into
-                // registers can clobber X0 and break subsequent projections. Preserve the base in X11 and
-                // use X11 as the effective base for reg-relative loads.
+                tuple_base_reg: string <- case len(va_str) > 0 of {
+                    true -> "";
+                    false -> tuple_base_reg_raw
+                };
                 effective_base: string <- case len(tuple_base_reg) > 0 and tuple_base_reg == "X0" of { true -> "X11"; false -> tuple_base_reg };
                 proj_index: int64 <- string_parse@string_to_int64(term.right_expr.value);
                 proj_count: int64 <- case len(term.value) > 0 of { true -> string_parse@string_to_int64(term.value); false -> 0 };
-                // Right-nested binary pairs: for 3+ element tuples, indices > 0 need pointer chasing
-                needs_chase: bool <- len(tuple_base_reg) > 0 and proj_index > 0 and proj_count > 2;
+                needs_chase: bool <- false;
                 proj_mem_ref: string <- case needs_chase of {
                     true -> "";
                     false -> case len(tuple_base_reg) > 0 of {

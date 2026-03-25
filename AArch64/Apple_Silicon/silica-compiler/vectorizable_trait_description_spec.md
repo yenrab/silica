@@ -372,7 +372,7 @@ NEON requirements:
 For buf(R, Space, ref(R, Space, A), N) with poor locality, gather/scatter may underperform.
 
 8.2 Explicit Packing API
-pack_aosoa : buf(R, Space, ref(R, Space, A), N) -> buf(R, Space, byte, M) -> PackPlan[A] -> block_elems:int64 -> PackedView
+pack_aosoa : buf(R, Space, ref(R, Space, A), N) -> buf(R, Space, uint8, M) -> PackPlan[A] -> block_elems:int64 -> PackedView
 unpack_aosoa : PackedView -> buf(R, Space, ref(R, Space, A), N) -> UnpackPlan[A] -> atom
 
 8.3 PackedView

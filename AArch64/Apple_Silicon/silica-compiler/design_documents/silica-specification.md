@@ -205,7 +205,7 @@ Silica source code is UTF-8 encoded. The language uses ASCII characters for keyw
 The following identifiers are reserved keywords:
 
 ```
-actor      actor_ref  atom      atomic    boolean      buf       byte      case
+actor      actor_ref  atom      atomic    boolean      buf       case
 cast       char       concurrency core_id  core_set device_io effect
 efficiency_cores else end        enum      export    false     float16   float32
 float64    fn         for        from      hot_swap   if        impl      import    int8
@@ -2622,12 +2622,7 @@ type uint32  // 32-bit unsigned integer (0 to 4,294,967,295)
 type uint64  // 64-bit unsigned integer (0 to 18,446,744,073,709,551,615)
 ```
 
-**Byte type:**
-The `byte` type is an alias for `uint8`, representing a single byte. It is commonly used for buffer element types (e.g., `buf(L, Space, byte, N)`).
-
-```
-type byte   // 8-bit unsigned byte (same as uint8)
-```
+For 8-bit unsigned buffer elements (e.g. raw octets), use `uint8` (e.g. `buf(L, Space, uint8, N)`).
 
 #### 4.1.4 Floating-Point Types
 Silica provides multiple floating-point types with different precisions:
@@ -10400,10 +10395,10 @@ module net.tcp {
     pub fn accept(sock: tcp_socket)
         -> result<tcp_connection, net_error> proc[networking]
 
-    pub fn send(sock: tcp_connection, data: buf(R, normal, byte, size))
+    pub fn send(sock: tcp_connection, data: buf(R, normal, uint8, size))
         -> result<int, net_error> proc[networking]
 
-    pub fn receive(sock: tcp_connection, buffer: buf(R, normal, byte, max_size))
+    pub fn receive(sock: tcp_connection, buffer: buf(R, normal, uint8, max_size))
         -> result<int, net_error> proc[networking]
 
     pub fn shutdown(sock: tcp_connection, direction: shutdown_direction)
@@ -10420,10 +10415,10 @@ module net.udp {
     pub type udp_socket = socket<udp>
     pub type udp_endpoint = socket_addr
 
-    pub fn send_to(sock: udp_socket, data: buf(R, normal, byte, size), dest: socket_addr)
+    pub fn send_to(sock: udp_socket, data: buf(R, normal, uint8, size), dest: socket_addr)
         -> result<int, net_error> proc[networking]
 
-    pub fn receive_from(sock: udp_socket, buffer: buf(R, normal, byte, max_size))
+    pub fn receive_from(sock: udp_socket, buffer: buf(R, normal, uint8, max_size))
         -> result<(int, socket_addr), net_error> proc[networking]
 
     pub fn join_multicast_group(sock: udp_socket, group_addr: ip_addr, interface: ip_addr)
@@ -10444,7 +10439,7 @@ module net.packet {
         dest_mac: mac_addr,
         src_mac: mac_addr,
         ethertype: int,
-        payload: buf(R, normal, byte, size)
+        payload: buf(R, normal, uint8, size)
     }
 
     pub type ipv4_packet = {
@@ -10460,14 +10455,14 @@ module net.packet {
         checksum: int,
         src_ip: ipv4_addr,
         dest_ip: ipv4_addr,
-        options: buf(R, normal, byte, opt_size),
-        payload: buf(R, normal, byte, payload_size)
+        options: buf(R, normal, uint8, opt_size),
+        payload: buf(R, normal, uint8, payload_size)
     }
 
-    pub fn parse_ethernet_frame(data: buf(R, normal, byte, frame_size))
+    pub fn parse_ethernet_frame(data: buf(R, normal, uint8, frame_size))
         -> result<ethernet_frame, parse_error> proc[]
 
-    pub fn parse_ipv4_packet(data: buf(R, normal, byte, packet_size))
+    pub fn parse_ipv4_packet(data: buf(R, normal, uint8, packet_size))
         -> result<ipv4_packet, parse_error> proc[]
 
     pub fn calculate_ipv4_checksum(packet: ipv4_packet)
@@ -10493,7 +10488,7 @@ module net.utils {
         -> list<network_interface> proc[networking]
 
     pub fn create_network_buffer(size: int)
-        -> buf(R, normal_noncacheable, byte, size) proc[networking, mem(normal_noncacheable)]
+        -> buf(R, normal_noncacheable, uint8, size) proc[networking, mem(normal_noncacheable)]
 
     pub fn optimize_buffer_for_nic(buffer: buf(R, normal_noncacheable, T, size), nic_device: device_ref)
         -> buf(R, normal_noncacheable, T, size) proc[networking]
@@ -12750,7 +12745,7 @@ sequence proc[mem(normal)]
     region2: region(L2, normal_writethrough) <- alloc_region(normal_writethrough);
     // Non-cacheable for DMA buffers
     dma_region: region(L3, normal_noncacheable) <- alloc_region(normal_noncacheable);
-    dma_buffer: buf(L3, normal_noncacheable, byte, 4096) <- alloc_buf(dma_region, 4096);
+    dma_buffer: buf(L3, normal_noncacheable, uint8, 4096) <- alloc_buf(dma_region, 4096);
     // Atomic memory for shared counters
     atomic_region: region(L4, atomic) <- alloc_region(atomic);
     counter: atomic_ref(L4, atomic, int64) <- alloc_atomic(atomic_region, 0);
