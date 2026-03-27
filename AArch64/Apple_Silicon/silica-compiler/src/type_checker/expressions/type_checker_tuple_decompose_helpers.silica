@@ -9,6 +9,18 @@ export add_bindings_to_context/2;
 export pattern_bindings_valid/2;
 export pattern_types_match_rhs/2;
 export build_pattern_type_from_bindings/1;
+export CasePatternInfo/0;
+export case_parse_pattern/1;
+export case_extend_context_for_pattern/3;
+export case_pattern_matches_scrutinee/2;
+export case_pattern_has_named_binding/1;
+export case_pattern_binding_name/1;
+export case_merge_bool_coverage/2;
+export case_bool_coverage_from_pattern_str/2;
+export case_bool_coverage_ok/1;
+export case_scan_bool_coverage/2;
+export CaseBoolCoverage/0;
+export infer_case_first_rhs_type/3;
 
 fn tuple_needs_parens(type_str: string) -> bool {
     len(type_str) >= 2 and substring(type_str, 0, 1) == "("
@@ -39,6 +51,81 @@ fn infer_literal_type(value: string) -> string {
     }
 }
 
+// Parse " ( T1 , T2 ) -> R " return type (same convention as check_user_defined_call).
+fn find_arrow_pos_infer(s: string, i: int64) -> int64 {
+    case i + 4 > len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 4) == " -> " of {
+            true -> i;
+            false -> find_arrow_pos_infer(s, i + 1)
+        }
+    }
+}
+
+fn trim_leading_infer_from(s: string, i: int64) -> string {
+    case i >= len(s) of {
+        true -> "";
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> trim_leading_infer_from(s, i + 1);
+            false -> substring(s, i, len(s))
+        }
+    }
+}
+
+fn parse_function_return_from_scheme(func_type: string) -> string {
+    arrow_pos: int64 <- find_arrow_pos_infer(func_type, 0);
+    case arrow_pos < 0 of {
+        true -> "";
+        false -> trim_leading_infer_from(substring(func_type, arrow_pos + 4, len(func_type)), 0)
+    }
+}
+
+fn is_arithmetic_op_infer(op: string) -> bool {
+    op == "+" or op == "-" or op == "*" or op == "/" or op == "%"
+}
+
+fn is_comparison_op_infer(op: string) -> bool {
+    op == "<" or op == ">" or op == "<=" or op == ">=" or op == "==" or op == "!="
+}
+
+fn is_logical_op_infer(op: string) -> bool {
+    op == "and" or op == "or"
+}
+
+// Kind 3: match check_binary_op — arithmetic result type = operand type when both agree; comparisons/logical -> boolean.
+fn infer_binary_expr_type(expr: Expr, context: TypeContext) -> string {
+    op: string <- expr.value;
+    case is_arithmetic_op_infer(op) of {
+        true -> do
+            lt: string <- infer_expr_type(expr.inner, context);
+            rt: string <- infer_expr_type(expr.right_expr, context);
+            case len(lt) > 0 of {
+                true -> case len(rt) > 0 of {
+                    true -> case lt == rt of { true -> lt; false -> "" };
+                    false -> lt
+                };
+                false -> case len(rt) > 0 of { true -> rt; false -> "" }
+            }
+        end;
+        false -> case is_comparison_op_infer(op) of {
+            true -> "boolean";
+            false -> case is_logical_op_infer(op) of {
+                true -> "boolean";
+                false -> ""
+            }
+        }
+    }
+}
+
+// Kind 4: user function return type from env scheme "(T) -> R"; builtins not inferred here (conservative "").
+fn infer_call_expr_type(expr: Expr, context: TypeContext) -> string {
+    (found: bool, typ: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
+    case found of {
+        false -> "";
+        true -> parse_function_return_from_scheme(typ)
+    }
+}
+
 fn infer_expr_type(expr: Expr, context: TypeContext) -> string {
     case expr.kind of {
         0 -> infer_literal_type(expr.value);
@@ -47,6 +134,8 @@ fn infer_expr_type(expr: Expr, context: TypeContext) -> string {
             case found of { true -> resolved; false -> "" }
         end;
         2 -> infer_expr_type(expr.inner, context);
+        3 -> infer_binary_expr_type(expr, context);
+        4 -> infer_call_expr_type(expr, context);
         5 -> "atom";
         6 -> expr.value;
         7 -> "boolean";
@@ -65,7 +154,24 @@ fn infer_expr_type(expr: Expr, context: TypeContext) -> string {
             };
             concat("(", concat(concat(first_wrapped, ","), concat(rest_wrapped, ")")))
         end;
+        13 -> infer_case_expr_kind13(expr, context);
+        19 -> infer_if_expr_kind19(expr, context);
         _: int64 -> ""
+    }
+}
+
+fn infer_if_expr_kind19(expr: Expr, context: TypeContext) -> string {
+    then_t: string <- infer_expr_type(expr.right_expr.inner, context);
+    else_t: string <- infer_expr_type(expr.right_expr.right_expr, context);
+    case expr.right_expr.right_expr.kind < 0 of {
+        true -> then_t;
+        false -> case len(then_t) > 0 of {
+            true -> case len(else_t) > 0 of {
+                true -> case types_equal(then_t, else_t) of { true -> then_t; false -> "" };
+                false -> ""
+            };
+            false -> ""
+        }
     }
 }
 
@@ -276,4 +382,254 @@ fn strip_spaces_from(s: string, i: int64, acc: string) -> string {
 struct CollectTypeResult {
     first_type: string,
     rest: ListTupleDecomposeBinding
+}
+
+// Case pattern: kind 0=bool lit, 1=string lit, 2=named binding, 3=wildcard, 4=int literal
+struct CasePatternInfo {
+    is_valid: bool,
+    pattern_kind: int64,
+    bool_lit: bool,
+    str_lit: string,
+    int_lit_str: string,
+    bind_name: string,
+    bind_type: string
+}
+
+struct CaseBoolCoverage {
+    has_true: int64,
+    has_false: int64,
+    has_wild: int64
+}
+
+fn case_flip_bool(b: bool) -> bool {
+    case b of {
+        true -> false;
+        false -> true
+    }
+}
+
+fn case_find_colon_outside_string(s: string, i: int64, in_string: bool) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "\"" of {
+            true -> case_find_colon_outside_string(s, i + 1, case_flip_bool(in_string));
+            false -> case in_string of {
+                true -> case_find_colon_outside_string(s, i + 1, in_string);
+                false -> case substring(s, i, i + 1) == ":" of {
+                    true -> i;
+                    false -> case_find_colon_outside_string(s, i + 1, false)
+                }
+            }
+        }
+    }
+}
+
+fn case_close_quote_index(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "\"" of {
+            true -> i;
+            false -> case_close_quote_index(s, i + 1)
+        }
+    }
+}
+
+fn case_char_is_digit(c: string) -> bool {
+    c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9"
+}
+
+fn case_all_digits_from(s: string, i: int64) -> bool {
+    case i >= len(s) of {
+        true -> true;
+        false -> case case_char_is_digit(substring(s, i, i + 1)) of {
+            true -> case_all_digits_from(s, i + 1);
+            false -> false
+        }
+    }
+}
+
+fn case_string_is_signed_int_literal(s: string) -> bool {
+    case len(s) == 0 of {
+        true -> false;
+        false -> case substring(s, 0, 1) == "-" of {
+            true -> case len(s) < 2 of { true -> false; false -> case_all_digits_from(s, 1) };
+            false -> case_all_digits_from(s, 0)
+        }
+    }
+}
+
+fn case_parse_pattern(pat_str: string) -> CasePatternInfo {
+    t: string <- strip_spaces(pat_str);
+    case len(t) == 0 of {
+        true -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "" };
+        false -> case substring(t, 0, 1) == "\"" of {
+            true -> do
+                cq: int64 <- case_close_quote_index(t, 1);
+                case cq < 0 of {
+                    true -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "" };
+                    false -> CasePatternInfo { is_valid: true, pattern_kind: 1, bool_lit: false, str_lit: substring(t, 1, cq), int_lit_str: "", bind_name: "", bind_type: "" }
+                }
+            end;
+            false -> case t == "true" of {
+                true -> CasePatternInfo { is_valid: true, pattern_kind: 0, bool_lit: true, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "" };
+                false -> case t == "false" of {
+                    true -> CasePatternInfo { is_valid: true, pattern_kind: 0, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "" };
+                    false -> do
+                        colon: int64 <- case_find_colon_outside_string(t, 0, false);
+                        case colon >= 0 of {
+                            true -> do
+                                name_raw: string <- strip_spaces(substring(t, 0, colon));
+                                typ_raw: string <- strip_spaces(substring(t, colon + 1, len(t)));
+                                case len(name_raw) == 0 or len(typ_raw) == 0 of {
+                                    true -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "" };
+                                    false -> case name_raw == "_" of {
+                                        true -> CasePatternInfo { is_valid: true, pattern_kind: 3, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "_", bind_type: typ_raw };
+                                        false -> CasePatternInfo { is_valid: true, pattern_kind: 2, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: name_raw, bind_type: typ_raw }
+                                    }
+                                }
+                            end;
+                            false -> case case_string_is_signed_int_literal(t) of {
+                                true -> CasePatternInfo { is_valid: true, pattern_kind: 4, bool_lit: false, str_lit: "", int_lit_str: t, bind_name: "", bind_type: "" };
+                                false -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "" }
+                            }
+                        }
+                    end
+                }
+            }
+        }
+    }
+}
+
+fn is_primitive_numeric_type_name(t: string) -> bool {
+    t == "int8" or t == "int16" or t == "int32" or t == "int64" or t == "uint8" or t == "uint16" or t == "uint32" or t == "uint64" or t == "float16" or t == "float32" or t == "float64"
+}
+
+fn case_pattern_matches_scrutinee(pi: CasePatternInfo, scrutinee_type: string) -> bool {
+    case pi.is_valid of {
+        false -> false;
+        true -> case pi.pattern_kind of {
+            0 -> types_equal(scrutinee_type, "boolean");
+            1 -> types_equal(scrutinee_type, "string");
+            2 -> types_equal(scrutinee_type, pi.bind_type);
+            3 -> types_equal(scrutinee_type, pi.bind_type);
+            4 -> is_primitive_numeric_type_name(scrutinee_type);
+            _: int64 -> false
+        }
+    }
+}
+
+fn case_pattern_has_named_binding(pi: CasePatternInfo) -> bool {
+    case pi.is_valid of {
+        false -> false;
+        true -> case pi.pattern_kind of {
+            2 -> len(pi.bind_name) > 0;
+            _: int64 -> false
+        }
+    }
+}
+
+fn case_pattern_binding_name(pi: CasePatternInfo) -> string {
+    case pi.pattern_kind of {
+        2 -> pi.bind_name;
+        _: int64 -> ""
+    }
+}
+
+fn case_extend_context_for_pattern(context: TypeContext, scrutinee_type: string, pat_str: string) -> TypeContext {
+    pi: CasePatternInfo <- case_parse_pattern(pat_str);
+    case pi.is_valid of {
+        false -> context;
+        true -> case pi.pattern_kind of {
+            2 -> case types_equal(scrutinee_type, pi.bind_type) of {
+                true -> TypeContext { env: type_checker_core@add_symbol(context.env, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list()) };
+                false -> context
+            };
+            _: int64 -> context
+        }
+    }
+}
+
+fn int_or(x: int64, y: int64) -> int64 {
+    case x == 1 of { true -> 1; false -> y }
+}
+
+fn case_merge_bool_coverage(a: CaseBoolCoverage, b: CaseBoolCoverage) -> CaseBoolCoverage {
+    mt: int64 <- int_or(a.has_true, b.has_true);
+    mf: int64 <- int_or(a.has_false, b.has_false);
+    mw: int64 <- int_or(a.has_wild, b.has_wild);
+    CaseBoolCoverage { has_true: mt, has_false: mf, has_wild: mw }
+}
+
+fn case_bool_coverage_from_pattern_str(pat_str: string, scrutinee_type: string) -> CaseBoolCoverage {
+    pi: CasePatternInfo <- case_parse_pattern(pat_str);
+    case types_equal(scrutinee_type, "boolean") of {
+        false -> CaseBoolCoverage { has_true: 0, has_false: 0, has_wild: 0 };
+        true -> case pi.is_valid of {
+            false -> CaseBoolCoverage { has_true: 0, has_false: 0, has_wild: 0 };
+            true -> case pi.pattern_kind of {
+                0 -> case strip_spaces(pat_str) == "true" of {
+                    true -> CaseBoolCoverage { has_true: 1, has_false: 0, has_wild: 0 };
+                    false -> CaseBoolCoverage { has_true: 0, has_false: 1, has_wild: 0 }
+                };
+                3 -> case types_equal(pi.bind_type, "boolean") of {
+                    true -> CaseBoolCoverage { has_true: 0, has_false: 0, has_wild: 1 };
+                    false -> CaseBoolCoverage { has_true: 0, has_false: 0, has_wild: 0 }
+                };
+                _: int64 -> CaseBoolCoverage { has_true: 0, has_false: 0, has_wild: 0 }
+            }
+        }
+    }
+}
+
+fn case_bool_coverage_ok(cov: CaseBoolCoverage) -> bool {
+    case cov.has_wild == 1 of {
+        true -> true;
+        false -> case cov.has_true == 1 of {
+            true -> cov.has_false == 1;
+            false -> false
+        }
+    }
+}
+
+fn case_scan_bool_coverage(branches: Expr, scrutinee_type: string) -> CaseBoolCoverage {
+    case branches.kind == -1 of {
+        true -> CaseBoolCoverage { has_true: 0, has_false: 0, has_wild: 0 };
+        false -> case branches.kind == 17 of {
+            true -> do
+                b: Expr <- branches.inner;
+                rest: Expr <- branches.right_expr;
+                cov: CaseBoolCoverage <- case_bool_coverage_from_pattern_str(b.value, scrutinee_type);
+                rest_cov: CaseBoolCoverage <- case_scan_bool_coverage(rest, scrutinee_type);
+                case_merge_bool_coverage(cov, rest_cov)
+            end;
+            false -> CaseBoolCoverage { has_true: 0, has_false: 0, has_wild: 0 }
+        }
+    }
+}
+
+fn infer_case_expr_kind13(expr: Expr, context: TypeContext) -> string {
+    scrut_t: string <- infer_expr_type(expr.inner, context);
+    case len(scrut_t) == 0 of {
+        true -> "";
+        false -> infer_case_first_rhs_type(expr.right_expr, scrut_t, context)
+    }
+}
+
+fn infer_case_first_rhs_type(branches: Expr, scrutinee_type: string, context: TypeContext) -> string {
+    case branches.kind == -1 of {
+        true -> "";
+        false -> case branches.kind == 17 of {
+            true -> do
+                br: Expr <- branches.inner;
+                case br.kind == 18 of {
+                    false -> "";
+                    true -> do
+                        ext: TypeContext <- case_extend_context_for_pattern(context, scrutinee_type, br.value);
+                        infer_expr_type(br.right_expr, ext)
+                    end
+                }
+            end;
+            false -> ""
+        }
+    }
 }

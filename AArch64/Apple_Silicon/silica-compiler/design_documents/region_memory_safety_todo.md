@@ -12,6 +12,16 @@ This document describes what remains to be done to make Silica's region-based me
 
 ---
 
+## Terminology: memory region vs arena
+
+In Silica, **memory region** (often **region**) is a typed allocation unit: `region(L, Space)` with a lifetime identifier `L`, a memory space `Space` (`normal`, `atomic`, `device`, …), and static region lifetime analysis (see [silica-specification.md](silica-specification.md) §12).
+
+In many other languages, **arena** names an allocator *pattern*, not a full type-system feature: a pool of memory from which objects are suballocated in bump or stack order and typically reclaimed together when the arena is reset or destroyed. Examples include C/C++ per-request or per-object arena allocators, Rust crates such as `typed-arena` or `bumpalo`, and JVM thread-local allocation buffers (sometimes called arenas). Some garbage collectors also use **arena** for age-based or nursery subspaces.
+
+**Silica memory regions vs those arenas:** A Silica region is not merely an arena allocator under another name. Regions are first-class types with lifetime parameters, integrate with effects (`mem(Space)`), and are verified by the compiler. A concrete implementation may use bump allocation *inside* a region’s backing storage—similar to *how* a classic arena works—but that is representation detail, not the definition of *region* in the language.
+
+---
+
 ## 1. Current Implementation Status
 
 ### 1.1 What Is Implemented
@@ -22,17 +32,16 @@ This document describes what remains to be done to make Silica's region-based me
 | Memory space validation | Same | ✓ Validates `normal`, `normal_writeback`, `normal_writethrough`, `normal_noncacheable`, `atomic`, `device` |
 | Effect tracking for region ops | `effect_checker/effect_checker_memory_regions.silica` | ✓ Requires `mem(Space)` for `alloc_region`, `alloc_ref`, `read_ref`, `write_ref`, etc. |
 | SIR prim generation | `sir_generator/terms/memory_region_calls.silica` | ✓ Maps region built-ins to SIR prim terms |
-| Code emission | `emitter/terms/prims/prims_memory.silica` | ✓ Emits AArch64 for alloc/read/write (stack-based) |
+| Code emission | `emitter/terms/prims/prims_memory.silica` | ✓ Emits AArch64 for alloc/read/write (heap bump; see §1.2) |
 
 ### 1.2 Current Allocation Strategy
 
-Regions are implemented as **stack-based allocation** (see `prims_memory.silica` comment: "Stack-based allocation for minimal implementation; region = arena on stack"):
+Each **memory region** is implemented in `prims_memory.silica` as a heap-allocated block with bump-pointer metadata at the base (see emitter comments for layout). This matches the spec’s model of scope-tied deallocation better than an earlier stack-only sketch, but remains a minimal prototype:
 
-- `alloc_region`: `SUB SP, SP, #8` — allocates 8 bytes on stack
-- `alloc_ref`: `SUB SP, SP, #8` + `STR` — allocates cell on stack
-- `alloc_buf`: `SUB SP, SP, X2, LSL #3` — allocates N×8 bytes on stack
+- `alloc_region`: obtain a block (e.g. via `malloc`), initialize bump/end pointers
+- `alloc_ref` / `alloc_buf`: bump-allocate within that block, with overflow checks to the region overflow path
 
-This is a minimal prototype. Stack allocation means regions are implicitly "freed" when the stack frame is popped, but without lifetime analysis, the compiler cannot prevent returning or storing references that would become dangling.
+Terminology: [memory region vs arena](#terminology-memory-region-vs-arena) (above). Without lifetime analysis, the compiler cannot fully prevent returning or storing references that would become dangling after the backing storage is released or invalidated.
 
 ---
 
@@ -138,9 +147,9 @@ fn emit_buf_load(dest: string) -> string {
 
 **Specification**: §12.1.2 Region Lifetime, §12.4.2 Lifetime Safety
 
-**Status**: ❌ Stack allocation without lifetime analysis enables use-after-free
+**Status**: ❌ Without complete lifetime analysis, use-after-free is still possible when a region’s storage is released while references remain
 
-**Problem**: With stack-based regions, when a function returns, its stack frame is popped. Any reference to memory in that frame becomes a dangling pointer. Without lifetime analysis, the compiler cannot reject:
+**Problem**: When a function or sequence ends, a region’s backing storage may be released per scope rules. Any reference to that storage becomes invalid. Without lifetime analysis, the compiler cannot reject:
 
 ```silica
 fn leak_ref() -> ref(R, normal, int64) {
@@ -148,7 +157,7 @@ fn leak_ref() -> ref(R, normal, int64) {
         r: region(R, normal) <- alloc_region(normal);
         ref: ref(R, normal, int64) <- alloc_ref(r, 42);
     produces
-        pure ref   // BUG: ref points to stack memory that is about to be invalidated
+        pure ref   // BUG: ref outlives its region (storage may be freed when scope ends)
     end
 }
 ```
@@ -156,9 +165,7 @@ fn leak_ref() -> ref(R, normal, int64) {
 **Required**:
 
 1. **Lifetime analysis** (see §2.1) must reject returning references whose region does not outlive the function
-2. **Allocation strategy**: Either:
-   - Keep stack allocation but enforce (via lifetime analysis) that no ref outlives its region, or
-   - Move to heap-based regions with explicit deallocation tied to scope exit (as spec implies)
+2. **Allocation strategy**: Enforce (via lifetime analysis) that no ref outlives its region; keep heap-backed regions with deallocation tied to scope exit as the spec implies (see §1.2)
 
 The spec describes "implicit deallocation when r goes out of scope" — the implementation must ensure no references remain when that happens.
 
@@ -208,3 +215,4 @@ When implementation is complete, the following should hold:
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2025-03-10 | Initial document; gaps identified from implementation analysis |
+| 1.1 | 2026-03-27 | Terminology: memory region vs arena; §1.2/§2.4 aligned with heap bump emitter |

@@ -69,6 +69,42 @@ fn string_literal_value_to_index(table: StringLiteralTable, value: string) -> in
     }
 }
 
+// Case branch (kind 8): add string pattern text to pool; collect guard and body.
+fn collect_string_literal_from_case_branch(branch: SIRTerm, table: StringLiteralTable, next_index: int64) -> (StringLiteralTable, int64) {
+    case branch.kind < 0 of {
+        true -> (table, next_index);
+        false -> case branch.kind == 8 of {
+            true -> do
+                (t1: StringLiteralTable, i1: int64) <- case branch.value == "string" of {
+                    true -> do
+                        (tbl: StringLiteralTable, idx: int64) <- add_str_value(table, branch.name, next_index);
+                        new_next: int64 <- case idx == next_index of { true -> next_index + 1; false -> next_index };
+                        (tbl, new_next)
+                    end;
+                    false -> (table, next_index)
+                };
+                (t2: StringLiteralTable, i2: int64) <- collect_string_literal_from_term(branch.inner, t1, i1);
+                collect_string_literal_from_term(branch.right_expr, t2, i2)
+            end;
+            false -> collect_string_literal_from_term(branch, table, next_index)
+        }
+    }
+}
+
+// Case branch list (kind 7): inner = branch, right_expr = rest of list or dummy.
+fn collect_string_literal_from_case_branch_list(seq: SIRTerm, table: StringLiteralTable, next_index: int64) -> (StringLiteralTable, int64) {
+    case seq.kind < 0 of {
+        true -> (table, next_index);
+        false -> case seq.kind == 7 of {
+            true -> do
+                (t1: StringLiteralTable, i1: int64) <- collect_string_literal_from_case_branch(seq.inner, table, next_index);
+                collect_string_literal_from_case_branch_list(seq.right_expr, t1, i1)
+            end;
+            false -> (table, next_index)
+        }
+    }
+}
+
 fn collect_string_literal_from_term(term: SIRTerm, table: StringLiteralTable, next_index: int64) -> (StringLiteralTable, int64) {
     case term.kind < 0 of {
         true -> (table, next_index);
@@ -89,6 +125,10 @@ fn collect_string_literal_from_term(term: SIRTerm, table: StringLiteralTable, ne
                 (t1: StringLiteralTable, i1: int64) <- collect_string_literal_from_term(term.inner, table, next_index);
                 (t2: StringLiteralTable, i2: int64) <- collect_string_literal_from_term(term.right_expr, t1, i1);
                 (t2, i2)
+            end;
+            3 -> do
+                (t1: StringLiteralTable, i1: int64) <- collect_string_literal_from_term(term.inner, table, next_index);
+                collect_string_literal_from_case_branch_list(term.right_expr, t1, i1)
             end;
             4 -> case term.name == "main.println" of {
                 true -> do

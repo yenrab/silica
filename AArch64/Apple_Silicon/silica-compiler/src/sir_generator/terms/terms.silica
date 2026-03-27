@@ -334,7 +334,11 @@ fn lower_sequence_body_to_lets(context: TypeContext, body_expr: Expr, result_exp
 // Convert Expr to SIRTerm when inside a let body. Uses bound_name/bound_type for identifiers.
 // expected_type: function return type for body expressions.
 fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
-    case expr.kind of {
+    do
+    ek_rel: int64 <- expr.kind - 13;
+    case ek_rel == 0 of {
+        true -> case_expr_to_sir(context, expr, expected_type, bound_name, bound_type, true);
+        false -> case expr.kind of {
         0 -> literals@expr_to_sir_with_type(context, expr, literal_type_for_expected(expected_type));
         1 -> identifiers@expr_to_sir_with_bound(context, expr, bound_name, bound_type);
         2 -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, expected_type);
@@ -406,8 +410,11 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                 }
             }
         end;
+        19 -> if_expr_to_sir(context, expr, expected_type, bound_name, bound_type, true);
         _: int64 -> sir_ast@dummy_sir_term();
+        }
     }
+    end
 }
 
 fn build_single_arg_call(context: TypeContext, expr: Expr, arg: SIRTerm) -> SIRTerm {
@@ -735,7 +742,11 @@ fn build_prim_for_type(op_lexeme: string, left: SIRTerm, right: SIRTerm, expecte
 
 // Convert Expr to SIRTerm with expected type (for function body). Dispatches on kind.
 fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
-    case expr.kind of {
+    do
+    ek_rel: int64 <- expr.kind - 13;
+    case ek_rel == 0 of {
+        true -> case_expr_to_sir(context, expr, expected_type, "", "", false);
+        false -> case expr.kind of {
         0 -> literals@expr_to_sir_with_type(context, expr, literal_type_for_expected(expected_type));
         1 -> identifiers@expr_to_sir(context, expr);
         2 -> expr_to_sir_with_expected(context, expr.inner, expected_type);
@@ -770,46 +781,49 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
                     end;
                     false -> case expr.name == "substring" of {
                         true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
-                            true -> do
-                                arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "string");
-                                arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "int64");
-                                arg3: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr.inner, "int64");
-                                string_calls@build_substring_from_sir(arg1, arg2, arg3)
-                            end;
+                        true -> do
+                            arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "string");
+                            arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "int64");
+                            arg3: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr.inner, "int64");
+                            string_calls@build_substring_from_sir(arg1, arg2, arg3)
+                        end;
                             false -> sir_ast@dummy_sir_term();
                         };
                         false -> case expr.name == "substring_until_char" of {
-                        true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
-                            true -> do
-                                arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "string");
-                                arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "int64");
-                                arg3: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr.inner, "char");
-                                string_calls@build_substring_until_char_from_sir(arg1, arg2, arg3)
-                            end;
-                            false -> sir_ast@dummy_sir_term();
-                        };
-                        false -> case negate_builtins@is_negate_builtin(expr.name) of {
-                            true -> do
-                                arg_t: string <- negate_builtins@negate_arg_type(expr.name);
-                                arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_t);
-                                negate_builtins@build_negate_from_sir(expr.name, arg)
-                            end;
-                            false -> case is_single_arg_builtin(expr.name) of {
+                            true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
                                 true -> do
-                                    arg_type: string <- arg_expected_type(expr.name, expected_type);
-                                    arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type);
-                                    build_single_arg_call(context, expr, arg);
+                                    arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "string");
+                                    arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "int64");
+                                    arg3: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr.inner, "char");
+                                    string_calls@build_substring_until_char_from_sir(arg1, arg2, arg3)
                                 end;
-                                false -> build_user_call_from_expr(context, expr, expected_type)
+                                false -> sir_ast@dummy_sir_term();
+                            };
+                            false -> case negate_builtins@is_negate_builtin(expr.name) of {
+                                true -> do
+                                    arg_t: string <- negate_builtins@negate_arg_type(expr.name);
+                                    arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_t);
+                                    negate_builtins@build_negate_from_sir(expr.name, arg)
+                                end;
+                                false -> case is_single_arg_builtin(expr.name) of {
+                                    true -> do
+                                        arg_type: string <- arg_expected_type(expr.name, expected_type);
+                                        arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type);
+                                        build_single_arg_call(context, expr, arg);
+                                    end;
+                                    false -> build_user_call_from_expr(context, expr, expected_type)
+                                };
                             }
                         }
                     }
                 }
             }
-        }
-    end;
+        end;
+        19 -> if_expr_to_sir(context, expr, expected_type, "", "", false);
         _: int64 -> sir_ast@dummy_sir_term();
+        }
     }
+    end
 }
 
 // Convert Expr to SIRTerm. Dispatches on kind. Uses int64 as default for literals/binary ops.
@@ -822,4 +836,187 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
 // Kind 6: let binding -> let(name, type, rhs, body)
 fn expr_to_sir(context: TypeContext, expr: Expr) -> SIRTerm {
     expr_to_sir_with_expected(context, expr, "int64")
+}
+
+// --- case expression (Expr kind 13) -> SIR kind 3; branch list kind 7; branch kind 8 ---
+
+fn extend_context_for_bind(ctx: TypeContext, name: string, ast_type: string) -> TypeContext {
+    new_env: ListSymbolEntry <- type_checker_core@add_symbol(ctx.env, name, ast_type, parser_ast@empty_effect_name_list());
+    TypeContext { env: new_env }
+}
+
+fn trim_leading_ws(s: string) -> string {
+    case len(s) == 0 of {
+        true -> "";
+        false -> case substring(s, 0, 1) == " " of {
+            true -> trim_leading_ws(substring(s, 1, len(s)));
+            false -> s
+        }
+    }
+}
+
+fn trim_trailing_ws(s: string) -> string {
+    case len(s) == 0 of {
+        true -> "";
+        false -> case substring(s, len(s) - 1, len(s)) == " " of {
+            true -> trim_trailing_ws(substring(s, 0, len(s) - 1));
+            false -> s
+        }
+    }
+}
+
+fn trim_pat(s: string) -> string {
+    trim_trailing_ws(trim_leading_ws(s))
+}
+
+fn find_colon_from(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == ":" of {
+            true -> i;
+            false -> find_colon_from(s, i + 1)
+        }
+    }
+}
+
+fn is_digit_char(c: string) -> bool {
+    c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9"
+}
+
+fn all_digits_from(s: string, i: int64) -> bool {
+    case i >= len(s) of {
+        true -> len(s) > 0;
+        false -> case is_digit_char(substring(s, i, i + 1)) of {
+            true -> all_digits_from(s, i + 1);
+            false -> false
+        }
+    }
+}
+
+fn is_int_literal_pat(t: string) -> bool {
+    case len(t) == 0 of {
+        true -> false;
+        false -> case substring(t, 0, 1) == "-" of {
+            true -> case len(t) > 1 of { true -> all_digits_from(t, 1); false -> false };
+            false -> all_digits_from(t, 0)
+        }
+    }
+}
+
+fn make_case_branch(pkind: string, ptype: string, pname: string, ctx_use: TypeContext, branch: Expr, expected_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    guard_sir: SIRTerm <- case branch.inner.kind < 0 of {
+        true -> sir_ast@dummy_sir_term();
+        false -> case in_body of {
+            true -> expr_to_sir_in_let_body(ctx_use, branch.inner, bound_name, bound_type, "boolean");
+            false -> expr_to_sir_with_expected(ctx_use, branch.inner, "boolean")
+        }
+    };
+    body_sir: SIRTerm <- case in_body of {
+        true -> expr_to_sir_in_let_body(ctx_use, branch.right_expr, bound_name, bound_type, expected_type);
+        false -> expr_to_sir_with_expected(ctx_use, branch.right_expr, expected_type)
+    };
+    SIRTerm { kind: 8, type_name: ptype, value: pkind, name: pname, inner: guard_sir, right_expr: body_sir }
+}
+
+// Pattern text like "hello" (string literal) — no colon; must not fall through to branch_from_bind_or_wild (dummy).
+fn case_close_quote_index(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "\"" of {
+            true -> i;
+            false -> case_close_quote_index(s, i + 1)
+        }
+    }
+}
+
+fn extract_string_pat_content(s: string) -> string {
+    case len(s) < 2 of {
+        true -> "";
+        false -> case substring(s, 0, 1) == "\"" of {
+            true -> do
+                cq: int64 <- case_close_quote_index(s, 1);
+                case cq < 0 of {
+                    true -> "";
+                    false -> substring(s, 1, cq)
+                }
+            end;
+            false -> ""
+        }
+    }
+}
+
+fn branch_from_bind_or_wild(raw: string, scrutinee_ast_type: string, branch: Expr, ctx: TypeContext, expected_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    cp: int64 <- find_colon_from(raw, 0);
+    case cp < 1 of {
+        true -> sir_ast@dummy_sir_term();
+        false -> do
+            left: string <- trim_pat(substring(raw, 0, cp));
+            right: string <- trim_pat(substring(raw, cp + 1, len(raw)));
+            case left == "_" of {
+                true -> make_case_branch("wild", types@type_name_to_sir(right), "_", ctx, branch, expected_type, bound_name, bound_type, in_body);
+                false -> do
+                    ctx_b: TypeContext <- extend_context_for_bind(ctx, left, right);
+                    make_case_branch("bind", types@type_name_to_sir(right), concat("%", left), ctx_b, branch, expected_type, bound_name, bound_type, in_body)
+                end
+            }
+        end
+    }
+}
+
+fn branch_ast_to_sir(branch: Expr, ctx: TypeContext, expected_type: string, scrutinee_ast_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    raw: string <- trim_pat(branch.value);
+    case raw == "true" of {
+        true -> make_case_branch("bool", "bool", "true", ctx, branch, expected_type, bound_name, bound_type, in_body);
+        false -> case raw == "false" of {
+            true -> make_case_branch("bool", "bool", "false", ctx, branch, expected_type, bound_name, bound_type, in_body);
+            false -> case substring(raw, 0, 1) == "\"" of {
+                true -> do
+                    str_content: string <- extract_string_pat_content(raw);
+                    make_case_branch("string", "string", str_content, ctx, branch, expected_type, bound_name, bound_type, in_body)
+                end;
+                false -> case is_int_literal_pat(raw) of {
+                    true -> make_case_branch("int", types@type_name_to_sir(scrutinee_ast_type), raw, ctx, branch, expected_type, bound_name, bound_type, in_body);
+                    false -> branch_from_bind_or_wild(raw, scrutinee_ast_type, branch, ctx, expected_type, bound_name, bound_type, in_body)
+                }
+            }
+        }
+    }
+}
+
+fn case_branches_to_sir_list(e: Expr, ctx: TypeContext, expected_type: string, scrutinee_ast_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    case e.kind < 0 of {
+        true -> sir_ast@dummy_sir_term();
+        false -> case e.kind - 17 == 0 of {
+            true -> do
+                one: SIRTerm <- branch_ast_to_sir(e.inner, ctx, expected_type, scrutinee_ast_type, bound_name, bound_type, in_body);
+                rest: SIRTerm <- case_branches_to_sir_list(e.right_expr, ctx, expected_type, scrutinee_ast_type, bound_name, bound_type, in_body);
+                SIRTerm { kind: 7, type_name: "", value: "", name: "", inner: one, right_expr: rest }
+            end;
+            false -> sir_ast@dummy_sir_term()
+        }
+    }
+}
+
+fn case_expr_to_sir(context: TypeContext, expr: Expr, expected_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    scrut_ast_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+    scrut_sir_t: string <- types@type_name_to_sir(scrut_ast_t);
+    scrut: SIRTerm <- case in_body of {
+        true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, scrut_ast_t);
+        false -> expr_to_sir_with_expected(context, expr.inner, scrut_ast_t);
+    };
+    branches: SIRTerm <- case_branches_to_sir_list(expr.right_expr, context, expected_type, scrut_ast_t, bound_name, bound_type, in_body);
+    case_emit_suffix: string <- concat("o", literals@int64_to_decimal_string(expr.location.offset));
+    SIRTerm { kind: 3, type_name: types@type_name_to_sir(expected_type), value: scrut_sir_t, name: case_emit_suffix, inner: scrut, right_expr: branches }
+}
+
+// Lower `if` / `else` (AST kind 19) to a boolean `case` on the condition. Placed after `case_expr_to_sir`; callers use forward reference.
+fn if_expr_to_sir(context: TypeContext, expr: Expr, expected_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    dummy_g: Expr <- parser_ast@dummy_expr();
+    true_br: Expr <- Expr { kind: 18, value: "true", name: "", location: expr.location, inner: dummy_g, right_expr: expr.right_expr.inner, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+    false_br: Expr <- Expr { kind: 18, value: "false", name: "", location: expr.location, inner: dummy_g, right_expr: expr.right_expr.right_expr, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+    rest_dummy: Expr <- parser_ast@dummy_expr();
+    list_inner: Expr <- Expr { kind: 17, value: "", name: "", location: expr.location, inner: false_br, right_expr: rest_dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+    list_head: Expr <- Expr { kind: 17, value: "", name: "", location: expr.location, inner: true_br, right_expr: list_inner, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+    case_e: Expr <- Expr { kind: 13, value: "", name: "", location: expr.location, inner: expr.inner, right_expr: list_head, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+    case_expr_to_sir(context, case_e, expected_type, bound_name, bound_type, in_body)
 }

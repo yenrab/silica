@@ -49,7 +49,7 @@ It is about controlling *which faults are possible*.
 A user-level execution unit:
 
 - Own stack
-- Own heap / arena
+- Own heap implemented as a dedicated **memory region** per LP (see [region_memory_safety_todo.md](region_memory_safety_todo.md) — *Terminology: memory region vs arena*)
 - No shared mutable memory
 - Communicates via message passing
 - Scheduled by runtime
@@ -243,7 +243,7 @@ Even with MTE, structural isolation is required.
 
 ### Per-LP Heap
 
-- Dedicated arena per LP
+- Dedicated memory region per LP (isolated heap; not the same thing as a generic “arena allocator” in C++/Rust—see [region_memory_safety_todo.md](region_memory_safety_todo.md) *Terminology: memory region vs arena*)
 - Prefer mmap-backed regions
 - No shared mutable heap state
 

@@ -418,7 +418,6 @@ expression ::= literal
              | function_call
              | function_literal
              | case_expression
-             | if_expression
              | sequence_expression
              | struct_literal
              | field_access
@@ -475,6 +474,8 @@ case_branch    ::= pattern ["if" expression] "->" expression ";"
 ```
 
 Case expressions support optional guard expressions. A guard is evaluated after pattern matching succeeds, and the branch is only taken if the guard evaluates to `true`.
+
+**`if` is only for case guards.** The keyword `if` is **not** permitted as the head of a standalone conditional (for example `if` … `then` … `else` …, or `if` … `{` … `}` … `else` …). The only valid use of `if` in Silica source text is in a case branch, in the form `pattern if guard_expression -> branch_body` (see §3.3.5). Use `case` (including `case` on a boolean) to express branching that would otherwise be written with `if`/`else` in other languages.
 
 **Important**: Catch-all patterns (`_`) must use declared types. The wildcard pattern must be typed: `_: type -> expression`.
 
@@ -1754,15 +1755,28 @@ variant_pattern   ::= identifier [pattern]
 pattern_alternative ::= pattern "|" pattern {"|" pattern}
 ```
 
-#### 3.3.5 If Expressions
+#### 3.3.5 Conditional logic: `if` only in case guards
+
+Silica has **no** standalone conditional expression or statement using `if` with `else`, and **no** `if` … `then` … `else` expression form. Independent `if`/`else` is not part of the language surface.
+
+The keyword **`if`** appears **only** in **case branch guards**, after a pattern and before `->`:
+
 ```
-if_expression ::= "if" expression "then" expression "else" expression
+case_branch ::= pattern ["if" expression] "->" expression ";"
 ```
 
-Example:
+The guard expression must have type `boolean`. It is evaluated only after the pattern matches; the branch runs only if the guard is `true`.
+
+To branch on a condition (for example a comparison), use a **`case`** on a boolean or on the scrutinee you are dispatching on, with as many branches as needed. For example, instead of a hypothetical `if`/`else` on `divisor == 0`, write:
+
 ```silica
-if x > 0 then x else -x
+case divisor == 0 of {
+    true -> -1;
+    false -> 100 / divisor
+}
 ```
+
+Use additional patterns, guards, or nested `case` expressions for more structure. Implementations may lower guards to efficient control flow internally; that does not add `if`/`else` as user-facing syntax.
 
 #### 3.3.6 Function Literals
 ```
@@ -2818,7 +2832,7 @@ proc[concurrency] actor_ref(msg)     // computation spawning an actor
 
 **Lifetime Identifiers (L*):** Region types use lifetime identifiers (e.g. `L1`, `L2`) to track region scope. The first parameter of `region`, `ref`, `buf`, and `atomic_ref` types is a lifetime identifier. Programmers obtain lifetime values via `fresh_lifetime()` and pass them to region-allocating functions. This ensures unique lifetimes when composing multiple regions in the same scope.
 
-**Allocation Scope:** Region allocation (`alloc_region`, `alloc_ref`, `alloc_buf`, `alloc_atomic`) is permitted only within sequence blocks (`sequence ... produces ... end`), not in function scope or plain `do` blocks.
+**Allocation Scope:** Region allocation (`alloc_region`, `alloc_ref`, `alloc_buf`, `alloc_atomic`) is permitted only within sequence blocks (`sequence ... produces pure ... end`), not at function scope or in other expression positions outside such blocks.
 
 #### 4.4.2 Region Types
 Region types represent memory regions: `region(L, Space)` where L is a lifetime identifier and Space is a memory space.
@@ -3262,10 +3276,10 @@ Error handling through return values (exceptions not yet implemented):
 
 ```silica
 fn main() -> int {
-    do
+    sequence
         result:int <- safe_divide(10, 2);
         // In future: proper error handling with Result types
-        result
+    produces pure result
     end
 }
 ```
@@ -3405,10 +3419,10 @@ Use Result types to propagate errors without exceptions:
 type ResultInt64String = Ok(int64) | Error(string)
 
 fn process_with_errors(x: int64, y: int64) -> ResultInt64String {
-    do
+    sequence
         // Chain operations with error handling
         result1: ResultInt64String <- safe_divide(x, y);
-        case result1 of {
+    produces pure case result1 of {
             Ok(value) -> {
                 // Continue processing
                 Ok(value * 2)
@@ -3429,10 +3443,10 @@ Actors handle exceptions independently, providing isolation:
 ```silica
 // Actor with robust error handling
 fn robust_actor(msg: Request, state: State) -> State {
-    do
+    sequence
         // Attempt operation with error handling
         result: ResultInt64String <- process_with_errors(msg.value1, msg.value2);
-        case result of {
+    produces pure case result of {
             Ok(value) -> {
                 // Update state on success
                 State {value: value, error_count: state.error_count}
@@ -3520,9 +3534,9 @@ Effects can be combined:
 effect io_and_mem = [device_io, mem(normal)]
 
 fn combined_operation() -> int {
-    do
+    sequence proc[io_and_mem]
         // Operations that require both I/O and memory effects
-        42
+    produces pure 42
     end
 }
 ```
@@ -4175,9 +4189,9 @@ All types must be explicitly declared in Silica. There is no type inference - ev
 fn add(x: int64, y: int64) -> int64 { x + y }        // explicit types
 
 fn example() -> int64 {
-    do
+    sequence
         x: int64 <- 42;                               // variable binding with type
-        x
+    produces pure x
     end
 }
 ```
@@ -4577,8 +4591,8 @@ Effects compose correctly even with conditional execution:
 
 ```silica
 fn conditional_effects(condition: boolean) -> int {
-    do
-        if condition {
+    sequence proc[mem(normal), device_io]
+    produces pure if condition {
             // Branch 1: mem(normal) and device_io
             r: region(R, normal) <- alloc_region(normal);
             ref: ref(R, normal, int) <- alloc_ref(r, 42);
@@ -4600,7 +4614,7 @@ Effects compose correctly in pattern matching expressions:
 
 ```silica
 fn pattern_matching_effects(msg: Message) -> int {
-    do
+    sequence proc[mem(normal), device_io]
         result: int <- case msg of {
             AllocateMsg {size} -> {
                 // Pattern branch: mem(normal)
@@ -4619,7 +4633,7 @@ fn pattern_matching_effects(msg: Message) -> int {
             }
         };
         // Combined: [mem(normal), device_io] (union of all branches)
-        result
+    produces pure result
     end
 }
 ```
@@ -4897,8 +4911,9 @@ fn caller() -> ref(R, normal, int) {
 **Code:**
 ```silica
 fn high_level() -> atom {
-    do
+    sequence
         print_string("Hello")
+    produces pure ()
     end
 }
 
@@ -5013,9 +5028,10 @@ fn create_actor() -> actor_ref {
 **Code:**
 ```silica
 fn complex_operation() -> atom {
-    do
+    sequence
         region: region(R, normal) <- alloc_region(normal);
         print_string("Allocated")
+    produces pure ()
     end
 }
 ```
@@ -5056,9 +5072,10 @@ See specification: spec:§9.3.1
 **Fix:**
 ```silica
 fn complex_operation() -> atom {
-    do
+    sequence proc[mem(normal), device_io]
         region: region(R, normal) <- alloc_region(normal);
         print_string("Allocated")
+    produces pure ()
     end
 }
 ```
@@ -5455,10 +5472,10 @@ fn pure_add(x: int, y: int) -> int {
 
 fn allocate_pair(r: region(R, normal))
  -> (ref(R, normal, int), ref(R, normal, int)) proc[mem(normal)] {
-    do
+    sequence proc[mem(normal)]
         x: ref(R, normal, int) <- alloc_ref(r, 1)    // creates process value
         y: ref(R, normal, int) <- alloc_ref(r, 2)    // creates process value
-        (x, y)                                         // returns composed process value
+    produces pure (x, y)                                         // returns composed process value
     end
 }
 // Effects properly declared: mem(normal)
@@ -5567,10 +5584,10 @@ Processes are executed using the `spawn()` function:
 
 ```
 // Process creation (not executed)
-computation: proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) <- do
+computation: proc[mem(normal)] (ref(R, normal, int), ref(R, normal, int)) <- sequence proc[mem(normal)]
     x: ref(R, normal, int) <- alloc_ref(region, 1)
     y: ref(R, normal, int) <- alloc_ref(region, 2)
-    (x, y)
+produces pure (x, y)
 end
 
 // Process execution via spawn
@@ -5595,10 +5612,10 @@ result: (ref(R, normal, int), ref(R, normal, int)) <- spawn(pair_process)
 fn allocate_quad(r: region(R, normal))
     -> (ref(R, normal, int), ref(R, normal, int),
         ref(R, normal, int), ref(R, normal, int)) proc[mem(normal)] {
-    do
+    sequence proc[mem(normal)]
         (a: ref(R, normal, int), b: ref(R, normal, int)) <- allocate_pair(r)    // creates process value
         (c: ref(R, normal, int), d: ref(R, normal, int)) <- allocate_pair(r)    // creates process value
-        (a, b, c, d)                                                              // returns composed process value
+    produces pure (a, b, c, d)                                                              // returns composed process value
     end
 }
 ```
@@ -6372,8 +6389,8 @@ function analyze_lifetime(expr, Γ, L, ScopDep):
                     error("Reference to deallocated region")
             return (atom, L', ScopDep')
         
-        // Do expression: sequential composition
-        do_expr(stmts):
+        // Sequence expression: sequential composition
+        sequence_expr(stmts):
             L_current = L
             ScopDep_current = ScopDep
             for each stmt in stmts:
@@ -7691,9 +7708,10 @@ NUMA-aware migration occurs at specific times:
 actor_ref: actor_ref <- spawn(initial_state, behavior_fn);
 
 // Data region allocated on NUMA node 0
-do
+sequence proc[mem(normal)]
     r: region(R, normal) <- alloc_region(normal);  // Allocated on NUMA node 0
     // Actor is placed on core in NUMA node 0 (optimal placement)
+produces pure ()
 end
 
 // Migration within NUMA node 0 (minimal overhead)
@@ -7707,9 +7725,10 @@ migrate_actor(actor_ref, target_core_in_numa_0);  // Same NUMA, fast migration
 actor_ref: actor_ref <- spawn(initial_state, behavior_fn);
 
 // Data region allocated on NUMA node 0
-do
+sequence proc[mem(normal)]
     r: region(R, normal) <- alloc_region(normal);  // Allocated on NUMA node 0
     // Actor is placed on core in NUMA node 0
+produces pure ()
 end
 
 // Migration to NUMA node 1 (cross-NUMA, higher latency)
@@ -7722,13 +7741,14 @@ migrate_actor(actor_ref, target_core_in_numa_1);
 
 ```silica
 // Allocate data region on specific NUMA node
-do
+sequence proc[mem(normal), concurrency]
     // Allocate region on NUMA node 0
     r: region(R, normal) <- alloc_region_on_numa(normal, numa_node_0);
     
     // Spawn actor - runtime places on core in NUMA node 0
     actor_ref: actor_ref <- spawn(initial_state, behavior_fn);
     // Actor automatically placed on NUMA node 0 core (optimal)
+produces pure ()
 end
 ```
 
@@ -9381,9 +9401,9 @@ Imported functions are accessed directly by name:
 use math_utils;
 
 fn main() -> int {
-    do
+    sequence
         result:int <- add(3, 4);   // 'add' from math_utils module
-        multiply(result, 2)        // 'multiply' from math_utils module
+    produces pure multiply(result, 2)        // 'multiply' from math_utils module
     end
 }
 ```
@@ -9712,13 +9732,13 @@ export append/2, remove/1;  // Renamed add/2 to append/2
 use calculator, list_ops;
 
 fn example() -> int64 {
-    do
+    sequence
         // Use calculator.add/2
         sum: int64 <- add(3, 4);
         
         // Use list_ops.append/2 (renamed from add/2)
         // (list operations would use append/2)
-        sum
+    produces pure sum
     end
 }
 ```
@@ -9754,10 +9774,10 @@ fn multiply(x: int, y: int) -> int { x * y }
 use math_utils;
 
 fn main() -> int {
-    do
+    sequence
         sum:int <- add(3, 4);        // uses function from math_utils
         product:int <- multiply(sum, 2);  // uses another function from math_utils
-        product
+    produces pure product
     end
 }
 ```
@@ -12157,7 +12177,7 @@ The runtime provides the following behavioral guarantees for tag allocation fail
 
 ```silica
 fn allocate_with_tag_reuse() -> ref(R, normal, NodeData) proc[mem(normal)] {
-    do
+    sequence proc[mem(normal)]
         r: region(R, normal) <- alloc_region(normal);
         
         // Attempt allocation (may trigger tag reuse if tag space exhausted)
@@ -12167,7 +12187,7 @@ fn allocate_with_tag_reuse() -> ref(R, normal, NodeData) proc[mem(normal)] {
         // 2. Validates tag reuse safety
         // 3. Falls back to software bounds checking if reuse fails
         
-        node
+    produces pure node
     end
 }
 ```
@@ -12307,7 +12327,7 @@ struct NodeData {
 impl tagged for NodeData;
 
 fn example() -> atom {
-    do
+    sequence proc[mem(normal)]
         r: region(R, normal) <- alloc_region(normal);
         // Allocate tagged memory
         node: ref(R, normal, NodeData) <- alloc_tagged_nodedata(r, 1);
@@ -12326,6 +12346,7 @@ fn example() -> atom {
         
         // Free tagged memory (clears tags)
         free_tagged_nodedata(node);
+    produces pure ()
     end
 }
 ```
@@ -12646,7 +12667,7 @@ struct SecureData {
 impl authenticated for SecureData;
 
 fn secure_operation(data: SecureData) -> atom proc[mem(normal)] {
-    do
+    sequence proc[mem(normal)]
         // Allocate secure data
         ptr: ref(R, normal, SecureData) <- alloc_ref(region, data);
         
@@ -12659,6 +12680,7 @@ fn secure_operation(data: SecureData) -> atom proc[mem(normal)] {
         
         // Use authenticated pointer
         data: SecureData <- read_ref(authenticated_ptr);
+    produces pure ()
     end
 }
 ```
@@ -13177,12 +13199,12 @@ fn safe_divide(x: int, y: int) -> result<int, string> proc[] {
 }
 
 // Usage
-do
+sequence proc[device_io]
     result: Result<int, string> <- safe_divide(10, 0)
-    case result of
-        Ok(value) -> print(value)
-        Error(msg) -> print("Error: " + msg)
-    end
+produces pure case result of {
+        Ok(value) -> print(value);
+        Error(msg) -> print("Error: " + msg);
+    }
 end
 ```
 
@@ -13341,12 +13363,12 @@ fn supervisor(child_failure: down_message, state: supervisor_state)
 Monadic error handling:
 
 ```
-do
+sequence
     x: Result<T, Error> <- operation_that_might_fail()
-    case x of
-        Ok(result) -> continue_with(result)
-        Error(err) -> handle_error(err)
-    end
+produces pure case x of {
+        Ok(result) -> continue_with(result);
+        Error(err) -> handle_error(err);
+    }
 end
 ```
 

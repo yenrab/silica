@@ -1029,6 +1029,133 @@ fn tuple_find_last_top_level_comma_from(s: string, i: int64, depth: int64, last:
     }
 }
 
+// Whether expression mentions identifier `name` (for case guard rule §3.4: guard must depend on pattern bindings).
+fn expr_references_name(e: Expr, name: string) -> bool {
+    case e.kind < 0 of {
+        true -> false;
+        false -> case e.kind of {
+            0 -> false;
+            1 -> e.name == name;
+            2 -> expr_references_name(e.inner, name);
+            3 -> expr_references_name(e.inner, name) or expr_references_name(e.right_expr, name);
+            4 -> expr_references_name(e.inner, name) or expr_references_name(e.right_expr, name);
+            5 -> false;
+            6 -> expr_references_name(e.inner, name) or expr_references_name(e.right_expr, name);
+            7 -> false;
+            8 -> false;
+            9 -> expr_references_name(e.inner, name) or expr_references_name(e.right_expr, name);
+            10 -> expr_references_name(e.inner, name);
+            11 -> expr_references_name(e.inner, name) or expr_references_name(e.right_expr, name);
+            12 -> expr_references_name(e.inner, name);
+            13 -> expr_references_name(e.inner, name) or expr_references_name(e.right_expr, name);
+            19 -> expr_references_name(e.inner, name) or expr_references_name(e.right_expr.inner, name) or expr_references_name(e.right_expr.right_expr, name);
+            _: int64 -> false
+        }
+    }
+}
+
+fn check_case_guard_invariant(branch: Expr, pi: CasePatternInfo) -> TypeCheckResult {
+    case type_checker_tuple_decompose_helpers@case_pattern_has_named_binding(pi) of {
+        true -> case expr_references_name(branch.inner, type_checker_tuple_decompose_helpers@case_pattern_binding_name(pi)) of {
+            true -> type_checker_core@type_check_ok();
+            false -> type_checker_core@type_check_err("E2014", branch.inner.location, "Guard does not depend on pattern bindings — move it before the case or restructure.", "sect3")
+        };
+        false -> type_checker_core@type_check_err("E2014", branch.inner.location, "Guard does not depend on pattern bindings — move it before the case or restructure.", "sect3")
+    }
+}
+
+fn check_case_branch_guard(branch: Expr, pi: CasePatternInfo, ext_ctx: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    case branch.inner.kind < 0 of {
+        true -> type_checker_core@type_check_ok();
+        false -> do
+            g: TypeCheckResult <- check_expr(branch.inner, "boolean", ext_ctx);
+            case g.is_ok of {
+                false -> g;
+                true -> check_case_guard_invariant(branch, pi)
+            }
+        end
+    }
+}
+
+fn check_one_case_branch(branch: Expr, scrutinee_type: string, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    case branch.kind == 18 of {
+        false -> type_checker_core@type_check_err("E2005", branch.location, "malformed case branch", "sect3");
+        true -> do
+            pi: CasePatternInfo <- type_checker_tuple_decompose_helpers@case_parse_pattern(branch.value);
+            case pi.is_valid of {
+                false -> type_checker_core@type_check_err("E2005", branch.location, "invalid or unsupported case pattern", "sect3");
+                true -> case type_checker_tuple_decompose_helpers@case_pattern_matches_scrutinee(pi, scrutinee_type) of {
+                    false -> type_checker_core@type_check_err("E2005", branch.location, "case pattern does not match scrutinee type", "sect3");
+                    true -> do
+                        ext_ctx: TypeContext <- type_checker_tuple_decompose_helpers@case_extend_context_for_pattern(context, scrutinee_type, branch.value);
+                        guard_r: TypeCheckResult <- check_case_branch_guard(branch, pi, ext_ctx);
+                        case guard_r.is_ok of {
+                            false -> guard_r;
+                            true -> check_expr(branch.right_expr, expected_type, ext_ctx)
+                        }
+                    end
+                }
+            }
+        end
+    }
+}
+
+fn check_case_branch_list(branches: Expr, scrutinee_type: string, expected_type: string, context: TypeContext, case_loc: SourceLocation) -> TypeCheckResult proc[DeviceIO] {
+    case branches.kind == -1 of {
+        true -> type_checker_core@type_check_ok();
+        false -> case branches.kind == 17 of {
+            true -> do
+                b: Expr <- branches.inner;
+                rest: Expr <- branches.right_expr;
+                r: TypeCheckResult <- check_one_case_branch(b, scrutinee_type, expected_type, context);
+                case r.is_ok of {
+                    false -> r;
+                    true -> check_case_branch_list(rest, scrutinee_type, expected_type, context, case_loc)
+                }
+            end;
+            false -> type_checker_core@type_check_err("E2005", case_loc, "malformed case branch list", "sect3")
+        }
+    }
+}
+
+fn check_case_boolean_exhaustive(branches: Expr, scrutinee_type: string, case_loc: SourceLocation) -> TypeCheckResult {
+    case scrutinee_type == "boolean" of {
+        false -> type_checker_core@type_check_ok();
+        true -> do
+            cov: CaseBoolCoverage <- type_checker_tuple_decompose_helpers@case_scan_bool_coverage(branches, scrutinee_type);
+            case type_checker_tuple_decompose_helpers@case_bool_coverage_ok(cov) of {
+                true -> type_checker_core@type_check_ok();
+                false -> type_checker_core@type_check_err("E2005", case_loc, "case on boolean must cover true and false or include a wildcard branch (_ : boolean)", "sect3")
+            }
+        end
+    }
+}
+
+fn check_case_expression(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    case expr.right_expr.kind == -1 of {
+        true -> type_checker_core@type_check_err("E2005", expr.location, "case expression must have at least one branch", "sect3");
+        false -> do
+            scrutinee_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+            case len(scrutinee_type) == 0 of {
+                true -> type_checker_core@type_check_err("E2005", expr.location, "cannot infer type of case scrutinee", "sect3");
+                false -> do
+                    rscr: TypeCheckResult <- check_expr(expr.inner, scrutinee_type, context);
+                    case rscr.is_ok of {
+                        false -> rscr;
+                        true -> do
+                            branches_r: TypeCheckResult <- check_case_branch_list(expr.right_expr, scrutinee_type, expected_type, context, expr.location);
+                            case branches_r.is_ok of {
+                                false -> branches_r;
+                                true -> check_case_boolean_exhaustive(expr.right_expr, scrutinee_type, expr.location)
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
 // true/false as identifiers: lexer may emit identifier; treat as boolean literal (spec: boolean values)
 fn is_true_or_false_identifier(expr: Expr) -> bool {
     case len(expr.name) of {
@@ -1084,7 +1211,26 @@ fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
         10 -> check_tuple_decompose(expr, expected_type, context);
         11 -> check_sequence_block(expr, expected_type, context);
         12 -> check_unary_minus_forbidden(expr, context);
+        13 -> check_case_expression(expr, expected_type, context);
+        19 -> check_if_expression(expr, expected_type, context);
         _: int64 -> type_checker_core@type_check_ok()
+    }
+}
+
+fn check_if_expression(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    rc: TypeCheckResult <- check_expr(expr.inner, "boolean", context);
+    case rc.is_ok of {
+        false -> rc;
+        true -> do
+            rt: TypeCheckResult <- check_expr(expr.right_expr.inner, expected_type, context);
+            case rt.is_ok of {
+                false -> rt;
+                true -> case expr.right_expr.right_expr.kind < 0 of {
+                    true -> type_checker_core@type_check_ok();
+                    false -> check_expr(expr.right_expr.right_expr, expected_type, context)
+                }
+            }
+        end
     }
 }
 

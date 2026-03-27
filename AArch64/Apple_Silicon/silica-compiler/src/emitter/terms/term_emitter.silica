@@ -129,6 +129,152 @@ fn emit_string_const(term: SIRTerm, dest: string, string_literal_table: StringLi
     concat(adrp, add)
 }
 
+// Case labels: legacy L_case_br_N / L_case_done / L_case_fb when case_name is empty.
+// When SIR kind-3 term.name is non-empty (e.g. "o" + source offset), use L_case{name}_br_N so nested case/if does not reuse symbols.
+fn case_emit_done_label(case_name: string) -> string {
+    case len(case_name) > 0 of {
+        true -> concat(concat(concat("L_case_", case_name), "_"), "done");
+        false -> "L_case_done"
+    }
+}
+
+fn case_emit_fb_label(case_name: string) -> string {
+    case len(case_name) > 0 of {
+        true -> concat(concat(concat("L_case_", case_name), "_"), "fb");
+        false -> "L_case_fb"
+    }
+}
+
+fn case_emit_branch_entry_label(case_name: string, idx: int64) -> string {
+    idx_s: string <- atom_table@int64_to_decimal_string(idx);
+    case len(case_name) > 0 of {
+        true -> concat(concat(concat(concat("L_case_", case_name), "_br_"), idx_s), "");
+        false -> concat("L_case_br_", idx_s)
+    }
+}
+
+// AArch64 CMP uses Wn for 32-bit compare of low bits of Xn (matches bool scrutinee convention).
+fn scrut_reg_w_for_cmp(scrut_reg: string) -> string {
+    case len(scrut_reg) > 0 of {
+        true -> case substring(scrut_reg, 0, 1) == "X" of {
+            true -> concat("W", substring(scrut_reg, 1, len(scrut_reg)));
+            false -> scrut_reg
+        };
+        false -> scrut_reg
+    }
+}
+
+// Case (SIR kind 3): scrutinee in inner, branch list in right_expr (kind 7 chain of kind 8 branches).
+fn emit_case_pattern_check(branch: SIRTerm, scrut_t: string, scrut_reg: string, lit_reg: string, fail_l: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable) -> string {
+    pk: string <- branch.value;
+    case pk == "wild" of {
+        true -> "";
+        false -> case pk == "bind" of {
+            true -> "";
+            false -> case pk == "bool" of {
+                true -> do
+                    imm: string <- case branch.name == "true" of { true -> "1"; false -> "0" };
+                    wreg: string <- scrut_reg_w_for_cmp(scrut_reg);
+                    cmp_ln: string <- concat(concat(concat(concat("    CMP ", wreg), ", #"), imm), "\n");
+                    bne_ln: string <- concat(cmp_ln, concat("    B.NE ", fail_l));
+                    concat(bne_ln, "\n")
+                end;
+                false -> case pk == "int" of {
+                    true -> do
+                        syn: SIRTerm <- SIRTerm { kind: 0, type_name: scrut_t, value: branch.name, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+                        ld: string <- const_dispatcher@emit_const(syn, lit_reg, table, literal_table, float64_literal_table, float32_literal_table);
+                        ln: string <- concat(ld, "\n");
+                        cmp_ln: string <- concat(concat(concat(ln, "    CMP "), scrut_reg), ", ");
+                        cmp_full: string <- concat(concat(cmp_ln, lit_reg), "\n");
+                        bne_ln: string <- concat(cmp_full, "    B.NE ");
+                        concat(concat(bne_ln, fail_l), "\n")
+                    end;
+                    false -> case pk == "string" of {
+                        true -> do
+                            syn: SIRTerm <- SIRTerm { kind: 0, type_name: "string", value: branch.name, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+                            ld: string <- emit_string_const(syn, lit_reg, string_literal_table);
+                            ln: string <- concat(ld, "\n");
+                            cmp_ln: string <- concat(concat(concat(ln, "    CMP "), scrut_reg), ", ");
+                            cmp_full: string <- concat(concat(cmp_ln, lit_reg), "\n");
+                            bne_ln: string <- concat(cmp_full, "    B.NE ");
+                            concat(concat(bne_ln, fail_l), "\n")
+                        end;
+                        false -> concat(concat("    B ", fail_l), "\n")
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn emit_case_one_branch_inner(branch: SIRTerm, scrut_t: string, scrut_reg: string, lit_reg: string, guard_reg: string, dest: string, done_l: string, fail_l: string, entry_l: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
+    pat_asm: string <- emit_case_pattern_check(branch, scrut_t, scrut_reg, lit_reg, fail_l, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table);
+    pkind: string <- branch.value;
+    br_bn: string <- case pkind == "bind" of {
+        true -> case len(branch.name) > 1 of { true -> substring(branch.name, 1, len(branch.name)); false -> "" };
+        false -> bound_name
+    };
+    br_br: string <- case pkind == "bind" of {
+        true -> scrut_reg;
+        false -> bound_reg
+    };
+    guard_asm: string <- case branch.inner.kind < 0 of {
+        true -> "";
+        false -> do
+            g_asm: string <- term_to_asm_opt_bound(branch.inner, guard_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, br_bn, br_br, outer_reg, false);
+            g_nl: string <- concat(g_asm, "\n");
+            cbz_mid: string <- concat(concat(concat(g_nl, "    CBZ "), guard_reg), ", ");
+            concat(cbz_mid, concat(fail_l, "\n"))
+        end
+    };
+    body_asm: string <- term_to_asm_opt_bound(branch.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, br_bn, br_br, outer_reg, false);
+    h0: string <- concat(entry_l, ":\n");
+    h1: string <- concat(concat(h0, pat_asm), guard_asm);
+    h2: string <- concat(concat(h1, body_asm), "\n");
+    br: string <- concat(concat("    B ", done_l), "\n");
+    concat(h2, br)
+}
+
+fn emit_case_branch_seq(rest: SIRTerm, scrut_t: string, scrut_reg: string, lit_reg: string, guard_reg: string, dest: string, done_l: string, fb_l: string, case_name: string, idx: int64, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
+    case rest.kind < 0 of {
+        true -> "";
+        false -> case rest.kind == 7 of {
+            true -> do
+                fail_l: string <- case rest.right_expr.kind < 0 of {
+                    true -> fb_l;
+                    false -> case_emit_branch_entry_label(case_name, idx + 1)
+                };
+                entry_l: string <- case_emit_branch_entry_label(case_name, idx);
+                inner_asm: string <- emit_case_one_branch_inner(rest.inner, scrut_t, scrut_reg, lit_reg, guard_reg, dest, done_l, fail_l, entry_l, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+                tail_asm: string <- emit_case_branch_seq(rest.right_expr, scrut_t, scrut_reg, lit_reg, guard_reg, dest, done_l, fb_l, case_name, idx + 1, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+                concat(inner_asm, tail_asm)
+            end;
+            false -> ""
+        }
+    }
+}
+
+fn emit_case_expression(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
+    scrut_reg: string <- case dest == "X1" of { true -> "X2"; false -> "X1" };
+    // Pattern literal (int/string) must not use X2 when scrutinee is in X1: X2 is used for int64 locals
+    // (e.g. let value <- 2 before case cmd of { ... }) and emit_string_const + CMP would clobber it.
+    lit_reg: string <- case scrut_reg == "X1" of { true -> "X3"; false -> case scrut_reg == "X2" of { true -> "X3"; false -> "X2" } };
+    guard_reg: string <- case scrut_reg == "X1" of { true -> "X4"; false -> case scrut_reg == "X2" of { true -> "X4"; false -> "X3" } };
+    scrut_asm: string <- term_to_asm_opt_bound(term.inner, scrut_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false);
+    case_name: string <- term.name;
+    done_l: string <- case_emit_done_label(case_name);
+    fb_l: string <- case_emit_fb_label(case_name);
+    branches_asm: string <- emit_case_branch_seq(term.right_expr, term.value, scrut_reg, lit_reg, guard_reg, dest, done_l, fb_l, case_name, 0, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+    fb_head: string <- concat(concat(concat(fb_l, ":\n    MOV "), dest), ", #0\n");
+    fb_tail: string <- concat(concat("    B ", done_l), "\n");
+    fb_asm: string <- concat(fb_head, fb_tail);
+    scr_nl: string <- concat(scrut_asm, "\n");
+    scr_br: string <- concat(scr_nl, branches_asm);
+    scr_fb: string <- concat(scr_br, fb_asm);
+    done_lbl: string <- concat(done_l, ":\n");
+    concat(scr_fb, done_lbl)
+}
+
 // Emit AArch64 assembly for a SIR term. dest is the virtual register for the result.
 // Tables: int64, int32, int16, int8 for print_X const label lookup; literal_table for large int64 const; float64_literal_table for float64 const; string_literal_table for string const
 fn term_to_asm(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable) -> string {
@@ -146,11 +292,19 @@ fn term_to_asm_debug_with_outer(term: SIRTerm, dest: string, table: AtomTable, i
 }
 
 fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
-    case term.kind of {
-        0 -> case term.type_name == "string" of {
-            true -> emit_string_const(term, dest, string_literal_table);
-            false -> const_dispatcher@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table)
-        };
+    do
+    k_rel_case: int64 <- term.kind - 3;
+    case k_rel_case == 0 of {
+        true -> emit_case_expression(term, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+        false -> case term.kind + 1 < 2 of {
+            true -> case term.kind + 1 == 1 of {
+                true -> case term.type_name == "string" of {
+                    true -> emit_string_const(term, dest, string_literal_table);
+                    false -> const_dispatcher@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table)
+                };
+                false -> concat("    ; unsupported term kind (dummy k)", "?")
+            };
+            false -> case term.kind of {
         1 -> case is_inline_float_var(term.name, dest) of {
             true -> do
                 float_val: string <- substring(term.name, 1, len(term.name));
@@ -996,30 +1150,48 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     // String concat expects X0=left, X1=right; keep original layout for is_string_prim.
                     left_is_prim: bool <- term.inner.kind == 6;
                     right_is_prim: bool <- term.right_expr.kind == 6;
+                    bool_and_or_two_prims: bool <- right_is_prim and term.type_name == "bool" and (term.name == "and" or term.name == "or") and is_string_prim == false and is_float64 == false and is_float32 == false and is_float16 == false;
                     (left_asm: string, right_asm: string) <- case left_is_prim of {
-                        true -> do
-                            l: string <- case is_string_prim of {
-                                true -> case debug of {
-                                    true -> do term_to_asm_opt_bound_debug(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
-                                    false -> term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                        true -> case bool_and_or_two_prims of {
+                            true -> do
+                                temp_reg: string <- left_reg;
+                                left_inner: string <- case debug of {
+                                    true -> do term_to_asm_opt_bound_debug(term.inner, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                    false -> term_to_asm_opt_bound(term.inner, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                 };
-                                false -> case debug of {
-                                    true -> do term_to_asm_opt_bound_debug(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
-                                    false -> term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
-                                }
-                            };
-                            r: string <- case is_string_prim of {
-                                true -> case debug of {
+                                save_left: string <- concat(concat("    STR ", temp_reg), ", [SP, #-16]!\n");
+                                right_inner: string <- case debug of {
                                     true -> do term_to_asm_opt_bound_debug(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                     false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                 };
-                                false -> case debug of {
-                                    true -> do term_to_asm_opt_bound_debug(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
-                                    false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
-                                }
-                            };
-                            (l, r)
-                        end;
+                                restore_left: string <- concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                combined: string <- concat(concat(concat(concat(concat(concat(left_inner, "\n"), save_left), right_inner), "\n"), restore_left), "");
+                                (combined, "")
+                            end;
+                            false -> do
+                                l: string <- case is_string_prim of {
+                                    true -> case debug of {
+                                        true -> do term_to_asm_opt_bound_debug(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                        false -> term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                                    };
+                                    false -> case debug of {
+                                        true -> do term_to_asm_opt_bound_debug(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                        false -> term_to_asm_opt_bound(term.inner, left_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                                    }
+                                };
+                                r: string <- case is_string_prim of {
+                                    true -> case debug of {
+                                        true -> do term_to_asm_opt_bound_debug(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                        false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                                    };
+                                    false -> case debug of {
+                                        true -> do term_to_asm_opt_bound_debug(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                        false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                                    }
+                                };
+                                (l, r)
+                            end
+                        };
                         false -> case right_is_prim of {
                             true -> do
                                 temp_reg: string <- concat(reg_prefix, "0");
@@ -1102,7 +1274,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             }
         };
         _: int64 -> concat("    ; unsupported term kind ", "?")
+            }
+        }
     }
+    end
 }
 
 // Debug variant: prints bound_name, bound_reg, term structure for let and var at each recursion
