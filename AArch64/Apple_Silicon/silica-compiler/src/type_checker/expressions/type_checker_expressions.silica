@@ -14,6 +14,25 @@ use type_checker_memory_regions;
 
 export check_expr/3;
 
+fn is_primitive_numeric_type_name(t: string) -> bool {
+    t == "int8" or t == "int16" or t == "int32" or t == "int64" or t == "uint8" or t == "uint16" or t == "uint32" or t == "uint64" or t == "float16" or t == "float32" or t == "float64"
+}
+
+// Expr kind 12: unary minus (-) on an expression; disallowed — use negate_<type>(...) instead.
+fn check_unary_minus_forbidden(expr: Expr, context: TypeContext) -> TypeCheckResult {
+    inner_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+    case len(inner_t) == 0 of {
+        true -> type_checker_core@type_check_err("E2013", expr.location, "Unary minus (-) is not allowed; use negate_<type>(...) instead of the `-` symbol, where <type> matches the operand's numeric type (operand type could not be inferred)", "sect6");
+        false -> case is_primitive_numeric_type_name(inner_t) of {
+            true -> do
+                suggest: string <- concat("negate_", inner_t);
+                type_checker_core@type_check_err("E2013", expr.location, concat(concat("Unary minus (-) is not allowed; use ", suggest), "(...) instead of the `-` symbol"), "sect6")
+            end;
+            false -> type_checker_core@type_check_err("E2013", expr.location, concat(concat("Unary minus (-) is not allowed; use negate_<type>(...) instead of the `-` symbol (operand type is ", inner_t), ", not a primitive numeric)"), "sect6")
+        }
+    }
+}
+
 // Arithmetic: +, -, *, /, % (mod) - operands int64/int32/int16/int8/uint64/uint32/uint16/uint8, result matches operands
 fn is_arithmetic_op_lexeme(op: string) -> bool {
     op == "+" or op == "-" or op == "*" or op == "/" or op == "%"
@@ -1040,7 +1059,7 @@ fn is_true_or_false_identifier(expr: Expr) -> bool {
     }
 }
 
-// Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding, 7=boolean literal, 8=string literal
+// Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding, 7=boolean literal, 8=string literal, 12=unary minus (forbidden)
 fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case expr.kind of {
         0 -> type_checker_expressions_literals@check_expr(expr, expected_type, context);
@@ -1064,6 +1083,7 @@ fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
         9 -> check_tuple_literal_inline(expr, expected_type, context);
         10 -> check_tuple_decompose(expr, expected_type, context);
         11 -> check_sequence_block(expr, expected_type, context);
+        12 -> check_unary_minus_forbidden(expr, context);
         _: int64 -> type_checker_core@type_check_ok()
     }
 }

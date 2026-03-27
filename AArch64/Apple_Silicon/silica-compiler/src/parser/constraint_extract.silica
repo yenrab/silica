@@ -1230,11 +1230,19 @@ fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO]
                 false -> (extract_operand_expr(first), rest)
             }
         };
-        false -> case first_kind == kinds.left_paren of {
-            true -> extract_parenthesized(slots);
-            false -> case is_operand_token(kinds, first_kind) of {
-                true -> (extract_operand_expr(first), rest);
-                false -> (extract_body_expr(first), rest)
+        false -> case first_kind == kinds.minus of {
+            true -> do
+                (operand: Expr, rest_after: ListTokenSlot) <- extract_expr_with_precedence(rest, 3);
+                dummy: Expr <- parser_ast@dummy_expr();
+                unary_minus: Expr <- Expr { kind: 12, value: "", name: "", location: first.token.location, inner: operand, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+                (unary_minus, rest_after)
+            end;
+            false -> case first_kind == kinds.left_paren of {
+                true -> extract_parenthesized(slots);
+                false -> case is_operand_token(kinds, first_kind) of {
+                    true -> (extract_operand_expr(first), rest);
+                    false -> (extract_body_expr(first), rest)
+                }
             }
         }
     }
@@ -1409,13 +1417,16 @@ fn expr_has_single_tuple_error(expr: Expr) -> (bool, SourceLocation) {
             true -> (true, expr.location);
             false -> case expr.kind == -1 of {
                 true -> (false, parser_ast@zero_location());
-                false -> do
-                    (inner_found: bool, inner_loc: SourceLocation) <- expr_has_single_tuple_error(expr.inner);
-                    case inner_found of {
-                        true -> (true, inner_loc);
-                        false -> expr_has_single_tuple_error(expr.right_expr)
-                    }
-                end
+                false -> case expr.kind == 12 of {
+                    true -> expr_has_single_tuple_error(expr.inner);
+                    false -> do
+                        (inner_found: bool, inner_loc: SourceLocation) <- expr_has_single_tuple_error(expr.inner);
+                        case inner_found of {
+                            true -> (true, inner_loc);
+                            false -> expr_has_single_tuple_error(expr.right_expr)
+                        }
+                    end
+                }
             }
         }
     }
