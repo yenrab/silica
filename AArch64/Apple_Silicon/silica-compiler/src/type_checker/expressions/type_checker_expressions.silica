@@ -367,10 +367,42 @@ fn check_print_call(expr: Expr, arg_type: string, expected_type: string, context
     }
 }
 
+// Built-in: negate_<primitive>/1 — signed int and float only. negate_uint* are not builtins (unknown function, E2005). negate_unit is rejected below.
+fn negate_builtin_arg_type(name: string) -> string {
+    case name of {
+        "negate_int8" -> "int8";
+        "negate_int16" -> "int16";
+        "negate_int32" -> "int32";
+        "negate_int64" -> "int64";
+        "negate_float16" -> "float16";
+        "negate_float32" -> "float32";
+        "negate_float64" -> "float64";
+        _: string -> ""
+    }
+}
+
+fn check_negate_call(expr: Expr, num_type: string, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    arg_result: TypeCheckResult <- check_expr(expr.inner, num_type, context);
+    case arg_result.is_ok of {
+        false -> arg_result;
+        true -> case expected_type of {
+            "discard" -> type_checker_core@type_check_ok();
+            _: string -> case expected_type == num_type of {
+                true -> type_checker_core@type_check_ok();
+                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat(expr.name, " returns "), num_type), ", expected "), expected_type), "sect6")
+            }
+        }
+    }
+}
+
 fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_memory_regions@is_region_builtin_call(expr.name) of {
         true -> check_region_builtin_call(expr, expected_type, context);
-        false -> case expr.name == "print_int64" of {
+        false -> case expr.name == "negate_unit" of {
+            true -> type_checker_core@type_check_err("E2003", expr.location, "negation is not supported for unit", "sect6");
+            false -> case len(negate_builtin_arg_type(expr.name)) > 0 of {
+                    true -> check_negate_call(expr, negate_builtin_arg_type(expr.name), expected_type, context);
+                    false -> case expr.name == "print_int64" of {
         true -> check_print_call(expr, "int64", expected_type, context);
         false -> case expr.name == "print_int32" of {
             true -> check_print_call(expr, "int32", expected_type, context);
@@ -482,6 +514,8 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
                         }
                     }
                 }
+            }
+        }
             }
         }
     }

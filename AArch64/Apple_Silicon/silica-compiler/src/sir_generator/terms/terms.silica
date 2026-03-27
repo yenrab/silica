@@ -32,6 +32,7 @@ use tuple_decompose;
 use types;
 use memory_region_calls;
 use user_calls;
+use negate_builtins;
 
 export expr_to_sir/2;
 export expr_to_sir_with_expected/3;
@@ -386,13 +387,20 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                                 end;
                                 false -> sir_ast@dummy_sir_term();
                             };
-                            false -> case is_single_arg_builtin(expr.name) of {
+                            false -> case negate_builtins@is_negate_builtin(expr.name) of {
                                 true -> do
-                                    arg: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_expected_type(expr.name, expected_type));
-                                    build_single_arg_call(context, expr, arg);
+                                    arg_t: string <- negate_builtins@negate_arg_type(expr.name);
+                                    arg: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_t);
+                                    negate_builtins@build_negate_from_sir(expr.name, arg)
                                 end;
-                                false -> build_user_call_from_expr_in_body(context, expr, bound_name, bound_type, expected_type)
-                            };
+                                false -> case is_single_arg_builtin(expr.name) of {
+                                    true -> do
+                                        arg: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_expected_type(expr.name, expected_type));
+                                        build_single_arg_call(context, expr, arg);
+                                    end;
+                                    false -> build_user_call_from_expr_in_body(context, expr, bound_name, bound_type, expected_type)
+                                };
+                            }
                         }
                     }
                 }
@@ -780,13 +788,20 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
                             end;
                             false -> sir_ast@dummy_sir_term();
                         };
-                        false -> case is_single_arg_builtin(expr.name) of {
+                        false -> case negate_builtins@is_negate_builtin(expr.name) of {
                             true -> do
-                                arg_type: string <- arg_expected_type(expr.name, expected_type);
-                                arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type);
-                                build_single_arg_call(context, expr, arg);
+                                arg_t: string <- negate_builtins@negate_arg_type(expr.name);
+                                arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_t);
+                                negate_builtins@build_negate_from_sir(expr.name, arg)
                             end;
-                            false -> build_user_call_from_expr(context, expr, expected_type)
+                            false -> case is_single_arg_builtin(expr.name) of {
+                                true -> do
+                                    arg_type: string <- arg_expected_type(expr.name, expected_type);
+                                    arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type);
+                                    build_single_arg_call(context, expr, arg);
+                                end;
+                                false -> build_user_call_from_expr(context, expr, expected_type)
+                            }
                         }
                     }
                 }

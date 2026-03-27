@@ -118,9 +118,9 @@ fn is_effect_decl_start(slots: ListTokenSlot) -> bool {
                 true -> false;
                 false -> case slots.tail.tail.tail.is_nil of {
                     true -> false;
-                    false -> case slots.head.token.kind == kinds.identifier of {
+                            false -> case slots.head.token.kind == kinds.identifier of {
                         true -> case slots.head.token.lexeme == "effect" of {
-                            true -> case slots.tail.head.token.kind == kinds.identifier of {
+                                true -> case lexer_token_kind@is_identifier_lexeme_token(kinds, slots.tail.head.token.kind) of {
                                 true -> case slots.tail.tail.head.token.kind == kinds.equal of {
                                     true -> slots.tail.tail.tail.head.token.kind == kinds.left_bracket;
                                     false -> false
@@ -201,7 +201,7 @@ fn is_logical_op_slot(slot: TokenSlot, kinds: TokenKinds) -> bool {
 }
 
 fn is_operand_token(kinds: TokenKinds, token_kind: int64) -> bool {
-    token_kind == kinds.integer_literal or token_kind == kinds.float_literal or token_kind == kinds.identifier or token_kind == kinds.atom_literal or token_kind == kinds.true_literal or token_kind == kinds.false_literal or token_kind == kinds.string_literal
+    token_kind == kinds.integer_literal or token_kind == kinds.float_literal or lexer_token_kind@is_identifier_lexeme_token(kinds, token_kind) or token_kind == kinds.atom_literal or token_kind == kinds.true_literal or token_kind == kinds.false_literal or token_kind == kinds.string_literal
 }
 
 fn collect_effects_until_right_bracket(slots: ListTokenSlot, acc: ListEffectName) -> (ListEffectName, ListTokenSlot) {
@@ -212,7 +212,7 @@ fn collect_effects_until_right_bracket(slots: ListTokenSlot, acc: ListEffectName
             true -> (acc, slots.tail);
             false -> case slots.head.token.kind == kinds.comma of {
                 true -> collect_effects_until_right_bracket(slots.tail, acc);
-                false -> case slots.head.token.kind == kinds.identifier of {
+                false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, slots.head.token.kind) of {
                     true -> do
                         rest1: ListTokenSlot <- slots.tail;
                         case rest1.is_nil of {
@@ -228,7 +228,7 @@ fn collect_effects_until_right_bracket(slots: ListTokenSlot, acc: ListEffectName
                                         next_acc_no_param: ListEffectName <- parser_ast@cons_effect_name(eff_no_param, acc);
                                         collect_effects_until_right_bracket(rest1, next_acc_no_param)
                                     end;
-                                    false -> case rest1.tail.head.token.kind == kinds.identifier of {
+                                    false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, rest1.tail.head.token.kind) of {
                                         true -> case rest1.tail.tail.is_nil of {
                                             true -> do
                                                 eff_no_param: EffectName <- EffectName { name: slots.head.token.lexeme, parameter: "", location: slots.head.token.location };
@@ -340,7 +340,7 @@ fn extract_td_bindings_from_params(slots: ListTokenSlot) -> ListTupleDecomposeBi
                 false -> case slots.tail.head.token.kind == kinds.left_paren of {
                     true -> case slots.tail.tail.is_nil of {
                         true -> parser_ast@nil_tuple_decompose_bindings();
-                        false -> case slots.tail.tail.head.token.kind == kinds.identifier of {
+                        false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, slots.tail.tail.head.token.kind) of {
                             true -> do
                                 td_result: TupleDecomposeResult <- parser_tuples@extract_tuple_decompose_pattern_from_slots(slots.tail);
                                 td_result.bindings
@@ -392,7 +392,7 @@ fn collect_params_loop(slots: ListTokenSlot, acc: ListParam) -> (ListParam, List
             false -> case slots.head.token.kind == kinds.left_paren of {
                 true -> case slots.tail.is_nil of {
                     true -> (acc, slots);
-                    false -> case slots.tail.head.token.kind == kinds.identifier of {
+                    false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, slots.tail.head.token.kind) of {
                         true -> do
                             td_result: TupleDecomposeResult <- parser_tuples@extract_tuple_decompose_pattern_from_slots(slots);
                             td_rest: ListTokenSlot <- td_result.rest_slots;
@@ -413,7 +413,7 @@ fn collect_params_loop(slots: ListTokenSlot, acc: ListParam) -> (ListParam, List
                         false -> (acc, slots)
                     }
                 };
-                false -> case slots.head.token.kind == kinds.identifier of {
+                false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, slots.head.token.kind) of {
                     true -> case slots.tail.is_nil of {
                         true -> (acc, slots);
                         false -> case slots.tail.tail.is_nil of {
@@ -476,7 +476,7 @@ fn extract_single_param_type(slots: ListTokenSlot) -> (string, ListTokenSlot) pr
                     };
                     false -> case is_type_keyword(kinds, slots.head.token.kind) of {
                         true -> (kind_to_type_name(slots.head.token.kind), slots.tail);
-                        false -> case slots.head.token.kind == kinds.identifier of {
+                        false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, slots.head.token.kind) of {
                             true -> (slots.head.token.lexeme, slots.tail);
                             false -> ("", slots)
                         }
@@ -588,7 +588,7 @@ fn is_binding_start(slots: ListTokenSlot) -> bool {
             true -> false;
             false -> case slots.tail.tail.is_nil of {
                 true -> false;
-                false -> case slots.head.token.kind == kinds.identifier of {
+                false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, slots.head.token.kind) of {
                     true -> case slots.tail.head.token.kind == kinds.colon of {
                         true -> case is_type_keyword(kinds, slots.tail.tail.head.token.kind) of {
                             true -> case slots.tail.tail.tail.is_nil of {
@@ -1102,7 +1102,7 @@ fn extract_body(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
             end;
             false -> case first.token.kind == kinds.sequence_keyword of {
                 true -> extract_sequence(slots);
-                false -> case first.token.kind == kinds.identifier of {
+                false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, first.token.kind) of {
                     true -> case is_binding_start(slots) of {
                         true -> extract_binding(slots);
                         false -> extract_expr_with_precedence(slots, 0)
@@ -1222,7 +1222,7 @@ fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO]
     first: TokenSlot <- slots.head;
     rest: ListTokenSlot <- slots.tail;
     first_kind: int64 <- first.token.kind;
-    case first_kind == kinds.identifier of {
+    case lexer_token_kind@is_identifier_lexeme_token(kinds, first_kind) of {
         true -> case slots_is_nil(rest) of {
             true -> (extract_operand_expr(first), rest);
             false -> case slots_head(rest).token.kind == kinds.left_paren of {
@@ -1336,7 +1336,7 @@ fn extract_body_expr(slot: TokenSlot) -> Expr {
         true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
         false -> case slot.token.kind == kinds.float_literal of {
             true -> Expr { kind: 0, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
-            false -> case slot.token.kind == kinds.identifier of {
+            false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, slot.token.kind) of {
                 true -> Expr { kind: 1, value: "", name: slot.token.lexeme, location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
                 false -> case slot.token.kind == kinds.atom_literal of {
                     true -> Expr { kind: 5, value: slot.token.lexeme, name: "", location: slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
