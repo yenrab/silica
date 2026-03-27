@@ -1169,7 +1169,26 @@ pub extern "C" fn silica_write_file_path(path_ptr: *const u8, content_ptr: *cons
     silica_write_file(path, path_len, content, content_len)
 }
 
+/// Same as silica_append_file but takes SilicaString path and content pointers.
+#[no_mangle]
+pub extern "C" fn silica_append_file_path(path_ptr: *const u8, content_ptr: *const u8) -> SilicaResult {
+    let (path, path_len) = unsafe {
+        crate::io::get_string_data_and_length(path_ptr).unwrap_or((std::ptr::null(), 0))
+    };
+    let (content, content_len) = unsafe {
+        crate::io::get_string_data_and_length(content_ptr).unwrap_or((std::ptr::null(), 0))
+    };
+    if path.is_null() || path_len == 0 {
+        return SilicaResult {
+            success: false,
+            data: create_error_string("Invalid or empty path"),
+        };
+    }
+    silica_append_file(path, path_len, content, content_len)
+}
+
 // LLVM-compatible external function (not C API)
+// Overwrites the file (truncate). Used by write_file and by build_output after a no-op delete_file.
 #[no_mangle]
 pub extern "C" fn silica_write_file(path: *const u8, path_len: usize, content: *const u8, content_len: usize) -> SilicaResult {
     // Convert path to Rust string
@@ -1185,10 +1204,10 @@ pub extern "C" fn silica_write_file(path: *const u8, path_len: usize, content: *
     // Convert content to Rust slice
     let content_slice = unsafe { std::slice::from_raw_parts(content, content_len) };
 
-    // Write/append to the file (append_file intrinsic uses this)
     match fs::OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
+        .truncate(true)
         .open(path_str) {
         Ok(mut file) => {
             use std::io::Write;
@@ -1199,6 +1218,42 @@ pub extern "C" fn silica_write_file(path: *const u8, path_len: usize, content: *
         },
         Err(e) => SilicaResult {
             success: false,
+                    data: create_error_string(&format!("Failed to write to file: {}", e)),
+                },
+            }
+        }
+        Err(e) => SilicaResult {
+            success: false,
+            data: create_error_string(&format!("Failed to open file: {}", e)),
+        },
+    }
+}
+
+/// Append to an existing file (append_file intrinsic).
+#[no_mangle]
+pub extern "C" fn silica_append_file(path: *const u8, path_len: usize, content: *const u8, content_len: usize) -> SilicaResult {
+    let path_slice = unsafe { std::slice::from_raw_parts(path, path_len) };
+    let path_str = match std::str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => return SilicaResult {
+            success: false,
+            data: create_error_string("Invalid UTF-8 in path"),
+        },
+    };
+    let content_slice = unsafe { std::slice::from_raw_parts(content, content_len) };
+    match fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path_str) {
+        Ok(mut file) => {
+            use std::io::Write;
+            match file.write_all(content_slice) {
+                Ok(()) => SilicaResult {
+                    success: true,
+                    data: std::ptr::null_mut(),
+                },
+                Err(e) => SilicaResult {
+                    success: false,
                     data: create_error_string(&format!("Failed to write to file: {}", e)),
                 },
             }

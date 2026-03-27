@@ -1,0 +1,34 @@
+// Two actors: server receives (:ping, reply_to) and send(reply_to, :pong). Client receives :start from main,
+// send(server, (:ping, self)), then on :pong prints it. Main send(client, :start) then recv() forever (no exit).
+// Server message type: (atom, actor_ref). Client mailbox: atom (:start | :pong). Client state: (actor_ref, atom) phase.
+fn main() -> atom {
+    sequence proc[concurrency, mailbox, device_io]
+        server: actor_ref <- spawn(:idle, fn(msg: (atom, actor_ref), state: atom) -> atom {
+            case msg of {
+                (tag: atom, reply: actor_ref) if tag == :ping -> {
+                    send(reply, :pong);
+                    state
+                }
+                _: (atom, actor_ref) -> state
+            }
+        });
+        client: actor_ref <- spawn((server, :idle), fn(msg: atom, state: (actor_ref, atom)) -> (actor_ref, atom) {
+            (srv: actor_ref, ph: atom) <- state;
+            case (msg, ph) of {
+                (s: atom, q: atom) if s == :start and q == :idle -> {
+                    send(srv, (:ping, self));
+                    (srv, :awaiting)
+                }
+                (p: atom, q: atom) if p == :pong and q == :awaiting -> {
+                    sequence proc[device_io]
+                        print_atom(p);
+                        println("");
+                    produces pure (srv, :done) end
+                }
+                _: (atom, atom) -> (srv, ph)
+            }
+        });
+        send(client, :start);
+        recv();
+    produces pure :ok end
+}

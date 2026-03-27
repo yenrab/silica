@@ -16,7 +16,10 @@ SILICA_COMPILER := $(THIS_DIR)../../src/silica-compiler
 SILICA_FILES := $(shell cat $(THIS_DIR)silica.config)
 
 .DEFAULT_GOAL := all
-.PHONY: all clean help
+.PHONY: all integrate clean help
+
+# Same checks as top-level trials Makefile for this directory (error output vs .golden_fail).
+integrate: all
 
 all:
 	@failed=0; \
@@ -56,10 +59,11 @@ help:
 	@echo "compared to .golden_fail."
 	@echo ""
 	@echo "Targets:"
-	@echo "  all   - Compile each .silica, diff .cur_fail vs .golden_fail"
-	@echo "          ✅✅ = output matches .golden_fail"
-	@echo "          ❌❌ = output differs, file not found, or missing .golden_fail"
-	@echo "  clean - Remove .cur_fail files"
-	@echo "  help  - Show this help"
+	@echo "  all       - Compile each .silica, diff .cur_fail vs .golden_fail"
+	@echo "              ✅✅ = output matches .golden_fail"
+	@echo "              ❌❌ = output differs, file not found, or missing .golden_fail"
+	@echo "  integrate - Same as all (integration test for this directory)"
+	@echo "  clean     - Remove .cur_fail files"
+	@echo "  help      - Show this help"
 	@echo ""
 	@echo "Files under test: $(SILICA_FILES)"

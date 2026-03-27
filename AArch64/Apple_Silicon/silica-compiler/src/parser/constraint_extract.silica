@@ -540,26 +540,37 @@ fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListEffe
                             end
                         }
                     };
-                    false -> case is_type_keyword(kinds, first.token.kind) of {
+                    false -> case first.token.kind == kinds.left_paren of {
                         true -> do
-                            ret_type: string <- first.token.lexeme;
+                            tr: TupleTypeResult <- parser_tuples@extract_tuple_type_from_slots(slots);
+                            ret_type: string <- tr.type_str;
                             ret_type_loc: SourceLocation <- first.token.location;
-                            rest_after_type: ListTokenSlot <- rest;
-                            (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(rest_after_type);
+                            (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(tr.rest_slots);
                             rest_after_lbrace: ListTokenSlot <- after_effects.tail;
                             body_slots: ListTokenSlot <- rest_after_lbrace;
-                    from_kind: string <- kind_to_type_name(first.token.kind);
-                    use_type: string <- case effects.is_nil of { true -> ret_type; false -> case from_kind of { "" -> ret_type; _: string -> from_kind } };
-                    // Instrumentation: when use_type is empty, return debug string so E2001 shows which of ret_type/from_kind was empty
-                    ret_empty: string <- case ret_type of { "" -> "ret_empty"; _: string -> "ret_ok" };
-                    from_empty: string <- case from_kind of { "" -> "from_empty"; _: string -> "from_ok" };
-                    use_type_instrumented: string <- case use_type of { "" -> concat("DEBUG:", concat(ret_empty, concat(",", from_empty))); _: string -> use_type };
-                    (use_type_instrumented, ret_type_loc, parser_ast@empty_effect_name_list(), body_slots)
-                end;
-                false -> do
-                    (ret_type: string, ret_type_loc: SourceLocation, _effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(rest);
-                    (ret_type, ret_type_loc, parser_ast@empty_effect_name_list(), body_slots)
-                end
+                            (ret_type, ret_type_loc, parser_ast@empty_effect_name_list(), body_slots)
+                        end;
+                        false -> case is_type_keyword(kinds, first.token.kind) of {
+                            true -> do
+                                ret_type: string <- first.token.lexeme;
+                                ret_type_loc: SourceLocation <- first.token.location;
+                                rest_after_type: ListTokenSlot <- rest;
+                                (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(rest_after_type);
+                                rest_after_lbrace: ListTokenSlot <- after_effects.tail;
+                                body_slots: ListTokenSlot <- rest_after_lbrace;
+                        from_kind: string <- kind_to_type_name(first.token.kind);
+                        use_type: string <- case effects.is_nil of { true -> ret_type; false -> case from_kind of { "" -> ret_type; _: string -> from_kind } };
+                        // Instrumentation: when use_type is empty, return debug string so E2001 shows which of ret_type/from_kind was empty
+                        ret_empty: string <- case ret_type of { "" -> "ret_empty"; _: string -> "ret_ok" };
+                        from_empty: string <- case from_kind of { "" -> "from_empty"; _: string -> "from_ok" };
+                        use_type_instrumented: string <- case use_type of { "" -> concat("DEBUG:", concat(ret_empty, concat(",", from_empty))); _: string -> use_type };
+                        (use_type_instrumented, ret_type_loc, parser_ast@empty_effect_name_list(), body_slots)
+                    end;
+                    false -> do
+                        (ret_type: string, ret_type_loc: SourceLocation, _effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(rest);
+                        (ret_type, ret_type_loc, parser_ast@empty_effect_name_list(), body_slots)
+                    end
+                }
             }
         }
         }

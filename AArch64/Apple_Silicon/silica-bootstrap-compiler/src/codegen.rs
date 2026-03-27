@@ -572,6 +572,8 @@ impl CodeGenerator {
         self.instructions.push("declare { i1, i8* } @silica_read_file_path(i8*)".to_string());
         self.instructions.push("declare { i1, i8* } @silica_write_file(i8*, i64, i8*, i64)".to_string());
         self.instructions.push("declare { i1, i8* } @silica_write_file_path(i8*, i8*)".to_string());
+        self.instructions.push("declare { i1, i8* } @silica_append_file(i8*, i64, i8*, i64)".to_string());
+        self.instructions.push("declare { i1, i8* } @silica_append_file_path(i8*, i8*)".to_string());
         self.instructions.push("declare void @silica_free_string(i8*)".to_string());
 
         // Process execution functions
@@ -818,6 +820,7 @@ impl CodeGenerator {
 
                 let write_file_type = result_struct_type.fn_type(&[i8_ptr.into(), i64_type.into(), i8_ptr.into(), i64_type.into()], false);
                 module.add_function("silica_write_file", write_file_type, None);
+                module.add_function("silica_append_file", write_file_type, None);
 
                 let free_string_type = void_type.fn_type(&[i8_ptr.into()], false);
                 module.add_function("silica_free_string", free_string_type, None);
@@ -13035,9 +13038,9 @@ impl CodeGenerator {
 
         let result_reg = self.next_register();
         if path_len_opt.is_some() && content_len_opt.is_some() {
-            self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_write_file({}, {}, {}, {})", result_reg, path_arg, path_len_opt.as_ref().unwrap(), content_arg, content_len_opt.as_ref().unwrap()));
+            self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_append_file({}, {}, {}, {})", result_reg, path_arg, path_len_opt.as_ref().unwrap(), content_arg, content_len_opt.as_ref().unwrap()));
         } else {
-            self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_write_file_path({}, {})", result_reg, path_arg, content_arg));
+            self.instructions.push(format!("  %{} = call {{ i1, i8* }} @silica_append_file_path({}, {})", result_reg, path_arg, content_arg));
         }
 
         // Extract the success flag from the result struct

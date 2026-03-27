@@ -25,7 +25,7 @@ LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(M
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
 .DEFAULT_GOAL := all
-.PHONY: all clean assembly objects executables help silica.config
+.PHONY: all clean assembly objects executables integrate help silica.config
 
 all: executables
 
@@ -62,6 +62,73 @@ executables: objects
 	fi; \
 	done
 
+# integrate: compile .silica per silica.config, diff .sams vs .ascomp, run binaries, diff .sout vs .scout
+integrate:
+	@failed=0; \
+	if [ ! -f silica.config ]; then \
+		ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true; \
+	fi; \
+	if [ ! -s silica.config ]; then \
+		echo "SKIP: no silica.config"; \
+		exit 0; \
+	fi; \
+	rm -f *.sams; \
+	echo "Compiling with silica-compiler..."; \
+	if ! $(abspath $(SILICA_COMPILER)); then \
+		echo "FAIL: Compilation failed"; \
+		exit 1; \
+	fi; \
+	for sams in *.sams; do \
+		[ -f "$$sams" ] || continue; \
+		base=$${sams%.sams}; \
+		if [ ! -f "$$base.ascomp" ]; then \
+			echo "❌❌ $$base has no .ascomp file"; \
+			failed=1; \
+		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
+			echo "❌❌ $$base .sams differs from .ascomp"; \
+			diff -Bw "$$sams" "$$base.ascomp" || true; \
+			failed=1; \
+		else \
+			echo "✅✅ $$base assembly matches .ascomp"; \
+		fi; \
+	done; \
+	for sams in *.sams; do \
+		[ -f "$$sams" ] || continue; \
+		base=$${sams%.sams}; \
+		echo "Assembling $$sams..."; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o || { failed=1; break; }; \
+	done; \
+	for o in *.o; do \
+		[ -f "$$o" ] || continue; \
+		base=$${o%.o}; \
+		echo "Linking $$base..."; \
+		if test -x "$(RUST_LLD)"; then \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) || failed=1; \
+		else \
+			$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) || failed=1; \
+		fi; \
+	done; \
+	for exe in *.sams; do \
+		[ -f "$$exe" ] || continue; \
+		base=$${exe%.sams}; \
+		if [ -x "$$base" ]; then \
+			{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
+			if [ -f "$$base.scout" ]; then \
+				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
+					echo "❌❌ $$base .sout differs from .scout"; \
+					diff -Bw "$$base.sout" "$$base.scout" || true; \
+					failed=1; \
+				else \
+					echo "✅✅ $$base output matches .scout"; \
+				fi; \
+			else \
+				echo "❌❌ $$base has no .scout file"; \
+				failed=1; \
+			fi; \
+		fi; \
+	done; \
+	exit $$failed
+
 clean:
 	@for s in *.sams; do \
 		[ -f "$$s" ] || continue; \
@@ -80,6 +147,7 @@ help:
 	@echo "  assembly    - Run silica-compiler (generates .sams)"
 	@echo "  objects     - Assemble .sams to .o"
 	@echo "  executables - Full build: assembly + link"
+	@echo "  integrate   - Compile, diff .sams vs .ascomp, run, diff .sout vs .scout"
 	@echo "  clean       - Remove .sams, .o, executables"
 	@echo "  help        - Show this help"
 	@echo ""
