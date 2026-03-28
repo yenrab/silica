@@ -198,11 +198,14 @@ fn emit_case_pattern_check(branch: SIRTerm, scrut_t: string, scrut_reg: string, 
                         true -> do
                             syn: SIRTerm <- SIRTerm { kind: 0, type_name: "string", value: branch.name, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
                             ld: string <- emit_string_const(syn, lit_reg, string_literal_table);
-                            ln: string <- concat(ld, "\n");
-                            cmp_ln: string <- concat(concat(concat(ln, "    CMP "), scrut_reg), ", ");
-                            cmp_full: string <- concat(concat(cmp_ln, lit_reg), "\n");
-                            bne_ln: string <- concat(cmp_full, "    B.NE ");
-                            concat(concat(bne_ln, fail_l), "\n")
+                            str_save: string <- concat(concat(concat("    STR ", scrut_reg), ", [SP, #-16]!\n"), concat(ld, "\n"));
+                            mov_x0_ln: string <- concat(concat("    MOV X0, ", scrut_reg), "\n");
+                            mov_x1_ln: string <- concat(concat("    MOV X1, ", lit_reg), "\n");
+                            bl_ln: string <- "    BL L_string_eq_helper\n";
+                            mov_bl: string <- concat(concat(mov_x0_ln, mov_x1_ln), bl_ln);
+                            cmp_bne: string <- concat(concat(concat("    CMP W12, #0\n", "    B.EQ "), fail_l), "\n");
+                            tail: string <- concat(concat(concat("    MOV W12, W0\n    LDR ", scrut_reg), ", [SP], #16\n"), cmp_bne);
+                            concat(concat(str_save, mov_bl), tail)
                         end;
                         false -> concat(concat("    B ", fail_l), "\n")
                     }
@@ -737,8 +740,13 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> concat("    MOV X12, ", concat(rhs_reg, "\n"));
                     false -> ""
                 };
-                outer_base_tl: string <- case is_simple_tuple_make of { true -> "SP"; false -> rhs_reg };
-                new_outer_tl: string <- concat(outer_base_tl, concat(reg_binding_tl, concat(tp_binding_tl, concat(adj_binding_tl, concat(iap_tl, concat(vab_tl, ptr_binding_tl))))));
+                // Top-level let: keep enclosing bindings (e.g. |%s=X19) so later prims still resolve params after rhs_reg holds the new let.
+                nob_tl: string <- case is_simple_tuple_make of {
+                    true -> "SP";
+                    false -> var@base_reg_of(outer_reg)
+                };
+                inherit_sp_tl: string <- var@extract_sp_bindings(outer_reg);
+                new_outer_tl: string <- concat(nob_tl, concat(inherit_sp_tl, concat(reg_binding_tl, concat(tp_binding_tl, concat(adj_binding_tl, concat(iap_tl, concat(vab_tl, ptr_binding_tl)))))));
                 body_asm: string <- case debug of {
                     true -> do term_to_asm_opt_bound_debug(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound_tl, new_outer_tl, true) end;
                     false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound_tl, new_outer_tl, false)
@@ -1071,7 +1079,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     false -> term_to_asm_opt_bound(term.right_expr.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                 };
                 op_asm: string <- prims@emit_prim_op(term, dest);
-                concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), concat(arg3_asm, "\n")), op_asm)
+                guarded_arg3: string <- concat("    STR X1, [SP, #-16]!\n", concat(arg3_asm, "\n    LDR X1, [SP], #16\n"));
+                concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), guarded_arg3), op_asm)
             end;
             false -> case prims_memory@is_memory_prim(term.name) and (term.name == "fresh_lifetime" or term.name == "alloc_region" or term.name == "read_ref") of {
             true -> case term.name == "fresh_lifetime" of {
@@ -1484,9 +1493,19 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 // which may be the source register for the right var. Emit right first to preserve it.
                                 // For string_prim with left=const: loading literal into X0 (left_reg) clobbers right var if right is in X0.
                                 // Emit right first (MOV X1, X0) to save right before loading left literal into X0.
-                                case is_float32 or is_float64 or is_float16 or (is_string_prim and term.inner.kind == 0) of {
-                                    true -> (r, l);
-                                    false -> (l, r)
+                                // When right operand is a call (kind 4), save/restore left_reg across it (AAPCS64: X9-X15 are caller-saved).
+                                right_is_call: bool <- term.right_expr.kind == 4;
+                                case right_is_call and is_float64 == false and is_float32 == false and is_float16 == false and is_string_prim == false of {
+                                    true -> do
+                                        save_left: string <- concat(concat("    STR ", left_reg), ", [SP, #-16]!\n");
+                                        restore_left: string <- concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                        combined: string <- concat(concat(concat(concat(concat(concat(l, "\n"), save_left), r), "\n"), restore_left), "");
+                                        (combined, "")
+                                    end;
+                                    false -> case is_float32 or is_float64 or is_float16 or (is_string_prim and term.inner.kind == 0) of {
+                                        true -> (r, l);
+                                        false -> (l, r)
+                                    }
                                 }
                             end
                         }

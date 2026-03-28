@@ -25,6 +25,7 @@ use prims_string;
 use string_concat_mmap_nomte;
 use string_substring_mmap_nomte;
 use string_length_mmap_nomte;
+use string_eq_mmap_nomte;
 use prims_memory;
 use recursion_support;
 
@@ -126,6 +127,11 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
         true -> concat("\n", string_length_mmap_nomte@emit_length_chars_helper());
         false -> ""
     };
+    needs_string_eq_helper: bool <- string_rodata@module_uses_string_case_pattern(sir_module);
+    string_eq_helper: string <- case needs_string_eq_helper of {
+        true -> concat("\n", string_eq_mmap_nomte@emit_string_eq_helper());
+        false -> ""
+    };
     fwh_0: string <- concat(funcs, pi_helper);
     fwh_1: string <- concat(fwh_0, pu_helper);
     fwh_2: string <- concat(fwh_1, pb_helper);
@@ -137,7 +143,8 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
     fwh_8: string <- concat(fwh_7, substring_until_char_helper);
     fwh_9: string <- concat(fwh_8, length_bytes_helper);
     fwh_10: string <- concat(fwh_9, length_chars_helper);
-    funcs_with_helper: string <- concat(fwh_10, region_overflow_helper);
+    fwh_11: string <- concat(fwh_10, string_eq_helper);
+    funcs_with_helper: string <- concat(fwh_11, region_overflow_helper);
     atom_rodata_str: string <- atom_rodata@emit_atom_rodata_section(table);
     bool_rodata: string <- boolean_rodata@emit_boolean_rodata_section();
     int64_rodata_str: string <- int_rodata@emit_int64_rodata_section(int64_table);
@@ -301,6 +308,11 @@ fn emit_module_debug(sir_module: SIRModule, debug: bool) -> string proc[DeviceIO
         true -> concat("\n", string_length_mmap_nomte@emit_length_chars_helper());
         false -> ""
     };
+    needs_string_eq_helper: bool <- string_rodata@module_uses_string_case_pattern(sir_module);
+    string_eq_helper: string <- case needs_string_eq_helper of {
+        true -> concat("\n", string_eq_mmap_nomte@emit_string_eq_helper());
+        false -> ""
+    };
     fwh_0: string <- concat(funcs, pi_helper);
     fwh_1: string <- concat(fwh_0, pu_helper);
     fwh_2: string <- concat(fwh_1, pb_helper);
@@ -312,7 +324,8 @@ fn emit_module_debug(sir_module: SIRModule, debug: bool) -> string proc[DeviceIO
     fwh_8: string <- concat(fwh_7, substring_until_char_helper);
     fwh_9: string <- concat(fwh_8, length_bytes_helper);
     fwh_10: string <- concat(fwh_9, length_chars_helper);
-    funcs_with_helper: string <- concat(fwh_10, region_overflow_helper);
+    fwh_11: string <- concat(fwh_10, string_eq_helper);
+    funcs_with_helper: string <- concat(fwh_11, region_overflow_helper);
     atom_rodata_str: string <- atom_rodata@emit_atom_rodata_section(table);
     bool_rodata: string <- boolean_rodata@emit_boolean_rodata_section();
     int64_rodata_str: string <- int_rodata@emit_int64_rodata_section(int64_table);
@@ -446,7 +459,15 @@ fn param_type_at_index(param_types: string, idx: int64) -> string {
     }
 }
 
-fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int64, acc: string) -> string {
+fn bind_reg_for_param(idx: int64, ptype: string, string_shadow: bool) -> string {
+    reg: string <- param_reg_for_index(idx, ptype);
+    case string_shadow and idx == 0 and ptype == "string" of {
+        true -> "X19";
+        false -> reg
+    }
+}
+
+fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int64, acc: string, string_shadow: bool) -> string {
     pipe: int64 <- find_pipe_in_param_names(param_names, 0);
     ptype: string <- param_type_at_index(param_types, idx);
     case pipe < 0 of {
@@ -454,9 +475,9 @@ fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int
             true -> acc;
             false -> do
                 prefixed: string <- concat("%", param_names);
-                reg: string <- param_reg_for_index(idx, ptype);
+                br: string <- bind_reg_for_param(idx, ptype, string_shadow);
                 sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
-                concat(acc, concat(sep, concat(prefixed, concat("=", reg))))
+                concat(acc, concat(sep, concat(prefixed, concat("=", br))))
             end
         };
         false -> do
@@ -464,12 +485,12 @@ fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int
             rest: string <- case pipe + 1 < len(param_names) of { true -> substring(param_names, pipe + 1, len(param_names)); false -> "" };
             rest_types: string <- case pipe + 1 < len(param_types) of { true -> substring(param_types, pipe + 1, len(param_types)); false -> "" };
             prefixed: string <- concat("%", first);
-            reg: string <- param_reg_for_index(idx, ptype);
+            br: string <- bind_reg_for_param(idx, ptype, string_shadow);
             sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
-            part: string <- concat(sep, concat(prefixed, concat("=", reg)));
+            part: string <- concat(sep, concat(prefixed, concat("=", br)));
             base: string <- case len(acc) == 0 of { true -> param_reg_for_index(0, ptype); false -> acc };
             next_acc: string <- concat(base, part);
-            build_param_outer_reg_loop(rest, rest_types, idx + 1, next_acc)
+            build_param_outer_reg_loop(rest, rest_types, idx + 1, next_acc, string_shadow)
         end
     }
 }
@@ -484,14 +505,29 @@ fn find_pipe_in_param_names(s: string, start: int64) -> int64 {
     }
 }
 
-fn build_param_outer_reg(param_names: string, param_types: string) -> string {
+fn build_param_outer_reg(param_names: string, param_types: string, string_shadow: bool) -> string {
     case len(param_names) == 0 of {
         true -> "";
         false -> do
             first_ptype: string <- param_type_at_index(param_types, 0);
             first_reg: string <- param_reg_for_index(0, first_ptype);
-            build_param_outer_reg_loop(param_names, param_types, 0, first_reg)
+            build_param_outer_reg_loop(param_names, param_types, 0, first_reg, string_shadow)
         end
+    }
+}
+
+// First string param arrives in X0 but substring/case clobber X0; keep a stable copy in X19 for the body.
+// Skip for tail-call bodies (kind 5): epilogue is not emitted so X19 save/restore would not match.
+fn first_param_string_shadow_enabled(param_types: string, body_kind: int64) -> bool {
+    case len(param_types) == 0 of {
+        true -> false;
+        false -> case param_type_at_index(param_types, 0) == "string" of {
+            true -> case body_kind == 5 of {
+                true -> false;
+                false -> true
+            };
+            false -> false
+        }
     }
 }
 
@@ -510,7 +546,13 @@ fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64Pr
             }
         }
     };
-    param_outer: string <- build_param_outer_reg(fn_val.param_names, fn_val.param_types);
+    string_shadow: bool <- first_param_string_shadow_enabled(fn_val.param_types, fn_val.body.kind);
+    param_outer: string <- build_param_outer_reg(fn_val.param_names, fn_val.param_types, string_shadow);
+    shadow_prologue: string <- case string_shadow of {
+        true -> "    STP X19, X20, [SP, #-16]!\n    MOV X19, X0\n";
+        false -> ""
+    };
+    prologue_full: string <- concat(prologue, shadow_prologue);
     body: string <- case fn_val.body.kind == 5 of {
         true -> term_emitter@emit_function_tail_user_call_root(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer, fn_val.effects, debug);
         false -> term_emitter@term_to_asm_debug_with_outer(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer, debug)
@@ -527,9 +569,12 @@ fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64Pr
     };
     epilogue: string <- case fn_val.body.kind == 5 of {
         true -> "";
-        false -> control@function_epilogue_with_effects(fn_val.effects)
+        false -> case string_shadow of {
+            true -> concat("    LDP X19, X20, [SP], #16\n", control@function_epilogue_with_effects(fn_val.effects));
+            false -> control@function_epilogue_with_effects(fn_val.effects)
+        }
     };
-    concat(concat(concat(eff_comment, "\n"), concat(prologue, "\n")), concat(concat(concat(body, "\n"), float_to_exit), epilogue))
+    concat(concat(concat(eff_comment, "\n"), concat(prologue_full, "\n")), concat(concat(concat(body, "\n"), float_to_exit), epilogue))
     end
 }
 

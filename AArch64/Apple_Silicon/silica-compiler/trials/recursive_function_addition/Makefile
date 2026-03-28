@@ -12,6 +12,8 @@
 # Directory containing this Makefile (works regardless of where make is invoked)
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 SILICA_COMPILER := $(THIS_DIR)../../src/silica-compiler
+# Bootstrap runtime (silica_string_equals, substring, length_chars helpers may call into Rust)
+RUNTIME_LIB := $(THIS_DIR)../../../silica-bootstrap-compiler/target/release/libsilica_compiler.a
 
 # Rust toolchain linker (rust-lld) - optional override
 RUST_SYSROOT := $(shell rustc --print sysroot 2>/dev/null)
@@ -58,9 +60,9 @@ executables: objects
 		[ -f "$$o" ] || continue; \
 		base=$${o%.o}; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) && echo "  ✅ Built $$base (rust-lld)"; \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) $(RUNTIME_LIB) && echo "  ✅ Built $$base (rust-lld)"; \
 		else \
-			$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) && echo "  ✅ Built $$base (clang)"; \
+			$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) $(RUNTIME_LIB) && echo "  ✅ Built $$base (clang)"; \
 		fi; \
 	done
 
@@ -106,9 +108,9 @@ integrate:
 		base=$${o%.o}; \
 		echo "Linking $$base..."; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) || failed=1; \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) $(RUNTIME_LIB) || failed=1; \
 		else \
-			$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) || failed=1; \
+			$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) $(RUNTIME_LIB) || failed=1; \
 		fi; \
 	done; \
 	for exe in *.sams; do \
