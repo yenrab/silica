@@ -484,10 +484,29 @@ fn build_region_prim_in_body_1arg(context: TypeContext, expr: Expr, bound_name: 
     memory_region_calls@build_region_prim_from_sir(expr.name, arg1, sir_ast@dummy_sir_term(), expected_type)
 }
 
+// Parser represents f(a,b) as call(inner=a, right=pair("", inner=b, right=...)); see extract_call_rest.
+fn region_call_second_arg(expr: Expr) -> Expr {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> expr.right_expr.inner;
+        false -> expr.right_expr
+    }
+}
+
 fn build_region_prim_in_body_2arg(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
     arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_type_for_region_prim_inferred(expr.name, 0, expected_type, expr, context));
-    arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, arg_type_for_region_prim_inferred(expr.name, 1, expected_type, expr, context));
+    arg2: SIRTerm <- expr_to_sir_in_let_body(context, region_call_second_arg(expr), bound_name, bound_type, arg_type_for_region_prim_inferred(expr.name, 1, expected_type, expr, context));
     memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type)
+}
+
+// write_buf(buf, idx, val): after first arg, parser builds pair(idx, pair(val, dummy)).
+fn buf_store_value_expr(expr: Expr) -> Expr {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> case expr.right_expr.right_expr.kind == 4 and expr.right_expr.right_expr.name == "" of {
+            true -> expr.right_expr.right_expr.inner;
+            false -> expr.right_expr.right_expr
+        };
+        false -> expr.right_expr
+    }
 }
 
 fn build_region_prim_in_body_buf_store(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
@@ -501,7 +520,7 @@ fn build_buf_store_arg2_in_body(context: TypeContext, expr: Expr, bound_name: st
         true -> do
             idx: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, "int64");
             val_type: string <- arg_type_for_region_prim_inferred(expr.name, 2, expected_type, expr, context);
-            val: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.right_expr, bound_name, bound_type, val_type);
+            val: SIRTerm <- expr_to_sir_in_let_body(context, buf_store_value_expr(expr), bound_name, bound_type, val_type);
             sir_type: string <- types@type_name_to_sir(val_type);
             SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: idx, right_expr: val }
         end;
@@ -532,7 +551,7 @@ fn build_region_prim_1arg(context: TypeContext, expr: Expr, expected_type: strin
 
 fn build_region_prim_2arg(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
     arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_type_for_region_prim_inferred(expr.name, 0, expected_type, expr, context));
-    arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, arg_type_for_region_prim_inferred(expr.name, 1, expected_type, expr, context));
+    arg2: SIRTerm <- expr_to_sir_with_expected(context, region_call_second_arg(expr), arg_type_for_region_prim_inferred(expr.name, 1, expected_type, expr, context));
     memory_region_calls@build_region_prim_from_sir(expr.name, arg1, arg2, expected_type)
 }
 
@@ -547,7 +566,7 @@ fn build_buf_store_arg2(context: TypeContext, expr: Expr, expected_type: string)
         true -> do
             idx: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "int64");
             val_type: string <- arg_type_for_region_prim_inferred(expr.name, 2, expected_type, expr, context);
-            val: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.right_expr, val_type);
+            val: SIRTerm <- expr_to_sir_with_expected(context, buf_store_value_expr(expr), val_type);
             sir_type: string <- types@type_name_to_sir(val_type);
             SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: idx, right_expr: val }
         end;

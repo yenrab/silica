@@ -1,12 +1,13 @@
 # Makefile for Silica experiments in atoms_addition
 # Uses silica-compiler (Phase 2) to generate assembly, then assembles and links
-# No Rust code - only silica-compiler + assembler + linker
+# No Rust runtime — string helpers are emitted as AArch64 in the compiler output.
 #
 # silica-compiler reads silica.config and outputs .sams (assembly) files.
 # Assembler: clang -c (Rust toolchain does not ship a standalone assembler)
 # Linker: rust-lld if available, else clang
 
-SILICA_COMPILER := ../../src/silica-compiler
+THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+SILICA_COMPILER := $(THIS_DIR)../../src/silica-compiler
 
 # Rust toolchain linker (rust-lld) - optional override
 RUST_SYSROOT := $(shell rustc --print sysroot 2>/dev/null)
@@ -55,11 +56,11 @@ executables: objects
 	@for o in *.o; do \
 	[ -f "$$o" ] || continue; \
 	base=$${o%.o}; \
-	if test -x "$(RUST_LLD)"; then \
-		$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) && echo "  ✅ Built $$base (rust-lld)"; \
-	else \
-		$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) && echo "  ✅ Built $$base (clang)"; \
-	fi; \
+		if test -x "$(RUST_LLD)"; then \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) && echo "  ✅ Built $$base (rust-lld)"; \
+		else \
+			$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) && echo "  ✅ Built $$base (clang)"; \
+		fi; \
 	done
 
 # integrate: compile .silica per silica.config, diff .sams vs .ascomp, run binaries, diff .sout vs .scout

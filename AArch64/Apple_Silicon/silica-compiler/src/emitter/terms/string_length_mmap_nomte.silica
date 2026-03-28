@@ -1,16 +1,23 @@
-// String length helpers: length_bytes, length_chars (spec §silica:StringLengthOperations).
-// Non-MTE fallback for Apple Silicon (macOS ARM64). No libc.
-//
-// Both delegate to Rust (io.rs): pointers may be SilicaString struct or null-terminated literals.
-// Frame around BL preserves LR for nested calls.
+// String length helpers: byte length and UTF-8 scalar count. Pure AArch64 (same normalize as io.rs).
+// Char count: for valid UTF-8, equals Rust str::chars().count() (non-continuation bytes).
+// X0 = string pointer; returns length in X0.
 
 export emit_length_bytes_helper/0;
 export emit_length_chars_helper/0;
 
 fn emit_length_bytes_helper() -> string {
-    "L_length_bytes_helper:\n    STP X29, X30, [SP, #-16]!\n    BL _silica_string_len\n    LDP X29, X30, [SP], #16\n    RET"
+    concat(
+        "L_length_bytes_helper:\n    STP X29, X30, [SP, #-16]!\n    STP X19, X20, [SP, #-16]!\n    STP X21, X22, [SP, #-16]!\n    MOV X19, X0\n    CBZ X19, Llb_z\n    MOV X0, X19\n    LDRB W1, [X0]\n    CMP W1, #0xFF\n    B.NE Llb_cstr\n    LDR X1, [X0]\n    MOV X2, #-1\n    CMP X1, X2\n    B.NE Llb_cstr\n    LDR X21, [X0, #8]\n    LDR X22, [X0, #16]\n    MOV X2, #0x40000000\n    CMP X22, X2\n    B.HS Llb_cstr\n    MOV X0, X22\n    LDP X21, X22, [SP], #16\n    LDP X19, X20, [SP], #16\n    LDP X29, X30, [SP], #16\n    RET\n",
+        "Llb_cstr:\n    MOV X21, X0\n    MOV X22, #0\n    MOV X1, X0\nLlb_lp:\n    LDRB W3, [X1], #1\n    CBZ W3, Llb_done\n    ADD X22, X22, #1\n    CMP X22, #0x100000\n    B.LT Llb_lp\nLlb_done:\n    MOV X0, X22\n    LDP X21, X22, [SP], #16\n    LDP X19, X20, [SP], #16\n    LDP X29, X30, [SP], #16\n    RET\nLlb_z:\n    MOV X0, #0\n    LDP X21, X22, [SP], #16\n    LDP X19, X20, [SP], #16\n    LDP X29, X30, [SP], #16\n    RET\n"
+    )
 }
 
 fn emit_length_chars_helper() -> string {
-    "L_length_chars_helper:\n    STP X29, X30, [SP, #-16]!\n    BL _silica_string_len_chars\n    LDP X29, X30, [SP], #16\n    RET"
+    concat(
+        concat(
+            "L_length_chars_helper:\n    STP X29, X30, [SP, #-16]!\n    STP X19, X20, [SP, #-16]!\n    STP X21, X22, [SP, #-16]!\n    STP X23, X24, [SP, #-16]!\n    STP X25, X26, [SP, #-16]!\n    MOV X19, X0\n    CBZ X19, Lch_z\n    MOV X0, X19\n    LDRB W1, [X0]\n    CMP W1, #0xFF\n    B.NE Lch_cstr\n    LDR X1, [X0]\n    MOV X2, #-1\n    CMP X1, X2\n    B.NE Lch_cstr\n    LDR X20, [X0, #8]\n    LDR X21, [X0, #16]\n    MOV X2, #0x40000000\n    CMP X21, X2\n    B.HS Lch_cstr\n    B Lch_count\n",
+            "Lch_cstr:\n    MOV X20, X0\n    MOV X21, #0\n    MOV X1, X0\nLch_lp:\n    LDRB W3, [X1], #1\n    CBZ W3, Lch_count\n    ADD X21, X21, #1\n    CMP X21, #0x100000\n    B.LT Lch_lp\nLch_count:\n    ADD X26, X20, X21\n    MOV X25, X20\n    MOV X24, #0\nLch_loop:\n    CMP X25, X26\n    B.GE Lch_done\n    LDRB W1, [X25], #1\n    AND W2, W1, #0xC0\n    CMP W2, #0x80\n    B.EQ Lch_loop\n    ADD X24, X24, #1\n    B Lch_loop\nLch_done:\n    MOV X0, X24\n    LDP X25, X26, [SP], #16\n    LDP X23, X24, [SP], #16\n    LDP X21, X22, [SP], #16\n    LDP X19, X20, [SP], #16\n    LDP X29, X30, [SP], #16\n    RET\n"
+        ),
+        "Lch_z:\n    MOV X0, #0\n    LDP X25, X26, [SP], #16\n    LDP X23, X24, [SP], #16\n    LDP X21, X22, [SP], #16\n    LDP X19, X20, [SP], #16\n    LDP X29, X30, [SP], #16\n    RET\n"
+    )
 }

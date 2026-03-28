@@ -213,6 +213,26 @@ fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> T
     }
 }
 
+// Multi-arg calls use kind-4 continuations with name "" (see extract_call_rest). Second argument is inner of that node.
+fn call_second_arg_expr(expr: Expr) -> Expr {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> expr.right_expr.inner;
+        false -> expr.right_expr
+    }
+}
+
+// Third argument of a 3-arg call like write_buf(buf, idx, val).
+// Parser encodes as call(inner=buf, right=pair("", inner=idx, right=pair("", inner=val, right=dummy))).
+fn call_third_arg_expr(expr: Expr) -> Expr {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> case expr.right_expr.right_expr.kind == 4 and expr.right_expr.right_expr.name == "" of {
+            true -> expr.right_expr.right_expr.inner;
+            false -> expr.right_expr.right_expr
+        };
+        false -> expr.right_expr
+    }
+}
+
 // Memory region built-ins per spec §4.4, §9.2.2, §12, §22
 fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case expr.name == "alloc_region" of {
@@ -244,7 +264,7 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                     true -> type_checker_core@type_check_err("E2010", expr.location, concat("alloc_ref result must be ref(R, Space, T), got ", expected_type), "sect4.4.2");
                     false -> do
                         r1: TypeCheckResult <- check_expr(expr.inner, region_type, context);
-                        case r1.is_ok of { false -> r1; true -> check_expr(expr.right_expr, elem_type, context) }
+                        case r1.is_ok of { false -> r1; true -> check_expr(call_second_arg_expr(expr), elem_type, context) }
                     end
                 }
             end;
@@ -271,7 +291,7 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                                 case r1.is_ok of {
                                     false -> r1;
                                     true -> do
-                                        r2: TypeCheckResult <- check_expr(expr.right_expr, elem_type, context);
+                                        r2: TypeCheckResult <- check_expr(call_second_arg_expr(expr), elem_type, context);
                                         case r2.is_ok of {
                                             false -> r2;
                                             true -> case expected_type == "atom" or expected_type == "discard" of {
@@ -291,7 +311,7 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                                 true -> type_checker_core@type_check_err("E2010", expr.location, concat("alloc_buf result must be buf(R, Space, T, N), got ", expected_type), "sect4.4.3");
                                 false -> do
                                     r1: TypeCheckResult <- check_expr(expr.inner, region_type, context);
-                                    case r1.is_ok of { false -> r1; true -> check_expr(expr.right_expr, "int64", context) }
+                                    case r1.is_ok of { false -> r1; true -> check_expr(call_second_arg_expr(expr), "int64", context) }
                                 end
                             }
                         end;
@@ -305,7 +325,7 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                                         false -> type_checker_core@type_check_err("E2010", expr.location, concat(concat("read_buf/buf_load: element type ", elem_type), concat(" does not match expected ", expected_type)), "sect4.4.3");
                                         true -> do
                                             r1: TypeCheckResult <- check_expr(expr.inner, buf_type, context);
-                                            case r1.is_ok of { false -> r1; true -> check_expr(expr.right_expr, "int64", context) }
+                                            case r1.is_ok of { false -> r1; true -> check_expr(call_second_arg_expr(expr), "int64", context) }
                                         end
                                     }
                                 }
@@ -327,7 +347,7 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                                                         case r2.is_ok of {
                                                             false -> r2;
                                                             true -> do
-                                                                r3: TypeCheckResult <- check_expr(expr.right_expr.right_expr, elem_type, context);
+                                                                r3: TypeCheckResult <- check_expr(call_third_arg_expr(expr), elem_type, context);
                                                                 case r3.is_ok of {
                                                                     false -> r3;
                                                                     true -> case expected_type == "atom" or expected_type == "discard" of {
@@ -351,7 +371,7 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                                             true -> type_checker_core@type_check_err("E2010", expr.location, concat("alloc_atomic result must be atomic_ref(R, Space, T), got ", expected_type), "sect4.4.4");
                                             false -> do
                                                 r1: TypeCheckResult <- check_expr(expr.inner, region_type, context);
-                                                case r1.is_ok of { false -> r1; true -> check_expr(expr.right_expr, elem_type, context) }
+                                                case r1.is_ok of { false -> r1; true -> check_expr(call_second_arg_expr(expr), elem_type, context) }
                                             end
                                         }
                                     end;

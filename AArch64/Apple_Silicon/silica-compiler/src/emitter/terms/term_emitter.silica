@@ -97,7 +97,53 @@ fn emit_rest_args(rest: SIRTerm, idx: int64, type_name: string, table: AtomTable
                 true -> "";
                 false -> emit_rest_args(rest.right_expr, idx + 1, type_name, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug)
             };
-            concat(concat(arg_asm, "\n"), rest_asm)
+            // fib_iter(n-1, b, a+b): emitting var(b)→X1 at idx=1 clobbers a(X1) before add(a,b)→X2 can read it.
+            // Detect: idx==1, current arg is var(v), next arg is add/mul with v as an operand.
+            // Fix: STR next_reg; emit add/mul into next_reg using original X1=a and X2=b; LDR current_reg=b.
+            // Guard all field accesses: first confirm idx/kind/name before descending into inner nodes.
+            next_is_add_or_mul: bool <- case idx == 1 and rest.right_expr.kind >= 0 and rest.inner.kind == 1 of {
+                true -> case rest.right_expr.name == "user_call_rest" of {
+                    true -> rest.right_expr.inner.kind == 6
+                        and (rest.right_expr.inner.name == "add" or rest.right_expr.inner.name == "mul");
+                    false -> rest.right_expr.kind == 6
+                        and (rest.right_expr.name == "add" or rest.right_expr.name == "mul")
+                };
+                false -> false
+            };
+            next_arg_node: SIRTerm <- case next_is_add_or_mul of {
+                true -> case rest.right_expr.name == "user_call_rest" of {
+                    true -> rest.right_expr.inner;
+                    false -> rest.right_expr
+                };
+                false -> rest.inner
+            };
+            next_has_matching_var: bool <- case next_is_add_or_mul of {
+                true -> (next_arg_node.inner.kind == 1 and next_arg_node.inner.name == rest.inner.name)
+                    or (next_arg_node.right_expr.kind == 1 and next_arg_node.right_expr.name == rest.inner.name);
+                false -> false
+            };
+            use_save_next_for_current: bool <- next_has_matching_var;
+            next_reg: string <- arg_reg_for_index(idx + 1, type_name);
+            next_arg_asm: string <- case use_save_next_for_current of {
+                true -> case debug of {
+                    true -> do term_to_asm_opt_bound_debug(next_arg_node, next_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                    false -> term_to_asm_opt_bound(next_arg_node, next_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                };
+                false -> ""
+            };
+            further_rest_asm: string <- case use_save_next_for_current of {
+                true -> case rest.right_expr.name == "user_call_rest" and rest.right_expr.right_expr.kind >= 0 of {
+                    true -> emit_rest_args(rest.right_expr.right_expr, idx + 2, type_name, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+                    false -> ""
+                };
+                false -> ""
+            };
+            save_next: string <- concat(concat("    STR ", next_reg), ", [SP, #-16]!\n");
+            restore_current: string <- concat(concat("    LDR ", reg), ", [SP], #16\n");
+            case use_save_next_for_current of {
+                true -> concat(concat(concat(concat(save_next, next_arg_asm), "\n"), restore_current), further_rest_asm);
+                false -> concat(concat(arg_asm, "\n"), rest_asm)
+            }
         end;
         false -> case debug of {
             true -> do term_to_asm_opt_bound_debug(rest, reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
@@ -446,10 +492,41 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
             false -> false
         }
     };
+    // factorial_acc(n-1, acc*n): arg1=sub clobbers X0(n) before arg2=mul can read n for acc*n. Emit mul into X1 first.
+    // SIR: sub left (minuend) must match mul right — same var as first param in X0.
+    mul_second_before_sub: bool <- case term.right_expr.kind == 6 and term.right_expr.name == "user_call_rest" of {
+        true -> case term.right_expr.inner.kind == 6 and term.right_expr.inner.name == "mul" of {
+            true -> case term.inner.kind == 6 and term.inner.name == "sub" of {
+                true -> term.inner.inner.kind == 1
+                    and term.right_expr.inner.right_expr.kind == 1
+                    and term.inner.inner.name == term.right_expr.inner.right_expr.name;
+                false -> false
+            };
+            false -> false
+        };
+        false -> case term.right_expr.kind == 6 and term.right_expr.name == "mul" of {
+            true -> case term.inner.kind == 6 and term.inner.name == "sub" of {
+                true -> term.inner.inner.kind == 1
+                    and term.right_expr.right_expr.kind == 1
+                    and term.inner.inner.name == term.right_expr.right_expr.name;
+                false -> false
+            };
+            false -> false
+        }
+    };
     use_two_arg_gpr_reorder_add_second_first: bool <- len(rest_asm) > 0
         and two_arg_tail_rest
         and arg2_term_ok
-        and add_second_before_sub;
+        and (add_second_before_sub or mul_second_before_sub);
+    // str_len_acc/count_a_acc/sum_digits_acc: arg1=substring sets MOV X1,#start clobbering acc(X1) before arg2 can use it.
+    // Fix: emit arg2 (rest_asm) first to compute acc result into X1, save X1, emit substring arg1, restore X1.
+    arg1_is_substring: bool <- term.inner.kind == 6
+        and (term.inner.name == "string_substring" or term.inner.name == "string_substring_until_char");
+    use_arg2_first_around_substring_arg1: bool <- len(rest_asm) > 0
+        and two_arg_tail_rest
+        and arg1_is_substring
+        and arg1_reg == "X0"
+        and arg2_reg == "X1";
     args_asm: string <- case len(rest_asm) > 0 of {
         true -> case use_two_arg_gpr_reorder of {
             true -> do
@@ -467,7 +544,10 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
                 end;
                 false -> case use_two_arg_gpr_reorder_add_second_first of {
                     true -> concat(concat(rest_asm, "\n"), concat(arg1_asm, "\n"));
-                    false -> concat(concat(arg1_asm, "\n"), concat(rest_asm, "\n"))
+                    false -> case use_arg2_first_around_substring_arg1 of {
+                        true -> concat(concat(concat(concat(rest_asm, "\n"), "    STR X1, [SP, #-16]!\n"), concat(arg1_asm, "\n")), "    LDR X1, [SP], #16\n");
+                        false -> concat(concat(arg1_asm, "\n"), concat(rest_asm, "\n"))
+                    }
                 }
             }
         };
@@ -1082,17 +1162,54 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 guarded_arg3: string <- concat("    STR X1, [SP, #-16]!\n", concat(arg3_asm, "\n    LDR X1, [SP], #16\n"));
                 concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), guarded_arg3), op_asm)
             end;
-            false -> case prims_memory@is_memory_prim(term.name) and (term.name == "fresh_lifetime" or term.name == "alloc_region" or term.name == "read_ref") of {
+            false -> case prims_memory@is_memory_prim(term.name) of {
             true -> case term.name == "fresh_lifetime" of {
                 true -> prims@emit_prim_op(term, dest);
-                false -> do
-                    arg_asm: string <- case debug of {
-                        true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
-                        false -> term_to_asm_opt_bound(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
-                    };
-                    op_asm: string <- prims@emit_prim_op(term, dest);
-                    concat(concat(arg_asm, "\n"), op_asm)
-                end
+                false -> case term.name == "alloc_region" of {
+                    true -> prims@emit_prim_op(term, dest);
+                    false -> case term.name == "read_ref" of {
+                    true -> do
+                        arg_asm: string <- case debug of {
+                            true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                            false -> term_to_asm_opt_bound(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                        };
+                        op_asm: string <- prims@emit_prim_op(term, dest);
+                        concat(concat(arg_asm, "\n"), op_asm)
+                    end;
+                    false -> case term.name == "alloc_ref" or term.name == "alloc_rec" or term.name == "alloc_atomic" or term.name == "alloc_buf" or term.name == "write_ref" or term.name == "buf_load" or term.name == "read_buf" of {
+                        true -> do
+                            arg1_asm: string <- case debug of {
+                                true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                false -> term_to_asm_opt_bound(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                            };
+                            arg2_asm: string <- case debug of {
+                                true -> do term_to_asm_opt_bound_debug(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                false -> term_to_asm_opt_bound(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                            };
+                            op_asm: string <- prims@emit_prim_op(term, dest);
+                            concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), "\n"), op_asm)
+                        end;
+                        false -> case term.name == "buf_store" of {
+                            true -> do
+                                // Emit arg2 (idx/val tuple) BEFORE arg1 (buf ptr) because the tuple
+                                // builder uses X1 as a scratch register; emitting buf ptr last ensures X1
+                                // holds the correct pointer when emit_buf_store runs.
+                                arg2_asm: string <- case debug of {
+                                    true -> do term_to_asm_opt_bound_debug(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                    false -> term_to_asm_opt_bound(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                                };
+                                arg1_asm: string <- case debug of {
+                                    true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                    false -> term_to_asm_opt_bound(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                                };
+                                op_asm: string <- prims@emit_prim_op(term, dest);
+                                concat(concat(concat(concat(arg2_asm, "\n"), concat(arg1_asm, "\n")), "\n"), op_asm)
+                            end;
+                            false -> prims@emit_prim_op(term, dest)
+                        }
+                    }
+                    }
+                }
             };
             false -> case term.type_name == "int64" and (term.name == "string_length_bytes" or term.name == "string_length_chars") of {
                 true -> do

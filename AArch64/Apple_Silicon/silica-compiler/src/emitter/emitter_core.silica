@@ -459,15 +459,18 @@ fn param_type_at_index(param_types: string, idx: int64) -> string {
     }
 }
 
-fn bind_reg_for_param(idx: int64, ptype: string, string_shadow: bool) -> string {
+fn bind_reg_for_param(idx: int64, ptype: string, string_shadow: bool, second_param_shadow: bool) -> string {
     reg: string <- param_reg_for_index(idx, ptype);
     case string_shadow and idx == 0 and ptype == "string" of {
         true -> "X19";
-        false -> reg
+        false -> case second_param_shadow and idx == 1 of {
+            true -> "X20";
+            false -> reg
+        }
     }
 }
 
-fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int64, acc: string, string_shadow: bool) -> string {
+fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int64, acc: string, string_shadow: bool, second_param_shadow: bool) -> string {
     pipe: int64 <- find_pipe_in_param_names(param_names, 0);
     ptype: string <- param_type_at_index(param_types, idx);
     case pipe < 0 of {
@@ -475,7 +478,7 @@ fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int
             true -> acc;
             false -> do
                 prefixed: string <- concat("%", param_names);
-                br: string <- bind_reg_for_param(idx, ptype, string_shadow);
+                br: string <- bind_reg_for_param(idx, ptype, string_shadow, second_param_shadow);
                 sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
                 concat(acc, concat(sep, concat(prefixed, concat("=", br))))
             end
@@ -485,12 +488,12 @@ fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int
             rest: string <- case pipe + 1 < len(param_names) of { true -> substring(param_names, pipe + 1, len(param_names)); false -> "" };
             rest_types: string <- case pipe + 1 < len(param_types) of { true -> substring(param_types, pipe + 1, len(param_types)); false -> "" };
             prefixed: string <- concat("%", first);
-            br: string <- bind_reg_for_param(idx, ptype, string_shadow);
+            br: string <- bind_reg_for_param(idx, ptype, string_shadow, second_param_shadow);
             sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
             part: string <- concat(sep, concat(prefixed, concat("=", br)));
             base: string <- case len(acc) == 0 of { true -> param_reg_for_index(0, ptype); false -> acc };
             next_acc: string <- concat(base, part);
-            build_param_outer_reg_loop(rest, rest_types, idx + 1, next_acc, string_shadow)
+            build_param_outer_reg_loop(rest, rest_types, idx + 1, next_acc, string_shadow, second_param_shadow)
         end
     }
 }
@@ -511,7 +514,8 @@ fn build_param_outer_reg(param_names: string, param_types: string, string_shadow
         false -> do
             first_ptype: string <- param_type_at_index(param_types, 0);
             first_reg: string <- param_reg_for_index(0, first_ptype);
-            build_param_outer_reg_loop(param_names, param_types, 0, first_reg, string_shadow)
+            second_ps: bool <- second_param_shadow_enabled(param_types, string_shadow);
+            build_param_outer_reg_loop(param_names, param_types, 0, first_reg, string_shadow, second_ps)
         end
     }
 }
@@ -531,6 +535,25 @@ fn first_param_string_shadow_enabled(param_types: string, body_kind: int64) -> b
     }
 }
 
+// Second param saved to X20 when first param is a string shadow. X20 is already saved/restored
+// by the STP/LDP pair. Enables acc or other GPR second params to survive BL calls in the body.
+// Only for GPR-typed second params (not float64/float32 which use D/S registers).
+fn second_param_shadow_enabled(param_types: string, string_shadow: bool) -> bool {
+    case string_shadow of {
+        true -> case find_pipe_in_param_names(param_types, 0) >= 0 of {
+            true -> do
+                second_type: string <- param_type_at_index(param_types, 1);
+                case second_type == "float64" or second_type == "float32" of {
+                    true -> false;
+                    false -> true
+                }
+            end;
+            false -> false
+        };
+        false -> false
+    }
+}
+
 fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool) -> string proc[DeviceIO] {
     do
     entry_label: string <- entry_point_label(fn_val.name);
@@ -547,9 +570,13 @@ fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64Pr
         }
     };
     string_shadow: bool <- first_param_string_shadow_enabled(fn_val.param_types, fn_val.body.kind);
+    second_param_shadow: bool <- second_param_shadow_enabled(fn_val.param_types, string_shadow);
     param_outer: string <- build_param_outer_reg(fn_val.param_names, fn_val.param_types, string_shadow);
     shadow_prologue: string <- case string_shadow of {
-        true -> "    STP X19, X20, [SP, #-16]!\n    MOV X19, X0\n";
+        true -> case second_param_shadow of {
+            true -> "    STP X19, X20, [SP, #-16]!\n    MOV X19, X0\n    MOV X20, X1\n";
+            false -> "    STP X19, X20, [SP, #-16]!\n    MOV X19, X0\n"
+        };
         false -> ""
     };
     prologue_full: string <- concat(prologue, shadow_prologue);

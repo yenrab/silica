@@ -1,8 +1,15 @@
-// L_string_eq_helper: delegates to runtime _silica_string_equals (io.rs). X0/X1 = any string repr
-// (SilicaString struct ptr or null-terminated literal). Returns W0 = 0/1; clobbers per C ABI.
+// L_string_eq_helper: pure AArch64. Matches io.rs get_string_data_and_length + silica_string_equals
+// (SilicaString tag -1 at offset 0, data at +8, length at +16; else null-terminated C string, cap 1MiB).
+// X0/X1 = pointers; W0 = 0/1. No external runtime.
 
 export emit_string_eq_helper/0;
 
 fn emit_string_eq_helper() -> string {
-    "L_string_eq_helper:\n    STP X29, X30, [SP, #-16]!\n    BL _silica_string_equals\n    LDP X29, X30, [SP], #16\n    RET"
+    concat(
+        concat(
+            "L_string_eq_helper:\n    STP X29, X30, [SP, #-16]!\n    STP X19, X20, [SP, #-16]!\n    STP X21, X22, [SP, #-16]!\n    STP X23, X24, [SP, #-16]!\n    STP X25, X26, [SP, #-16]!\n    STP X27, X28, [SP, #-16]!\n    MOV X19, X0\n    MOV X20, X1\n    CBZ X19, Leq_anull\n    CBZ X20, Leq_neq\n    MOV X0, X19\n    LDRB W1, [X0]\n    CMP W1, #0xFF\n    B.NE Leq_n1_cstr\n    LDR X1, [X0]\n    MOV X2, #-1\n    CMP X1, X2\n    B.NE Leq_n1_cstr\n    LDR X21, [X0, #8]\n    LDR X22, [X0, #16]\n    MOV X2, #0x40000000\n    CMP X22, X2\n    B.HS Leq_n1_cstr\n    B Leq_n1_done\n",
+            "Leq_n1_cstr:\n    MOV X21, X0\n    MOV X22, #0\n    MOV X1, X0\nLeq_n1l:\n    LDRB W3, [X1], #1\n    CBZ W3, Leq_n1_done\n    ADD X22, X22, #1\n    CMP X22, #0x100000\n    B.LT Leq_n1l\nLeq_n1_done:\n    MOV X0, X20\n    LDRB W1, [X0]\n    CMP W1, #0xFF\n    B.NE Leq_n2_cstr\n    LDR X1, [X0]\n    MOV X2, #-1\n    CMP X1, X2\n    B.NE Leq_n2_cstr\n    LDR X23, [X0, #8]\n    LDR X24, [X0, #16]\n    MOV X2, #0x40000000\n    CMP X24, X2\n    B.HS Leq_n2_cstr\n    B Leq_n2_done\n"
+        ),
+        "Leq_n2_cstr:\n    MOV X23, X0\n    MOV X24, #0\n    MOV X1, X0\nLeq_n2l:\n    LDRB W3, [X1], #1\n    CBZ W3, Leq_n2_done\n    ADD X24, X24, #1\n    CMP X24, #0x100000\n    B.LT Leq_n2l\nLeq_n2_done:\n    CMP X22, X24\n    B.NE Leq_neq\n    CBZ X22, Leq_yes\n    MOV X25, X21\n    MOV X26, X23\n    MOV X27, X22\nLeq_cloop:\n    LDRB W28, [X25], #1\n    LDRB W0, [X26], #1\n    CMP W28, W0\n    B.NE Leq_neq\n    SUBS X27, X27, #1\n    B.NE Leq_cloop\nLeq_yes:\n    MOV W0, #1\n    B Leq_exit\nLeq_anull:\n    CBZ X20, Leq_yes\n    B Leq_neq\nLeq_neq:\n    MOV W0, #0\nLeq_exit:\n    LDP X27, X28, [SP], #16\n    LDP X25, X26, [SP], #16\n    LDP X23, X24, [SP], #16\n    LDP X21, X22, [SP], #16\n    LDP X19, X20, [SP], #16\n    LDP X29, X30, [SP], #16\n    RET\n"
+    )
 }
