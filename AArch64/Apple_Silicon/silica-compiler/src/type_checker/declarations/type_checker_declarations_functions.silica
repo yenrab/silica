@@ -6,6 +6,7 @@ use parser_ast;
 use type_checker_core;
 use type_checker_expressions;
 use type_checker_memory_regions;
+use type_checker_recursion;
 
 export add_function/2;
 export check_body/2;
@@ -42,7 +43,7 @@ fn add_params_to_context_loop(params: ListParam, context: TypeContext) -> TypeCo
         false -> do
             p: Param <- params.head;
             new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, p.name, p.type_name, parser_ast@empty_effect_name_list());
-            add_params_to_context_loop(params.tail, TypeContext { env: new_env })
+            add_params_to_context_loop(params.tail, type_checker_core@type_context_with_env(context, new_env))
         end
     }
 }
@@ -88,7 +89,13 @@ fn check_body_after_params(decl: Declaration, context: TypeContext) -> TypeCheck
         true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
         false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
             true -> check_body_memory_region_return(decl, context_with_params);
-            false -> type_checker_expressions@check_expr(decl.body, decl.return_type_name, context_with_params)
+            false -> do
+                body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, context_with_params);
+                case body_result.is_ok of {
+                    false -> body_result;
+                    true -> type_checker_recursion@recursion_analyze_body(decl.body, decl.name)
+                }
+            end
         }
     }
 }
@@ -97,6 +104,12 @@ fn check_body_memory_region_return(decl: Declaration, context: TypeContext) -> T
     mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(decl.return_type_name, decl.return_type_location);
     case mem_result.is_ok of {
         false -> mem_result;
-        true -> type_checker_expressions@check_expr(decl.body, decl.return_type_name, context)
+        true -> do
+            body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, context);
+            case body_result.is_ok of {
+                false -> body_result;
+                true -> type_checker_recursion@recursion_analyze_body(decl.body, decl.name)
+            }
+        end
     }
 }

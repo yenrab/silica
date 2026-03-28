@@ -1,0 +1,65 @@
+// Recursion runtime hooks for the AArch64 emitter (design_documents/recursion_implementation.jsonld).
+// Emits optional .bss, assembly comments, and trampoline/fuel scaffolding — no license text.
+
+use sir_ast;
+
+export module_uses_tail_calls/1;
+export emit_recursion_bss_section/0;
+export emit_recursion_phase_header_comment/0;
+export emit_fuel_backedge_stub_comment/0;
+export emit_trampoline_fallback_stub/0;
+export emit_stack_trace_hook_comment/0;
+
+// Phase 3 — preemption: fuel / reductions (optional linker/runtime fills symbols).
+fn emit_recursion_bss_section() -> string {
+    l1: string <- concat(".balign 8\n", ".lcomm _silica_frame_depth, 8\n");
+    l2: string <- concat(l1, ".lcomm _silica_frame_max, 8\n");
+    l3: string <- concat(l2, ".lcomm _silica_fuel, 8\n");
+    l4: string <- concat(l3, ".lcomm _silica_saved_pc, 8\n");
+    concat(".bss\n", l4)
+}
+
+fn emit_recursion_phase_header_comment() -> string {
+    concat(
+        "    ; --- recursion phases (recursion_implementation.jsonld) ---\n",
+        concat(
+            "    ; p1: explicit frame fields; p2: push/dispatch/pop; p3: fuel on back-edges\n",
+            "    ; p4: PC/source map hooks; p5: tail BR (see emit_tail_call_body); p6: trampoline fallback\n"
+        )
+    )
+}
+
+// Phase 3: placeholder for SUBS fuel / branch to yield (runtime wires _silica_fuel).
+fn emit_fuel_backedge_stub_comment() -> string {
+    "    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)\n"
+}
+
+// Phase 6: when BR tail is unavailable, BL to a trampoline that dispatches without growing LR chain.
+fn emit_trampoline_fallback_stub() -> string {
+    concat(
+        "    ; p6 trampoline fallback (optional):\n",
+        concat(
+            "    ; _silica_trampoline_dispatch: load target from frame / BR X8\n",
+            "    ; never rely on unbounded native recursion for general calls\n"
+        )
+    )
+}
+
+// Phase 4: stack trace / frame identity (debug runtime consumes symbols).
+fn emit_stack_trace_hook_comment() -> string {
+    "    ; p4 observability: frame -> (fn id, source id) map; filter trampoline frames\n"
+}
+
+fn module_uses_tail_calls_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case fns.head.body.kind == 5 of {
+            true -> true;
+            false -> module_uses_tail_calls_functions(fns.tail)
+        }
+    }
+}
+
+fn module_uses_tail_calls(sir_mod: SIRModule) -> bool {
+    module_uses_tail_calls_functions(sir_mod.functions)
+}

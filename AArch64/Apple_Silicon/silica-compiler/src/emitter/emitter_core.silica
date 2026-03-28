@@ -26,6 +26,7 @@ use string_concat_mmap_nomte;
 use string_substring_mmap_nomte;
 use string_length_mmap_nomte;
 use prims_memory;
+use recursion_support;
 
 export emit_module/1;
 export emit_module_debug/2;
@@ -35,7 +36,17 @@ export emit_module_debug/2;
 // Output: Assembly text as string
 fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
     do
-    header: string <- asm_header(sir_module.module_name);
+    header: string <- case recursion_support@module_uses_tail_calls(sir_module) of {
+        true -> do
+            bss: string <- recursion_support@emit_recursion_bss_section();
+            p1: string <- recursion_support@emit_recursion_phase_header_comment();
+            p4: string <- recursion_support@emit_stack_trace_hook_comment();
+            p6: string <- recursion_support@emit_trampoline_fallback_stub();
+            base: string <- asm_header(sir_module.module_name);
+            concat(concat(concat(concat(concat(concat(bss, "\n"), base), "\n"), p1), concat("\n", concat(p4, concat("\n", p6)))), "\n")
+        end;
+        false -> asm_header(sir_module.module_name)
+    };
     table: AtomTable <- atom_table@build_atom_table(sir_module);
     int64_table: Int64PrintTable <- int_rodata@build_int64_print_table(sir_module);
     int32_table: Int32PrintTable <- int_rodata@build_int32_print_table(sir_module);
@@ -189,7 +200,17 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
 // Emit with debug: when debug is true, term_emitter prints branch/register info to stderr
 fn emit_module_debug(sir_module: SIRModule, debug: bool) -> string proc[DeviceIO] {
     do
-    header: string <- asm_header(sir_module.module_name);
+    header: string <- case recursion_support@module_uses_tail_calls(sir_module) of {
+        true -> do
+            bss: string <- recursion_support@emit_recursion_bss_section();
+            p1: string <- recursion_support@emit_recursion_phase_header_comment();
+            p4: string <- recursion_support@emit_stack_trace_hook_comment();
+            p6: string <- recursion_support@emit_trampoline_fallback_stub();
+            base: string <- asm_header(sir_module.module_name);
+            concat(concat(concat(concat(concat(concat(bss, "\n"), base), "\n"), p1), concat("\n", concat(p4, concat("\n", p6)))), "\n")
+        end;
+        false -> asm_header(sir_module.module_name)
+    };
     table: AtomTable <- atom_table@build_atom_table(sir_module);
     int64_table: Int64PrintTable <- int_rodata@build_int64_print_table(sir_module);
     int32_table: Int32PrintTable <- int_rodata@build_int32_print_table(sir_module);
@@ -468,15 +489,24 @@ fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64Pr
         }
     };
     param_outer: string <- build_param_outer_reg(fn_val.param_names, fn_val.param_types);
-    body: string <- term_emitter@term_to_asm_debug_with_outer(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer, debug);
-    float_to_exit: string <- case main_returns_float64(fn_val.name, fn_val.return_type) of {
-        true -> "    FCVTZS W0, D0\n";
-        false -> case main_returns_float32(fn_val.name, fn_val.return_type) of {
-            true -> "    FCVTZS W0, S0\n";
-            false -> ""
+    body: string <- case fn_val.body.kind == 5 of {
+        true -> term_emitter@emit_function_tail_user_call_root(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer, fn_val.effects, debug);
+        false -> term_emitter@term_to_asm_debug_with_outer(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer, debug)
+    };
+    float_to_exit: string <- case fn_val.body.kind == 5 of {
+        true -> "";
+        false -> case main_returns_float64(fn_val.name, fn_val.return_type) of {
+            true -> "    FCVTZS W0, D0\n";
+            false -> case main_returns_float32(fn_val.name, fn_val.return_type) of {
+                true -> "    FCVTZS W0, S0\n";
+                false -> ""
+            }
         }
     };
-    epilogue: string <- control@function_epilogue_with_effects(fn_val.effects);
+    epilogue: string <- case fn_val.body.kind == 5 of {
+        true -> "";
+        false -> control@function_epilogue_with_effects(fn_val.effects)
+    };
     concat(concat(concat(eff_comment, "\n"), concat(prologue, "\n")), concat(concat(concat(body, "\n"), float_to_exit), epilogue))
     end
 }
