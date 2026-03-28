@@ -259,21 +259,84 @@ fn emit_case_branch_seq(rest: SIRTerm, scrut_t: string, scrut_reg: string, lit_r
     }
 }
 
+// Case scrutinee default: dest X0/X1 -> X2 so we do not use X0 (result). If outer_reg already binds X2
+// (e.g. let value <- 2; case cmd of { ... } with cmd in X1), use X3+ so loading the scrutinee does not clobber value.
+// term_to_asm_opt_bound passes bound_reg = body_bound: the register for the enclosing let's binding in the
+// case body (e.g. let value <- 2 in case cmd -> body_bound is X2 where value lives). Default scrutinee X2
+// would clobber that; use X3+ when body_bound is X2 or outer_reg records X2.
+fn emit_case_pick_scrut_reg(dest: string, outer_reg: string, bound_reg: string) -> string {
+    case dest == "X1" of {
+        true -> case var@is_reg_bound(outer_reg, "X2") of {
+            true -> case var@is_reg_bound(outer_reg, "X3") of {
+                true -> case var@is_reg_bound(outer_reg, "X4") of { true -> "X5"; false -> "X4" };
+                false -> "X3"
+            };
+            false -> case bound_reg == "X2" of {
+                true -> "X3";
+                false -> "X2"
+            }
+        };
+        false -> case dest == "X0" of {
+            true -> case var@is_reg_bound(outer_reg, "X2") of {
+                true -> case var@is_reg_bound(outer_reg, "X3") of {
+                    true -> case var@is_reg_bound(outer_reg, "X4") of { true -> "X5"; false -> "X4" };
+                    false -> "X3"
+                };
+                false -> case bound_reg == "X2" of {
+                    true -> "X3";
+                    false -> "X2"
+                }
+            };
+            false -> "X1"
+        }
+    }
+}
+
+fn emit_case_lit_reg_for_scrut(scrut_reg: string) -> string {
+    case scrut_reg == "X1" of {
+        true -> "X3";
+        false -> case scrut_reg == "X2" of {
+            true -> "X3";
+            false -> case scrut_reg == "X3" of {
+                true -> "X4";
+                false -> case scrut_reg == "X4" of {
+                    true -> "X5";
+                    false -> case scrut_reg == "X5" of {
+                        true -> "X6";
+                        false -> "X2"
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn emit_case_guard_reg_for_scrut(scrut_reg: string) -> string {
+    case scrut_reg == "X1" of {
+        true -> "X4";
+        false -> case scrut_reg == "X2" of {
+            true -> "X4";
+            false -> case scrut_reg == "X3" of {
+                true -> "X5";
+                false -> case scrut_reg == "X4" of {
+                    true -> "X6";
+                    false -> case scrut_reg == "X5" of {
+                        true -> "X7";
+                        false -> "X3"
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn emit_case_expression(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
     // Scrutinee register must not clobber AArch64 args still needed in branch bodies. X0/X1 are the first two
     // int64 params; placing the bool scrutinee in X1 when dest is X0 (return) breaks e.g. ack(m,n): CSET X1,EQ
     // overwrites n before the true branch can do n+1.
-    scrut_reg: string <- case dest == "X1" of {
-        true -> "X2";
-        false -> case dest == "X0" of {
-            true -> "X2";
-            false -> "X1"
-        }
-    };
-    // Pattern literal (int/string) must not use X2 when scrutinee is in X1: X2 is used for int64 locals
-    // (e.g. let value <- 2 before case cmd of { ... }) and emit_string_const + CMP would clobber it.
-    lit_reg: string <- case scrut_reg == "X1" of { true -> "X3"; false -> case scrut_reg == "X2" of { true -> "X3"; false -> "X2" } };
-    guard_reg: string <- case scrut_reg == "X1" of { true -> "X4"; false -> case scrut_reg == "X2" of { true -> "X4"; false -> "X3" } };
+    scrut_reg: string <- emit_case_pick_scrut_reg(dest, outer_reg, bound_reg);
+    lit_reg: string <- emit_case_lit_reg_for_scrut(scrut_reg);
+    guard_reg: string <- emit_case_guard_reg_for_scrut(scrut_reg);
     scrut_asm: string <- term_to_asm_opt_bound(term.inner, scrut_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false);
     case_name: string <- term.name;
     done_l: string <- case_emit_done_label(case_name);
