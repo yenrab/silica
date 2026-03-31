@@ -1187,23 +1187,42 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 false -> term_to_asm_opt_bound(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                             };
                             op_asm: string <- prims@emit_prim_op(term, dest);
-                            concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), "\n"), op_asm)
+                            // tuple_make for arg2 uses SUB SP; restore before later ops / return. write_ref leaves ref in X1; bindings expect ref in X2.
+                            tuple_stack_bytes: int64 <- flat_tuple_total_alloc(term.right_expr);
+                            tuple_sp_restore: string <- case tuple_stack_bytes > 0 of {
+                                true -> concat("\n    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(tuple_stack_bytes), "\n"));
+                                false -> ""
+                            };
+                            write_ref_recover: string <- case term.name == "write_ref" of {
+                                true -> "\n    MOV X2, X1\n";
+                                false -> ""
+                            };
+                            after_op: string <- concat(op_asm, concat(tuple_sp_restore, write_ref_recover));
+                            concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), "\n"), after_op)
                         end;
                         false -> case term.name == "buf_store" of {
                             true -> do
-                                // Emit arg2 (idx/val tuple) BEFORE arg1 (buf ptr) because the tuple
-                                // builder uses X1 as a scratch register; emitting buf ptr last ensures X1
-                                // holds the correct pointer when emit_buf_store runs.
-                                arg2_asm: string <- case debug of {
-                                    true -> do term_to_asm_opt_bound_debug(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
-                                    false -> term_to_asm_opt_bound(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
-                                };
+                                // Emit arg1 (buf) to X1 before arg2 (idx/val tuple) to X2.
+                                // alloc_buf leaves the buffer pointer in X2; tuple_make ends with MOV X2, SP.
+                                // If we emitted the tuple first, X2 would be overwritten and the follow-up
+                                // buf load (e.g. MOV X1, X2) would pass the tuple pointer to buf_store.
+                                // Flat tuple emission uses per-element scratch temps (e.g. X9), not X1.
                                 arg1_asm: string <- case debug of {
                                     true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                     false -> term_to_asm_opt_bound(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                 };
+                                arg2_asm: string <- case debug of {
+                                    true -> do term_to_asm_opt_bound_debug(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                    false -> term_to_asm_opt_bound(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                                };
                                 op_asm: string <- prims@emit_prim_op(term, dest);
-                                concat(concat(concat(concat(arg2_asm, "\n"), concat(arg1_asm, "\n")), "\n"), op_asm)
+                                // tuple_make did SUB SP (possibly multiple for nested tuple_make); restore SP before return / next ops.
+                                tuple_bytes: int64 <- flat_tuple_total_alloc(term.right_expr);
+                                tuple_sp_adj: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(tuple_bytes), "\n"));
+                                // emit_buf_store leaves X1=buf; LDR X2,[X2] leaves X2=index. Bindings still expect buf in X2.
+                                recover_buf_reg: string <- "    MOV X2, X1\n";
+                                after_store: string <- concat(op_asm, concat("\n", concat(tuple_sp_adj, concat("\n", recover_buf_reg))));
+                                concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), "\n"), after_store)
                             end;
                             false -> prims@emit_prim_op(term, dest)
                         }
@@ -1809,7 +1828,9 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
                     false -> type_prefix
                 }
             };
-            temp_reg: string <- concat(elem_prefix, "1");
+            // Use a scratch register that won't clobber argument registers (X1/X2),
+            // since tuple_make often appears adjacent to memory prims like alloc_ref(region, value).
+            temp_reg: string <- concat(elem_prefix, "9");
             elem_asm: string <- case debug of {
                 true -> do term_to_asm_opt_bound_debug(elem, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                 false -> term_to_asm_opt_bound(elem, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
@@ -1834,7 +1855,9 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
                     false -> type_prefix2
                 }
             };
-            temp_reg: string <- concat(elem_prefix, "1");
+            // Use a scratch register that won't clobber argument registers (X1/X2),
+            // since tuple_make often appears adjacent to memory prims like alloc_ref(region, value).
+            temp_reg: string <- concat(elem_prefix, "9");
             elem_asm: string <- case debug of {
                 true -> do term_to_asm_opt_bound_debug(term, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                 false -> term_to_asm_opt_bound(term, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
