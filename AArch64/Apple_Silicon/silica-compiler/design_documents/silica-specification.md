@@ -3171,6 +3171,7 @@ fn is_empty[ElementType: Collectable](list: List[ElementType]) -> boolean
 - **Head operations only**: All list modification operations work only on the head of the list. There are no operations to remove elements from the middle or end of a list.
 - **Immutability**: All operations return new lists; they never modify existing lists.
 - **Structural sharing**: When prepending or removing the head, Silica uses structural sharing to avoid copying all elements. The original list structure is reused efficiently.
+- **Memory effects (`mem`)**: Constructing or growing a list allocates storage in a **Silica memory region**; that allocation must occur under an explicit **`mem(<space>)`** effect declared on a **`sequence`** block. Use **`sequence proc[mem(<space>)]`** … **`produces`** **`pure`** … **`end`**, where **`<space>`** is a memory space such as **`normal`**, **`normal_writethrough`**, **`atomic`**, **`normal_noncacheable`**, etc. (see **§4.4** and `tutorials_and_howtos/memory_region_types.md`). The **same** **`mem(<space>)`** covers the list’s region and **every** additional buffer allocated when the list spine grows. For blocks that also call **I/O** (e.g. **`print`**), declare combined effects, e.g. **`sequence proc[mem(normal), device_io]`**. Compiler implementation details for **`List[T]`** as a region-backed bundle are in **`design_documents/list_implementation_design.md`** (silica-compiler).
 
 **Examples:**
 

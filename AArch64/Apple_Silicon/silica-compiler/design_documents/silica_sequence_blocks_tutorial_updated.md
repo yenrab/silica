@@ -86,6 +86,8 @@ When a sequence block uses functions that require effects, those effects **must*
 
 5. **No sequence needed when pure:** A function does **not** need a `sequence ... produces ... end` block if it uses no functions requiring effects. Pure functions use ordinary expressions and braces.
 
+6. **Lists and `mem`:** Constructing or growing a **`List[T]`** (literals, **`empty`**, **`prepend`**, **`length`** on allocated lists, etc.) **requires** a **`mem(<space>)`** effect on the **`sequence`** block. Use **`sequence proc[mem(<space>)]`** … **`produces`** **`pure`** … **`end`**. **`<space>`** matches the memory policy for the region backing the list (see **`tutorials_and_howtos/memory_region_types.md`**). Add **`device_io`** when the block also **prints** or performs other I/O: **`sequence proc[mem(normal), device_io]`**. **Do** **not** **attach** **`proc[…]`** **to** **named** **function** **return** **types**; **wrap** **list** **access** **in** **`sequence`** **inside** **the** **function** (**`list_int64_recursive_sum.silica`**). See **`design_documents/list_implementation_design.md`** §7 and **`trials/list_addition/`** (e.g. **`list_int64_two_primaries_shared_suffix.silica`**).
+
 ---
 
 ## Good Examples

@@ -1,0 +1,216 @@
+# List Implementation Design (silica-compiler)
+
+## 1. Purpose and scope
+
+This document specifies how **immutable, Erlang-style lists** (`List[T]`) are implemented in the **Phase 2 self-hosted compiler** (`silica-compiler`): representation, **early desugaring** to regions and buffers, **linear region** ownership with a **bundle** model, and the **v1** operation set. It is a **compiler implementation** design; it does not replace the **language** definition in [silica-specification.md](silica-specification.md), but where this doc is more specific (e.g. ownership), implementation follows this document.
+
+**In scope**
+
+- Parser, types, lowering, **SIR** (or intermediate chosen by the project), and **codegen** paths for lists **only** in `silica-compiler`.
+- **Trials** under `silica-compiler/trials/list_addition/` (and extensions of that directory).
+- Integration with the **memory region** model as described in region tutorials and region-related design notes.
+
+**Out of scope**
+
+- **silica-bootstrap-compiler**: no list implementation work there for this effort.
+- **`AArch64/Apple_Silicon/experiments/`**: bootstrap-specific; **no** new list material there.
+- **Slices, views, and streams** as separate user-facing types for list-like data in this implementation pass.
+- **User-visible** reference counting or explicit `retain`/`release` in the language.
+- **Tracing** **GC** or **reference** **counting** **for** **list** **spine** **chunks** (**§9.4**): **reclamation** **follows** **region** **semantics** **only**.
+
+---
+
+## 2. Goals (semantic)
+
+| Goal | Description |
+|------|-------------|
+| **Immutability** | List operations do not mutate existing abstract list values; **prepend** and related operations yield new logical lists while **reusing** shared suffix storage where defined by the representation. |
+| **Head-oriented API** | Construction and observation align with **head** operations (as in the language spec); **no** middle/end removal in v1 unless the spec already commits otherwise. |
+| **Erlang-like sharing** | Multiple **names** for prefixes over the same storage are **supported** without duplicating the suffix, subject to the **ownership model** in §6. |
+| **Vector chunks (day 1)** | Chunks are sized to **vector-processing width** on the target (e.g. 128-bit / 256-bit on AArch64); **pack** multiple elements per chunk when `sizeof(T)` allows **and** alignment rules permit. |
+| **Region integration (day 1)** | Lists **desugar** to **allocated buffers** tied to **Silica memory regions**; no “floating” pointers without region authority. |
+| **Early desugaring** | The long-lived **primary** representation in the compiler pipeline is **not** a bespoke high-level “list IR” that survives to codegen; lists become **regions + buffers + linkage + metadata** as early as is practical. |
+| **Kernel operations (v1)** | **Compiler-known** primitives include at least: **empty**, **prepend**, **remove_head** (or equivalent), **length** (O(1), **memoized**), **map**, **filter**, **reduce**, and **full** **`case`** on lists including **`_`** and **cons**. |
+| **Materialized map/filter/reduce** | **No** separate slice/view/stream types in this pass; **map** and **filter** produce **new** `List` materializations; **reduce** is a fold. **Chained** map/filter may allocate **intermediate** lists). |
+
+---
+
+## 3. Surface language (reference)
+
+The **authoritative** surface syntax and typing rules remain in [silica-specification.md](silica-specification.md), including:
+
+- `List[ElementType]` with **Collectable** constraints as specified.
+- **Explicit** element type annotations where the spec requires them.
+- **List literals** and **pattern matching** (`[]`, cons, `_`).
+
+**Compile-time list data** (literals, static initialization) is handled by **ordinary compiler lowering**, not user-level macros (Silica does not have macros).
+
+---
+
+## 4. Physical representation (conceptual)
+
+### 4.1 Chunks and buffers
+
+- A **logical list** is an **ordered spine** of **chunks**.
+- **All chunks of one spine** live in **one** **Silica memory region** (see §9.2). **Inter-chunk** links are **in-region** (or use handles **scoped** to that region); spines **do not** span **multiple** owning regions.
+- Each **chunk** is a **fixed-capacity** buffer aligned to the **vector width** (e.g. 128 bits); **capacity in elements** depends on `T` and **packing** (§4.2).
+- Chunks are **linked** (e.g. **next** pointer or handle) so traversal **stops** at the **end** of the chain **for every** `List[T]` that reaches that far. **Different** `List[T]` “views” are **different entry points** into the **same** linked structure when sharing applies.
+- **Within** each **chunk**, **prepend** **fills** **from** **the** **back** **toward** **the** **front** **until** **full**, then **continues** **in** **the** **next** **chunk** (§9.5).
+
+### 4.2 Packed scalars
+
+- When **more than one** element of type `T` fits in a chunk **according to** `sizeof` and **alignment** rules, **pack** them in a **deterministic** order consistent with **§9.5** (exact **slot** **indices** **from** **back** **forward** **per** **chunk** must be **fixed** for vectorized access and codegen).
+
+### 4.3 Empty list
+
+- An **empty** list has **no** allocated chunk buffer **or** is represented by a **sentinel** empty state **without** a region-backed buffer, consistent with region and trial conventions.
+
+### 4.4 Non-primitive elements
+
+- Where the spec places **region references** into buffers for non-primitive `T`, follow that **indirection** model; **provenance** for pointed-to regions follows existing region rules.
+
+---
+
+## 5. Early desugaring
+
+- **Target shape:** list operations **lower** to a small set of **operations** on **regions** and **buffers**: allocate chunk, write slots, link **next**, update **bundle** cursors (§6), maintain **cached length** where applicable.
+- **SIR / middle-end:** **lower** **list** **operations** **to** **regions**/**buffers** **immediately** **in** **all** **paths** (§9.6); **do** **not** **retain** a **persistent** **opaque** **`List`** **node** **across** **middle-end** **passes** **for** **debugging** **or** **alternate** **paths**.
+
+---
+
+## 6. Ownership: linear regions and the “bundle”
+
+### 6.1 Problem
+
+Silica **regions** are **moved** when passed and returned; **at most one** **owning** token for a given allocation **must** be the model the **user** reasons about. **Indices** or **heads** into a buffer are **not** valid without the **accompanying** region **authority**.
+
+### 6.2 Approach: two names, one bundle
+
+**Sharing** (multiple logical list prefixes or **names**) is expressed **inside** **one** **movable aggregate** (the **bundle**):
+
+- The bundle carries **one** **owning** **region** for the **entire** spine (**all** chunks of that list—§9.2) **plus** the **metadata** needed for **multiple** **entry cursors** (heads) **without** duplicating **owning** region tokens at the type level.
+- The programmer **names** “views” **through** the **bundle’s API** (or through operations that **return** an **updated** bundle whose API exposes **prior** and **new** heads), **not** as **two** independent **owned** regions to the **same** storage.
+
+### 6.3 Consequences
+
+- **`List[T]`** **is** the **bundle** type: **one** **type** **carrying** **region** **authority** **plus** **cursor** **metadata** **(§9.7)**. **No** **separate** **internal** **`ListBundle[T]`** / **`ListContext[T]`** **as** **the** **“real”** **type** **with** **`List[T]`** **as** **a** **thin** **wrapper**—**not** **viable** **here**.
+- **List** **storage** **reclamation** is **not** via **GC** or **refcount** (see **§9.4**): **only** **memory** **region** **move** **semantics** and **the** **region’s** **lifetime** **/** **deallocation** **rules**. **Chunks** **live** **only** **inside** **that** **region** (§9.2).
+
+### 6.4 Length memoization
+
+- **`length`** is **O(1)** via **memoization** on the **bundle** or **chunk metadata** as appropriate; **immutable** lists do **not** require **invalidation** of cached length for **v1** (no **mutable** length through interior mutation).
+
+---
+
+## 7. Operations (compiler-known primitives)
+
+The following are **v1** goals (exact names match the language spec where it already defines them):
+
+- **Construction / destruction at head:** `empty`, `prepend`, `remove_head` (or spec-equivalent).
+- **Observation:** `length`, **pattern matching** with **`[]`**, cons, **`_`** (**`case`** **uses** **only** **the** **current**/**primary** **cursor**—§9.7).
+- **Higher-order:** `map`, `filter`, `reduce` **materialized** to `List` / value as specified.
+
+**Typing** and **Collectable** constraints follow the **language spec**.
+
+**Effects and surface shape:** **List** **allocation** (literals, **`empty`**, **`prepend`**, spine **growth**) **must** appear **inside** a **`sequence`** block that **declares** the **`mem(<space>)`** effect (see **§9.3**). **Canonical** shape:
+
+```silica
+sequence proc[mem(<space>)]
+    -- list construction / operations using that region
+    result: int64 <- ...;
+produces
+    pure result
+end
+```
+
+**`<space>`** is a **memory** **space** from the same vocabulary as **`alloc_region(<space>)`** (e.g. **`normal`**, **`normal_writethrough`**, **`atomic`**, **`normal_noncacheable`** — see **`tutorials_and_howtos/memory_region_types.md`**). **That** **same** **`mem(<space>)`** **covers** the **list** **region** and **every** **additional** **buffer** **when** **chunks** **are** **added**. If the **block** **also** **performs** **I/O** (e.g. **`print`**), **declare** **combined** **effects**, e.g. **`sequence proc[mem(normal), device_io]`** (see **`trials/list_addition/list_int64_two_primaries_shared_suffix.silica`**).
+
+**Named** **functions** **do** **not** **declare** **effects** **on** **the** **signature**; **put** **`sequence proc[mem(<space>)] … produces pure … end`** **inside** **the** **function** **body** **when** **the** **body** **allocates** **or** **reads** **list** **storage** (**`case`** **on** **`List[T]`**, **etc.**). **Recursive** **list** **walks** **repeat** **that** **sequence** **per** **call** (see **`list_int64_recursive_sum.silica`**).
+
+---
+
+## 8. Trials and validation
+
+- All **executable** **trials** for **lists** live under **`silica-compiler/trials/list_addition/`**. **Each** **trial** **uses** **`sequence proc[mem(<space>)] … produces pure … end`** (and **`device_io`** **when** **printing**). **Inventory:**
+  - **`list_int64_create_literal_and_empty.silica`** — literals, **`empty`**, **`length`**; **`mem(normal)`**.
+  - **`list_int64_mem_effect_sequence.silica`** — minimal **`mem(normal)`** + list + **`length`**.
+  - **`list_int64_mem_writethrough.silica`** — **`mem(normal_writethrough)`** (non-**`normal`** **space**).
+  - **`list_int64_prepend.silica`**, **`list_int64_remove_head.silica`** — head ops; **`mem(normal)`**.
+  - **`list_int64_recursive_sum.silica`** — **recursive** **`sum_list`**; **`case`** **inside** **`sequence proc[mem(normal)]`** **(no** **`proc`** **on** **the** **function)**; **`main`** **also** **`sequence proc[mem(normal)]`** **for** **the** **literal**.
+  - **`list_int64_two_primaries_shared_suffix.silica`** — two **`List[int64]`** **values**, **`case`** **on** **each** (**§6**/**§9.7**); **`mem(normal), device_io`** **for** **stdout**.
+  - **`list_uint32_prepend_second_chunk.silica`** — nine **`prepend`** **steps** **on** **`List[uint32]`** **after** **`empty`** so **at** **least** **two** **vector** **chunks** **are** **used** (**covers** **128-bit** **and** **256-bit** **chunk** **capacities** **per** **§4.1**).
+- **Memory-region** trials remain under **`trials/memory_region_addition/`** (and related) as **prerequisites** or **cross-checks** for buffer writes and region typing.
+
+---
+
+## 9. Design decisions (resolved)
+
+The following **§9** sections record **agreed** decisions for **list** **implementation** in **silica-compiler**.
+
+### 9.1 Resolved: cursor growth
+
+- **Cardinality over time:** The number of **cursors** in a bundle may grow **without a fixed cap** (unbounded over the lifetime of the bundle).
+- **Dropping one cursor:** A **single** cursor may be **dropped** while the **bundle** remains **live** and **other** cursors remain **valid**. Dropping a cursor **does not** by itself **destroy** the bundle or **free** the **region** if other cursors still **reference** storage; it **removes** one **entry point** from the bundle’s **cursor set** (implementation: shrink or tombstone **metadata** as defined by the runtime). **Reclamation** of **storage** **reachable** **only** **from** **dropped** **cursors** **follows** **§9.4** (no **GC** / **refcount**; **region** **move** **only**).
+
+### 9.2 Resolved: one region per spine
+
+- **All** chunks belonging to **one** list **spine** (one **linked** chain of buffers for a **single** logical list’s storage graph) **must** reside in **one** **Silica memory region**.
+- **Rationale:** **One** **move** of the **bundle** carries **one** **region** authority; **inter-chunk** pointers never **cross** region boundaries for the **same** spine. **Growth** (new chunk when a buffer fills) **allocates** **inside** that **same** region per the region’s **growth** rules.
+- **Non-primitive** elements that **point** at **other** regions (e.g. nested **values**) follow **existing** region rules; only the **list spine’s** **chunk buffers** are constrained **here**.
+
+### 9.3 Resolved: effects for list allocation
+
+- **Declaration:** **List** **allocation** **requires** a **`mem(<space>)`** **effect** on the **`sequence`** **block** (the **memory** **space** matches **region** **policy**, e.g. **`mem(normal)`**, **`mem(normal_writethrough)`**, **`mem(atomic)`**, **`mem(normal_noncacheable)`** — see **`memory_region_types.md`**).
+- **Surface** **shape:** **`sequence proc[mem(<space>)]`** … **statements** … **`produces`** **`pure`** **`<value>`** **`end`**. **Combined** **with** **I/O:** **`sequence proc[mem(<space>), device_io]`** when **needed** (see **`list_int64_two_primaries_shared_suffix.silica`**).
+- **Reuse:** **That** **same** **`mem(<space>)`** is **reused** **every** time a **new** **buffer** is **added** to **that** **region**—including **each** **additional** **chunk** when the **spine** **grows** inside a **single** **region** (§9.2). **No** **separate** **effect** **binding** per **buffer** **append**; **growth** **stays** under the **same** **`mem`** **declaration** established for **that** **list’s** **region**.
+
+### 9.4 Resolved: runtime strategy under the bundle
+
+- **No** **tracing** **garbage** **collection** and **no** **reference** **counting** for **list** **spine** **storage** (**neither** **in** **the** **language** **nor** **hidden** **in** **the** **list** **runtime** **for** **chunks**).
+- **Ownership** **and** **reclamation** **are** **memory** **region** **semantics** **only:** **the** **bundle** **moves** **with** **its** **region** **authority**; **all** **chunks** **are** **allocated** **inside** **that** **region** (§9.2). **Lifetime** **ends** when **the** **region** **is** **dropped** **or** **moved** **out** **of** **scope** **per** **Silica’s** **linear** **region** **rules**—**not** **per** **chunk** **refcount** **or** **GC**.
+- **Implication:** **Erlang-like** **structural** **sharing** **must** **be** **expressed** **without** **two** **independent** **owning** **region** **tokens** **to** **the** **same** **bytes**—**i.e.** **through** **the** **bundle** **model** (§6.2) **and** **cursor** **metadata** **within** **one** **moved** **value**, **not** **through** **shared** **heap** **cells** **with** **RC**/**GC**.
+
+### 9.5 Resolved: chunk fill direction
+
+- **First** **element** **in** **a** **chunk** **occupies** **the** **back** **of** **that** **chunk’s** **buffer** (**last** **slot** **in** **the** **chunk’s** **element** **ordering** **for** **prepend** **growth**).
+- **Further** **prepends** **fill** **the** **chunk** **from** **that** **back** **toward** **the** **front** **until** **the** **chunk** **is** **full**.
+- When **no** **room** **remains** **in** **the** **current** **chunk**, **prepend** **continues** **in** **the** **next** **chunk** **in** **the** **spine** (**linked** **per** §9.2). **Vectorized** **loads**/**stores** **must** **agree** **with** **this** **fixed** **layout** **per** **chunk** **width** **and** **`T`** **packing** (§4.2).
+
+### 9.6 Resolved: SIR staging
+
+- **Lower** **immediately** **in** **all** **paths:** **list** **values** **do** **not** **use** a **retained** **intermediate** **`List`** **representation** **in** **SIR** (or **equivalent**) **across** **passes** **for** **debugging**, **optional** **pipelines**, or **backend** **branching**. **Every** **path** **that** **constructs** **or** **consumes** **a** **list** **lowers** **promptly** **to** **the** **region** + **buffer** + **bundle** **model** (§5). **Transient** **scratch** **during** **a** **single** **lowering** **step** is **allowed**; **no** **persistent** **staging** **layer**.
+
+### 9.7 Resolved: `List[T]` surface and `case` / cursors
+
+- **`List[T]`** **is** **not** **a** **thin** **wrapper** **around** **another** **named** **bundle** **type:** **`List[T]`** **is** **the** **concrete** **type** **denoting** **region** **+** **cursor** **set** **+** **associated** **metadata** **for** **list** **storage** **(§6)**. **No** **separate** **user-facing** `ListBundle[T]` / `ListContext[T]` **as** **the** **authoritative** **implementation** **type**.
+- **`case`** **on** **a** **`List[T]`** **always** **matches** **against** **the** **current**/**primary** **list** **using** **its** **designated** **cursor** **only**; **patterns** **do** **not** **take** **a** **cursor** **parameter**.
+- **Other** **cursors** (**secondary** **heads**, **historical** **prefixes**, **etc.**) **are** **held** **in** **ordinary** **variables** **when** **needed**; **when** **a** **variable** **binding** **ends** **(scope** **exit**), **that** **cursor** **is** **removed** **from** **the** **bundle** **metadata** **together** **with** **its** **head** **reference** **into** **the** **region** **(same** **discipline** **as** **explicit** **cursor** **drop**—§9.1).
+
+---
+
+## 10. References
+
+- [silica-specification.md](silica-specification.md) — language definition for lists, literals, patterns.
+- [silica-compiler-code-organization.md](silica-compiler-code-organization.md) — parser/codegen file names for lists, patterns, types.
+- `silica-compiler/tutorials_and_howtos/memory_region_types.md` — region spaces and allocation examples.
+- `silica-compiler/trials/list_addition/` — executable trials.
+
+---
+
+## Document history
+
+| Version | Summary |
+|---------|---------|
+| 1.0 | Initial design: desugaring, chunks, bundle ownership, v1 kernel, out-of-scope items, open questions. |
+| 1.1 | Resolved §9.2 cursor growth: unbounded cursors; single cursor droppable while bundle and others live. |
+| 1.2 | Resolved one region per spine: all chunks of a list spine live in one Silica memory region (§9.2). |
+| 1.3 | Resolved effects §9.3: `mem` type effect for list allocation; same `mem` reused for each new buffer in the region. |
+| 1.4 | Resolved §9.4 runtime: no GC, no refcount; region move only; chunks live in the region. |
+| 1.5 | Resolved §9.5 chunk fill: first element at back of chunk; prepend fills toward front until full; then next chunk. |
+| 1.6 | Resolved §9.6 SIR: lower immediately in all paths; no retained staging List IR. |
+| 1.7 | Resolved §9.7: `List[T]` is the bundle (no thin wrapper); `case` uses primary cursor; other cursors in variables, removed at scope end. |
+| 1.8 | §8 trials: list_addition files aligned with design (headers, mem sequence, two primaries). |
+| 1.9 | §7/§8/§9.3: canonical `sequence proc[mem(<space>)]` shape; trial inventory + writethrough example; spec cross-ref. |
+| 1.10 | §8: `list_uint32_prepend_second_chunk.silica` (nine prepends; ≥2 chunk buffers for 128/256-bit layouts). |
+| 1.11 | §8: `list_int64_recursive_sum.silica` (recursive function over list). |
+| 1.12 | §7/§8: effects only on `sequence` (not function return types); `list_int64_recursive_sum` uses inner `sequence proc[mem(normal)]`. |

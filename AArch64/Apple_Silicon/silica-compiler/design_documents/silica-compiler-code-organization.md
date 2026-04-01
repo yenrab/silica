@@ -273,6 +273,12 @@ This keeps changes localized and makes the compiler easy to extend and maintain.
 5. **Testable**: Each feature can be tested independently
 6. **Scalable**: New features follow the same pattern, maintaining consistency
 
+## List trials (`trials/list_addition/`)
+
+Executable **list** trials live under **`silica-compiler/trials/list_addition/`** and follow the **implementation** design in **`design_documents/list_implementation_design.md`**: list operations run inside **`sequence proc[mem(<space>)] … produces pure … end`**, with **`device_io`** **added** when **printing**. **Non-**`normal` **memory** **spaces** (e.g. **`normal_writethrough`**) are illustrated in **`list_int64_mem_writethrough.silica`**. **`list_uint32_prepend_second_chunk.silica`** **stresses** **multi-chunk** **spines** **via** **repeated** **`prepend`**; **`list_int64_recursive_sum.silica`** **covers** **recursive** **helpers** **with** **`sequence proc[mem]`** **inside** **the** **function** **(no** **`proc`** **on** **the** **function)**. Parser/codegen work for lists uses **`parser_expressions_lists.silica`**, **`parser_patterns_lists.silica`**, **`parser_types_lists.silica`**, and matching **codegen** paths as listed above.
+
+---
+
 ## Relationship to Specification
 
 This organization maps directly to the Silica language specification sections:

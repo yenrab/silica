@@ -22,6 +22,16 @@ When you allocate a region with `alloc_region(space)`, you choose a **memory spa
 
 ---
 
+## Lists and `mem` effects
+
+`List[T]` values allocate storage in a **Silica memory region**. In the self-hosted compiler, list construction and growth are implemented as **region + chunk buffers** under a single **`mem(<space>)`** declaration (see **`design_documents/list_implementation_design.md`** §9.3).
+
+**Surface syntax:** use a **`sequence`** block with **`sequence proc[mem(<space>)]`** … **`produces`** **`pure`** … **`end`** for any code that **constructs**, **grows**, or **pattern-matches** lists (effects are **not** declared on **function** **return** **types**—put **`sequence`** **inside** **named** **functions** **when** **needed**). **`<space>`** is the same memory-space name you would pass to **`alloc_region(<space>)`** (e.g. **`normal`**, **`normal_writethrough`**, **`atomic`**). The **same** **`mem(<space>)`** applies to **all** buffers allocated for that list’s spine. If the block also performs **console I/O**, add **`device_io`**, e.g. **`sequence proc[mem(normal), device_io]`**.
+
+**Trials:** **`silica-compiler/trials/list_addition/`** — **`list_int64_mem_effect_sequence.silica`** uses **`mem(normal)`**; **`list_int64_mem_writethrough.silica`** uses **`mem(normal_writethrough)`**; **`list_int64_two_primaries_shared_suffix.silica`** uses **`mem(normal), device_io`** with **`print`**; **`list_int64_recursive_sum.silica`** uses **`sequence proc[mem(normal)]`** **inside** **`sum_list`**.
+
+---
+
 ## normal / normal_writeback
 
 **What it is:** Write-back cacheable memory. Reads and writes go through the CPU cache. Writes are buffered in cache and flushed to main memory on eviction or explicit sync. This is the **default** and **fastest** option for most workloads.
