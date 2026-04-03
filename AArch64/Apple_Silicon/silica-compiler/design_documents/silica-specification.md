@@ -6919,17 +6919,24 @@ The `initial_state` parameter must implement the `ActorState` trait (for named t
 **Important**: `spawn()` creates and immediately starts executing the actor. The returned `actor_ref` is a handle to the running actor that can be used for message passing and control operations.
 
 #### 15.1.2 Actor Execution Model
-Each actor executes as an infinite loop in the runtime system:
+Each actor follows a **gen_server-style** model (cf. Erlang `gen_server`): a **non-recursive** behavior function of type `(Msg, State) -> State` is invoked **once per message** by the runtime. The **infinite loop** lives only in the runtime, not as a user-written tail-recursive receive loop.
+
+Each actor executes as an infinite loop **inside** the runtime system:
 
 ```
+// Runtime-internal loop (not user code):
 actor_loop(state, behavior) {
     message <- recv()           // runtime receives message from mailbox
-    new_state <- behavior(message, state)  // user behavior processes message
-    actor_loop(new_state, behavior)        // continue with new state
+    new_state <- behavior(message, state)  // user behavior: may send/cast/reply inside body
+    actor_loop(new_state, behavior)        // runtime continues with new state
 }
 ```
 
-**Important**: The `recv()` operation is performed by the actor runtime system outside of the user-defined behavior function. User-defined behavior functions only receive the message and current state as parameters - they never call `recv()` directly. The `recv()` function is not user-callable and is an internal runtime operation. The runtime calls `recv()` to retrieve messages from the actor's mailbox, then passes the received message to the behavior function along with the current state.
+**Receiving**: The `recv()` operation is performed only by the actor runtime, **between** behavior invocations. User-defined behavior functions receive the message and current state as parameters; they **never** call `recv()` directly. The `recv()` function is not user-callable and is an internal runtime operation.
+
+**Sending**: The behavior function **may** perform `send`, `cast`, and other concurrency effects **inside** its body (typically within `sequence` blocks that declare the required effects). For **request–reply** patterns, message types often include the **sender’s** `actor_ref` (or process id) so the behavior can reply to the current client.
+
+**Important**: The behavior function returns **only** updated `State`; it does not implement the mailbox loop itself. That keeps each message handler a finite call stack on the actor’s stack (see `actor_growable_stack_design.md`).
 
 **Actor Migration Policy:**
 
@@ -8027,7 +8034,7 @@ Message reception is handled automatically by the actor runtime system. The `rec
 recv() -> Msg proc[mailbox, concurrency]  // Runtime internal function
 ```
 
-User behavior functions receive messages as parameters rather than calling `recv()` directly.
+User behavior functions receive messages as parameters rather than calling `recv()` directly. **Sending** (`send`, `cast`, etc.) is **allowed** inside the behavior body when effects permit; only **reception** is reserved to the runtime loop (see §15.1.2).
 
 #### 16.2.2 Mailbox Semantics
 Each actor has a single mailbox that queues incoming messages:
@@ -12798,7 +12805,7 @@ recv([actor]) -> Msg proc[mailbox, concurrency]          // Runtime internal
 self() -> actor_ref proc[mailbox, concurrency]
 ```
 
-**Note**: `recv()` is a runtime internal function and cannot be called directly from user code.
+**Note**: `recv()` is a runtime internal function and cannot be called directly from user code. `send()` and `cast()` may be used from within actor behavior functions (and elsewhere) when the enclosing `sequence` declares the required effects (see §15.1.2, §16.2.1).
 
 **Core Affinity Parameter:**
 The `spawn()` function accepts an optional third parameter for CPU core affinity:

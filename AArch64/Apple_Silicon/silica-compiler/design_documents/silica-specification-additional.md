@@ -8,6 +8,7 @@
 | [silica_sequence_blocks_tutorial_updated.md](design_documents/silica_sequence_blocks_tutorial_updated.md) | Sequence block syntax (`sequence...produces pure...end`) |
 | [sir_optimization_spec.md](sir_optimization_spec.md) | SIR optimization passes |
 | [sir_design_spec.md](sir_design_spec.md) | SIR structure, terms, types, primitives |
+| [actor_growable_stack_design.md](actor_growable_stack_design.md) | Per-actor growable stack and runtime actor loop |
 
 ---
 
@@ -136,7 +137,19 @@ Rather than optimizing away inefficient or redundant code, Silica enforces that 
 
 ---
 
-## 4. Implementation Notes
+## 4. Actor execution (gen_server pattern)
+
+This document does not duplicate §15–§16 of [silica-specification.md](silica-specification.md); it records the **architectural contract** for tooling and diagnostics:
+
+1. **Runtime-owned loop**: The actor runtime performs `recv()` and then calls the user **behavior** `(Msg, State) -> State` once per message. The behavior is **not** defined as a user-level recursive receive loop.
+2. **User behavior**: Returns updated state only; may contain `sequence` blocks that perform `send`, `cast`, and **replies** using the sender’s handle when the **message type** includes it (see §15.1.2, §16.2.1).
+3. **Isolation**: `recv()` remains runtime-internal; conflating “behavior body” with “mailbox receive” in user code is inconsistent with the specification.
+
+For stack growth and message-boundary semantics, see [actor_growable_stack_design.md](actor_growable_stack_design.md) §5.2.
+
+---
+
+## 5. Implementation Notes
 
 1. **Detection phase**: These checks run during or after SIR construction, before optimization passes that would have previously remediated them.
 2. **Diagnostics**: Each error should suggest the fix (e.g. "move outside the loop", "use shift").
@@ -145,8 +158,9 @@ Rather than optimizing away inefficient or redundant code, Silica enforces that 
 
 ---
 
-## 5. Revision History
+## 6. Revision History
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.1 | 2026-04-03 | §4: Actor execution (gen_server pattern) cross-reference |
 | 1.0 | 2025-02-12 | Initial specification; anti-patterns elevated to compile-time failures |

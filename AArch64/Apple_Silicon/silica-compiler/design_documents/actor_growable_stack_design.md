@@ -10,7 +10,7 @@
 
 This document describes the complete actor memory architecture for Silica, replacing the per-actor heap model with **growable stacks and lazy page migration**. Key design principles:
 
-- **Complete actor isolation**: No data sharing between actors
+- **Complete actor isolation**: No concurrent shared mutable data between actors; regions may still **move** across actors by ownership transfer (not aliasing)
 - **Growable stacks**: Unbounded allocations within physical RAM
 - **Automatic cleanup**: Stack deallocates instantly on actor termination
 - **Lazy page migration**: Pages migrate to execution core on access (not upfront)
@@ -40,11 +40,11 @@ This document describes the complete actor memory architecture for Silica, repla
 
 - Each actor has completely isolated memory (its stack)
 - Regions are allocated within an actor's stack
-- References (`ref(R, Space, T)`) only point within the same actor's stack
+- References (`ref(R, Space, T)`) point into the stack of the actor that currently owns the region (ownership may move to another actor only as a whole-region transfer with its references)
 - When an actor terminates, all its memory is deallocated instantly
 - Type system enforces this isolation at compile time
 
-**Consequence**: No region copies on spawn, no cross-actor references, no need for runtime reference tracking.
+**Consequence**: No region copies on spawn, no *concurrent* cross-actor aliasing of region data (ownership moves or stays local), and the type system can track moves so runtime reference counting is not required for isolation.
 
 ---
 
@@ -213,11 +213,12 @@ fn process_message(msg: Message, state: ActorState) -> ActorState {
 - References cannot outlive their region
 - **Now simplified**: Region lifetime = actor lifetime (or scope within actor)
 
-**No Cross-Actor Region Passing**:
-- Regions are NOT passed between actors
-- Each actor allocates its own regions within its stack
-- Type system enforces this at compile time
-- No need for Phases B (nested scopes) and C (cross-function) analysis
+**Cross-Actor Region Passing (moves, not sharing)**:
+- Regions **may** be passed between actors as **moves**: the region is transferred together with every reference that points into it (and any other handles tied to that region’s lifetime).
+- References into the region that are **not** included in the move cannot survive it; memory for those references is **freed** (they do not remain valid in the sender). Any attempted use of a reference after a move is a **compile-time error**.
+- There is still **no concurrent sharing** of a region across actors: after a move, only the receiver owns that region’s stack extent.
+- Each actor allocates regions within its own stack; the type system enforces move completeness and non-aliasing at compile time.
+- **Phases B (nested scopes) and C (cross-function)** analysis remain in scope: escaping regions, cross-function boundaries, and actor sends are all cases where the compiler must verify which references move and which are dropped.
 
 ### 3.3 Memory Region Semantics
 
@@ -511,10 +512,11 @@ void actor_execution_loop(int actor_id):
         return;
 ```
 
-**Concurrency Model**:
-- Behavior function is synchronous (message -> state -> new state)
-- No explicit message handling inside behavior function
-- Runtime calls recv() externally; behavior function only processes
+**Concurrency Model** (gen_server-style):
+- The **runtime** owns the message loop: it **receives** one message (blocking), then calls the **behavior function** once with `(message, current_state)`. The behavior returns the **new state**; the runtime stores it and repeats. The behavior is **not** written as a recursive receive loop; unbounded recursion in user code is unnecessary for mailbox processing.
+- **Receiving**: Only the runtime calls `recv()` / `recv_from_mailbox`. User code never calls `recv()`.
+- **Sending**: `send`, `cast`, and **replies** to the current sender (using the sender’s `actor_ref` or PID carried **in the message**, when the message type includes it) occur **inside** the behavior body as needed. Effects are declared on `sequence` blocks per the language spec.
+- **Stack**: Each behavior invocation runs on the actor’s growable stack and returns before the next message is received, so stack depth accrues per message turn, not from an unbounded user-level receive loop.
 - State is single-threaded per actor (no concurrent updates)
 
 ### 5.3 Actor Migration
@@ -1464,14 +1466,14 @@ atomic_ref(R, Space, T) // Atomic reference within stack
 **Constraint additions**:
 ```silica
 // Compile-time enforcement:
-// 1. No region passing between actors
-// 2. Regions allocated within actor scope
-// 3. References don't escape actor
-// 4. No shared mutable state
+// 1. Region moves across actors include every ref/buf/etc. into that region, or drop those values (free storage for refs not moved)
+// 2. Regions allocated within actor stack; moves transfer ownership of the extent
+// 3. No dangling refs: refs don't outlive their region; cross-actor only via whole-region move; use after move is a compile-time error
+// 4. No shared mutable state across actors (moves transfer ownership, not aliases)
 
 // Type checker enhancement:
 // Add "ActorBoundary" to type judgments
-// Ensure all regions are local to actor
+// Model region + reference bundles for sends; Phase B/C for escapes and cross-function moves
 ```
 
 ### 6.2 Code Generation Changes
