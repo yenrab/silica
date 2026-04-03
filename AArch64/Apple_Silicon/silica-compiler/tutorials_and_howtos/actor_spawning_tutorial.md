@@ -2,6 +2,8 @@
 
 This tutorial teaches you how to spawn actors in Silica with appropriate migration strategies. The key insight is that **migration strategy choice depends on runtime behavior patterns, not on actor lifespan**.
 
+Silica actors use a **gen_server-style** execution model: the **runtime** owns the mailbox loop (`recv` is runtime-internal); your **behavior** has type `(Msg, State) -> State`, runs **once per message**, and may perform **`send`**, **`cast`**, and **replies** inside the function body (see [silica-specification.md](../design_documents/silica-specification.md) §15.1.2, §16.2.1). That shapes how you reason about **stack depth** for the strategies below: depth comes from work in **one message turn**, not from “one stack frame per message” in user code.
+
 ---
 
 ## Table of Contents
@@ -34,6 +36,13 @@ Choose migration strategy based on these three questions:
 
 ## Core Concepts
 
+### Actor execution model (gen_server-style)
+
+- **Runtime mailbox loop**: Between messages, the runtime performs `recv()` and then invokes your behavior with the dequeued message and current `State`. User code **never** calls `recv()`.
+- **Non-recursive mailbox processing**: You do **not** implement the infinite receive loop yourself (no user-level tail-recursive “receive then recurse” pattern for the mailbox). Unbounded stack growth is **not** expected from processing many messages over time; each handler invocation returns before the next message is received.
+- **Sends inside the behavior**: `send`, `cast`, and **request–reply** (reply to the sender using an `actor_ref` or process id carried **in the message type**, when you design it that way) happen **inside** the behavior body, with effects declared on `sequence` blocks as required by the spec.
+- **Why this matters here**: Migration and stack-strategy advice below is about **how much stack one message handler uses** (including deep recursion **during** that handler), not about message count.
+
 ### Migration Frequency
 
 **How often will this actor move between CPU cores?**
@@ -56,7 +65,7 @@ Choose migration strategy based on these three questions:
 
 - **Light** (< 10%): Short-lived tasks, leaf operations, thin request handlers
 - **Moderate** (10-50%): Normal business logic, typical web handlers
-- **Heavy** (> 50%): Complex computations, deep recursion, memory-intensive work
+- **Heavy** (> 50%): Complex computations, deep recursion **while handling a single message**, memory-intensive work
 
 ---
 
@@ -495,6 +504,10 @@ Simplicity               ✓ Default          ✓ Explicit pause  ⚠️ Core af
 
 ## FAQ
 
+**Q: Do I implement the mailbox loop or call `recv()` in my behavior?**
+
+A: No. The **runtime** receives messages and calls your behavior `(Msg, State) -> State` once per message. `recv()` is not user-callable. You may use `send`, `cast`, and replies from inside the behavior when your `sequence` blocks declare the right effects (see the specification §15.1.2).
+
 **Q: Should I always use lazy migration?**
 
 A: No. Lazy is a good default for high-frequency migrations and interactive workloads, but eager_copy is better for rare migrations with heavy, predictable stack usage. And static_core is essential for real-time work.
@@ -519,6 +532,7 @@ A: Use lazy. Frequent migrations mean you cannot afford eager_copy pauses. Lazy 
 
 ## See Also
 
-- [actor_growable_stack_design.md](actor_growable_stack_design.md) — Low-level architecture details
-- [silica-specification.md](../silica-specification.md) — Language specification, §19 Actors
+- [actor_growable_stack_design.md](../design_documents/actor_growable_stack_design.md) — Growable per-actor stack, runtime actor loop (§5.2)
+- [silica-specification.md](../design_documents/silica-specification.md) — §15 Actor model semantics, §16 Message passing, §22.4 Actor operations
+- [silica-specification-additional.md](../design_documents/silica-specification-additional.md) — §4 Actor execution (gen_server pattern) (compiler/tooling contract)
 - Performance profiling guide (coming soon)
