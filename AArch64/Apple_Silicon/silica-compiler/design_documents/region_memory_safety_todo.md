@@ -28,7 +28,7 @@ In many other languages, **arena** names an allocator *pattern*, not a full type
 
 | Component | Location | Status |
 |-----------|----------|--------|
-| Region type syntax validation | `type_checker/type_checker_memory_regions.silica` | ✓ Validates `ref(R, Space, T)`, `region(R, Space)`, `buf(R, Space, T, N)`, `atomic_ref(R, Space, T)` |
+| Region type syntax validation | `type_checker/type_checker_memory_regions.silica` | ✓ Validates `ref(R, Space, T)`, `region(R, Space)`, `buf(R, Space, T, N)` (legacy `atomic_ref` may still parse; **`alloc_atomic`** is checked against **`ref(R, atomic, T)`**) |
 | Memory space validation | Same | ✓ Validates `normal`, `normal_writeback`, `normal_writethrough`, `normal_noncacheable`, `atomic`, `device` |
 | Effect tracking for region ops | `effect_checker/effect_checker_memory_regions.silica` | ✓ Requires `mem(Space)` for `alloc_region`, `alloc_ref`, `read_ref`, `write_ref`, etc. |
 | SIR prim generation | `sir_generator/terms/memory_region_calls.silica` | ✓ Maps region built-ins to SIR prim terms |
@@ -54,7 +54,7 @@ Terminology: [memory region vs arena](#terminology-memory-region-vs-arena) (abov
 **Status**: ⚠️ Phase A implemented; Phases B and C pending
 
 **Phase A (implemented)**: Single-scope lifetime analysis in `type_checker_memory_regions.silica`:
-- When a sequence returns, any `ref(L,...)`, `buf(L,...)`, or `atomic_ref(L,...)` in the return type must have `region(L,...)` in the return type (scope exit rule).
+- When a sequence returns, any `ref(L,...)`, `buf(L,...)` (including `ref(L, atomic, ...)` for atomic space), or legacy `atomic_ref(L,...)` in the return type must have `region(L,...)` in the return type (scope exit rule).
 - Error E2100: "reference outlives region" when returning references without the region.
 
 **Phases B and C (not yet implemented)**: Must be implemented after functions are fully supported:
@@ -171,18 +171,20 @@ The spec describes "implicit deallocation when r goes out of scope" — the impl
 
 ---
 
-### 2.5 atomic_ref Support (Medium)
+### 2.5 Atomic references (`ref(R, atomic, T)`) (Medium)
 
-**Specification**: §4.4.4 Atomic Types, §17 Atomic Operations
+**Specification**: §4.4.5 Atomic memory space and `ref`, §17 Atomic Operations
 
-**Status**: ⚠️ Type validation exists; emission may be incomplete
+**Status**: ⚠️ `alloc_atomic` is type-checked against `ref(R, atomic, T)`; emission may be incomplete
 
-**Required**: Verify that `atomic_ref(R, Space, T)` is fully supported:
+**Required**: Verify that **`ref(R, atomic, T)`** (and **`alloc_atomic`**) is fully supported:
 
-- Type checker accepts it ✓
+- Type checker accepts **`ref`** with **`atomic`** space ✓
 - Effect checker handles `mem(atomic)` ✓
 - SIR generation and code emission for atomic load/store/compare-exchange
 - Memory ordering semantics per §17.2
+
+**Note:** The redundant **`atomic_ref(R, Space, T)`** type constructor is **not** used for new code; **`ref(R, atomic, T)`** carries the same enforcement via the memory space parameter.
 
 ---
 

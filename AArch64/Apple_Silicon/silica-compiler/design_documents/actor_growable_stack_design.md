@@ -232,7 +232,7 @@ ref1: ref(R1, normal, int64) <- alloc_ref(region, 42);
 buf1: buf(R1, normal, int64, 100) <- alloc_buf(region, 100);
 
 // Atomic reference
-atomic1: atomic_ref(R1, atomic, int64) <- alloc_atomic(region, 99);
+atomic1: ref(R1, atomic, int64) <- alloc_atomic(region, 99);
 
 // All live on the actor's stack
 // All become inaccessible when actor terminates
@@ -1460,7 +1460,7 @@ void terminate_actor(int actor_id):
 region(R, Space)        // Stack-allocated region
 ref(R, Space, T)        // Reference within stack
 buf(R, Space, T, N)     // Buffer within stack
-atomic_ref(R, Space, T) // Atomic reference within stack
+ref(R, atomic, T) // Atomic-capable reference within stack (atomic memory space)
 ```
 
 **Constraint additions**:

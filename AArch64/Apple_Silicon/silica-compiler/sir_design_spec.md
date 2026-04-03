@@ -120,7 +120,6 @@ SIRType ::=
   | region(R, Space)
   | ref(R, Space, SIRType)
   | buf(R, Space, SIRType, N)
-  | atomic_ref(R, Space, SIRType)
   | actor_ref
   | core_id
   | core_set
@@ -373,11 +372,11 @@ The guard term must have type `bool`. If the pattern matches, the guard is evalu
 
 | PrimOp | SIRType | Args | Effect |
 |--------|---------|------|--------|
-| atomic_load | T | (atomic_ref) | [mem(atomic)] |
-| atomic_store | unit | (atomic_ref, value) | [mem(atomic)] |
-| atomic_add | T | (atomic_ref, value) | [mem(atomic)] |
-| atomic_sub | T | (atomic_ref, value) | [mem(atomic)] |
-| atomic_cas | (bool, T) | (atomic_ref, expected, desired) | [mem(atomic)] |
+| atomic_load | T | (ref to atomic space) | [mem(atomic)] |
+| atomic_store | unit | (ref to atomic space, value) | [mem(atomic)] |
+| atomic_add | T | (ref to atomic space, value) | [mem(atomic)] |
+| atomic_sub | T | (ref to atomic space, value) | [mem(atomic)] |
+| atomic_cas | (bool, T) | (ref to atomic space, expected, desired) | [mem(atomic)] |
 
 ### 7.6 Tuple and Record
 

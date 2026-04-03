@@ -2,7 +2,7 @@
 
 ## 1. Purpose and scope
 
-This document specifies how **immutable, Erlang-style lists** (`List[T]`) are implemented in the **Phase 2 self-hosted compiler** (`silica-compiler`): representation, **early desugaring** to regions and buffers, **linear region** ownership with a **bundle** model, and the **v1** operation set. It is a **compiler implementation** design; it does not replace the **language** definition in [silica-specification.md](silica-specification.md), but where this doc is more specific (e.g. ownership), implementation follows this document.
+This document specifies how **immutable, Erlang-style lists** (`List[T, S]`) are implemented in the **Phase 2 self-hosted compiler** (`silica-compiler`): representation, **early desugaring** to regions and buffers, **linear region** ownership with a **bundle** model, **memory space** `S` (aligned with `alloc_region(S)` and `mem(S)`), and the **v1** operation set. It is a **compiler implementation** design; it does not replace the **language** definition in [silica-specification.md](silica-specification.md), but where this doc is more specific (e.g. ownership), implementation follows this document.
 
 **In scope**
 
@@ -39,11 +39,19 @@ This document specifies how **immutable, Erlang-style lists** (`List[T]`) are im
 
 The **authoritative** surface syntax and typing rules remain in [silica-specification.md](silica-specification.md), including:
 
-- `List[ElementType]` with **Collectable** constraints as specified.
-- **Explicit** element type annotations where the spec requires them.
-- **List literals** and **pattern matching** (`[]`, cons, `_`).
+- `List[ElementType, Space]` with **Collectable** on the element type and a **memory space** `Space` from the same vocabulary as **`alloc_region(Space)`** (e.g. **`normal`**, **`atomic`**, **`normal_writethrough`** — see [memory_region_types.md](../tutorials_and_howtos/memory_region_types.md)).
+- **Explicit** element type and **space** annotations: the compiler does **not** infer `Space` from the enclosing `sequence` alone; **`S`** is part of the **`List`** type and must **agree** with **`sequence proc[mem(S)]`** wherever list storage is **allocated** or **accessed** (§9.8).
+- **List literals** and **pattern matching** (`[]`, cons, `_`) use **`List[ElementType, Space]`** in **patterns** and **annotations** (same **`Space`** as the scrutinee).
+
+**Shorthand:** older trials may still show **`List[ElementType]`**; the **canonical** surface for new code and **effect checking** is **`List[T, S]`** with **explicit** **`S`**.
 
 **Compile-time list data** (literals, static initialization) is handled by **ordinary compiler lowering**, not user-level macros (Silica does not have macros).
+
+### 3.5 Memory space `S` in the list type
+
+- **`S`** is a **type-level** (or otherwise **statically explicit**) **memory space**; **runtime** does **not** infer or dispatch on `S` for **semantics** (no **runtime** **space** inference).
+- **`List[T, S]`** **carries** **`S`** across **move** and **return** so **callers** and **callees** keep a **single** **consistent** **story** with **`region(L1, S)`** for the **list’s** **owning** **region**.
+- **Primitives** that are **polymorphic** in **`T`** and **`S`** (e.g. **`empty`**, **`prepend`**, **`length`**) use **explicit** **instantiation** at the call site, e.g. **`empty[int64, normal]()`**, **`prepend[int64, normal](...)`**, **`length[int64, normal](...)`** — **no** **inference** of **`S`** from **context** (see §7).
 
 ---
 
@@ -54,7 +62,7 @@ The **authoritative** surface syntax and typing rules remain in [silica-specific
 - A **logical list** is an **ordered spine** of **chunks**.
 - **All chunks of one spine** live in **one** **Silica memory region** (see §9.2). **Inter-chunk** links are **in-region** (or use handles **scoped** to that region); spines **do not** span **multiple** owning regions.
 - Each **chunk** is a **fixed-capacity** buffer aligned to the **vector width** (e.g. 128 bits); **capacity in elements** depends on `T` and **packing** (§4.2).
-- Chunks are **linked** (e.g. **next** pointer or handle) so traversal **stops** at the **end** of the chain **for every** `List[T]` that reaches that far. **Different** `List[T]` “views” are **different entry points** into the **same** linked structure when sharing applies.
+- Chunks are **linked** (e.g. **next** pointer or handle) so traversal **stops** at the **end** of the chain **for every** `List[T, S]` that reaches that far. **Different** `List[T, S]` “views” are **different entry points** into the **same** linked structure when sharing applies.
 - **Within** each **chunk**, **prepend** **fills** **from** **the** **back** **toward** **the** **front** **until** **full**, then **continues** **in** **the** **next** **chunk** (§9.5).
 
 ### 4.2 Packed scalars
@@ -93,7 +101,7 @@ Silica **regions** are **moved** when passed and returned; **at most one** **own
 
 ### 6.3 Consequences
 
-- **`List[T]`** **is** the **bundle** type: **one** **type** **carrying** **region** **authority** **plus** **cursor** **metadata** **(§9.7)**. **No** **separate** **internal** **`ListBundle[T]`** / **`ListContext[T]`** **as** **the** **“real”** **type** **with** **`List[T]`** **as** **a** **thin** **wrapper**—**not** **viable** **here**.
+- **`List[T, S]`** **is** the **bundle** type: **one** **type** **carrying** **region** **authority** **for** **space** **`S`**, **plus** **cursor** **metadata** **(§9.7)**. **No** **separate** **internal** **`ListBundle[T]`** / **`ListContext[T]`** **as** **the** **“real”** **type** **with** **`List[T, S]`** **as** **a** **thin** **wrapper**—**not** **viable** **here**.
 - **List** **storage** **reclamation** is **not** via **GC** or **refcount** (see **§9.4**): **only** **memory** **region** **move** **semantics** and **the** **region’s** **lifetime** **/** **deallocation** **rules**. **Chunks** **live** **only** **inside** **that** **region** (§9.2).
 
 ### 6.4 Length memoization
@@ -112,12 +120,13 @@ The following are **v1** goals (exact names match the language spec where it alr
 
 **Typing** and **Collectable** constraints follow the **language spec**.
 
-**Effects and surface shape:** **List** **allocation** (literals, **`empty`**, **`prepend`**, spine **growth**) **must** appear **inside** a **`sequence`** block that **declares** the **`mem(<space>)`** effect (see **§9.3**). **Canonical** shape:
+**Effects and surface shape:** **List** **allocation** (literals, **`empty`**, **`prepend`**, spine **growth**) **must** appear **inside** a **`sequence`** block that **declares** the **`mem(<space>)`** effect (see **§9.3**), and **`<space>`** **must** **equal** the **`S`** in **every** **`List[T, S]`** **value** **touched** in that block (§9.8). **Canonical** shape:
 
 ```silica
-sequence proc[mem(<space>)]
-    -- list construction / operations using that region
-    result: int64 <- ...;
+sequence proc[mem(normal)]
+    -- list construction / operations using that region; S in List[T, S] equals mem's space
+    xs: List[int64, normal] <- [1, 2, 3]: List[int64, normal];
+    result: int64 <- length[int64, normal](xs);
 produces
     pure result
 end
@@ -125,13 +134,15 @@ end
 
 **`<space>`** is a **memory** **space** from the same vocabulary as **`alloc_region(<space>)`** (e.g. **`normal`**, **`normal_writethrough`**, **`atomic`**, **`normal_noncacheable`** — see **`tutorials_and_howtos/memory_region_types.md`**). **That** **same** **`mem(<space>)`** **covers** the **list** **region** and **every** **additional** **buffer** **when** **chunks** **are** **added**. If the **block** **also** **performs** **I/O** (e.g. **`print`**), **declare** **combined** **effects**, e.g. **`sequence proc[mem(normal), device_io]`** (see **`trials/list_addition/list_int64_two_primaries_shared_suffix.silica`**).
 
-**Named** **functions** **do** **not** **declare** **effects** **on** **the** **signature**; **put** **`sequence proc[mem(<space>)] … produces pure … end`** **inside** **the** **function** **body** **when** **the** **body** **allocates** **or** **reads** **list** **storage** (**`case`** **on** **`List[T]`**, **etc.**). **Recursive** **list** **walks** **repeat** **that** **sequence** **per** **call** (see **`list_int64_recursive_sum.silica`**).
+**Explicit** **instantiation** at **call** **sites** for **list** **primitives** includes **`S`**, e.g. **`empty[int64, normal]()`**, **`prepend[int64, normal](x, xs)`**, **`length[int64, normal](xs)`** — **no** **inference** of **`S`** from **lexical** `mem` **alone** (§3.5, §9.8).
+
+**Named** **functions** **may** **declare** **effects** **on** **the** **signature** **when** **the** **API** **surface** **is** **fixed** (e.g. **`with mem(S)`**); **at minimum**, **put** **`sequence proc[mem(<space>)] … produces pure … end`** **inside** **the** **function** **body** **when** **the** **body** **allocates** **or** **reads** **list** **storage** (**`case`** **on** **`List[T, S]`**, **etc.**). **Recursive** **list** **walks** **repeat** **that** **sequence** **per** **call** (see **`list_int64_recursive_sum.silica`**).
 
 ---
 
 ## 8. Trials and validation
 
-- All **executable** **trials** for **lists** live under **`silica-compiler/trials/list_addition/`**. **Each** **trial** **uses** **`sequence proc[mem(<space>)] … produces pure … end`** (and **`device_io`** **when** **printing**). **Inventory:**
+- All **executable** **trials** for **lists** live under **`silica-compiler/trials/list_addition/`**. **Each** **trial** **uses** **`sequence proc[mem(<space>)] … produces pure … end`** (and **`device_io`** **when** **printing**). **Canonical** **types** **use** **`List[T, S]`** **(§3.5)**; **legacy** **trials** **may** **still** **show** **`List[T]`** **until** **the** **compiler** **surface** **is** **updated** **everywhere**. **Inventory:**
   - **`list_int64_create_literal_and_empty.silica`** — literals, **`empty`**, **`length`**; **`mem(normal)`**.
   - **`list_int64_mem_effect_sequence.silica`** — minimal **`mem(normal)`** + list + **`length`**.
   - **`list_int64_mem_writethrough.silica`** — **`mem(normal_writethrough)`** (non-**`normal`** **space**).
@@ -139,7 +150,7 @@ end
   - **`list_int64_recursive_sum.silica`** — **recursive** **`sum_list`**; **`case`** **inside** **`sequence proc[mem(normal)]`** **(no** **`proc`** **on** **the** **function)**; **`main`** **also** **`sequence proc[mem(normal)]`** **for** **the** **literal**.
   - **`list_int64_two_primaries_shared_suffix.silica`** — two **`List[int64]`** **values**, **`case`** **on** **each** (**§6**/**§9.7**); **`mem(normal), device_io`** **for** **stdout**.
   - **`list_uint32_prepend_second_chunk.silica`** — nine **`prepend`** **steps** **on** **`List[uint32]`** **after** **`empty`** so **at** **least** **two** **vector** **chunks** **are** **used** (**covers** **128-bit** **and** **256-bit** **chunk** **capacities** **per** **§4.1**).
-- **Memory-region** trials remain under **`trials/memory_region_addition/`** (and related) as **prerequisites** or **cross-checks** for buffer writes and region typing.
+- **Memory-region** trials under **`trials/memory_region_addition/`** (and related) are **prerequisites** or **cross-checks** for buffer writes and region typing. **Each** **`.silica`** **file** **includes** a **header** **comment** **stating** **that** **the** **memory** **space** **`S`** **in** **`sequence proc[mem(S)]`**, **`alloc_region(S)`**, and **`region(L1, S)`** / **`ref`** / **`buf`** **uses** **the** **same** **vocabulary** **as** **`List[T, S]`** (§3.5, §9.8).
 
 ---
 
@@ -180,11 +191,17 @@ The following **§9** sections record **agreed** decisions for **list** **implem
 
 - **Lower** **immediately** **in** **all** **paths:** **list** **values** **do** **not** **use** a **retained** **intermediate** **`List`** **representation** **in** **SIR** (or **equivalent**) **across** **passes** **for** **debugging**, **optional** **pipelines**, or **backend** **branching**. **Every** **path** **that** **constructs** **or** **consumes** **a** **list** **lowers** **promptly** **to** **the** **region** + **buffer** + **bundle** **model** (§5). **Transient** **scratch** **during** **a** **single** **lowering** **step** is **allowed**; **no** **persistent** **staging** **layer**.
 
-### 9.7 Resolved: `List[T]` surface and `case` / cursors
+### 9.7 Resolved: `List[T, S]` surface and `case` / cursors
 
-- **`List[T]`** **is** **not** **a** **thin** **wrapper** **around** **another** **named** **bundle** **type:** **`List[T]`** **is** **the** **concrete** **type** **denoting** **region** **+** **cursor** **set** **+** **associated** **metadata** **for** **list** **storage** **(§6)**. **No** **separate** **user-facing** `ListBundle[T]` / `ListContext[T]` **as** **the** **authoritative** **implementation** **type**.
-- **`case`** **on** **a** **`List[T]`** **always** **matches** **against** **the** **current**/**primary** **list** **using** **its** **designated** **cursor** **only**; **patterns** **do** **not** **take** **a** **cursor** **parameter**.
+- **`List[T, S]`** **is** **not** **a** **thin** **wrapper** **around** **another** **named** **bundle** **type:** **`List[T, S]`** **is** **the** **concrete** **type** **denoting** **region** **(in** **space** **`S`**) **+** **cursor** **set** **+** **associated** **metadata** **for** **list** **storage** **(§6)**. **No** **separate** **user-facing** `ListBundle[T]` / `ListContext[T]` **as** **the** **authoritative** **implementation** **type**.
+- **`case`** **on** **a** **`List[T, S]`** **always** **matches** **against** **the** **current**/**primary** **list** **using** **its** **designated** **cursor** **only**; **patterns** **do** **not** **take** **a** **cursor** **parameter**. **Pattern** **types** **use** **the** **same** **`List[T, S]`** **as** **the** **scrutinee**.
 - **Other** **cursors** (**secondary** **heads**, **historical** **prefixes**, **etc.**) **are** **held** **in** **ordinary** **variables** **when** **needed**; **when** **a** **variable** **binding** **ends** **(scope** **exit**), **that** **cursor** **is** **removed** **from** **the** **bundle** **metadata** **together** **with** **its** **head** **reference** **into** **the** **region** **(same** **discipline** **as** **explicit** **cursor** **drop**—§9.1).
+
+### 9.8 Resolved: effect checker alignment (explicit `S`, moves, returns)
+
+- **Static** **rule:** **every** **`sequence proc[mem(S)]`** **block** **that** **allocates**, **grows**, **or** **pattern-matches** **a** **list** **must** **use** **the** **same** **`S`** **as** **the** **`List[T, S]`** **types** **of** **all** **list** **values** **accessed** **in** **that** **block**. **No** **inferring** **`S`** **only** **from** **the** **block** **effect** **while** **the** **value** **type** **is** **silent** **—** **`S`** **is** **part** **of** **`List[T, S]`** **(§3.5)**.
+- **Moves** **and** **returns:** **`S`** **is** **preserved** **in** **the** **type** **`List[T, S]`**; **callees** **cannot** **honestly** **declare** **`mem(S′)`** **for** **list** **work** **unless** **`S′`** **=** **`S`** **(unless** **the** **language** **defines** **a** **sound** **widening** **—** **none** **is** **assumed** **here** **for** **distinct** **spaces).
+- **Region** **trials** **and** **list** **trials** **share** **one** **memory-space** **vocabulary**; **`trials/memory_region_addition/`** **headers** **cross-reference** **this** **document** **for** **`List[T, S]`**.
 
 ---
 
@@ -194,6 +211,7 @@ The following **§9** sections record **agreed** decisions for **list** **implem
 - [silica-compiler-code-organization.md](silica-compiler-code-organization.md) — parser/codegen file names for lists, patterns, types.
 - `silica-compiler/tutorials_and_howtos/memory_region_types.md` — region spaces and allocation examples.
 - `silica-compiler/trials/list_addition/` — executable trials.
+- `silica-compiler/tutorials_and_howtos/list_memory_space_and_effects.md` — **lists**, **`mem(S)`**, and **`List[T, S]`** alignment with **regions**.
 
 ---
 
@@ -214,3 +232,4 @@ The following **§9** sections record **agreed** decisions for **list** **implem
 | 1.10 | §8: `list_uint32_prepend_second_chunk.silica` (nine prepends; ≥2 chunk buffers for 128/256-bit layouts). |
 | 1.11 | §8: `list_int64_recursive_sum.silica` (recursive function over list). |
 | 1.12 | §7/§8: effects only on `sequence` (not function return types); `list_int64_recursive_sum` uses inner `sequence proc[mem(normal)]`. |
+| 1.13 | §3.5 `List[T, S]` and explicit memory space; §9.8 effect checker alignment; §7/§9.7 updated; `memory_region_addition` trial headers cross-reference; optional `with mem(S)` on functions. |

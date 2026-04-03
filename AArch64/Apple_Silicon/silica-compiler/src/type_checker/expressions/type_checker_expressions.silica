@@ -363,19 +363,7 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                                         }
                                     }
                                 end;
-                                false -> case expr.name == "alloc_atomic" of {
-                                    true -> do
-                                        region_type: string <- type_checker_memory_regions@atomic_ref_type_to_region_type(expected_type);
-                                        elem_type: string <- type_checker_memory_regions@extract_element_type_from_atomic_ref(expected_type);
-                                        case len(region_type) == 0 of {
-                                            true -> type_checker_core@type_check_err("E2010", expr.location, concat("alloc_atomic result must be atomic_ref(R, Space, T), got ", expected_type), "sect4.4.4");
-                                            false -> do
-                                                r1: TypeCheckResult <- check_expr(expr.inner, region_type, context);
-                                                case r1.is_ok of { false -> r1; true -> check_expr(call_second_arg_expr(expr), elem_type, context) }
-                                            end
-                                        }
-                                    end;
-                                    false -> case expr.name == "fresh_lifetime" of {
+                                false -> case expr.name == "fresh_lifetime" of {
                                         true -> case expected_type == "lifetime" of {
                                             true -> type_checker_core@type_check_ok();
                                             false -> type_checker_core@type_check_err("E2003", expr.location, concat("fresh_lifetime returns lifetime, got ", expected_type), "sect22.1")
@@ -389,7 +377,6 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                 }
             }
         }
-    }
 }
 
 // Built-in: print_int64/32/16/8, print_uint64/32/16/8 - arg matches type, returns atom
@@ -844,7 +831,7 @@ fn check_user_call_two_args_as_tuple(expr: Expr, tuple_param: string, expected_t
 
 // Let binding: name: type <- rhs; body. Check rhs has declared type, add to env, check body.
 // Reject unit for named variables; allow _ : unit <- expr (discard pattern for expression statements).
-// Memory region types (ref, region, buf, atomic_ref) are validated before type checking.
+// Memory region types (ref, region, buf) are validated before type checking.
 fn check_let(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     bind_type: string <- expr.value;
     case type_checker_memory_regions@is_memory_region_type(bind_type) of {
@@ -918,7 +905,7 @@ fn context_after_sequence_body(body: Expr, context: TypeContext) -> TypeContext 
 // Sequence block (kind 11): sequence [proc[ε]] {statements} produces pure expr end
 // inner = body (statements before produces), right_expr = result (pure expr); sequence_effects validated by effect checker
 // The produces expr is in scope of all bindings from the body.
-// Phase A lifetime analysis: when return type contains ref/buf/atomic_ref, region must be returned (spec §12.1.4).
+// Phase A lifetime analysis: when return type contains ref/buf, region must be returned (spec §12.1.4).
 fn check_sequence_block(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     body_result: TypeCheckResult <- check_expr(expr.inner, "discard", context);
     case body_result.is_ok of {

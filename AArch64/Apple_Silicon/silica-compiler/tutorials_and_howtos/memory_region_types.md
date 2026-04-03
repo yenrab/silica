@@ -24,11 +24,13 @@ When you allocate a region with `alloc_region(space)`, you choose a **memory spa
 
 ## Lists and `mem` effects
 
-`List[T]` values allocate storage in a **Silica memory region**. In the self-hosted compiler, list construction and growth are implemented as **region + chunk buffers** under a single **`mem(<space>)`** declaration (see **`design_documents/list_implementation_design.md`** §9.3).
+`List[T, S]` allocates storage in a Silica memory region whose space is `S`. The same `S` appears in `alloc_region(S)`, `region(L1, S)`, and `sequence proc[mem(S)]` (see **`design_documents/list_implementation_design.md`** §3.5, §9.3, §9.8). List construction and growth lower to **region + chunk buffers** under a single `mem(S)` declaration.
 
-**Surface syntax:** use a **`sequence`** block with **`sequence proc[mem(<space>)]`** … **`produces`** **`pure`** … **`end`** for any code that **constructs**, **grows**, or **pattern-matches** lists (effects are **not** declared on **function** **return** **types**—put **`sequence`** **inside** **named** **functions** **when** **needed**). **`<space>`** is the same memory-space name you would pass to **`alloc_region(<space>)`** (e.g. **`normal`**, **`normal_writethrough`**, **`atomic`**). The **same** **`mem(<space>)`** applies to **all** buffers allocated for that list’s spine. If the block also performs **console I/O**, add **`device_io`**, e.g. **`sequence proc[mem(normal), device_io]`**.
+Use a `sequence` block with `sequence proc[mem(S)]` … `produces` `pure` … `end` for code that constructs, grows, or pattern-matches lists. The `S` in every `List[T, S]` value touched in that block must match the `S` in `mem(S)` (the effect checker validates this; do not infer `S` only from the effect). Named functions may declare effects on the signature (for example `with mem(S)`) or wrap list work in `sequence` inside the body (see list design doc §7).
 
-**Trials:** **`silica-compiler/trials/list_addition/`** — **`list_int64_mem_effect_sequence.silica`** uses **`mem(normal)`**; **`list_int64_mem_writethrough.silica`** uses **`mem(normal_writethrough)`**; **`list_int64_two_primaries_shared_suffix.silica`** uses **`mem(normal), device_io`** with **`print`**; **`list_int64_recursive_sum.silica`** uses **`sequence proc[mem(normal)]`** **inside** **`sum_list`**.
+**Trials:** `silica-compiler/trials/list_addition/` — `list_int64_mem_effect_sequence.silica` uses `mem(normal)`; `list_int64_mem_writethrough.silica` uses `mem(normal_writethrough)`; `list_int64_two_primaries_shared_suffix.silica` uses `mem(normal), device_io` with `print`; `list_int64_recursive_sum.silica` uses `sequence proc[mem(normal)]` inside `sum_list`. Trials under `trials/memory_region_addition/` include headers that tie the same `S` vocabulary to regions and `List[T, S]`.
+
+**Tutorial:** [list_memory_space_and_effects.md](list_memory_space_and_effects.md) — regions, effects, and list types together.
 
 ---
 
@@ -99,7 +101,7 @@ produces pure 0 end
 
 ## atomic
 
-**What it is:** Memory space that supports **hardware atomic operations**. Uses the same cache attributes as normal write-back, but allocations in this space can hold `atomic_ref` values. Use `alloc_atomic` to create atomic references for lock-free counters and similar patterns.
+**What it is:** Memory space that supports **hardware atomic operations**. Uses the same cache attributes as normal write-back. References into this space use **`ref(L, atomic, T)`** — the **`atomic`** memory space (second parameter) carries atomic capability; there is no separate `atomic_ref` type constructor. Use **`alloc_atomic`** to allocate atomic-capable **`ref`** cells for lock-free counters and similar patterns.
 
 **When to use it:**
 - **Lock-free counters**: Reference counts, statistics, event counts
@@ -112,7 +114,7 @@ produces pure 0 end
 sequence proc[mem(atomic)]
     L1: lifetime <- fresh_lifetime();
     r: region(L1, atomic) <- alloc_region(atomic);
-    counter: atomic_ref(L1, atomic, int64) <- alloc_atomic(r, 0);
+    counter: ref(L1, atomic, int64) <- alloc_atomic(r, 0);
 produces pure 0 end
 ```
 
