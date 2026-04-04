@@ -1229,6 +1229,51 @@ pub extern "C" fn silica_write_file(path: *const u8, path_len: usize, content: *
     }
 }
 
+/// Remove a file if it exists (delete_file intrinsic). NotFound is treated as success so callers can
+/// clear output paths before append/write.
+#[no_mangle]
+pub extern "C" fn silica_delete_file(path: *const u8, path_len: usize) -> SilicaResult {
+    let path_slice = unsafe { std::slice::from_raw_parts(path, path_len) };
+    let path_str = match std::str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => {
+            return SilicaResult {
+                success: false,
+                data: create_error_string("Invalid UTF-8 in path"),
+            };
+        }
+    };
+    match fs::remove_file(path_str) {
+        Ok(()) => SilicaResult {
+            success: true,
+            data: std::ptr::null_mut(),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => SilicaResult {
+            success: true,
+            data: std::ptr::null_mut(),
+        },
+        Err(e) => SilicaResult {
+            success: false,
+            data: create_error_string(&format!("Failed to delete file: {}", e)),
+        },
+    }
+}
+
+/// Path as SilicaString (same convention as read_file_path / write_file_path).
+#[no_mangle]
+pub extern "C" fn silica_delete_file_path(path_ptr: *const u8) -> SilicaResult {
+    let (path, path_len) = unsafe {
+        crate::io::get_string_data_and_length(path_ptr).unwrap_or((std::ptr::null(), 0))
+    };
+    if path.is_null() || path_len == 0 {
+        return SilicaResult {
+            success: false,
+            data: create_error_string("Invalid or empty path"),
+        };
+    }
+    silica_delete_file(path, path_len)
+}
+
 /// Append to an existing file (append_file intrinsic).
 #[no_mangle]
 pub extern "C" fn silica_append_file(path: *const u8, path_len: usize, content: *const u8, content_len: usize) -> SilicaResult {

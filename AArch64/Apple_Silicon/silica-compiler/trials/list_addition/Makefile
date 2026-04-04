@@ -37,7 +37,7 @@ all: executables
 # Stage 1: silica-compiler generates .sams (reads silica.config internally)
 assembly:
 	@echo "Compiling with silica-compiler..."
-	@cd "$(THIS_DIR)" && $(SILICA_COMPILER)
+	@cd "$(THIS_DIR)" && rm -f *.sams && $(SILICA_COMPILER)
 	@echo "✅ Assembly generated"
 
 # Stage 2: Assemble .sams -> .o (no Rust code, clang assembler only)

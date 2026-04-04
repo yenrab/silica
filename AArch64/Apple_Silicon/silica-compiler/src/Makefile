@@ -80,7 +80,8 @@ executables: $(EXECUTABLE)
 
 # Main LLVM IR depends on subdirs, lexer, parser, type_checker, effect_checker, and emitter (main.silica imports emitter_core)
 EMITTER_FILES := $(wildcard emitter/*.silica emitter/*/*.silica emitter/*/*/*.silica)
-$(MAIN_LL): $(MAIN_FILE) subdirs $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(EFFECT_CHECKER_LL) $(EMITTER_FILES) $(SILICA_COMPILER)
+BUILD_OUTPUT_FILES := $(wildcard build_output/*.silica)
+$(MAIN_LL): $(MAIN_FILE) subdirs $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(EFFECT_CHECKER_LL) $(EMITTER_FILES) $(BUILD_OUTPUT_FILES) $(SILICA_COMPILER)
 	@$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # main.ll -> main.bc (bitcode)

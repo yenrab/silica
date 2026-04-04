@@ -272,6 +272,18 @@ fn emit_case_pattern_check(branch: SIRTerm, scrut_t: string, scrut_reg: string, 
     }
 }
 
+// After list_cons (prepend) RHS, tail arg was emitted to X2 and emit_list_cons restores X2 to the
+// tail list pointer across malloc. Earlier |tailvar=R bindings may be stale (e.g. R=X0 clobbered).
+fn list_cons_tail_rebind_suffix(inner: SIRTerm) -> string {
+    case inner.kind == 6 and inner.name == "list_cons" of {
+        true -> case inner.right_expr.kind == 1 of {
+            true -> var@reg_binding(inner.right_expr.name, "X2");
+            false -> ""
+        };
+        false -> ""
+    }
+}
+
 // List cons pattern: branch.name is "%h|%t" (or _), branch.type_name is "head_t|list_t" (SIR).
 fn emit_list_cons_pattern_loads(branch: SIRTerm, scrut_reg: string, outer_reg: string) -> (string, string) {
     pipe_n: int64 <- var@find_pipe_from(branch.name, 0);
@@ -383,6 +395,8 @@ fn emit_case_branch_seq(rest: SIRTerm, scrut_t: string, scrut_reg: string, lit_r
 // term_to_asm_opt_bound passes bound_reg = body_bound: the register for the enclosing let's binding in the
 // case body (e.g. let value <- 2 in case cmd -> body_bound is X2 where value lives). Default scrutinee X2
 // would clobber that; use X3+ when body_bound is X2 or outer_reg records X2.
+// If outer_reg binds X1 (e.g. |%extended=X1) but we would use scrutinee X1, a prior case may have loaded
+// another list into X1 — use X3+ so the scrutinee load runs in a fresh reg and reloads the right pointer.
 fn emit_case_pick_scrut_reg(dest: string, outer_reg: string, bound_reg: string) -> string {
     case dest == "X1" of {
         true -> case var@is_reg_bound(outer_reg, "X2") of {
@@ -406,7 +420,27 @@ fn emit_case_pick_scrut_reg(dest: string, outer_reg: string, bound_reg: string) 
                     false -> "X2"
                 }
             };
-            false -> "X1"
+            // Result in X2 (e.g. third let hb): default scrutinee X1 would load base with MOV X1,X2 and
+            // clobber X1 holding another list primary (extended after prepend). Use X3+ like dest X0/X1.
+            false -> case dest == "X2" of {
+                true -> case var@is_reg_bound(outer_reg, "X3") of {
+                    true -> case var@is_reg_bound(outer_reg, "X4") of { true -> "X5"; false -> "X4" };
+                    false -> "X3"
+                };
+                false -> case var@is_reg_bound(outer_reg, "X1") of {
+                    true -> case var@is_reg_bound(outer_reg, "X3") of {
+                        true -> case var@is_reg_bound(outer_reg, "X4") of { true -> "X5"; false -> "X4" };
+                        false -> "X3"
+                    };
+                    false -> case var@is_reg_bound(outer_reg, "X2") of {
+                        true -> case var@is_reg_bound(outer_reg, "X3") of {
+                            true -> case var@is_reg_bound(outer_reg, "X4") of { true -> "X5"; false -> "X4" };
+                            false -> "X3"
+                        };
+                        false -> "X1"
+                    }
+                }
+            }
         }
     }
 }
@@ -820,9 +854,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 nob: string <- var@base_reg_of(new_outer_raw);
                 nosp: string <- var@extract_sp_bindings(new_outer_raw);
                 new_outer: string <- concat(nob, concat(va_b, concat(adj_binding, concat(iap_b, concat(nosp, ptr_binding_inner)))));
+                outer_for_body: string <- concat(new_outer, list_cons_tail_rebind_suffix(term.inner));
                 body_asm: string <- case debug of {
-                    true -> do term_to_asm_opt_bound_debug(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound, new_outer, true) end;
-                    false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound, new_outer, false)
+                    true -> do term_to_asm_opt_bound_debug(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound, outer_for_body, true) end;
+                    false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound, outer_for_body, false)
                 };
                 dealloc_bytes: int64 <- case reg_conventions@is_tuple_type(term.inner.type_name) of {
                     true -> flat_tuple_dealloc_size(term.inner);
@@ -836,10 +871,14 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> "";
                     false -> "\n"
                 };
-                concat(concat(rhs_asm, rhs_sep), concat(save_base_b, case len(dealloc) > 0 of {
+                let_combined: string <- concat(concat(rhs_asm, rhs_sep), concat(save_base_b, case len(dealloc) > 0 of {
                     true -> concat(concat(body_asm, "\n"), dealloc);
                     false -> body_asm
-                }))
+                }));
+                case term.inner.name == "buf_store" or term.inner.name == "write_ref" of {
+                    true -> var@strip_mov_x2_x1_then_x1_x2(let_combined);
+                    false -> let_combined
+                }
             end;
             false -> do
                 base_rhs: string <- let_dispatcher@compute_rhs_reg_top_level(term, bound_reg, dest);
@@ -903,9 +942,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 };
                 inherit_sp_tl: string <- var@extract_sp_bindings(outer_reg);
                 new_outer_tl: string <- concat(nob_tl, concat(inherit_sp_tl, concat(reg_binding_tl, concat(tp_binding_tl, concat(adj_binding_tl, concat(iap_tl, concat(vab_tl, ptr_binding_tl)))))));
+                outer_for_body_tl: string <- concat(new_outer_tl, list_cons_tail_rebind_suffix(term.inner));
                 body_asm: string <- case debug of {
-                    true -> do term_to_asm_opt_bound_debug(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound_tl, new_outer_tl, true) end;
-                    false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound_tl, new_outer_tl, false)
+                    true -> do term_to_asm_opt_bound_debug(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound_tl, outer_for_body_tl, true) end;
+                    false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound_tl, outer_for_body_tl, false)
                 };
                 dealloc_bytes_tl: int64 <- flat_tuple_dealloc_size(term.inner);
                 dealloc: string <- case dealloc_bytes_tl > 0 of {

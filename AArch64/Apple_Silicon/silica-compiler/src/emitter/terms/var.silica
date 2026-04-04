@@ -7,6 +7,7 @@ use string_parse;
 
 export emit_var/2;
 export emit_var_reg/3;
+export strip_mov_x2_x1_then_x1_x2/1;
 export emit_var_sp_load/2;
 export emit_var_with_sp_check/3;
 export find_sp_binding/2;
@@ -229,10 +230,12 @@ fn is_memory_ref(s: string) -> bool {
 }
 
 fn emit_var_with_sp_check(term: SIRTerm, dest: string, outer_reg: string) -> string {
-    sp_match: string <- find_sp_binding(outer_reg, term.name);
-    sp_fin: string <- case len(sp_match) > 0 of {
-        true -> sp_match;
-        false -> find_last_sp_binding(outer_reg, term.name)
+    // Resolve |name= once: prefer last binding (prepend tail rebind appends |%v=X2 after stale |%v=X0).
+    sp_last: string <- find_last_sp_binding(outer_reg, term.name);
+    sp_first: string <- find_sp_binding(outer_reg, term.name);
+    sp_fin: string <- case len(sp_last) > 0 of {
+        true -> sp_last;
+        false -> sp_first
     };
     case len(sp_fin) > 0 of {
         true -> case is_memory_ref(sp_fin) of {
@@ -247,6 +250,17 @@ fn emit_var_with_sp_check(term: SIRTerm, dest: string, outer_reg: string) -> str
 // The variable (e.g. %x) is already in a register; we copy to dest.
 fn emit_var(term: SIRTerm, dest: string) -> string {
     concat(concat(concat("    MOV ", dest), ", "), term.name)
+}
+
+// buf_store / write_ref recover emits MOV X2, X1; the following read_buf/read_ref then emits
+// redundant MOV X1, X2 (pointer already in X1).
+fn strip_mov_x2_x1_then_x1_x2(s: string) -> string {
+    old: string <- "    MOV X2, X1\n    MOV X1, X2\n";
+    pos: int64 <- find_str_at(s, old, 0);
+    case pos < 0 of {
+        true -> s;
+        false -> concat(substring(s, 0, pos), concat("    MOV X2, X1\n\n", substring(s, pos + len(old), len(s))))
+    }
 }
 
 // Emit MOV dest, reg (or FMOV for float64/float32) when var is a let-bound variable (value already in reg).

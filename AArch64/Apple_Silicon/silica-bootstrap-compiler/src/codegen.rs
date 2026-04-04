@@ -572,6 +572,8 @@ impl CodeGenerator {
         self.instructions.push("declare { i1, i8* } @silica_write_file_path(i8*, i8*)".to_string());
         self.instructions.push("declare { i1, i8* } @silica_append_file(i8*, i64, i8*, i64)".to_string());
         self.instructions.push("declare { i1, i8* } @silica_append_file_path(i8*, i8*)".to_string());
+        self.instructions.push("declare { i1, i8* } @silica_delete_file(i8*, i64)".to_string());
+        self.instructions.push("declare { i1, i8* } @silica_delete_file_path(i8*)".to_string());
         self.instructions.push("declare void @silica_free_string(i8*)".to_string());
 
         // Process execution functions
@@ -821,6 +823,11 @@ impl CodeGenerator {
                 let write_file_type = result_struct_type.fn_type(&[i8_ptr.into(), i64_type.into(), i8_ptr.into(), i64_type.into()], false);
                 module.add_function("silica_write_file", write_file_type, None);
                 module.add_function("silica_append_file", write_file_type, None);
+
+                let delete_file_type = result_struct_type.fn_type(&[i8_ptr.into(), i64_type.into()], false);
+                module.add_function("silica_delete_file", delete_file_type, None);
+                let delete_file_path_type = result_struct_type.fn_type(&[i8_ptr.into()], false);
+                module.add_function("silica_delete_file_path", delete_file_path_type, None);
 
                 let free_string_type = void_type.fn_type(&[i8_ptr.into()], false);
                 module.add_function("silica_free_string", free_string_type, None);
@@ -2670,6 +2677,9 @@ impl CodeGenerator {
                 return self.generate_read_file_call(call);
             } else if func_name == "write_file" {
                 return self.generate_write_file_call(call);
+            } else if func_name == "delete_file" {
+                // Parsed as CallExpr in some front-ends; same lowering as Expression::DeleteFile
+                return self.generate_delete_file_call(call);
             } else if func_name == "string_to_int64" {
                 return self.generate_string_to_int64_call(call);
             }
@@ -12333,6 +12343,36 @@ impl CodeGenerator {
         Ok(Some(result_reg))
     }
 
+    /// Generate LLVM IR for delete_file(path) when parsed as CallExpr (single-arg call).
+    fn generate_delete_file_call(&mut self, call: &CallExpr) -> Result<Option<String>> {
+        if call.arguments.len() != 1 {
+            return Err(CompilerError::codegen_error(
+                "delete_file expects exactly 1 argument".to_string(),
+            ));
+        }
+        let path_val = self.generate_expression(&call.arguments[0])?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid path in delete_file".to_string()))?;
+        let (path_arg, path_len_opt) = self.get_path_arg_and_length(&path_val)?;
+        let result_reg = format!("%delete_result_{}", self.instructions.len());
+        if let Some(path_len_reg) = path_len_opt {
+            self.instructions.push(format!(
+                "  {} = call {{ i1, i8* }} @silica_delete_file({}, {})",
+                result_reg, path_arg, path_len_reg
+            ));
+        } else {
+            self.instructions.push(format!(
+                "  {} = call {{ i1, i8* }} @silica_delete_file_path({})",
+                result_reg, path_arg
+            ));
+        }
+        let success_reg = self.next_register();
+        self.instructions.push(format!(
+            "  %{} = extractvalue {{ i1, i8* }} {}, 0",
+            success_reg, result_reg
+        ));
+        Ok(Some(success_reg))
+    }
+
     /// Generate LLVM IR for print expression
     fn generate_print(&mut self, print: &PrintExpr) -> Result<Option<String>> {
         let value_val = self.generate_expression(&print.value)?
@@ -13145,8 +13185,27 @@ impl CodeGenerator {
 
     /// Generate LLVM IR for delete_file expression
     fn generate_delete_file(&mut self, delete_file: &DeleteFileExpr) -> Result<Option<String>> {
-        // For now, return true (placeholder implementation)
-        Ok(Some("1".to_string()))
+        let path_val = self.generate_expression(&delete_file.path)?
+            .ok_or_else(|| CompilerError::codegen_error("Invalid path in delete_file".to_string()))?;
+        let (path_arg, path_len_opt) = self.get_path_arg_and_length(&path_val)?;
+        let result_reg = format!("%delete_result_{}", self.instructions.len());
+        if let Some(path_len_reg) = path_len_opt {
+            self.instructions.push(format!(
+                "  {} = call {{ i1, i8* }} @silica_delete_file({}, {})",
+                result_reg, path_arg, path_len_reg
+            ));
+        } else {
+            self.instructions.push(format!(
+                "  {} = call {{ i1, i8* }} @silica_delete_file_path({})",
+                result_reg, path_arg
+            ));
+        }
+        let success_reg = self.next_register();
+        self.instructions.push(format!(
+            "  %{} = extractvalue {{ i1, i8* }} {}, 0",
+            success_reg, result_reg
+        ));
+        Ok(Some(success_reg))
     }
 
     /// Generate LLVM IR for get_file_size expression
