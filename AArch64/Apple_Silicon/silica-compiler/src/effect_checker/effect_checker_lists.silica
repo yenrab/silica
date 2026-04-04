@@ -43,26 +43,34 @@ fn extract_space_from_generic_instantiation(generic_value: string) -> (bool, str
             case len(trimmed) == 0 of {
                 true -> (false, "");
                 false -> do
-                    last_sp: int64 <- last_space_index(trimmed);
-                    case last_sp < 0 of {
+                    comma_idx: int64 <- index_of_first_comma(trimmed);
+                    case comma_idx >= 0 of {
                         true -> do
-                            comma_idx: int64 <- index_of_first_comma(trimmed);
-                            case comma_idx < 0 of {
-                                true -> (false, "");
-                                false -> do
-                                    after_comma: string <- eff_strip_spaces_list(trim_leading_ws(substring(trimmed, comma_idx + 1, len(trimmed))));
-                                    case effect_checker_core@is_valid_mem_parameter(after_comma) of {
-                                        true -> (true, after_comma);
-                                        false -> (false, "")
-                                    }
-                                end
+                            after_comma: string <- eff_strip_spaces_list(trim_leading_ws(substring(trimmed, comma_idx + 1, len(trimmed))));
+                            bare_ac: string <- unwrap_mem_param(after_comma);
+                            case effect_checker_core@is_valid_mem_parameter(bare_ac) of {
+                                true -> (true, bare_ac);
+                                false -> case effect_checker_core@is_valid_mem_parameter(after_comma) of {
+                                    true -> (true, after_comma);
+                                    false -> (false, "")
+                                }
                             }
                         end;
                         false -> do
-                            space: string <- eff_strip_spaces_list(substring(trimmed, last_sp + 1, len(trimmed)));
-                            case effect_checker_core@is_valid_mem_parameter(space) of {
-                                true -> (true, space);
-                                false -> (false, "")
+                            last_sp: int64 <- last_space_index(trimmed);
+                            case last_sp < 0 of {
+                                true -> (false, "");
+                                false -> do
+                                    space: string <- eff_strip_spaces_list(substring(trimmed, last_sp + 1, len(trimmed)));
+                                    bare_sp: string <- unwrap_mem_param(space);
+                                    case effect_checker_core@is_valid_mem_parameter(bare_sp) of {
+                                        true -> (true, bare_sp);
+                                        false -> case effect_checker_core@is_valid_mem_parameter(space) of {
+                                            true -> (true, space);
+                                            false -> (false, "")
+                                        }
+                                    }
+                                end
                             }
                         end
                     }
@@ -200,9 +208,13 @@ fn extract_space_from_list_type_str(type_str: string) -> (bool, string) {
                                         false -> do
                                             rest: string <- substring(inner, comma_idx + 1, len(inner));
                                             space: string <- eff_strip_spaces_list(trim_leading_ws(rest));
-                                            case effect_checker_core@is_valid_mem_parameter(space) of {
-                                                true -> (true, space);
-                                                false -> (false, "")
+                                            bare: string <- unwrap_mem_param(space);
+                                            case effect_checker_core@is_valid_mem_parameter(bare) of {
+                                                true -> (true, bare);
+                                                false -> case effect_checker_core@is_valid_mem_parameter(space) of {
+                                                    true -> (true, space);
+                                                    false -> (false, "")
+                                                }
                                             }
                                         end
                                     }
@@ -218,6 +230,33 @@ fn extract_space_from_list_type_str(type_str: string) -> (bool, string) {
 
 fn index_of_first_comma(s: string) -> int64 {
     index_of_char_from(s, ",", 0)
+}
+
+// Unwrap "mem(normal)" or "mem ( normal )" → "normal"; return input unchanged if not mem(...).
+fn unwrap_mem_param(s: string) -> string {
+    t: string <- eff_strip_spaces_list(s);
+    case len(t) >= 5 of {
+        true -> case substring(t, 0, 3) == "mem" of {
+            true -> do
+                j: int64 <- eff_skip_spaces_index(t, 3);
+                case j < len(t) of {
+                    true -> case substring(t, j, j + 1) == "(" of {
+                        true -> do
+                            k: int64 <- index_of_char_from(t, ")", j + 1);
+                            case k > j of {
+                                true -> eff_strip_spaces_list(substring(t, j + 1, k));
+                                false -> t
+                            }
+                        end;
+                        false -> t
+                    };
+                    false -> t
+                }
+            end;
+            false -> t
+        };
+        false -> t
+    }
 }
 
 fn index_of_char_from(s: string, ch: string, i: int64) -> int64 {

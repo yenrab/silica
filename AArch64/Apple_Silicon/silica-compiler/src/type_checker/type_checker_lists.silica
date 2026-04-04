@@ -47,6 +47,21 @@ fn strip_spaces_list_from(s: string, start: int64, end_inclusive: int64) -> stri
     }
 }
 
+// Lexer/parser may join tokens with spaces anywhere ("int64 , mem ( normal )"). Match spec tuple types_equal.
+fn strip_all_spaces_list(s: string) -> string {
+    strip_all_spaces_list_from(s, 0, "")
+}
+
+fn strip_all_spaces_list_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> strip_all_spaces_list_from(s, i + 1, acc);
+            false -> strip_all_spaces_list_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
 fn starts_with_list(s: string, prefix: string) -> bool {
     case len(s) < len(prefix) of {
         true -> false;
@@ -84,9 +99,9 @@ fn normalize_list_type_bracket(s: string) -> string {
     }
 }
 
-// "List[int64, normal]" -> (true, "int64", "normal"); "List[int64]" -> (true, "int64", "")
+// "List[int64, mem(normal)]" -> (true, "int64", "mem(normal)"); "List[int64]" -> (true, "int64", "")
 fn parse_list_type_params(full: string) -> (bool, string, string) {
-    t: string <- normalize_list_type_bracket(strip_spaces_list(full));
+    t: string <- normalize_list_type_bracket(strip_all_spaces_list(full));
     case len(t) < 6 of {
         true -> (false, "", "");
         false -> case starts_with_list(t, "List[") of {
@@ -138,9 +153,28 @@ fn types_equal_strip(a: string, b: string) -> bool {
     strip_spaces_list(a) == strip_spaces_list(b)
 }
 
-// Legacy List[T] matches List[T, S] when element types match.
+// Surface memory space is mem(<space>); compare after stripping so mem(normal) matches the inner token form.
+fn normalize_memory_space_for_list(s: string) -> string {
+    t: string <- strip_spaces_list(s);
+    case len(t) < 6 of {
+        true -> t;
+        false -> case substring(t, 0, 4) == "mem(" of {
+            false -> t;
+            true -> case substring(t, len(t) - 1, len(t)) == ")" of {
+                false -> t;
+                true -> strip_spaces_list(substring(t, 4, len(t) - 1))
+            }
+        }
+    }
+}
+
+fn memory_spaces_equivalent_for_list(a: string, b: string) -> bool {
+    types_equal_strip(normalize_memory_space_for_list(a), normalize_memory_space_for_list(b))
+}
+
+// Legacy List[T] matches List[T, S] when element types match. Ignore all spaces (token-join differences).
 fn list_types_compatible(a: string, b: string) -> bool {
-    case types_equal_strip(a, b) of {
+    case strip_all_spaces_list(a) == strip_all_spaces_list(b) of {
         true -> true;
         false -> do
             (ok_a: bool, ea: string, sa: string) <- parse_list_type_params(a);
@@ -155,7 +189,7 @@ fn list_types_compatible(a: string, b: string) -> bool {
                             true -> true;
                             false -> case len(sb) == 0 of {
                                 true -> true;
-                                false -> types_equal_strip(sa, sb)
+                                false -> memory_spaces_equivalent_for_list(sa, sb)
                             }
                         }
                     }
@@ -280,7 +314,7 @@ fn parse_list_empty_case_pattern(pat_str: string) -> ListEmptyPat {
                                 false -> case substring(t, j_col, j_col + 1) == ":" of {
                                     false -> ListEmptyPat { ok: false, list_type: "" };
                                     true -> do
-                                        rest: string <- normalize_list_type_bracket(strip_spaces_list(substring(t, j_col + 1, len(t))));
+                                        rest: string <- normalize_list_type_bracket(strip_all_spaces_list(substring(t, j_col + 1, len(t))));
                                         case starts_with_list(rest, "List[") of {
                                             false -> ListEmptyPat { ok: false, list_type: "" };
                                             true -> ListEmptyPat { ok: true, list_type: rest }
@@ -365,7 +399,7 @@ fn parse_list_cons_case_pattern(pat_str: string) -> ListConsPat {
                                     true -> case ok_r of {
                                         false -> ListConsPat { ok: false, head_name: "", head_type: "", tail_name: "", tail_list_type: "" };
                                         true -> do
-                                            tt_n: string <- normalize_list_type_bracket(tt);
+                                            tt_n: string <- normalize_list_type_bracket(strip_all_spaces_list(tt));
                                             case starts_with_list(tt_n, "List[") of {
                                                 false -> ListConsPat { ok: false, head_name: "", head_type: "", tail_name: "", tail_list_type: "" };
                                                 true -> ListConsPat { ok: true, head_name: hn, head_type: ht, tail_name: tn, tail_list_type: tt_n }
