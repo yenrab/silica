@@ -1237,21 +1237,28 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 true -> prims_list@emit_prim_op(term, dest);
                 false -> case term.name == "list_cons" of {
                     true -> do
-                        arg1_asm: string <- case debug of {
-                            true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
-                            false -> term_to_asm_opt_bound(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
-                        };
+                        // Emit tail (arg2) into X2 BEFORE head (arg1) into X1.
+                        // Evaluating arg2 first ensures that variable references bound to X1
+                        // (e.g. prepend(val, xs) where xs is in X1) are resolved before
+                        // arg1 overwrites X1 with the new head value.
                         arg2_asm: string <- case debug of {
                             true -> do term_to_asm_opt_bound_debug(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                             false -> term_to_asm_opt_bound(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                         };
-                        op_asm: string <- prims_list@emit_prim_op(term, dest);
-                        concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), "\n"), op_asm)
-                    end;
-                    false -> do
-                        arg_asm: string <- case debug of {
+                        arg1_asm: string <- case debug of {
                             true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                             false -> term_to_asm_opt_bound(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                        };
+                        op_asm: string <- prims_list@emit_prim_op(term, dest);
+                        concat(concat(concat(concat(arg2_asm, "\n"), concat(arg1_asm, "\n")), "\n"), op_asm)
+                    end;
+                    false -> do
+                        // list_length arg goes to X0 (helper expects X0); list_head/remove_head use X9
+                        // to avoid clobbering let bindings in X1.
+                        arg_dest: string <- case term.name == "list_length" of { true -> "X0"; false -> "X9" };
+                        arg_asm: string <- case debug of {
+                            true -> do term_to_asm_opt_bound_debug(term.inner, arg_dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                            false -> term_to_asm_opt_bound(term.inner, arg_dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                         };
                         op_asm: string <- prims_list@emit_prim_op(term, dest);
                         concat(concat(arg_asm, "\n"), op_asm)

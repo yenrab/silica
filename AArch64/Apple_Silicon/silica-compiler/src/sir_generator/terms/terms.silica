@@ -848,18 +848,27 @@ fn build_prim_for_type(op_lexeme: string, left: SIRTerm, right: SIRTerm, expecte
 }
 
 fn lower_list_literal_elems(context: TypeContext, expr: Expr, elem_t: string, list_t: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
-    case expr.inner.kind == -1 of {
-        true -> list_terms@build_list_nil(elem_t, list_t);
+    case expr.kind == 20 of {
+        true -> case expr.inner.kind == -1 of {
+            true -> list_terms@build_list_nil(elem_t, list_t);
+            false -> do
+                head: SIRTerm <- case in_body of {
+                    true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, elem_t);
+                    false -> expr_to_sir_with_expected(context, expr.inner, elem_t)
+                };
+                tail: SIRTerm <- case expr.right_expr.kind == -1 of {
+                    true -> list_terms@build_list_nil(elem_t, list_t);
+                    false -> lower_list_literal_elems(context, expr.right_expr, elem_t, list_t, in_body, bound_name, bound_type)
+                };
+                list_terms@build_list_cons(head, tail, list_t)
+            end
+        };
         false -> do
-            head: SIRTerm <- case in_body of {
-                true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, elem_t);
-                false -> expr_to_sir_with_expected(context, expr.inner, elem_t)
+            leaf_head: SIRTerm <- case in_body of {
+                true -> expr_to_sir_in_let_body(context, expr, bound_name, bound_type, elem_t);
+                false -> expr_to_sir_with_expected(context, expr, elem_t)
             };
-            tail: SIRTerm <- case expr.right_expr.kind == -1 of {
-                true -> list_terms@build_list_nil(elem_t, list_t);
-                false -> lower_list_literal_elems(context, expr.right_expr, elem_t, list_t, in_body, bound_name, bound_type)
-            };
-            list_terms@build_list_cons(head, tail, list_t)
+            list_terms@build_list_cons(leaf_head, list_terms@build_list_nil(elem_t, list_t), list_t)
         end
     }
 }
