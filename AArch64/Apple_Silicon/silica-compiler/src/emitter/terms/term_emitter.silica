@@ -678,13 +678,19 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 synthetic_const: SIRTerm <- SIRTerm { kind: 0, type_name: float_type, value: float_val, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
                 const_dispatcher@emit_const(synthetic_const, dest, table, literal_table, float64_literal_table, float32_literal_table)
             end;
-            false -> case term.name == bound_name or term.name == concat("%", bound_name) of {
-                true -> case len(bound_reg) > 0 and substring(bound_reg, 0, 1) == "[" of {
-                    true -> var@emit_var_sp_load(dest, bound_reg);
-                    false -> var@emit_var_reg(term, dest, bound_reg)
+            false -> do
+                bound_norm: string <- case substring(bound_name, 0, 1) == "%" of {
+                    true -> bound_name;
+                    false -> concat("%", bound_name)
                 };
-                false -> var@emit_var_with_sp_check(term, dest, outer_reg)
-            }
+                case term.name == bound_norm of {
+                    true -> case len(bound_reg) > 0 and substring(bound_reg, 0, 1) == "[" of {
+                        true -> var@emit_var_sp_load(dest, bound_reg);
+                        false -> var@emit_var_reg(term, dest, bound_reg)
+                    };
+                    false -> var@emit_var_with_sp_check(term, dest, outer_reg)
+                }
+            end
         };
         2 -> case len(bound_name) > 0 and len(bound_reg) > 0 of {
             true -> do
@@ -809,7 +815,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         nosp_r: string <- var@extract_sp_bindings(outer_reg);
                         concat(nob_r, concat(nosp_r, reg_binding_inner))
                     end;
-                    false -> var@build_outer_with_sp(bound_name, bound_reg, outer_reg, term.name, term.inner, proj_sp_adj)
+                    false -> var@build_outer_with_sp(bound_name, bound_reg, outer_reg, term.name, term.inner, proj_sp_adj, rhs_reg)
                 };
                 nob: string <- var@base_reg_of(new_outer_raw);
                 nosp: string <- var@extract_sp_bindings(new_outer_raw);
@@ -1253,9 +1259,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         concat(concat(concat(concat(arg2_asm, "\n"), concat(arg1_asm, "\n")), "\n"), op_asm)
                     end;
                     false -> do
-                        // list_length arg goes to X0 (helper expects X0); list_head/remove_head use X9
-                        // to avoid clobbering let bindings in X1.
-                        arg_dest: string <- case term.name == "list_length" of { true -> "X0"; false -> "X9" };
+                        // list_length arg goes to X9 then MOV X0,X9 in prims_list (helper entry still uses X0);
+                        // avoids losing the list pointer when X0 holds a prior int64 result (e.g. chained lets).
+                        // list_head/remove_head use X9 for the same reason.
+                        arg_dest: string <- "X9";
                         arg_asm: string <- case debug of {
                             true -> do term_to_asm_opt_bound_debug(term.inner, arg_dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                             false -> term_to_asm_opt_bound(term.inner, arg_dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)

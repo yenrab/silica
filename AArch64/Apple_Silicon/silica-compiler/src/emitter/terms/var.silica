@@ -15,7 +15,7 @@ export is_memory_ref/1;
 export sp_offset_for_index/1;
 export tuple_proj_body_bound/3;
 export new_tp_binding/3;
-export build_outer_with_sp/6;
+export build_outer_with_sp/7;
 export sp_offset_for_index_adj/2;
 export reg_offset_for_index/2;
 export reg_binding/2;
@@ -55,10 +55,30 @@ fn base_reg_of(outer: string) -> string {
     base_reg_check(base_reg_raw(outer))
 }
 
+fn match_prefix_at_inner(haystack: string, needle: string, start: int64, i: int64) -> bool {
+    case i >= len(needle) of {
+        true -> true;
+        false -> case substring(haystack, start + i, start + i + 1) == substring(needle, i, i + 1) of {
+            true -> match_prefix_at_inner(haystack, needle, start, i + 1);
+            false -> false
+        }
+    }
+}
+
+fn match_prefix_at(haystack: string, needle: string, start: int64) -> bool {
+    case start + len(needle) > len(haystack) of {
+        true -> false;
+        false -> case len(needle) == 0 of {
+            true -> true;
+            false -> match_prefix_at_inner(haystack, needle, start, 0)
+        }
+    }
+}
+
 fn find_str_at(haystack: string, needle: string, start: int64) -> int64 {
     case start + len(needle) > len(haystack) of {
         true -> -1;
-        false -> case substring(haystack, start, start + len(needle)) == needle of {
+        false -> case match_prefix_at(haystack, needle, start) of {
             true -> start;
             false -> find_str_at(haystack, needle, start + 1)
         }
@@ -81,12 +101,40 @@ fn find_sp_binding_extract(outer_reg: string, val_start: int64) -> string {
     }
 }
 
-fn find_sp_binding(outer_reg: string, var_name: string) -> string {
+// Search only within haystack (single region). Used by find_sp_binding.
+fn find_sp_binding_in(outer_reg: string, var_name: string) -> string {
     key: string <- concat("|", concat(var_name, "="));
     pos: int64 <- find_str_at(outer_reg, key, 0);
     case pos < 0 of {
-        true -> "";
+        true -> case substring(var_name, 0, 1) == "%" of {
+            true -> do
+                bare: string <- substring(var_name, 1, len(var_name));
+                key2: string <- concat("|", concat(bare, "="));
+                pos2: int64 <- find_str_at(outer_reg, key2, 0);
+                case pos2 < 0 of {
+                    true -> "";
+                    false -> find_sp_binding_extract(outer_reg, pos2 + len(key2))
+                }
+            end;
+            false -> ""
+        };
         false -> find_sp_binding_extract(outer_reg, pos + len(key))
+    }
+}
+
+// Resolve |name=REG in outer_reg. Prefer the pipe-suffix (stack bindings) first so lookups
+// succeed even when base_reg_of(outer_reg) prefixes the string (e.g. X1|... vs |...).
+fn find_sp_binding(outer_reg: string, var_name: string) -> string {
+    sp_only: string <- extract_sp_bindings(outer_reg);
+    case len(sp_only) > 0 of {
+        true -> do
+            first: string <- find_sp_binding_in(sp_only, var_name);
+            case len(first) > 0 of {
+                true -> first;
+                false -> find_sp_binding_in(outer_reg, var_name)
+            }
+        end;
+        false -> find_sp_binding_in(outer_reg, var_name)
     }
 }
 
@@ -154,7 +202,9 @@ fn new_tp_binding(let_name: string, inner_term: SIRTerm, sp_adj: int64) -> strin
     }
 }
 
-fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer: string, let_name: string, inner_term: SIRTerm, sp_adj: int64) -> string {
+// rhs_reg: register where this let's RHS will be emitted (must match |let_name= in outer for downstream lookups).
+// Do not use the parent's bound_reg here — that incorrectly maps e.g. |%empty_list=X0 when the list lives in X1.
+fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer: string, let_name: string, inner_term: SIRTerm, sp_adj: int64, rhs_reg: string) -> string {
     raw_base: string <- base_reg_of(base_bound_reg);
     base: string <- case len(raw_base) == 0 of {
         true -> base_reg_of(current_outer);
@@ -162,7 +212,7 @@ fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer
     };
     sp_part: string <- extract_sp_bindings(current_outer);
     enc: string <- enclosing_sp_binding(bound_name, base_bound_reg);
-    rb: string <- reg_binding(let_name, base_bound_reg);
+    rb: string <- reg_binding(let_name, rhs_reg);
     nb: string <- new_tp_binding(let_name, inner_term, sp_adj);
     concat(base, concat(sp_part, concat(enc, concat(rb, nb))))
 }
@@ -180,10 +230,14 @@ fn is_memory_ref(s: string) -> bool {
 
 fn emit_var_with_sp_check(term: SIRTerm, dest: string, outer_reg: string) -> string {
     sp_match: string <- find_sp_binding(outer_reg, term.name);
-    case len(sp_match) > 0 of {
-        true -> case is_memory_ref(sp_match) of {
-            true -> emit_var_sp_load(dest, sp_match);
-            false -> emit_var_reg(term, dest, sp_match)
+    sp_fin: string <- case len(sp_match) > 0 of {
+        true -> sp_match;
+        false -> find_last_sp_binding(outer_reg, term.name)
+    };
+    case len(sp_fin) > 0 of {
+        true -> case is_memory_ref(sp_fin) of {
+            true -> emit_var_sp_load(dest, sp_fin);
+            false -> emit_var_reg(term, dest, sp_fin)
         };
         false -> emit_var_with_base_reg(term, dest, base_reg_of(outer_reg))
     }
@@ -300,5 +354,16 @@ fn find_last_sp_binding_rec(outer_reg: string, key: string, start: int64, last_p
 
 fn find_last_sp_binding(outer_reg: string, var_name: string) -> string {
     key: string <- concat("|", concat(var_name, "="));
-    find_last_sp_binding_rec(outer_reg, key, 0, -1)
+    res: string <- find_last_sp_binding_rec(outer_reg, key, 0, -1);
+    case len(res) > 0 of {
+        true -> res;
+        false -> case substring(var_name, 0, 1) == "%" of {
+            true -> do
+                bare: string <- substring(var_name, 1, len(var_name));
+                key2: string <- concat("|", concat(bare, "="));
+                find_last_sp_binding_rec(outer_reg, key2, 0, -1)
+            end;
+            false -> ""
+        }
+    }
 }
