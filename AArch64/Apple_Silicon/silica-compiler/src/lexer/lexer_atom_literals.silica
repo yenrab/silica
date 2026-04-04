@@ -155,8 +155,8 @@ fn read_atom_literal(lexer: Lexer, start_location: SourceLocation) -> (Token, Le
 
 
 {-
-- When the lexer is at ":", either reads an atom literal (if followed by atom start character) or a standalone colon token (for type annotations). Dispatches to read_atom_literal for the full logic.
-- Entry point for ":" tokenization: the lexer calls this when peek_char is ":". If next character is lowercase letter or underscore, reads full atom. Otherwise emits colon token for type annotations like "x: int64".
+- When the lexer is at ":", either reads `::` (double colon, per silica-spec §2.2.4), an atom literal (if followed by atom start character), or a standalone colon token (for type annotations). Dispatches to read_atom_literal for the full logic.
+- Entry point for ":" tokenization: the lexer calls this when peek_char is ":". If peek_next is ":", emits double_colon. Else if next is atom start, reads full atom. Otherwise emits colon for type annotations like "x: int64" or `]: List[int64]`.
 - Example: lexer at ":" of ":ok" — next is "o" (atom start), read_atom_literal consumes ":ok"; result is (Token atom_literal ":ok", lexer past "k").
 - Example: lexer at ":" of "x: int64" — next is " " (not atom start), read_atom_literal emits colon and advances; result is (Token colon ":", lexer past ":").
 - Time: O(1) for colon, O(k) for atom. Space: O(1) for colon, O(k) for atom.
@@ -170,6 +170,11 @@ fn read_colon_or_atom_literal(lexer: Lexer) -> (Token, Lexer) {
         ":" -> do
             second: string <- lexer_core@peek_next_char(lexer);
             case second of {
+                ":" -> do
+                    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+                    after_double: Lexer <- lexer_core@advance(lexer_core@advance(lexer));
+                    (lexer_core@make_token(kinds.double_colon, "::", start_location), after_double)
+                end;
                 "" -> do
                     kinds: TokenKinds <- lexer_token_kind@token_kinds();
                     updated_lexer: Lexer <- lexer_core@advance(lexer);

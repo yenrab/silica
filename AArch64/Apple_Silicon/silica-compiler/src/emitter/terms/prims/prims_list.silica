@@ -1,0 +1,137 @@
+// List prim emission: list_nil, list_cons, list_length, list_head, list_remove_head
+// list_implementation_design.md §5–§6: immutable spine; v1 uses classic cons nodes in heap (malloc)
+// Layout per node: [0:8] = head (zero-extended for narrow types), [8:16] = tail pointer (0 = nil)
+// Empty list: Xn = 0
+
+use sir_ast;
+use reg_conventions;
+use var;
+
+export is_list_prim/1;
+export emit_prim_op/2;
+export module_uses_list_prims/1;
+export emit_list_length_helper/0;
+
+fn is_list_prim(name: string) -> bool {
+    name == "list_nil" or name == "list_cons" or name == "list_length" or name == "list_head" or name == "list_remove_head"
+}
+
+fn term_has_list_prim(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            6 -> is_list_prim(term.name);
+            2 -> case term_has_list_prim(term.inner) of {
+                true -> true;
+                false -> term_has_list_prim(term.right_expr)
+            };
+            3 -> case term_has_list_prim(term.inner) of {
+                true -> true;
+                false -> term_has_list_prim(term.right_expr)
+            };
+            4 -> case term_has_list_prim(term.inner) of {
+                true -> true;
+                false -> term_has_list_prim(term.right_expr)
+            };
+            5 -> case term_has_list_prim(term.inner) of {
+                true -> true;
+                false -> term_has_list_prim(term.right_expr)
+            };
+            7 -> case term_has_list_prim(term.inner) of {
+                true -> true;
+                false -> term_has_list_prim(term.right_expr)
+            };
+            8 -> case term_has_list_prim(term.inner) of {
+                true -> true;
+                false -> term_has_list_prim(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn list_prim_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_list_prim(fns.head.body) of {
+            true -> true;
+            false -> list_prim_in_functions(fns.tail)
+        }
+    }
+}
+
+fn module_uses_list_prims(sir_module: SIRModule) -> bool {
+    list_prim_in_functions(sir_module.functions)
+}
+
+fn emit_list_nil(dest: string) -> string {
+    concat(concat("    MOV ", dest), ", #0\n")
+}
+
+// X1 = head (element), X2 = tail list pointer. Result in dest.
+// Save X1/X2 across BL _malloc (caller-saved by AArch64 calling convention).
+fn emit_list_cons(dest: string) -> string {
+    save: string <- "    STP X1, X2, [SP, #-16]!\n";
+    mov_sz: string <- "    MOV X0, #16\n";
+    bl_m: string <- "    BL _malloc\n";
+    restore: string <- "    LDP X1, X2, [SP], #16\n";
+    st_h: string <- "    STR X1, [X0]\n";
+    st_t: string <- "    STR X2, [X0, #8]\n";
+    mov_d: string <- concat(concat("    MOV ", dest), ", X0\n");
+    concat(concat(concat(concat(concat(concat(save, mov_sz), bl_m), restore), st_h), st_t), mov_d)
+}
+
+// X1 = list pointer (cons cell). Load first element into dest (narrow types use W*).
+fn emit_list_head(term: SIRTerm, dest: string) -> string {
+    ed: string <- case reg_conventions@is_narrow_type(term.type_name) of {
+        true -> case len(dest) > 0 of {
+            true -> case substring(dest, 0, 1) == "X" of {
+                true -> concat("W", substring(dest, 1, len(dest)));
+                false -> dest
+            };
+            false -> dest
+        };
+        false -> dest
+    };
+    case reg_conventions@is_narrow_type(term.type_name) of {
+        true -> case term.type_name of {
+            "int8" -> concat(concat(concat(concat("    LDRSB ", ed), ", [X1]"), ""), "\n");
+            "uint8" -> concat(concat(concat(concat("    LDRB ", ed), ", [X1]"), ""), "\n");
+            "int16" -> concat(concat(concat(concat("    LDRSH ", ed), ", [X1]"), ""), "\n");
+            "uint16" -> concat(concat(concat(concat("    LDRH ", ed), ", [X1]"), ""), "\n");
+            _: string -> concat(concat(concat(concat("    LDR ", ed), ", [X1]"), ""), "\n")
+        };
+        false -> concat(concat(concat(concat("    LDR ", dest), ", [X1]"), ""), "\n")
+    }
+}
+
+fn emit_list_remove_head(dest: string) -> string {
+    concat(concat(concat(concat("    LDR ", dest), ", [X1, #8]"), ""), "\n")
+}
+
+// X1 = list ptr. Result length in dest (int64). Uses helper that expects list in X0.
+fn emit_list_length(dest: string) -> string {
+    mov_arg: string <- "    MOV X0, X1\n";
+    bl_h: string <- "    BL L_list_length_helper\n";
+    mov_out: string <- case dest == "X0" of {
+        true -> "";
+        false -> concat(concat("    MOV ", dest), ", X0\n")
+    };
+    concat(concat(mov_arg, bl_h), mov_out)
+}
+
+fn emit_prim_op(term: SIRTerm, dest: string) -> string {
+    case term.name of {
+        "list_nil" -> emit_list_nil(dest);
+        "list_cons" -> emit_list_cons(dest);
+        "list_length" -> emit_list_length(dest);
+        "list_head" -> emit_list_head(term, dest);
+        "list_remove_head" -> emit_list_remove_head(dest);
+        _: string -> concat(concat("    ; unsupported list prim: ", term.name), "\n")
+    }
+}
+
+// Shared helper: X0 = list head pointer, returns X0 = length (uint64).
+fn emit_list_length_helper() -> string {
+    "L_list_length_helper:\n    MOV X1, X0\n    MOV X0, #0\nL_list_len_loop:\n    CBZ X1, L_list_len_done\n    ADD X0, X0, #1\n    LDR X1, [X1, #8]\n    B L_list_len_loop\nL_list_len_done:\n    RET\n"
+}

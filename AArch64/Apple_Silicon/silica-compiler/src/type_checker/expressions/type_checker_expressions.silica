@@ -11,6 +11,7 @@ use type_checker_expressions_string_calls;
 use boolean_type_checker_expressions;
 use type_checker_tuple_decompose_helpers;
 use type_checker_memory_regions;
+use type_checker_lists;
 
 export check_expr/3;
 
@@ -517,12 +518,15 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
                                                                                     lb: TypeCheckResult <- check_expr(expr.inner, "string", context);
                                                                                     type_checker_expressions_string_calls@check_length_bytes_call(expr, expected_type, lb)
                                                                                 end;
-                                                                                    false -> case expr.name == "length_chars" of {
+                                                                                        false -> case expr.name == "length_chars" of {
                                                                                         true -> do
                                                                                             lc: TypeCheckResult <- check_expr(expr.inner, "string", context);
                                                                                             type_checker_expressions_string_calls@check_length_chars_call(expr, expected_type, lc)
                                                                                         end;
-                                                                                        false -> check_user_defined_call(expr, expected_type, context)
+                                                                                        false -> case type_checker_lists@is_list_primitive_name(expr.name) of {
+                                                                                            true -> check_list_primitive_call(expr, expected_type, context);
+                                                                                            false -> check_user_defined_call(expr, expected_type, context)
+                                                                                        }
                                                                                     }
                                                                             }
                                                                         }
@@ -1056,16 +1060,38 @@ fn expr_references_name(e: Expr, name: string) -> bool {
             12 -> expr_references_name(e.inner, name);
             13 -> expr_references_name(e.inner, name) or expr_references_name(e.right_expr, name);
             19 -> expr_references_name(e.inner, name) or expr_references_name(e.right_expr.inner, name) or expr_references_name(e.right_expr.right_expr, name);
+            20 -> expr_references_name(e.inner, name) or expr_references_name(e.right_expr, name);
             _: int64 -> false
+        }
+    }
+}
+
+fn case_list_cons_guard_ok_expr(branch: Expr, pi: CasePatternInfo) -> bool {
+    head_bound: bool <- len(pi.bind_name) > 0 and pi.bind_name != "_";
+    tail_bound: bool <- len(pi.list_tail_name) > 0 and pi.list_tail_name != "_";
+    case head_bound of {
+        false -> case tail_bound of {
+            false -> true;
+            true -> expr_references_name(branch.inner, pi.list_tail_name)
+        };
+        true -> case tail_bound of {
+            false -> expr_references_name(branch.inner, pi.bind_name);
+            true -> expr_references_name(branch.inner, pi.bind_name) or expr_references_name(branch.inner, pi.list_tail_name)
         }
     }
 }
 
 fn check_case_guard_invariant(branch: Expr, pi: CasePatternInfo) -> TypeCheckResult {
     case type_checker_tuple_decompose_helpers@case_pattern_has_named_binding(pi) of {
-        true -> case expr_references_name(branch.inner, type_checker_tuple_decompose_helpers@case_pattern_binding_name(pi)) of {
-            true -> type_checker_core@type_check_ok();
-            false -> type_checker_core@type_check_err("E2014", branch.inner.location, "Guard does not depend on pattern bindings — move it before the case or restructure.", "sect3")
+        true -> case pi.pattern_kind of {
+            6 -> case case_list_cons_guard_ok_expr(branch, pi) of {
+                true -> type_checker_core@type_check_ok();
+                false -> type_checker_core@type_check_err("E2014", branch.inner.location, "Guard does not depend on pattern bindings — move it before the case or restructure.", "sect3")
+            };
+            _: int64 -> case expr_references_name(branch.inner, type_checker_tuple_decompose_helpers@case_pattern_binding_name(pi)) of {
+                true -> type_checker_core@type_check_ok();
+                false -> type_checker_core@type_check_err("E2014", branch.inner.location, "Guard does not depend on pattern bindings — move it before the case or restructure.", "sect3")
+            }
         };
         false -> type_checker_core@type_check_err("E2014", branch.inner.location, "Guard does not depend on pattern bindings — move it before the case or restructure.", "sect3")
     }
@@ -1193,7 +1219,160 @@ fn is_true_or_false_identifier(expr: Expr) -> bool {
     }
 }
 
-// Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding, 7=boolean literal, 8=string literal, 12=unary minus (forbidden)
+// List literal (kind 20): value = full List[T, S] on root; inner/right_expr chain like tuple kind 9.
+fn check_list_literal(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    lit_t: string <- expr.value;
+    case len(lit_t) == 0 of {
+        true -> type_checker_core@type_check_err("E2005", expr.location, "list literal missing type annotation (: List[...])", "list");
+        false -> do
+            case type_checker_lists@list_types_compatible(expected_type, lit_t) of {
+                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("list literal type ", lit_t), " does not match expected "), expected_type), ""), "list");
+                true -> do
+                    (_ok: bool, elem_t: string, _: string) <- type_checker_lists@parse_list_type_params(lit_t);
+                    case expr.inner.kind == -1 of {
+                        true -> type_checker_core@type_check_ok();
+                        false -> check_list_elem_tree(expr, elem_t, context)
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn check_list_elem_tree(expr: Expr, elem_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    case expr.kind == 20 of {
+        true -> do
+            r1: TypeCheckResult <- check_expr(expr.inner, elem_type, context);
+            case r1.is_ok of {
+                false -> r1;
+                true -> case expr.right_expr.kind == -1 of {
+                    true -> type_checker_core@type_check_ok();
+                    false -> check_list_elem_tree(expr.right_expr, elem_type, context)
+                }
+            }
+        end;
+        false -> check_expr(expr, elem_type, context)
+    }
+}
+
+// Compiler-known list primitives (list_implementation_design.md §7): empty, length, prepend, remove_head, head.
+fn check_list_primitive_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    (elem: string, space: string) <- type_checker_lists@parse_generic_ts(expr.value);
+    case len(elem) == 0 of {
+        true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("list primitive ", expr.name), " requires explicit generic type arguments [T, S] or [T]"), "list");
+        false -> do
+            list_t: string <- type_checker_lists@format_list_type_from_parts(elem, space);
+            case expr.name == "empty" of {
+                true -> do
+                    ac: int64 <- type_checker_lists@count_call_args_list(expr);
+                    case ac == 0 of {
+                        false -> type_checker_core@type_check_err("E2005", expr.location, "empty expects 0 arguments", "list");
+                        true -> case expected_type == "discard" of {
+                            true -> type_checker_core@type_check_ok();
+                            false -> case type_checker_lists@list_types_compatible(expected_type, list_t) of {
+                                true -> type_checker_core@type_check_ok();
+                                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("empty returns ", list_t), ", expected "), expected_type), ""), "list")
+                            }
+                        }
+                    }
+                end;
+                false -> case expr.name == "length" of {
+                    true -> do
+                        ac: int64 <- type_checker_lists@count_call_args_list(expr);
+                        case ac == 1 of {
+                            false -> type_checker_core@type_check_err("E2005", expr.location, "length expects 1 argument", "list");
+                            true -> do
+                                r1: TypeCheckResult <- check_expr(expr.inner, list_t, context);
+                                case r1.is_ok of {
+                                    false -> r1;
+                                    true -> case expected_type == "discard" of {
+                                        true -> type_checker_core@type_check_ok();
+                                        false -> case expected_type == "int64" of {
+                                            true -> type_checker_core@type_check_ok();
+                                            false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat("length returns int64, expected ", expected_type), ""), "list")
+                                        }
+                                    }
+                                }
+                            end
+                        }
+                    end;
+                    false -> case expr.name == "prepend" of {
+                        true -> do
+                            ac: int64 <- type_checker_lists@count_call_args_list(expr);
+                            case ac == 2 of {
+                                false -> type_checker_core@type_check_err("E2005", expr.location, "prepend expects 2 arguments (element, list)", "list");
+                                true -> do
+                                    r1: TypeCheckResult <- check_expr(expr.inner, elem, context);
+                                    case r1.is_ok of {
+                                        false -> r1;
+                                        true -> do
+                                            r2: TypeCheckResult <- check_expr(call_second_arg_expr(expr), list_t, context);
+                                            case r2.is_ok of {
+                                                false -> r2;
+                                                true -> case expected_type == "discard" of {
+                                                    true -> type_checker_core@type_check_ok();
+                                                    false -> case type_checker_lists@list_types_compatible(expected_type, list_t) of {
+                                                        true -> type_checker_core@type_check_ok();
+                                                        false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("prepend returns ", list_t), ", expected "), expected_type), ""), "list")
+                                                    }
+                                                }
+                                            }
+                                        end
+                                    }
+                                end
+                            }
+                        end;
+                        false -> case expr.name == "remove_head" of {
+                            true -> do
+                                ac: int64 <- type_checker_lists@count_call_args_list(expr);
+                                case ac == 1 of {
+                                    false -> type_checker_core@type_check_err("E2005", expr.location, "remove_head expects 1 argument", "list");
+                                    true -> do
+                                        r1: TypeCheckResult <- check_expr(expr.inner, list_t, context);
+                                        case r1.is_ok of {
+                                            false -> r1;
+                                            true -> case expected_type == "discard" of {
+                                                true -> type_checker_core@type_check_ok();
+                                                false -> case type_checker_lists@list_types_compatible(expected_type, list_t) of {
+                                                    true -> type_checker_core@type_check_ok();
+                                                    false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("remove_head returns ", list_t), ", expected "), expected_type), ""), "list")
+                                                }
+                                            }
+                                        }
+                                    end
+                                }
+                            end;
+                            false -> case expr.name == "head" of {
+                                true -> do
+                                    ac: int64 <- type_checker_lists@count_call_args_list(expr);
+                                    case ac == 1 of {
+                                        false -> type_checker_core@type_check_err("E2005", expr.location, "head expects 1 argument", "list");
+                                        true -> do
+                                            r1: TypeCheckResult <- check_expr(expr.inner, list_t, context);
+                                            case r1.is_ok of {
+                                                false -> r1;
+                                                true -> case expected_type == "discard" of {
+                                                    true -> type_checker_core@type_check_ok();
+                                                    false -> case type_checker_lists@types_equal_strip(expected_type, elem) of {
+                                                        true -> type_checker_core@type_check_ok();
+                                                        false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("head returns ", elem), ", expected "), expected_type), ""), "list")
+                                                    }
+                                                }
+                                            }
+                                        end
+                                    }
+                                end;
+                                false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown list primitive: ", expr.name), "list")
+                            }
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+// Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding, 7=boolean literal, 8=string literal, 12=unary minus (forbidden); 20=list literal
 fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case expr.kind of {
         0 -> type_checker_expressions_literals@check_expr(expr, expected_type, context);
@@ -1220,6 +1399,10 @@ fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
         12 -> check_unary_minus_forbidden(expr, context);
         13 -> check_case_expression(expr, expected_type, context);
         19 -> check_if_expression(expr, expected_type, context);
+        20 -> case len(expr.value) > 0 of {
+            true -> check_list_literal(expr, expected_type, context);
+            false -> check_list_elem_tree(expr, expected_type, context)
+        };
         _: int64 -> type_checker_core@type_check_ok()
     }
 }

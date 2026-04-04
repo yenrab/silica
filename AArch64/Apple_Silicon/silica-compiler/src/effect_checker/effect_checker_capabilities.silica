@@ -11,6 +11,7 @@ use lexer_core;
 use effect_checker_core;
 use effect_checker_declarations;
 use effect_checker_propagation;
+use effect_checker_lists;
 
 export is_subeffect/2;
 export is_mem_subeffect/2;
@@ -251,10 +252,16 @@ fn check_sequence_blocks_in_expr(expr: Expr, ctx: EffectContext) -> EffectCheckR
                             unused_result: EffectCheckResult <- check_sequence_unused_effects(expanded_declared, used, expr.location);
                             case unused_result.is_ok of {
                                 true -> do
-                                    inner_result: EffectCheckResult <- check_sequence_blocks_in_expr(expr.inner, ctx);
-                                    case inner_result.is_ok of {
-                                        true -> check_sequence_blocks_in_expr(expr.right_expr, ctx);
-                                        false -> inner_result;
+                                    list_align: EffectCheckResult <- effect_checker_lists@check_list_mem_alignment_in_sequence(expr, expanded_declared);
+                                    case list_align.is_ok of {
+                                        false -> list_align;
+                                        true -> do
+                                            inner_result: EffectCheckResult <- check_sequence_blocks_in_expr(expr.inner, ctx);
+                                            case inner_result.is_ok of {
+                                                true -> check_sequence_blocks_in_expr(expr.right_expr, ctx);
+                                                false -> inner_result;
+                                            }
+                                        end
                                     }
                                 end;
                                 false -> unused_result
@@ -295,7 +302,10 @@ fn check_sequence_blocks_in_expr_default(expr: Expr, ctx: EffectContext) -> Effe
                     true -> check_sequence_blocks_in_expr(expr.inner, ctx);
                     false -> case expr.kind == 10 of {
                         true -> check_sequence_binop_10(expr, ctx);
-                        false -> effect_checker_core@effect_check_ok();
+                        false -> case expr.kind == 11 of {
+                            true -> check_sequence_blocks_in_expr(expr, ctx);
+                            false -> effect_checker_core@effect_check_ok();
+                        }
                     }
                 }
             }

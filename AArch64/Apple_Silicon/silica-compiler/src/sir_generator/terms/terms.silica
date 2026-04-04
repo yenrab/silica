@@ -6,6 +6,7 @@ use parser_ast;
 use type_checker_core;
 use type_checker_tuple_decompose_helpers;
 use type_checker_memory_regions;
+use type_checker_lists;
 use sir_ast;
 use literals;
 use identifiers;
@@ -34,6 +35,7 @@ use memory_region_calls;
 use user_calls;
 use recursion_terms;
 use negate_builtins;
+use list_terms;
 
 export expr_to_sir/2;
 export expr_to_sir_with_expected/3;
@@ -350,6 +352,10 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
         9 -> expr_to_sir_tuple_inline(context, expr, expected_type);
         10 -> expr_to_sir_tuple_decompose_in_body(context, expr, bound_name, bound_type, expected_type);
         11 -> lower_sequence_block_in_body(context, expr, bound_name, bound_type, expected_type);
+        20 -> case len(expr.value) > 0 of {
+            true -> expr_list_literal_from_root(context, expr, true, bound_name, bound_type);
+            false -> expr_list_literal_from_expected_type(context, expr, expected_type, true, bound_name, bound_type)
+        };
         6 -> do
             rhs: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, expr.value);
             bind_type: string <- types@type_name_to_sir(expr.value);
@@ -367,7 +373,9 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
         4 -> do
             case memory_region_calls@is_region_builtin(expr.name) of {
                 true -> build_region_prim_in_body(context, expr, bound_name, bound_type, expected_type);
-                false -> case expr.name == "concatenate" of {
+                false -> case list_terms@is_list_primitive_name(expr.name) of {
+                    true -> build_list_primitive_from_expr(context, expr, expected_type, true, bound_name, bound_type);
+                    false -> case expr.name == "concatenate" of {
                     true -> do
                         arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "string");
                         arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr.inner, bound_name, bound_type, "string");
@@ -409,6 +417,7 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                             }
                         }
                     }
+                }
                 }
             }
         end;
@@ -724,7 +733,9 @@ fn build_user_call_from_expr(context: TypeContext, expr: Expr, expected_type: st
 fn root_body_is_tail_user_call(expr: Expr) -> bool {
     case expr.kind == 4 of {
         false -> false;
-        true -> case memory_region_calls@is_region_builtin(expr.name) of {
+        true -> case list_terms@is_list_primitive_name(expr.name) of {
+            true -> false;
+            false -> case memory_region_calls@is_region_builtin(expr.name) of {
             true -> false;
             false -> case expr.name == "concatenate" of {
                 true -> false;
@@ -742,6 +753,7 @@ fn root_body_is_tail_user_call(expr: Expr) -> bool {
                     }
                 }
             }
+        }
         }
     }
 }
@@ -835,6 +847,94 @@ fn build_prim_for_type(op_lexeme: string, left: SIRTerm, right: SIRTerm, expecte
     }
 }
 
+fn lower_list_literal_elems(context: TypeContext, expr: Expr, elem_t: string, list_t: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    case expr.inner.kind == -1 of {
+        true -> list_terms@build_list_nil(elem_t, list_t);
+        false -> do
+            head: SIRTerm <- case in_body of {
+                true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, elem_t);
+                false -> expr_to_sir_with_expected(context, expr.inner, elem_t)
+            };
+            tail: SIRTerm <- case expr.right_expr.kind == -1 of {
+                true -> list_terms@build_list_nil(elem_t, list_t);
+                false -> lower_list_literal_elems(context, expr.right_expr, elem_t, list_t, in_body, bound_name, bound_type)
+            };
+            list_terms@build_list_cons(head, tail, list_t)
+        end
+    }
+}
+
+fn expr_list_literal_from_root(context: TypeContext, expr: Expr, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    (ok: bool, elem: string, space: string) <- type_checker_lists@parse_list_type_params(expr.value);
+    case ok of {
+        false -> sir_ast@dummy_sir_term();
+        true -> do
+            lt: string <- type_checker_lists@format_list_type_from_parts(elem, space);
+            lower_list_literal_elems(context, expr, elem, lt, in_body, bound_name, bound_type)
+        end
+    }
+}
+
+fn expr_list_literal_from_expected_type(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    (ok: bool, elem: string, space: string) <- type_checker_lists@parse_list_type_params(expected_type);
+    case ok of {
+        false -> sir_ast@dummy_sir_term();
+        true -> do
+            lt: string <- type_checker_lists@format_list_type_from_parts(elem, space);
+            lower_list_literal_elems(context, expr, elem, lt, in_body, bound_name, bound_type)
+        end
+    }
+}
+
+fn build_list_primitive_from_expr(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    (elem: string, space: string) <- type_checker_lists@parse_generic_ts(expr.value);
+    list_t: string <- type_checker_lists@format_list_type_from_parts(elem, space);
+    case expr.name == "empty" of {
+        true -> list_terms@build_list_nil(elem, list_t);
+        false -> case expr.name == "prepend" of {
+            true -> do
+                h: SIRTerm <- case in_body of {
+                    true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, elem);
+                    false -> expr_to_sir_with_expected(context, expr.inner, elem)
+                };
+                t: SIRTerm <- case in_body of {
+                    true -> expr_to_sir_in_let_body(context, region_call_second_arg(expr), bound_name, bound_type, list_t);
+                    false -> expr_to_sir_with_expected(context, region_call_second_arg(expr), list_t)
+                };
+                list_terms@build_list_cons(h, t, list_t)
+            end;
+            false -> case expr.name == "length" of {
+                true -> do
+                    a: SIRTerm <- case in_body of {
+                        true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, list_t);
+                        false -> expr_to_sir_with_expected(context, expr.inner, list_t)
+                    };
+                    list_terms@build_list_length_prim(a)
+                end;
+                false -> case expr.name == "remove_head" of {
+                    true -> do
+                        a: SIRTerm <- case in_body of {
+                            true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, list_t);
+                            false -> expr_to_sir_with_expected(context, expr.inner, list_t)
+                        };
+                        list_terms@build_list_remove_head_prim(a, list_t)
+                    end;
+                    false -> case expr.name == "head" of {
+                        true -> do
+                            a: SIRTerm <- case in_body of {
+                                true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, list_t);
+                                false -> expr_to_sir_with_expected(context, expr.inner, list_t)
+                            };
+                            list_terms@build_list_head_prim(a, elem)
+                        end;
+                        false -> sir_ast@dummy_sir_term()
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Convert Expr to SIRTerm with expected type (for function body). Dispatches on kind.
 fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
     do
@@ -851,6 +951,10 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
         9 -> expr_to_sir_tuple_inline(context, expr, expected_type);
         10 -> expr_to_sir_tuple_decompose(context, expr, expected_type);
         11 -> lower_sequence_block_with_expected(context, expr, expected_type);
+        20 -> case len(expr.value) > 0 of {
+            true -> expr_list_literal_from_root(context, expr, false, "", "");
+            false -> expr_list_literal_from_expected_type(context, expr, expected_type, false, "", "")
+        };
         6 -> do
             rhs: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, expr.value);
             bind_type: string <- types@type_name_to_sir(expr.value);
@@ -868,7 +972,9 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
         4 -> do
             case memory_region_calls@is_region_builtin(expr.name) of {
                 true -> build_region_prim(context, expr, expected_type);
-                false -> case expr.name == "concatenate" of {
+                false -> case list_terms@is_list_primitive_name(expr.name) of {
+                    true -> build_list_primitive_from_expr(context, expr, expected_type, false, "", "");
+                    false -> case expr.name == "concatenate" of {
                     true -> do
                         arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "string");
                         arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr.inner, "string");
@@ -911,6 +1017,7 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
                             }
                         }
                     }
+                }
                 }
             }
         end;
@@ -1040,6 +1147,39 @@ fn extract_string_pat_content(s: string) -> string {
     }
 }
 
+fn list_cons_bind_payload(hn: string, tn: string) -> string {
+    concat(list_one_bind_list(hn), concat("|", list_one_bind_list(tn)))
+}
+
+fn list_one_bind_list(n: string) -> string {
+    case n == "_" of { true -> "_"; false -> concat("%", n) }
+}
+
+fn make_case_branch_list_cons(head_name: string, head_type: string, tail_name: string, tail_list_type: string, ctx: TypeContext, branch: Expr, expected_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
+    ctx_h: TypeContext <- case len(head_name) > 0 and head_name != "_" of {
+        true -> extend_context_for_bind(ctx, head_name, head_type);
+        false -> ctx
+    };
+    ctx_ht: TypeContext <- case len(tail_name) > 0 and tail_name != "_" of {
+        true -> extend_context_for_bind(ctx_h, tail_name, tail_list_type);
+        false -> ctx_h
+    };
+    guard_sir: SIRTerm <- case branch.inner.kind < 0 of {
+        true -> sir_ast@dummy_sir_term();
+        false -> case in_body of {
+            true -> expr_to_sir_in_let_body(ctx_ht, branch.inner, bound_name, bound_type, "boolean");
+            false -> expr_to_sir_with_expected(ctx_ht, branch.inner, "boolean")
+        }
+    };
+    body_sir: SIRTerm <- case in_body of {
+        true -> expr_to_sir_in_let_body(ctx_ht, branch.right_expr, bound_name, bound_type, expected_type);
+        false -> expr_to_sir_with_expected(ctx_ht, branch.right_expr, expected_type)
+    };
+    ht_sir: string <- concat(types@type_name_to_sir(head_type), concat("|", types@type_name_to_sir(tail_list_type)));
+    bind_s: string <- list_cons_bind_payload(head_name, tail_name);
+    SIRTerm { kind: 8, type_name: ht_sir, value: "list_cons", name: bind_s, inner: guard_sir, right_expr: body_sir }
+}
+
 fn branch_from_bind_or_wild(raw: string, scrutinee_ast_type: string, branch: Expr, ctx: TypeContext, expected_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
     cp: int64 <- find_colon_from(raw, 0);
     case cp < 1 of {
@@ -1060,21 +1200,31 @@ fn branch_from_bind_or_wild(raw: string, scrutinee_ast_type: string, branch: Exp
 
 fn branch_ast_to_sir(branch: Expr, ctx: TypeContext, expected_type: string, scrutinee_ast_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
     raw: string <- trim_pat(branch.value);
-    case raw == "true" of {
-        true -> make_case_branch("bool", "bool", "true", ctx, branch, expected_type, bound_name, bound_type, in_body);
-        false -> case raw == "false" of {
-            true -> make_case_branch("bool", "bool", "false", ctx, branch, expected_type, bound_name, bound_type, in_body);
-            false -> case substring(raw, 0, 1) == "\"" of {
-                true -> do
-                    str_content: string <- extract_string_pat_content(raw);
-                    make_case_branch("string", "string", str_content, ctx, branch, expected_type, bound_name, bound_type, in_body)
-                end;
-                false -> case is_int_literal_pat(raw) of {
-                    true -> make_case_branch("int", types@type_name_to_sir(scrutinee_ast_type), raw, ctx, branch, expected_type, bound_name, bound_type, in_body);
-                    false -> branch_from_bind_or_wild(raw, scrutinee_ast_type, branch, ctx, expected_type, bound_name, bound_type, in_body)
+    lep: ListEmptyPat <- type_checker_lists@parse_list_empty_case_pattern(raw);
+    case lep.ok of {
+        true -> make_case_branch("list_nil", types@type_name_to_sir(lep.list_type), "", ctx, branch, expected_type, bound_name, bound_type, in_body);
+        false -> do
+            lcp: ListConsPat <- type_checker_lists@parse_list_cons_case_pattern(raw);
+            case lcp.ok of {
+                true -> make_case_branch_list_cons(lcp.head_name, lcp.head_type, lcp.tail_name, lcp.tail_list_type, ctx, branch, expected_type, bound_name, bound_type, in_body);
+                false -> case raw == "true" of {
+                    true -> make_case_branch("bool", "bool", "true", ctx, branch, expected_type, bound_name, bound_type, in_body);
+                    false -> case raw == "false" of {
+                        true -> make_case_branch("bool", "bool", "false", ctx, branch, expected_type, bound_name, bound_type, in_body);
+                        false -> case substring(raw, 0, 1) == "\"" of {
+                            true -> do
+                                str_content: string <- extract_string_pat_content(raw);
+                                make_case_branch("string", "string", str_content, ctx, branch, expected_type, bound_name, bound_type, in_body)
+                            end;
+                            false -> case is_int_literal_pat(raw) of {
+                                true -> make_case_branch("int", types@type_name_to_sir(scrutinee_ast_type), raw, ctx, branch, expected_type, bound_name, bound_type, in_body);
+                                false -> branch_from_bind_or_wild(raw, scrutinee_ast_type, branch, ctx, expected_type, bound_name, bound_type, in_body)
+                            }
+                        }
+                    }
                 }
             }
-        }
+        end
     }
 }
 

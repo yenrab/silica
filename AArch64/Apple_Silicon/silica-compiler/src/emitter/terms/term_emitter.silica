@@ -9,6 +9,7 @@ use call;
 use prims;
 use prims_tuple;
 use prims_memory;
+use prims_list;
 use string_parse;
 use let_dispatcher;
 use print_atom_inline;
@@ -253,7 +254,17 @@ fn emit_case_pattern_check(branch: SIRTerm, scrut_t: string, scrut_reg: string, 
                             tail: string <- concat(concat(concat("    MOV W12, W0\n    LDR ", scrut_reg), ", [SP], #16\n"), cmp_bne);
                             concat(concat(str_save, mov_bl), tail)
                         end;
-                        false -> concat(concat("    B ", fail_l), "\n")
+                        false -> case pk == "list_nil" of {
+                            true -> do
+                                cmp_ln: string <- concat(concat(concat("    CMP ", scrut_reg), ", #0\n"), "");
+                                bne_ln: string <- concat(cmp_ln, concat("    B.NE ", fail_l));
+                                concat(bne_ln, "\n")
+                            end;
+                            false -> case pk == "list_cons" of {
+                                true -> concat(concat(concat("    CBZ ", scrut_reg), ", "), concat(fail_l, "\n"));
+                                false -> concat(concat("    B ", fail_l), "\n")
+                            }
+                        }
                     }
                 }
             }
@@ -261,9 +272,64 @@ fn emit_case_pattern_check(branch: SIRTerm, scrut_t: string, scrut_reg: string, 
     }
 }
 
+// List cons pattern: branch.name is "%h|%t" (or _), branch.type_name is "head_t|list_t" (SIR).
+fn emit_list_cons_pattern_loads(branch: SIRTerm, scrut_reg: string, outer_reg: string) -> (string, string) {
+    pipe_n: int64 <- var@find_pipe_from(branch.name, 0);
+    case pipe_n < 0 of {
+        true -> ("", outer_reg);
+        false -> do
+            left_pat: string <- substring(branch.name, 0, pipe_n);
+            right_pat: string <- substring(branch.name, pipe_n + 1, len(branch.name));
+            pipe_t: int64 <- var@find_pipe_from(branch.type_name, 0);
+            head_t: string <- case pipe_t < 0 of {
+                true -> "";
+                false -> substring(branch.type_name, 0, pipe_t)
+            };
+            ext0: string <- outer_reg;
+            (asm_h: string, ext1: string) <- case left_pat == "_" of {
+                true -> ("", ext0);
+                false -> do
+                    hr: string <- var@next_free_int_reg(ext0);
+                    hr_w: string <- case reg_conventions@is_narrow_type(head_t) of {
+                        true -> concat("W", substring(hr, 1, len(hr)));
+                        false -> hr
+                    };
+                    h_ld: string <- case reg_conventions@is_narrow_type(head_t) of {
+                        true -> case head_t of {
+                            "int8" -> concat(concat(concat(concat("    LDRSB ", hr_w), ", ["), scrut_reg), "]\n");
+                            "uint8" -> concat(concat(concat(concat("    LDRB ", hr_w), ", ["), scrut_reg), "]\n");
+                            "int16" -> concat(concat(concat(concat("    LDRSH ", hr_w), ", ["), scrut_reg), "]\n");
+                            "uint16" -> concat(concat(concat(concat("    LDRH ", hr_w), ", ["), scrut_reg), "]\n");
+                            _: string -> concat(concat(concat(concat("    LDR ", hr_w), ", ["), scrut_reg), "]\n")
+                        };
+                        false -> concat(concat(concat(concat("    LDR ", hr), ", ["), scrut_reg), "]\n")
+                    };
+                    nb: string <- var@reg_binding(left_pat, hr);
+                    (h_ld, concat(ext0, nb))
+                end
+            };
+            (asm_t: string, ext2: string) <- case right_pat == "_" of {
+                true -> ("", ext1);
+                false -> do
+                    tr: string <- var@next_free_int_reg(ext1);
+                    t_ld: string <- concat(concat(concat(concat("    LDR ", tr), ", ["), scrut_reg), ", #8]\n");
+                    nb2: string <- var@reg_binding(right_pat, tr);
+                    (t_ld, concat(ext1, nb2))
+                end
+            };
+            (concat(asm_h, asm_t), ext2)
+        end
+    }
+}
+
 fn emit_case_one_branch_inner(branch: SIRTerm, scrut_t: string, scrut_reg: string, lit_reg: string, guard_reg: string, dest: string, done_l: string, fail_l: string, entry_l: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
     pat_asm: string <- emit_case_pattern_check(branch, scrut_t, scrut_reg, lit_reg, fail_l, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table);
     pkind: string <- branch.value;
+    (list_bind_asm: string, outer_for_list: string) <- case pkind == "list_cons" of {
+        true -> emit_list_cons_pattern_loads(branch, scrut_reg, outer_reg);
+        false -> ("", outer_reg)
+    };
+    pat_full: string <- concat(pat_asm, list_bind_asm);
     br_bn: string <- case pkind == "bind" of {
         true -> case len(branch.name) > 1 of { true -> substring(branch.name, 1, len(branch.name)); false -> "" };
         false -> bound_name
@@ -272,18 +338,22 @@ fn emit_case_one_branch_inner(branch: SIRTerm, scrut_t: string, scrut_reg: strin
         true -> scrut_reg;
         false -> bound_reg
     };
+    outer_body: string <- case pkind == "list_cons" of {
+        true -> outer_for_list;
+        false -> outer_reg
+    };
     guard_asm: string <- case branch.inner.kind < 0 of {
         true -> "";
         false -> do
-            g_asm: string <- term_to_asm_opt_bound(branch.inner, guard_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, br_bn, br_br, outer_reg, false);
+            g_asm: string <- term_to_asm_opt_bound(branch.inner, guard_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, br_bn, br_br, outer_body, false);
             g_nl: string <- concat(g_asm, "\n");
             cbz_mid: string <- concat(concat(concat(g_nl, "    CBZ "), guard_reg), ", ");
             concat(cbz_mid, concat(fail_l, "\n"))
         end
     };
-    body_asm: string <- term_to_asm_opt_bound(branch.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, br_bn, br_br, outer_reg, false);
+    body_asm: string <- term_to_asm_opt_bound(branch.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, br_bn, br_br, outer_body, false);
     h0: string <- concat(entry_l, ":\n");
-    h1: string <- concat(concat(h0, pat_asm), guard_asm);
+    h1: string <- concat(concat(h0, pat_full), guard_asm);
     h2: string <- concat(concat(h1, body_asm), "\n");
     br: string <- concat(concat("    B ", done_l), "\n");
     concat(h2, br)
@@ -1162,6 +1232,33 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 guarded_arg3: string <- concat("    STR X1, [SP, #-16]!\n", concat(arg3_asm, "\n    LDR X1, [SP], #16\n"));
                 concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), guarded_arg3), op_asm)
             end;
+            false -> case prims_list@is_list_prim(term.name) of {
+            true -> case term.name == "list_nil" of {
+                true -> prims_list@emit_prim_op(term, dest);
+                false -> case term.name == "list_cons" of {
+                    true -> do
+                        arg1_asm: string <- case debug of {
+                            true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                            false -> term_to_asm_opt_bound(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                        };
+                        arg2_asm: string <- case debug of {
+                            true -> do term_to_asm_opt_bound_debug(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                            false -> term_to_asm_opt_bound(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                        };
+                        op_asm: string <- prims_list@emit_prim_op(term, dest);
+                        concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), "\n"), op_asm)
+                    end;
+                    false -> do
+                        arg_asm: string <- case debug of {
+                            true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                            false -> term_to_asm_opt_bound(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                        };
+                        op_asm: string <- prims_list@emit_prim_op(term, dest);
+                        concat(concat(arg_asm, "\n"), op_asm)
+                    end
+                }
+                }
+            ;
             false -> case prims_memory@is_memory_prim(term.name) of {
             true -> case term.name == "fresh_lifetime" of {
                 true -> prims@emit_prim_op(term, dest);
@@ -1229,7 +1326,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     }
                     }
                 }
-            };
+            }
             false -> case term.type_name == "int64" and (term.name == "string_length_bytes" or term.name == "string_length_chars") of {
                 true -> do
                     arg_asm: string <- case debug of {
@@ -1659,10 +1756,11 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             }
             }
             }
+            }
         };
         _: int64 -> concat("    ; unsupported term kind ", "?")
-            }
         }
+    }
     }
     end
 }

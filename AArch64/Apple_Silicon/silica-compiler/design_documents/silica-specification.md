@@ -320,7 +320,7 @@ Examples:
 - `[1, 2, 3]: List[int64]` - list with three integer elements
 - `[fn(x: int64) -> int64 { x * 2 }]: List[(int64 -> int64)]` - list with function elements
 
-**Type Checking**: All elements in a list literal must have exactly the same type. The explicit type annotation `List[ElementType]` must match the types of all elements. Mixing different types in a list literal is a compile-time error, even if both types implement `Collectable`.
+**Type Checking**: All elements in a list literal must have exactly the same type. The explicit type annotation `List[ElementType]` or `List[ElementType, Space]` must match the types of all elements and must match the **uniform** list type used for variables and function parameters that receive this literal (see §4.2.4 **Uniform list types**). Mixing different types in a list literal is a compile-time error, even if both types implement `Collectable`.
 
 #### 2.2.4 Operators and Punctuation
 
@@ -1371,7 +1371,7 @@ case list_expression of {
 2. Pattern matching is exhaustive - all cases must be covered
 3. The `head` variable has type `ElementType` (the list's element type)
 4. The `tail` variable has type `List[ElementType]` with the same element type
-5. All patterns must explicitly specify `List[ElementType]` - `List` alone is not valid
+5. All patterns must explicitly specify `List[ElementType]` or `List[ElementType, Space]` - `List` alone is not valid; pattern list types must **match** the scrutinee and any function parameters or variables in the same `case` arm (see §4.2.4 **Uniform list types**)
 6. The non-empty pattern matches a list with at least one element, binding the first element to `head` and the remaining elements to `tail`
 
 **Examples:**
@@ -2784,21 +2784,26 @@ Example:
 ```
 
 #### 4.2.4 List Types
-List types are parameterized by their element type and have the form `List[ElementType]` where `ElementType` must implement the `Collectable` trait.
+List types are parameterized by their element type and, when memory-backed list storage is in use, by a **memory space** `Space`. The full form is `List[ElementType, Space]` where `ElementType` must implement the `Collectable` trait and `Space` is a memory space from the same vocabulary as `mem(Space)` and region types (see §4.4). The two-parameter form ties list storage to a specific region policy; `Space` is part of the type and is not inferred only from the enclosing `sequence` block.
+
+A shorthand `List[ElementType]` may appear in generic descriptions; where `List[ElementType, Space]` is required by the implementation, **every** occurrence that describes the **same** list data flow must use the **same** spelling (see **Uniform list types** below).
 
 ```
 List[ElementType: Collectable]
+List[ElementType, Space]     // Space explicit when lists are region-backed (silica-compiler)
 ```
 
 Lists are immutable - all operations return new lists rather than modifying existing lists. The language implementation uses structural sharing to make head operations (prepend, remove_head) efficient without copying all elements.
 
 Examples:
-- `List[string]` - list of strings
-- `List[int64]` - list of integers
+- `List[string]` / `List[string, normal]` - list of strings (full form when space is explicit)
+- `List[int64]` / `List[int64, normal]` - list of integers
 - `List[(int64 -> int64)]` - list of functions
-- `List[List[int64]]` - nested list (list of lists of integers)
+- `List[List[int64, normal], normal]` - nested list (inner and outer list types each carry `Space` where required)
 
-**Type Annotation Requirement**: All list variables and expressions must explicitly specify the element type using `List[ElementType]` syntax. Type inference is not performed for lists - the element type must always be explicitly provided. The type `List` alone (without element type) is not valid.
+**Type Annotation Requirement**: All list variables and expressions must explicitly specify the element type using `List[ElementType]` or `List[ElementType, Space]` syntax. Type inference is not performed for lists - the element type (and memory space, when present) must always be explicitly provided. The type `List` alone (without element type) is not valid.
+
+**Uniform list types (parameters, variables, and call sites):** The list type of a **formal parameter** of a function must **match** the list type of any **argument** passed to that function: same `ElementType` and, when `List[..., Space]` is used, the **same** `Space`. **Local variables**, **`let`** bindings, **return types**, **list literal** annotations (`[...] : List[...]`), **pattern** annotations in `case`, and the **scrutinee** type in `case` must all use that **same** list type for a given value or call chain. Mixing `List[ElementType]` in one position with `List[ElementType, Space]` in another for the same list value is **ill-formed**. Implementations may require the canonical `List[ElementType, Space]` form everywhere in source; see `design_documents/list_implementation_design.md` (silica-compiler).
 
 **Immutability**: Lists in Silica are immutable. All list operations return new lists rather than modifying existing lists. The language implementation uses structural sharing to make these operations efficient - when prepending an element or removing the head, the original list structure is reused rather than copying all elements.
 
@@ -3169,10 +3174,11 @@ fn is_empty[ElementType: Collectable](list: List[ElementType]) -> boolean
 ```
 
 **Operation Notes:**
+- **Uniform list types**: Arguments to **`empty`**, **`prepend`**, **`length`**, and other list operations must have the **same** `List[ElementType]` or `List[ElementType, Space]` type as the surrounding variables and function parameters (§4.2.4).
 - **Head operations only**: All list modification operations work only on the head of the list. There are no operations to remove elements from the middle or end of a list.
 - **Immutability**: All operations return new lists; they never modify existing lists.
 - **Structural sharing**: When prepending or removing the head, Silica uses structural sharing to avoid copying all elements. The original list structure is reused efficiently.
-- **Memory effects (`mem`)**: Constructing or growing a list allocates storage in a **Silica memory region**; that allocation must occur under an explicit **`mem(<space>)`** effect declared on a **`sequence`** block. Use **`sequence proc[mem(<space>)]`** … **`produces`** **`pure`** … **`end`**, where **`<space>`** is a memory space such as **`normal`**, **`normal_writethrough`**, **`atomic`**, **`normal_noncacheable`**, etc. (see **§4.4** and `tutorials_and_howtos/memory_region_types.md`). The **same** **`mem(<space>)`** covers the list’s region and **every** additional buffer allocated when the list spine grows. For blocks that also call **I/O** (e.g. **`print`**), declare combined effects, e.g. **`sequence proc[mem(normal), device_io]`**. Compiler implementation details for **`List[T]`** as a region-backed bundle are in **`design_documents/list_implementation_design.md`** (silica-compiler).
+- **Memory effects (`mem`)**: Constructing or growing a list allocates storage in a **Silica memory region**; that allocation must occur under an explicit **`mem(<space>)`** effect declared on a **`sequence`** block. Use **`sequence proc[mem(<space>)]`** … **`produces`** **`pure`** … **`end`**, where **`<space>`** is a memory space such as **`normal`**, **`normal_writethrough`**, **`atomic`**, **`normal_noncacheable`**, etc. (see **§4.4** and `tutorials_and_howtos/memory_region_types.md`). The **same** **`mem(<space>)`** covers the list’s region and **every** additional buffer allocated when the list spine grows. For blocks that also call **I/O** (e.g. **`print`**), declare combined effects, e.g. **`sequence proc[mem(normal), device_io]`**. Compiler implementation details for **`List[T, S]`** as a region-backed bundle are in **`design_documents/list_implementation_design.md`** (silica-compiler).
 
 **Examples:**
 

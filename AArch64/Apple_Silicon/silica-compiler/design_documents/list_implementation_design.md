@@ -43,7 +43,7 @@ The **authoritative** surface syntax and typing rules remain in [silica-specific
 - **Explicit** element type and **space** annotations: the compiler does **not** infer `Space` from the enclosing `sequence` alone; **`S`** is part of the **`List`** type and must **agree** with **`sequence proc[mem(S)]`** wherever list storage is **allocated** or **accessed** (§9.8).
 - **List literals** and **pattern matching** (`[]`, cons, `_`) use **`List[ElementType, Space]`** in **patterns** and **annotations** (same **`Space`** as the scrutinee).
 
-**Shorthand:** older trials may still show **`List[ElementType]`**; the **canonical** surface for new code and **effect checking** is **`List[T, S]`** with **explicit** **`S`**.
+**Uniformity (spec):** [silica-specification.md](silica-specification.md) §4.2.4 requires that **function parameters**, **local variables**, **return types**, **literal** annotations, **case** scrutinees, and **patterns** use the **same** list type for the same data flow—**no** mixing **`List[T]`** with **`List[T, S]`** across a boundary. The **canonical** surface for **effect checking** and **silica-compiler** trials is **`List[T, S]`** with **explicit** **`S`** everywhere those types appear.
 
 **Compile-time list data** (literals, static initialization) is handled by **ordinary compiler lowering**, not user-level macros (Silica does not have macros).
 
@@ -142,7 +142,7 @@ end
 
 ## 8. Trials and validation
 
-- All **executable** **trials** for **lists** live under **`silica-compiler/trials/list_addition/`**. **Each** **trial** **uses** **`sequence proc[mem(<space>)] … produces pure … end`** (and **`device_io`** **when** **printing**). **Canonical** **types** **use** **`List[T, S]`** **(§3.5)**; **legacy** **trials** **may** **still** **show** **`List[T]`** **until** **the** **compiler** **surface** **is** **updated** **everywhere**. **Inventory:**
+- All **executable** **trials** for **lists** live under **`silica-compiler/trials/list_addition/`**. **Each** **trial** **uses** **`sequence proc[mem(<space>)] … produces pure … end`** (and **`device_io`** **when** **printing**). **Types** **must** **use** **`List[T, S]`** **consistently** **for** **parameters**, **variables**, **literals**, **and** **patterns** **(§4.2.4** **uniform** **list** **types** **in** **silica-specification.md**). **Inventory:**
   - **`list_int64_create_literal_and_empty.silica`** — literals, **`empty`**, **`length`**; **`mem(normal)`**.
   - **`list_int64_mem_effect_sequence.silica`** — minimal **`mem(normal)`** + list + **`length`**.
   - **`list_int64_mem_writethrough.silica`** — **`mem(normal_writethrough)`** (non-**`normal`** **space**).
@@ -233,3 +233,4 @@ The following **§9** sections record **agreed** decisions for **list** **implem
 | 1.11 | §8: `list_int64_recursive_sum.silica` (recursive function over list). |
 | 1.12 | §7/§8: effects only on `sequence` (not function return types); `list_int64_recursive_sum` uses inner `sequence proc[mem(normal)]`. |
 | 1.13 | §3.5 `List[T, S]` and explicit memory space; §9.8 effect checker alignment; §7/§9.7 updated; `memory_region_addition` trial headers cross-reference; optional `with mem(S)` on functions. |
+| 1.14 | §3/§8: uniform list types—parameters, variables, literals, patterns must match; cross-ref silica-specification §4.2.4; trials use consistent `List[T, S]`. |
