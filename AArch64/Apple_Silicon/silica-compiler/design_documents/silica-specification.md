@@ -37,7 +37,7 @@ Silica is designed to be both LLM-friendly and human-readable. The following des
 #### 1.3.2 Unambiguous Syntax Patterns
 - Distinct operators for different operations:
   - `<-` for binding/assignment (clear left-to-right flow)
-  - `=` for type aliases and equality comparison
+  - `=` for equality comparison and bindings where the grammar permits (not for declaring named types; §3.4.2)
   - `->` for function types and case branches
 - Explicit effect declarations on sequences: `sequence proc[device_io, concurrency]`
 - Clear block delimiters: `sequence...produces pure...end` for sequence blocks, `{...}` for case expressions
@@ -395,13 +395,9 @@ This specification uses Extended Backus-Naur Form (EBNF):
 program ::= {declaration}
 
 declaration ::= function_declaration
-              | type_declaration
-              | type_alias_declaration
               | effect_declaration
               | import_declaration
               | export_declaration
-              | struct_declaration
-              | enum_declaration
               | trait_declaration
               | impl_declaration
               | module_declaration
@@ -424,7 +420,11 @@ expression ::= literal
              | tuple_literal
              | constructor_call
              | cast_expression
+             | expression "impl" "ActorMessage" impl_marker_body
+
 ```
+
+**Actor message marker (postfix):** `expr impl ActorMessage impl_marker_body` attaches the `ActorMessage` marker to the **payload** `expr` for type checking. The body is empty or `{}` only — `ActorMessage` has no methods (§16.3.2). This form is the usual way to satisfy `ActorMessage` at `send` and `cast` call sites. `impl_marker_body` is defined in §3.4.9.
 
 #### 3.3.1 Literals
 ```
@@ -1585,10 +1585,71 @@ fn main() -> int64 {
 
 **Note:** If a function literal uses operations requiring effects (such as `print_string`, `print_int`, `cast`, `spawn`, etc.), it must contain a sequence block that declares those effects (e.g., `sequence proc[device_io]`). Effectful operations may not appear outside sequence blocks.
 
-#### 3.4.2 Type Declarations
+#### 3.4.1.1 Function Effect Declaration Rules
+
+**Critical Rule: Function signatures do NOT declare effects.** All effect declarations must appear on `sequence` blocks within the function body. This applies to **all** functions, including behavior functions.
+
+**Incorrect Syntax (not allowed in Silica):**
+```silica
+fn example() -> int64 proc[device_io] { ... }              // ✗ WRONG
+fn behavior(msg: Msg, state: State) -> State proc[mailbox] { ... }  // ✗ WRONG
 ```
-type_declaration ::= "type" identifier "=" type ";"
+
+**Correct Syntax:**
+```silica
+fn example() -> int64 {
+    sequence proc[device_io]
+        // Implementation here
+    produces
+        pure result
+    end
+}
+
+fn behavior(msg: Msg, state: State) -> State {
+    sequence proc[mailbox, concurrency]
+        // Implementation here
+    produces
+        pure new_state
+    end
+}
 ```
+
+**Effect Declaration Requirements:**
+- Effects are declared **on the sequence block**, not on the function signature
+- Each sequence block declares its own `proc[effects]` requirements
+- Nested sequence blocks (e.g., inside function literals) each declare their own effects
+- The function signature contains only the return type: `fn name(params) -> ReturnType`
+- Effect requirements propagate upward through the call chain
+
+**Example - Actor Behavior Function:**
+```silica
+fn counter_actor(
+  msg: { command: string, reply_to: actor_ref },
+  state: int64
+) -> int64 {
+    sequence proc[mailbox, concurrency]
+        new_state: int64 <- case msg of {
+            {command: "inc", reply_to} -> state + 1,
+            {command: "get", reply_to} -> {
+                cast(reply_to, (:result, state) impl ActorMessage {});
+                state
+            }
+        };
+    produces
+        pure new_state
+    end
+}
+```
+
+#### 3.4.2 Types are inline only (no user-declared type names)
+
+Silica **does not** provide declarations that introduce a **new user-defined type name**. There is no `type Ping = …`, no `struct Ping { … }`, and no `enum` that binds a fresh type identifier for application code. **Composite types are always structural and written inline** wherever a type is required (parameters, returns, `impl … for …`, pattern annotations, etc.): tuples `(T1, …, Tn)`, inline records `{ f1: T1, …, fn: Tn }`, tagged tuples `( :tag, T1, …)` (§3.7), lists, variants written as sum types, and combinations thereof.
+
+The identifiers `int64`, `string`, `atom`, and other **built-in** names are predefined. **Trait implementations** attach to these **inline type expressions**, for example `impl ActorMessage for { seq: int64 };` or `impl ActorMessage for (:ping, int64);` (§16.3.2).
+
+**Ill-formed:** any declaration of the form `type Name = …` or `struct Name { … }` or `enum Name { … }` as a user-defined type definition.
+
+**Note:** Some later sections and examples may still show `type … =` or `struct …` for historical reasons; those forms are **not** part of the Silica surface language described here.
 
 #### 3.4.3 Effect Declarations
 ```
@@ -1610,7 +1671,10 @@ export_list ::= export_item {"," export_item}
 export_item ::= identifier "/" integer_literal
 ```
 
-#### 3.4.6 Struct Declarations
+#### 3.4.6 Struct Declarations (superseded by §3.4.2)
+
+**Note:** Silica does not use `struct` to introduce user-defined type names (§3.4.2). Use **inline** record types `{ field: T, … }` in signatures and values. The following grammar is **not** part of the surface language described in this specification.
+
 ```
 struct_declaration ::= "struct" identifier "{" struct_fields "}" ";"
 
@@ -1618,7 +1682,7 @@ struct_fields ::= [struct_field {"," struct_field}]
 struct_field  ::= identifier ":" type
 ```
 
-Example:
+Example (historical only):
 ```silica
 struct Point {
     x: int,
@@ -1626,7 +1690,10 @@ struct Point {
 }
 ```
 
-#### 3.4.7 Enum Declarations
+#### 3.4.7 Enum Declarations (superseded by §3.4.2)
+
+**Note:** Silica does not use `enum` to introduce user-defined type names (§3.4.2). The following grammar is **not** part of the surface language described in this specification.
+
 ```
 enum_declaration ::= "enum" identifier "{" enum_variants "}" ";"
 
@@ -1688,6 +1755,12 @@ trait Comparable {
 #### 3.4.9 Implementation Declarations
 ```
 impl_declaration ::= "impl" [trait_name] "for" type "{" impl_items "}" ";"
+                  | impl_actor_message_decl
+
+impl_actor_message_decl ::= "impl" "ActorMessage" "for" type impl_marker_body ";"
+                          | tagged_tuple_type "impl" "ActorMessage" impl_marker_body ";"
+
+impl_marker_body ::= /* empty */ | "{" "}"
 
 trait_name ::= identifier
 
@@ -1715,18 +1788,9 @@ impl Comparable for Point {
 }
 ```
 
-#### 3.4.10 Type Alias Declarations
-```
-type_alias_declaration ::= "type" identifier "=" type ";"
-```
+**`ActorMessage` implementations:** `ActorMessage` is a marker trait (no methods). Valid forms are: (1) **postfix on the payload** — `expr impl ActorMessage {}` (§3.3, §16.3.2); (2) **type-level** — `impl_actor_message_decl` (§16.3.2) or `impl ActorMessage for type { }` with an **empty** `impl_items` block, when the same inline type is reused and you do not want to repeat the postfix. The compiler **must not** infer `ActorMessage` without one of these forms.
 
-Example:
-```silica
-type IntPair = (int, int);
-type StringMap = { keys: list<string>, values: list<int> };
-```
-
-#### 3.4.11 Module Declarations
+#### 3.4.10 Module Declarations
 ```
 module_declaration ::= "module" identifier ";"
 ```
@@ -2570,13 +2634,17 @@ type_identifier ::= identifier
 
 function_type   ::= "(" [type {"," type}] ")" "->" type
 tuple_type      ::= "(" type {"," type} ")"
-record_type     ::= "struct" identifier "{" identifier ":" type {"," identifier ":" type} "}"
+                | tagged_tuple_type
+tagged_tuple_type ::= "(" atom_literal "," type {"," type} ")"
+record_type     ::= "{" identifier ":" type {"," identifier ":" type} "}"
 variant_type    ::= identifier {"|" identifier}
 
 effect_type     ::= "proc" "[" effect_list "]" type
 effect_list     ::= effect {"," effect}
 effect          ::= effect_identifier
 ```
+
+**Tagged tuple types:** `tagged_tuple_type` fixes the first component to a specific atom literal `:tag` (see §2.2.3). It is **not** interchangeable with `(atom, T1, …)` (first slot any atom). For actor mailboxes, tagged tuples require an explicit `impl ActorMessage` as described in §16.3.2.1.
 
 ### 3.8 Effects
 ```
@@ -2826,7 +2894,7 @@ Examples:
 ```
 proc[] int                           // pure computation returning int
 proc[mem(normal)] ref(region, int)   // computation allocating memory
-proc[concurrency] actor_ref(msg)     // computation spawning an actor
+proc[concurrency] actor_ref          // computation spawning an actor
 ```
 
 ### 4.4 Region and Memory Types
@@ -3345,44 +3413,29 @@ end function
 Actors handle exceptions independently, providing isolation:
 
 ```silica
-type ActorMessage = Request | Response;
-
-type Request = {
-    command: string,
-    value: int64
-}
-
-type Response = {
-    result: int64,
-    error: OptionException
-}
-
-impl ActorMessage for Request;
-impl ActorMessage for Response;
-
-// Actor behavior with exception handling
-fn safe_calculator(msg: Request, state: int64) -> int64 {
+// Actor behavior with exception handling (inline record types only; §3.4.2)
+fn safe_calculator(msg: { command: string, value: int64 }, state: int64) -> int64 {
     case msg.command of {
         "divide" -> {
             // Division with error handling
             divisor: int64 <- msg.value;
             if divisor == 0 {
                 // Return error response (no exception thrown)
-                Response {result: 0, error: Some(DivisionByZero)}
+                { result: 0, error: Some(DivisionByZero) }
             } else {
                 // Successful division
                 result: int64 <- state / divisor;
-                Response {result: result, error: None}
+                { result: result, error: None }
             }
         }
         "multiply" -> {
             // Multiplication (no error possible)
             result: int64 <- state * msg.value;
-            Response {result: result, error: None}
+            { result: result, error: None }
         }
         _: string -> {
             // Unknown command
-            Response {result: 0, error: Some(InvalidArgument(msg.command))}
+            { result: 0, error: Some(InvalidArgument(msg.command)) }
         }
     }
 }
@@ -3647,25 +3700,20 @@ int ≡ int                                   // primitive types
 {a: int, b: boolean} ≡ {a: int, b: boolean}       // record types
 ```
 
-#### 8.2.2 Nominal Equivalence for User Types
-User-defined types are equivalent only if they have the same name:
+#### 8.2.2 Structural equivalence for composite types
+User-defined composite types are **not named** (§3.4.2). Equivalence is **structural**: two inline types are equivalent when their structure matches exactly (same tuple shape, same record fields and field types, same tagged-tuple tag and components, etc.).
 
 ```
-type my_int = int
-type your_int = int
-
-my_int ≢ your_int    // different names, not equivalent
-my_int ≢ int         // user type vs primitive
+{ x: int64, y: int64 } ≡ { x: int64, y: int64 }
+(int64, boolean) ≡ (int64, boolean)
 ```
 
 #### 8.2.3 Subtyping Rules
 Silica has no structural subtyping - all types must match exactly. However, polymorphism is achieved through trait composition, where types implementing the same trait can be used interchangeably in trait-constrained contexts.
 
 ```
-// No structural subtyping:
-type MyInt = int64
-type YourInt = int64
-MyInt ≢ YourInt    // Different names, not equivalent
+// Types must match exactly; no widening:
+// (int64, int64) is distinct from (int64, int32)
 
 // Trait-based polymorphism (not subtyping):
 trait Display { fn show(self) -> string; }
@@ -3737,13 +3785,6 @@ enum OptionInt {
     Some(int64)
 }
 // OptionInt automatically implements Collectable
-```
-
-**Type Aliases (Automatic Collectable):**
-Type aliases inherit `Collectable` from their underlying type:
-```silica
-type MyInt = int64;
-// MyInt automatically implements Collectable (inherited from int64)
 ```
 
 **List Type (Automatic Collectable):**
@@ -4217,7 +4258,7 @@ Silica defines several built-in effects that track different kinds of side effec
   - `mem(normal_noncacheable)` - Normal non-cacheable memory
   - `mem(atomic)` - Atomic memory operations
   - `mem(device)` - Device memory (reserved for driver library)
-- `mailbox` - Message passing (messages must implement `ActorMessage` trait)
+- `mailbox` - Message passing (messages must satisfy `ActorMessage`; see §16.3.2)
 - `concurrency` - Actor spawning and scheduling
 - `atomic` - Atomic memory operations
 - `device_io` - Limited to: print (stdout), read from file, write to file, read from console
@@ -4227,7 +4268,7 @@ Silica defines several built-in effects that track different kinds of side effec
 
 **Note**: The `mailbox` effect is untyped. Type safety for actor messages is ensured through:
 1. Function parameter types (behavior functions receive typed messages)
-2. The `ActorMessage` trait (all message types must implement this trait)
+2. The `ActorMessage` trait (all message types must satisfy this trait via explicit `impl`; see §16.3.2)
 3. Compile-time type checking
 
 #### 9.1.2 Effect Aliases
@@ -4242,7 +4283,7 @@ effect hot_swap_eff = [hot_swap]
 effect register_rwr_eff = [register_rwr]
 ```
 
-**Note**: Effect aliases use untyped `mailbox` effect. Message type safety is ensured through function parameter types and the `ActorMessage` trait.
+**Note**: Effect aliases use untyped `mailbox` effect. Message type safety is ensured through function parameter types and the `ActorMessage` rules in §16.3.2.
 
 #### 9.1.3 User-Defined Effects
 New effects can be declared for domain-specific side effects:
@@ -4259,7 +4300,7 @@ Effects are combined in sets: `proc[effect1, effect2, ...] Result`
 
 ```
 proc[mem(normal), atomic] int           // memory + atomic operations
-proc[concurrency] actor_ref<msg>        // actor spawning
+proc[concurrency] actor_ref             // actor spawning
 proc[] unit                             // pure computation
 ```
 
@@ -5479,7 +5520,7 @@ fn pure_add(x: int, y: int) -> int {
 // Function type: (int, int) -> int ! []
 
 fn allocate_pair(r: region(R, normal))
- -> (ref(R, normal, int), ref(R, normal, int)) proc[mem(normal)] {
+ -> (ref(R, normal, int), ref(R, normal, int)) {
     sequence proc[mem(normal)]
         x: ref(R, normal, int) <- alloc_ref(r, 1)    // creates process value
         y: ref(R, normal, int) <- alloc_ref(r, 2)    // creates process value
@@ -5538,7 +5579,7 @@ result: (int, int) <- spawn(computation)
 Each effect requires runtime capability checking:
 
 - `mem(S)` - Access to memory space S
-- `mailbox` - Message queue (messages must implement `ActorMessage` trait)
+- `mailbox` - Message queue (messages must satisfy `ActorMessage`; see §16.3.2)
 - `concurrency` - Actor spawning and scheduling
 - `atomic` - Atomic memory operations
 - `device_io` - Device access permissions
@@ -6450,7 +6491,7 @@ The algorithm computes `L'` and `ScopDep'` as follows:
 
 **Example (region not returned):**
 ```silica
-fn example() -> int64 proc[mem(normal)] {
+fn example() -> int64 {
     sequence proc[mem(normal)]
         L1: lifetime <- fresh_lifetime();
         r: region(L1, normal) <- alloc_region(normal);  // L = {L1:scope_seq}
@@ -6466,7 +6507,7 @@ fn example() -> int64 proc[mem(normal)] {
 
 **Example (region returned — lifetime extends):**
 ```silica
-fn alloc_and_return() -> region(L1, normal) proc[mem(normal)] {
+fn alloc_and_return() -> region(L1, normal) {
     sequence proc[mem(normal)]
         L1: lifetime <- fresh_lifetime();
         r: region(L1, normal) <- alloc_region(normal);
@@ -6519,22 +6560,21 @@ The compiler analyzes region lifetimes across function boundaries:
 
 #### 12.1.5 Region Handles and Actor Spawn
 
-When a region handle is passed to an actor via `spawn(initial_state, behavior_fn)`, the handle is moved (see §4.4.2). The actor may outlive the spawner, so the spawner must receive the handle back. `spawn` obeys the same rule as any function: the handle is moved in and must be returned.
+When a region handle is passed to an actor via `spawn(initial_state, behavior_fn)`, the region handle moves from spawn to the actor's initial state. The spawner passes ownership of the region to the actor.
 
-**Region Copy and Return Semantics:** When `spawn` is invoked with an `initial_state` that contains a region handle:
+**Region Move Semantics:** When `spawn` is invoked with an `initial_state` that contains a region handle:
 
-1. **Handle is moved**: Ownership of the handle transfers to `spawn`.
-2. **Copy the region**: Allocate a new region and copy its contents (all allocated cells and their values) into the new region.
-3. **Actor receives handle to the copy**: The actor's `initial_state` receives a handle to the newly allocated copy.
-4. **Spawn returns the original handle**: `spawn` returns the original handle to the spawner (along with the `actor_ref`). The spawner regains ownership.
+1. **Handle is moved**: Ownership of the handle transfers from the spawner to the actor via the `initial_state`.
+2. **Region content is moved**: The region and all its allocated cells and values move to the actor.
+3. **Actor receives the region**: The actor's `initial_state` contains the handle to the moved region.
+4. **Spawner releases ownership**: The spawner no longer owns or can access the region after the `spawn` call.
 
-This ensures that both the spawner and the actor have valid handles to distinct regions. For spawning multiple actors with the same region, the spawner passes the handle to each `spawn` call and receives it back each time; each actor receives its own handle to its own copy.
+Once spawned, the actor exclusively owns the region. The spawner cannot access the region after spawn, and the region remains under the actor's control for the lifetime of the actor.
 
-**Trade-offs:**
-- **Correctness**: No dangling handles; each owner has a distinct region.
-- **Cost**: Each spawn performs a region copy (allocation plus copying all contents).
-- **Semantics**: Regions diverge after spawn; changes in one do not affect the others.
-- **Use case**: Use when each actor should have its own independent copy of the data.
+**Semantics:**
+- **Ownership Transfer**: Complete ownership transfer from spawner to actor.
+- **No Sharing**: Only the actor has access to the region; the spawner cannot read or modify it.
+- **Use case**: Use when an actor should have exclusive access to data for its entire lifetime.
 
 See §15.1.1 (Actor Creation) for the `spawn` function signature.
 
@@ -6910,10 +6950,10 @@ alloc_ref(r, 42)    // Runtime error: capability violation
 Actors are created with initial state and behavior function:
 
 ```
-spawn(initial_state, behavior_fn [, core_affinity]) -> actor_ref proc[concurrency]
+spawn(initial_state, behavior_fn [, core_affinity]) -> actor_ref
 ```
 
-When `initial_state` contains a region handle, `spawn` returns `(actor_ref, initial_state)` so the caller receives the moved handle back. The actor's state receives a handle to a copy of the region.
+When `initial_state` contains a region handle, the handle is moved from `spawn` to the actor. The actor receives exclusive ownership of the region.
 
 The `spawn()` function is the execution point for actor creation. It returns an `actor_ref` handle that can be used with other functions such as `cast()`, `send()`, and `pin_actor_to_core()`. The actor begins executing immediately when `spawn()` is called.
 
@@ -6921,7 +6961,7 @@ The behavior function has type: `(Msg, State) -> State`. The effects required by
 
 The `initial_state` parameter must implement the `ActorState` trait (for named types only). The `actor_ref` return type is a primitive type (like `int` or `boolean`), not parameterized by message type.
 
-**Region handles in initial state:** When `initial_state` contains a region handle, the handle is moved into `spawn` and must be returned (see §4.4.2, §12.1.5). The runtime copies the region; the actor receives a handle to the copy. `spawn` returns the original handle to the spawner (along with the `actor_ref`). Each actor has its own handle to its own copy.
+**Region handles in initial state:** When `initial_state` contains a region handle, the handle is moved from `spawn` to the actor (see §4.4.2, §12.1.5). The region and all its contents are moved; the actor receives exclusive ownership. The spawner releases all access to the region after the spawn call.
 
 **Important**: `spawn()` creates and immediately starts executing the actor. The returned `actor_ref` is a handle to the running actor that can be used for message passing and control operations.
 
@@ -7270,104 +7310,11 @@ end function
 
 **2. Core Parking and Unparking:**
 
-Efficiency cores may be parked/unparked by the OS based on system load:
+Efficiency cores may be parked/unparked by the OS based on system load. Actors running on cores remain unaffected by core parking; if a core is parked while an actor is executing there, the actor continues until explicitly migrated by application code using `migrate_actor()`.
 
-**Behavior:**
-- **Parking**: OS parks efficiency cores when system load is low
-  - Parked cores are powered down (no execution)
-  - Actors on parked cores are migrated to active cores
-- **Unparking**: OS unparks efficiency cores when system load increases
-  - Unparked cores become available for actor scheduling
-  - Runtime can schedule new actors on unparked cores
+**3. Thermal Throttling:**
 
-**Runtime Handling:**
-```pseudocode
-function handle_core_parking(core):
-    if core_is_parked(core):
-        // Find actors on parked core
-        actors_on_core = get_actors_on_core(core)
-        
-        // Migrate actors to active cores
-        for each actor in actors_on_core:
-            // Find suitable active core
-            target_core = find_active_core(actor.affinity)
-            
-            // Migrate actor
-            migrate_actor(actor, target_core)
-        end for
-    end if
-end function
-
-function handle_core_unparking(core):
-    if core_is_unparked(core):
-        // Core is now available
-        // Runtime can schedule new actors on this core
-        available_cores.add(core)
-        
-        // Prefer unparked efficiency cores for low-priority actors
-        schedule_low_priority_actors_on_efficiency_cores()
-    end if
-end function
-```
-
-**Core Parking Impact:**
-- **Actor Migration**: Actors are migrated transparently (no actor code changes)
-- **Latency**: Migration takes ~1-10 milliseconds (context switch overhead)
-- **State Preservation**: Actor state is preserved during migration
-
-**3. Thermal Management:**
-
-The runtime respects thermal throttling and adapts actor scheduling:
-
-**Behavior:**
-- **Thermal Throttling**: Cores throttle when temperature exceeds limits
-  - Throttled cores reduce frequency or pause execution
-  - Actors on throttled cores experience performance degradation
-- **Thermal Migration**: Runtime may migrate actors from hot cores to cooler cores
-  - Prevents further temperature increase
-  - Distributes heat load across cores
-
-**Runtime Adaptation:**
-```pseudocode
-function monitor_thermal_state():
-    for each core in system:
-        temperature = get_core_temperature(core)
-        
-        if temperature > THROTTLE_THRESHOLD:
-            // Core is throttling
-            if temperature > MIGRATION_THRESHOLD:
-                // Migrate actors to cooler cores
-                migrate_actors_from_hot_core(core)
-            else:
-                // Reduce actor priority on hot core
-                reduce_actor_priority_on_core(core)
-            end if
-        end if
-    end for
-end function
-
-function migrate_actors_from_hot_core(hot_core):
-    // Find cooler cores
-    cool_cores = find_cooler_cores(hot_core)
-    
-    // Migrate high-priority actors first
-    actors = get_actors_on_core(hot_core)
-    sort_by_priority(actors)
-    
-    for each actor in actors:
-        // Find suitable cool core
-        target_core = find_suitable_cool_core(actor, cool_cores)
-        
-        // Migrate actor
-        migrate_actor(actor, target_core)
-    end for
-end function
-```
-
-**Thermal Management Impact:**
-- **Performance**: Throttled cores execute slower (frequency reduction)
-- **Migration Overhead**: Actor migration adds latency (~1-10 milliseconds)
-- **Heat Distribution**: Migration distributes heat load, preventing hotspots
+The runtime monitors thermal conditions. When cores thermal throttle, actors running on those cores experience performance degradation but continue executing. Application code can monitor and respond to thermal conditions as needed.
 
 **4. Energy Efficiency Optimization:**
 
@@ -7413,12 +7360,12 @@ end function
 
 **Power Management Runtime Behavior Summary:**
 
-| Feature | Behavior | Impact on Actors | Runtime Response |
-|---------|----------|------------------|-------------------|
+| Feature | Behavior | Impact on Actors | Application Response |
+|---------|----------|------------------|----------------------|
 | **Frequency Scaling** | CPU frequency adjusts based on load | Performance varies with frequency | Request max frequency for high-priority actors |
-| **Core Parking** | Efficiency cores powered down | Actors migrated to active cores | Transparent migration, no actor changes |
-| **Thermal Throttling** | Cores throttle when hot | Performance degradation on hot cores | Migrate actors to cooler cores |
-| **Energy Optimization** | Load balanced for efficiency | Low-priority actors on efficiency cores | Automatic core selection based on priority |
+| **Core Parking** | Efficiency cores powered down | Minimal impact on active actors | Use `migrate_actor()` if needed |
+| **Thermal Throttling** | Cores throttle when hot | Performance degradation on hot cores | Use `migrate_actor()` to move to cooler cores |
+| **Energy Optimization** | Initial actor placement considers efficiency | Placement at spawn time based on affinity | Specify `performance_cores` or `efficiency_cores` at spawn |
 
 **Power Management Integration:**
 
@@ -7474,86 +7421,9 @@ actor_ref: actor_ref <- spawn_on_numa(initial_state, behavior, 0);
 // minimizing cross-NUMA memory access latency
 ```
 
-#### 15.1.2.2 Actor Migration Overhead and Behavior
+#### 15.1.2.2 Message Delivery During Migration
 
-The runtime may migrate actors between cores for load balancing, thermal management, power optimization, and core availability. Actor migration is transparent to user code but has performance implications that developers should understand.
-
-**Migration Triggers:**
-
-Actors are migrated between cores in the following scenarios:
-
-- **Thermal Throttling**: When a core exceeds thermal limits, actors are migrated to cooler cores to prevent performance degradation and hardware damage
-  - **Trigger Threshold**: Core temperature exceeds thermal throttling threshold (typically 80-90°C)
-  - **Migration Target**: Actors are migrated to cores with lower temperatures
-  - **Priority**: High-priority actors are migrated first to maintain performance
-  
-- **Load Balancing**: When core load becomes imbalanced, actors are redistributed to balance workload across available cores
-  - **Trigger Threshold**: Core load imbalance exceeds threshold (typically 20-30% difference)
-  - **Migration Target**: Actors are migrated from overloaded cores to underutilized cores
-  - **Frequency**: Load balancing occurs periodically (typically every 100-1000 milliseconds)
-  
-- **Core Parking/Unparking**: When efficiency cores are parked or unparked by the OS, actors are migrated accordingly
-  - **Core Parking**: Actors on parked cores are migrated to active cores
-  - **Core Unparking**: New actors may be scheduled on newly unparked cores
-  - **Transparency**: Migration is transparent to actors - no code changes required
-  
-- **Affinity Changes**: When actor affinity is changed via runtime APIs, actors are migrated to new cores
-  - **Explicit Migration**: Programmers can explicitly migrate actors using runtime APIs
-  - **Affinity Updates**: Changes to actor affinity trigger migration to new cores
-  - **Validation**: Runtime validates that target cores are available before migration
-  
-- **NUMA Optimization**: Actors may be migrated to cores within the same NUMA node as their data regions
-  - **NUMA Awareness**: Runtime migrates actors to minimize cross-NUMA memory access
-  - **Data Locality**: Actors are placed on cores with local access to their data regions
-  - **Performance**: Reduces memory access latency by avoiding cross-NUMA communication
-
-**Migration Process:**
-
-Actor migration follows a well-defined process to ensure correctness and minimize overhead:
-
-1. **Migration Decision**: Runtime determines that migration is necessary based on triggers
-2. **Target Selection**: Runtime selects target core based on load, temperature, NUMA affinity, and actor requirements
-3. **State Capture**: Actor's current state is captured (including in-flight message processing)
-4. **Migration Preparation**: Runtime prepares target core for actor execution
-5. **State Transfer**: Actor state is transferred to target core (memory remains in place, only execution context moves)
-6. **Execution Resume**: Actor resumes execution on target core
-7. **Cleanup**: Source core resources are cleaned up
-
-**Migration Overhead:**
-
-Actor migration incurs overhead that affects performance:
-
-- **Context Switch Overhead**: Migration requires context switching between cores, adding ~1-5 microseconds overhead
-- **Cache Invalidation**: Actor's cache lines may be invalidated on source core, requiring cache refill on target core
-- **TLB Flush**: Translation Lookaside Buffer (TLB) entries may need to be flushed and refilled on target core
-- **Memory Access Latency**: Cross-NUMA migration may increase memory access latency if data regions are not migrated
-- **Message Queue Transfer**: Actor's message queue is transferred to target core, adding ~100-500 nanoseconds overhead
-
-**Migration Latency Guarantees:**
-
-The runtime provides latency guarantees for actor migration:
-
-- **Migration Time**: Actor migration completes within 1-10 milliseconds for typical actors
-- **Message Delivery**: Messages continue to be delivered during migration (queued until migration completes)
-- **State Consistency**: Actor state remains consistent during migration (no partial updates visible)
-- **Execution Continuity**: Actor execution resumes on target core without loss of progress
-
-**Message Delivery During Migration:**
-
-Message delivery behavior during migration ensures correctness:
-
-- **Pre-Migration Messages**: Messages received before migration starts are processed on source core
-- **Migration-In-Flight Messages**: Messages received during migration are queued and delivered after migration completes
-- **Post-Migration Messages**: Messages received after migration completes are delivered normally on target core
-- **Message Ordering**: Message ordering is preserved across migration (FIFO ordering maintained)
-
-**Cache Performance Impact:**
-
-Migration affects cache performance:
-
-- **Cache Warm-Up**: Target core's caches are cold after migration, requiring cache warm-up
-- **Cache Miss Rate**: Cache miss rate increases immediately after migration (typically 20-30% increase)
-- **Cache Recovery**: Cache performance recovers as actor executes on target core (typically within 100-1000 operations)
+When an actor is explicitly migrated via `migrate_actor()`, message delivery guarantees ensure correct actor semantics and message ordering.
 - **NUMA Cache Effects**: Cross-NUMA migration may cause cache misses if data is not local to target core
 
 **Migration Control:**
@@ -7880,35 +7750,35 @@ If migration fails:
 - See Section 18.1.1 (Actor Message Ordering) for happens-before relationships
 
 #### 15.1.3 Actor Identity
-Each actor has a unique identity:
+Each actor has a unique identity. The built-in function `self()` returns the current actor's reference:
 
 ```
-self() -> actor_ref proc[mailbox, concurrency]
+self() -> actor_ref
 ```
+
+(This is a built-in function that returns the actor reference directly, with no effects.)
 
 The `actor_ref` type is a primitive type (like `int` or `boolean`), representing a reference to an actor.
 
 ### 15.2 Actor Behavior Functions
 
 #### 15.2.1 Behavior Function Signature
-Behavior functions transform messages and state:
+Behavior functions transform messages and state. The function signature contains only the parameter and return types; effects are declared in the sequence block:
 
-```
-type Request = {command: string, reply_to: actor_ref};
-type Response = {result: int};
-impl ActorMessage for Request;
-impl ActorMessage for Response;
-
-fn counter(msg: Request, state: int)
- -> int proc[mailbox, concurrency] {
-
-    case msg of
-        {command: "increment", reply_to} -> return state + 1
-        {command: "get", reply_to} ->
-            // Send response back using cast
-            cast(reply_to, Response {result: state})
-            return state
-        {command: "reset", reply_to} -> return 0
+```silica
+fn counter(msg: { command: string, reply_to: actor_ref }, state: int64) -> int64 {
+    sequence proc[mailbox, concurrency]
+        result: int64 <- case msg of {
+            {command: "increment", reply_to} -> state + 1,
+            {command: "get", reply_to} -> {
+                // Send response back using cast
+                cast(reply_to, { result: state } impl ActorMessage {});
+                state
+            },
+            {command: "reset", reply_to} -> 0
+        };
+    produces
+        pure result
     end
 }
 ```
@@ -7961,7 +7831,7 @@ Messages are sent asynchronously:
 send(actor: actor_ref, message: ActorMessage) -> atom proc[concurrency]
 ```
 
-Send never blocks - messages are queued in the actor's mailbox. The `message` parameter must be a type that implements the `ActorMessage` trait (for named types only).
+Send never blocks - messages are queued in the actor's mailbox. The `message` argument must satisfy `ActorMessage` — typically `expr impl ActorMessage {}` (§3.3, §16.3.2) or a type that has `impl ActorMessage for T` in scope.
 
 #### 16.1.2 Asynchronous Cast
 Messages can be sent asynchronously without blocking, with success/failure indication:
@@ -7970,7 +7840,7 @@ Messages can be sent asynchronously without blocking, with success/failure indic
 cast(actor: actor_ref, message: ActorMessage) -> boolean proc[concurrency]
 ```
 
-Cast never blocks - messages are queued in the actor's mailbox and the function returns immediately. Returns `true` if the message was successfully enqueued, `false` if the actor doesn't exist. Mailboxes are unbounded queues that can grow without limit, so messages are never rejected due to mailbox capacity. The `message` parameter must be a type that implements the `ActorMessage` trait (for named types only).
+Cast never blocks - messages are queued in the actor's mailbox and the function returns immediately. Returns `true` if the message was successfully enqueued, `false` if the actor doesn't exist. Mailboxes are unbounded queues that can grow without limit, so messages are never rejected due to mailbox capacity. The `message` argument must satisfy `ActorMessage` — typically `expr impl ActorMessage {}` (§3.3, §16.3.2) or a type that has `impl ActorMessage for T` in scope.
 
 #### 16.1.3 Message Ordering
 Each actor's mailbox is a queue containing all messages from all actors sending it messages. Messages are processed in standard queue ordering: first-received, first-processed (FIFO). Messages from the same sender maintain order relative to each other, but messages from different senders are interleaved in the order they arrive at the actor's mailbox.
@@ -8148,10 +8018,10 @@ trait ActorState {
 }
 ```
 
-Only the `initial_state` parameter in `spawn(initial_state, ...)` must implement `ActorState`. The trait is only implemented for named types (structs, type aliases) - no blanket implementations for primitive types.
+Only the `initial_state` parameter in `spawn(initial_state, ...)` must implement `ActorState`. The trait is only implemented for **inline** composite types (records, tuples, etc.) with an explicit `impl ActorState for …` in scope (§3.4.2) — no blanket implementations for primitive types.
 
 #### 16.3.2 ActorMessage Trait
-The `ActorMessage` trait is a marker trait that must be implemented by types used as messages:
+The `ActorMessage` trait is a **marker trait** used only for type checking: it declares **no methods** and carries **no associated functions**. Sending is performed exclusively through `send()` and `cast()`; implementations do not define behavior.
 
 ```
 trait ActorMessage {
@@ -8159,34 +8029,145 @@ trait ActorMessage {
 }
 ```
 
-All types used in `send()` or `cast()` must implement `ActorMessage`. The trait is only implemented for named types (structs, type aliases) - no blanket implementations for primitive types.
+**Required explicit marker.** A type may be used as the payload of `send()` or `cast()` **only** if `ActorMessage` is established by one of the forms below. The compiler **must not** infer `ActorMessage` from the structure of the payload alone (no automatic or default implementation).
+
+**Forms** (marker only; **no trait methods** — empty `{}` when a brace body is present):
+
+1. **In-place payload marker (usual at `send` / `cast`):** `expr impl ActorMessage impl_marker_body` as the **message operand** (§3.3). The postfix binds to `expr` (the message value). `impl_marker_body` is empty or `{}` only. **Example:** `send(peer, (:job, "run", 7) impl ActorMessage {})`.
+2. **Type-level (optional, for reuse):** `impl ActorMessage for T;` or `impl_actor_message_decl` / `impl_declaration` with empty body (§3.4.9), where `T` is an **inline** type expression (§3.4.2).
+3. **Tagged tuple alternate spelling** (§16.3.2.1): `(:tag, T1, …, Tn) impl ActorMessage;` — equivalent to `impl ActorMessage for (:tag, T1, …, Tn);`.
+
+**Well-formedness:** For `impl ActorMessage for ( :tag, T1, …, Tn)` or for `expr impl ActorMessage {}` where `expr` has a tagged-tuple type, each `Ti` must already satisfy `ActorMessage` (via (1)–(2) at component use sites or type-level `impl`). Similarly for inline records `{ f1: T1, … }`. Mutual recursion is rejected unless resolved by declaration order rules defined by the implementation.
+
+**Identity:** There are no user-declared type names (§3.4.2). Two structurally identical inline types are the same type for matching purposes (§8.2.2). `impl ActorMessage for T` applies to that **exact** inline type `T`; `expr impl ActorMessage {}` establishes the marker for the static type of `expr` at that expression.
+
+**Example (worker + client):**
+
+```silica
+fn worker(
+  msg: { seq: int64, reply_to: actor_ref },
+  state: int64
+) -> int64 {
+    sequence proc[mailbox, concurrency]
+        result: int64 <- case msg of {
+            { seq: n, reply_to: r } -> {
+                cast(r, (:job, "done", n) impl ActorMessage {});
+                state + n
+            }
+        };
+    produces
+        pure result
+    end
+}
+
+fn client(peer: actor_ref, reply: actor_ref) -> atom {
+    sequence proc[mailbox, concurrency]
+        send(peer, (:job, "run", 7) impl ActorMessage {});
+        send(peer, { seq: 1, reply_to: reply } impl ActorMessage {});
+    produces
+        pure ()
+    end
+}
+```
+
+The `impl ActorMessage {}` suffix is required on each message operand unless a matching type-level `impl ActorMessage for T` is already in scope for that payload type. The `{}` is empty because `ActorMessage` defines no methods.
+
+#### 16.3.2.0.1 ActorMessage Marker Syntax Quick Reference
+
+**Usual Pattern (at `send` and `cast` call sites):**
+```silica
+send(actor_ref, MESSAGE_VALUE impl ActorMessage {})
+cast(actor_ref, MESSAGE_VALUE impl ActorMessage {})
+```
+
+**Examples:**
+```silica
+// Inline record message
+send(actor, { command: "start", reply_to: self() } impl ActorMessage {})
+
+// Tagged tuple message
+send(actor, (:ping, 42) impl ActorMessage {})
+
+// Primitive type (if ActorMessage is implemented for it)
+send(actor, "hello" impl ActorMessage {})
+```
+
+**When Optional:** The `impl ActorMessage {}` suffix can be omitted if a type-level declaration exists in scope:
+```silica
+impl ActorMessage for { command: string, reply_to: actor_ref };
+
+// Now you can omit the postfix:
+send(actor, { command: "go", reply_to: self() })  // ✓ works
+```
+
+**Type-Level Declaration (for reuse):**
+```silica
+// Declare once at module level
+impl ActorMessage for { seq: int64, reply_to: actor_ref };
+
+// Use multiple times without postfix
+send(actor1, { seq: 1, reply_to: self() })
+send(actor2, { seq: 2, reply_to: self() })
+send(actor3, { seq: 3, reply_to: self() })
+```
+
+#### 16.3.2.1 Tagged tuple messages (user-defined inline types)
+
+A **tagged tuple type** is written `( :tag, T1, …, Tn)` where `:tag` is an **atom literal** in the **first type position** (see §3.7). It denotes a nominal message shape: values are tuples whose first component is **exactly** the atom `:tag`, followed by components matching `T1 … Tn`. This is **not** the same as `(atom, T1, …)` (any atom in the first slot).
+
+**Required syntax** — one of the following (no method bodies; `impl_marker_body` per §3.4.9). Component types must already have `ActorMessage` in scope:
+
+```silica
+impl ActorMessage for int64;
+
+impl ActorMessage for (:bob, int64);
+
+impl ActorMessage for string;
+(:ping, string, int64) impl ActorMessage;
+```
+
+The second form is an **alternate spelling** of the first for tagged tuple types only (same semantics, not a separate mechanism).
+
+Values can be sent with the **in-place** marker (usual form):
+
+```silica
+send(actor, (:bob, 42) impl ActorMessage {})
+cast(actor, (:ping, "hi", 7) impl ActorMessage {})
+```
+
+Or, if `impl ActorMessage for (:bob, int64)` is in scope, the operand may omit the postfix for that type.
+
+Behavior functions use the tagged tuple type in the message parameter position:
+
+```silica
+fn worker(msg: (:bob, int64), state: int64) -> int64 proc[mailbox, concurrency] {
+    case msg of {
+        (:bob, n: int64) -> state + n;
+    }
+}
+```
+
+**Well-formedness:** Each `Ti` in `( :tag, T1, …, Tn)` must satisfy `ActorMessage` (see type-level `impl` or in-place markers on subvalues where applicable) before the tagged-tuple type-level `impl` is accepted.
 
 #### 16.3.3 Message Type Safety
-Messages must implement the `ActorMessage` trait:
+Messages must satisfy `ActorMessage` through an **in-place** postfix on the operand (§3.3, §16.3.2) **or** a type-level `impl ActorMessage for T` in scope:
 
-```
-type Request = {data: int, reply_to: actor_ref};
-impl ActorMessage for Request;
-
+```silica
 actor_ref: actor_ref <- spawn(0, handler)
-cast(actor_ref, Request {data: 42, reply_to: some_actor})  // ✓ correct type
-cast(actor_ref, 42)  // ✗ type error: int doesn't implement ActorMessage
+cast(actor_ref, { data: 42, reply_to: some_actor } impl ActorMessage {})
+cast(actor_ref, 42 impl ActorMessage {})
+send(actor, (1, true) impl ActorMessage {})
 ```
 
 #### 16.3.4 Cast-Back Pattern
 Messages can include a `reply_to` field containing an `actor_ref` for sending responses back:
 
 ```
-type Request = {data: int, reply_to: actor_ref};
-type Response = {result: int};
-impl ActorMessage for Request;
-impl ActorMessage for Response;
-
-fn handler(msg: Request, state: State) -> State {
+fn handler(msg: { data: int64, reply_to: actor_ref }, state: State) -> State {
     case msg of
         {data, reply_to} ->
             // Process request and send response back
-            cast(reply_to, Response {result: data * 2})
+            cast(reply_to, { result: data * 2 } impl ActorMessage {})
             // ... update state ...
     end
 }
@@ -8195,7 +8176,7 @@ fn handler(msg: Request, state: State) -> State {
 The `reply_to` field is optional - messages without it cannot be used for cast-back, but this is enforced at compile time through field access checks. Attempting to access `reply_to` on a message type that doesn't have it results in a compile-time error.
 
 #### 16.3.5 Message Passing Guarantees
-- **Type Safety**: Messages are type-checked at compile time - must implement `ActorMessage` trait
+- **Type Safety**: Messages are type-checked at compile time — they must satisfy `ActorMessage` (§16.3.2) via `expr impl ActorMessage {}` on the payload and/or explicit type-level `impl` in scope
 - **Trait Checking**: All type inference and trait checking happens at compile time, not runtime
 - **Compile-Time Verification**: Field access (e.g., `reply_to`) is verified at compile time - attempting to access a field that doesn't exist in the message type results in a compile-time error
 - **Immutability**: Message data cannot be mutated after sending
@@ -11583,7 +11564,7 @@ check_tag_nodedata(ptr: ref(R, normal, NodeData)) -> boolean
 
 **Note**: For each type that implements the `tagged` trait, the compiler generates type-specific versions of these functions. The function names follow the pattern `alloc_tagged_<typename>`, `free_tagged_<typename>`, etc.
 
-**Note**: The `tagged` trait can only be implemented for named types (structs, type aliases), not for primitive types. This ensures type safety and prevents misuse of MTE features.
+**Note**: The `tagged` trait can only be implemented for **inline** composite types (not for primitive types), with an explicit `impl tagged for …` in scope. This ensures type safety and prevents misuse of MTE features.
 
 #### 21.3.3 MTE Runtime Integration
 
@@ -12403,7 +12384,7 @@ auth_fail_securedata(ptr: ref(R, Space, SecureData), context: int) -> boolean
 
 **Note**: For each type that implements the `authenticated` trait, the compiler generates type-specific versions of these functions. The function names follow the pattern `sign_ptr_<typename>`, `auth_ptr_<typename>`, `auth_fail_<typename>`, etc.
 
-**Note**: The `authenticated` trait can only be implemented for named types (structs, type aliases), not for primitive types. This ensures type safety and prevents misuse of PAC features.
+**Note**: The `authenticated` trait can only be implemented for **inline** composite types (not for primitive types), with an explicit `impl` in scope. This ensures type safety and prevents misuse of PAC features.
 
 #### 21.4.3 PAC Runtime Integration
 
@@ -12734,7 +12715,7 @@ module arch.apple.amx {
 }
 ```
 
-**Note**: The `apple_matrix` trait can only be implemented for named types (structs, type aliases), not for primitive types. This ensures type safety and prevents misuse of AMX features.
+**Note**: The `apple_matrix` trait can only be implemented for **inline** composite types (not for primitive types), with an explicit `impl` in scope. This ensures type safety and prevents misuse of AMX features.
 
 **Note**: For each type that implements the `apple_matrix` trait, the compiler generates type-specific versions of these functions. The function names follow the pattern `load_matrix_<typename>`, `store_matrix_<typename>`, `matmul_<typename>`, etc. This approach maintains consistency with Silica's no-generics design principle, matching the pattern used for SVE, NEON, MTE, and PAC operations.
 
@@ -12806,7 +12787,7 @@ buffer_capacity(buffer) -> int
 
 ### 22.4 Actor Operations
 ```
-spawn(initial_state, behavior [, core_affinity]) -> actor_ref proc[concurrency]
+spawn(initial_state, behavior [, core_affinity]) -> actor_ref
 send(actor, message) -> atom proc[concurrency]
 cast(actor, message) -> boolean proc[concurrency]
 recv([actor]) -> Msg proc[mailbox, concurrency]          // Runtime internal
@@ -13117,13 +13098,12 @@ Actors are managed by the runtime:
 #### 23.1.3 CPU Scheduling and Affinity
 The runtime provides intelligent CPU scheduling with optional affinity controls:
 
-- **NUMA-Aware Scheduling**: Automatic scheduling considers memory locality to minimize cross-NUMA communication latency
-- **Optional CPU Pinning**: Developers can optionally pin actors to specific cores or core types when needed
+- **NUMA-Aware Scheduling**: Initial scheduling considers memory locality to minimize cross-NUMA communication latency
+- **Core Affinity Control**: Developers can specify core affinity at spawn time using `core_id`, `core_set`, `performance_cores`, or `efficiency_cores`
 - **Core Type Awareness**: Distinguishes between efficiency cores (power-optimized) and performance cores (speed-optimized)
-- **Load Balancing**: Automatic distribution across available cores with affinity constraints
-- **Thermal Management**: Runtime monitors thermal conditions and migrates actors to prevent overheating while respecting affinity settings
+- **Manual Migration**: Application code can explicitly migrate actors using `migrate_actor()` to respond to thermal or load conditions
+- **Monitoring Support**: Runtime provides temperature and load information for application-driven optimization decisions
 - **Real-Time Scheduling**: Optional real-time priority scheduling for latency-critical actors with CPU affinity guarantees
-- **Power Management**: Automatic migration between core types based on battery level and power constraints
 
 #### 23.1.4 Memory Manager
 Region-based memory management:
@@ -14668,7 +14648,7 @@ trait ActorState {
 }
 ```
 
-Types used as actor initial state in `spawn(initial_state, ...)` must implement `ActorState`. Only named types (structs, type aliases) implement this trait - no blanket implementations for primitive types.
+Types used as actor initial state in `spawn(initial_state, ...)` must implement `ActorState`. Only **inline** composite types with an explicit `impl ActorState for …` in scope implement this trait (§3.4.2) — no blanket implementations for primitive types.
 
 **ActorMessage Trait:**
 ```silica
@@ -14677,19 +14657,14 @@ trait ActorMessage {
 }
 ```
 
-Types used as messages in `send()` or `cast()` must implement `ActorMessage`. Only named types (structs, type aliases) implement this trait - no blanket implementations for primitive types.
+Types used as messages in `send()` or `cast()` must implement `ActorMessage` through **`expr impl ActorMessage {}` on the payload** and/or explicit type-level `impl` (§16.3.2). The compiler does not infer `ActorMessage` from type structure alone. Tagged tuple types use the forms in §16.3.2.1.
 
 **Trait-as-Type:**
 When a trait is used directly as a type (e.g., `ActorMessage`), it represents any concrete type implementing that trait. This is resolved at compile time through trait implementation checking.
 
 **Example:**
 ```silica
-type Request = {data: int, reply_to: actor_ref};
-type Response = {result: int};
-impl ActorMessage for Request;
-impl ActorMessage for Response;
-
-// ActorMessage can be used as a type
+// ActorMessage can be used as a type; payloads use expr impl ActorMessage {} at call sites
 cast(actor_ref, message: ActorMessage) -> boolean proc[concurrency]
 ```
 
