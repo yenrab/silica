@@ -6955,35 +6955,191 @@ spawn(initial_state, behavior_fn [, core_affinity]) -> actor_ref
 
 When `initial_state` contains a region handle, the handle is moved from `spawn` to the actor. The actor receives exclusive ownership of the region.
 
-The `spawn()` function is the execution point for actor creation. It returns an `actor_ref` handle that can be used with other functions such as `cast()`, `send()`, and `pin_actor_to_core()`. The actor begins executing immediately when `spawn()` is called.
+The `spawn()` function is the execution point for actor creation. It returns an `actor_ref` handle that can be used with `call()`, `cast()`, and control operations like `pin_actor_to_core()`. The actor begins executing immediately when `spawn()` is called.
 
-The behavior function has type: `(Msg, State) -> State`. The effects required by the behavior function are declared on sequence blocks inside it.
+**Handler Function Reuse**: The same behavior function can be passed to multiple `spawn()` calls, creating multiple independent actor instances with the same handler logic.
 
-The `initial_state` parameter must implement the `ActorState` trait (for named types only). The `actor_ref` return type is a primitive type (like `int` or `boolean`), not parameterized by message type.
+**Handler Function Parameterization**: Behavior functions **cannot** be parameterized differently per actor. Each call to `spawn()` uses the function as-is. If different behavior is needed, define separate handler functions or use different initial state to drive conditional logic within the handler.
+
+**Behavior Function Return Type:** The behavior function must return **exactly one of**:
+- `(:reply, Reply, State)` — for **call-only** behaviors that handle synchronous requests
+- `(:no_reply, State)` — for **cast-only** behaviors that handle asynchronous notifications
+
+The behavior function **must never** return a union of both forms. Each behavior handles exactly one calling convention.
+
+The effects required by the behavior function are declared on sequence blocks inside it.
+
+The `initial_state` parameter must implement the `ActorState` trait (for named types only). The `actor_ref` return type is a primitive type (like `int` or `boolean`), not parameterized by message type. However, the compiler tracks the **calling convention** of each `actor_ref` based on the behavior's return type.
+
+**Calling Convention Tracking:** The compiler infers and tracks whether an `actor_ref` is **call-only** (behavior returns `(:reply, ...)`) or **cast-only** (behavior returns `(:no_reply, ...)`). This information is used for compile-time type checking of `call()` and `cast()` operations.
+
+**State Type Constraints:** The initial state can be **any valid Silica type**, including:
+- Primitive types: `int64`, `boolean`, `string`, etc.
+- Composite types: tuples, records, unions
+- Region handles: `region(R, normal)`, `region(R, atomic)`, etc.
+- Arbitrarily large structures
+
+**State Semantics:** When a message is processed:
+- The state is **moved** to the behavior function (not copied)
+- The behavior returns a new state via the tagged tuple
+- The new state becomes the actor's state for the next message
+- This preserves region ownership and avoids unnecessary copying
+
+**Supervisor Registration:** Each actor can register a **supervisor** that is notified when the actor terminates (see §15.1.3).
+
+#### 15.1.1.1 Handler Functions and Module System
+
+**Actor Definition**: Each actor is defined by a **handler function** in a module. Handler functions are ordinary Silica functions with the signature:
+
+```
+fn handler_name(msg: MessageType, state: StateType) -> (:reply, Reply, State) | (:no_reply, State)
+```
+
+**No Special Syntax**: There is no special actor definition syntax (no `actor`, `handler`, or `impl Actor` keyword). Actors are created by passing ordinary functions to `spawn()`.
+
+**Module Definition**: Handler functions are defined in modules just like any other function:
+
+```silica
+// module my_actors.silica
+
+impl ActorMessage for int64;
+impl ActorState for int64;
+
+// This is a handler function - nothing special about its definition
+fn counter_handler(msg: int64, state: int64) -> (:reply, int64, int64) {
+    new_state: int64 <- state + msg;
+    (:reply, new_state, new_state)
+}
+
+fn log_handler(msg: string, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io, mailbox, concurrency]
+        println(msg);
+    produces pure (:no_reply, state + 1) end
+}
+```
+
+**Export and Import**: Handler functions can be exported and imported like any other function:
+
+```silica
+export counter_handler/2;
+export log_handler/2;
+```
+
+```silica
+use my_actors;
+
+fn main() -> atom {
+    sequence proc[concurrency]
+        counter: actor_ref <- spawn(0, my_actors::counter_handler);
+        logger: actor_ref <- spawn(0, my_actors::log_handler);
+    produces pure :ok end
+}
+```
+
+**Function Identity**: A handler function is just a function. It has no special runtime behavior or metadata. The only thing that makes it an "actor handler" is that it's passed to `spawn()`. The same function can be:
+- Passed to `spawn()` to create an actor
+- Called directly as a regular function (not recommended, but syntactically valid)
+- Exported, imported, passed as arguments, etc.
+
+**No Actor Type**: There is no `ActorHandler` type or similar. The type system treats handler functions as regular functions with specific signatures.
 
 **Region handles in initial state:** When `initial_state` contains a region handle, the handle is moved from `spawn` to the actor (see §4.4.2, §12.1.5). The region and all its contents are moved; the actor receives exclusive ownership. The spawner releases all access to the region after the spawn call.
 
 **Important**: `spawn()` creates and immediately starts executing the actor. The returned `actor_ref` is a handle to the running actor that can be used for message passing and control operations.
 
 #### 15.1.2 Actor Execution Model
-Each actor follows a **gen_server-style** model (cf. Erlang `gen_server`): a **non-recursive** behavior function of type `(Msg, State) -> State` is invoked **once per message** by the runtime. The **infinite loop** lives only in the runtime, not as a user-written tail-recursive receive loop.
+Each actor follows a **gen_server-style** model (cf. Erlang `gen_server`): a **non-recursive** behavior function is invoked **once per message** by the runtime. The **infinite loop** lives only in the runtime, not as a user-written tail-recursive receive loop.
+
+**Behavior Function Return Type Constraint:**
+
+Each behavior function must return **exactly one** of these forms (never both):
+
+**Call-only behavior:**
+```
+fn handler(msg: Msg, state: State) -> (:reply, Reply, State) { ... }
+```
+
+**Cast-only behavior:**
+```
+fn handler(msg: Msg, state: State) -> (:no_reply, State) { ... }
+```
+
+A behavior function's return type **must not** be a union of `(:reply, ...)` and `(:no_reply, ...)` forms. All code paths must return the same form. This is enforced at compile time — if some paths return `(:reply, ...)` and others return `(:no_reply, ...)`, the compiler reports a **type error**.
 
 Each actor executes as an infinite loop **inside** the runtime system:
 
 ```
 // Runtime-internal loop (not user code):
 actor_loop(state, behavior) {
-    message <- recv()           // runtime receives message from mailbox
-    new_state <- behavior(message, state)  // user behavior: may send/cast/reply inside body
-    actor_loop(new_state, behavior)        // runtime continues with new state
+    (message, origin) <- recv_with_origin()     // runtime receives message + call/cast flag
+    result <- behavior(message, state)          // user behavior returns action
+    case result of {
+        (:reply, reply_value, new_state) -> {
+            send_reply_to_caller(origin, reply_value)
+            actor_loop(new_state, behavior)
+        }
+        (:no_reply, new_state) -> {
+            actor_loop(new_state, behavior)
+        }
+    }
 }
 ```
 
 **Receiving**: The `recv()` operation is performed only by the actor runtime, **between** behavior invocations. User-defined behavior functions receive the message and current state as parameters; they **never** call `recv()` directly. The `recv()` function is not user-callable and is an internal runtime operation.
 
-**Sending**: The behavior function **may** perform `send`, `cast`, and other concurrency effects **inside** its body (typically within `sequence` blocks that declare the required effects). For **request–reply** patterns, message types often include the **sender’s** `actor_ref` (or process id) so the behavior can reply to the current client.
+**Sending**: The behavior function **may** perform `call()`, `cast()`, and other concurrency effects **inside** its body (typically within `sequence` blocks that declare the required effects).
 
-**Important**: The behavior function returns **only** updated `State`; it does not implement the mailbox loop itself. That keeps each message handler a finite call stack on the actor’s stack (see `actor_growable_stack_design.md`).
+**Recursion Constraint**: Behavior functions (handlers) are **not allowed to be recursive**. A behavior function cannot call itself, either directly or indirectly through other functions.
+
+**Rationale**:
+- Each message invokes the behavior exactly once
+- Recursion would complicate stack management and predictability
+- The runtime owns the message loop; user code does not implement recursion over messages
+- If recursive logic is needed, structure it as non-recursive message-driven state machines
+
+**Important**: The behavior function returns a tagged tuple `(:reply, Reply, State) | (:no_reply, State)` that encodes both the reply and new state. This keeps each message handler a finite call stack on the actor’s stack (see `actor_growable_stack_design.md`).
+
+#### 15.1.2.1 Actor Termination
+
+**Graceful Shutdown Protocol:** Actors do not have an explicit built-in termination function. Instead, termination is accomplished by sending **shutdown messages** to the actor. The behavior function must:
+
+1. Handle shutdown message types (application-defined, e.g., `:shutdown`, `(:terminate, reason)`)
+2. Perform cleanup operations as needed
+3. Return a state update that signals the actor to stop processing messages
+
+When a behavior function detects a shutdown signal and returns, the runtime:
+- Stops the actor’s message loop
+- Notifies any registered supervisor (see §15.1.3)
+- Drops all remaining messages in the mailbox
+- Terminates the actor thread
+
+**Example:**
+```silica
+impl ActorMessage for atom;
+
+fn server(msg: atom, state: int64) -> (:no_reply, int64) {
+    case msg of {
+        :shutdown -> {
+            // Cleanup happens here
+            // Return a special marker or simply stop processing
+            (:no_reply, state)  // Last message - actor terminates after this
+        }
+        _ -> (:no_reply, state)
+    }
+}
+```
+
+#### 15.1.3 Supervisor Notification
+
+**Supervisor Registration:** When an actor terminates (either via shutdown message or due to an error), any registered supervisor is notified. The supervisor receives a termination message.
+
+**Supervisor Semantics:**
+- A supervisor is itself an actor that monitors one or more child actors
+- When a supervised actor terminates, the supervisor receives a message (implementation-defined format)
+- The supervisor can inspect the termination reason, log it, restart the actor, or take other action
+- This enables supervisor trees and fault tolerance (OTP-style supervision)
+
+**Supervisor Specification:** Details of supervisor registration and notification are specified in the supervisor subsystem (see §15.4, Supervision and Fault Tolerance — future expansion).
 
 **Actor Migration Policy:**
 
@@ -7824,14 +7980,38 @@ send(actor2, "ping")    // actor2 continues normally
 
 ### 16.1 Message Send Semantics
 
-#### 16.1.1 Asynchronous Send
-Messages are sent asynchronously:
+#### 16.1.1 Synchronous Call
+Messages can be sent synchronously, with the caller blocking until a reply is received:
 
 ```
-send(actor: actor_ref, message: ActorMessage) -> atom proc[concurrency]
+call(actor: actor_ref, message: ActorMessage) -> Reply proc[concurrency]
 ```
 
-Send never blocks - messages are queued in the actor's mailbox. The `message` argument must satisfy `ActorMessage` — typically `expr impl ActorMessage {}` (§3.3, §16.3.2) or a type that has `impl ActorMessage for T` in scope.
+**Semantics:**
+- **Blocking**: The caller is suspended until the target actor returns a reply via the `(:reply, reply_value, new_state)` tuple
+- **Immediate Death Detection**: If the target actor is dead or terminates before sending a reply, `call()` immediately raises `actor_not_found` (not `timeout_error`)
+- **Message Delivery**: The message is queued in the target actor's mailbox like any other message (if the actor is alive)
+- **Reply Value**: The return type is determined by the `reply_value` in the behavior's `(:reply, reply_value, new_state)` return tuple, verified at compile time to match the `call()` return type
+
+**Behavior Function Contract**: The target actor must be spawned with a **call-only** behavior function that returns `(:reply, Reply, State)`, where:
+- `Reply` is the reply value sent back to the caller (becomes the return value of `call()`)
+- `State` is the new actor state after processing the message
+
+**Type Matching**: The type of the `call()` expression **must match** the `Reply` type from the behavior's return tuple:
+```
+call(actor, message) -> Reply
+```
+
+If the behavior returns `(:reply, int64, State)`, then `call()` returns `int64`.
+
+**Type Checking Requirement**:
+- The compiler **must** verify that `actor` was spawned with a call-only behavior (one that always returns `(:reply, ...)`)
+- The compiler **must** verify that the Reply type in `(:reply, Reply, State)` matches the expected return type of `call()`
+- If `actor` is spawned with a cast-only behavior (returns `(:no_reply, ...)`), the compiler reports a **type error**: `"cannot call() a cast-only actor"`
+- If the behavior returns a union of both `(:reply, ...)` and `(:no_reply, ...)` forms, the compiler reports a **type error**: `"behavior has inconsistent return types; cannot determine if call-safe"`
+- If Reply type does not match expected return type, the compiler reports a **type error**: `"reply type mismatch: expected X, got Y"`
+
+The `message` argument must satisfy `ActorMessage` — typically `expr impl ActorMessage {}` (§3.3, §16.3.2) or a type that has `impl ActorMessage for T` in scope.
 
 #### 16.1.2 Asynchronous Cast
 Messages can be sent asynchronously without blocking, with success/failure indication:
@@ -7840,20 +8020,37 @@ Messages can be sent asynchronously without blocking, with success/failure indic
 cast(actor: actor_ref, message: ActorMessage) -> boolean proc[concurrency]
 ```
 
-Cast never blocks - messages are queued in the actor's mailbox and the function returns immediately. Returns `true` if the message was successfully enqueued, `false` if the actor doesn't exist. Mailboxes are unbounded queues that can grow without limit, so messages are never rejected due to mailbox capacity. The `message` argument must satisfy `ActorMessage` — typically `expr impl ActorMessage {}` (§3.3, §16.3.2) or a type that has `impl ActorMessage for T` in scope.
+**Semantics:**
+- **Non-Blocking**: The caller returns immediately; the message is queued and processing continues without waiting for a response
+- **No Reply Expected**: The target behavior must return `(:no_reply, new_state)` — no reply is sent back to the caller
+- **Immediate Death Detection**: Returns `false` immediately if the actor is already dead (does not queue the message)
+- **Success/Failure**: Returns `true` if the message was successfully enqueued (actor exists and alive), `false` if the actor doesn't exist or is dead
+
+**Behavior Function Contract**: The target actor must be spawned with a **cast-only** behavior function that returns `(:no_reply, new_state)`.
+
+**Type Checking Requirement**:
+- The compiler **must** verify that `actor` was spawned with a cast-only behavior (one that always returns `(:no_reply, ...)`)
+- If `actor` is spawned with a call-only behavior (returns `(:reply, ...)`), the compiler reports a **type error**: `"cannot cast() to a call-only actor"`
+- If the behavior returns a union of both `(:reply, ...)` and `(:no_reply, ...)` forms, the compiler reports a **type error**: `"behavior has inconsistent return types; cannot determine if cast-safe"`
+
+Mailboxes are unbounded queues that can grow without limit, so messages are never rejected due to mailbox capacity. The `message` argument must satisfy `ActorMessage` — typically `expr impl ActorMessage {}` (§3.3, §16.3.2) or a type that has `impl ActorMessage for T` in scope.
 
 #### 16.1.3 Message Ordering
-Each actor's mailbox is a queue containing all messages from all actors sending it messages. Messages are processed in standard queue ordering: first-received, first-processed (FIFO). Messages from the same sender maintain order relative to each other, but messages from different senders are interleaved in the order they arrive at the actor's mailbox.
+Each actor's mailbox is a queue containing all messages from all actors sending it messages. Messages are processed in standard queue ordering: first-received, first-processed (FIFO). Messages from the same sender maintain order relative to each other, but messages from different senders are interleaved in the order they arrive at the actor's mailbox. Both `call()` and `cast()` messages are interleaved in arrival order.
 
 ```
-send(actor, msg1)
-send(actor, msg2)
-// actor receives msg1, then msg2 (maintains sender order)
-// Messages from other actors may be interleaved between msg1 and msg2
+call(actor, msg1)
+call(actor, msg2)
+cast(actor, msg3)
+// actor receives msg1, msg2, msg3 in order (FIFO)
+// caller of msg1 blocks until reply; caller of msg2 blocks until msg1 replies; cast returns immediately
 ```
 
 #### 16.1.4 Message Delivery
-Messages are delivered exactly once, in FIFO order. The actor runtime processes messages from the mailbox queue sequentially, passing each message to the behavior function along with the current state.
+Messages are delivered exactly once, in FIFO order. The actor runtime processes messages from the mailbox queue sequentially, passing each message to the behavior function along with the current state. The behavior function returns a tagged tuple that indicates whether to send a reply and what the new state should be:
+
+- **`(:reply, reply_value, new_state)`** — For `call()` messages: send `reply_value` back to the caller, update state to `new_state`
+- **`(:no_reply, new_state)`** — For `cast()` messages: no reply sent, update state to `new_state`
 
 **Message Delivery to Terminated Actors:**
 
@@ -7880,8 +8077,11 @@ actor_b_ref: actor_ref <- spawn(initial_state, behavior_fn);
 // Actor B terminates (for any reason)
 // ... Actor B terminates ...
 
-// Actor A sends message to terminated Actor B
-send(actor_b_ref, SomeMessage {});  // Message is dropped, no error raised
+// Actor A sends message (cast) to terminated Actor B
+cast(actor_b_ref, SomeMessage {});  // Returns false, no error raised
+
+// Actor A calls (expects reply) from terminated Actor B
+call(actor_b_ref, SomeRequest {});  // Raises actor_not_found exception
 
 // Optional: Runtime may log warning (implementation-dependent)
 // Warning: "Message sent to terminated actor"
@@ -7977,35 +8177,199 @@ Unbounded mailboxes provide predictable performance characteristics:
 - See Section 15.1.2.2 (Actor Migration Overhead and Behavior) for message delivery during migration
 - See Section 12.1 (Region-Based Memory Management) for memory management details
 
-#### 16.2.3 Message Patterns in Behavior Functions
+#### 16.2.3 Message Type Validation
+
+**Compile-Time Checking**: The compiler verifies message types match the behavior's parameter type.
+
+**Runtime Checking**: If a message of the wrong type is sent to an actor (e.g., through indirect routing, message forwarding, or type system bypasses), the behavior receives a message that does not match the expected type. The behavior's pattern matching will fail to match any case, resulting in a **runtime error**:
+
+```
+error: message type mismatch at runtime
+  - behavior expects: MessageType
+  - received: DifferentType
+  - no matching pattern in case expression
+  - actor terminates
+```
+
+This is a **runtime error**, not a compile-time error, because type information may not be fully available until runtime in some actor routing scenarios.
+
+#### 16.2.4 Message Patterns in Behavior Functions
 Behavior functions receive messages as parameters and can use pattern matching on them:
 
 ```
-fn selective_receiver(msg: msg_type, state: unit) -> atom proc[mailbox] {
-    case msg of
-        {request, data} -> handle_request(data)
-        ping -> handle_ping()
-        quit -> terminate()
-    end
-    return ()
+fn selective_receiver(msg: msg_type, state: unit) -> (:no_reply, unit) {
+    sequence proc[mailbox, concurrency]
+        result: unit <- case msg of {
+            (:request, data: int64) -> handle_request(data)
+            (:ping) -> handle_ping()
+            (:shutdown) -> { shutdown_cleanup(); () }
+        };
+    produces pure (:no_reply, state) end
 }
 ```
 
-The message parameter is automatically provided by the actor runtime when a message is received.
+The message parameter is automatically provided by the actor runtime when a message is received. Pattern matching exhaustiveness is checked at compile time; if a message arrives that matches no pattern, it is a runtime error.
 
-### 16.2.4 Cast vs Send
-Both `cast()` and `send()` send messages asynchronously without blocking:
+#### 16.2.3.1 Effect Requirements for Actor Behaviors
 
-- **`send()`**: Returns `atom` - fire-and-forget message sending
-  - Always succeeds (messages are always accepted by unbounded mailboxes)
-  - No return value to check - suitable when message delivery is guaranteed
-  
-- **`cast()`**: Returns `boolean` - indicates whether actor exists
-  - Returns `true` if message was successfully enqueued (actor exists)
-  - Returns `false` only if actor doesn't exist (terminated or invalid actor reference)
-  - Never returns `false` due to mailbox capacity (mailboxes are unbounded)
+**All actors have a mailbox.** There is no separate `actor` effect.
 
-Use `cast()` when you need to detect if an actor exists before sending messages. Use `send()` for simple fire-and-forget messaging when actor existence is guaranteed.
+**Effect Declaration**: Behavior functions must declare effects within `sequence` blocks:
+
+- **`proc[mailbox, concurrency]`** — For all actor operations:
+  - This effect covers **all** concurrency and mailbox operations together
+  - Required when behavior performs `call()`, `cast()`, or uses `self()`
+  - This is the standard effect for actor message handling
+
+- **Additional effects as needed**:
+  - `proc[device_io, mailbox, concurrency]` — For I/O within actor behavior
+  - `proc[mem(normal), mailbox, concurrency]` — For region operations within actor behavior
+
+**Single Effect Requirement**: `mailbox` and `concurrency` are always used together. There is no scenario where you use one without the other in actor code.
+
+**Example:**
+```silica
+fn handler(msg: int64, state: int64) -> (:reply, int64, int64) {
+    sequence proc[mailbox, concurrency]
+        // All actor operations (call, cast, self) are allowed here
+        _: boolean <- cast(other_actor, msg impl ActorMessage {});
+        new_state: int64 <- msg + state;
+    produces pure (:reply, new_state, new_state) end
+}
+```
+
+### 16.2.5 Call vs Cast
+
+**Synchronous `call()`** and asynchronous **`cast()`** provide two message-sending patterns:
+
+| Aspect | `call()` | `cast()` |
+|--------|----------|---------|
+| **Blocking** | Yes — caller blocks until reply | No — returns immediately |
+| **Return Value** | Reply from behavior | Boolean (actor exists?) |
+| **Behavior Return** | `(:reply, reply_value, new_state)` | `(:no_reply, new_state)` |
+| **Use Case** | Request-reply patterns | Fire-and-forget notifications |
+| **Exception on Fail** | `timeout_error` or `actor_not_found` | Returns `false` |
+
+**Usage Guidance:**
+- Use `call()` for **request-reply** patterns where the caller needs a response before continuing
+- Use `cast()` for **notifications** or **commands** where no reply is expected
+- Use `cast()` to detect actor existence (returns `boolean`)
+
+### 16.2.6 Compiler Type Checking for Calling Conventions
+
+The compiler enforces strict type checking to prevent misuse of `call()` and `cast()` with incompatible actors.
+
+#### 16.2.6.1 Behavior Return Type Consistency
+
+**Rule**: Each behavior function must return **exactly one of**:
+- `(:reply, Reply, State)` for all code paths (call-only behavior)
+- `(:no_reply, State)` for all code paths (cast-only behavior)
+
+**Compiler Error**: If any code path returns `(:reply, ...)` and any code path returns `(:no_reply, ...)`, the compiler reports a **type error**:
+```
+error: behavior has inconsistent return types
+  - some paths return (:reply, ...)
+  - some paths return (:no_reply, ...)
+  - cannot determine if behavior is call-safe or cast-safe
+  - split into two separate behaviors
+```
+
+#### 16.2.6.2 Call Type Checking
+
+**Rule**: `call(actor_ref, message)` is only valid if `actor_ref` was spawned with a call-only behavior (returns `(:reply, ...)` exclusively).
+
+**Compiler Error**: If `call()` is used on an actor spawned with a cast-only behavior:
+```
+error: cannot call() a cast-only actor
+  - actor was spawned with a behavior returning (:no_reply, ...)
+  - use cast() instead, or create a separate actor with a call-only behavior
+```
+
+#### 16.2.6.3 Cast Type Checking
+
+**Rule**: `cast(actor_ref, message)` is only valid if `actor_ref` was spawned with a cast-only behavior (returns `(:no_reply, ...)` exclusively).
+
+**Compiler Error**: If `cast()` is used on an actor spawned with a call-only behavior:
+```
+error: cannot cast() to a call-only actor
+  - actor was spawned with a behavior returning (:reply, ...)
+  - use call() instead to receive a reply
+```
+
+#### 16.2.6.4 Tracking Actor Calling Convention
+
+The compiler tracks the calling convention of each `actor_ref` based on:
+1. The behavior function passed to `spawn()`
+2. The return type of that behavior function
+3. All code paths in the behavior must consistently return one form
+
+This information is used at call sites of `call()` and `cast()` to enforce the type checking rules above.
+
+#### 16.2.6.5 Self-Call Deadlock Prevention
+
+**Rule**: `call(self(), message)` is a **compiler error**. An actor cannot call itself synchronously, as this would cause a deadlock.
+
+**Compiler Error**: If an actor behavior attempts `call(self(), ...)`:
+```
+error: cannot call(self(), ...)
+  - self() returns the current actor's reference
+  - calling self() would deadlock (actor waits for reply from itself)
+  - use cast(self(), ...) for asynchronous self-messages instead
+```
+
+**Rationale**: The calling actor is suspended waiting for a reply from the same actor that is handling the current message. The reply can never come, resulting in permanent deadlock.
+
+**Alternative**: If an actor needs to send itself a message, use `cast(self(), ...)` (asynchronous), which enqueues the message for later processing after the current message completes.
+
+#### 16.2.6.6 Migration Message Handling
+
+**Migration Control**: Actor migration between cores is initiated by messages sent to the actor (via `migrate_actor()` or similar control functions). However, these migration messages are **handled by the runtime**, not by the behavior function.
+
+**Semantics**:
+- Migration messages are processed **outside** the normal message handler
+- The behavior function does not see or handle migration messages
+- During migration, the actor's state is preserved and moved to the target core
+- Message ordering and reply guarantees still hold (see §15.1.2.2)
+
+**Programmer Perspective**: Migrations appear as transparent core movements. The behavior function continues processing messages normally; state transfers are handled by the runtime.
+
+### 16.2.7 Supervisor Actors (Future Definition)
+
+**Concept**: Supervisor actors monitor and manage child actors. They are implemented using **traits** (see §9, Trait System).
+
+**Status**: Supervisor trait definitions and supervisor patterns are not yet fully specified. They will be defined in a future expansion of this specification (§15.4, Supervision and Fault Tolerance).
+
+**Current Recommendation**: Applications should implement custom supervisor patterns using regular actors and traits until the formal supervisor subsystem is defined.
+
+### 16.2.8 Backpressure and Mailbox Management
+
+**No Built-in Backpressure**: The runtime does not provide automatic backpressure mechanisms. Mailboxes are unbounded and will grow indefinitely if senders vastly outpace receivers.
+
+**Programmer Responsibility**: Applications must implement backpressure strategies suitable for their use case:
+
+- **Request/Response Pattern**: Use `call()` instead of `cast()` to naturally slow senders (caller blocks until reply)
+- **Explicit Acknowledgments**: Have receivers send acknowledgment messages back to senders
+- **Bounded Queues**: Maintain application-level message queues with size limits
+- **Throttling**: Have senders monitor receiver state and throttle message rate
+- **Priority Queues**: Route critical messages separately from bulk messages
+
+**Example: Backpressure via Acknowledgments**
+```silica
+impl ActorMessage for (:work, int64);
+impl ActorMessage for (:ack);
+
+fn worker(msg: (:ack), state: int64) -> (:no_reply, int64) {
+    (:no_reply, state)
+}
+
+fn producer(worker_ref: actor_ref) -> atom {
+    sequence proc[mailbox, concurrency]
+        _: boolean <- cast(worker_ref, (:work, 42) impl ActorMessage {});
+        // Wait for acknowledgment before sending next message
+        ack_msg: (:ack) <- recv();
+    produces pure :ok end
+}
+```
 
 ### 16.3 Message Types and Serialization
 
@@ -12786,15 +13150,43 @@ buffer_capacity(buffer) -> int
 ```
 
 ### 22.4 Actor Operations
+
+#### Spawning Actors
 ```
-spawn(initial_state, behavior [, core_affinity]) -> actor_ref
-send(actor, message) -> atom proc[concurrency]
-cast(actor, message) -> boolean proc[concurrency]
+spawn(initial_state, behavior [, core_affinity]) -> actor_ref proc[concurrency]
+```
+
+Creates a new actor with the given initial state and behavior function. The behavior function has type `(Msg, State) -> (:reply, Reply, State) | (:no_reply, State)`.
+
+#### Synchronous Call (Request-Reply)
+```
+call(actor: actor_ref, message: ActorMessage) -> Reply proc[concurrency]
+```
+
+Sends a message to an actor and **blocks** until a reply is received. The target behavior must return `(:reply, reply_value, new_state)`. Returns the `reply_value` sent back by the behavior. Raises `timeout_error` if no reply is received within the timeout period (default 5 seconds), or `actor_not_found` if the actor has terminated.
+
+#### Asynchronous Cast (Fire-and-Forget)
+```
+cast(actor: actor_ref, message: ActorMessage) -> boolean proc[concurrency]
+```
+
+Sends a message to an actor and **returns immediately** without waiting for a response. The target behavior should return `(:no_reply, new_state)`. Returns `true` if the message was successfully enqueued (actor exists), `false` if the actor doesn't exist.
+
+#### Runtime Message Reception
+```
 recv([actor]) -> Msg proc[mailbox, concurrency]          // Runtime internal
+```
+
+The `recv()` operation is a **runtime internal function** and cannot be called directly from user code. The runtime uses `recv()` internally to dequeue messages from the actor's mailbox.
+
+#### Actor Self-Reference
+```
 self() -> actor_ref proc[mailbox, concurrency]
 ```
 
-**Note**: `recv()` is a runtime internal function and cannot be called directly from user code. `send()` and `cast()` may be used from within actor behavior functions (and elsewhere) when the enclosing `sequence` declares the required effects (see §15.1.2, §16.2.1).
+Returns the current actor's reference. Can be used to send messages back to the caller (for cast-back patterns in behaviors, or to include in message payloads).
+
+**Note**: `call()` and `cast()` may be used from within actor behavior functions (and elsewhere) when the enclosing `sequence` declares the required effects (see §15.1.2, §16.1).
 
 **Core Affinity Parameter:**
 The `spawn()` function accepts an optional third parameter for CPU core affinity:

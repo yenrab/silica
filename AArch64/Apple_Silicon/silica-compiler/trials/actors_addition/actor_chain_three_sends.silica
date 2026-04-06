@@ -1,9 +1,29 @@
-// Spec §16: repeated send to the same actor_ref (sequential message delivery in sequence block)
+// Spec §16.1.3: repeated call() to same actor_ref preserves FIFO ordering for that sender.
+// §15.1.2: behavior for call() returns (:reply, reply_value, new_state).
+
+impl ActorMessage for int64;
+
+fn acc(msg: int64, state: int64) -> (:reply, int64, int64) {
+    sequence proc[device_io, concurrency]
+        println("State is now");
+        print_int64(state);
+        println("Received message");
+        print_int64(msg);
+        new_state: int64 <- msg + state;
+        println("New state is");
+        print_int64(new_state);
+    produces
+        pure (:reply, new_state, new_state)
+    end
+}
+
 fn main() -> atom {
     sequence proc[concurrency]
-        worker: actor_ref(int64) <- spawn(0);
-        send(worker, 1);
-        send(worker, 2);
-        send(worker, 3);
-    produces pure :ok end
+        worker: actor_ref <- spawn(0, acc);
+        _: int64 <- call(worker, 1 impl ActorMessage {});
+        _: int64 <- call(worker, 2 impl ActorMessage {});
+        _: int64 <- call(worker, 3 impl ActorMessage {});
+    produces
+        pure :ok
+    end
 }
