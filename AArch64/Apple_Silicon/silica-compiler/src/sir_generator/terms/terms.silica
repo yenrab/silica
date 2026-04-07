@@ -32,6 +32,8 @@ use string_calls;
 use tuple_decompose;
 use types;
 use memory_region_calls;
+use actor_calls;
+use type_checker_expressions_actors;
 use user_calls;
 use recursion_terms;
 use negate_builtins;
@@ -40,6 +42,184 @@ use list_terms;
 export expr_to_sir/2;
 export expr_to_sir_with_expected/3;
 export expr_to_sir_function_body/3;
+
+// Lower actor / concurrency builtins (silica-spec §15–16) to SIR prims; used from kind-4 call dispatch.
+fn sir_subexpr_for_actor(context: TypeContext, e: Expr, t: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    case in_body of {
+        true -> expr_to_sir_in_let_body(context, e, bound_name, bound_type, t);
+        false -> expr_to_sir_with_expected(context, e, t)
+    }
+}
+
+fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    case expr.name == "spawn" of {
+        true -> do
+            ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+            case ac == 2 or ac == 3 of {
+                false -> sir_ast@dummy_sir_term();
+                true -> do
+                    init_e: Expr <- type_checker_expressions_actors@spawn_init_expr(expr);
+                    beh_e: Expr <- type_checker_expressions_actors@spawn_behavior_expr(expr);
+                    case beh_e.kind == 1 of {
+                        false -> sir_ast@dummy_sir_term();
+                        true -> do
+                            (beh_found: bool, beh_fn_type: string) <- type_checker_core@lookup_symbol_found(context.env, beh_e.name);
+                            case beh_found of {
+                                false -> sir_ast@dummy_sir_term();
+                                true -> do
+                                    state_t: string <- type_checker_expressions_actors@parse_behavior_state_param_type(beh_fn_type);
+                                    beh_infer: string <- type_checker_tuple_decompose_helpers@infer_expr_type(beh_e, context);
+                                    init_sir: SIRTerm <- sir_subexpr_for_actor(context, init_e, state_t, in_body, bound_name, bound_type);
+                                    beh_sir: SIRTerm <- sir_subexpr_for_actor(context, beh_e, beh_infer, in_body, bound_name, bound_type);
+                                    case ac == 3 of {
+                                        true -> do
+                                            pl_e: Expr <- type_checker_expressions_actors@spawn_placement_expr(expr);
+                                            pl_sir: SIRTerm <- sir_subexpr_for_actor(context, pl_e, "discard", in_body, bound_name, bound_type);
+                                            actor_calls@build_spawn_prim(init_sir, beh_sir, pl_sir, true)
+                                        end;
+                                        false -> actor_calls@build_spawn_prim(init_sir, beh_sir, sir_ast@dummy_sir_term(), false)
+                                    }
+                                end
+                            }
+                        end
+                    }
+                end
+            }
+        end;
+        false -> case expr.name == "send" of {
+            true -> do
+                a0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                msg_e: Expr <- actor_calls@actor_call_second_arg(expr);
+                a1: SIRTerm <- sir_subexpr_for_actor(context, msg_e, "discard", in_body, bound_name, bound_type);
+                actor_calls@build_send_prim(a0, a1)
+            end;
+            false -> case expr.name == "cast" of {
+                true -> do
+                    c0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                    cmsg: Expr <- actor_calls@actor_call_second_arg(expr);
+                    c1: SIRTerm <- sir_subexpr_for_actor(context, cmsg, "discard", in_body, bound_name, bound_type);
+                    actor_calls@build_actor_cast_prim(c0, c1)
+                end;
+                false -> case expr.name == "call" of {
+                    true -> do
+                        k0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                        kmsg: Expr <- actor_calls@actor_call_second_arg(expr);
+                        k1: SIRTerm <- sir_subexpr_for_actor(context, kmsg, "discard", in_body, bound_name, bound_type);
+                        actor_calls@build_actor_call_prim(k0, k1, expected_type)
+                    end;
+                    false -> case expr.name == "self" of {
+                        true -> case type_checker_expressions_actors@count_chain_args(expr) == 0 of {
+                            true -> actor_calls@build_self_prim();
+                            false -> sir_ast@dummy_sir_term()
+                        };
+                        false -> lower_actor_runtime_helper_expr(context, expr, in_body, bound_name, bound_type)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn lower_actor_runtime_helper_expr(context: TypeContext, expr: Expr, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    n: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    ret: string <- actor_calls@actor_runtime_sir_return_type(expr.name);
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    case expr.name == "get_cpu_topology" of {
+        true -> case n == 0 of { true -> actor_calls@build_actor_runtime_prim(expr.name, ret, d, d, 0); false -> sir_ast@dummy_sir_term() };
+        false -> case expr.name == "get_efficiency_cores" of {
+            true -> case n == 0 of { true -> actor_calls@build_actor_runtime_prim(expr.name, ret, d, d, 0); false -> sir_ast@dummy_sir_term() };
+            false -> case expr.name == "get_performance_cores" of {
+                true -> case n == 0 of { true -> actor_calls@build_actor_runtime_prim(expr.name, ret, d, d, 0); false -> sir_ast@dummy_sir_term() };
+                false -> case expr.name == "get_core_capabilities" of {
+                    true -> case n == 1 of {
+                        true -> do
+                            a0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "int64", in_body, bound_name, bound_type);
+                            actor_calls@build_actor_runtime_prim(expr.name, ret, a0, d, 1)
+                        end;
+                        false -> sir_ast@dummy_sir_term()
+                    };
+                    false -> case expr.name == "pin_actor_to_core" of {
+                        true -> case n == 2 of {
+                            true -> do
+                                p0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                p1: SIRTerm <- sir_subexpr_for_actor(context, actor_calls@actor_call_second_arg(expr), "int64", in_body, bound_name, bound_type);
+                                actor_calls@build_actor_runtime_prim(expr.name, ret, p0, p1, 2)
+                            end;
+                            false -> sir_ast@dummy_sir_term()
+                        };
+                        false -> case expr.name == "pin_actor_realtime" of {
+                            true -> case n == 2 of {
+                                true -> do
+                                    r0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                    r1: SIRTerm <- sir_subexpr_for_actor(context, actor_calls@actor_call_second_arg(expr), "int64", in_body, bound_name, bound_type);
+                                    actor_calls@build_actor_runtime_prim(expr.name, ret, r0, r1, 2)
+                                end;
+                                false -> sir_ast@dummy_sir_term()
+                            };
+                            false -> case expr.name == "set_actor_priority" of {
+                                true -> case n == 2 of {
+                                    true -> do
+                                        s0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                        s1: SIRTerm <- sir_subexpr_for_actor(context, actor_calls@actor_call_second_arg(expr), "discard", in_body, bound_name, bound_type);
+                                        actor_calls@build_actor_runtime_prim(expr.name, ret, s0, s1, 2)
+                                    end;
+                                    false -> sir_ast@dummy_sir_term()
+                                };
+                                false -> case expr.name == "pin_actor_to_numa_node" of {
+                                    true -> case n == 2 of {
+                                        true -> do
+                                            u0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                            u1: SIRTerm <- sir_subexpr_for_actor(context, actor_calls@actor_call_second_arg(expr), "discard", in_body, bound_name, bound_type);
+                                            actor_calls@build_actor_runtime_prim(expr.name, ret, u0, u1, 2)
+                                        end;
+                                        false -> sir_ast@dummy_sir_term()
+                                    };
+                                    false -> case expr.name == "pin_actor_to_efficiency_core" of {
+                                        true -> case n == 1 of {
+                                            true -> do
+                                                e0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                actor_calls@build_actor_runtime_prim(expr.name, ret, e0, d, 1)
+                                            end;
+                                            false -> sir_ast@dummy_sir_term()
+                                        };
+                                        false -> case expr.name == "pin_actor_to_performance_core" of {
+                                            true -> case n == 1 of {
+                                                true -> do
+                                                    f0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                    actor_calls@build_actor_runtime_prim(expr.name, ret, f0, d, 1)
+                                                end;
+                                                false -> sir_ast@dummy_sir_term()
+                                            };
+                                            false -> case expr.name == "unpin_actor" of {
+                                                true -> case n == 1 of {
+                                                    true -> do
+                                                        v0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                        actor_calls@build_actor_runtime_prim(expr.name, ret, v0, d, 1)
+                                                    end;
+                                                    false -> sir_ast@dummy_sir_term()
+                                                };
+                                                false -> case expr.name == "remove_actor" of {
+                                                    true -> case n == 1 of {
+                                                        true -> do
+                                                            w0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                            actor_calls@build_actor_runtime_prim(expr.name, ret, w0, d, 1)
+                                                        end;
+                                                        false -> sir_ast@dummy_sir_term()
+                                                    };
+                                                    false -> sir_ast@dummy_sir_term()
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 fn expr_to_sir_tuple_decompose(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
     rhs_type_lookup: string <- tuple_decompose@expr_type_of(expr.inner, context);
@@ -373,7 +553,9 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
         4 -> do
             case memory_region_calls@is_region_builtin(expr.name) of {
                 true -> build_region_prim_in_body(context, expr, bound_name, bound_type, expected_type);
-                false -> case list_terms@is_list_primitive_name(expr.name) of {
+                false -> case actor_calls@is_actor_sir_builtin(expr.name) of {
+                    true -> lower_actor_builtin_expr(context, expr, expected_type, true, bound_name, bound_type);
+                    false -> case list_terms@is_list_primitive_name(expr.name) of {
                     true -> build_list_primitive_from_expr(context, expr, expected_type, true, bound_name, bound_type);
                     false -> case expr.name == "concatenate" of {
                     true -> do
@@ -417,6 +599,7 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                             }
                         }
                     }
+                }
                 }
                 }
             }
@@ -737,7 +920,9 @@ fn root_body_is_tail_user_call(expr: Expr) -> bool {
             true -> false;
             false -> case memory_region_calls@is_region_builtin(expr.name) of {
             true -> false;
-            false -> case expr.name == "concatenate" of {
+            false -> case actor_calls@is_actor_sir_builtin(expr.name) of {
+                true -> false;
+                false -> case expr.name == "concatenate" of {
                 true -> false;
                 false -> case expr.name == "substring" of {
                     true -> false;
@@ -751,6 +936,7 @@ fn root_body_is_tail_user_call(expr: Expr) -> bool {
                             }
                         }
                     }
+                }
                 }
             }
         }
@@ -981,7 +1167,9 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
         4 -> do
             case memory_region_calls@is_region_builtin(expr.name) of {
                 true -> build_region_prim(context, expr, expected_type);
-                false -> case list_terms@is_list_primitive_name(expr.name) of {
+                false -> case actor_calls@is_actor_sir_builtin(expr.name) of {
+                    true -> lower_actor_builtin_expr(context, expr, expected_type, false, "", "");
+                    false -> case list_terms@is_list_primitive_name(expr.name) of {
                     true -> build_list_primitive_from_expr(context, expr, expected_type, false, "", "");
                     false -> case expr.name == "concatenate" of {
                     true -> do
@@ -1026,6 +1214,7 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
                             }
                         }
                     }
+                }
                 }
                 }
             }

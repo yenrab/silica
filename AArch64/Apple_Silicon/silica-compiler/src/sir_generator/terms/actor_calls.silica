@@ -1,0 +1,92 @@
+// Actor / concurrency builtins → SIR prim terms (silica-specification §4.5, §15–16; sir_design_spec §7.9).
+// spawn, send per §7.9; actor_call, actor_cast, self and placement/runtime helpers use the same prim(kind 6) shape as region builtins.
+
+use parser_ast;
+use sir_ast;
+use types;
+
+export is_actor_sir_builtin/1;
+export actor_call_second_arg/1;
+export build_spawn_prim/4;
+export build_send_prim/2;
+export build_actor_call_prim/3;
+export build_actor_cast_prim/2;
+export build_self_prim/0;
+export build_actor_runtime_prim/4;
+export actor_runtime_sir_return_type/1;
+
+// Parser: second argument is inner of right_expr when right is a kind-4 pair with empty name.
+fn actor_call_second_arg(expr: Expr) -> Expr {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> expr.right_expr.inner;
+        false -> expr.right_expr
+    }
+}
+
+fn is_actor_sir_builtin(name: string) -> bool {
+    name == "spawn" or name == "send" or name == "cast" or name == "call" or name == "self"
+        or name == "pin_actor_to_core" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
+        or name == "pin_actor_realtime" or name == "remove_actor" or name == "pin_actor_to_numa_node"
+        or name == "unpin_actor" or name == "set_actor_priority"
+        or name == "get_cpu_topology" or name == "get_efficiency_cores" or name == "get_performance_cores"
+        or name == "get_core_capabilities"
+}
+
+// SIR text type field for runtime helper return (mirrors type_checker_expressions@actor_runtime_builtin_return_type).
+fn actor_runtime_sir_return_type(name: string) -> string {
+    case name of {
+        "pin_actor_to_core" -> "(int64,affinity_error)";
+        "pin_actor_to_efficiency_core" -> "(int64,affinity_error)";
+        "pin_actor_to_performance_core" -> "(int64,affinity_error)";
+        "pin_actor_realtime" -> "(int64,affinity_error)";
+        "remove_actor" -> "(int64,affinity_error)";
+        "pin_actor_to_numa_node" -> "(int64,affinity_error)";
+        "unpin_actor" -> "atom";
+        "set_actor_priority" -> "atom";
+        "get_cpu_topology" -> "cpu_topology";
+        "get_efficiency_cores" -> "List[int64,normal]";
+        "get_performance_cores" -> "List[int64,normal]";
+        "get_core_capabilities" -> "core_info";
+        _: string -> "unit"
+    }
+}
+
+// spawn: §7.9 — [concurrency]; optional third arg packed as tuple_make(behavior, placement) in the right slot.
+fn build_spawn_prim(init: SIRTerm, beh: SIRTerm, place: SIRTerm, three_args: bool) -> SIRTerm {
+    right_slot: SIRTerm <- case three_args of {
+        true -> SIRTerm { kind: 6, type_name: "unit", value: "", name: "tuple_make", inner: beh, right_expr: place };
+        false -> beh
+    };
+    SIRTerm { kind: 6, type_name: "actor_ref", value: "[concurrency]", name: "spawn", inner: init, right_expr: right_slot }
+}
+
+fn build_send_prim(ref_term: SIRTerm, message: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "unit", value: "[concurrency, mailbox]", name: "send", inner: ref_term, right_expr: message }
+}
+
+// Synchronous actor request; return type from type-checked expectation.
+fn build_actor_call_prim(ref_term: SIRTerm, message: SIRTerm, return_ast_type: string) -> SIRTerm {
+    sir_t: string <- types@type_name_to_sir(return_ast_type);
+    SIRTerm { kind: 6, type_name: sir_t, value: "[concurrency, mailbox]", name: "actor_call", inner: ref_term, right_expr: message }
+}
+
+// Fire-and-forget mailbox delivery; Silica surface returns boolean (§16.1.2). Distinct from sir_design_spec §7.12 repr cast.
+fn build_actor_cast_prim(ref_term: SIRTerm, message: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "bool", value: "[concurrency, mailbox]", name: "actor_cast", inner: ref_term, right_expr: message }
+}
+
+fn build_self_prim() -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "actor_ref", value: "[concurrency]", name: "self", inner: d, right_expr: d }
+}
+
+// Runtime helpers (CPU affinity, topology): prim name = Silica builtin, arity 0–2.
+fn build_actor_runtime_prim(builtin_name: string, sir_ret: string, arg0: SIRTerm, arg1: SIRTerm, nargs: int64) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    case nargs of {
+        0 -> SIRTerm { kind: 6, type_name: sir_ret, value: "[concurrency]", name: builtin_name, inner: d, right_expr: d };
+        1 -> SIRTerm { kind: 6, type_name: sir_ret, value: "[concurrency]", name: builtin_name, inner: arg0, right_expr: d };
+        2 -> SIRTerm { kind: 6, type_name: sir_ret, value: "[concurrency]", name: builtin_name, inner: arg0, right_expr: arg1 };
+        _: int64 -> sir_ast@dummy_sir_term()
+    }
+}

@@ -12,6 +12,7 @@ use boolean_type_checker_expressions;
 use type_checker_tuple_decompose_helpers;
 use type_checker_memory_regions;
 use type_checker_lists;
+use type_checker_expressions_actors;
 
 export check_expr/3;
 
@@ -422,10 +423,380 @@ fn check_negate_call(expr: Expr, num_type: string, expected_type: string, contex
     }
 }
 
+// §4.5 actor_ref, §15 spawn, §16 call/cast/send, self; recv forbidden §15.1.2;
+// CPU affinity / topology helpers (spec appendix): pin_actor_*, unpin_actor, remove_actor, set_actor_priority, get_cpu_topology, get_*_cores, get_core_capabilities.
+fn actor_runtime_builtin_return_type(name: string) -> string {
+    case name of {
+        "pin_actor_to_core" -> "(int64,affinity_error)";
+        "pin_actor_to_efficiency_core" -> "(int64,affinity_error)";
+        "pin_actor_to_performance_core" -> "(int64,affinity_error)";
+        "pin_actor_realtime" -> "(int64,affinity_error)";
+        "remove_actor" -> "(int64,affinity_error)";
+        "pin_actor_to_numa_node" -> "(int64,affinity_error)";
+        "unpin_actor" -> "atom";
+        "set_actor_priority" -> "atom";
+        "get_cpu_topology" -> "cpu_topology";
+        "get_efficiency_cores" -> "List[int64,normal]";
+        "get_performance_cores" -> "List[int64,normal]";
+        "get_core_capabilities" -> "core_info";
+        _: string -> ""
+    }
+}
+
+fn is_actor_runtime_helper_name(name: string) -> bool {
+    len(actor_runtime_builtin_return_type(name)) > 0
+}
+
+// §4.5 actor_ref, §15 spawn, §16 call/cast/send, self; recv forbidden §15.1.2.
+fn is_actor_concurrency_builtin(name: string) -> bool {
+    name == "spawn" or name == "send" or name == "cast" or name == "call" or name == "self" or name == "recv" or is_actor_runtime_helper_name(name)
+}
+
+fn check_runtime_builtin_return(expr: Expr, inferred: string, expected_type: string) -> TypeCheckResult {
+    case expected_type == "discard" of {
+        true -> type_checker_core@type_check_ok();
+        false -> case type_checker_lists@types_equal_strip(inferred, expected_type) of {
+            true -> type_checker_core@type_check_ok();
+            false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat(expr.name, " returns "), inferred), ", expected "), expected_type), "sect15")
+        }
+    }
+}
+
+fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    inferred: string <- actor_runtime_builtin_return_type(expr.name);
+    ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    case expr.name == "get_cpu_topology" of {
+        true -> case ac == 0 of {
+            false -> type_checker_core@type_check_err("E2005", expr.location, "get_cpu_topology expects 0 arguments", "sect15");
+            true -> check_runtime_builtin_return(expr, inferred, expected_type)
+        };
+        false -> case expr.name == "get_efficiency_cores" of {
+            true -> case ac == 0 of {
+                false -> type_checker_core@type_check_err("E2005", expr.location, "get_efficiency_cores expects 0 arguments", "sect15");
+                true -> check_runtime_builtin_return(expr, inferred, expected_type)
+            };
+            false -> case expr.name == "get_performance_cores" of {
+                true -> case ac == 0 of {
+                    false -> type_checker_core@type_check_err("E2005", expr.location, "get_performance_cores expects 0 arguments", "sect15");
+                    true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                };
+                false -> case expr.name == "get_core_capabilities" of {
+                    true -> case ac == 1 of {
+                        false -> type_checker_core@type_check_err("E2005", expr.location, "get_core_capabilities expects 1 argument: (core_id: int64)", "sect15");
+                        true -> do
+                            r0: TypeCheckResult <- check_expr(expr.inner, "int64", context);
+                            case r0.is_ok of {
+                                false -> r0;
+                                true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                            }
+                        end
+                    };
+                    false -> case expr.name == "pin_actor_to_core" of {
+                        true -> case ac == 2 of {
+                            false -> type_checker_core@type_check_err("E2005", expr.location, "pin_actor_to_core expects 2 arguments: (actor_ref, core_id)", "sect15");
+                            true -> do
+                                r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                case r0.is_ok of {
+                                    false -> r0;
+                                    true -> do
+                                        r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "int64", context);
+                                        case r1.is_ok of {
+                                            false -> r1;
+                                            true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                        }
+                                    end
+                                }
+                            end
+                        };
+                        false -> case expr.name == "pin_actor_realtime" of {
+                            true -> case ac == 2 of {
+                                false -> type_checker_core@type_check_err("E2005", expr.location, "pin_actor_realtime expects 2 arguments: (actor_ref, priority)", "sect15");
+                                true -> do
+                                    r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                    case r0.is_ok of {
+                                        false -> r0;
+                                        true -> do
+                                            r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "int64", context);
+                                            case r1.is_ok of {
+                                                false -> r1;
+                                                true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                            }
+                                        end
+                                    }
+                                end
+                            };
+                            false -> case expr.name == "set_actor_priority" of {
+                                true -> case ac == 2 of {
+                                    false -> type_checker_core@type_check_err("E2005", expr.location, "set_actor_priority expects 2 arguments: (actor_ref, priority_level)", "sect15");
+                                    true -> do
+                                        r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                        case r0.is_ok of {
+                                            false -> r0;
+                                            true -> do
+                                                r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "discard", context);
+                                                case r1.is_ok of {
+                                                    false -> r1;
+                                                    true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                                }
+                                            end
+                                        }
+                                    end
+                                };
+                                false -> case expr.name == "pin_actor_to_numa_node" of {
+                                    true -> case ac == 2 of {
+                                        false -> type_checker_core@type_check_err("E2005", expr.location, "pin_actor_to_numa_node expects 2 arguments: (actor_ref, numa_node)", "sect15");
+                                        true -> do
+                                            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                            case r0.is_ok of {
+                                                false -> r0;
+                                                true -> do
+                                                    r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "discard", context);
+                                                    case r1.is_ok of {
+                                                        false -> r1;
+                                                        true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                                    }
+                                                end
+                                            }
+                                        end
+                                    };
+                                    false -> case expr.name == "pin_actor_to_efficiency_core" of {
+                                        true -> case ac == 1 of {
+                                            false -> type_checker_core@type_check_err("E2005", expr.location, "pin_actor_to_efficiency_core expects 1 argument: (actor_ref)", "sect15");
+                                            true -> do
+                                                r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                case r0.is_ok of {
+                                                    false -> r0;
+                                                    true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                                }
+                                            end
+                                        };
+                                        false -> case expr.name == "pin_actor_to_performance_core" of {
+                                            true -> case ac == 1 of {
+                                                false -> type_checker_core@type_check_err("E2005", expr.location, "pin_actor_to_performance_core expects 1 argument: (actor_ref)", "sect15");
+                                                true -> do
+                                                    r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                    case r0.is_ok of {
+                                                        false -> r0;
+                                                        true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                                    }
+                                                end
+                                            };
+                                            false -> case expr.name == "unpin_actor" of {
+                                                true -> case ac == 1 of {
+                                                    false -> type_checker_core@type_check_err("E2005", expr.location, "unpin_actor expects 1 argument: (actor_ref)", "sect15");
+                                                    true -> do
+                                                        r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                        case r0.is_ok of {
+                                                            false -> r0;
+                                                            true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                                        }
+                                                    end
+                                                };
+                                                false -> case expr.name == "remove_actor" of {
+                                                    true -> case ac == 1 of {
+                                                        false -> type_checker_core@type_check_err("E2005", expr.location, "remove_actor expects 1 argument: (actor_ref)", "sect15");
+                                                        true -> do
+                                                            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                            case r0.is_ok of {
+                                                                false -> r0;
+                                                                true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                                            }
+                                                        end
+                                                    };
+                                                    false -> type_checker_core@type_check_err("E2005", expr.location, "unknown actor runtime helper", "sect15")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn check_actor_self_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    case ac == 0 of {
+        false -> type_checker_core@type_check_err("E2005", expr.location, "self expects 0 arguments (§15.1.3)", "sect15");
+        true -> case expected_type == "actor_ref" of {
+            true -> type_checker_core@type_check_ok();
+            false -> case expected_type == "discard" of {
+                true -> type_checker_core@type_check_ok();
+                false -> type_checker_core@type_check_err("E2003", expr.location, concat("self returns actor_ref, expected ", expected_type), "sect15")
+            }
+        }
+    }
+}
+
+fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    case ac == 2 or ac == 3 of {
+        false -> type_checker_core@type_check_err("E2005", expr.location, "spawn expects 2 or 3 arguments: (initial_state, behavior_fn [, core_affinity]) §15.1.1", "sect15");
+        true -> do
+            init_e: Expr <- type_checker_expressions_actors@spawn_init_expr(expr);
+            beh_e: Expr <- type_checker_expressions_actors@spawn_behavior_expr(expr);
+            case beh_e.kind == 1 of {
+                false -> type_checker_core@type_check_err("E2005", expr.location, "spawn: behavior must be a function identifier", "sect15");
+                true -> do
+                    (beh_found: bool, beh_type: string) <- type_checker_core@lookup_symbol_found(context.env, beh_e.name);
+                    case beh_found of {
+                        false -> type_checker_core@type_check_err("E2005", expr.location, concat("spawn: unknown behavior function: ", beh_e.name), "sect15");
+                        true -> case is_function_type_user_call(beh_type) of {
+                            false -> type_checker_core@type_check_err("E2005", expr.location, "spawn: behavior must be a function", "sect15");
+                            true -> do
+                                sig_ok: TypeCheckResult <- type_checker_expressions_actors@validate_spawn_behavior_function_type(beh_type, expr.location);
+                                case sig_ok.is_ok of {
+                                    false -> sig_ok;
+                                    true -> do
+                                        state_t: string <- type_checker_expressions_actors@parse_behavior_state_param_type(beh_type);
+                                        case len(state_t) == 0 of {
+                                            true -> type_checker_core@type_check_err("E2005", expr.location, "spawn: could not parse behavior state parameter type", "sect15");
+                                            false -> do
+                                                r_init: TypeCheckResult <- check_expr(init_e, state_t, context);
+                                                case r_init.is_ok of {
+                                                    false -> r_init;
+                                                    true -> case ac == 3 of {
+                                                        true -> do
+                                                            place_e: Expr <- type_checker_expressions_actors@spawn_placement_expr(expr);
+                                                            r_pl: TypeCheckResult <- check_expr(place_e, "discard", context);
+                                                            case r_pl.is_ok of {
+                                                                false -> r_pl;
+                                                                true -> check_actor_spawn_result_type(expr, expected_type)
+                                                            }
+                                                        end;
+                                                        false -> check_actor_spawn_result_type(expr, expected_type)
+                                                    }
+                                                }
+                                            end
+                                        }
+                                    end
+                                }
+                            end
+                        }
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn check_actor_spawn_result_type(expr: Expr, expected_type: string) -> TypeCheckResult {
+    case expected_type == "actor_ref" of {
+        true -> type_checker_core@type_check_ok();
+        false -> case expected_type == "discard" of {
+            true -> type_checker_core@type_check_ok();
+            false -> type_checker_core@type_check_err("E2003", expr.location, concat("spawn returns actor_ref, expected ", expected_type), "sect15")
+        }
+    }
+}
+
+fn check_actor_call_builtin(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    case ac == 2 of {
+        false -> type_checker_core@type_check_err("E2005", expr.location, "call expects 2 arguments: (actor_ref, message) §16.1.1", "sect16");
+        true -> do
+            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+            case r0.is_ok of {
+                false -> r0;
+                true -> do
+                    msg_e: Expr <- call_second_arg_expr(expr);
+                    r1: TypeCheckResult <- check_expr(msg_e, "discard", context);
+                    case r1.is_ok of {
+                        false -> r1;
+                        true -> type_checker_core@type_check_ok()
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn check_actor_cast_builtin(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    case ac == 2 of {
+        false -> type_checker_core@type_check_err("E2005", expr.location, "cast expects 2 arguments: (actor_ref, message) §16.1.2", "sect16");
+        true -> do
+            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+            case r0.is_ok of {
+                false -> r0;
+                true -> do
+                    msg_e: Expr <- call_second_arg_expr(expr);
+                    r1: TypeCheckResult <- check_expr(msg_e, "discard", context);
+                    case r1.is_ok of {
+                        false -> r1;
+                        true -> case expected_type == "boolean" of {
+                            true -> type_checker_core@type_check_ok();
+                            false -> case expected_type == "discard" of {
+                                true -> type_checker_core@type_check_ok();
+                                false -> type_checker_core@type_check_err("E2003", expr.location, concat("cast returns boolean, expected ", expected_type), "sect16")
+                            }
+                        }
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn check_actor_send_builtin(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    case ac == 2 of {
+        false -> type_checker_core@type_check_err("E2005", expr.location, "send expects 2 arguments: (actor_ref, message) §16.1", "sect16");
+        true -> do
+            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+            case r0.is_ok of {
+                false -> r0;
+                true -> do
+                    msg_e: Expr <- call_second_arg_expr(expr);
+                    r1: TypeCheckResult <- check_expr(msg_e, "discard", context);
+                    case r1.is_ok of {
+                        false -> r1;
+                        true -> case expected_type == "atom" of {
+                            true -> type_checker_core@type_check_ok();
+                            false -> case expected_type == "discard" of {
+                                true -> type_checker_core@type_check_ok();
+                                false -> type_checker_core@type_check_err("E2003", expr.location, concat("send returns atom, expected ", expected_type), "sect16")
+                            }
+                        }
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn check_actor_concurrency_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    case is_actor_runtime_helper_name(expr.name) of {
+        true -> check_actor_runtime_helper_call(expr, expected_type, context);
+        false -> case expr.name == "recv" of {
+            true -> type_checker_core@type_check_err("E2005", expr.location, "recv() is runtime-internal only; user code cannot call recv (§15.1.2)", "sect15");
+            false -> case expr.name == "self" of {
+                true -> check_actor_self_call(expr, expected_type, context);
+                false -> case expr.name == "spawn" of {
+                    true -> check_actor_spawn_call(expr, expected_type, context);
+                    false -> case expr.name == "call" of {
+                        true -> check_actor_call_builtin(expr, expected_type, context);
+                        false -> case expr.name == "cast" of {
+                            true -> check_actor_cast_builtin(expr, expected_type, context);
+                            false -> check_actor_send_builtin(expr, expected_type, context)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_memory_regions@is_region_builtin_call(expr.name) of {
         true -> check_region_builtin_call(expr, expected_type, context);
-        false -> case expr.name == "negate_unit" of {
+        false -> case is_actor_concurrency_builtin(expr.name) of {
+            true -> check_actor_concurrency_call(expr, expected_type, context);
+            false -> case expr.name == "negate_unit" of {
             true -> type_checker_core@type_check_err("E2003", expr.location, "negation is not supported for unit", "sect6");
             false -> case len(negate_builtin_arg_type(expr.name)) > 0 of {
                     true -> check_negate_call(expr, negate_builtin_arg_type(expr.name), expected_type, context);
@@ -547,6 +918,7 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
             }
         }
             }
+        }
         }
     }
     }

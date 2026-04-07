@@ -1,0 +1,186 @@
+// Actor / concurrency builtins (silica-specification §4.5 actor_ref, §15 spawn, §16 call/cast/send, self).
+// String-only helpers and spawn signature validation; call sites use type_checker_expressions@check_expr.
+
+use parser_ast;
+use type_checker_core;
+
+export count_chain_args/1;
+export trim_leading_actor/1;
+export behavior_return_is_call_only/1;
+export behavior_return_is_cast_only/1;
+export validate_spawn_behavior_function_type/2;
+export parse_behavior_state_param_type/1;
+export spawn_init_expr/1;
+export spawn_behavior_expr/1;
+export spawn_placement_expr/1;
+
+// Mirrors count_call_args_user_call in type_checker_expressions.silica (call arg chain encoding).
+fn count_chain_args(expr: Expr) -> int64 {
+    case expr.inner.kind == -1 of {
+        true -> 0;
+        false -> case expr.right_expr.kind == -1 of {
+            true -> 1;
+            false -> case expr.right_expr.kind == 4 of {
+                true -> 1 + count_chain_args(expr.right_expr);
+                false -> 2
+            }
+        }
+    }
+}
+
+fn trim_leading_actor_from(s: string, i: int64) -> string {
+    case i >= len(s) of {
+        true -> "";
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> trim_leading_actor_from(s, i + 1);
+            false -> substring(s, i, len(s))
+        }
+    }
+}
+
+fn trim_leading_actor(s: string) -> string {
+    trim_leading_actor_from(s, 0)
+}
+
+// §15.1.1 / §15.1.2: behavior returns (:reply, Reply, State) or (:no_reply, State).
+fn behavior_return_is_call_only(return_type: string) -> bool {
+    t: string <- trim_leading_actor(return_type);
+    case len(t) >= 8 of {
+        false -> false;
+        true -> substring(t, 0, 8) == "(:reply,"
+    }
+}
+
+fn behavior_return_is_cast_only(return_type: string) -> bool {
+    t: string <- trim_leading_actor(return_type);
+    case len(t) >= 11 of {
+        false -> false;
+        true -> substring(t, 0, 11) == "(:no_reply,"
+    }
+}
+
+fn find_arrow_pos_actor(s: string, i: int64) -> int64 {
+    case i + 4 > len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 4) == " -> " of {
+            true -> i;
+            false -> find_arrow_pos_actor(s, i + 1)
+        }
+    }
+}
+
+fn get_params_inner_actor(func_type: string) -> string {
+    arrow_pos: int64 <- find_arrow_pos_actor(func_type, 0);
+    case arrow_pos < 0 of {
+        true -> "";
+        false -> do
+            params_part: string <- substring(func_type, 0, arrow_pos);
+            case len(params_part) < 2 of {
+                true -> "";
+                false -> trim_leading_actor(substring(params_part, 1, len(params_part) - 1))
+            }
+        end
+    }
+}
+
+fn find_top_level_comma_actor(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) == "(" or substring(s, i, i + 1) == "[" or substring(s, i, i + 1) == "{" of {
+            true -> find_top_level_comma_actor(s, i + 1, depth + 1);
+            false -> case substring(s, i, i + 1) == ")" or substring(s, i, i + 1) == "]" or substring(s, i, i + 1) == "}" of {
+                true -> case depth <= 0 of {
+                    true -> len(s);
+                    false -> find_top_level_comma_actor(s, i + 1, depth - 1)
+                };
+                false -> case substring(s, i, i + 1) == "," of {
+                    true -> case depth == 0 of {
+                        true -> i;
+                        false -> find_top_level_comma_actor(s, i + 1, depth)
+                    };
+                    false -> find_top_level_comma_actor(s, i + 1, depth)
+                }
+            }
+        }
+    }
+}
+
+fn get_first_param_actor(params_inner: string) -> (string, string) {
+    case len(params_inner) == 0 of {
+        true -> ("", "");
+        false -> do
+            comma_pos: int64 <- find_top_level_comma_actor(params_inner, 0, 0);
+            case comma_pos >= len(params_inner) of {
+                true -> (trim_leading_actor(params_inner), "");
+                false -> do
+                    first: string <- trim_leading_actor(substring(params_inner, 0, comma_pos));
+                    rest: string <- trim_leading_actor(substring(params_inner, comma_pos + 1, len(params_inner)));
+                    (first, rest)
+                end
+            }
+        end
+    }
+}
+
+fn parse_function_return_actor(func_type: string) -> string {
+    arrow_pos: int64 <- find_arrow_pos_actor(func_type, 0);
+    case arrow_pos < 0 of {
+        true -> "";
+        false -> trim_leading_actor(substring(func_type, arrow_pos + 4, len(func_type)))
+    }
+}
+
+// Second parameter type is the actor state (initial_state must match it). §15.1.1.
+fn parse_behavior_state_param_type(func_type: string) -> string {
+    inner: string <- get_params_inner_actor(func_type);
+    (_msg: string, after_msg: string) <- get_first_param_actor(inner);
+    (state_t: string, tail: string) <- get_first_param_actor(after_msg);
+    case len(trim_leading_actor(tail)) > 0 of {
+        true -> "";
+        false -> trim_leading_actor(state_t)
+    }
+}
+
+fn validate_spawn_behavior_function_type(func_type: string, location: SourceLocation) -> TypeCheckResult {
+    arrow_pos: int64 <- find_arrow_pos_actor(func_type, 0);
+    case arrow_pos < 0 of {
+        true -> type_checker_core@type_check_err("E2005", location, "spawn: behavior must be a function type (Msg, State) -> (:reply, ...) or (:no_reply, ...)", "sect15");
+        false -> do
+            inner: string <- get_params_inner_actor(func_type);
+            (_msg_t: string, after_msg: string) <- get_first_param_actor(inner);
+            case len(trim_leading_actor(after_msg)) == 0 of {
+                true -> type_checker_core@type_check_err("E2005", location, "spawn: behavior must take exactly two parameters (message, state)", "sect15");
+                false -> do
+                    (_state_t: string, tail: string) <- get_first_param_actor(after_msg);
+                    case len(trim_leading_actor(tail)) > 0 of {
+                        true -> type_checker_core@type_check_err("E2005", location, "spawn: behavior must take exactly two parameters (message, state)", "sect15");
+                        false -> do
+                            ret: string <- parse_function_return_actor(func_type);
+                            case behavior_return_is_call_only(ret) of {
+                                true -> type_checker_core@type_check_ok();
+                                false -> case behavior_return_is_cast_only(ret) of {
+                                    true -> type_checker_core@type_check_ok();
+                                    false -> type_checker_core@type_check_err("E2005", location, "spawn: behavior return type must be (:reply, Reply, State) or (:no_reply, State) per §15.1.2", "sect15")
+                                }
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+// spawn(init, behavior): inner = init, right_expr.kind==4, right_expr.inner = behavior (when 2 args).
+fn spawn_init_expr(call_expr: Expr) -> Expr {
+    call_expr.inner
+}
+
+fn spawn_behavior_expr(call_expr: Expr) -> Expr {
+    call_expr.right_expr.inner
+}
+
+// Third argument when present: call_expr.right_expr.right_expr.inner
+fn spawn_placement_expr(call_expr: Expr) -> Expr {
+    call_expr.right_expr.right_expr.inner
+}

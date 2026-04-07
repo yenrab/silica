@@ -119,13 +119,53 @@ fn infer_binary_expr_type(expr: Expr, context: TypeContext) -> string {
 }
 
 // Kind 4: user function return type from env scheme "(T) -> R"; list primitives inferred from generics.
+// §4.5 / §15–16: spawn/self -> actor_ref; cast -> boolean; send -> atom; call return type is site-specific (empty).
+// CPU affinity / topology builtins: see type_checker_expressions@actor_runtime_builtin_return_type (duplicated names here via forward string match in infer).
+fn infer_actor_runtime_return(name: string) -> string {
+    case name of {
+        "pin_actor_to_core" -> "(int64,affinity_error)";
+        "pin_actor_to_efficiency_core" -> "(int64,affinity_error)";
+        "pin_actor_to_performance_core" -> "(int64,affinity_error)";
+        "pin_actor_realtime" -> "(int64,affinity_error)";
+        "remove_actor" -> "(int64,affinity_error)";
+        "pin_actor_to_numa_node" -> "(int64,affinity_error)";
+        "unpin_actor" -> "atom";
+        "set_actor_priority" -> "atom";
+        "get_cpu_topology" -> "cpu_topology";
+        "get_efficiency_cores" -> "List[int64,normal]";
+        "get_performance_cores" -> "List[int64,normal]";
+        "get_core_capabilities" -> "core_info";
+        _: string -> ""
+    }
+}
+
 fn infer_call_expr_type(expr: Expr, context: TypeContext) -> string {
-    (found: bool, typ: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
-    case found of {
-        true -> parse_function_return_from_scheme(typ);
-        false -> case type_checker_lists@is_list_primitive_name(expr.name) of {
-            true -> type_checker_lists@infer_list_primitive_return(expr);
-            false -> ""
+    case expr.name == "spawn" of {
+        true -> "actor_ref";
+        false -> case expr.name == "self" of {
+            true -> "actor_ref";
+            false -> case expr.name == "cast" of {
+                true -> "boolean";
+                false -> case expr.name == "send" of {
+                    true -> "atom";
+                    false -> do
+                        rt: string <- infer_actor_runtime_return(expr.name);
+                        case len(rt) > 0 of {
+                            true -> rt;
+                            false -> do
+                                (found: bool, typ: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
+                                case found of {
+                                    true -> parse_function_return_from_scheme(typ);
+                                    false -> case type_checker_lists@is_list_primitive_name(expr.name) of {
+                                        true -> type_checker_lists@infer_list_primitive_return(expr);
+                                        false -> ""
+                                    }
+                                }
+                            end
+                        }
+                    end
+                }
+            }
         }
     }
 }

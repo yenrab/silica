@@ -1,0 +1,30 @@
+// Spec §15.1.2: recv() is runtime-internal only; forwarding is done inside a behavior via cast().
+// Router behavior receives msg as a parameter and delivers it to another actor via cast().
+// §15.1.2: behavior returns (:no_reply, new_state) for cast() messages.
+
+impl ActorMessage for int64;
+impl ActorState for { v: int64 };
+impl ActorState for { sink: actor_ref };
+
+fn sink(msg: int64, state: { v: int64 }) -> (:no_reply, { v: int64 }) {
+    (:no_reply, { v: state.v + msg })
+}
+
+fn forwarder(msg: int64, state: { sink: actor_ref }) -> (:no_reply, { sink: actor_ref }) {
+    sequence proc[concurrency]
+        _: boolean <- cast(state.sink, msg impl ActorMessage {});
+    produces
+        pure :ok
+    end
+    (:no_reply, state)
+}
+
+fn main() -> atom {
+    sequence proc[concurrency]
+        sink_ref: actor_ref <- spawn({ v: 0 }, sink);
+        router: actor_ref <- spawn({ sink: sink_ref }, forwarder);
+        _: boolean <- cast(router, 7 impl ActorMessage {});
+    produces
+        pure :ok
+    end
+}

@@ -118,8 +118,7 @@ RESULT: Choose strategy and spawn
 ```silica
 spawn_actor(
   proc_def: request_handler,
-  initial_stack_size: 50_000_000,      // 50 MB default
-  max_stack_size: 1_000_000_000,       // Can grow to 1 GB if needed
+  initial_stack_size: 50_000_000,      // 50 MB initial
   migration_strategy: lazy,            // Handle frequent migrations without blocking
   numa_aware: true,                    // Prefer local memory
   initial_core: any                    // Scheduler places it
@@ -160,7 +159,6 @@ spawn_actor(
 spawn_actor(
   proc_def: background_job,
   initial_stack_size: 50_000_000,
-  max_stack_size: 200_000_000,         // Won't grow much
   migration_strategy: eager_copy,      // Copy eagerly when migrating (rare)
   numa_aware: true,
   initial_core: prefer_local            // Start on a NUMA node
@@ -200,7 +198,6 @@ spawn_actor(
 spawn_actor(
   proc_def: realtime_control_loop,
   initial_stack_size: 100_000_000,     // 100 MB for real-time work
-  max_stack_size: 200_000_000,         // Limited growth allowed
   migration_strategy: static_core,     // Never migrate
   core_affinity: some(physical_core_5) // Pin to specific core
 )
@@ -241,7 +238,6 @@ spawn_actor(
 spawn_actor(
   proc_def: batch_inference,
   initial_stack_size: 300_000_000,     // 300 MB for heavy computation
-  max_stack_size: 1_000_000_000,       // Can grow if needed
   migration_strategy: eager_copy,      // Copy upfront; then run clean
   numa_aware: true
 )
@@ -281,7 +277,6 @@ spawn_actor(
 spawn_actor(
   proc_def: api_handler,
   initial_stack_size: 50_000_000,
-  max_stack_size: 500_000_000,        // Allow growth for complex requests
   migration_strategy: lazy,           // Handle unpredictable pattern gracefully
   numa_aware: true
 )
@@ -380,7 +375,6 @@ spawn_request_handler(request) -> ActorRef {
   spawn_actor(
     proc_def: handle_request(request),
     initial_stack_size: 50_000_000,
-    max_stack_size: 200_000_000,
     migration_strategy: lazy,
     numa_aware: true
   )
@@ -404,7 +398,6 @@ spawn_service(config) -> ActorRef {
   spawn_actor(
     proc_def: background_service(config),
     initial_stack_size: 100_000_000,
-    max_stack_size: 500_000_000,
     migration_strategy: eager_copy,
     numa_aware: true
   )
@@ -428,7 +421,6 @@ spawn_realtime_worker(task) -> ActorRef {
   spawn_actor(
     proc_def: realtime_task(task),
     initial_stack_size: 200_000_000,
-    max_stack_size: 500_000_000,
     migration_strategy: static_core,
     core_affinity: some(preferred_core),
     numa_aware: true
@@ -454,7 +446,6 @@ spawn_batch_job(job_params) -> ActorRef {
   spawn_actor(
     proc_def: execute_batch(job_params),
     initial_stack_size: stack_size,
-    max_stack_size: stack_size * 2,      // Allow modest growth
     migration_strategy: eager_copy,      // Copy upfront; clean execution
     numa_aware: true
   )
@@ -495,10 +486,9 @@ Simplicity               ✓ Default          ✓ Explicit pause  ⚠️ Core af
 - [ ] **Know blocking tolerance**: Can it pause? For how long?
 - [ ] **Estimate stack usage**: How much memory will it actually use?
 - [ ] **Choose initial size**: Start with reasonable default (50 MB), adjust based on analysis
-- [ ] **Set max size**: Allow growth, but set a reasonable limit
 - [ ] **Select strategy**: Use decision flowchart to choose lazy/eager_copy/static_core
 - [ ] **Test & measure**: Run actual workload; measure page fault rates and latency
-- [ ] **Tune if needed**: Adjust initial_stack_size, max_stack_size, or migration_strategy based on profiling
+- [ ] **Tune if needed**: Adjust initial_stack_size or migration_strategy based on profiling
 
 ---
 

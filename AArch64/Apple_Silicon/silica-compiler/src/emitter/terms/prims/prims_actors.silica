@@ -1,0 +1,168 @@
+// Actor / concurrency prim emission (silica-specification §4.5, §15–16; sir_generator actor_calls.silica).
+// Lowers SIR kind-6 prims to BL of compiler-bundled runtime (_silica_rt_*), appended by emitter_core
+// from prims_actors_runtime_asm.silica (AArch64 assembly strings, compiler-owned).
+// Operands: binary prims expect inner -> X9, right_expr -> X10 (same as arithmetic).
+// spawn 3-arg form: right_expr is tuple_make(behavior, placement); X10 points at flat pair.
+
+use sir_ast;
+
+export is_actor_prim/1;
+export actor_prim_is_nullary/1;
+export actor_prim_is_unary/1;
+export emit_prim_op/2;
+export module_uses_actor_prims/1;
+
+fn term_has_actor_prim(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            6 -> is_actor_prim(term.name);
+            2 -> case term_has_actor_prim(term.inner) of {
+                true -> true;
+                false -> term_has_actor_prim(term.right_expr)
+            };
+            3 -> case term_has_actor_prim(term.inner) of {
+                true -> true;
+                false -> term_has_actor_prim(term.right_expr)
+            };
+            4 -> case term_has_actor_prim(term.inner) of {
+                true -> true;
+                false -> term_has_actor_prim(term.right_expr)
+            };
+            5 -> case term_has_actor_prim(term.inner) of {
+                true -> true;
+                false -> term_has_actor_prim(term.right_expr)
+            };
+            7 -> case term_has_actor_prim(term.inner) of {
+                true -> true;
+                false -> term_has_actor_prim(term.right_expr)
+            };
+            8 -> case term_has_actor_prim(term.inner) of {
+                true -> true;
+                false -> term_has_actor_prim(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn actor_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_actor_prim(fns.head.body) of {
+            true -> true;
+            false -> actor_in_functions(fns.tail)
+        }
+    }
+}
+
+fn module_uses_actor_prims(sir_module: SIRModule) -> bool {
+    actor_in_functions(sir_module.functions)
+}
+
+fn is_actor_prim(name: string) -> bool {
+    name == "spawn" or name == "send" or name == "actor_call" or name == "actor_cast" or name == "self"
+        or name == "pin_actor_to_core" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
+        or name == "pin_actor_realtime" or name == "remove_actor" or name == "pin_actor_to_numa_node"
+        or name == "unpin_actor" or name == "set_actor_priority"
+        or name == "get_cpu_topology" or name == "get_efficiency_cores" or name == "get_performance_cores"
+        or name == "get_core_capabilities"
+}
+
+fn actor_prim_is_nullary(name: string) -> bool {
+    name == "self" or name == "get_cpu_topology" or name == "get_efficiency_cores" or name == "get_performance_cores"
+}
+
+fn actor_prim_is_unary(name: string) -> bool {
+    name == "get_core_capabilities" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
+        or name == "unpin_actor" or name == "remove_actor"
+}
+
+fn asm_bl(label: string) -> string {
+    concat(concat("    BL ", label), "\n")
+}
+
+fn mov_dest_from_x0(dest: string) -> string {
+    case dest == "X0" of {
+        true -> "";
+        false -> concat(concat(concat("    MOV ", dest), ", X0"), "\n")
+    }
+}
+
+fn emit_spawn(dest: string, term: SIRTerm) -> string {
+    three: bool <- term.right_expr.kind == 6 and term.right_expr.name == "tuple_make";
+    case three of {
+        true -> concat(concat("    MOV X0, X9\n    LDR X1, [X10]\n    LDR X12, [X10, #8]\n    MOV W2, W12\n", asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0(dest));
+        false -> concat(concat("    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n", asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0(dest))
+    }
+}
+
+fn emit_send(dest: string) -> string {
+    concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_send")), mov_dest_from_x0(dest))
+}
+
+fn emit_actor_call(dest: string) -> string {
+    concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_call")), mov_dest_from_x0(dest))
+}
+
+fn emit_actor_cast(dest: string) -> string {
+    // bool in W0 per AAPCS; widen to X for dest
+    concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_cast")), mov_dest_from_x0(dest))
+}
+
+fn emit_self(dest: string) -> string {
+    concat(asm_bl("_silica_rt_actor_self"), mov_dest_from_x0(dest))
+}
+
+fn runtime_label(name: string) -> string {
+    case name of {
+        "get_cpu_topology" -> "_silica_rt_get_cpu_topology";
+        "get_efficiency_cores" -> "_silica_rt_get_efficiency_cores";
+        "get_performance_cores" -> "_silica_rt_get_performance_cores";
+        "get_core_capabilities" -> "_silica_rt_get_core_capabilities";
+        "pin_actor_to_core" -> "_silica_rt_pin_actor_to_core";
+        "pin_actor_to_efficiency_core" -> "_silica_rt_pin_actor_to_efficiency_core";
+        "pin_actor_to_performance_core" -> "_silica_rt_pin_actor_to_performance_core";
+        "pin_actor_realtime" -> "_silica_rt_pin_actor_realtime";
+        "remove_actor" -> "_silica_rt_remove_actor";
+        "pin_actor_to_numa_node" -> "_silica_rt_pin_actor_to_numa_node";
+        "unpin_actor" -> "_silica_rt_unpin_actor";
+        "set_actor_priority" -> "_silica_rt_set_actor_priority";
+        _: string -> "_silica_rt_actor_unknown"
+    }
+}
+
+fn emit_runtime_nullary(dest: string, name: string) -> string {
+    concat(asm_bl(runtime_label(name)), mov_dest_from_x0(dest))
+}
+
+fn emit_runtime_unary(dest: string, name: string) -> string {
+    concat(concat("    MOV X0, X9\n", asm_bl(runtime_label(name))), mov_dest_from_x0(dest))
+}
+
+fn emit_runtime_binary(dest: string, name: string) -> string {
+    concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl(runtime_label(name))), mov_dest_from_x0(dest))
+}
+
+fn emit_prim_op(term: SIRTerm, dest: string) -> string {
+    case term.name of {
+        "spawn" -> emit_spawn(dest, term);
+        "send" -> emit_send(dest);
+        "actor_call" -> emit_actor_call(dest);
+        "actor_cast" -> emit_actor_cast(dest);
+        "self" -> emit_self(dest);
+        "get_cpu_topology" -> emit_runtime_nullary(dest, term.name);
+        "get_efficiency_cores" -> emit_runtime_nullary(dest, term.name);
+        "get_performance_cores" -> emit_runtime_nullary(dest, term.name);
+        "get_core_capabilities" -> emit_runtime_unary(dest, term.name);
+        "pin_actor_to_core" -> emit_runtime_binary(dest, term.name);
+        "pin_actor_to_efficiency_core" -> emit_runtime_unary(dest, term.name);
+        "pin_actor_to_performance_core" -> emit_runtime_unary(dest, term.name);
+        "pin_actor_realtime" -> emit_runtime_binary(dest, term.name);
+        "remove_actor" -> emit_runtime_unary(dest, term.name);
+        "pin_actor_to_numa_node" -> emit_runtime_binary(dest, term.name);
+        "unpin_actor" -> emit_runtime_unary(dest, term.name);
+        "set_actor_priority" -> emit_runtime_binary(dest, term.name);
+        _: string -> concat(concat("    ; unsupported actor prim: ", term.name), "\n")
+    }
+}

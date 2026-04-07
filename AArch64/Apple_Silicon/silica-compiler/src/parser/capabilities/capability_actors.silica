@@ -1,0 +1,103 @@
+// Actors (silica-specification §3.3 postfix impl ActorMessage, §3.4.9 impl_actor_message_decl,
+// §4.5 actor_ref, §15 spawn/send/cast/call, §15.2 / appendix CPU affinity runtime helpers, placement keywords).
+// Lexer exposes actor/spawn/send/cast/self/recv, pin_actor_*/unpin/remove/set_priority/get_cpu_topology/get_*_cores/get_core_capabilities, impl/for, placement kinds.
+
+use lexer_token_kind;
+use constraint_core;
+
+export constraints/0;
+export initial_roles/1;
+
+fn role_actor_impl_kw() -> int64 { 215 }
+fn role_actor_impl_trait_name() -> int64 { 216 }
+fn role_actor_impl_for_kw() -> int64 { 217 }
+
+fn role_fn_keyword() -> int64 { 1 }
+fn role_type_name() -> int64 { 6 }
+fn role_left_brace() -> int64 { 7 }
+fn role_right_brace() -> int64 { 8 }
+fn role_operand() -> int64 { 12 }
+fn role_call_name() -> int64 { 14 }
+fn role_call_rparen() -> int64 { 16 }
+fn role_comma_param() -> int64 { 17 }
+fn role_param_type() -> int64 { 27 }
+fn role_stmt_sep() -> int64 { 55 }
+
+fn single_role(r: int64) -> ListInt {
+    constraint_core@cons_int(r, constraint_core@empty_list_int())
+}
+
+fn two_roles(r1: int64, r2: int64) -> ListInt {
+    constraint_core@cons_int(r1, single_role(r2))
+}
+
+fn three_roles(r1: int64, r2: int64, r3: int64) -> ListInt {
+    constraint_core@cons_int(r1, two_roles(r2, r3))
+}
+
+fn four_roles(r1: int64, r2: int64, r3: int64, r4: int64) -> ListInt {
+    constraint_core@cons_int(r1, three_roles(r2, r3, r4))
+}
+
+fn five_roles(r1: int64, r2: int64, r3: int64, r4: int64, r5: int64) -> ListInt {
+    constraint_core@cons_int(r1, four_roles(r2, r3, r4, r5))
+}
+
+fn constraints() -> ListConstraint {
+    c_post1: Constraint <- Constraint { trigger_role: role_operand(), next_token_roles: single_role(role_actor_impl_kw()), prev_token_roles: constraint_core@empty_list_int(), constraint_id: 400 };
+    c_post2: Constraint <- Constraint { trigger_role: role_call_rparen(), next_token_roles: single_role(role_actor_impl_kw()), prev_token_roles: constraint_core@empty_list_int(), constraint_id: 401 };
+    c_stmt_impl: Constraint <- Constraint { trigger_role: role_stmt_sep(), next_token_roles: two_roles(role_actor_impl_kw(), role_fn_keyword()), prev_token_roles: constraint_core@empty_list_int(), constraint_id: 402 };
+    c_rb_impl: Constraint <- Constraint { trigger_role: role_right_brace(), next_token_roles: single_role(role_actor_impl_kw()), prev_token_roles: constraint_core@empty_list_int(), constraint_id: 403 };
+    c_impl_trait: Constraint <- Constraint { trigger_role: role_actor_impl_kw(), next_token_roles: single_role(role_actor_impl_trait_name()), prev_token_roles: four_roles(role_operand(), role_call_rparen(), role_stmt_sep(), role_right_brace()), constraint_id: 404 };
+    // After trait name: "for" (top-level), marker brace, end of arg ), comma, or ; only if mistaken parse paths eliminated elsewhere
+    c_trait_next: Constraint <- Constraint { trigger_role: role_actor_impl_trait_name(), next_token_roles: five_roles(role_actor_impl_for_kw(), role_left_brace(), role_call_rparen(), role_comma_param(), role_stmt_sep()), prev_token_roles: single_role(role_actor_impl_kw()), constraint_id: 405 };
+    c_for_type: Constraint <- Constraint { trigger_role: role_actor_impl_for_kw(), next_token_roles: two_roles(role_type_name(), role_param_type()), prev_token_roles: single_role(role_actor_impl_trait_name()), constraint_id: 406 };
+    c_impl_type_next: Constraint <- Constraint { trigger_role: role_param_type(), next_token_roles: three_roles(role_stmt_sep(), role_left_brace(), role_call_rparen()), prev_token_roles: single_role(role_actor_impl_for_kw()), constraint_id: 407 };
+    c_impl_type_next_tn: Constraint <- Constraint { trigger_role: role_type_name(), next_token_roles: three_roles(role_stmt_sep(), role_left_brace(), role_call_rparen()), prev_token_roles: single_role(role_actor_impl_for_kw()), constraint_id: 408 };
+    c_semi_after_impl_type: Constraint <- Constraint { trigger_role: role_stmt_sep(), next_token_roles: constraint_core@empty_list_int(), prev_token_roles: two_roles(role_param_type(), role_type_name()), constraint_id: 409 };
+    constraint_core@cons_constraint(c_post1, constraint_core@cons_constraint(c_post2, constraint_core@cons_constraint(c_stmt_impl, constraint_core@cons_constraint(c_rb_impl, constraint_core@cons_constraint(c_impl_trait, constraint_core@cons_constraint(c_trait_next, constraint_core@cons_constraint(c_for_type, constraint_core@cons_constraint(c_impl_type_next, constraint_core@cons_constraint(c_impl_type_next_tn, constraint_core@cons_constraint(c_semi_after_impl_type, constraint_core@empty_list_constraint()))))))))))
+}
+
+fn initial_roles(token_kind: int64) -> ListInt {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case token_kind == kinds.impl_keyword of {
+        true -> single_role(role_actor_impl_kw());
+        false -> case token_kind == kinds.for_keyword of {
+            true -> single_role(role_actor_impl_for_kw());
+            false -> case token_kind == kinds.spawn_keyword of {
+                true -> two_roles(role_call_name(), role_operand());
+                false -> case token_kind == kinds.send_keyword of {
+                    true -> two_roles(role_call_name(), role_operand());
+                    false -> case token_kind == kinds.cast_keyword of {
+                        true -> two_roles(role_call_name(), role_operand());
+                        false -> case token_kind == kinds.self_keyword of {
+                            true -> two_roles(role_call_name(), role_operand());
+                            false -> case token_kind == kinds.recv_keyword of {
+                                true -> two_roles(role_call_name(), role_operand());
+                                false -> case lexer_token_kind@is_actor_runtime_helper_kind(kinds, token_kind) of {
+                                    true -> two_roles(role_call_name(), role_operand());
+                                    false -> case token_kind == kinds.performance_cores_keyword of {
+                                        true -> single_role(role_operand());
+                                        false -> case token_kind == kinds.efficiency_cores_keyword of {
+                                            true -> single_role(role_operand());
+                                            false -> case token_kind == kinds.core_id_keyword of {
+                                                true -> two_roles(role_call_name(), role_operand());
+                                                false -> case token_kind == kinds.core_set_keyword of {
+                                                    true -> two_roles(role_call_name(), role_operand());
+                                                    false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, token_kind) of {
+                                                        true -> single_role(role_actor_impl_trait_name());
+                                                        false -> constraint_core@empty_list_int()
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

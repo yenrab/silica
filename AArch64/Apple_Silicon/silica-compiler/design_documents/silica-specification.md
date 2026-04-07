@@ -1606,7 +1606,7 @@ fn example() -> int64 {
 }
 
 fn behavior(msg: Msg, state: State) -> State {
-    sequence proc[mailbox, concurrency]
+    sequence proc[concurrency]
         // Implementation here
     produces
         pure new_state
@@ -1627,7 +1627,7 @@ fn counter_actor(
   msg: { command: string, reply_to: actor_ref },
   state: int64
 ) -> int64 {
-    sequence proc[mailbox, concurrency]
+    sequence proc[concurrency]
         new_state: int64 <- case msg of {
             {command: "inc", reply_to} -> state + 1,
             {command: "get", reply_to} -> {
@@ -4258,15 +4258,14 @@ Silica defines several built-in effects that track different kinds of side effec
   - `mem(normal_noncacheable)` - Normal non-cacheable memory
   - `mem(atomic)` - Atomic memory operations
   - `mem(device)` - Device memory (reserved for driver library)
-- `mailbox` - Message passing (messages must satisfy `ActorMessage`; see §16.3.2)
-- `concurrency` - Actor spawning and scheduling
+- `concurrency` - Actor spawning, message passing, and scheduling
 - `atomic` - Atomic memory operations
 - `device_io` - Limited to: print (stdout), read from file, write to file, read from console
 - `network_io` - Network communications of all kinds (sockets, HTTP, etc.)
 - `hot_swap` - Code loading (dynamic loading, JIT, self-modifying code). On AArch64, requires `ISB` barrier to ensure instruction fetch sees code writes.
 - `register_rwr` - Direct device register access via mmap (read and write). On AArch64, requires `DSB SY` before and `ISB` after for device ordering.
 
-**Note**: The `mailbox` effect is untyped. Type safety for actor messages is ensured through:
+**Note**: Message type safety for actors is ensured through:
 1. Function parameter types (behavior functions receive typed messages)
 2. The `ActorMessage` trait (all message types must satisfy this trait via explicit `impl`; see §16.3.2)
 3. Compile-time type checking
@@ -4275,7 +4274,7 @@ Silica defines several built-in effects that track different kinds of side effec
 Effects can be aliased for convenience and abstraction:
 
 ```
-effect actor_eff = [mailbox, concurrency]
+effect actor_eff = [concurrency]
 effect io_eff = [mem(normal), device_io]
 effect atomic_eff = [mem(atomic), atomic]
 effect network_eff = [network_io]
@@ -4283,7 +4282,7 @@ effect hot_swap_eff = [hot_swap]
 effect register_rwr_eff = [register_rwr]
 ```
 
-**Note**: Effect aliases use untyped `mailbox` effect. Message type safety is ensured through function parameter types and the `ActorMessage` rules in §16.3.2.
+**Note**: Message type safety for actors is ensured through function parameter types and the `ActorMessage` rules in §16.3.2.
 
 #### 9.1.3 User-Defined Effects
 New effects can be declared for domain-specific side effects:
@@ -5579,8 +5578,7 @@ result: (int, int) <- spawn(computation)
 Each effect requires runtime capability checking:
 
 - `mem(S)` - Access to memory space S
-- `mailbox` - Message queue (messages must satisfy `ActorMessage`; see §16.3.2)
-- `concurrency` - Actor spawning and scheduling
+- `concurrency` - Actor spawning, message passing, and scheduling
 - `atomic` - Atomic memory operations
 - `device_io` - Device access permissions
 
@@ -6944,6 +6942,8 @@ alloc_ref(r, 42)    // Runtime error: capability violation
 
 ## 15. Actor Model Semantics
 
+**Intrinsic Functions**: Actors and all actor-related functions defined in this specification (`spawn()`, `call()`, `cast()`, `self()`, `recv()`, etc.) are intrinsic to the Silica compiler. They are implemented directly in the compiler and runtime, similar to how basic arithmetic operators (`+`, `-`, `*`, `/`) are implemented. These functions are not defined in user code or standard libraries but are built-in language primitives.
+
 ### 15.1 Actor Lifecycle
 
 #### 15.1.1 Actor Creation
@@ -7012,7 +7012,7 @@ fn counter_handler(msg: int64, state: int64) -> (:reply, int64, int64) {
 }
 
 fn log_handler(msg: string, state: int64) -> (:no_reply, int64) {
-    sequence proc[device_io, mailbox, concurrency]
+    sequence proc[device_io, concurrency]
         println(msg);
     produces pure (:no_reply, state + 1) end
 }
@@ -7096,6 +7096,54 @@ actor_loop(state, behavior) {
 - Recursion would complicate stack management and predictability
 - The runtime owns the message loop; user code does not implement recursion over messages
 - If recursive logic is needed, structure it as non-recursive message-driven state machines
+
+#### 15.1.2.2 Actor Stack Architecture
+
+**Runtime-Managed Stacks**: Each actor has its own **dedicated stack** maintained by the Silica runtime, **not** by the operating system.
+
+**Key Properties**:
+- **Not OS Threads**: Actors are not backed by OS threads. Multiple actors can execute on the same OS thread
+- **Lightweight**: Actor stacks are lightweight runtime objects, enabling massive numbers of concurrent actors
+- **Dedicated Allocation**: Each actor receives a dedicated stack with configurable initial size
+- **Theoretically Infinite**: Stacks grow on demand up to system memory limits (no hard max size limit)
+- **Runtime Managed**: The runtime allocates, manages, and deallocates actor stacks
+
+**Stack Initialization**: When an actor is spawned, the runtime allocates a stack with:
+- **`initial_stack_size`**: The initial stack size in bytes (e.g., 50,000 bytes = ~50 KB)
+- Stack grows automatically as needed during message processing
+- No maximum size limit—growth limited only by available system memory
+
+**Stack Usage**: During message handler execution:
+- Handler runs on the actor's dedicated stack
+- Local variables, function calls, and return addresses stored on actor stack
+- When handler returns, stack pointer resets for next message
+- Each message handler execution is a finite call stack operation
+
+**Example**:
+```silica
+fn handler(msg: int64, state: int64) -> (:reply, int64, int64) {
+    // This execution uses the actor's dedicated stack
+    // Local variables allocated on stack
+    result: int64 <- msg + state;
+
+    // When this returns, stack is reset for next message
+    (:reply, result, result)
+}
+
+fn main() -> atom {
+    sequence proc[concurrency]
+        // Spawn with 100KB initial stack
+        // Stack grows as needed, limited only by system memory
+        actor: actor_ref <- spawn(0, handler);
+    produces pure :ok end
+}
+```
+
+**Advantages**:
+- **Scalability**: Thousands/millions of actors with minimal overhead
+- **Predictability**: Each actor's stack is isolated; one actor's stack overflow doesn't affect others
+- **Flexibility**: Stack grows naturally; no need to pre-allocate all memory
+- **Efficiency**: Only allocated memory that's actually used
 
 **Important**: The behavior function returns a tagged tuple `(:reply, Reply, State) | (:no_reply, State)` that encodes both the reply and new state. This keeps each message handler a finite call stack on the actor’s stack (see `actor_growable_stack_design.md`).
 
@@ -7923,7 +7971,7 @@ Behavior functions transform messages and state. The function signature contains
 
 ```silica
 fn counter(msg: { command: string, reply_to: actor_ref }, state: int64) -> int64 {
-    sequence proc[mailbox, concurrency]
+    sequence proc[concurrency]
         result: int64 <- case msg of {
             {command: "increment", reply_to} -> state + 1,
             {command: "get", reply_to} -> {
@@ -7957,7 +8005,7 @@ Actors can change their behavior by returning a different behavior function type
 Actors terminate when their behavior function cannot handle a message:
 
 ```
-fn fragile_behavior(msg: string, state: unit) -> atom proc[mailbox] {
+fn fragile_behavior(msg: string, state: unit) -> atom proc[concurrency] {
     case msg of
         "quit" -> // terminate actor (no return)
         other -> return ()  // continue
@@ -8108,7 +8156,7 @@ To avoid message loss:
 Message reception is handled automatically by the actor runtime system. The `recv()` operation is not available for direct use in user code:
 
 ```
-recv() -> Msg proc[mailbox, concurrency]  // Runtime internal function
+recv() -> Msg proc[concurrency]  // Runtime internal function
 ```
 
 User behavior functions receive messages as parameters rather than calling `recv()` directly. **Sending** (`send`, `cast`, etc.) is **allowed** inside the behavior body when effects permit; only **reception** is reserved to the runtime loop (see §15.1.2).
@@ -8198,7 +8246,7 @@ Behavior functions receive messages as parameters and can use pattern matching o
 
 ```
 fn selective_receiver(msg: msg_type, state: unit) -> (:no_reply, unit) {
-    sequence proc[mailbox, concurrency]
+    sequence proc[concurrency]
         result: unit <- case msg of {
             (:request, data: int64) -> handle_request(data)
             (:ping) -> handle_ping()
@@ -8209,34 +8257,6 @@ fn selective_receiver(msg: msg_type, state: unit) -> (:no_reply, unit) {
 ```
 
 The message parameter is automatically provided by the actor runtime when a message is received. Pattern matching exhaustiveness is checked at compile time; if a message arrives that matches no pattern, it is a runtime error.
-
-#### 16.2.3.1 Effect Requirements for Actor Behaviors
-
-**All actors have a mailbox.** There is no separate `actor` effect.
-
-**Effect Declaration**: Behavior functions must declare effects within `sequence` blocks:
-
-- **`proc[mailbox, concurrency]`** — For all actor operations:
-  - This effect covers **all** concurrency and mailbox operations together
-  - Required when behavior performs `call()`, `cast()`, or uses `self()`
-  - This is the standard effect for actor message handling
-
-- **Additional effects as needed**:
-  - `proc[device_io, mailbox, concurrency]` — For I/O within actor behavior
-  - `proc[mem(normal), mailbox, concurrency]` — For region operations within actor behavior
-
-**Single Effect Requirement**: `mailbox` and `concurrency` are always used together. There is no scenario where you use one without the other in actor code.
-
-**Example:**
-```silica
-fn handler(msg: int64, state: int64) -> (:reply, int64, int64) {
-    sequence proc[mailbox, concurrency]
-        // All actor operations (call, cast, self) are allowed here
-        _: boolean <- cast(other_actor, msg impl ActorMessage {});
-        new_state: int64 <- msg + state;
-    produces pure (:reply, new_state, new_state) end
-}
-```
 
 ### 16.2.5 Call vs Cast
 
@@ -8363,7 +8383,7 @@ fn worker(msg: (:ack), state: int64) -> (:no_reply, int64) {
 }
 
 fn producer(worker_ref: actor_ref) -> atom {
-    sequence proc[mailbox, concurrency]
+    sequence proc[concurrency]
         _: boolean <- cast(worker_ref, (:work, 42) impl ActorMessage {});
         // Wait for acknowledgment before sending next message
         ack_msg: (:ack) <- recv();
@@ -8412,7 +8432,7 @@ fn worker(
   msg: { seq: int64, reply_to: actor_ref },
   state: int64
 ) -> int64 {
-    sequence proc[mailbox, concurrency]
+    sequence proc[concurrency]
         result: int64 <- case msg of {
             { seq: n, reply_to: r } -> {
                 cast(r, (:job, "done", n) impl ActorMessage {});
@@ -8425,7 +8445,7 @@ fn worker(
 }
 
 fn client(peer: actor_ref, reply: actor_ref) -> atom {
-    sequence proc[mailbox, concurrency]
+    sequence proc[concurrency]
         send(peer, (:job, "run", 7) impl ActorMessage {});
         send(peer, { seq: 1, reply_to: reply } impl ActorMessage {});
     produces
@@ -8504,7 +8524,7 @@ Or, if `impl ActorMessage for (:bob, int64)` is in scope, the operand may omit t
 Behavior functions use the tagged tuple type in the message parameter position:
 
 ```silica
-fn worker(msg: (:bob, int64), state: int64) -> int64 proc[mailbox, concurrency] {
+fn worker(msg: (:bob, int64), state: int64) -> int64 proc[concurrency] {
     case msg of {
         (:bob, n: int64) -> state + n;
     }
@@ -13174,14 +13194,14 @@ Sends a message to an actor and **returns immediately** without waiting for a re
 
 #### Runtime Message Reception
 ```
-recv([actor]) -> Msg proc[mailbox, concurrency]          // Runtime internal
+recv([actor]) -> Msg proc[concurrency]          // Runtime internal
 ```
 
 The `recv()` operation is a **runtime internal function** and cannot be called directly from user code. The runtime uses `recv()` internally to dequeue messages from the actor's mailbox.
 
 #### Actor Self-Reference
 ```
-self() -> actor_ref proc[mailbox, concurrency]
+self() -> actor_ref proc[concurrency]
 ```
 
 Returns the current actor's reference. Can be used to send messages back to the caller (for cast-back patterns in behaviors, or to include in message payloads).
@@ -13559,8 +13579,7 @@ Memory Spaces:
 #### 23.2.3 Concurrency Capabilities
 Concurrency operations require capabilities:
 
-- `concurrency`: Actor spawning and management
-- `mailbox`: Message send/receive operations
+- `concurrency`: Actor spawning, message passing, and management
 - `atomic`: Atomic memory operations
 - `cpu_affinity`: CPU pinning and affinity controls
 - `networking`: Network device access and communication
@@ -13722,7 +13741,7 @@ Actors can fail and notify monitors:
 ```
 type down_message = Down(actor_ref, exit_reason)
 
-fn failing_actor(msg: unit, state: unit) -> atom proc[mailbox] {
+fn failing_actor(msg: unit, state: unit) -> atom proc[concurrency] {
     case msg of
         () -> panic("intentional failure")
     end
@@ -13736,7 +13755,7 @@ Actors can supervise other actors:
 
 ```
 fn supervisor(child_failure: down_message, state: supervisor_state)
- -> supervisor_state proc[mailbox] {
+ -> supervisor_state proc[concurrency] {
 
     case child_failure of
         Down(child_ref, reason) ->
