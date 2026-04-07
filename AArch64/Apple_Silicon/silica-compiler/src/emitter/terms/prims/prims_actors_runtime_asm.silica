@@ -27,7 +27,7 @@ _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 	mov	x21, x0
 	mov	w22, #1                         ; =0x1
 	mov	w0, #1                          ; =0x1
-	mov	w1, #160                        ; =0xa0
+	mov	w1, #192                        ; =0xc0 (extended for region metadata)
 	bl	_calloc
 	mov	x19, x0
 	cbz	x0, LBB0_4
@@ -57,6 +57,8 @@ Lloh1:
 LBB0_3:
 	ldur	x0, [x19, #144]
 	bl	_pthread_detach
+	mov	x0, x19
+	bl	_silica_rt_actor_init_region
 LBB0_4:
 	mov	x0, x19
 	ldp	x29, x30, [sp, #32]             ; 16-byte Folded Reload
@@ -165,6 +167,14 @@ LBB1_13:                                ;   in Loop: Header=BB1_2 Depth=1
 LBB1_14:
 	add	x0, x19, #16
 	bl	_pthread_mutex_unlock
+	mov	x0, x19
+	bl	_silica_rt_actor_dealloc_region
+	add	x0, x19, #16
+	bl	_pthread_mutex_destroy
+	add	x0, x19, #80
+	bl	_pthread_cond_destroy
+	mov	x0, x19
+	bl	_free
 	mov	x0, #0                          ; =0x0
 	ldp	x29, x30, [sp, #32]             ; 16-byte Folded Reload
 	ldp	x20, x19, [sp, #16]             ; 16-byte Folded Reload
@@ -422,18 +432,106 @@ fn actor_rt_asm_chunk_6() -> string {
 	.p2align	2
 _silica_rt_get_efficiency_cores:        ; @silica_rt_get_efficiency_cores
 	.cfi_startproc
-; %bb.0:
-	mov	x0, #0                          ; =0x0
+; %bb.0: query P-core count (offset) then E-core count, build list [p..p+e-1]
+	stp	x22, x21, [sp, #-48]!
+	stp	x20, x19, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	add	x29, sp, #32
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	.cfi_offset w21, -40
+	.cfi_offset w22, -48
+	sub	sp, sp, #16
+	mov	x0, #4
+	str	x0, [sp, #8]
+	str	xzr, [sp]
+Lloh6:
+	adrp	x0, L_hw_perf0_str@PAGE
+Lloh7:
+	add	x0, x0, L_hw_perf0_str@PAGEOFF
+	mov	x1, sp
+	add	x2, sp, #8
+	mov	x3, #0
+	mov	x4, #0
+	bl	_sysctlbyname
+	cbnz	w0, LBBec_fail
+	ldr	w19, [sp]
+	mov	x0, #4
+	str	x0, [sp, #8]
+	str	xzr, [sp]
+Lloh8:
+	adrp	x0, L_hw_perf1_str@PAGE
+Lloh9:
+	add	x0, x0, L_hw_perf1_str@PAGEOFF
+	mov	x1, sp
+	add	x2, sp, #8
+	mov	x3, #0
+	mov	x4, #0
+	bl	_sysctlbyname
+	cbnz	w0, LBBec_fail
+	ldr	w1, [sp]
+	mov	x0, x19
+	add	sp, sp, #16
+	bl	_silica_rt_build_int_range_list
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
 	ret
+LBBec_fail:
+	add	sp, sp, #16
+	mov	x0, #0
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+	.loh AdrpAdd	Lloh6, Lloh7
+	.loh AdrpAdd	Lloh8, Lloh9
 	.cfi_endproc
                                         ; -- End function
 	.globl	_silica_rt_get_performance_cores ; -- Begin function silica_rt_get_performance_cores
 	.p2align	2
 _silica_rt_get_performance_cores:       ; @silica_rt_get_performance_cores
 	.cfi_startproc
-; %bb.0:
-	mov	x0, #0                          ; =0x0
+; %bb.0: query P-core count, build list [0..count-1]
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	sub	sp, sp, #16
+	mov	x0, #4
+	str	x0, [sp, #8]
+	str	xzr, [sp]
+Lloh10:
+	adrp	x0, L_hw_perf0_str@PAGE
+Lloh11:
+	add	x0, x0, L_hw_perf0_str@PAGEOFF
+	mov	x1, sp
+	add	x2, sp, #8
+	mov	x3, #0
+	mov	x4, #0
+	bl	_sysctlbyname
+	cbnz	w0, LBBpc_fail
+	ldr	w1, [sp]
+	mov	x0, #0
+	add	sp, sp, #16
+	bl	_silica_rt_build_int_range_list
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
 	ret
+LBBpc_fail:
+	add	sp, sp, #16
+	mov	x0, #0
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.loh AdrpAdd	Lloh10, Lloh11
 	.cfi_endproc
                                         ; -- End function
 	.globl	_silica_rt_get_core_capabilities ; -- Begin function silica_rt_get_core_capabilities
@@ -449,8 +547,29 @@ _silica_rt_get_core_capabilities:       ; @silica_rt_get_core_capabilities
 	.p2align	2
 _silica_rt_pin_actor_to_core:           ; @silica_rt_pin_actor_to_core
 	.cfi_startproc
-; %bb.0:
-	mov	x0, #0                          ; =0x0
+; %bb.0: X0=actor_ref X1=core_id; thread_policy_set(THREAD_AFFINITY_POLICY)
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	mov	x19, x1
+	ldr	x0, [x0, #144]
+	bl	_pthread_mach_thread_np
+	mov	x20, x0
+	sub	sp, sp, #16
+	str	w19, [sp]
+	mov	x0, x20
+	mov	w1, #4
+	mov	x2, sp
+	mov	w3, #1
+	bl	_thread_policy_set
+	add	sp, sp, #16
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
 	ret
 	.cfi_endproc
                                         ; -- End function
@@ -458,8 +577,29 @@ _silica_rt_pin_actor_to_core:           ; @silica_rt_pin_actor_to_core
 	.p2align	2
 _silica_rt_pin_actor_to_efficiency_core: ; @silica_rt_pin_actor_to_efficiency_core
 	.cfi_startproc
-; %bb.0:
-	mov	x0, #0                          ; =0x0
+; %bb.0: X0=actor_ref; pin to any E-core via affinity tag 0x45 ('E')
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	ldr	x0, [x0, #144]
+	bl	_pthread_mach_thread_np
+	mov	x20, x0
+	sub	sp, sp, #16
+	mov	w8, #0x45
+	str	w8, [sp]
+	mov	x0, x20
+	mov	w1, #4
+	mov	x2, sp
+	mov	w3, #1
+	bl	_thread_policy_set
+	add	sp, sp, #16
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
 	ret
 	.cfi_endproc
                                         ; -- End function
@@ -471,8 +611,29 @@ _silica_rt_pin_actor_to_efficiency_core: ; @silica_rt_pin_actor_to_efficiency_co
 fn actor_rt_asm_chunk_7() -> string {
     "_silica_rt_pin_actor_to_performance_core: ; @silica_rt_pin_actor_to_performance_core
 	.cfi_startproc
-; %bb.0:
-	mov	x0, #0                          ; =0x0
+; %bb.0: X0=actor_ref; pin to any P-core via affinity tag 0x50 ('P')
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	ldr	x0, [x0, #144]
+	bl	_pthread_mach_thread_np
+	mov	x20, x0
+	sub	sp, sp, #16
+	mov	w8, #0x50
+	str	w8, [sp]
+	mov	x0, x20
+	mov	w1, #4
+	mov	x2, sp
+	mov	w3, #1
+	bl	_thread_policy_set
+	add	sp, sp, #16
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
 	ret
 	.cfi_endproc
                                         ; -- End function
@@ -480,7 +641,7 @@ fn actor_rt_asm_chunk_7() -> string {
 	.p2align	2
 _silica_rt_pin_actor_realtime:          ; @silica_rt_pin_actor_realtime
 	.cfi_startproc
-; %bb.0:
+; %bb.0: X0=actor_ref; stub (realtime policy requires THREAD_TIME_CONSTRAINT_POLICY)
 	mov	x0, #0                          ; =0x0
 	ret
 	.cfi_endproc
@@ -489,8 +650,26 @@ _silica_rt_pin_actor_realtime:          ; @silica_rt_pin_actor_realtime
 	.p2align	2
 _silica_rt_remove_actor:                ; @silica_rt_remove_actor
 	.cfi_startproc
-; %bb.0:
-	mov	x0, #0                          ; =0x0
+; %bb.0: X0=actor_ref; set alive=0, signal cond to wake thread
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	mov	x19, x0
+	add	x0, x19, #16
+	bl	_pthread_mutex_lock
+	str	wzr, [x19, #152]
+	add	x0, x19, #80
+	bl	_pthread_cond_signal
+	add	x0, x19, #16
+	bl	_pthread_mutex_unlock
+	mov	x0, #0
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
 	ret
 	.cfi_endproc
                                         ; -- End function
@@ -498,7 +677,7 @@ _silica_rt_remove_actor:                ; @silica_rt_remove_actor
 	.p2align	2
 _silica_rt_pin_actor_to_numa_node:      ; @silica_rt_pin_actor_to_numa_node
 	.cfi_startproc
-; %bb.0:
+; %bb.0: N/A on Apple Silicon (single NUMA domain)
 	mov	x0, #0                          ; =0x0
 	ret
 	.cfi_endproc
@@ -507,8 +686,29 @@ _silica_rt_pin_actor_to_numa_node:      ; @silica_rt_pin_actor_to_numa_node
 	.p2align	2
 _silica_rt_unpin_actor:                 ; @silica_rt_unpin_actor
 	.cfi_startproc
-; %bb.0:
-	mov	x0, #0                          ; =0x0
+; %bb.0: X0=actor_ref; clear affinity by setting tag=0
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	ldr	x0, [x0, #144]
+	bl	_pthread_mach_thread_np
+	mov	x20, x0
+	sub	sp, sp, #16
+	str	wzr, [sp]
+	mov	x0, x20
+	mov	w1, #4
+	mov	x2, sp
+	mov	w3, #1
+	bl	_thread_policy_set
+	add	sp, sp, #16
+	mov	x0, #0
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
 	ret
 	.cfi_endproc
                                         ; -- End function
@@ -516,8 +716,43 @@ _silica_rt_unpin_actor:                 ; @silica_rt_unpin_actor
 	.p2align	2
 _silica_rt_set_actor_priority:          ; @silica_rt_set_actor_priority
 	.cfi_startproc
-; %bb.0:
-	mov	x0, #0                          ; =0x0
+; %bb.0: X0=actor_ref X1=priority; map to pthread QoS class
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	mov	x19, x1
+	ldr	x0, [x0, #144]
+	cmp	x19, #3
+	b.ge	LBBsp_interactive
+	cmp	x19, #2
+	b.eq	LBBsp_initiated
+	cmp	x19, #1
+	b.eq	LBBsp_default
+	cmp	x19, #0
+	b.eq	LBBsp_utility
+	mov	w1, #0x09
+	b	LBBsp_set
+LBBsp_interactive:
+	mov	w1, #0x21
+	b	LBBsp_set
+LBBsp_initiated:
+	mov	w1, #0x19
+	b	LBBsp_set
+LBBsp_default:
+	mov	w1, #0x15
+	b	LBBsp_set
+LBBsp_utility:
+	mov	w1, #0x11
+LBBsp_set:
+	mov	w2, #0
+	bl	_pthread_set_qos_class_np
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
 	ret
 	.cfi_endproc
 "
@@ -525,18 +760,385 @@ _silica_rt_set_actor_priority:          ; @silica_rt_set_actor_priority
 
 fn actor_rt_asm_chunk_8() -> string {
     "                                        ; -- End function
-.tbss _tl_current_actor$tlv$init, 8, 3  ; @tl_current_actor
+"
+}
+
+fn actor_rt_asm_chunk_9() -> string {
+    "	.section	__TEXT,__cstring,cstring_literals
+L_hw_perf0_str:
+	.asciz	\"hw.perflevel0.physicalcpu\"
+L_hw_perf1_str:
+	.asciz	\"hw.perflevel1.physicalcpu\"
+	.section	__TEXT,__text,regular,pure_instructions
+	.p2align	2                               ; -- Begin function silica_rt_build_int_range_list
+_silica_rt_build_int_range_list:        ; @silica_rt_build_int_range_list
+	.cfi_startproc
+; %bb.0: X0=start X1=count -> X0=cons list [start..start+count-1] or nil
+	stp	x22, x21, [sp, #-48]!
+	stp	x20, x19, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	add	x29, sp, #32
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	.cfi_offset w21, -40
+	.cfi_offset w22, -48
+	mov	x19, x0
+	mov	x20, x1
+	mov	x21, #0
+	cbz	x20, LBBrl_done
+	add	x22, x19, x20
+	sub	x22, x22, #1
+LBBrl_loop:
+	stp	x21, x22, [sp, #-16]!
+	mov	x0, #16
+	bl	_malloc
+	ldp	x21, x22, [sp], #16
+	cbz	x0, LBBrl_done
+	str	x22, [x0]
+	str	x21, [x0, #8]
+	mov	x21, x0
+	sub	x22, x22, #1
+	cmp	x22, x19
+	b.ge	LBBrl_loop
+LBBrl_done:
+	mov	x0, x21
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+	.cfi_endproc
+                                        ; -- End function
+"
+}
+
+fn actor_rt_asm_chunk_10() -> string {
+    ".tbss _tl_current_actor$tlv$init, 8, 3  ; @tl_current_actor
 
 	.section	__DATA,__thread_vars,thread_local_variables
 _tl_current_actor:
 	.quad	__tlv_bootstrap
 	.quad	0
 	.quad	_tl_current_actor$tlv$init
+"
+}
+
+fn actor_rt_asm_chunk_11() -> string {
+    "	.section	__TEXT,__text,regular,pure_instructions
+	.p2align	2
+_silica_rt_actor_init_region:           ; init growable stack region for actor
+	.cfi_startproc
+; X0=actor_ptr. Reserves 1GB VA, maps first 8MB, stores metadata at [160..192].
+; Also installs SIGSEGV handler on first call.
+	stp	x22, x21, [sp, #-48]!
+	stp	x20, x19, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	add	x29, sp, #32
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	.cfi_offset w21, -40
+	.cfi_offset w22, -48
+	mov	x19, x0
+Lloh_ir0:
+	adrp	x8, _silica_rt_fault_handler_installed@PAGE
+Lloh_ir1:
+	add	x8, x8, _silica_rt_fault_handler_installed@PAGEOFF
+	ldr	w9, [x8]
+	cbnz	w9, LBBir_skip_handler
+	mov	w9, #1
+	str	w9, [x8]
+	bl	_silica_rt_install_fault_handler
+LBBir_skip_handler:
+	mov	x0, #0
+	movz	x1, #0x4000, lsl #16
+	mov	w2, #0
+	movz	w3, #0x1002
+	mov	w4, #-1
+	mov	x5, #0
+	bl	_mmap
+	cmn	x0, #1
+	b.eq	LBBir_fail
+	mov	x20, x0
+	movz	x1, #0x80, lsl #16
+	mov	w2, #3
+	bl	_mprotect
+	str	x20, [x19, #160]
+	movz	x8, #0x80, lsl #16
+	str	x8, [x19, #168]
+	add	x8, x20, #256
+	str	x8, [x19, #176]
+	movz	x8, #0x4000, lsl #16
+	str	x8, [x19, #184]
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+LBBir_fail:
+	str	xzr, [x19, #160]
+	str	xzr, [x19, #168]
+	str	xzr, [x19, #176]
+	str	xzr, [x19, #184]
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+	.loh AdrpAdd	Lloh_ir0, Lloh_ir1
+	.cfi_endproc
+                                        ; -- End function
+	.p2align	2
+_silica_rt_actor_dealloc_region:        ; release actor's growable stack region
+	.cfi_startproc
+; X0=actor_ptr. munmap(region_base, total_size).
+	stp	x29, x30, [sp, #-16]!
+	mov	x29, sp
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	ldr	x8, [x0, #184]
+	ldr	x0, [x0, #160]
+	cbz	x0, LBBdr_skip
+	mov	x1, x8
+	bl	_munmap
+LBBdr_skip:
+	ldp	x29, x30, [sp], #16
+	ret
+	.cfi_endproc
+                                        ; -- End function
+"
+}
+
+fn actor_rt_asm_chunk_12() -> string {
+    "	.globl	_silica_rt_migrate_actor        ; -- Begin function silica_rt_migrate_actor
+	.p2align	2
+_silica_rt_migrate_actor:               ; @silica_rt_migrate_actor
+	.cfi_startproc
+; X0=actor_ref X1=target_core; sets thread affinity to target core
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	mov	x19, x1
+	ldr	x0, [x0, #144]
+	bl	_pthread_mach_thread_np
+	mov	x20, x0
+	sub	sp, sp, #16
+	str	w19, [sp]
+	mov	x0, x20
+	mov	w1, #4
+	mov	x2, sp
+	mov	w3, #1
+	bl	_thread_policy_set
+	add	sp, sp, #16
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_move_actor           ; -- Begin function silica_rt_move_actor
+	.p2align	2
+_silica_rt_move_actor:                  ; @silica_rt_move_actor
+	.cfi_startproc
+; X0=actor_ref X1=from_core X2=to_core; migrate actor to target core
+	stp	x22, x21, [sp, #-48]!
+	stp	x20, x19, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	add	x29, sp, #32
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	.cfi_offset w21, -40
+	.cfi_offset w22, -48
+	mov	x19, x2
+	ldr	x0, [x0, #144]
+	bl	_pthread_mach_thread_np
+	mov	x20, x0
+	sub	sp, sp, #16
+	str	w19, [sp]
+	mov	x0, x20
+	mov	w1, #4
+	mov	x2, sp
+	mov	w3, #1
+	bl	_thread_policy_set
+	add	sp, sp, #16
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.p2align	2
+_silica_rt_install_fault_handler:       ; install SIGSEGV handler (once)
+	.cfi_startproc
+	stp	x29, x30, [sp, #-16]!
+	mov	x29, sp
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	sub	sp, sp, #16
+Lloh_fh0:
+	adrp	x8, _silica_rt_stack_fault_handler@PAGE
+Lloh_fh1:
+	add	x8, x8, _silica_rt_stack_fault_handler@PAGEOFF
+	str	x8, [sp]
+	str	wzr, [sp, #8]
+	mov	w8, #0x40
+	str	w8, [sp, #12]
+	mov	w0, #11
+	mov	x1, sp
+	mov	x2, #0
+	bl	_sigaction
+	add	sp, sp, #16
+	ldp	x29, x30, [sp], #16
+	ret
+	.loh AdrpAdd	Lloh_fh0, Lloh_fh1
+	.cfi_endproc
+                                        ; -- End function
+	.p2align	2
+_silica_rt_stack_fault_handler:         ; SIGSEGV handler for growable actor stacks
+	.cfi_startproc
+; X0=sig X1=siginfo_t* X2=ucontext_t*
+; Checks if fault is in current actor's region and maps the page on demand.
+	stp	x22, x21, [sp, #-48]!
+	stp	x20, x19, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	add	x29, sp, #32
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	.cfi_offset w21, -40
+	.cfi_offset w22, -48
+	ldr	x19, [x1, #24]
+Lloh_sh0:
+	adrp	x0, _tl_current_actor@TLVPPAGE
+Lloh_sh1:
+	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
+	ldr	x8, [x0]
+	blr	x8
+	ldr	x20, [x0]
+	cbz	x20, LBBfh_crash
+	ldr	x21, [x20, #160]
+	cbz	x21, LBBfh_crash
+	ldr	x22, [x20, #184]
+	add	x22, x21, x22
+	cmp	x19, x21
+	b.lo	LBBfh_crash
+	cmp	x19, x22
+	b.hs	LBBfh_overflow
+	bic	x0, x19, #0xfff
+	mov	x1, #0x1000
+	mov	w2, #3
+	bl	_mprotect
+	ldr	x8, [x20, #160]
+	bic	x9, x19, #0xfff
+	add	x9, x9, #0x1000
+	sub	x9, x9, x8
+	ldr	x10, [x20, #168]
+	cmp	x9, x10
+	b.ls	LBBfh_done
+	str	x9, [x20, #168]
+LBBfh_done:
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+LBBfh_overflow:
+	str	wzr, [x20, #152]
+	add	x0, x20, #80
+	bl	_pthread_cond_signal
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+LBBfh_crash:
+	mov	w0, #11
+	bl	_signal
+	mov	w0, #11
+	bl	_raise
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+	.loh AdrpLdr	Lloh_sh0, Lloh_sh1
+	.cfi_endproc
+                                        ; -- End function
+	.section	__DATA,__common
+	.p2align	2
+_silica_rt_fault_handler_installed:
+	.long	0
+"
+}
+
+fn actor_rt_asm_chunk_13() -> string {
+    "	.section	__TEXT,__text,regular,pure_instructions
+	.globl	_silica_rt_get_actor_memory_usage ; -- Begin function silica_rt_get_actor_memory_usage
+	.p2align	2
+_silica_rt_get_actor_memory_usage:      ; @silica_rt_get_actor_memory_usage
+	.cfi_startproc
+; X0=actor_ref -> X0=bytes mapped in actor's growable region
+	ldr	x0, [x0, #168]
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_region_alloc         ; -- Begin function silica_rt_region_alloc
+	.p2align	2
+_silica_rt_region_alloc:                ; @silica_rt_region_alloc
+	.cfi_startproc
+; X0=size. Bump-allocates from current actor's mmap region.
+; Falls back to _malloc if not in actor context.
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	mov	x19, x0
+Lloh_ra0:
+	adrp	x0, _tl_current_actor@TLVPPAGE
+Lloh_ra1:
+	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
+	ldr	x8, [x0]
+	blr	x8
+	ldr	x20, [x0]
+	cbz	x20, LBBra_fallback
+	ldr	x8, [x20, #176]
+	cbz	x8, LBBra_fallback
+	add	x9, x8, x19
+	add	x9, x9, #7
+	bic	x9, x9, #7
+	str	x9, [x20, #176]
+	mov	x0, x8
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+LBBra_fallback:
+	mov	x0, x19
+	bl	_malloc
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.loh AdrpLdr	Lloh_ra0, Lloh_ra1
+	.cfi_endproc
+                                        ; -- End function
 
 .subsections_via_symbols
 "
 }
 
 fn emit_actor_runtime_helpers() -> string {
-    concat(concat(concat(concat(concat(concat(concat(concat(actor_rt_asm_chunk_0(), actor_rt_asm_chunk_1()), actor_rt_asm_chunk_2()), actor_rt_asm_chunk_3()), actor_rt_asm_chunk_4()), actor_rt_asm_chunk_5()), actor_rt_asm_chunk_6()), actor_rt_asm_chunk_7()), actor_rt_asm_chunk_8())
+    concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(actor_rt_asm_chunk_0(), actor_rt_asm_chunk_1()), actor_rt_asm_chunk_2()), actor_rt_asm_chunk_3()), actor_rt_asm_chunk_4()), actor_rt_asm_chunk_5()), actor_rt_asm_chunk_6()), actor_rt_asm_chunk_7()), actor_rt_asm_chunk_8()), actor_rt_asm_chunk_9()), actor_rt_asm_chunk_10()), actor_rt_asm_chunk_11()), actor_rt_asm_chunk_12()), actor_rt_asm_chunk_13())
 }

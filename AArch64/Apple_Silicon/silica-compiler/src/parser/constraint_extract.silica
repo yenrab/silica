@@ -2080,6 +2080,10 @@ fn extract_case_expression(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[D
     }
 }
 
+fn is_actor_callable_keyword(kinds: TokenKinds, token_kind: int64) -> bool {
+    token_kind == kinds.spawn_keyword or token_kind == kinds.send_keyword or token_kind == kinds.cast_keyword or token_kind == kinds.self_keyword or lexer_token_kind@is_actor_runtime_helper_kind(kinds, token_kind)
+}
+
 fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     first: TokenSlot <- slots.head;
@@ -2088,9 +2092,7 @@ fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO]
         false -> do
             rest: ListTokenSlot <- slots.tail;
             first_kind: int64 <- first.token.kind;
-            // buf/ref/region are keywords for types but valid variable names in expression position
-            // (e.g. read_buf(buf, 0), read_ref(ref)); without this, extract_body_expr mis-parses them as literals.
-            case lexer_token_kind@is_identifier_lexeme_token(kinds, first_kind) or first_kind == kinds.buf_keyword or first_kind == kinds.ref_keyword or first_kind == kinds.region_keyword or first_kind == kinds.atomic_keyword of {
+            case lexer_token_kind@is_identifier_lexeme_token(kinds, first_kind) or first_kind == kinds.buf_keyword or first_kind == kinds.ref_keyword or first_kind == kinds.region_keyword or first_kind == kinds.atomic_keyword or is_actor_callable_keyword(kinds, first_kind) of {
                 true -> case slots_is_nil(rest) of {
                     true -> (extract_operand_expr(first), rest);
                     false -> case slots_head(rest).token.kind == kinds.left_paren of {
@@ -2155,6 +2157,42 @@ fn extract_expr_with_precedence(slots: ListTokenSlot, min_prec: int64) -> (Expr,
     end
 }
 
+fn skip_impl_annotation(slots: ListTokenSlot) -> (ListTokenSlot, bool) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> (slots, false);
+        false -> case trimmed.head.token.kind == kinds.impl_keyword or trimmed.head.token.lexeme == "impl" of {
+            true -> do
+                after_impl: ListTokenSlot <- skip_leading_whitespace_slots(trimmed.tail);
+                case after_impl.is_nil of {
+                    true -> (slots, false);
+                    false -> do
+                        after_name: ListTokenSlot <- skip_leading_whitespace_slots(after_impl.tail);
+                        case after_name.is_nil of {
+                            true -> (slots, false);
+                            false -> case after_name.head.token.kind == kinds.left_brace of {
+                                true -> do
+                                    after_lbrace: ListTokenSlot <- skip_leading_whitespace_slots(after_name.tail);
+                                    case after_lbrace.is_nil of {
+                                        true -> (slots, false);
+                                        false -> case after_lbrace.head.token.kind == kinds.right_brace of {
+                                            true -> (after_lbrace.tail, true);
+                                            false -> (slots, false)
+                                        }
+                                    }
+                                end;
+                                false -> (slots, false)
+                            }
+                        }
+                    end
+                }
+            end;
+            false -> (slots, false)
+        }
+    }
+}
+
 fn extract_call_rest(slots: ListTokenSlot, call_loc: SourceLocation) -> (Expr, ListTokenSlot) proc[DeviceIO] {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     dummy: Expr <- parser_ast@dummy_expr();
@@ -2166,8 +2204,10 @@ fn extract_call_rest(slots: ListTokenSlot, call_loc: SourceLocation) -> (Expr, L
                 true -> do
                     arg_slots: ListTokenSlot <- slots_tail(slots);
                     (arg: Expr, rest_after_arg: ListTokenSlot) <- extract_body(arg_slots);
-                    (sub_expr: Expr, rest_final: ListTokenSlot) <- extract_call_rest(rest_after_arg, call_loc);
-                    pair: Expr <- Expr { kind: 4, value: "", name: "", location: call_loc, inner: arg, right_expr: sub_expr, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+                    (rest_skipped: ListTokenSlot, has_impl_am: bool) <- skip_impl_annotation(rest_after_arg);
+                    am_marker: string <- case has_impl_am of { true -> "AM"; false -> "" };
+                    (sub_expr: Expr, rest_final: ListTokenSlot) <- extract_call_rest(rest_skipped, call_loc);
+                    pair: Expr <- Expr { kind: 4, value: am_marker, name: "", location: call_loc, inner: arg, right_expr: sub_expr, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
                     (pair, rest_final)
                 end;
                 false -> (dummy, slots)
@@ -2187,7 +2227,8 @@ fn extract_call(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
             true -> do
                 arg_slots: ListTokenSlot <- slots_tail(at_lparen);
                 (arg1: Expr, rest_after_arg1: ListTokenSlot) <- extract_body(arg_slots);
-                (right_expr: Expr, rest_after_rparen: ListTokenSlot) <- extract_call_rest(rest_after_arg1, first.token.location);
+                (rest_after_arg1_skipped: ListTokenSlot, _has_am_arg1: bool) <- skip_impl_annotation(rest_after_arg1);
+                (right_expr: Expr, rest_after_rparen: ListTokenSlot) <- extract_call_rest(rest_after_arg1_skipped, first.token.location);
                 call_name: string <- first.token.lexeme;
                 call_loc: SourceLocation <- first.token.location;
                 call_expr: Expr <- Expr { kind: 4, value: type_args, name: call_name, location: call_loc, inner: arg1, right_expr: right_expr, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };

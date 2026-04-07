@@ -367,21 +367,40 @@ fn debug_print_tokens_acc(tokens: ListToken, kinds: TokenKinds) -> int64 proc[De
 
 // Debug: print expr structure (kind, name, value) for body tracing
 fn debug_print_expr(expr: Expr, indent: string) -> int64 proc[DeviceIO] {
-    case expr.kind of {
-        0 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "literal value="), expr.value)); 0 end;
-        1 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "identifier name="), expr.name)); 0 end;
-        6 -> do
-            _: unit <- println(concat(concat(concat(concat("  [DEBUG EXPR] ", indent), "let "), expr.name), concat(": ", expr.value)));
-            _: int64 <- debug_print_expr(expr.inner, concat(indent, "  rhs:"));
-            _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  body:"));
+    case expr.kind < 0 of {
+        true -> do
+            _: unit <- println(concat(concat("  [DEBUG EXPR] ", indent), "DUMMY(kind<0)"));
             0
         end;
-        8 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "string_literal value="), expr.value)); 0 end;
-        _: int64 -> do
-            kind_str: string <- concat("kind=", expr.value);
-            _: unit <- println(concat(concat("  [DEBUG EXPR] ", indent), kind_str));
-            0
-        end
+        false -> case expr.kind of {
+            0 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "literal value="), expr.value)); 0 end;
+            1 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "identifier name="), expr.name)); 0 end;
+            4 -> do
+                _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "call name="), expr.name));
+                _: int64 <- debug_print_expr(expr.inner, concat(indent, "  arg1:"));
+                _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  arg2:"));
+                0
+            end;
+            6 -> do
+                _: unit <- println(concat(concat(concat(concat("  [DEBUG EXPR] ", indent), "let "), expr.name), concat(": ", expr.value)));
+                _: int64 <- debug_print_expr(expr.inner, concat(indent, "  rhs:"));
+                _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  body:"));
+                0
+            end;
+            8 -> do _: unit <- println(concat(concat(concat("  [DEBUG EXPR] ", indent), "string_literal value="), expr.value)); 0 end;
+            11 -> do
+                _: unit <- println(concat(concat("  [DEBUG EXPR] ", indent), "SEQUENCE_BLOCK"));
+                _: int64 <- debug_print_expr(expr.inner, concat(indent, "  seq_body:"));
+                _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  seq_result:"));
+                0
+            end;
+            _: int64 -> do
+                _: unit <- println(concat(concat(concat(concat("  [DEBUG EXPR] ", indent), "OTHER kind name="), expr.name), concat(" value=", expr.value)));
+                _: int64 <- debug_print_expr(expr.inner, concat(indent, "  inner:"));
+                _: int64 <- debug_print_expr(expr.right_expr, concat(indent, "  right:"));
+                0
+            end
+        }
     }
 }
 {-
@@ -394,6 +413,17 @@ fn debug_print_expr(expr: Expr, indent: string) -> int64 proc[DeviceIO] {
 fn debug_compile(filename: string) -> bool {
     case filename of {
         _: string -> false
+    }
+}
+
+fn debug_walk_decls(decls: ListDeclaration) -> int64 proc[DeviceIO] {
+    case decls.is_nil of {
+        true -> 0;
+        false -> do
+            _: unit <- println(concat("  decl name=", decls.head.name));
+            _: int64 <- debug_print_expr(decls.head.body, "BODY>");
+            debug_walk_decls(decls.tail)
+        end
     }
 }
 
@@ -426,6 +456,14 @@ fn compile_file(filename: string) -> int64 proc[DeviceIO] {
                     effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(parse_result.program);
                     case effect_result.is_ok of {
                         true -> do
+                            _: int64 <- case debug_compile(filename) of {
+                                true -> do
+                                    println("  [DEBUG AST] decl-count walk:");
+                                    debug_walk_decls(parse_result.program.declarations);
+                                    0
+                                end;
+                                false -> 0
+                            };
                             println("  Generating SIR...");
                             sir_module: SIRModule <- sir_generator_core@emit_program(parse_result.program, checked_context);
                             _: int64 <- case debug_compile(filename) of {

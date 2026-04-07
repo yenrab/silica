@@ -429,7 +429,7 @@ struct CollectTypeResult {
     rest: ListTupleDecomposeBinding
 }
 
-// Case pattern: kind 0=bool lit, 1=string lit, 2=named binding, 3=wildcard, 4=int literal; 5=list empty []: List[...]; 6=list cons [h: T, t: List[...]]
+// Case pattern: kind 0=bool lit, 1=string lit, 2=named binding, 3=wildcard, 4=int literal; 5=list empty []: List[...]; 6=list cons [h: T, t: List[...]]; 7=atom lit :name (suffix matches lexer atom body; no extra ':' in suffix)
 struct CasePatternInfo {
     is_valid: bool,
     pattern_kind: int64,
@@ -505,6 +505,27 @@ fn case_string_is_signed_int_literal(s: string) -> bool {
     }
 }
 
+// If t is atom literal :name with no ':' inside the name (aligns with lexer), return pattern_kind 7 with str_lit = name; else is_valid false.
+fn case_try_atom_literal_pattern(t: string) -> CasePatternInfo {
+    inv: CasePatternInfo <- CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
+    case substring(t, 0, 1) == ":" of {
+        false -> inv;
+        true -> do
+            atom_rest: string <- strip_spaces(substring(t, 1, len(t)));
+            case len(atom_rest) == 0 of {
+                true -> inv;
+                false -> do
+                    ci: int64 <- case_find_colon_outside_string(atom_rest, 0, false);
+                    case ci >= 0 of {
+                        true -> inv;
+                        false -> CasePatternInfo { is_valid: true, pattern_kind: 7, bool_lit: false, str_lit: atom_rest, int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" }
+                    }
+                end
+            }
+        end
+    }
+}
+
 fn case_parse_pattern(pat_str: string) -> CasePatternInfo {
     t: string <- strip_spaces(pat_str);
     case len(t) == 0 of {
@@ -530,23 +551,29 @@ fn case_parse_pattern(pat_str: string) -> CasePatternInfo {
                                 false -> case t == "false" of {
                                     true -> CasePatternInfo { is_valid: true, pattern_kind: 0, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
                                     false -> do
-                                        colon: int64 <- case_find_colon_outside_string(t, 0, false);
-                                        case colon >= 0 of {
-                                            true -> do
-                                                name_raw: string <- strip_spaces(substring(t, 0, colon));
-                                                typ_raw: string <- strip_spaces(substring(t, colon + 1, len(t)));
-                                                case len(name_raw) == 0 or len(typ_raw) == 0 of {
-                                                    true -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
-                                                    false -> case name_raw == "_" of {
-                                                        true -> CasePatternInfo { is_valid: true, pattern_kind: 3, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "_", bind_type: typ_raw, list_tail_name: "", list_tail_type: "" };
-                                                        false -> CasePatternInfo { is_valid: true, pattern_kind: 2, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: name_raw, bind_type: typ_raw, list_tail_name: "", list_tail_type: "" }
+                                        apat: CasePatternInfo <- case_try_atom_literal_pattern(t);
+                                        case apat.is_valid of {
+                                            true -> apat;
+                                            false -> do
+                                                colon: int64 <- case_find_colon_outside_string(t, 0, false);
+                                                case colon >= 0 of {
+                                                    true -> do
+                                                        name_raw: string <- strip_spaces(substring(t, 0, colon));
+                                                        typ_raw: string <- strip_spaces(substring(t, colon + 1, len(t)));
+                                                        case len(name_raw) == 0 or len(typ_raw) == 0 of {
+                                                            true -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
+                                                            false -> case name_raw == "_" of {
+                                                                true -> CasePatternInfo { is_valid: true, pattern_kind: 3, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "_", bind_type: typ_raw, list_tail_name: "", list_tail_type: "" };
+                                                                false -> CasePatternInfo { is_valid: true, pattern_kind: 2, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: name_raw, bind_type: typ_raw, list_tail_name: "", list_tail_type: "" }
+                                                            }
+                                                        }
+                                                    end;
+                                                    false -> case case_string_is_signed_int_literal(t) of {
+                                                        true -> CasePatternInfo { is_valid: true, pattern_kind: 4, bool_lit: false, str_lit: "", int_lit_str: t, bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
+                                                        false -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" }
                                                     }
                                                 }
-                                            end;
-                                            false -> case case_string_is_signed_int_literal(t) of {
-                                                true -> CasePatternInfo { is_valid: true, pattern_kind: 4, bool_lit: false, str_lit: "", int_lit_str: t, bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
-                                                false -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" }
-                                            }
+                                            end
                                         }
                                     end
                                 }
@@ -594,6 +621,7 @@ fn case_pattern_matches_scrutinee(pi: CasePatternInfo, scrutinee_type: string) -
             4 -> is_primitive_numeric_type_name(scrutinee_type);
             5 -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
             6 -> case_list_cons_matches(pi, scrutinee_type);
+            7 -> types_equal(scrutinee_type, "atom");
             _: int64 -> false
         }
     }

@@ -263,7 +263,18 @@ fn emit_case_pattern_check(branch: SIRTerm, scrut_t: string, scrut_reg: string, 
                             end;
                             false -> case pk == "list_cons" of {
                                 true -> concat(concat(concat("    CBZ ", scrut_reg), ", "), concat(fail_l, "\n"));
-                                false -> concat(concat("    B ", fail_l), "\n")
+                                false -> case pk == "atom" of {
+                                    true -> do
+                                        syn: SIRTerm <- SIRTerm { kind: 0, type_name: "atom", value: branch.name, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+                                        ld: string <- const_dispatcher@emit_const(syn, lit_reg, table, literal_table, float64_literal_table, float32_literal_table);
+                                        ln: string <- concat(ld, "\n");
+                                        cmp_ln: string <- concat(concat(concat(ln, "    CMP "), scrut_reg), ", ");
+                                        cmp_full: string <- concat(concat(cmp_ln, lit_reg), "\n");
+                                        bne_ln: string <- concat(cmp_full, "    B.NE ");
+                                        concat(concat(bne_ln, fail_l), "\n")
+                                    end;
+                                    false -> concat(concat("    B ", fail_l), "\n")
+                                }
                             }
                         }
                     }
@@ -971,7 +982,12 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         true -> do term_to_asm_opt_bound_debug(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                         false -> term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                     };
-                    inline_asm: string <- print_atom_inline@emit_print_atom_by_index(term, dest, table);
+                    pa_uid_base: string <- case term.inner.kind == 1 and len(term.inner.name) > 1 of {
+                        true -> substring(term.inner.name, 1, len(term.inner.name));
+                        false -> case len(bound_name) > 0 of { true -> bound_name; false -> "v" }
+                    };
+                    pa_uid: string <- concat(pa_uid_base, concat("_", atom_table@int64_to_decimal_string(len(outer_reg))));
+                    inline_asm: string <- print_atom_inline@emit_print_atom_by_index(term, dest, table, pa_uid);
                     concat(concat(arg_asm, "\n"), inline_asm)
                 end
             };

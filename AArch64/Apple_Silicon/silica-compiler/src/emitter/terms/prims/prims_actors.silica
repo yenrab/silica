@@ -9,6 +9,7 @@ use sir_ast;
 export is_actor_prim/1;
 export actor_prim_is_nullary/1;
 export actor_prim_is_unary/1;
+export actor_prim_is_ternary/1;
 export emit_prim_op/2;
 export module_uses_actor_prims/1;
 
@@ -67,6 +68,8 @@ fn is_actor_prim(name: string) -> bool {
         or name == "unpin_actor" or name == "set_actor_priority"
         or name == "get_cpu_topology" or name == "get_efficiency_cores" or name == "get_performance_cores"
         or name == "get_core_capabilities"
+        or name == "get_actor_memory_usage"
+        or name == "migrate_actor" or name == "move"
 }
 
 fn actor_prim_is_nullary(name: string) -> bool {
@@ -75,7 +78,11 @@ fn actor_prim_is_nullary(name: string) -> bool {
 
 fn actor_prim_is_unary(name: string) -> bool {
     name == "get_core_capabilities" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
-        or name == "unpin_actor" or name == "remove_actor"
+        or name == "unpin_actor" or name == "remove_actor" or name == "get_actor_memory_usage"
+}
+
+fn actor_prim_is_ternary(name: string) -> bool {
+    name == "move"
 }
 
 fn asm_bl(label: string) -> string {
@@ -128,6 +135,9 @@ fn runtime_label(name: string) -> string {
         "pin_actor_to_numa_node" -> "_silica_rt_pin_actor_to_numa_node";
         "unpin_actor" -> "_silica_rt_unpin_actor";
         "set_actor_priority" -> "_silica_rt_set_actor_priority";
+        "get_actor_memory_usage" -> "_silica_rt_get_actor_memory_usage";
+        "migrate_actor" -> "_silica_rt_migrate_actor";
+        "move" -> "_silica_rt_move_actor";
         _: string -> "_silica_rt_actor_unknown"
     }
 }
@@ -142,6 +152,10 @@ fn emit_runtime_unary(dest: string, name: string) -> string {
 
 fn emit_runtime_binary(dest: string, name: string) -> string {
     concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl(runtime_label(name))), mov_dest_from_x0(dest))
+}
+
+fn emit_runtime_ternary(dest: string, name: string) -> string {
+    concat(concat("    MOV X0, X9\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n", asm_bl(runtime_label(name))), mov_dest_from_x0(dest))
 }
 
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
@@ -163,6 +177,9 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
         "pin_actor_to_numa_node" -> emit_runtime_binary(dest, term.name);
         "unpin_actor" -> emit_runtime_unary(dest, term.name);
         "set_actor_priority" -> emit_runtime_binary(dest, term.name);
+        "get_actor_memory_usage" -> emit_runtime_unary(dest, term.name);
+        "migrate_actor" -> emit_runtime_binary(dest, term.name);
+        "move" -> emit_runtime_ternary(dest, term.name);
         _: string -> concat(concat("    ; unsupported actor prim: ", term.name), "\n")
     }
 }

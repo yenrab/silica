@@ -2,36 +2,29 @@
 // §16.1.1: call(actor_ref, message) -> Reply for synchronous request-reply.
 // §15.1.3: self() returns the current actor's reference.
 
-impl ActorMessage for atom;
-(:ping) impl ActorMessage;
-impl ActorState for int64;
 
-fn server(msg: (:ping), state: int64) -> (:reply, atom, int64) {
-    (:reply, :pong, state)
-}
-
-fn client(msg: atom, state: { srv: actor_ref, phase: atom }) -> (:reply, atom, { srv: actor_ref, phase: atom }) {
-    sequence proc[device_io, concurrency]
-        result: atom <- case (msg, state.phase) of {
-            (s: atom, q: atom) if s == :start and q == :idle -> {
-                pong: atom <- call(state.srv, (:ping) impl ActorMessage {});
-                print_atom(pong);
+fn server(msg: atom, state: int64) -> (:reply, atom, int64) {
+    sequence proc[device_io]
+        result: atom <- case msg of {
+            :ping -> {
+                print_atom(msg);
                 println("");
-                pong
+                :pong
             }
-            _: atom -> :ok
+            _: atom -> :error
         };
     produces
-        pure (:reply, result, { srv: state.srv, phase: :done })
+        pure (:reply, result, state)
     end
 }
 
 fn main() -> atom {
-    sequence proc[concurrency]
+    sequence proc[concurrency, device_io]
         server_ref: actor_ref <- spawn(0, server);
-        client_ref: actor_ref <- spawn({ srv: server_ref, phase: :idle }, client);
-        _: atom <- call(client_ref, :start impl ActorMessage {});
+        result: atom <- call(server_ref, (:ping) impl ActorMessage {});
+        print_atom(result);
+        println("");
     produces
-        pure :ok
+        pure result
     end
 }

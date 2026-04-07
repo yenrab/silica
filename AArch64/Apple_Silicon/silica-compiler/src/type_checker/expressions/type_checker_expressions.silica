@@ -439,6 +439,9 @@ fn actor_runtime_builtin_return_type(name: string) -> string {
         "get_efficiency_cores" -> "List[int64,normal]";
         "get_performance_cores" -> "List[int64,normal]";
         "get_core_capabilities" -> "core_info";
+        "get_actor_memory_usage" -> "int64";
+        "migrate_actor" -> "atom";
+        "move" -> "atom";
         _: string -> ""
     }
 }
@@ -603,7 +606,61 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                                                             }
                                                         end
                                                     };
-                                                    false -> type_checker_core@type_check_err("E2005", expr.location, "unknown actor runtime helper", "sect15")
+                                                    false -> case expr.name == "get_actor_memory_usage" of {
+                                                        true -> case ac == 1 of {
+                                                            false -> type_checker_core@type_check_err("E2005", expr.location, "get_actor_memory_usage expects 1 argument: (actor_ref)", "sect15");
+                                                            true -> do
+                                                                r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                                case r0.is_ok of {
+                                                                    false -> r0;
+                                                                    true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                                                }
+                                                            end
+                                                        };
+                                                        false -> case expr.name == "migrate_actor" of {
+                                                            true -> case ac == 2 of {
+                                                                false -> type_checker_core@type_check_err("E2005", expr.location, "migrate_actor expects 2 arguments: (actor_ref, target_core: int64)", "sect15");
+                                                                true -> do
+                                                                    r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                                    case r0.is_ok of {
+                                                                        false -> r0;
+                                                                        true -> do
+                                                                            r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "int64", context);
+                                                                            case r1.is_ok of {
+                                                                                false -> r1;
+                                                                                true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                                                            }
+                                                                        end
+                                                                    }
+                                                                end
+                                                            };
+                                                            false -> case expr.name == "move" of {
+                                                                true -> case ac == 3 of {
+                                                                    false -> type_checker_core@type_check_err("E2005", expr.location, "move expects 3 arguments: (actor_ref, from_core: int64, to_core: int64)", "sect15");
+                                                                    true -> do
+                                                                        r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                                        case r0.is_ok of {
+                                                                            false -> r0;
+                                                                            true -> do
+                                                                                r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "int64", context);
+                                                                                case r1.is_ok of {
+                                                                                    false -> r1;
+                                                                                    true -> do
+                                                                                        r2: TypeCheckResult <- check_expr(call_third_arg_expr(expr), "int64", context);
+                                                                                        case r2.is_ok of {
+                                                                                            false -> r2;
+                                                                                            true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                                                                        }
+                                                                                    end
+                                                                                }
+                                                                            end
+                                                                        }
+                                                                    end
+                                                                };
+                                                                false -> type_checker_core@type_check_err("E2005", expr.location, "unknown actor runtime helper", "sect15")
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -665,7 +722,13 @@ fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContex
                                                             r_pl: TypeCheckResult <- check_expr(place_e, "discard", context);
                                                             case r_pl.is_ok of {
                                                                 false -> r_pl;
-                                                                true -> check_actor_spawn_result_type(expr, expected_type)
+                                                                true -> do
+                                                                    aff_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(place_e, context);
+                                                                    case is_valid_core_affinity_type(aff_t) of {
+                                                                        true -> check_actor_spawn_result_type(expr, expected_type);
+                                                                        false -> type_checker_core@type_check_err("E2005", place_e.location, concat("spawn: core affinity argument must be int64 (core ID) or List[int64] (core set), got ", aff_t), "sect15")
+                                                                    }
+                                                                end
                                                             }
                                                         end;
                                                         false -> check_actor_spawn_result_type(expr, expected_type)
@@ -684,6 +747,11 @@ fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContex
     }
 }
 
+// §4.6 / §15.1.1: valid core affinity types for spawn's 3rd argument.
+fn is_valid_core_affinity_type(t: string) -> bool {
+    t == "int64" or t == "List[int64,normal]"
+}
+
 fn check_actor_spawn_result_type(expr: Expr, expected_type: string) -> TypeCheckResult {
     case expected_type == "actor_ref" of {
         true -> type_checker_core@type_check_ok();
@@ -691,6 +759,14 @@ fn check_actor_spawn_result_type(expr: Expr, expected_type: string) -> TypeCheck
             true -> type_checker_core@type_check_ok();
             false -> type_checker_core@type_check_err("E2003", expr.location, concat("spawn returns actor_ref, expected ", expected_type), "sect15")
         }
+    }
+}
+
+fn check_actor_message_satisfies_am(expr: Expr, msg_e: Expr, context: TypeContext) -> TypeCheckResult {
+    has_postfix: bool <- type_checker_expressions_actors@call_has_impl_am_marker(expr);
+    case has_postfix of {
+        true -> type_checker_core@type_check_ok();
+        false -> type_checker_core@type_check_err("E2005", msg_e.location, "message must satisfy ActorMessage (§16.3.2); use `expr impl ActorMessage {}`", "sect16")
     }
 }
 
@@ -703,11 +779,34 @@ fn check_actor_call_builtin(expr: Expr, expected_type: string, context: TypeCont
             case r0.is_ok of {
                 false -> r0;
                 true -> do
+                    beh_type: string <- type_checker_expressions_actors@lookup_actor_behavior_type(expr, context);
+                    msg_expected: string <- case len(beh_type) > 0 of {
+                        true -> type_checker_expressions_actors@parse_behavior_msg_param_type(beh_type);
+                        false -> "discard"
+                    };
                     msg_e: Expr <- call_second_arg_expr(expr);
-                    r1: TypeCheckResult <- check_expr(msg_e, "discard", context);
+                    r1: TypeCheckResult <- check_expr(msg_e, msg_expected, context);
                     case r1.is_ok of {
                         false -> r1;
-                        true -> type_checker_core@type_check_ok()
+                        true -> do
+                            am_check: TypeCheckResult <- check_actor_message_satisfies_am(expr, msg_e, context);
+                            case am_check.is_ok of {
+                                false -> am_check;
+                                true -> do
+                                    reply_type: string <- case len(beh_type) > 0 of {
+                                        true -> type_checker_expressions_actors@parse_behavior_reply_type(beh_type);
+                                        false -> ""
+                                    };
+                                    case len(reply_type) > 0 of {
+                                        true -> case expected_type == reply_type or expected_type == "discard" of {
+                                            true -> type_checker_core@type_check_ok();
+                                            false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat("call returns ", reply_type), concat(", expected ", expected_type)), "sect16")
+                                        };
+                                        false -> type_checker_core@type_check_ok()
+                                    }
+                                end
+                            }
+                        end
                     }
                 end
             }
@@ -724,17 +823,25 @@ fn check_actor_cast_builtin(expr: Expr, expected_type: string, context: TypeCont
             case r0.is_ok of {
                 false -> r0;
                 true -> do
+                    beh_type: string <- type_checker_expressions_actors@lookup_actor_behavior_type(expr, context);
+                    msg_expected: string <- case len(beh_type) > 0 of {
+                        true -> type_checker_expressions_actors@parse_behavior_msg_param_type(beh_type);
+                        false -> "discard"
+                    };
                     msg_e: Expr <- call_second_arg_expr(expr);
-                    r1: TypeCheckResult <- check_expr(msg_e, "discard", context);
+                    r1: TypeCheckResult <- check_expr(msg_e, msg_expected, context);
                     case r1.is_ok of {
                         false -> r1;
-                        true -> case expected_type == "boolean" of {
-                            true -> type_checker_core@type_check_ok();
-                            false -> case expected_type == "discard" of {
-                                true -> type_checker_core@type_check_ok();
-                                false -> type_checker_core@type_check_err("E2003", expr.location, concat("cast returns boolean, expected ", expected_type), "sect16")
+                        true -> do
+                            am_check: TypeCheckResult <- check_actor_message_satisfies_am(expr, msg_e, context);
+                            case am_check.is_ok of {
+                                false -> am_check;
+                                true -> case expected_type == "boolean" or expected_type == "discard" of {
+                                    true -> type_checker_core@type_check_ok();
+                                    false -> type_checker_core@type_check_err("E2003", expr.location, concat("cast returns boolean, expected ", expected_type), "sect16")
+                                }
                             }
-                        }
+                        end
                     }
                 end
             }
@@ -751,17 +858,25 @@ fn check_actor_send_builtin(expr: Expr, expected_type: string, context: TypeCont
             case r0.is_ok of {
                 false -> r0;
                 true -> do
+                    beh_type: string <- type_checker_expressions_actors@lookup_actor_behavior_type(expr, context);
+                    msg_expected: string <- case len(beh_type) > 0 of {
+                        true -> type_checker_expressions_actors@parse_behavior_msg_param_type(beh_type);
+                        false -> "discard"
+                    };
                     msg_e: Expr <- call_second_arg_expr(expr);
-                    r1: TypeCheckResult <- check_expr(msg_e, "discard", context);
+                    r1: TypeCheckResult <- check_expr(msg_e, msg_expected, context);
                     case r1.is_ok of {
                         false -> r1;
-                        true -> case expected_type == "atom" of {
-                            true -> type_checker_core@type_check_ok();
-                            false -> case expected_type == "discard" of {
-                                true -> type_checker_core@type_check_ok();
-                                false -> type_checker_core@type_check_err("E2003", expr.location, concat("send returns atom, expected ", expected_type), "sect16")
+                        true -> do
+                            am_check: TypeCheckResult <- check_actor_message_satisfies_am(expr, msg_e, context);
+                            case am_check.is_ok of {
+                                false -> am_check;
+                                true -> case expected_type == "atom" or expected_type == "discard" of {
+                                    true -> type_checker_core@type_check_ok();
+                                    false -> type_checker_core@type_check_err("E2003", expr.location, concat("send returns atom, expected ", expected_type), "sect16")
+                                }
                             }
-                        }
+                        end
                     }
                 end
             }
@@ -1224,6 +1339,39 @@ fn check_let_memory_region(expr: Expr, expected_type: string, context: TypeConte
     }
 }
 
+// When a let-binding creates an actor_ref from spawn, record the behavior function type
+// and enforce region move semantics (§12.1.5): if initial_state is a region variable,
+// shadow it with "moved_region" so subsequent use is a compile error.
+fn enrich_env_for_actor_spawn(env: ListSymbolEntry, var_name: string, bind_type: string, rhs: Expr, context: TypeContext) -> ListSymbolEntry {
+    case bind_type == "actor_ref" and rhs.kind == 4 and rhs.name == "spawn" of {
+        true -> do
+            beh_e: Expr <- type_checker_expressions_actors@spawn_behavior_expr(rhs);
+            env1: ListSymbolEntry <- case beh_e.kind == 1 of {
+                true -> do
+                    (beh_found: bool, beh_type: string) <- type_checker_core@lookup_symbol_found(context.env, beh_e.name);
+                    case beh_found of {
+                        true -> type_checker_core@add_symbol(env, concat("__actor_beh__", var_name), beh_type, parser_ast@empty_effect_name_list());
+                        false -> env
+                    }
+                end;
+                false -> env
+            };
+            state_e: Expr <- rhs.inner;
+            case state_e.kind == 1 of {
+                true -> do
+                    (st_found: bool, st_type: string) <- type_checker_core@lookup_symbol_found(context.env, state_e.name);
+                    case st_found and type_checker_memory_regions@is_memory_region_type(st_type) of {
+                        true -> type_checker_core@add_symbol(env1, state_e.name, "moved_region", parser_ast@empty_effect_name_list());
+                        false -> env1
+                    }
+                end;
+                false -> env1
+            }
+        end;
+        false -> env
+    }
+}
+
 fn check_let_after_validation(expr: Expr, expected_type: string, context: TypeContext, bind_type: string) -> TypeCheckResult proc[DeviceIO] {
     case bind_type == "unit" of {
         true -> case expr.name == "_" of {
@@ -1246,7 +1394,8 @@ fn check_let_after_validation(expr: Expr, expected_type: string, context: TypeCo
             case rhs_result.is_ok of {
                 false -> rhs_result;
                 true -> do
-                    new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, bind_type, parser_ast@empty_effect_name_list());
+                    base_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, bind_type, parser_ast@empty_effect_name_list());
+                    new_env: ListSymbolEntry <- enrich_env_for_actor_spawn(base_env, expr.name, bind_type, expr.inner, context);
                     new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
                     body_result: TypeCheckResult <- check_expr(expr.right_expr, expected_type, new_context);
                     body_result
@@ -1264,7 +1413,11 @@ fn context_after_sequence_body(body: Expr, context: TypeContext) -> TypeContext 
             is_discard: bool <- body.value == "unit" and body.name == "_";
             new_context: TypeContext <- case is_discard of {
                 true -> context;
-                false -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, body.name, body.value, parser_ast@empty_effect_name_list()))
+                false -> do
+                    base_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, body.name, body.value, parser_ast@empty_effect_name_list());
+                    enriched_env: ListSymbolEntry <- enrich_env_for_actor_spawn(base_env, body.name, body.value, body.inner, context);
+                    type_checker_core@type_context_with_env(context, enriched_env)
+                end
             };
             context_after_sequence_body(body.right_expr, new_context)
         end;

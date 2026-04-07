@@ -70,7 +70,8 @@ fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: str
                                     state_t: string <- type_checker_expressions_actors@parse_behavior_state_param_type(beh_fn_type);
                                     beh_infer: string <- type_checker_tuple_decompose_helpers@infer_expr_type(beh_e, context);
                                     init_sir: SIRTerm <- sir_subexpr_for_actor(context, init_e, state_t, in_body, bound_name, bound_type);
-                                    beh_sir: SIRTerm <- sir_subexpr_for_actor(context, beh_e, beh_infer, in_body, bound_name, bound_type);
+                                    beh_label: string <- user_calls@qual_name(beh_e.name);
+                                    beh_sir: SIRTerm <- SIRTerm { kind: 0, type_name: "fn_ptr", value: beh_label, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
                                     case ac == 3 of {
                                         true -> do
                                             pl_e: Expr <- type_checker_expressions_actors@spawn_placement_expr(expr);
@@ -206,7 +207,37 @@ fn lower_actor_runtime_helper_expr(context: TypeContext, expr: Expr, in_body: bo
                                                         end;
                                                         false -> sir_ast@dummy_sir_term()
                                                     };
-                                                    false -> sir_ast@dummy_sir_term()
+                                                    false -> case expr.name == "get_actor_memory_usage" of {
+                                                        true -> case n == 1 of {
+                                                            true -> do
+                                                                mu0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                                actor_calls@build_actor_runtime_prim(expr.name, ret, mu0, d, 1)
+                                                            end;
+                                                            false -> sir_ast@dummy_sir_term()
+                                                        };
+                                                        false -> case expr.name == "migrate_actor" of {
+                                                            true -> case n == 2 of {
+                                                                true -> do
+                                                                    ma0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                                    ma1: SIRTerm <- sir_subexpr_for_actor(context, actor_calls@actor_call_second_arg(expr), "int64", in_body, bound_name, bound_type);
+                                                                    actor_calls@build_actor_runtime_prim(expr.name, ret, ma0, ma1, 2)
+                                                                end;
+                                                                false -> sir_ast@dummy_sir_term()
+                                                            };
+                                                            false -> case expr.name == "move" of {
+                                                                true -> case n == 3 of {
+                                                                    true -> do
+                                                                        mv0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                                        mv1: SIRTerm <- sir_subexpr_for_actor(context, actor_calls@actor_call_second_arg(expr), "int64", in_body, bound_name, bound_type);
+                                                                        mv2: SIRTerm <- sir_subexpr_for_actor(context, type_checker_expressions_actors@spawn_placement_expr(expr), "int64", in_body, bound_name, bound_type);
+                                                                        actor_calls@build_actor_runtime_prim_3(expr.name, ret, mv0, mv1, mv2)
+                                                                    end;
+                                                                    false -> sir_ast@dummy_sir_term()
+                                                                };
+                                                                false -> sir_ast@dummy_sir_term()
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -1279,6 +1310,20 @@ fn find_colon_from(s: string, i: int64) -> int64 {
     }
 }
 
+// Atom literal pattern :name (no ':' inside suffix); aligns with type_checker case_try_atom_literal_pattern.
+fn is_atom_literal_pat(raw: string) -> bool {
+    case substring(raw, 0, 1) == ":" of {
+        false -> false;
+        true -> do
+            atom_rest: string <- substring(raw, 1, len(raw));
+            case len(atom_rest) == 0 of {
+                true -> false;
+                false -> find_colon_from(atom_rest, 0) < 0
+            }
+        end
+    }
+}
+
 fn is_digit_char(c: string) -> bool {
     c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9"
 }
@@ -1416,7 +1461,10 @@ fn branch_ast_to_sir(branch: Expr, ctx: TypeContext, expected_type: string, scru
                             end;
                             false -> case is_int_literal_pat(raw) of {
                                 true -> make_case_branch("int", types@type_name_to_sir(scrutinee_ast_type), raw, ctx, branch, expected_type, bound_name, bound_type, in_body);
-                                false -> branch_from_bind_or_wild(raw, scrutinee_ast_type, branch, ctx, expected_type, bound_name, bound_type, in_body)
+                                false -> case is_atom_literal_pat(raw) of {
+                                    true -> make_case_branch("atom", "atom", raw, ctx, branch, expected_type, bound_name, bound_type, in_body);
+                                    false -> branch_from_bind_or_wild(raw, scrutinee_ast_type, branch, ctx, expected_type, bound_name, bound_type, in_body)
+                                }
                             }
                         }
                     }
