@@ -8,8 +8,8 @@
 
 SILICA_COMPILER := ../../src/silica-compiler
 
-# Files to build: read from silica.config (one .silica per line)
-CONFIG_FILES := $(shell grep -v '^\#' silica.config 2>/dev/null | grep '\.silica$$' || true)
+# Sources: all .silica in this directory (silica.config is generated before compile)
+CONFIG_FILES := $(shell ls -1 *.silica 2>/dev/null)
 EXECUTABLES := $(CONFIG_FILES:%.silica=%)
 SAMS_FILES := $(addsuffix .sams, $(EXECUTABLES))
 OBJ_FILES := $(addsuffix .o, $(EXECUTABLES))
@@ -35,10 +35,9 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
 all: executables
 
-# Stage 1: silica-compiler generates .sams from .silica (reads silica.config)
-assembly: $(SAMS_FILES)
-
-$(SAMS_FILES): $(CONFIG_FILES) silica.config
+# Stage 1: write silica.config from ls *.silica, then silica-compiler -> .sams
+assembly: $(CONFIG_FILES)
+	@ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true
 	@echo "Compiling with silica-compiler..."
 	@$(SILICA_COMPILER)
 	@echo "✅ Assembly generated"
@@ -64,9 +63,7 @@ executables: assembly $(OBJ_FILES)
 # integrate: compile .silica per silica.config, diff .sams vs .ascomp, run binaries, diff .sout vs .scout
 integrate:
 	@failed=0; \
-	if [ ! -f silica.config ]; then \
-		ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true; \
-	fi; \
+	ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true; \
 	if [ ! -s silica.config ]; then \
 		echo "SKIP: no silica.config"; \
 		exit 0; \
@@ -146,5 +143,5 @@ help:
 	@echo "  clean       - Remove .sams, .o, executables"
 	@echo "  help        - Show this help"
 	@echo ""
-	@echo "Config: silica.config (one .silica file per line)"
+	@echo "Config: silica.config (generated from ls *.silica before compile)"
 	@echo "Linker: $(LINKER)"

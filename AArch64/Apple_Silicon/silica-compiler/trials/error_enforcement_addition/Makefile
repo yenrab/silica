@@ -1,5 +1,5 @@
 # Makefile for Silica error enforcement trials
-# Files to test are read from silica.config (never modified by this Makefile).
+# Files to test: all *.silica in this directory (same discovery as ls-based silica.config).
 # Each file is compiled in isolation inside a temporary directory: a symlink to
 # the .silica file and a single-entry silica.config are created there, the
 # compiler is run, then the temp directory is removed.
@@ -12,8 +12,8 @@
 THIS_DIR        := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 SILICA_COMPILER := $(THIS_DIR)../../src/silica-compiler
 
-# Authoritative file list — read once at parse time; silica.config is never written.
-SILICA_FILES := $(shell cat $(THIS_DIR)silica.config)
+# All trial sources in this directory (no checked-in silica.config).
+SILICA_FILES := $(shell cd "$(THIS_DIR)" && ls -1 *.silica 2>/dev/null)
 
 .DEFAULT_GOAL := all
 .PHONY: all integrate clean help
@@ -53,8 +53,8 @@ clean:
 help:
 	@echo "Makefile - Silica error enforcement trials"
 	@echo "=========================================="
-	@echo "File list is read from silica.config (never modified by this Makefile)."
-	@echo "Each file is compiled in an isolated temp directory so silica.config"
+	@echo "File list is all *.silica in this directory."
+	@echo "Each file is compiled in an isolated temp directory; a one-line silica.config"
 	@echo "is left untouched.  Compiler output is captured to .cur_fail and"
 	@echo "compared to .golden_fail."
 	@echo ""

@@ -1,6 +1,9 @@
 # Makefile for Silica trials - integrate target compiles all .silica files,
 # diffs .sams vs .ascomp, runs executables, and compares output to .scout files.
 #
+# Each subdir regenerates silica.config from: ls -1 *.silica | grep '\.silica$'
+# To refresh configs without compiling: ./rebuild-silica-configs.sh
+#
 # integrate: compile all .silica in subdirs, diff .sams vs .ascomp, run each binary, diff .sout vs .scout
 # clean: remove executables, .sams, .o (keeps .scout and .ascomp)
 
@@ -37,9 +40,7 @@ integrate:
 			continue; \
 		fi; \
 		cd $$dir && \
-		if [ ! -f silica.config ]; then \
-			ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true; \
-		fi; \
+		ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true; \
 		if [ ! -s silica.config ]; then \
 			echo "SKIP: $$dir has no silica.config"; \
 			cd ..; \
@@ -131,9 +132,11 @@ help:
 	@echo "====================="
 	@echo ""
 	@echo "Targets:"
-	@echo "  integrate  - Compile all .silica in subdirs, diff .sams vs .ascomp,"
+	@echo "  integrate  - Regenerate silica.config (ls *.silica), compile, diff .sams vs .ascomp,"
 	@echo "               run each binary, diff .sout vs .scout (report failures)"
 	@echo "  clean      - Remove executables, .sams, .o, .sout (keeps .scout, .ascomp)"
 	@echo "  help       - Show this help"
+	@echo ""
+	@echo "Also: ./rebuild-silica-configs.sh — write silica.config in each subdir without compiling."
 	@echo ""
 	@echo "Subdirs: $(SUBDIRS)"

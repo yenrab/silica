@@ -65,9 +65,7 @@ executables: objects
 # integrate: compile .silica per silica.config, diff .sams vs .ascomp, run binaries, diff .sout vs .scout
 integrate:
 	@failed=0; \
-	if [ ! -f silica.config ]; then \
-		ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true; \
-	fi; \
+	ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true; \
 	if [ ! -s silica.config ]; then \
 		echo "SKIP: no silica.config"; \
 		exit 0; \

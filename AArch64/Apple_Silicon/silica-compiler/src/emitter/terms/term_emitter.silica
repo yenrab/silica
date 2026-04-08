@@ -35,6 +35,41 @@ export emit_function_tail_user_call_root/14;
 export term_to_asm_debug/12;
 export term_to_asm_debug_with_outer/13;
 
+// int64/uint64/boolean let RHS in X0 is overwritten by device_io syscalls (write), print helpers, and later actor_call/actor_cast before the let body runs.
+// Spill to callee-saved X19–X22 in order (same pool as actor_ref); emitter_core emits STP/LDP pairs (see needs_actor_ref_x21_x22_frame).
+fn spill_reg_chain_from_outer(outer_reg: string) -> string {
+    case var@is_reg_bound(outer_reg, "X19") of {
+        false -> "X19";
+        true -> case var@is_reg_bound(outer_reg, "X20") of {
+            false -> "X20";
+            true -> case var@is_reg_bound(outer_reg, "X21") of {
+                false -> "X21";
+                true -> case var@is_reg_bound(outer_reg, "X22") of {
+                    false -> "X22";
+                    true -> ""
+                }
+            }
+        }
+    }
+}
+
+fn compute_let_rhs_spill_reg(term: SIRTerm, rhs_reg: string, outer_reg: string) -> string {
+    case rhs_reg == "X0" of {
+        false -> "";
+        true -> case term.type_name of {
+            "int64" -> spill_reg_chain_from_outer(outer_reg);
+            "uint64" -> spill_reg_chain_from_outer(outer_reg);
+            "boolean" -> spill_reg_chain_from_outer(outer_reg);
+            "actor_ref" -> spill_reg_chain_from_outer(outer_reg);
+            _: string -> ""
+        }
+    }
+}
+
+fn mov_spill_from_rhs(rhs_reg: string, spill_reg: string) -> string {
+    concat(concat(concat("    MOV ", spill_reg), ", "), concat(rhs_reg, "\n"))
+}
+
 // Total stack bytes to deallocate for tuple-constructed call arguments.
 // tuple_make allocates on SP; callers must restore SP after the call returns.
 // Convert an integer offset to a # prefixed string for AArch64 immediates
@@ -754,6 +789,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         false -> term_to_asm_opt_bound(term.inner, rhs_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                     }
                 };
+                spill_reg_b: string <- compute_let_rhs_spill_reg(term, rhs_reg, outer_reg);
+                spill_b: bool <- len(spill_reg_b) > 0;
+                rhs_bind_b: string <- case spill_b of { true -> spill_reg_b; false -> rhs_reg };
+                mov_spill_b: string <- case spill_b of { true -> mov_spill_from_rhs(rhs_reg, spill_reg_b); false -> "" };
                 adj_str_b: string <- var@find_sp_binding(outer_reg, "_adj");
                 sp_adj_b: int64 <- case len(adj_str_b) > 0 of { true -> string_parse@string_to_int64(adj_str_b); false -> 0 };
                 tm_adj: int64 <- case term.inner.kind == 6 and term.inner.name == "tuple_make" of {
@@ -833,25 +872,25 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> rhs_reg;
                     false -> case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(proj_tvs) > 0 of {
                         true -> var@sp_offset_for_index_adj(term.inner.right_expr.value, proj_sp_adj);
-                        false -> var@tuple_proj_body_bound(term.inner, rhs_reg, proj_sp_adj)
+                        false -> var@tuple_proj_body_bound(term.inner, rhs_bind_b, proj_sp_adj)
                     }
                 };
                 tuple_elem_count_b: int64 <- case term.inner.kind == 1 and reg_conventions@is_tuple_type(term.type_name) of { true -> prims_tuple@count_type_elements(term.type_name); false -> 0 };
                 ptr_binding_inner: string <- case term.inner.kind == 1 and reg_conventions@is_tuple_type(term.type_name) and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
                     true -> case tuple_elem_count_b > 2 of {
                         true -> concat("|_ptr.", concat(term.name, "=X12"));
-                        false -> concat("|_ptr.", concat(term.name, concat("=", rhs_reg)))
+                        false -> concat("|_ptr.", concat(term.name, concat("=", rhs_bind_b)))
                     };
                     false -> ""
                 };
                 save_base_b: string <- case tuple_elem_count_b > 2 and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
-                    true -> concat("    MOV X12, ", concat(rhs_reg, "\n"));
+                    true -> concat("    MOV X12, ", concat(rhs_bind_b, "\n"));
                     false -> ""
                 };
                 reg_binding_inner: string <- case tp_is_reg_b of {
                     true -> case term.inner.kind == 6 and term.inner.name == "tuple_proj" and len(proj_tvs) > 0 of {
                         true -> concat("|", concat(term.name, concat("=", var@sp_offset_for_index_adj(term.inner.right_expr.value, proj_sp_adj))));
-                        false -> concat("|", concat(term.name, concat("=", rhs_reg)))
+                        false -> concat("|", concat(term.name, concat("=", rhs_bind_b)))
                     };
                     false -> ""
                 };
@@ -861,7 +900,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         nosp_r: string <- var@extract_sp_bindings(outer_reg);
                         concat(nob_r, concat(nosp_r, reg_binding_inner))
                     end;
-                    false -> var@build_outer_with_sp(bound_name, bound_reg, outer_reg, term.name, term.inner, proj_sp_adj, rhs_reg)
+                    false -> var@build_outer_with_sp(bound_name, bound_reg, outer_reg, term.name, term.inner, proj_sp_adj, rhs_bind_b)
                 };
                 nob: string <- var@base_reg_of(new_outer_raw);
                 nosp: string <- var@extract_sp_bindings(new_outer_raw);
@@ -883,10 +922,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> "";
                     false -> "\n"
                 };
-                let_combined: string <- concat(concat(rhs_asm, rhs_sep), concat(save_base_b, case len(dealloc) > 0 of {
+                let_combined: string <- concat(concat(concat(concat(rhs_asm, rhs_sep), mov_spill_b), save_base_b), case len(dealloc) > 0 of {
                     true -> concat(concat(body_asm, "\n"), dealloc);
                     false -> body_asm
-                }));
+                });
                 case term.inner.name == "buf_store" or term.inner.name == "write_ref" of {
                     true -> var@strip_mov_x2_x1_then_x1_x2(let_combined);
                     false -> let_combined
@@ -925,26 +964,30 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> concat("|_va.", concat(term.name, concat("=", atom_table@int64_to_decimal_string(tm_adj_tl))));
                     false -> ""
                 };
+                spill_reg_tl: string <- compute_let_rhs_spill_reg(term, rhs_reg, outer_reg);
+                spill_tl: bool <- len(spill_reg_tl) > 0;
+                rhs_bind_tl: string <- case spill_tl of { true -> spill_reg_tl; false -> rhs_reg };
+                mov_spill_tl: string <- case spill_tl of { true -> mov_spill_from_rhs(rhs_reg, spill_reg_tl); false -> "" };
                 is_simple_tuple_make: bool <- term.inner.kind == 6 and term.inner.name == "tuple_make" and tm_adj_tl == 0;
                 body_bound_tl: string <- case is_simple_tuple_make of {
                     true -> "SP";
-                    false -> var@tuple_proj_body_bound(term.inner, rhs_reg, 0)
+                    false -> var@tuple_proj_body_bound(term.inner, rhs_bind_tl, 0)
                 };
                 tp_binding_tl: string <- var@new_tp_binding(term.name, term.inner, 0);
                 reg_binding_tl: string <- case is_simple_tuple_make of {
                     true -> concat("|", concat(term.name, "=SP"));
-                    false -> var@reg_binding(term.name, rhs_reg)
+                    false -> var@reg_binding(term.name, rhs_bind_tl)
                 };
                 tuple_elem_count_tl: int64 <- case term.inner.kind == 1 and reg_conventions@is_tuple_type(term.type_name) of { true -> prims_tuple@count_type_elements(term.type_name); false -> 0 };
                 ptr_binding_tl: string <- case term.inner.kind == 1 and reg_conventions@is_tuple_type(term.type_name) and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
                     true -> case tuple_elem_count_tl > 2 of {
                         true -> concat("|_ptr.", concat(term.name, "=X12"));
-                        false -> concat("|_ptr.", concat(term.name, concat("=", rhs_reg)))
+                        false -> concat("|_ptr.", concat(term.name, concat("=", rhs_bind_tl)))
                     };
                     false -> ""
                 };
                 save_base_tl: string <- case tuple_elem_count_tl > 2 and len(rhs_reg) > 0 and substring(rhs_reg, 0, 1) != "[" of {
-                    true -> concat("    MOV X12, ", concat(rhs_reg, "\n"));
+                    true -> concat("    MOV X12, ", concat(rhs_bind_tl, "\n"));
                     false -> ""
                 };
                 // Top-level let: keep enclosing bindings (e.g. |%s=X19) so later prims still resolve params after rhs_reg holds the new let.
@@ -968,10 +1011,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> "";
                     false -> "\n"
                 };
-                concat(concat(rhs_asm, rhs_sep), concat(save_base_tl, case len(dealloc) > 0 of {
+                concat(concat(concat(concat(rhs_asm, rhs_sep), mov_spill_tl), save_base_tl), case len(dealloc) > 0 of {
                     true -> concat(concat(body_asm, "\n"), dealloc);
                     false -> body_asm
-                }))
+                })
             end
         };
         4 -> case term.name == "main.print_atom" of {
@@ -1190,8 +1233,12 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
         6 -> case term.name == "tuple_make" of {
             true -> do
                 count: int64 <- prims_tuple@count_flat_elements(term);
-                alloc_asm: string <- concat("    SUB SP, SP, #", concat(prims_tuple@flat_alloc_size_str(count), "\n"));
-                stores_asm: string <- emit_flat_tuple_stores(term, 0, count, 0, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+                sret_base: string <- var@find_sp_binding(outer_reg, "_tuple_sret");
+                alloc_asm: string <- case len(sret_base) > 0 of {
+                    true -> "";
+                    false -> concat("    SUB SP, SP, #", concat(prims_tuple@flat_alloc_size_str(count), "\n"))
+                };
+                stores_asm: string <- emit_flat_tuple_stores(term, 0, count, 0, sret_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
                 nested_adjust: int64 <- flat_tuple_nested_alloc(term, count, 0);
                 dest_ptr: string <- case len(dest) > 0 and substring(dest, 0, 1) == "W" of {
                     true -> concat("X", substring(dest, 1, len(dest)));
@@ -1199,9 +1246,15 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 };
                 mov_asm: string <- case dest == "SP" of {
                     true -> "";
-                    false -> case nested_adjust == 0 of {
-                        true -> concat(concat("    MOV ", dest_ptr), ", SP");
-                        false -> concat("    ADD ", concat(dest_ptr, concat(", SP, #", atom_table@int64_to_decimal_string(nested_adjust))))
+                    false -> case len(sret_base) > 0 of {
+                        true -> case nested_adjust == 0 of {
+                            true -> concat(concat("    MOV ", dest_ptr), concat(", ", sret_base));
+                            false -> concat("    ADD ", concat(dest_ptr, concat(", ", concat(sret_base, concat(", #", atom_table@int64_to_decimal_string(nested_adjust))))))
+                        };
+                        false -> case nested_adjust == 0 of {
+                            true -> concat(concat("    MOV ", dest_ptr), ", SP");
+                            false -> concat("    ADD ", concat(dest_ptr, concat(", SP, #", atom_table@int64_to_decimal_string(nested_adjust))))
+                        }
                     }
                 };
                 concat(alloc_asm, concat(stores_asm, case len(mov_asm) > 0 of { true -> concat("\n", mov_asm); false -> "" }))
@@ -2013,10 +2066,23 @@ fn compute_inner_adj_bindings(term: SIRTerm, idx: int64, count: int64, cumulativ
     }
 }
 
-// Walk tuple_make chain, emit each element value and store at [SP, #(idx*8 + sp_adjust)].
+// [SP,#off] or [Xn,#off] when store_base is non-empty (actor behavior sret buffer in X20).
+fn tuple_flat_memref(store_base: string, offset: int64) -> string {
+    case len(store_base) > 0 of {
+        true -> do
+            p: string <- concat("[", store_base);
+            q: string <- concat(p, ", #");
+            r: string <- concat(q, atom_table@int64_to_decimal_string(offset));
+            concat(r, "]")
+        end;
+        false -> concat(concat("[SP, #", atom_table@int64_to_decimal_string(offset)), "]")
+    }
+}
+
+// Walk tuple_make chain, emit each element value and store at [SP, #(idx*8 + sp_adjust)] or [store_base, #...].
 // count = total elements from type; idx = current element index; sp_adjust = bytes SP moved from nested tuple emissions.
-// Returns (assembly_string, total_sp_adjust_after_all_stores) encoded as "asm\x00adjust".
-fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: int64, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
+// store_base: empty -> stack; non-empty -> register holding reply buffer (actor thread stack via X2 at entry).
+fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: int64, store_base: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
     case idx < count - 1 and term.kind == 6 and term.name == "tuple_make" of {
         true -> do
             elem: SIRTerm <- term.inner;
@@ -2042,8 +2108,8 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
             };
             new_adjust: int64 <- sp_adjust + nested_bytes;
             store_offset: int64 <- idx * 8 + new_adjust;
-            store_asm: string <- concat("    STR ", concat(temp_reg, concat(", [SP, #", concat(atom_table@int64_to_decimal_string(store_offset), "]"))));
-            rest_asm: string <- emit_flat_tuple_stores(term.right_expr, idx + 1, count, new_adjust, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+            store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))));
+            rest_asm: string <- emit_flat_tuple_stores(term.right_expr, idx + 1, count, new_adjust, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
             concat(concat(elem_asm, concat("\n", store_asm)), concat("\n", rest_asm))
         end;
         false -> do
@@ -2069,7 +2135,7 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
             };
             new_adjust: int64 <- sp_adjust + nested_bytes;
             store_offset: int64 <- idx * 8 + new_adjust;
-            store_asm: string <- concat("    STR ", concat(temp_reg, concat(", [SP, #", concat(atom_table@int64_to_decimal_string(store_offset), "]"))));
+            store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))));
             concat(elem_asm, concat("\n", store_asm))
         end
     }

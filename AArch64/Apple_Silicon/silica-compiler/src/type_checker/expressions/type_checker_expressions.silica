@@ -1450,6 +1450,14 @@ fn check_sequence_block(expr: Expr, expected_type: string, context: TypeContext)
     }
 }
 
+// Parsed tuple types may spell atom slots as lexemes (:reply, :no_reply, :ok). For checking expressions, that field has type atom.
+fn tuple_elem_type_for_check(field_type: string) -> string {
+    case len(field_type) > 0 and substring(field_type, 0, 1) == ":" of {
+        true -> "atom";
+        false -> field_type
+    }
+}
+
 // Tuple literal (kind 9): check against expected tuple type "(T1, T2)"
 fn check_tuple_literal_inline(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case len(expected_type) == 7 and substring(expected_type, 0, 1) == "d" and substring(expected_type, 1, 2) == "i" and substring(expected_type, 2, 3) == "s" and substring(expected_type, 3, 4) == "c" and substring(expected_type, 4, 5) == "a" and substring(expected_type, 5, 6) == "r" and substring(expected_type, 6, 7) == "d" of {
@@ -1480,11 +1488,13 @@ fn check_tuple_literal_inline(expr: Expr, expected_type: string, context: TypeCo
                             true -> concat(concat("(", second_type), ")");
                             false -> second_type
                         };
-                        first_result: TypeCheckResult <- check_expr(expr.inner, first_type_wrapped, context);
+                        first_expect: string <- tuple_elem_type_for_check(first_type_wrapped);
+                        second_expect: string <- tuple_elem_type_for_check(second_type_wrapped);
+                        first_result: TypeCheckResult <- check_expr(expr.inner, first_expect, context);
                         case first_result.is_ok of {
                             false -> first_result;
                             true -> do
-                                second_result: TypeCheckResult <- check_expr(expr.right_expr, second_type_wrapped, context);
+                                second_result: TypeCheckResult <- check_expr(expr.right_expr, second_expect, context);
                                 second_result
                             end
                         }
