@@ -1,0 +1,314 @@
+// Inline record struct layout for AArch64 emitter (silica-spec §3.3.7 / §3.4.2, sir_design_spec §7.6).
+// record_make / record_proj mirror tuple flat stack layout: field order matches `{ f1: T1, ... }`.
+
+use sir_ast;
+use prims_tuple;
+
+export record_type_starts/1;
+export find_field_type_in_record/2;
+export count_record_fields/1;
+export count_record_chain/1;
+export offset_bytes_before_field/2;
+export slot_bytes_for_field_type/1;
+export strip_spaces_rt/1;
+export record_type_braces_balanced/1;
+export record_case_inner_body/1;
+export record_case_field_step/1;
+export record_field_segment_name_sub/1;
+
+fn strip_spaces_rt(s: string) -> string {
+    strip_spaces_rt_from(s, 0, "")
+}
+
+fn strip_spaces_rt_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> strip_spaces_rt_from(s, i + 1, acc);
+            false -> strip_spaces_rt_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn record_type_starts(s: string) -> bool {
+    t: string <- strip_spaces_rt(s);
+    len(t) > 0 and substring(t, 0, 1) == "{"
+}
+
+fn extract_inner_from_brace(t: string, i: int64, depth: int64) -> string {
+    case i >= len(t) of {
+        true -> "";
+        false -> do
+            c: string <- substring(t, i, i + 1);
+            case c == "{" of {
+                true -> extract_inner_from_brace(t, i + 1, depth + 1);
+                false -> case c == "}" of {
+                    true -> case depth == 1 of {
+                        true -> substring(t, 1, i);
+                        false -> extract_inner_from_brace(t, i + 1, depth - 1)
+                    };
+                    false -> extract_inner_from_brace(t, i + 1, depth)
+                }
+            }
+        end
+    }
+}
+
+fn extract_braced_body(t: string) -> string {
+    case len(t) < 2 of {
+        true -> "";
+        false -> extract_inner_from_brace(t, 1, 1)
+    }
+}
+
+fn first_top_comma_or_end(content: string, i: int64, brace_depth: int64, bracket_depth: int64) -> int64 {
+    case i >= len(content) of {
+        true -> len(content);
+        false -> do
+            c: string <- substring(content, i, i + 1);
+            case c == "{" of {
+                true -> first_top_comma_or_end(content, i + 1, brace_depth + 1, bracket_depth);
+                false -> case c == "}" of {
+                    true -> first_top_comma_or_end(content, i + 1, brace_depth - 1, bracket_depth);
+                    false -> case c == "[" of {
+                        true -> first_top_comma_or_end(content, i + 1, brace_depth, bracket_depth + 1);
+                        false -> case c == "]" of {
+                            true -> first_top_comma_or_end(content, i + 1, brace_depth, bracket_depth - 1);
+                            false -> case c == "," and brace_depth == 0 and bracket_depth == 0 of {
+                                true -> i;
+                                false -> first_top_comma_or_end(content, i + 1, brace_depth, bracket_depth)
+                            }
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn colon_at_depth0_seg(seg: string, i: int64, brace_depth: int64, bracket_depth: int64) -> int64 {
+    case i >= len(seg) of {
+        true -> -1;
+        false -> do
+            c: string <- substring(seg, i, i + 1);
+            case c == "{" of {
+                true -> colon_at_depth0_seg(seg, i + 1, brace_depth + 1, bracket_depth);
+                false -> case c == "}" of {
+                    true -> colon_at_depth0_seg(seg, i + 1, brace_depth - 1, bracket_depth);
+                    false -> case c == "[" of {
+                        true -> colon_at_depth0_seg(seg, i + 1, brace_depth, bracket_depth + 1);
+                        false -> case c == "]" of {
+                            true -> colon_at_depth0_seg(seg, i + 1, brace_depth, bracket_depth - 1);
+                            false -> case c == ":" and brace_depth == 0 and bracket_depth == 0 of {
+                                true -> i;
+                                false -> colon_at_depth0_seg(seg, i + 1, brace_depth, bracket_depth)
+                            }
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn scan_after_comma(content: string, field: string, seg_end: int64) -> string {
+    case seg_end >= len(content) of {
+        true -> "";
+        false -> case substring(content, seg_end, seg_end + 1) == "," of {
+            true -> scan_field_in_content(content, field, seg_end + 1);
+            false -> ""
+        }
+    }
+}
+
+fn scan_field_in_content(content: string, field: string, start: int64) -> string {
+    case start > len(content) of {
+        true -> "";
+        false -> do
+            seg_end: int64 <- first_top_comma_or_end(content, start, 0, 0);
+            seg: string <- strip_spaces_rt(substring(content, start, seg_end));
+            case len(seg) == 0 of {
+                true -> "";
+                false -> do
+                    colon: int64 <- colon_at_depth0_seg(seg, 0, 0, 0);
+                    case colon < 0 of {
+                        true -> scan_after_comma(content, field, seg_end);
+                        false -> do
+                            fname: string <- strip_spaces_rt(substring(seg, 0, colon));
+                            fty: string <- strip_spaces_rt(substring(seg, colon + 1, len(seg)));
+                            case fname == field of {
+                                true -> fty;
+                                false -> scan_after_comma(content, field, seg_end)
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn find_field_type_in_record(record_str: string, field: string) -> string {
+    t: string <- strip_spaces_rt(record_str);
+    case len(t) < 2 of {
+        true -> "";
+        false -> case substring(t, 0, 1) == "{" of {
+            false -> "";
+            true -> do
+                content: string <- extract_braced_body(t);
+                scan_field_in_content(content, field, 0)
+            end
+        }
+    }
+}
+
+fn count_top_level_commas_from(content: string, i: int64, brace_depth: int64, bracket_depth: int64) -> int64 {
+    case i >= len(content) of {
+        true -> 0;
+        false -> do
+            c: string <- substring(content, i, i + 1);
+            case c == "{" of {
+                true -> count_top_level_commas_from(content, i + 1, brace_depth + 1, bracket_depth);
+                false -> case c == "}" of {
+                    true -> count_top_level_commas_from(content, i + 1, brace_depth - 1, bracket_depth);
+                    false -> case c == "[" of {
+                        true -> count_top_level_commas_from(content, i + 1, brace_depth, bracket_depth + 1);
+                        false -> case c == "]" of {
+                            true -> count_top_level_commas_from(content, i + 1, brace_depth, bracket_depth - 1);
+                            false -> case c == "," and brace_depth == 0 and bracket_depth == 0 of {
+                                true -> 1 + count_top_level_commas_from(content, i + 1, brace_depth, bracket_depth);
+                                false -> count_top_level_commas_from(content, i + 1, brace_depth, bracket_depth)
+                            }
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn count_record_fields(record_str: string) -> int64 {
+    t: string <- strip_spaces_rt(record_str);
+    content: string <- extract_braced_body(t);
+    inner: string <- strip_spaces_rt(content);
+    case len(inner) == 0 of {
+        true -> 0;
+        false -> count_top_level_commas_from(inner, 0, 0, 0) + 1
+    }
+}
+
+fn slot_bytes_for_field_type(fty: string) -> int64 {
+    t: string <- strip_spaces_rt(fty);
+    case record_type_starts(t) of {
+        true -> do
+            nf: int64 <- count_record_fields(t);
+            prims_tuple@flat_alloc_size(nf)
+        end;
+        false -> case len(t) > 0 and substring(t, 0, 1) == "(" of {
+            true -> do
+                ne: int64 <- prims_tuple@count_type_elements(t);
+                prims_tuple@flat_alloc_size(ne)
+            end;
+            false -> 8
+        }
+    }
+}
+
+fn offset_bytes_before_field_in_content(content: string, field: string, start: int64, acc: int64) -> int64 {
+    case start > len(content) of {
+        true -> acc;
+        false -> do
+            seg_end: int64 <- first_top_comma_or_end(content, start, 0, 0);
+            seg: string <- strip_spaces_rt(substring(content, start, seg_end));
+            colon: int64 <- colon_at_depth0_seg(seg, 0, 0, 0);
+            case colon < 0 of {
+                true -> acc;
+                false -> do
+                    fname: string <- strip_spaces_rt(substring(seg, 0, colon));
+                    fty: string <- strip_spaces_rt(substring(seg, colon + 1, len(seg)));
+                    case fname == field of {
+                        true -> acc;
+                        false -> offset_bytes_before_field_in_content(content, field, seg_end + 1, acc + slot_bytes_for_field_type(fty))
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn offset_bytes_before_field(record_str: string, field: string) -> int64 {
+    t: string <- strip_spaces_rt(record_str);
+    case record_type_starts(t) of {
+        false -> 0;
+        true -> do
+            content: string <- extract_braced_body(t);
+            offset_bytes_before_field_in_content(content, field, 0, 0)
+        end
+    }
+}
+
+fn count_record_chain(term: SIRTerm) -> int64 {
+    case term.kind == 6 and term.name == "record_make" of {
+        true -> case term.right_expr.kind < 0 of {
+            true -> 1;
+            false -> 1 + count_record_chain(term.right_expr)
+        };
+        false -> 0
+    }
+}
+
+fn brace_walk(s: string, i: int64, depth: int64) -> bool {
+    case i >= len(s) of {
+        true -> depth == 0;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "{" of {
+                true -> brace_walk(s, i + 1, depth + 1);
+                false -> case c == "}" of {
+                    true -> case depth == 0 of {
+                        true -> false;
+                        false -> brace_walk(s, i + 1, depth - 1)
+                    };
+                    false -> brace_walk(s, i + 1, depth)
+                }
+            }
+        end
+    }
+}
+
+fn record_type_braces_balanced(s: string) -> bool {
+    t: string <- strip_spaces_rt(s);
+    case len(t) < 2 of {
+        true -> false;
+        false -> case substring(t, 0, 1) == "{" of {
+            false -> true;
+            true -> brace_walk(t, 0, 0)
+        }
+    }
+}
+
+fn record_case_inner_body(full_pat: string) -> string {
+    t: string <- strip_spaces_rt(full_pat);
+    extract_braced_body(t)
+}
+
+fn record_case_field_step(remaining_inner: string) -> (string, string) {
+    seg_end: int64 <- first_top_comma_or_end(remaining_inner, 0, 0, 0);
+    first: string <- strip_spaces_rt(substring(remaining_inner, 0, seg_end));
+    rest: string <- case seg_end >= len(remaining_inner) of {
+        true -> "";
+        false -> case substring(remaining_inner, seg_end, seg_end + 1) == "," of {
+            true -> strip_spaces_rt(substring(remaining_inner, seg_end + 1, len(remaining_inner)));
+            false -> ""
+        }
+    };
+    (first, rest)
+}
+
+fn record_field_segment_name_sub(seg: string) -> (string, string) {
+    colon: int64 <- colon_at_depth0_seg(seg, 0, 0, 0);
+    case colon < 0 of {
+        true -> ("", "");
+        false -> (strip_spaces_rt(substring(seg, 0, colon)), strip_spaces_rt(substring(seg, colon + 1, len(seg))))
+    }
+}

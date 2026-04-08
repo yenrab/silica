@@ -1,0 +1,78 @@
+// Trial 08: Complex inline struct operations
+//
+// Demonstrates:
+// - Structs whose fields are other inline record types (all shapes written inline)
+// - Segments, bounds, and summaries without named type aliases
+// - Lists of structs and recursive folds (element type is the full inline shape each time)
+
+fn segment_energy(s: { start: { x: int64, y: int64 }, end: { x: int64, y: int64 } }) -> int64 {
+    dx: int64 <- s.end.x - s.start.x;
+    dy: int64 <- s.end.y - s.start.y;
+    dx * dx + dy * dy
+}
+
+fn merge_x_ranges(a: { min_x: int64, max_x: int64 }, b: { min_x: int64, max_x: int64 }) -> { min_x: int64, max_x: int64 } {
+    min_a: int64 <- a.min_x;
+    max_a: int64 <- a.max_x;
+    min_b: int64 <- b.min_x;
+    max_b: int64 <- b.max_x;
+    new_min: int64 <- case min_a < min_b of {
+        true -> min_a;
+        false -> min_b
+    };
+    new_max: int64 <- case max_a < max_b of {
+        true -> max_b;
+        false -> max_a
+    };
+    { min_x: new_min, max_x: new_max }
+}
+
+fn sum_segment_energies(
+    segments: List[{ start: { x: int64, y: int64 }, end: { x: int64, y: int64 } }, mem(normal)],
+    accumulator: int64
+) -> int64 {
+    sequence proc[mem(normal)]
+        n: int64 <- case segments of {
+            []: List[{ start: { x: int64, y: int64 }, end: { x: int64, y: int64 } }, mem(normal)] -> 0
+            [h: { start: { x: int64, y: int64 }, end: { x: int64, y: int64 } },
+             t: List[{ start: { x: int64, y: int64 }, end: { x: int64, y: int64 } }, mem(normal)]] -> {
+                sum_segment_energies(t, accumulator + segment_energy(h))
+            }
+            _: List[{ start: { x: int64, y: int64 }, end: { x: int64, y: int64 } }, mem(normal)] -> 0
+        };
+    produces
+        pure n
+    end
+}
+
+fn build_example_segments() -> List[{ start: { x: int64, y: int64 }, end: { x: int64, y: int64 } }, mem(normal)] {
+    sequence proc[mem(normal)]
+        empty: List[{ start: { x: int64, y: int64 }, end: { x: int64, y: int64 } }, mem(normal)] <-
+            empty[{ start: { x: int64, y: int64 }, end: { x: int64, y: int64 } }, mem(normal)]();
+        s1: { start: { x: int64, y: int64 }, end: { x: int64, y: int64 } } <- {
+            start: { x: 0, y: 0 },
+            end: { x: 3, y: 4 }
+        };
+        s2: { start: { x: int64, y: int64 }, end: { x: int64, y: int64 } } <- {
+            start: { x: 1, y: 1 },
+            end: { x: 4, y: 1 }
+        };
+        list1: List[{ start: { x: int64, y: int64 }, end: { x: int64, y: int64 } }, mem(normal)] <-
+            prepend[{ start: { x: int64, y: int64 }, end: { x: int64, y: int64 } }, mem(normal)](s1, empty);
+        list2: List[{ start: { x: int64, y: int64 }, end: { x: int64, y: int64 } }, mem(normal)] <-
+            prepend[{ start: { x: int64, y: int64 }, end: { x: int64, y: int64 } }, mem(normal)](s2, list1);
+    produces
+        pure list2
+    end
+}
+
+fn main() -> int64 {
+    segs: List[{ start: { x: int64, y: int64 }, end: { x: int64, y: int64 } }, mem(normal)] <- build_example_segments();
+    energy: int64 <- sum_segment_energies(segs, 0);
+
+    r1: { min_x: int64, max_x: int64 } <- { min_x: 0, max_x: 10 };
+    r2: { min_x: int64, max_x: int64 } <- { min_x: 5, max_x: 20 };
+    merged: { min_x: int64, max_x: int64 } <- merge_x_ranges(r1, r2);
+    span: int64 <- merged.max_x - merged.min_x;
+    energy + span
+}

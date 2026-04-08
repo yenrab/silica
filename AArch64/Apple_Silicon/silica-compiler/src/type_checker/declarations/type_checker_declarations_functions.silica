@@ -8,6 +8,7 @@ use type_checker_expressions;
 use type_checker_memory_regions;
 use type_checker_recursion;
 use type_checker_expressions_actors;
+use type_checker_record_types;
 
 export add_function/2;
 export check_body/2;
@@ -53,20 +54,37 @@ fn add_params_to_context(decl: Declaration, context: TypeContext) -> TypeContext
     add_params_to_context_loop(decl.parameters, context)
 }
 
+// Inline record param types `{ f: T, ... }` (§3.4.2): reject unbalanced `{` `}`.
+fn validate_record_type_string(type_str: string, location: SourceLocation) -> TypeCheckResult {
+    case type_checker_record_types@record_type_starts(type_str) of {
+        false -> type_checker_core@type_check_ok();
+        true -> case type_checker_record_types@record_type_braces_balanced(type_str) of {
+            true -> type_checker_core@type_check_ok();
+            false -> type_checker_core@type_check_err("E2003", location, "malformed inline record type (unbalanced braces)", "sect3.4.2")
+        }
+    }
+}
+
 // Validate each param type (memory region types must be valid). Return first error or ok.
 fn validate_params_loop(params: ListParam) -> TypeCheckResult proc[DeviceIO] {
     case params.is_nil of {
         true -> type_checker_core@type_check_ok();
-        false -> case type_checker_memory_regions@is_memory_region_type(params.head.type_name) of {
-            true -> do
-                mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(params.head.type_name, params.head.location);
-                case mem_result.is_ok of {
-                    false -> mem_result;
-                    true -> validate_params_loop(params.tail)
+        false -> do
+            rec_result: TypeCheckResult <- validate_record_type_string(params.head.type_name, params.head.location);
+            case rec_result.is_ok of {
+                false -> rec_result;
+                true -> case type_checker_memory_regions@is_memory_region_type(params.head.type_name) of {
+                    true -> do
+                        mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(params.head.type_name, params.head.location);
+                        case mem_result.is_ok of {
+                            false -> mem_result;
+                            true -> validate_params_loop(params.tail)
+                        }
+                    end;
+                    false -> validate_params_loop(params.tail)
                 }
-            end;
-            false -> validate_params_loop(params.tail)
-        }
+            }
+        end
     }
 }
 
@@ -86,7 +104,10 @@ fn check_body(decl: Declaration, context: TypeContext) -> TypeCheckResult proc[D
 
 fn check_body_after_params(decl: Declaration, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     context_with_params: TypeContext <- add_params_to_context(decl, context);
-    case decl.return_type_name == "unit" of {
+    ret_rec: TypeCheckResult <- validate_record_type_string(decl.return_type_name, decl.return_type_location);
+    case ret_rec.is_ok of {
+        false -> ret_rec;
+        true -> case decl.return_type_name == "unit" of {
         true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
         false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
             true -> check_body_memory_region_return(decl, context_with_params);
@@ -103,6 +124,7 @@ fn check_body_after_params(decl: Declaration, context: TypeContext) -> TypeCheck
                     end
                 }
             end
+        }
         }
     }
 }

@@ -38,6 +38,8 @@ use user_calls;
 use recursion_terms;
 use negate_builtins;
 use list_terms;
+use type_checker_record_types;
+use struct_terms;
 
 export expr_to_sir/2;
 export expr_to_sir_with_expected/3;
@@ -567,6 +569,8 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
             true -> expr_list_literal_from_root(context, expr, true, bound_name, bound_type);
             false -> expr_list_literal_from_expected_type(context, expr, expected_type, true, bound_name, bound_type)
         };
+        21 -> lower_struct_literal_expr(context, expr, expected_type, true, bound_name, bound_type);
+        22 -> lower_field_access_expr(context, expr, true, bound_name, bound_type);
         6 -> do
             rhs: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, expr.value);
             bind_type: string <- types@type_name_to_sir(expr.value);
@@ -1112,6 +1116,61 @@ fn expr_list_literal_from_expected_type(context: TypeContext, expr: Expr, expect
     }
 }
 
+// Kind 21: struct literal `{ f: e, ... }` -> nested prim record_make (sir_design_spec §7.6).
+fn lower_struct_literal_chain(context: TypeContext, expr: Expr, rt: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    case expr.kind != 21 of {
+        true -> sir_ast@dummy_sir_term();
+        false -> do
+            ft: string <- type_checker_record_types@find_field_type_in_record(rt, expr.name);
+            case len(ft) == 0 of {
+                true -> sir_ast@dummy_sir_term();
+                false -> do
+                    val: SIRTerm <- case in_body of {
+                        true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, ft);
+                        false -> expr_to_sir_with_expected(context, expr.inner, ft)
+                    };
+                    sir_rt: string <- types@type_name_to_sir(rt);
+                    case struct_terms@is_last_struct_literal_node(expr) of {
+                        true -> struct_terms@build_record_make_layer(sir_rt, expr.name, val, sir_ast@dummy_sir_term());
+                        false -> do
+                            rest: SIRTerm <- lower_struct_literal_chain(context, expr.right_expr, rt, in_body, bound_name, bound_type);
+                            struct_terms@build_record_make_layer(sir_rt, expr.name, val, rest)
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn lower_struct_literal_expr(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    rt: string <- struct_terms@record_type_for_struct_literal(context, expr, expected_type);
+    case len(rt) == 0 of {
+        true -> sir_ast@dummy_sir_term();
+        false -> case type_checker_record_types@record_type_starts(rt) of {
+            false -> sir_ast@dummy_sir_term();
+            true -> lower_struct_literal_chain(context, expr, rt, in_body, bound_name, bound_type)
+        }
+    }
+}
+
+// Kind 22: field access `base.field` -> prim record_proj.
+fn lower_field_access_expr(context: TypeContext, expr: Expr, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
+    base_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+    ft: string <- type_checker_record_types@find_field_type_in_record(base_t, expr.name);
+    case len(ft) == 0 of {
+        true -> sir_ast@dummy_sir_term();
+        false -> do
+            base_s: SIRTerm <- case in_body of {
+                true -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, base_t);
+                false -> expr_to_sir_with_expected(context, expr.inner, base_t)
+            };
+            ft_sir: string <- types@type_name_to_sir(ft);
+            struct_terms@build_record_proj_prim(ft_sir, expr.name, base_s)
+        end
+    }
+}
+
 fn build_list_primitive_from_expr(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
     (elem: string, space: string) <- type_checker_lists@parse_generic_ts(expr.value);
     list_t: string <- type_checker_lists@format_list_type_from_parts(elem, space);
@@ -1181,6 +1240,8 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
             true -> expr_list_literal_from_root(context, expr, false, "", "");
             false -> expr_list_literal_from_expected_type(context, expr, expected_type, false, "", "")
         };
+        21 -> lower_struct_literal_expr(context, expr, expected_type, false, "", "");
+        22 -> lower_field_access_expr(context, expr, false, "", "");
         6 -> do
             rhs: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, expr.value);
             bind_type: string <- types@type_name_to_sir(expr.value);
@@ -1424,17 +1485,22 @@ fn make_case_branch_list_cons(head_name: string, head_type: string, tail_name: s
 }
 
 fn branch_from_bind_or_wild(raw: string, scrutinee_ast_type: string, branch: Expr, ctx: TypeContext, expected_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
-    cp: int64 <- find_colon_from(raw, 0);
-    case cp < 1 of {
-        true -> sir_ast@dummy_sir_term();
+    case raw == "_" of {
+        true -> make_case_branch("wild", types@type_name_to_sir(scrutinee_ast_type), "_", ctx, branch, expected_type, bound_name, bound_type, in_body);
         false -> do
-            left: string <- trim_pat(substring(raw, 0, cp));
-            right: string <- trim_pat(substring(raw, cp + 1, len(raw)));
-            case left == "_" of {
-                true -> make_case_branch("wild", types@type_name_to_sir(right), "_", ctx, branch, expected_type, bound_name, bound_type, in_body);
+            cp: int64 <- find_colon_from(raw, 0);
+            case cp < 1 of {
+                true -> sir_ast@dummy_sir_term();
                 false -> do
-                    ctx_b: TypeContext <- extend_context_for_bind(ctx, left, right);
-                    make_case_branch("bind", types@type_name_to_sir(right), concat("%", left), ctx_b, branch, expected_type, bound_name, bound_type, in_body)
+                    left: string <- trim_pat(substring(raw, 0, cp));
+                    right: string <- trim_pat(substring(raw, cp + 1, len(raw)));
+                    case left == "_" of {
+                        true -> make_case_branch("wild", types@type_name_to_sir(right), "_", ctx, branch, expected_type, bound_name, bound_type, in_body);
+                        false -> do
+                            ctx_b: TypeContext <- extend_context_for_bind(ctx, left, right);
+                            make_case_branch("bind", types@type_name_to_sir(right), concat("%", left), ctx_b, branch, expected_type, bound_name, bound_type, in_body)
+                        end
+                    }
                 end
             }
         end
@@ -1459,11 +1525,20 @@ fn branch_ast_to_sir(branch: Expr, ctx: TypeContext, expected_type: string, scru
                                 str_content: string <- extract_string_pat_content(raw);
                                 make_case_branch("string", "string", str_content, ctx, branch, expected_type, bound_name, bound_type, in_body)
                             end;
-                            false -> case is_int_literal_pat(raw) of {
+                                false -> case is_int_literal_pat(raw) of {
                                 true -> make_case_branch("int", types@type_name_to_sir(scrutinee_ast_type), raw, ctx, branch, expected_type, bound_name, bound_type, in_body);
                                 false -> case is_atom_literal_pat(raw) of {
                                     true -> make_case_branch("atom", "atom", raw, ctx, branch, expected_type, bound_name, bound_type, in_body);
-                                    false -> branch_from_bind_or_wild(raw, scrutinee_ast_type, branch, ctx, expected_type, bound_name, bound_type, in_body)
+                                    false -> case type_checker_record_types@record_type_starts(raw) of {
+                                        true -> case type_checker_record_types@record_type_braces_balanced(raw) of {
+                                            true -> do
+                                                ctx_re: TypeContext <- type_checker_tuple_decompose_helpers@case_extend_context_for_pattern(ctx, scrutinee_ast_type, raw);
+                                                make_case_branch("record", types@type_name_to_sir(scrutinee_ast_type), raw, ctx_re, branch, expected_type, bound_name, bound_type, in_body)
+                                            end;
+                                            false -> branch_from_bind_or_wild(raw, scrutinee_ast_type, branch, ctx, expected_type, bound_name, bound_type, in_body)
+                                        };
+                                        false -> branch_from_bind_or_wild(raw, scrutinee_ast_type, branch, ctx, expected_type, bound_name, bound_type, in_body)
+                                    }
                                 }
                             }
                         }

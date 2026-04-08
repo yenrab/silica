@@ -8,6 +8,7 @@ use var;
 use call;
 use prims;
 use prims_tuple;
+use prims_record;
 use prims_memory;
 use prims_actors;
 use prims_list;
@@ -84,6 +85,13 @@ fn call_tuple_args_dealloc_bytes(term: SIRTerm) -> int64 {
             true -> flat_tuple_dealloc_size(term.inner) + call_tuple_args_dealloc_bytes(term.right_expr);
             false -> flat_tuple_dealloc_size(term)
         }
+    }
+}
+
+fn is_aggregate_make(t: SIRTerm) -> bool {
+    case t.kind == 6 of {
+        false -> false;
+        true -> t.name == "tuple_make" or t.name == "record_make"
     }
 }
 
@@ -319,6 +327,185 @@ fn emit_case_pattern_check(branch: SIRTerm, scrut_t: string, scrut_reg: string, 
     }
 }
 
+fn digit_char_emit(c: string) -> bool {
+    c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9"
+}
+
+fn all_digits_from_emit(s: string, i: int64) -> bool {
+    case i >= len(s) of {
+        true -> len(s) > 0;
+        false -> case digit_char_emit(substring(s, i, i + 1)) of {
+            true -> all_digits_from_emit(s, i + 1);
+            false -> false
+        }
+    }
+}
+
+fn is_int_literal_pat_emit(t: string) -> bool {
+    case len(t) == 0 of {
+        true -> false;
+        false -> case substring(t, 0, 1) == "-" of {
+            true -> case len(t) > 1 of { true -> all_digits_from_emit(t, 1); false -> false };
+            false -> all_digits_from_emit(t, 0)
+        }
+    }
+}
+
+fn case_close_quote_index_emit(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "\"" of {
+            true -> i;
+            false -> case_close_quote_index_emit(s, i + 1)
+        }
+    }
+}
+
+fn extract_string_pat_content_emit(s: string) -> string {
+    case len(s) < 2 of {
+        true -> "";
+        false -> case substring(s, 0, 1) == "\"" of {
+            true -> do
+                cq: int64 <- case_close_quote_index_emit(s, 1);
+                case cq < 0 of {
+                    true -> "";
+                    false -> substring(s, 1, cq)
+                }
+            end;
+            false -> ""
+        }
+    }
+}
+
+fn emit_ldr_record_field(fty: string, dest_gpr: string, mem_ref: string) -> string {
+    case reg_conventions@is_narrow_type(fty) of {
+        true -> case fty of {
+            "int8" -> concat(concat(concat(concat("    LDRSB ", concat("W", substring(dest_gpr, 1, len(dest_gpr)))), ", "), mem_ref), "\n");
+            "uint8" -> concat(concat(concat(concat("    LDRB ", concat("W", substring(dest_gpr, 1, len(dest_gpr)))), ", "), mem_ref), "\n");
+            "int16" -> concat(concat(concat(concat("    LDRSH ", concat("W", substring(dest_gpr, 1, len(dest_gpr)))), ", "), mem_ref), "\n");
+            "uint16" -> concat(concat(concat(concat("    LDRH ", concat("W", substring(dest_gpr, 1, len(dest_gpr)))), ", "), mem_ref), "\n");
+            "boolean" -> concat(concat(concat(concat("    LDRB ", concat("W", substring(dest_gpr, 1, len(dest_gpr)))), ", "), mem_ref), "\n");
+            _: string -> concat(concat(concat(concat("    LDR ", dest_gpr), ", "), mem_ref), "\n")
+        };
+        false -> concat(concat(concat(concat("    LDR ", dest_gpr), ", "), mem_ref), "\n")
+    }
+}
+
+fn emit_record_field_subpat(sub_st: string, fty: string, scrut_reg: string, abs_off: int64, lit_reg: string, fail_l: string, outer_acc: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable) -> (string, string) {
+    case sub_st == "_" of {
+        true -> ("", outer_acc);
+        false -> case prims_record@record_type_starts(sub_st) and prims_record@record_type_braces_balanced(sub_st) of {
+            true -> do
+                inner_rem: string <- prims_record@record_case_inner_body(sub_st);
+                emit_record_case_rem(inner_rem, fty, scrut_reg, abs_off, lit_reg, fail_l, outer_acc, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table)
+            end;
+            false -> case fty == "boolean" and (sub_st == "true" or sub_st == "false") of {
+                true -> do
+                    mem_ref: string <- var@reg_offset_for_byte(scrut_reg, abs_off);
+                    tr: string <- var@next_free_int_reg(outer_acc);
+                    imm: string <- case sub_st == "true" of { true -> "1"; false -> "0" };
+                    ld_ln: string <- emit_ldr_record_field(fty, tr, mem_ref);
+                    wtr: string <- scrut_reg_w_for_cmp(tr);
+                    cmp_ln: string <- concat(concat(concat(concat(concat(ld_ln, "    CMP "), wtr), ", #"), imm), "\n");
+                    bne_ln: string <- concat(cmp_ln, concat("    B.NE ", fail_l));
+                    (concat(bne_ln, "\n"), outer_acc)
+                end;
+                false -> case is_int_literal_pat_emit(sub_st) of {
+                    true -> do
+                        mem_ref: string <- var@reg_offset_for_byte(scrut_reg, abs_off);
+                        tr: string <- var@next_free_int_reg(outer_acc);
+                        ld_field: string <- emit_ldr_record_field(fty, tr, mem_ref);
+                        syn: SIRTerm <- SIRTerm { kind: 0, type_name: fty, value: sub_st, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+                        ld_lit: string <- const_dispatcher@emit_const(syn, lit_reg, table, literal_table, float64_literal_table, float32_literal_table);
+                        ln: string <- concat(ld_lit, "\n");
+                        cmp_ln: string <- concat(concat(concat(ln, "    CMP "), tr), ", ");
+                        cmp_full: string <- concat(concat(cmp_ln, lit_reg), "\n");
+                        bne_ln: string <- concat(cmp_full, "    B.NE ");
+                        (concat(concat(ld_field, concat(concat(bne_ln, fail_l), "\n")), ""), outer_acc)
+                    end;
+                    false -> case substring(sub_st, 0, 1) == "\"" of {
+                        true -> case fty == "string" of {
+                            true -> do
+                                str_content: string <- extract_string_pat_content_emit(sub_st);
+                                mem_ref: string <- var@reg_offset_for_byte(scrut_reg, abs_off);
+                                tr: string <- var@next_free_int_reg(outer_acc);
+                                ld_f: string <- concat(concat(concat(concat("    LDR ", tr), ", "), mem_ref), "\n");
+                                syn: SIRTerm <- SIRTerm { kind: 0, type_name: "string", value: str_content, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+                                ld_pat: string <- emit_string_const(syn, lit_reg, string_literal_table);
+                                str_save: string <- concat(concat(concat("    STR ", tr), ", [SP, #-16]!\n"), concat(ld_pat, "\n"));
+                                mov_x0: string <- concat(concat("    MOV X0, ", tr), "\n");
+                                mov_x1: string <- concat(concat("    MOV X1, ", lit_reg), "\n");
+                                bl_ln: string <- "    BL L_string_eq_helper\n";
+                                cmp_bne: string <- concat(concat(concat("    CMP W12, #0\n", "    B.EQ "), fail_l), "\n");
+                                tail: string <- concat(concat(concat("    MOV W12, W0\n    LDR ", tr), ", [SP], #16\n"), cmp_bne);
+                                (concat(concat(concat(ld_f, str_save), concat(concat(mov_x0, mov_x1), concat(bl_ln, tail))), "\n"), outer_acc)
+                            end;
+                            false -> (concat(concat("    B ", fail_l), "\n"), outer_acc)
+                        };
+                        false -> case substring(sub_st, 0, 1) == ":" of {
+                            true -> do
+                                mem_ref: string <- var@reg_offset_for_byte(scrut_reg, abs_off);
+                                tr: string <- var@next_free_int_reg(outer_acc);
+                                ld_f: string <- emit_ldr_record_field(fty, tr, mem_ref);
+                                syn: SIRTerm <- SIRTerm { kind: 0, type_name: "atom", value: sub_st, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+                                ld_lit: string <- const_dispatcher@emit_const(syn, lit_reg, table, literal_table, float64_literal_table, float32_literal_table);
+                                ln: string <- concat(ld_lit, "\n");
+                                cmp_ln: string <- concat(concat(concat(ln, "    CMP "), tr), ", ");
+                                cmp_full: string <- concat(concat(cmp_ln, lit_reg), "\n");
+                                bne_ln: string <- concat(cmp_full, "    B.NE ");
+                                (concat(concat(ld_f, concat(concat(bne_ln, fail_l), "\n")), ""), outer_acc)
+                            end;
+                            false -> do
+                                mem_ref: string <- var@reg_offset_for_byte(scrut_reg, abs_off);
+                                tr: string <- var@next_free_int_reg(outer_acc);
+                                ld_f: string <- emit_ldr_record_field(fty, tr, mem_ref);
+                                nb: string <- var@reg_binding(concat("%", sub_st), tr);
+                                (concat(ld_f, ""), concat(outer_acc, nb))
+                            end
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn emit_record_case_rem(rem: string, type_t: string, scrut_reg: string, base_off: int64, lit_reg: string, fail_l: string, outer_acc: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable) -> (string, string) {
+    rin: string <- prims_record@strip_spaces_rt(rem);
+    case len(rin) == 0 of {
+        true -> ("", outer_acc);
+        false -> do
+            (seg, rest) <- prims_record@record_case_field_step(rin);
+            (fname, sub) <- prims_record@record_field_segment_name_sub(seg);
+            case len(fname) == 0 of {
+                true -> emit_record_case_rem(prims_record@strip_spaces_rt(rest), type_t, scrut_reg, base_off, lit_reg, fail_l, outer_acc, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table);
+                false -> do
+                    fo: int64 <- prims_record@offset_bytes_before_field(type_t, fname);
+                    fty: string <- prims_record@find_field_type_in_record(type_t, fname);
+                    abs_off: int64 <- base_off + fo;
+                    case len(fty) == 0 of {
+                        true -> do
+                            (ar, ou) <- emit_record_case_rem(rest, type_t, scrut_reg, base_off, lit_reg, fail_l, outer_acc, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table);
+                            (concat(concat(concat("    B ", fail_l), "\n"), ar), ou)
+                        end;
+                        false -> do
+                            sub_st: string <- prims_record@strip_spaces_rt(sub);
+                            (asm_f, outer_f) <- emit_record_field_subpat(sub_st, fty, scrut_reg, abs_off, lit_reg, fail_l, outer_acc, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table);
+                            (asm_r, outer_r) <- emit_record_case_rem(rest, type_t, scrut_reg, base_off, lit_reg, fail_l, outer_f, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table);
+                            (concat(asm_f, asm_r), outer_r)
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn emit_record_case_pattern_asm(branch: SIRTerm, record_type_str: string, scrut_reg: string, lit_reg: string, fail_l: string, outer_reg: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable) -> (string, string) {
+    inner: string <- prims_record@record_case_inner_body(branch.name);
+    emit_record_case_rem(inner, record_type_str, scrut_reg, 0, lit_reg, fail_l, outer_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table)
+}
+
 // After list_cons (prepend) RHS, tail arg was emitted to X2 and emit_list_cons restores X2 to the
 // tail list pointer across malloc. Earlier |tailvar=R bindings may be stale (e.g. R=X0 clobbered).
 fn list_cons_tail_rebind_suffix(inner: SIRTerm) -> string {
@@ -382,11 +569,20 @@ fn emit_list_cons_pattern_loads(branch: SIRTerm, scrut_reg: string, outer_reg: s
 }
 
 fn emit_case_one_branch_inner(branch: SIRTerm, scrut_t: string, scrut_reg: string, lit_reg: string, guard_reg: string, dest: string, done_l: string, fail_l: string, entry_l: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
-    pat_asm: string <- emit_case_pattern_check(branch, scrut_t, scrut_reg, lit_reg, fail_l, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table);
     pkind: string <- branch.value;
-    (list_bind_asm: string, outer_for_list: string) <- case pkind == "list_cons" of {
-        true -> emit_list_cons_pattern_loads(branch, scrut_reg, outer_reg);
-        false -> ("", outer_reg)
+    (pat_asm: string, list_bind_asm: string, outer_for_branch: string) <- case pkind == "record" of {
+        true -> do
+            (rec_asm: string, outer_rec: string) <- emit_record_case_pattern_asm(branch, branch.type_name, scrut_reg, lit_reg, fail_l, outer_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table);
+            (rec_asm, "", outer_rec)
+        end;
+        false -> do
+            chk: string <- emit_case_pattern_check(branch, scrut_t, scrut_reg, lit_reg, fail_l, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table);
+            (lb_asm: string, outer_l: string) <- case pkind == "list_cons" of {
+                true -> emit_list_cons_pattern_loads(branch, scrut_reg, outer_reg);
+                false -> ("", outer_reg)
+            };
+            (chk, lb_asm, outer_l)
+        end
     };
     pat_full: string <- concat(pat_asm, list_bind_asm);
     br_bn: string <- case pkind == "bind" of {
@@ -397,10 +593,7 @@ fn emit_case_one_branch_inner(branch: SIRTerm, scrut_t: string, scrut_reg: strin
         true -> scrut_reg;
         false -> bound_reg
     };
-    outer_body: string <- case pkind == "list_cons" of {
-        true -> outer_for_list;
-        false -> outer_reg
-    };
+    outer_body: string <- outer_for_branch;
     guard_asm: string <- case branch.inner.kind < 0 of {
         true -> "";
         false -> do
@@ -795,23 +988,33 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 mov_spill_b: string <- case spill_b of { true -> mov_spill_from_rhs(rhs_reg, spill_reg_b); false -> "" };
                 adj_str_b: string <- var@find_sp_binding(outer_reg, "_adj");
                 sp_adj_b: int64 <- case len(adj_str_b) > 0 of { true -> string_parse@string_to_int64(adj_str_b); false -> 0 };
-                tm_adj: int64 <- case term.inner.kind == 6 and term.inner.name == "tuple_make" of {
-                    true -> flat_tuple_nested_alloc(term.inner, prims_tuple@count_flat_elements(term.inner), 0);
-                    false -> sp_adj_b
+                tm_adj: int64 <- case is_aggregate_make(term.inner) of {
+                    false -> sp_adj_b;
+                    true -> case term.inner.name == "tuple_make" of {
+                        true -> flat_tuple_nested_alloc(term.inner, prims_tuple@count_flat_elements(term.inner), 0);
+                        false -> flat_record_sum_nested_inners(term.inner)
+                    }
                 };
                 adj_binding: string <- case tm_adj > 0 of {
                     true -> concat("|_adj=", atom_table@int64_to_decimal_string(tm_adj));
                     false -> ""
                 };
-                iap_b: string <- case term.inner.kind == 6 and term.inner.name == "tuple_make" of {
-                    true -> do
-                        ic_b: int64 <- prims_tuple@count_flat_elements(term.inner);
-                        it_b: int64 <- flat_tuple_nested_alloc(term.inner, ic_b, 0);
-                        compute_inner_adj_bindings(term.inner, 0, ic_b, 0, it_b)
-                    end;
+                iap_b: string <- case is_aggregate_make(term.inner) of {
+                    true -> case term.inner.name == "tuple_make" of {
+                        true -> do
+                            ic_b: int64 <- prims_tuple@count_flat_elements(term.inner);
+                            it_b: int64 <- flat_tuple_nested_alloc(term.inner, ic_b, 0);
+                            compute_inner_adj_bindings(term.inner, 0, ic_b, 0, it_b)
+                        end;
+                        false -> do
+                            icr_b: int64 <- prims_record@count_record_fields(term.inner.type_name);
+                            itr_b: int64 <- flat_record_sum_nested_inners(term.inner);
+                            compute_inner_adj_bindings_record(term.inner, 0, icr_b, 0, itr_b)
+                        end
+                    };
                     false -> ""
                 };
-                va_b_tm: string <- case term.inner.kind == 6 and term.inner.name == "tuple_make" of {
+                va_b_tm: string <- case is_aggregate_make(term.inner) of {
                     true -> concat("|_va.", concat(term.name, concat("=", atom_table@int64_to_decimal_string(tm_adj))));
                     false -> ""
                 };
@@ -944,23 +1147,33 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         false -> term_to_asm_opt_bound(term.inner, rhs_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                     }
                 };
-                tm_adj_tl: int64 <- case term.inner.kind == 6 and term.inner.name == "tuple_make" of {
-                    true -> flat_tuple_nested_alloc(term.inner, prims_tuple@count_flat_elements(term.inner), 0);
-                    false -> 0
+                tm_adj_tl: int64 <- case is_aggregate_make(term.inner) of {
+                    false -> 0;
+                    true -> case term.inner.name == "tuple_make" of {
+                        true -> flat_tuple_nested_alloc(term.inner, prims_tuple@count_flat_elements(term.inner), 0);
+                        false -> flat_record_sum_nested_inners(term.inner)
+                    }
                 };
                 adj_binding_tl: string <- case tm_adj_tl > 0 of {
                     true -> concat("|_adj=", atom_table@int64_to_decimal_string(tm_adj_tl));
                     false -> ""
                 };
-                iap_tl: string <- case term.inner.kind == 6 and term.inner.name == "tuple_make" of {
-                    true -> do
-                        ic_tl: int64 <- prims_tuple@count_flat_elements(term.inner);
-                        it_tl: int64 <- flat_tuple_nested_alloc(term.inner, ic_tl, 0);
-                        compute_inner_adj_bindings(term.inner, 0, ic_tl, 0, it_tl)
-                    end;
+                iap_tl: string <- case is_aggregate_make(term.inner) of {
+                    true -> case term.inner.name == "tuple_make" of {
+                        true -> do
+                            ic_tl: int64 <- prims_tuple@count_flat_elements(term.inner);
+                            it_tl: int64 <- flat_tuple_nested_alloc(term.inner, ic_tl, 0);
+                            compute_inner_adj_bindings(term.inner, 0, ic_tl, 0, it_tl)
+                        end;
+                        false -> do
+                            icr_tl: int64 <- prims_record@count_record_fields(term.inner.type_name);
+                            itr_tl: int64 <- flat_record_sum_nested_inners(term.inner);
+                            compute_inner_adj_bindings_record(term.inner, 0, icr_tl, 0, itr_tl)
+                        end
+                    };
                     false -> ""
                 };
-                vab_tl: string <- case term.inner.kind == 6 and term.inner.name == "tuple_make" of {
+                vab_tl: string <- case is_aggregate_make(term.inner) of {
                     true -> concat("|_va.", concat(term.name, concat("=", atom_table@int64_to_decimal_string(tm_adj_tl))));
                     false -> ""
                 };
@@ -968,7 +1181,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 spill_tl: bool <- len(spill_reg_tl) > 0;
                 rhs_bind_tl: string <- case spill_tl of { true -> spill_reg_tl; false -> rhs_reg };
                 mov_spill_tl: string <- case spill_tl of { true -> mov_spill_from_rhs(rhs_reg, spill_reg_tl); false -> "" };
-                is_simple_tuple_make: bool <- term.inner.kind == 6 and term.inner.name == "tuple_make" and tm_adj_tl == 0;
+                is_simple_tuple_make: bool <- is_aggregate_make(term.inner) and tm_adj_tl == 0;
                 body_bound_tl: string <- case is_simple_tuple_make of {
                     true -> "SP";
                     false -> var@tuple_proj_body_bound(term.inner, rhs_bind_tl, 0)
@@ -1259,6 +1472,80 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 };
                 concat(alloc_asm, concat(stores_asm, case len(mov_asm) > 0 of { true -> concat("\n", mov_asm); false -> "" }))
             end;
+            false -> case term.name == "record_make" of {
+            true -> do
+                count_r: int64 <- prims_record@count_record_fields(term.type_name);
+                Rm: string <- term.type_name;
+                sret_base_r: string <- var@find_sp_binding(outer_reg, "_tuple_sret");
+                alloc_asm_r: string <- case len(sret_base_r) > 0 of {
+                    true -> "";
+                    false -> concat("    SUB SP, SP, #", concat(prims_tuple@flat_alloc_size_str(count_r), "\n"))
+                };
+                stores_asm_r: string <- emit_flat_record_stores(term, Rm, 0, sret_base_r, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+                nested_adjust_r: int64 <- flat_record_sum_nested_inners(term);
+                dest_ptr_r: string <- case len(dest) > 0 and substring(dest, 0, 1) == "W" of {
+                    true -> concat("X", substring(dest, 1, len(dest)));
+                    false -> dest
+                };
+                mov_asm_r: string <- case dest == "SP" of {
+                    true -> "";
+                    false -> case len(sret_base_r) > 0 of {
+                        true -> case nested_adjust_r == 0 of {
+                            true -> concat(concat("    MOV ", dest_ptr_r), concat(", ", sret_base_r));
+                            false -> concat("    ADD ", concat(dest_ptr_r, concat(", ", concat(sret_base_r, concat(", #", atom_table@int64_to_decimal_string(nested_adjust_r))))))
+                        };
+                        false -> case nested_adjust_r == 0 of {
+                            true -> concat(concat("    MOV ", dest_ptr_r), ", SP");
+                            false -> concat("    ADD ", concat(dest_ptr_r, concat(", SP, #", atom_table@int64_to_decimal_string(nested_adjust_r))))
+                        }
+                    }
+                };
+                concat(alloc_asm_r, concat(stores_asm_r, case len(mov_asm_r) > 0 of { true -> concat("\n", mov_asm_r); false -> "" }))
+            end;
+            false -> case term.name == "record_proj" of {
+            true -> do
+                rp_var: string <- case term.inner.kind == 1 of { true -> term.inner.name; false -> "" };
+                va_key_rp: string <- concat("_va.", rp_var);
+                va_str_rp: string <- case len(rp_var) > 0 of { true -> var@find_sp_binding(outer_reg, va_key_rp); false -> "" };
+                var_binding_rp: string <- case len(rp_var) > 0 of { true -> var@find_sp_binding(outer_reg, rp_var); false -> "" };
+                saved_ptr_reg_rp: string <- case len(rp_var) > 0 of { true -> var@find_last_sp_binding(outer_reg, concat("_ptr.", rp_var)); false -> "" };
+                tuple_in_reg_rp: bool <- len(var_binding_rp) > 0 and var@is_memory_ref(var_binding_rp) == false;
+                tuple_base_reg_raw_rp: string <- case rp_var == bound_name and len(bound_reg) > 0 and var@is_memory_ref(bound_reg) == false of {
+                    true -> bound_reg;
+                    false -> case len(saved_ptr_reg_rp) > 0 of {
+                        true -> saved_ptr_reg_rp;
+                        false -> case tuple_in_reg_rp of {
+                            true -> var_binding_rp;
+                            false -> case rp_var == bound_name of { true -> bound_reg; false -> "" }
+                        }
+                    }
+                };
+                tuple_base_reg_rp: string <- case len(va_str_rp) > 0 of {
+                    true -> "";
+                    false -> tuple_base_reg_raw_rp
+                };
+                effective_base_rp: string <- case len(tuple_base_reg_rp) > 0 and tuple_base_reg_rp == "X0" of { true -> "X11"; false -> tuple_base_reg_rp };
+                record_ty: string <- term.inner.type_name;
+                byte_off: int64 <- prims_record@offset_bytes_before_field(record_ty, term.value);
+                proj_mem_ref_rp: string <- case len(tuple_base_reg_rp) > 0 of {
+                    true -> var@reg_offset_for_byte(effective_base_rp, byte_off);
+                    false -> do
+                        sp_adj_rp: int64 <- case len(va_str_rp) > 0 of {
+                            true -> string_parse@string_to_int64(va_str_rp);
+                            false -> do
+                                adj_str_rp: string <- var@find_sp_binding(outer_reg, "_adj");
+                                case len(adj_str_rp) > 0 of { true -> string_parse@string_to_int64(adj_str_rp); false -> 0 }
+                            end
+                        };
+                        var@sp_offset_for_byte_adj(byte_off, sp_adj_rp)
+                    end
+                };
+                proj_prefix_rp: string <- prims_tuple@ldr_prefix_for_type(term.type_name);
+                proj_dest_num_rp: string <- case len(dest) > 0 of { true -> substring(dest, 1, len(dest)); false -> "0" };
+                proj_ldr_reg_rp: string <- concat(proj_prefix_rp, proj_dest_num_rp);
+                preserve_base_rp: string <- case effective_base_rp == "X11" of { true -> "    MOV X11, X0\n"; false -> "" };
+                concat(preserve_base_rp, concat("    LDR ", concat(proj_ldr_reg_rp, concat(", ", proj_mem_ref_rp))))
+            end;
             false -> case term.name == "tuple_proj" of {
             true -> do
                 tp_var: string <- case term.inner.kind == 1 of { true -> term.inner.name; false -> "" };
@@ -1409,7 +1696,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                             };
                             op_asm: string <- prims@emit_prim_op(term, dest);
                             // tuple_make for arg2 uses SUB SP; restore before later ops / return. write_ref leaves ref in X1; bindings expect ref in X2.
-                            tuple_stack_bytes: int64 <- flat_tuple_total_alloc(term.right_expr);
+                            tuple_stack_bytes: int64 <- flat_tuple_dealloc_size(term.right_expr);
                             tuple_sp_restore: string <- case tuple_stack_bytes > 0 of {
                                 true -> concat("\n    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(tuple_stack_bytes), "\n"));
                                 false -> ""
@@ -1438,7 +1725,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 };
                                 op_asm: string <- prims@emit_prim_op(term, dest);
                                 // tuple_make did SUB SP (possibly multiple for nested tuple_make); restore SP before return / next ops.
-                                tuple_bytes: int64 <- flat_tuple_total_alloc(term.right_expr);
+                                tuple_bytes: int64 <- flat_tuple_dealloc_size(term.right_expr);
                                 tuple_sp_adj: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(tuple_bytes), "\n"));
                                 // emit_buf_store leaves X1=buf; LDR X2,[X2] leaves X2=index. Bindings still expect buf in X2.
                                 recover_buf_reg: string <- "    MOV X2, X1\n";
@@ -1472,7 +1759,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 true -> do term_to_asm_opt_bound_debug(term.right_expr, "X10", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                 false -> term_to_asm_opt_bound(term.right_expr, "X10", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                             };
-                            tuple_bytes_a: int64 <- flat_tuple_total_alloc(term.right_expr);
+                            tuple_bytes_a: int64 <- flat_tuple_dealloc_size(term.right_expr);
                             op_asm_a: string <- prims_actors@emit_prim_op(term, dest);
                             tuple_sp_restore_a: string <- case tuple_bytes_a > 0 of {
                                 true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(tuple_bytes_a), "\n"));
@@ -1913,6 +2200,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             }
             }
             }
+            }
+            }
         };
         _: int64 -> concat("    ; unsupported term kind ", "?")
         }
@@ -2028,6 +2317,59 @@ fn term_to_asm_opt_bound_debug(term: SIRTerm, dest: string, table: AtomTable, in
 
 // For each tuple-typed element in a tuple_make chain, compute the inner adj value and
 // encode as |_adj.{idx}={adj}| bindings.  adj_i = suffix_alloc_after_i + elem_i_nested.
+fn compute_inner_adj_bindings_record(term: SIRTerm, idx: int64, count: int64, cumulative_alloc: int64, total_nested: int64) -> string {
+    case idx < count - 1 and term.kind == 6 and term.name == "record_make" of {
+        true -> do
+            elem: SIRTerm <- term.inner;
+            eit: bool <- elem.kind == 6 and (elem.name == "tuple_make" or elem.name == "record_make");
+            eta: int64 <- case eit of {
+                true -> case elem.name == "tuple_make" of {
+                    true -> flat_tuple_total_alloc(elem);
+                    false -> flat_record_total_alloc(elem)
+                };
+                false -> 0
+            };
+            nc: int64 <- cumulative_alloc + eta;
+            binding: string <- case eit of {
+                true -> case elem.name == "tuple_make" of {
+                    true -> do
+                        sa: int64 <- total_nested - nc;
+                        ec: int64 <- prims_tuple@count_flat_elements(elem);
+                        en: int64 <- flat_tuple_nested_alloc(elem, ec, 0);
+                        ia: int64 <- sa + en;
+                        concat("|_adj.", concat(atom_table@int64_to_decimal_string(idx), concat("=", atom_table@int64_to_decimal_string(ia))))
+                    end;
+                    false -> do
+                        sa2: int64 <- total_nested - nc;
+                        ec2: int64 <- prims_record@count_record_fields(elem.type_name);
+                        en2: int64 <- flat_record_sum_nested_inners(elem);
+                        ia2: int64 <- sa2 + en2;
+                        concat("|_adj.", concat(atom_table@int64_to_decimal_string(idx), concat("=", atom_table@int64_to_decimal_string(ia2))))
+                    end
+                };
+                false -> ""
+            };
+            rest: string <- compute_inner_adj_bindings_record(term.right_expr, idx + 1, count, nc, total_nested);
+            concat(binding, rest)
+        end;
+        false -> do
+            eit: bool <- term.kind == 6 and term.name == "record_make";
+            eta: int64 <- case eit of { true -> flat_record_total_alloc(term); false -> 0 };
+            nc: int64 <- cumulative_alloc + eta;
+            case eit of {
+                true -> do
+                    sa: int64 <- total_nested - nc;
+                    ec: int64 <- prims_record@count_record_fields(term.type_name);
+                    en: int64 <- flat_record_sum_nested_inners(term);
+                    ia: int64 <- sa + en;
+                    concat("|_adj.", concat(atom_table@int64_to_decimal_string(idx), concat("=", atom_table@int64_to_decimal_string(ia))))
+                end;
+                false -> ""
+            }
+        end
+    }
+}
+
 fn compute_inner_adj_bindings(term: SIRTerm, idx: int64, count: int64, cumulative_alloc: int64, total_nested: int64) -> string {
     case idx < count - 1 and term.kind == 6 and term.name == "tuple_make" of {
         true -> do
@@ -2086,9 +2428,9 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
     case idx < count - 1 and term.kind == 6 and term.name == "tuple_make" of {
         true -> do
             elem: SIRTerm <- term.inner;
-            elem_is_tuple: bool <- elem.kind == 6 and elem.name == "tuple_make";
+            elem_is_agg: bool <- elem.kind == 6 and (elem.name == "tuple_make" or elem.name == "record_make");
             type_prefix: string <- reg_conventions@reg_prefix_for_type(elem.type_name);
-            elem_prefix: string <- case elem_is_tuple of {
+            elem_prefix: string <- case elem_is_agg of {
                 true -> "X";
                 false -> case type_prefix == "X" and elem.kind == 0 and value_has_dot(elem.value) of {
                     true -> "D";
@@ -2102,8 +2444,8 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
                 true -> do term_to_asm_opt_bound_debug(elem, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                 false -> term_to_asm_opt_bound(elem, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
             };
-            nested_bytes: int64 <- case elem_is_tuple of {
-                true -> flat_tuple_total_alloc(elem);
+            nested_bytes: int64 <- case elem_is_agg of {
+                true -> agg_alloc_inner(elem);
                 false -> 0
             };
             new_adjust: int64 <- sp_adjust + nested_bytes;
@@ -2113,9 +2455,9 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
             concat(concat(elem_asm, concat("\n", store_asm)), concat("\n", rest_asm))
         end;
         false -> do
-            elem_is_tuple: bool <- term.kind == 6 and term.name == "tuple_make";
+            elem_is_agg: bool <- term.kind == 6 and (term.name == "tuple_make" or term.name == "record_make");
             type_prefix2: string <- reg_conventions@reg_prefix_for_type(term.type_name);
-            elem_prefix: string <- case elem_is_tuple of {
+            elem_prefix: string <- case elem_is_agg of {
                 true -> "X";
                 false -> case type_prefix2 == "X" and term.kind == 0 and value_has_dot(term.value) of {
                     true -> "D";
@@ -2129,8 +2471,8 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
                 true -> do term_to_asm_opt_bound_debug(term, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                 false -> term_to_asm_opt_bound(term, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
             };
-            nested_bytes: int64 <- case elem_is_tuple of {
-                true -> flat_tuple_total_alloc(term);
+            nested_bytes: int64 <- case elem_is_agg of {
+                true -> agg_alloc_inner(term);
                 false -> 0
             };
             new_adjust: int64 <- sp_adjust + nested_bytes;
@@ -2154,6 +2496,114 @@ fn flat_tuple_total_alloc(term: SIRTerm) -> int64 {
     }
 }
 
+fn agg_alloc_inner(inner: SIRTerm) -> int64 {
+    case inner.kind == 6 and inner.name == "tuple_make" of {
+        true -> flat_tuple_total_alloc(inner);
+        false -> case inner.kind == 6 and inner.name == "record_make" of {
+            true -> flat_record_total_alloc(inner);
+            false -> 0
+        }
+    }
+}
+
+// Sum agg_alloc_inner along a record_make chain (nested tuple/record in each field). No mutual tail with flat_record_total_alloc.
+fn flat_record_sum_nested_inners(term: SIRTerm) -> int64 {
+    case term.kind == 6 and term.name == "record_make" of {
+        false -> 0;
+        true -> do
+            here: int64 <- agg_alloc_inner(term.inner);
+            rest: int64 <- case term.right_expr.kind < 0 of {
+                true -> 0;
+                false -> flat_record_sum_nested_inners(term.right_expr)
+            };
+            here + rest
+        end
+    }
+}
+
+fn flat_record_total_alloc(term: SIRTerm) -> int64 {
+    case term.kind == 6 and term.name == "record_make" of {
+        true -> do
+            my_count: int64 <- prims_record@count_record_fields(term.type_name);
+            case my_count < 1 of {
+                true -> 0;
+                false -> do
+                    my_size: int64 <- prims_tuple@flat_alloc_size(my_count);
+                    nested: int64 <- flat_record_sum_nested_inners(term);
+                    my_size + nested
+                end
+            }
+        end;
+        false -> 0
+    }
+}
+
+// Walk record_make chain; R is the full inline record type string on each node.
+fn emit_flat_record_stores(term: SIRTerm, R: string, sp_adjust: int64, store_base: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool) -> string {
+    case term.kind == 6 and term.name == "record_make" of {
+        false -> "";
+        true -> case term.right_expr.kind < 0 of {
+            true -> do
+                elem: SIRTerm <- term.inner;
+                fname: string <- term.value;
+                fty: string <- prims_record@find_field_type_in_record(R, fname);
+                elem_is_agg: bool <- elem.kind == 6 and (elem.name == "tuple_make" or elem.name == "record_make");
+                type_prefix: string <- reg_conventions@reg_prefix_for_type(fty);
+                elem_prefix: string <- case elem_is_agg of {
+                    true -> "X";
+                    false -> case type_prefix == "X" and elem.kind == 0 and value_has_dot(elem.value) of {
+                        true -> "D";
+                        false -> type_prefix
+                    }
+                };
+                temp_reg: string <- concat(elem_prefix, "9");
+                elem_asm: string <- case debug of {
+                    true -> do term_to_asm_opt_bound_debug(elem, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                    false -> term_to_asm_opt_bound(elem, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                };
+                nested_bytes: int64 <- case elem_is_agg of {
+                    true -> agg_alloc_inner(elem);
+                    false -> 0
+                };
+                new_adjust: int64 <- sp_adjust + nested_bytes;
+                base_off: int64 <- prims_record@offset_bytes_before_field(R, fname);
+                store_offset: int64 <- base_off + new_adjust;
+                store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))));
+                concat(elem_asm, concat("\n", store_asm))
+            end;
+            false -> do
+                elem: SIRTerm <- term.inner;
+                fname: string <- term.value;
+                fty: string <- prims_record@find_field_type_in_record(R, fname);
+                elem_is_agg: bool <- elem.kind == 6 and (elem.name == "tuple_make" or elem.name == "record_make");
+                type_prefix: string <- reg_conventions@reg_prefix_for_type(fty);
+                elem_prefix: string <- case elem_is_agg of {
+                    true -> "X";
+                    false -> case type_prefix == "X" and elem.kind == 0 and value_has_dot(elem.value) of {
+                        true -> "D";
+                        false -> type_prefix
+                    }
+                };
+                temp_reg: string <- concat(elem_prefix, "9");
+                elem_asm: string <- case debug of {
+                    true -> do term_to_asm_opt_bound_debug(elem, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                    false -> term_to_asm_opt_bound(elem, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                };
+                nested_bytes: int64 <- case elem_is_agg of {
+                    true -> agg_alloc_inner(elem);
+                    false -> 0
+                };
+                new_adjust: int64 <- sp_adjust + nested_bytes;
+                base_off: int64 <- prims_record@offset_bytes_before_field(R, fname);
+                store_offset: int64 <- base_off + new_adjust;
+                store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))));
+                rest_asm: string <- emit_flat_record_stores(term.right_expr, R, new_adjust, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+                concat(concat(elem_asm, concat("\n", store_asm)), concat("\n", rest_asm))
+            end
+        }
+    }
+}
+
 // Sum nested tuple element allocations within a tuple_make chain of `count` elements.
 fn flat_tuple_nested_alloc(term: SIRTerm, remaining: int64, acc: int64) -> int64 {
     case remaining <= 1 of {
@@ -2163,7 +2613,7 @@ fn flat_tuple_nested_alloc(term: SIRTerm, remaining: int64, acc: int64) -> int64
         };
         false -> case term.kind == 6 and term.name == "tuple_make" of {
             true -> do
-                elem_bytes: int64 <- flat_tuple_total_alloc(term.inner);
+                elem_bytes: int64 <- agg_alloc_inner(term.inner);
                 flat_tuple_nested_alloc(term.right_expr, remaining - 1, acc + elem_bytes)
             end;
             false -> acc
@@ -2172,5 +2622,8 @@ fn flat_tuple_nested_alloc(term: SIRTerm, remaining: int64, acc: int64) -> int64
 }
 
 fn flat_tuple_dealloc_size(term: SIRTerm) -> int64 {
-    flat_tuple_total_alloc(term)
+    case term.kind == 6 and term.name == "record_make" of {
+        true -> flat_record_total_alloc(term);
+        false -> flat_tuple_total_alloc(term)
+    }
 }

@@ -126,15 +126,15 @@ fn parse_list_type_params(full: string) -> (bool, string, string) {
     }
 }
 
-// Comma at depth 0; depth increases for [ and (, decreases for ] and ).
+// Comma at depth 0; depth increases for [, (, {; decreases for ], ), }.
 fn find_first_comma_depth0_list(s: string, i: int64, depth: int64) -> int64 {
     case i >= len(s) of {
         true -> len(s);
         false -> do
             c: string <- substring(s, i, i + 1);
-            case c == "(" or c == "[" of {
+            case c == "(" or c == "[" or c == "{" of {
                 true -> find_first_comma_depth0_list(s, i + 1, depth + 1);
-                false -> case c == ")" or c == "]" of {
+                false -> case c == ")" or c == "]" or c == "}" of {
                     true -> find_first_comma_depth0_list(s, i + 1, depth - 1);
                     false -> case c == "," of {
                         true -> case depth == 0 of {
@@ -219,16 +219,46 @@ fn strip_leading_comma_spaces(s: string) -> string {
     }
 }
 
-// Generic call value: "int64 normal" or single "int64"
+// Generic call value: "int64 normal", "int64 , mem ( normal )", "{ x : int64 , y : int64 } , mem ( normal )", or single "int64"
+// Split at top-level comma (depth-aware for {}, (), []) to separate element type from memory space.
 fn parse_generic_ts(value: string) -> (string, string) {
     v: string <- strip_spaces_list(value);
     case len(v) == 0 of {
         true -> ("", "");
         false -> do
-            sp: int64 <- find_first_space_list(v, 0);
-            case sp >= len(v) of {
-                true -> (v, "");
-                false -> (strip_spaces_list(substring(v, 0, sp)), strip_leading_comma_spaces(substring(v, sp + 1, len(v))))
+            comma_pos: int64 <- find_first_comma_depth0_list(v, 0, 0);
+            case comma_pos >= len(v) of {
+                true -> do
+                    sp: int64 <- find_first_space_depth0_list(v, 0, 0);
+                    case sp >= len(v) of {
+                        true -> (v, "");
+                        false -> (strip_spaces_list(substring(v, 0, sp)), strip_leading_comma_spaces(substring(v, sp + 1, len(v))))
+                    }
+                end;
+                false -> (strip_spaces_list(substring(v, 0, comma_pos)), strip_leading_comma_spaces(substring(v, comma_pos + 1, len(v))))
+            }
+        end
+    }
+}
+
+// Find first space at depth 0; depth increases for (, [, {; decreases for ), ], }.
+fn find_first_space_depth0_list(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "[" or c == "{" of {
+                true -> find_first_space_depth0_list(s, i + 1, depth + 1);
+                false -> case c == ")" or c == "]" or c == "}" of {
+                    true -> find_first_space_depth0_list(s, i + 1, depth - 1);
+                    false -> case c == " " of {
+                        true -> case depth == 0 of {
+                            true -> i;
+                            false -> find_first_space_depth0_list(s, i + 1, depth)
+                        };
+                        false -> find_first_space_depth0_list(s, i + 1, depth)
+                    }
+                }
             }
         end
     }
@@ -292,40 +322,62 @@ fn count_call_args_list(expr: Expr) -> int64 {
     }
 }
 
+// `[]` alone (scrutinee supplies the List type) or `[]: List[...]` / `[ ] : List[...]`.
+fn is_bare_empty_list_brackets(t: string) -> bool {
+    s: string <- strip_spaces_list(t);
+    case len(s) < 2 of {
+        true -> false;
+        false -> case substring(s, 0, 1) == "[" of {
+            false -> false;
+            true -> case substring(s, len(s) - 1, len(s)) == "]" of {
+                false -> false;
+                true -> do
+                    inner: string <- substring(s, 1, len(s) - 1);
+                    inner_nw: string <- strip_all_spaces_list(inner);
+                    len(inner_nw) == 0
+                end
+            }
+        }
+    }
+}
+
 // []: List[...]
 // slot_lexemes_join may produce "[ ] : List [ int64 , normal ]" (spaces between tokens).
 // Handle both "[]" and "[ ]" for the empty-bracket prefix, and normalize the List type.
 fn parse_list_empty_case_pattern(pat_str: string) -> ListEmptyPat {
     t: string <- strip_spaces_list(pat_str);
-    case len(t) < 4 of {
-        true -> ListEmptyPat { ok: false, list_type: "" };
-        false -> case substring(t, 0, 1) == "[" of {
-            false -> ListEmptyPat { ok: false, list_type: "" };
-            true -> do
-                j_rb: int64 <- skip_spaces_index_list(t, 1);
-                case j_rb >= len(t) of {
-                    true -> ListEmptyPat { ok: false, list_type: "" };
-                    false -> case substring(t, j_rb, j_rb + 1) == "]" of {
-                        false -> ListEmptyPat { ok: false, list_type: "" };
-                        true -> do
-                            j_col: int64 <- skip_spaces_index_list(t, j_rb + 1);
-                            case j_col >= len(t) of {
-                                true -> ListEmptyPat { ok: false, list_type: "" };
-                                false -> case substring(t, j_col, j_col + 1) == ":" of {
-                                    false -> ListEmptyPat { ok: false, list_type: "" };
-                                    true -> do
-                                        rest: string <- normalize_list_type_bracket(strip_all_spaces_list(substring(t, j_col + 1, len(t))));
-                                        case starts_with_list(rest, "List[") of {
-                                            false -> ListEmptyPat { ok: false, list_type: "" };
-                                            true -> ListEmptyPat { ok: true, list_type: rest }
-                                        }
-                                    end
+    case is_bare_empty_list_brackets(t) of {
+        true -> ListEmptyPat { ok: true, list_type: "" };
+        false -> case len(t) < 4 of {
+            true -> ListEmptyPat { ok: false, list_type: "" };
+            false -> case substring(t, 0, 1) == "[" of {
+                false -> ListEmptyPat { ok: false, list_type: "" };
+                true -> do
+                    j_rb: int64 <- skip_spaces_index_list(t, 1);
+                    case j_rb >= len(t) of {
+                        true -> ListEmptyPat { ok: false, list_type: "" };
+                        false -> case substring(t, j_rb, j_rb + 1) == "]" of {
+                            false -> ListEmptyPat { ok: false, list_type: "" };
+                            true -> do
+                                j_col: int64 <- skip_spaces_index_list(t, j_rb + 1);
+                                case j_col >= len(t) of {
+                                    true -> ListEmptyPat { ok: false, list_type: "" };
+                                    false -> case substring(t, j_col, j_col + 1) == ":" of {
+                                        false -> ListEmptyPat { ok: false, list_type: "" };
+                                        true -> do
+                                            rest: string <- normalize_list_type_bracket(strip_all_spaces_list(substring(t, j_col + 1, len(t))));
+                                            case starts_with_list(rest, "List[") of {
+                                                false -> ListEmptyPat { ok: false, list_type: "" };
+                                                true -> ListEmptyPat { ok: true, list_type: rest }
+                                            }
+                                        end
+                                    }
                                 }
-                            }
-                        end
+                            end
+                        }
                     }
-                }
-            end
+                end
+            }
         }
     }
 }

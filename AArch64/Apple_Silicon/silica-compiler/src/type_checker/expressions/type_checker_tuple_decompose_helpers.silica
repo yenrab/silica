@@ -4,8 +4,11 @@
 use parser_ast;
 use type_checker_core;
 use type_checker_lists;
+use type_checker_record_types;
 
 export infer_expr_type/2;
+export infer_struct_literal_type/2;
+export types_equal/2;
 export add_bindings_to_context/2;
 export pattern_bindings_valid/2;
 export pattern_types_match_rhs/2;
@@ -14,7 +17,7 @@ export CasePatternInfo/0;
 export case_parse_pattern/1;
 export case_extend_context_for_pattern/3;
 export case_pattern_matches_scrutinee/2;
-export case_pattern_has_named_binding/1;
+export case_pattern_has_named_binding/2;
 export case_pattern_binding_name/1;
 export case_merge_bool_coverage/2;
 export case_bool_coverage_from_pattern_str/2;
@@ -22,6 +25,7 @@ export case_bool_coverage_ok/1;
 export case_scan_bool_coverage/2;
 export CaseBoolCoverage/0;
 export infer_case_first_rhs_type/3;
+export case_parse_record_field_subpat/2;
 
 fn tuple_needs_parens(type_str: string) -> bool {
     len(type_str) >= 2 and substring(type_str, 0, 1) == "("
@@ -201,6 +205,8 @@ fn infer_expr_type(expr: Expr, context: TypeContext) -> string {
         end;
         13 -> infer_case_expr_kind13(expr, context);
         19 -> infer_if_expr_kind19(expr, context);
+        21 -> infer_struct_literal_type(expr, context);
+        22 -> infer_field_access_type(expr, context);
         _: int64 -> ""
     }
 }
@@ -216,6 +222,49 @@ fn infer_if_expr_kind19(expr: Expr, context: TypeContext) -> string {
                 false -> ""
             };
             false -> ""
+        }
+    }
+}
+
+// Kind 21: struct literal — right-nested chain; each node has name = field, inner = expr.
+fn infer_struct_literal_type(expr: Expr, context: TypeContext) -> string {
+    case expr.kind == -1 of {
+        true -> "";
+        false -> infer_struct_lit_chain(expr, context, "", false)
+    }
+}
+
+// Parser may end the kind-21 chain with dummy (-1) or a trailing-comma sentinel (kind 999).
+fn infer_struct_lit_chain(expr: Expr, context: TypeContext, acc: string, need_comma: bool) -> string {
+    case expr.kind == -1 or expr.kind == 999 of {
+        true -> case len(acc) > 0 of { true -> concat(acc, "}"); false -> "" };
+        false -> case expr.kind == 21 of {
+            true -> do
+                it: string <- infer_expr_type(expr.inner, context);
+                case len(it) == 0 of {
+                    true -> "";
+                    false -> do
+                        chunk: string <- case need_comma of {
+                            true -> concat(concat(concat(",", expr.name), ":"), it);
+                            false -> concat(concat(concat("{", expr.name), ":"), it)
+                        };
+                        infer_struct_lit_chain(expr.right_expr, context, concat(acc, chunk), true)
+                    end
+                }
+            end;
+            false -> ""
+        }
+    }
+}
+
+// Kind 22: field access — inner = base, name = field
+fn infer_field_access_type(expr: Expr, context: TypeContext) -> string {
+    base_t: string <- infer_expr_type(expr.inner, context);
+    case len(base_t) == 0 of {
+        true -> "";
+        false -> case type_checker_record_types@record_type_starts(base_t) of {
+            false -> "";
+            true -> type_checker_record_types@find_field_type_in_record(base_t, expr.name)
         }
     }
 }
@@ -505,6 +554,36 @@ fn case_string_is_signed_int_literal(s: string) -> bool {
     }
 }
 
+fn case_char_is_ident_letter_or_underscore(c: string) -> bool {
+    c == "a" or c == "b" or c == "c" or c == "d" or c == "e" or c == "f" or c == "g" or c == "h" or c == "i" or c == "j" or c == "k" or c == "l" or c == "m" or c == "n" or c == "o" or c == "p" or c == "q" or c == "r" or c == "s" or c == "t" or c == "u" or c == "v" or c == "w" or c == "x" or c == "y" or c == "z" or c == "A" or c == "B" or c == "C" or c == "D" or c == "E" or c == "F" or c == "G" or c == "H" or c == "I" or c == "J" or c == "K" or c == "L" or c == "M" or c == "N" or c == "O" or c == "P" or c == "Q" or c == "R" or c == "S" or c == "T" or c == "U" or c == "V" or c == "W" or c == "X" or c == "Y" or c == "Z" or c == "_"
+}
+
+fn case_ident_rest_ok(s: string, i: int64) -> bool {
+    case i >= len(s) of {
+        true -> true;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case case_char_is_digit(c) or case_char_is_ident_letter_or_underscore(c) of {
+                true -> case_ident_rest_ok(s, i + 1);
+                false -> false
+            }
+        end
+    }
+}
+
+fn case_simple_ident_token(s: string) -> bool {
+    case len(s) == 0 of {
+        true -> false;
+        false -> do
+            c0: string <- substring(s, 0, 1);
+            case case_char_is_digit(c0) of {
+                true -> false;
+                false -> case_ident_rest_ok(s, 0)
+            }
+        end
+    }
+}
+
 // If t is atom literal :name with no ':' inside the name (aligns with lexer), return pattern_kind 7 with str_lit = name; else is_valid false.
 fn case_try_atom_literal_pattern(t: string) -> CasePatternInfo {
     inv: CasePatternInfo <- CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
@@ -530,7 +609,9 @@ fn case_parse_pattern(pat_str: string) -> CasePatternInfo {
     t: string <- strip_spaces(pat_str);
     case len(t) == 0 of {
         true -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
-        false -> do
+        false -> case t == "_" of {
+            true -> CasePatternInfo { is_valid: true, pattern_kind: 3, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "_", bind_type: "", list_tail_name: "", list_tail_type: "" };
+            false -> do
             lep: ListEmptyPat <- type_checker_lists@parse_list_empty_case_pattern(t);
             case lep.ok of {
                 true -> CasePatternInfo { is_valid: true, pattern_kind: 5, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: lep.list_type, list_tail_name: "", list_tail_type: "" };
@@ -538,44 +619,47 @@ fn case_parse_pattern(pat_str: string) -> CasePatternInfo {
                     lcp: ListConsPat <- type_checker_lists@parse_list_cons_case_pattern(t);
                     case lcp.ok of {
                         true -> CasePatternInfo { is_valid: true, pattern_kind: 6, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: lcp.head_name, bind_type: lcp.head_type, list_tail_name: lcp.tail_name, list_tail_type: lcp.tail_list_type };
-                        false -> case substring(t, 0, 1) == "\"" of {
-                            true -> do
-                                cq: int64 <- case_close_quote_index(t, 1);
-                                case cq < 0 of {
-                                    true -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
-                                    false -> CasePatternInfo { is_valid: true, pattern_kind: 1, bool_lit: false, str_lit: substring(t, 1, cq), int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" }
-                                }
-                            end;
-                            false -> case t == "true" of {
-                                true -> CasePatternInfo { is_valid: true, pattern_kind: 0, bool_lit: true, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
-                                false -> case t == "false" of {
-                                    true -> CasePatternInfo { is_valid: true, pattern_kind: 0, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
-                                    false -> do
-                                        apat: CasePatternInfo <- case_try_atom_literal_pattern(t);
-                                        case apat.is_valid of {
-                                            true -> apat;
-                                            false -> do
-                                                colon: int64 <- case_find_colon_outside_string(t, 0, false);
-                                                case colon >= 0 of {
-                                                    true -> do
-                                                        name_raw: string <- strip_spaces(substring(t, 0, colon));
-                                                        typ_raw: string <- strip_spaces(substring(t, colon + 1, len(t)));
-                                                        case len(name_raw) == 0 or len(typ_raw) == 0 of {
-                                                            true -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
-                                                            false -> case name_raw == "_" of {
-                                                                true -> CasePatternInfo { is_valid: true, pattern_kind: 3, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "_", bind_type: typ_raw, list_tail_name: "", list_tail_type: "" };
-                                                                false -> CasePatternInfo { is_valid: true, pattern_kind: 2, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: name_raw, bind_type: typ_raw, list_tail_name: "", list_tail_type: "" }
+                        false -> case substring(t, 0, 1) == "{" and type_checker_record_types@record_type_braces_balanced(t) of {
+                            true -> CasePatternInfo { is_valid: true, pattern_kind: 8, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: t, list_tail_name: "", list_tail_type: "" };
+                            false -> case substring(t, 0, 1) == "\"" of {
+                                true -> do
+                                    cq: int64 <- case_close_quote_index(t, 1);
+                                    case cq < 0 of {
+                                        true -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
+                                        false -> CasePatternInfo { is_valid: true, pattern_kind: 1, bool_lit: false, str_lit: substring(t, 1, cq), int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" }
+                                    }
+                                end;
+                                false -> case t == "true" of {
+                                    true -> CasePatternInfo { is_valid: true, pattern_kind: 0, bool_lit: true, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
+                                    false -> case t == "false" of {
+                                        true -> CasePatternInfo { is_valid: true, pattern_kind: 0, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
+                                        false -> do
+                                            apat: CasePatternInfo <- case_try_atom_literal_pattern(t);
+                                            case apat.is_valid of {
+                                                true -> apat;
+                                                false -> do
+                                                    colon: int64 <- case_find_colon_outside_string(t, 0, false);
+                                                    case colon >= 0 of {
+                                                        true -> do
+                                                            name_raw: string <- strip_spaces(substring(t, 0, colon));
+                                                            typ_raw: string <- strip_spaces(substring(t, colon + 1, len(t)));
+                                                            case len(name_raw) == 0 or len(typ_raw) == 0 of {
+                                                                true -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
+                                                                false -> case name_raw == "_" of {
+                                                                    true -> CasePatternInfo { is_valid: true, pattern_kind: 3, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "_", bind_type: typ_raw, list_tail_name: "", list_tail_type: "" };
+                                                                    false -> CasePatternInfo { is_valid: true, pattern_kind: 2, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: name_raw, bind_type: typ_raw, list_tail_name: "", list_tail_type: "" }
+                                                                }
                                                             }
+                                                        end;
+                                                        false -> case case_string_is_signed_int_literal(t) of {
+                                                            true -> CasePatternInfo { is_valid: true, pattern_kind: 4, bool_lit: false, str_lit: "", int_lit_str: t, bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
+                                                            false -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" }
                                                         }
-                                                    end;
-                                                    false -> case case_string_is_signed_int_literal(t) of {
-                                                        true -> CasePatternInfo { is_valid: true, pattern_kind: 4, bool_lit: false, str_lit: "", int_lit_str: t, bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
-                                                        false -> CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" }
                                                     }
-                                                }
-                                            end
-                                        }
-                                    end
+                                                end
+                                            }
+                                        end
+                                    }
                                 }
                             }
                         }
@@ -583,6 +667,28 @@ fn case_parse_pattern(pat_str: string) -> CasePatternInfo {
                 end
             }
         end
+        }
+    }
+}
+
+fn case_parse_record_field_subpat(sub: string, field_ty: string) -> CasePatternInfo {
+    inv: CasePatternInfo <- CasePatternInfo { is_valid: false, pattern_kind: -1, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "", bind_type: "", list_tail_name: "", list_tail_type: "" };
+    s: string <- strip_spaces(sub);
+    case len(s) == 0 of {
+        true -> inv;
+        false -> case s == "_" of {
+            true -> CasePatternInfo { is_valid: true, pattern_kind: 3, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: "_", bind_type: field_ty, list_tail_name: "", list_tail_type: "" };
+            false -> do
+                base: CasePatternInfo <- case_parse_pattern(s);
+                case base.is_valid of {
+                    true -> base;
+                    false -> case case_simple_ident_token(s) of {
+                        true -> CasePatternInfo { is_valid: true, pattern_kind: 2, bool_lit: false, str_lit: "", int_lit_str: "", bind_name: s, bind_type: field_ty, list_tail_name: "", list_tail_type: "" };
+                        false -> inv
+                    }
+                }
+            end
+        }
     }
 }
 
@@ -608,31 +714,145 @@ fn case_pattern_matches_scrutinee(pi: CasePatternInfo, scrutinee_type: string) -
             0 -> types_equal(scrutinee_type, "boolean");
             1 -> types_equal(scrutinee_type, "string");
             2 -> types_equal(scrutinee_type, pi.bind_type);
-            3 -> case types_equal(scrutinee_type, pi.bind_type) of {
-                true -> true;
-                false -> case len(pi.bind_type) >= 5 of {
-                    true -> case substring(pi.bind_type, 0, 5) == "List[" of {
-                        true -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
+            3 -> case len(pi.bind_type) == 0 of {
+                true -> pi.bind_name == "_";
+                false -> case types_equal(scrutinee_type, pi.bind_type) of {
+                    true -> true;
+                    false -> case len(pi.bind_type) >= 5 of {
+                        true -> case substring(pi.bind_type, 0, 5) == "List[" of {
+                            true -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
+                            false -> false
+                        };
                         false -> false
-                    };
-                    false -> false
+                    }
                 }
             };
             4 -> is_primitive_numeric_type_name(scrutinee_type);
             5 -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
             6 -> case_list_cons_matches(pi, scrutinee_type);
             7 -> types_equal(scrutinee_type, "atom");
+            8 -> case_record_pat_matches_full(pi.bind_type, scrutinee_type);
             _: int64 -> false
         }
     }
 }
 
-fn case_pattern_has_named_binding(pi: CasePatternInfo) -> bool {
+fn case_record_inner_fields_match_more(rem: string, scrutinee_type: string) -> bool {
+    r: string <- strip_spaces(rem);
+    case len(r) == 0 of {
+        true -> true;
+        false -> do
+            (seg: string, rest: string) <- type_checker_record_types@record_case_field_step(r);
+            (fname: string, sub: string) <- type_checker_record_types@record_field_segment_name_sub(seg);
+            case len(fname) == 0 of {
+                true -> false;
+                false -> do
+                    fty: string <- type_checker_record_types@find_field_type_in_record(scrutinee_type, fname);
+                    case len(fty) == 0 of {
+                        true -> false;
+                        false -> do
+                            spi: CasePatternInfo <- case_parse_record_field_subpat(sub, fty);
+                            case spi.is_valid of {
+                                false -> false;
+                                true -> case case_pattern_matches_scrutinee(spi, fty) of {
+                                    false -> false;
+                                    true -> case_record_inner_fields_match_more(rest, scrutinee_type)
+                                }
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn case_record_pat_matches_full(pat_str: string, scrutinee_type: string) -> bool {
+    case type_checker_record_types@record_type_starts(scrutinee_type) of {
+        false -> false;
+        true -> do
+            inner: string <- type_checker_record_types@record_case_inner_body(pat_str);
+            rin: string <- strip_spaces(inner);
+            case len(rin) == 0 of {
+                true -> type_checker_record_types@count_record_fields(scrutinee_type) == 0;
+                false -> case_record_inner_fields_match_more(rin, scrutinee_type)
+            }
+        end
+    }
+}
+
+fn case_record_pattern_has_nonwildcard_bind_loop(rem: string, scrutinee_type: string) -> bool {
+    r: string <- strip_spaces(rem);
+    case len(r) == 0 of {
+        true -> false;
+        false -> do
+            (seg: string, rest: string) <- type_checker_record_types@record_case_field_step(r);
+            (fname: string, sub: string) <- type_checker_record_types@record_field_segment_name_sub(seg);
+            case len(fname) == 0 of {
+                true -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type);
+                false -> do
+                    fty: string <- type_checker_record_types@find_field_type_in_record(scrutinee_type, fname);
+                    case len(fty) == 0 of {
+                        true -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type);
+                        false -> do
+                            spi: CasePatternInfo <- case_parse_record_field_subpat(sub, fty);
+                            case spi.is_valid of {
+                                false -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type);
+                                true -> case spi.pattern_kind of {
+                                    2 -> case len(spi.bind_name) > 0 and spi.bind_name != "_" of { true -> true; false -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type) };
+                                    8 -> case case_record_pattern_has_nonwildcard_bind_loop(type_checker_record_types@record_case_inner_body(spi.bind_type), fty) of { true -> true; false -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type) };
+                                    _: int64 -> case_record_pattern_has_nonwildcard_bind_loop(rest, scrutinee_type)
+                                }
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn case_extend_record_fields_rem(context: TypeContext, rem: string, scrutinee_type: string) -> TypeContext {
+    r: string <- strip_spaces(rem);
+    case len(r) == 0 of {
+        true -> context;
+        false -> do
+            (seg: string, rest: string) <- type_checker_record_types@record_case_field_step(r);
+            (fname: string, sub: string) <- type_checker_record_types@record_field_segment_name_sub(seg);
+            case len(fname) == 0 of {
+                true -> case_extend_record_fields_rem(context, rest, scrutinee_type);
+                false -> do
+                    fty: string <- type_checker_record_types@find_field_type_in_record(scrutinee_type, fname);
+                    case len(fty) == 0 of {
+                        true -> case_extend_record_fields_rem(context, rest, scrutinee_type);
+                        false -> do
+                            spi: CasePatternInfo <- case_parse_record_field_subpat(sub, fty);
+                            case spi.is_valid of {
+                                false -> case_extend_record_fields_rem(context, rest, scrutinee_type);
+                                true -> do
+                                    ctx2: TypeContext <- case spi.pattern_kind of {
+                                        2 -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, spi.bind_name, spi.bind_type, parser_ast@empty_effect_name_list()));
+                                        8 -> case_extend_record_fields_rem(context, type_checker_record_types@record_case_inner_body(spi.bind_type), fty);
+                                        _: int64 -> context
+                                    };
+                                    case_extend_record_fields_rem(ctx2, rest, scrutinee_type)
+                                end
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn case_pattern_has_named_binding(pi: CasePatternInfo, scrutinee_type: string) -> bool {
     case pi.is_valid of {
         false -> false;
         true -> case pi.pattern_kind of {
             2 -> len(pi.bind_name) > 0;
             6 -> (len(pi.bind_name) > 0 and pi.bind_name != "_") or (len(pi.list_tail_name) > 0 and pi.list_tail_name != "_");
+            8 -> case_record_pattern_has_nonwildcard_bind_loop(type_checker_record_types@record_case_inner_body(pi.bind_type), scrutinee_type);
             _: int64 -> false
         }
     }
@@ -666,6 +886,10 @@ fn case_extend_context_for_pattern(context: TypeContext, scrutinee_type: string,
                         false -> ctx_after_head
                     }
                 end
+            };
+            8 -> case case_pattern_matches_scrutinee(pi, scrutinee_type) of {
+                false -> context;
+                true -> case_extend_record_fields_rem(context, type_checker_record_types@record_case_inner_body(pi.bind_type), scrutinee_type)
             };
             _: int64 -> context
         }

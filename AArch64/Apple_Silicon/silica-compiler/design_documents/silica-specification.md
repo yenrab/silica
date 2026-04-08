@@ -403,6 +403,8 @@ declaration ::= function_declaration
               | module_declaration
 ```
 
+**Inline types and struct values.** Silica does not use top-level declarations to introduce new user-defined record or enum **names** (see §3.4.2). Record **types** are written inline as `{ field: Type, ... }` wherever a type is required. Record **values** are always **struct literals** (§3.3.7): either an anonymous `{ field: expression, ... }` or, where the grammar allows a disambiguating name for a value, `identifier { field: expression, ... }`. There is no `struct TypeName { ... }` declaration form in the surface language.
+
 ### 3.3 Expressions
 ```
 expression ::= literal
@@ -1645,6 +1647,8 @@ fn counter_actor(
 
 Silica **does not** provide declarations that introduce a **new user-defined type name**. There is no `type Ping = …`, no `struct Ping { … }`, and no `enum` that binds a fresh type identifier for application code. **Composite types are always structural and written inline** wherever a type is required (parameters, returns, `impl … for …`, pattern annotations, etc.): tuples `(T1, …, Tn)`, inline records `{ f1: T1, …, fn: Tn }`, tagged tuples `( :tag, T1, …)` (§3.7), lists, variants written as sum types, and combinations thereof.
 
+**Record values (struct literals only):** Values of record type are always written as **struct literals** (§3.3.7)—for example `p: { x: int64, y: int64 } <- { x: 42, y: 23 }` or `{ x: 42, y: 23 }` in an expression. The reserved keyword `struct` does **not** begin a record type declaration; unnamed record shape is carried by inline `{ field: Type, … }` in type positions and `{ field: expression, … }` in expression positions.
+
 The identifiers `int64`, `string`, `atom`, and other **built-in** names are predefined. **Trait implementations** attach to these **inline type expressions**, for example `impl ActorMessage for { seq: int64 };` or `impl ActorMessage for (:ping, int64);` (§16.3.2).
 
 **Ill-formed:** any declaration of the form `type Name = …` or `struct Name { … }` or `enum Name { … }` as a user-defined type definition.
@@ -1673,7 +1677,7 @@ export_item ::= identifier "/" integer_literal
 
 #### 3.4.6 Struct Declarations (superseded by §3.4.2)
 
-**Note:** Silica does not use `struct` to introduce user-defined type names (§3.4.2). Use **inline** record types `{ field: T, … }` in signatures and values. The following grammar is **not** part of the surface language described in this specification.
+**Note:** Silica does not use `struct` to introduce user-defined type names (§3.4.2). Record **types** use inline `{ field: T, … }`; record **values** use **struct literals** only (§3.3.7). The following grammar is **not** part of the surface language described in this specification.
 
 ```
 struct_declaration ::= "struct" identifier "{" struct_fields "}" ";"
@@ -1723,38 +1727,87 @@ enum Message {
 ```
 
 #### 3.4.8 Trait Declarations
+
+Traits are independent, reusable behavioral components. Each trait formally declares:
+- **Provided methods**: Fully implemented methods with bodies. May call required methods via dynamic dispatch.
+- **Required methods**: Method signatures (no body) that implementing types must provide.
+- **Conflicts**: Compiler error if two traits are applied to the same type and both provide/require the same method name.
+
+Traits never reference or compose with other traits; each is completely self-contained.
+
 ```
-trait_declaration ::= "trait" identifier "{" trait_items "}" ";"
+trait_declaration ::= "trait" identifier "{" trait_section* "}" ";"
 
-trait_items ::= [trait_item]
-trait_item  ::= associated_type
-              | trait_method
+trait_section ::= provided_section | required_section | marker_trait
 
-associated_type ::= "type" identifier [type_bounds] ";"
-type_bounds     ::= ":" identifier {"," identifier}
+provided_section ::= "provided" "{" provided_method+ "}"
+provided_method ::= "fn" identifier parameter_list [":" type] "{" expression "}"
 
-trait_method ::= "fn" identifier parameter_list [":" type] ";"
+required_section ::= "required" "{" required_method+ "}"
+required_method ::= "fn" identifier parameter_list [":" type]
+
+marker_trait ::= /* empty - for marker traits with no methods */
 ```
+
+**Provided Methods:**
+- Must have full implementation with body
+- May call required methods via dynamic dispatch (resolved at runtime based on implementation)
+- Can be overridden by implementations
+
+**Required Methods:**
+- Only specify signature, no body
+- Must be implemented by types that claim the trait
+- Compile error if not provided in impl
+
+**Marker Traits:**
+- No provided or required sections
+- Used for type-checking only (e.g., ActorMessage)
+- Attached via `impl ActorMessage { }` with empty body
 
 Examples:
 ```silica
 trait Display {
-    fn show(self) -> string;
+    provided {
+        fn to_string(self) -> string {
+            "default_display"
+        }
+    }
 }
 
-trait Debug {
-    fn debug(self) -> string;
+trait Drawable {
+    provided {
+        fn render(self) -> atom {
+            // Dynamic dispatch to required methods
+            pos: { x: int64, y: int64 } <- self.position();
+            bounds: { width: int64, height: int64 } <- self.bounds();
+            atom
+        }
+    }
+    
+    required {
+        fn position(self) -> { x: int64, y: int64 }
+        fn bounds(self) -> { width: int64, height: int64 }
+    }
 }
 
 trait Comparable {
-    type Output;
-    fn compare(self, other: Self) -> Output;
+    required {
+        fn equals(self, other) -> boolean
+        fn less_than(self, other) -> boolean
+    }
+}
+
+trait ActorMessage {
+    // Marker trait - no provided/required
 }
 ```
 
 #### 3.4.9 Implementation Declarations
+
+Implementations attach traits to inline types. For each required method in a trait, the implementation must provide a body. Provided methods from the trait are automatically available; implementations may override them.
+
 ```
-impl_declaration ::= "impl" [trait_name] "for" type "{" impl_items "}" ";"
+impl_declaration ::= "impl" trait_name "for" type "{" impl_items "}" ";"
                   | impl_actor_message_decl
 
 impl_actor_message_decl ::= "impl" "ActorMessage" "for" type impl_marker_body ";"
@@ -1765,30 +1818,63 @@ impl_marker_body ::= /* empty */ | "{" "}"
 trait_name ::= identifier
 
 impl_items ::= [impl_item]
-impl_item  ::= associated_type_def
-             | method_implementation
+impl_item  ::= required_impl | provided_override
 
-associated_type_def ::= "type" identifier "=" type ";"
-method_implementation ::= function_declaration
+required_impl ::= "fn" identifier parameter_list [":" type] "{" expression "}"
+provided_override ::= "fn" identifier parameter_list [":" type] "{" expression "}"
 ```
+
+**Implementation Rules:**
+- Must implement all required methods from the trait (compile error if any are missing)
+- May override any provided method from the trait
+- If multiple traits are applied to the same type and they conflict (both define/require the same method), compiler error
+- No trait-to-trait references; each trait implementation is independent
 
 Examples:
 ```silica
-impl Display for Point {
-    fn show(self) -> string {
-        "Point"
+impl Drawable for { x: int64, y: int64, width: int64, height: int64 } {
+    // Implement required methods
+    fn position(self) -> { x: int64, y: int64 } {
+        { x: self.x, y: self.y }
+    }
+    
+    fn bounds(self) -> { width: int64, height: int64 } {
+        { width: self.width, height: self.height }
+    }
+    
+    // Override provided method (optional)
+    fn render(self) -> atom {
+        // Custom render logic for this type
+        atom
     }
 }
 
-impl Comparable for Point {
-    type Output = int;
-    fn compare(self, other: Point) -> int {
-        0
+impl Display for { x: int64, y: int64, width: int64, height: int64 } {
+    // No required methods in Display, but can override its provided
+    fn to_string(self) -> string {
+        "window_struct"
     }
 }
+
+impl Comparable for { x: int64, y: int64, width: int64, height: int64 } {
+    fn equals(self, other) -> boolean {
+        self.x == other.x && self.y == other.y && 
+        self.width == other.width && self.height == other.height
+    }
+    
+    fn less_than(self, other) -> boolean {
+        (self.width * self.height) < (other.width * other.height)
+    }
+}
+
+impl ActorMessage for (:window_event, int64) { }
 ```
 
 **`ActorMessage` implementations:** `ActorMessage` is a marker trait (no methods). Valid forms are: (1) **postfix on the payload** — `expr impl ActorMessage {}` (§3.3, §16.3.2); (2) **type-level** — `impl_actor_message_decl` (§16.3.2) or `impl ActorMessage for type { }` with an **empty** `impl_items` block, when the same inline type is reused and you do not want to repeat the postfix. The compiler **must not** infer `ActorMessage` without one of these forms.
+
+**Method Dispatch:**
+- When a provided method calls a required method, the call is dynamically dispatched to the implementation's version of that method
+- Qualified method calls use syntax: `TraitName.method_name(value)` to explicitly specify which trait's version to call
 
 #### 3.4.10 Module Declarations
 ```
@@ -1860,16 +1946,22 @@ fn(msg: Message) -> atom {
 ```
 
 #### 3.3.7 Struct Literals
+Record values are written only as struct literals—there is no separate named `struct` declaration form (§3.4.2).
+
 ```
-struct_literal ::= identifier "{" [field_initializer {"," field_initializer}] "}"
+struct_literal ::= "{" field_initializer {"," field_initializer} "}"
+                 | identifier "{" [field_initializer {"," field_initializer}] "}"
 
 field_initializer ::= identifier ":" expression
 ```
 
-Example:
+Examples:
 ```silica
+{ x: 42, y: 23 }
 Point { x: 10, y: 20 }
 ```
+
+The form `identifier "{" … "}"` is a **value** (a struct literal with a leading name where permitted by the grammar), not a type declaration. Anonymous struct literals `{ … }` are the usual form for inline record values that match an inline record type.
 
 #### 3.3.8 Field Access
 ```
@@ -3295,12 +3387,7 @@ Get CPU topology information as a JSON string. Requires the `device_io` effect.
 Record patterns allow destructuring record values:
 
 ```silica
-struct Point {
-    x: int,
-    y: int
-}
-
-fn distance_from_origin(p: Point) -> int {
+fn distance_from_origin(p: { x: int, y: int }) -> int {
     case p.x == 0 && p.y == 0 of {
         true -> 0
         false -> p.x * p.x + p.y * p.y  // Simplified for now
@@ -3708,31 +3795,80 @@ User-defined composite types are **not named** (§3.4.2). Equivalence is **struc
 (int64, boolean) ≡ (int64, boolean)
 ```
 
-#### 8.2.3 Subtyping Rules
-Silica has no structural subtyping - all types must match exactly. However, polymorphism is achieved through trait composition, where types implementing the same trait can be used interchangeably in trait-constrained contexts.
+#### 8.2.3 Subtyping Rules and Trait-Based Polymorphism
 
+Silica has no structural subtyping - all types must match exactly. Polymorphism is achieved through independent trait implementations:
+
+**No Structural Subtyping:**
 ```
 // Types must match exactly; no widening:
 // (int64, int64) is distinct from (int64, int32)
-
-// Trait-based polymorphism (not subtyping):
-trait Display { fn show(self) -> string; }
-impl Display for int64;
-impl Display for string;
-
-// Types implementing Display can be used where Display is required
-fn print_value(x: Display) -> atom { ... }
-// int64 and string can both be passed to print_value
 ```
+
+**Trait-Based Polymorphism:**
+Traits are independent behavioral specifications. Multiple traits can be implemented on the same type; if they conflict (both define/require the same method), the compiler produces an error.
+
+```silica
+// Each trait is completely independent
+trait Display {
+    provided {
+        fn to_string(self) -> string { "default" }
+    }
+}
+
+trait Comparable {
+    required {
+        fn equals(self, other) -> boolean
+    }
+}
+
+// Implement both traits on int64
+impl Display for int64 {
+    fn to_string(self) -> string { 
+        // convert int to string 
+        "int"
+    }
+}
+
+impl Comparable for int64 {
+    fn equals(self, other) -> boolean { 
+        self == other 
+    }
+}
+
+// Call trait methods using qualified names
+fn describe(value: int64) -> string {
+    Display.to_string(value)
+}
+
+fn compare_values(a: int64, b: int64) -> boolean {
+    Comparable.equals(a, b)
+}
+```
+
+**Trait Independence:**
+- Traits never reference or inherit from other traits
+- No trait-to-trait composition
+- Multiple traits on the same type are checked for conflicts
+- Compiler error if two traits both define/require the same method name on the same type
 
 #### 8.2.4 Collectable Trait
 
-The `Collectable` trait is a marker trait indicating that a type can be collected in lists. This trait has no methods; it serves as a type-level marker.
+The `Collectable` trait is a marker trait indicating that a type can be collected in lists. Marker traits have no provided or required methods; they serve only for compile-time type checking.
 
 ```silica
 trait Collectable {
-    // Marker trait indicating that a type can be collected in lists
-    // This trait has no methods; it serves as a type-level marker
+    // Marker trait - no provided or required methods
+    // Indicates that a type can be collected in List[ElementType]
+}
+
+// Automatically implemented for all inline struct instances
+impl Collectable for { x: int64, y: int64 } { }
+
+// Can be checked at compile time
+fn collect_items(items: List[Collectable]) -> int64 {
+    // Process list of any Collectable type
+    0
 }
 ```
 
@@ -3768,13 +3904,10 @@ All tuple types of the form `(T1, T2, ...)` where all `Ti` are concrete types au
 - Any combination of concrete types
 
 **Struct Types (Automatic Collectable):**
-All struct types automatically implement `Collectable`:
+All inline struct instances automatically implement `Collectable`:
 ```silica
-struct Point {
-    x: int64,
-    y: int64
-}
-// Point automatically implements Collectable
+{ x: int64, y: int64 }  // Inline struct literal
+// This struct instance automatically implements Collectable
 ```
 
 **Enum Types (Automatic Collectable):**
@@ -6537,12 +6670,9 @@ produces pure () end
 For recursive data structures containing references, lifetime analysis tracks references through the structure:
 
 ```
-struct Node {
-    value: int64,
-    next: OptionRefNode
-}
-
-type OptionRefNode = Some(ref(L, normal, Node)) | None
+// Inline struct type with recursive reference
+type NodeType = { value: int64, next: OptionRefNode }
+type OptionRefNode = Some(ref(L, normal, NodeType)) | None
 ```
 
 When analyzing recursive structures:
@@ -11920,13 +12050,8 @@ trait tagged {
     // Marker trait for types that can be used with MTE
 }
 
-// Example: Implement tagged trait for a struct
-struct NodeData {
-    value: int64,
-    next: int64
-}
-
-impl tagged for NodeData;
+// Example: Implement tagged trait for an inline struct type
+impl tagged for { value: int64, next: int64 };
 ```
 
 #### 21.3.2 Tagged Pointer Operations
@@ -12700,21 +12825,16 @@ MTE tagging is available for all memory spaces:
 **Example Usage:**
 
 ```silica
-struct NodeData {
-    value: int64,
-    next: int64
-}
-
-impl tagged for NodeData;
+impl tagged for { value: int64, next: int64 };
 
 fn example() -> atom {
     sequence proc[mem(normal)]
         r: region(R, normal) <- alloc_region(normal);
         // Allocate tagged memory
-        node: ref(R, normal, NodeData) <- alloc_tagged_nodedata(r, 1);
+        node: ref(R, normal, { value: int64, next: int64 }) <- alloc_tagged_nodedata(r, 1);
         
         // Tag is automatically set and checked by hardware
-        data: NodeData <- read_ref(node);  // Hardware validates tag
+        data: { value: int64, next: int64 } <- read_ref(node);  // Hardware validates tag
         
         // Get tag value
         tag: int <- get_tag_nodedata(node);
@@ -12742,13 +12862,8 @@ trait authenticated {
     // Marker trait for types that can be used with PAC
 }
 
-// Example: Implement authenticated trait for a struct
-struct SecureData {
-    value: int64,
-    metadata: string
-}
-
-impl authenticated for SecureData;
+// Example: Implement authenticated trait for an inline struct type
+impl authenticated for { value: int64, metadata: string };
 ```
 
 #### 21.4.2 Authenticated Pointer Operations
@@ -13040,27 +13155,22 @@ PAC integrates with Silica's region-based memory model:
 **Example: Secure Pointer Usage**
 
 ```silica
-struct SecureData {
-    value: int64,
-    metadata: string
-}
+impl authenticated for { value: int64, metadata: string };
 
-impl authenticated for SecureData;
-
-fn secure_operation(data: SecureData) -> atom proc[mem(normal)] {
+fn secure_operation(data: { value: int64, metadata: string }) -> atom proc[mem(normal)] {
     sequence proc[mem(normal)]
         // Allocate secure data
-        ptr: ref(R, normal, SecureData) <- alloc_ref(region, data);
+        ptr: ref(R, normal, { value: int64, metadata: string }) <- alloc_ref(region, data);
         
         // Sign pointer with context
         context: int <- 0x1234;  // Context value
-        signed_ptr: ref(R, normal, SecureData) <- sign_ptr_securedata(ptr, context);
+        signed_ptr: ref(R, normal, { value: int64, metadata: string }) <- sign_ptr_securedata(ptr, context);
         
         // Later: authenticate before use
-        authenticated_ptr: ref(R, normal, SecureData) <- auth_ptr_securedata(signed_ptr, context);
+        authenticated_ptr: ref(R, normal, { value: int64, metadata: string }) <- auth_ptr_securedata(signed_ptr, context);
         
         // Use authenticated pointer
-        data: SecureData <- read_ref(authenticated_ptr);
+        data: { value: int64, metadata: string } <- read_ref(authenticated_ptr);
     produces pure ()
     end
 }
@@ -14820,24 +14930,19 @@ trait Comparable {
 
 **Implementing Multiple Traits on a Type:**
 ```silica
-struct Widget {
-    name: string,
-    version: int
-}
-
-impl Printable for Widget {
+impl Printable for { name: string, version: int } {
     fn to_string(self) = format("{} v{}", self.name, self.version)
 }
 
-impl Debug for Widget {
+impl Debug for { name: string, version: int } {
     fn debug_string(self) = format("Widget {{ name: {}, version: {} }}", self.name, self.version)
 }
 
-impl Serializable for Widget {
+impl Serializable for { name: string, version: int } {
     fn serialize(self) = encode(self.name, self.version)
 }
 
-impl Comparable for Widget {
+impl Comparable for { name: string, version: int } {
     fn equals(self, other) = self.name == other.name && self.version == other.version
 }
 ```
@@ -14862,17 +14967,15 @@ trait Writer {
 }
 
 // A type implementing both traits
-struct MyType { data: int64 }
-
-impl Reader for MyType {
-    fn read(self: MyType) -> int64 { self.data }
+impl Reader for { data: int64 } {
+    fn read(self) -> int64 { self.data }
 }
 
-impl Writer for MyType {
-    fn read(self: MyType) -> int64 { self.data + 1 }
+impl Writer for { data: int64 } {
+    fn read(self) -> int64 { self.data + 1 }
 }
 
-fn process(value: MyType) -> int64 {
+fn process(value: { data: int64 }) -> int64 {
     // Use qualified names to disambiguate
     reader_result: int64 <- Reader.read(value);
     writer_result: int64 <- Writer.read(value);
@@ -14932,18 +15035,16 @@ trait Writer {
     fn write(self: Self, data: int64) -> int64;  // Different name
 }
 
-struct MyType { data: int64 }
-
-impl Reader for MyType {
-    fn read(self: MyType) -> int64 { self.data }
+impl Reader for { data: int64 } {
+    fn read(self) -> int64 { self.data }
 }
 
-impl Writer for MyType {
-    fn write(self: MyType, data: int64) -> int64 { data }
+impl Writer for { data: int64 } {
+    fn write(self, data: int64) -> int64 { data }
 }
 
 // No disambiguation needed: method names are unique
-fn process(value: MyType) -> int64 {
+fn process(value: { data: int64 }) -> int64 {
     value2: int64 <- value.read();        // Unambiguous: only Reader.read()
     value.write(value2)                   // Unambiguous: only Writer.write()
 }
@@ -14960,18 +15061,16 @@ trait Debugger {
     fn log(self: Self, msg: string) -> atom;  // Same name and signature
 }
 
-struct MyTool { name: string }
-
-impl Logger for MyTool {
-    fn log(self: MyTool, msg: string) -> atom { print_string(msg) }
+impl Logger for { name: string } {
+    fn log(self, msg: string) -> atom { print_string(msg) }
 }
 
-impl Debugger for MyTool {
-    fn log(self: MyTool, msg: string) -> atom { print_string("DEBUG: " + msg) }
+impl Debugger for { name: string } {
+    fn log(self, msg: string) -> atom { print_string("DEBUG: " + msg) }
 }
 
 // Disambiguation required: both Logger and Debugger define log()
-fn run(tool: MyTool) -> atom {
+fn run(tool: { name: string }) -> atom {
     Logger.log(tool, "info");      // Required: specify Logger.log()
     Debugger.log(tool, "debug");   // Required: specify Debugger.log()
 }
@@ -14997,18 +15096,16 @@ trait NetworkReader {
     fn read_socket(self: Self, sock: socket) -> string;
 }
 
-struct MyReader { base_path: string }
-
-impl FileReader for MyReader {
-    fn read_file(self: MyReader, path: string) -> string { ... }
+impl FileReader for { base_path: string } {
+    fn read_file(self, path: string) -> string { ... }
 }
 
-impl NetworkReader for MyReader {
-    fn read_socket(self: MyReader, sock: socket) -> string { ... }
+impl NetworkReader for { base_path: string } {
+    fn read_socket(self, sock: socket) -> string { ... }
 }
 
 // No disambiguation needed: method names are distinct
-fn read_all(reader: MyReader) -> string {
+fn read_all(reader: { base_path: string }) -> string {
     file_data: string <- reader.read_file("data.txt");      // Unambiguous
     socket_data: string <- reader.read_socket(sock);        // Unambiguous
     file_data + socket_data
@@ -15119,16 +15216,11 @@ impl Printable for boolean {
 Types can implement multiple traits:
 
 ```silica
-struct Person {
-    name: string,
-    age: int
-}
-
-impl Display for Person {
+impl Display for { name: string, age: int } {
     fn to_string(self) = format("Person({}, {})", self.name, self.age)
 }
 
-impl Comparable for Person {
+impl Comparable for { name: string, age: int } {
     fn equals(self, other) = self.name == other.name && self.age == other.age
     fn less_than(self, other) = self.age < other.age
 }
@@ -15147,16 +15239,11 @@ trait Debug {
 }
 
 // A type that implements both traits
-struct Point {
-    x: int,
-    y: int
-}
-
-impl Display for Point {
+impl Display for { x: int, y: int } {
     fn to_string(self) = format("({}, {})", self.x, self.y)
 }
 
-impl Debug for Point {
+impl Debug for { x: int, y: int } {
     fn debug_string(self) = format("Point {{ x: {}, y: {} }}", self.x, self.y)
 }
 ```

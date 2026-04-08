@@ -13,6 +13,7 @@ use type_checker_tuple_decompose_helpers;
 use type_checker_memory_regions;
 use type_checker_lists;
 use type_checker_expressions_actors;
+use type_checker_record_types;
 
 export check_expr/3;
 
@@ -1054,14 +1055,14 @@ fn is_function_type_user_call(type_str: string) -> bool {
     find_arrow_pos_user_call(type_str, 0) >= 0
 }
 
-// Find first comma at depth 0 (top level). Respects parentheses and brackets in type strings
-// so that a single tuple parameter like (int64, int64) or ref(R, Space, T) counts as 1 param.
+// Find first comma at depth 0 (top level). Respects parentheses, brackets, and braces in type strings
+// so that a single tuple parameter like (int64, int64), ref(R, Space, T), or { x: int64, y: int64 } counts as 1 param.
 fn find_top_level_comma_user_call(s: string, i: int64, depth: int64) -> int64 {
     case i >= len(s) of {
         true -> len(s);
-        false -> case substring(s, i, i + 1) == "(" or substring(s, i, i + 1) == "[" of {
+        false -> case substring(s, i, i + 1) == "(" or substring(s, i, i + 1) == "[" or substring(s, i, i + 1) == "{" of {
             true -> find_top_level_comma_user_call(s, i + 1, depth + 1);
-            false -> case substring(s, i, i + 1) == ")" or substring(s, i, i + 1) == "]" of {
+            false -> case substring(s, i, i + 1) == ")" or substring(s, i, i + 1) == "]" or substring(s, i, i + 1) == "}" of {
                 true -> case depth <= 0 of {
                     true -> len(s);
                     false -> find_top_level_comma_user_call(s, i + 1, depth - 1)
@@ -1601,6 +1602,47 @@ fn expr_references_name(e: Expr, name: string) -> bool {
     }
 }
 
+fn case_record_guard_refs_any(branch: Expr, pat_str: string, scrutinee_type: string) -> bool {
+    inner: string <- type_checker_record_types@record_case_inner_body(pat_str);
+    case_record_guard_refs_loop(branch, inner, scrutinee_type)
+}
+
+fn case_record_guard_refs_loop(branch: Expr, rem: string, scrutinee_type: string) -> bool {
+    (seg: string, rest2: string) <- type_checker_record_types@record_case_field_step(rem);
+    case len(seg) == 0 of {
+        true -> false;
+        false -> do
+            (fname: string, sub: string) <- type_checker_record_types@record_field_segment_name_sub(seg);
+            case len(fname) == 0 of {
+                true -> case_record_guard_refs_loop(branch, rest2, scrutinee_type);
+                false -> do
+                    fty: string <- type_checker_record_types@find_field_type_in_record(scrutinee_type, fname);
+                    case len(fty) == 0 of {
+                        true -> case_record_guard_refs_loop(branch, rest2, scrutinee_type);
+                        false -> do
+                            spi: CasePatternInfo <- type_checker_tuple_decompose_helpers@case_parse_record_field_subpat(sub, fty);
+                            case spi.is_valid of {
+                                false -> case_record_guard_refs_loop(branch, rest2, scrutinee_type);
+                                true -> case spi.pattern_kind of {
+                                    2 -> case expr_references_name(branch.inner, spi.bind_name) of {
+                                        true -> true;
+                                        false -> case_record_guard_refs_loop(branch, rest2, scrutinee_type)
+                                    };
+                                    8 -> case case_record_guard_refs_any(branch, spi.bind_type, fty) of {
+                                        true -> true;
+                                        false -> case_record_guard_refs_loop(branch, rest2, scrutinee_type)
+                                    };
+                                    _: int64 -> case_record_guard_refs_loop(branch, rest2, scrutinee_type)
+                                }
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
 fn case_list_cons_guard_ok_expr(branch: Expr, pi: CasePatternInfo) -> bool {
     head_bound: bool <- len(pi.bind_name) > 0 and pi.bind_name != "_";
     tail_bound: bool <- len(pi.list_tail_name) > 0 and pi.list_tail_name != "_";
@@ -1616,10 +1658,14 @@ fn case_list_cons_guard_ok_expr(branch: Expr, pi: CasePatternInfo) -> bool {
     }
 }
 
-fn check_case_guard_invariant(branch: Expr, pi: CasePatternInfo) -> TypeCheckResult {
-    case type_checker_tuple_decompose_helpers@case_pattern_has_named_binding(pi) of {
+fn check_case_guard_invariant(branch: Expr, pi: CasePatternInfo, scrutinee_type: string) -> TypeCheckResult {
+    case type_checker_tuple_decompose_helpers@case_pattern_has_named_binding(pi, scrutinee_type) of {
         true -> case pi.pattern_kind of {
             6 -> case case_list_cons_guard_ok_expr(branch, pi) of {
+                true -> type_checker_core@type_check_ok();
+                false -> type_checker_core@type_check_err("E2014", branch.inner.location, "Guard does not depend on pattern bindings — move it before the case or restructure.", "sect3")
+            };
+            8 -> case case_record_guard_refs_any(branch, pi.bind_type, scrutinee_type) of {
                 true -> type_checker_core@type_check_ok();
                 false -> type_checker_core@type_check_err("E2014", branch.inner.location, "Guard does not depend on pattern bindings — move it before the case or restructure.", "sect3")
             };
@@ -1632,14 +1678,14 @@ fn check_case_guard_invariant(branch: Expr, pi: CasePatternInfo) -> TypeCheckRes
     }
 }
 
-fn check_case_branch_guard(branch: Expr, pi: CasePatternInfo, ext_ctx: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_case_branch_guard(branch: Expr, pi: CasePatternInfo, ext_ctx: TypeContext, scrutinee_type: string) -> TypeCheckResult proc[DeviceIO] {
     case branch.inner.kind < 0 of {
         true -> type_checker_core@type_check_ok();
         false -> do
             g: TypeCheckResult <- check_expr(branch.inner, "boolean", ext_ctx);
             case g.is_ok of {
                 false -> g;
-                true -> check_case_guard_invariant(branch, pi)
+                true -> check_case_guard_invariant(branch, pi, scrutinee_type)
             }
         end
     }
@@ -1656,7 +1702,7 @@ fn check_one_case_branch(branch: Expr, scrutinee_type: string, expected_type: st
                     false -> type_checker_core@type_check_err("E2005", branch.location, "case pattern does not match scrutinee type", "sect3");
                     true -> do
                         ext_ctx: TypeContext <- type_checker_tuple_decompose_helpers@case_extend_context_for_pattern(context, scrutinee_type, branch.value);
-                        guard_r: TypeCheckResult <- check_case_branch_guard(branch, pi, ext_ctx);
+                        guard_r: TypeCheckResult <- check_case_branch_guard(branch, pi, ext_ctx, scrutinee_type);
                         case guard_r.is_ok of {
                             false -> guard_r;
                             true -> check_expr(branch.right_expr, expected_type, ext_ctx)
@@ -1910,7 +1956,107 @@ fn check_list_primitive_call(expr: Expr, expected_type: string, context: TypeCon
     }
 }
 
-// Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding, 7=boolean literal, 8=string literal, 12=unary minus (forbidden); 20=list literal
+fn count_struct_chain_nodes(expr: Expr) -> int64 {
+    case expr.kind == -1 or expr.kind == 999 of {
+        true -> 0;
+        false -> case expr.kind == 21 of {
+            true -> 1 + count_struct_chain_nodes(expr.right_expr);
+            false -> 0
+        }
+    }
+}
+
+fn check_struct_literal_discard_chain(expr: Expr, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    case expr.kind == -1 or expr.kind == 999 of {
+        true -> type_checker_core@type_check_ok();
+        false -> case expr.kind == 21 of {
+            false -> type_checker_core@type_check_err("E2005", expr.location, "ill-formed struct literal (expected kind 21)", "sect3");
+            true -> do
+                it: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                case len(it) == 0 of {
+                    true -> type_checker_core@type_check_err("E2005", expr.location, "cannot infer field expression type in struct literal", "sect3");
+                    false -> do
+                        r1: TypeCheckResult <- check_expr(expr.inner, it, context);
+                        case r1.is_ok of {
+                            false -> r1;
+                            true -> check_struct_literal_discard_chain(expr.right_expr, context)
+                        }
+                    end
+                }
+            end
+        }
+    }
+}
+
+fn check_struct_literal_chain(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    case expr.kind == -1 or expr.kind == 999 of {
+        true -> type_checker_core@type_check_ok();
+        false -> case expr.kind == 21 of {
+            false -> type_checker_core@type_check_err("E2005", expr.location, "ill-formed struct literal (expected kind 21)", "sect3");
+            true -> do
+                ft: string <- type_checker_record_types@find_field_type_in_record(expected_type, expr.name);
+                case len(ft) == 0 of {
+                    true -> type_checker_core@type_check_err("E2003", expr.location, concat(concat("field ", expr.name), " is not part of the record type"), "sect3");
+                    false -> do
+                        r1: TypeCheckResult <- check_expr(expr.inner, ft, context);
+                        case r1.is_ok of {
+                            false -> r1;
+                            true -> check_struct_literal_chain(expr.right_expr, expected_type, context)
+                        }
+                    end
+                }
+            end
+        }
+    }
+}
+
+fn check_struct_literal_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    case expected_type == "discard" of {
+        true -> check_struct_literal_discard_chain(expr, context);
+        false -> case type_checker_record_types@record_type_starts(expected_type) of {
+            false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat("expected record type, got ", expected_type), ""), "sect3");
+            true -> do
+                n_type: int64 <- type_checker_record_types@count_record_fields(expected_type);
+                n_lit: int64 <- count_struct_chain_nodes(expr);
+                case n_type == n_lit of {
+                    false -> type_checker_core@type_check_err("E2003", expr.location, "struct literal field count does not match record type", "sect3");
+                    true -> check_struct_literal_chain(expr, expected_type, context)
+                }
+            end
+        }
+    }
+}
+
+fn check_field_access_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    base_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+    case len(base_t) == 0 of {
+        true -> type_checker_core@type_check_err("E2005", expr.location, "cannot infer type of field access base", "sect3");
+        false -> case type_checker_record_types@record_type_starts(base_t) of {
+            false -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("field access base must be record type, got ", base_t), ""), "sect3");
+            true -> do
+                ft: string <- type_checker_record_types@find_field_type_in_record(base_t, expr.name);
+                case len(ft) == 0 of {
+                    true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("no field ", expr.name), " on record type"), "sect3");
+                    false -> do
+                        rbase: TypeCheckResult <- check_expr(expr.inner, base_t, context);
+                        case rbase.is_ok of {
+                            false -> rbase;
+                            true -> case expected_type == "discard" of {
+                                true -> type_checker_core@type_check_ok();
+                                false -> case type_checker_tuple_decompose_helpers@types_equal(ft, expected_type) of {
+                                    true -> type_checker_core@type_check_ok();
+                                    false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("field has type ", ft), ", expected "), expected_type), ""), "sect3")
+                                }
+                            }
+                        }
+                    end
+                }
+            end
+        }
+    }
+}
+
+// Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding, 7=boolean literal, 8=string literal, 12=unary minus (forbidden); 20=list literal; 21=struct literal; 22=field access
 fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case expr.kind of {
         0 -> type_checker_expressions_literals@check_expr(expr, expected_type, context);
@@ -1938,6 +2084,8 @@ fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
         13 -> check_case_expression(expr, expected_type, context);
         19 -> check_if_expression(expr, expected_type, context);
         20 -> check_list_literal(expr, expected_type, context);
+        21 -> check_struct_literal_expr(expr, expected_type, context);
+        22 -> check_field_access_expr(expr, expected_type, context);
         _: int64 -> type_checker_core@type_check_ok()
     }
 }
