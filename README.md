@@ -4,9 +4,11 @@
 
 **Silica's target is to be the world’s most secure language and runtime—without asking you to fight the tools to get there.** With Silica, security is not a bolt-on checklist; it is woven through the language model, the compiler, and the runtime so that ordinary code reads clearly and dangerous patterns fail early, with explanations you can act on.
 
-Silica is a **systems language** that is **functional**: explicit effects, **actor-based** message passing, and **region-based memory** with **no garbage collection**. You keep predictable performance and a small conceptual surface area, while the type system and compiler shoulder much of the burden that other ecosystems leave to discipline, reviews, and production incidents.
+Silica is a **systems language** that is **functional**: explicit effects, **actor-based** message passing, and **region-based memory** with **no garbage collection**. You keep predictable performance and a small conceptual surface area, while the type system and compiler shoulder much of the burden that other ecosystems leave to discipline, reviews, and production incidents. **With Silica, you stay in control without being overwhelmed.**
 
-**Bad security practices should always have been compiler errors!**
+---
+
+> <img src="./silica_icon_tiny.png" alt="" width="28" height="28" style="vertical-align: middle;" /> **Motto: Bad security practices should always be compiler errors!**
 
 ---
 
@@ -22,7 +24,7 @@ Silica is a **systems language** that is **functional**: explicit effects, **act
 ### A runtime built for isolation and recovery
 
 - **Unsafe worlds stay outside your safe core** (proposed). When you must touch C or other unsafe libraries, a **brokered IPC** design keeps the safe application free of in-process FFI to untrusted code: separate channels, validated messages, no shared memory with the worker, centralized policy—so isolation and recovery are architectural, not aspirational. See [brokered IPC architecture](compiler/silica-compiler/design_documents/brokered_ipc_isolation_architecture.md).
-- **BEAM-inspired fault containment, native speed.** The runtime direction is **lightweight actors** with independent stacks and no heap, message passing, and “let it crash” semantics at the process level—paired with hardware-assisted safety (e.g. **MTE** on AArch64) so faults become controlled events where possible, not silent corruption. See [crash containment design](compiler/silica-compiler/design_documents/beam_like_crash_containment_design_notes.md).
+- **BEAM-inspired fault containment, native speed.** The runtime direction is **lightweight actors** running concurrenlty with independent stacks and no heap, message passing, and “let it crash” semantics at the process level—paired with hardware-assisted safety (e.g. **MTE** on AArch64) so faults become controlled events where possible, not silent corruption. See [crash containment design](compiler/silica-compiler/design_documents/beam_like_crash_containment_design_notes.md).
 
 ### Still easy to read, write, and tool
 
