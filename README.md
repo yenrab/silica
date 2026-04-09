@@ -50,6 +50,8 @@ The numbering here is the **language and platform roadmap** the bootstrap compil
 **Phase 2 — current development focus**
 
 - **Foreign interoperability:** call into **existing C libraries** and into **any library that exposes a C-compatible ABI** (a stable C calling convention and linkable symbols) via **FFI bindings**, instead of rewriting the ecosystem in pure Silica. That lets Silica programs use mature native code where appropriate while the longer-term isolation story (below) stays on the table for untrusted or high-risk components.
+- **CI trial edge-case additions:** grow [`compiler/silica-compiler/trials/`](compiler/silica-compiler/trials/) with scenarios that stress the self-hosted pipeline—corner cases for parsing, types, effects, and codegen—so `make integrate` stays the gate for regressions on golden assembly (`.ascomp`) and output (`.scout`).
+- **Assembly optimization:** tighten and tune **AArch64** emission (instruction choice, scheduling, and related emitter paths) for better performance and smaller binaries without weakening the trials’ contract with checked-in baselines.
 
 **Phase 3 — under conceptualization**
 
