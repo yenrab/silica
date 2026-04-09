@@ -1,6 +1,6 @@
 <div align="center">
 
-![Silica logo — stylized SiO₂ molecule](./silica_icon.png)
+![Silica logo — stylized SiO₂ molecule](./silica_icon_small.png)
 
 </div>
 
