@@ -1,8 +1,6 @@
-
-
-Silica logo — stylized SiO₂ molecule
-
-
+<div align="center">
+  <img src="./silica_icon_small.png" alt="Silica logo — stylized SiO₂ molecule" width="220" />
+</div>
 
 # Silica
 
