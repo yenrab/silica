@@ -1,8 +1,7 @@
-<div align="left">
-  <img src="../../../silica_icon_tiny.png" alt="Silica logo — stylized SiO₂ molecule" width="72" />
-</div>
-
-# Silica compiler — tutorials and how-tos
+<h1 align="left">
+  <img src="../../../silica_icon_tiny.png" alt="" width="40" height="40" style="vertical-align: middle; margin-right: 0.35em;" />
+  Silica compiler — tutorials and how-tos
+</h1>
 
 These files are **working documents**: hands-on tutorials and explanatory notes for learning Silica and the self-hosted compiler. They are **revised as the language and tooling evolve**; where they disagree with [design_documents](../design_documents/) or with the code, prefer the **language specification** and implementation unless a tutorial explicitly states it is illustrative only.
 

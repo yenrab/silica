@@ -1,8 +1,7 @@
-<div align="left">
-  <img src="../../../silica_icon_tiny.png" alt="Silica logo — stylized SiO₂ molecule" width="72" />
-</div>
-
-# Silica compiler — design documents
+<h1 align="left">
+  <img src="../../../silica_icon_tiny.png" alt="" width="40" height="40" style="vertical-align: middle; margin-right: 0.35em;" />
+  Silica compiler — design documents
+</h1>
 
 These files are **working documents**: specifications, plans, and design notes for the Silica language and the self-hosted compiler. They are **revised as the implementation evolves**; where they disagree with each other or with the code, treat the situation as “docs catching up” unless a document explicitly marks itself as normative for a given area.
 
