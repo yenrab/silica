@@ -167,6 +167,10 @@ The trial harness assumes the same **Apple Silicon / macOS** toolchain as the Ph
 
 Ad hoc language experiments also exist under [`compiler/experiments/`](compiler/experiments/) (separate Makefiles; not the same integrated golden-file pipeline as the CI trials).
 
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for copyright attribution.
+
 ---
 
 *Silica: systems programming where security and clarity are part of the language—not an afterthought.*
