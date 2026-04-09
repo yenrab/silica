@@ -16,7 +16,7 @@ Silica is a **systems language** that is **functional**: explicit effects, **act
     width: auto;
     object-fit: contain;
     display: inline-block;
-    vertical-align: -0.20em;
+    vertical-align: -0.5em;
     margin-right: 0.2em;
   "
 /><strong>Motto: Bad security practices should always be compiler errors!</strong>
