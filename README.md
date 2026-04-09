@@ -1,6 +1,4 @@
-<div align="center">
-  <img src="./silica_icon_small.png" alt="Silica logo — stylized SiO₂ molecule" width="220" />
-</div>
+
 
 # Silica
 
@@ -45,12 +43,14 @@ If you care about **secure-by-construction systems**, **native performance**, an
 
 ### Where the project is headed (roadmap phases)
 
-The numbering here is the **language and platform roadmap** the bootstrap compiler was Phase 1.
+The numbering here is the **language and platform roadmap** the completed bootstrap compiler was Phase 1.
 
 **Phase 2 — current development focus**
 
 - **Foreign interoperability:** call into **existing C libraries** and into **any library that exposes a C-compatible ABI** (a stable C calling convention and linkable symbols) via **FFI bindings**, instead of rewriting the ecosystem in pure Silica. That lets Silica programs use mature native code where appropriate while the longer-term isolation story (below) stays on the table for untrusted or high-risk components.
-- **CI trial edge-case additions:** grow [`compiler/silica-compiler/trials/`](compiler/silica-compiler/trials/) with scenarios that stress the self-hosted pipeline—corner cases for parsing, types, effects, and codegen—so `make integrate` stays the gate for regressions on golden assembly (`.ascomp`) and output (`.scout`).
+- **Compiler errors for anti-patterns:** the self-hosted compiler reports **hard errors** for **dead bindings**, **duplicate work**, **redundant arithmetic**, **loop-invariant mistakes**, and other patterns spelled out in [additional compiler rules](compiler/silica-compiler/design_documents/silica-specification-additional.md)—so inefficient or ambiguous code is fixed at the source, not silently “optimized away.”
+- **Fine-tuning compiler errors:** refine **diagnostics** for the current pipeline—clearer messages, stable **error codes**, accurate locations, and **spec-linked** references (see §1.6 of the [language specification](compiler/silica-compiler/design_documents/silica-specification.md))—so fixing mistakes stays fast while the self-hosted compiler matures.
+- **CI trial edge-case additions:** grow `[compiler/silica-compiler/trials/](compiler/silica-compiler/trials/)` with scenarios that stress the self-hosted pipeline—corner cases for parsing, types, effects, and codegen—so `make integrate` stays the gate for regressions on golden assembly (`.ascomp`) and output (`.scout`).
 - **Assembly optimization:** tighten and tune **AArch64** emission (instruction choice, scheduling, and related emitter paths) for better performance and smaller binaries without weakening the trials’ contract with checked-in baselines.
 
 **Phase 3 — under conceptualization**
@@ -60,6 +60,7 @@ The numbering here is the **language and platform roadmap** the bootstrap compil
 - **Numeric tower:** **automatic big integers** (`Auto BigInt`), **automatic big floats** (`Auto BigFloat`), **rationals** plus **automatic big rationals** (`Auto BigRational`) as first-class directions for precise and overflow-safe numerics.
 - **Formal methods:** deepen **Curry–Howard**–aligned reasoning and proof tooling on top of the type system. See [formal verification specification](compiler/silica-compiler/design_documents/silica-formal-verification-specification.md).
 - **Cryptography:** realize the **language-level cryptographic guardrails** (secret/public labels, constant-time discipline, protected buffers, and related rules). See [crypto proposal](compiler/silica-compiler/design_documents/crypto-proposal-introduction.md).
+- **Fine-tuning compiler errors:** carry **diagnostic quality** forward as Phase 3 features land—new rules for **crypto**, **numerics**, **IPC**, and **verification**-oriented feedback—with the same bar: **human-readable** and **machine-friendly** errors that stay aligned with the specification.
 
 ### Compiler-building tools
 
