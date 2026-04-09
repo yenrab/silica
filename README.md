@@ -60,6 +60,8 @@ The numbering here is the **language and platform roadmap** the completed bootst
 
 **Phase 2 — current development focus**
 
+- **Fast Map, Filter, and Reduce:** make **immutable list** traversals use **vector-sized chunks** in **region-backed** storage—so the usual functional pipeline stays expressive in source while the emitter can target **SIMD-friendly** layouts and avoid redundant allocations. See [list implementation design](compiler/silica-compiler/design_documents/list_implementation_design.md) (kernel ops and lowering).
+
 - **Foreign interoperability:** call into **existing C libraries** and into **any library that exposes a C-compatible ABI** (a stable C calling convention and linkable symbols) via **FFI bindings**, instead of rewriting the ecosystem in pure Silica. That lets Silica programs use mature native code where appropriate while the longer-term isolation story (below) stays on the table for untrusted or high-risk components.
 - **Compiler errors for anti-patterns:** the self-hosted compiler reports **hard errors** for **dead bindings**, **duplicate work**, **redundant arithmetic**, **loop-invariant mistakes**, and other patterns spelled out in [additional compiler rules](compiler/silica-compiler/design_documents/silica-specification-additional.md)—so inefficient or ambiguous code is fixed at the source, not silently “optimized away.”
 - **Fine-tuning compiler errors:** refine **diagnostics** for the current pipeline—clearer messages, stable **error codes**, accurate locations, and **spec-linked** references (see §1.6 of the [language specification](compiler/silica-compiler/design_documents/silica-specification.md))—so fixing mistakes stays fast while the self-hosted compiler matures.
