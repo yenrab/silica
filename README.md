@@ -6,7 +6,7 @@
 
 Silica is a **systems language** that is **functional**: explicit effects, **actor-based** message passing, and **region-based memory** with **no garbage collection**. You keep **predictable performance** and a **small conceptual surface area**, while the type system and compiler shoulder much of what other ecosystems leave to discipline, reviews, and production incidents. **With Silica, you stay in control without being overwhelmed.**
 
-**Silica** is built for **today’s silicon** and the facilities real cores expose now—so you are not stuck translating ideas through **obsolete machine models** or carry-over abstractions from another era. The language and runtime **line up with modern chip design**: what you write maps to **performance aligned with the hardware** you can actually buy and ship, not to a nostalgic picture of how chips and computers used to work.
+**Silica** is built for **today’s silicon** and the facilities real cores expose now—so you are not stuck translating ideas through **obsolete machine models** or carry-over abstractions from another era. The language and runtime **line up with modern chip design**: what you write maps to **performance aligned with the hardware** you can actually buy and use, not to a nostalgic picture of how chips and computers used to work.
 
 ---
 
