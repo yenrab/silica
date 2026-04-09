@@ -12,11 +12,11 @@ Silica is a **systems language** that is **functional**: explicit effects, **act
   src="./silica_icon_emoji.png"
   alt=""
   style="
-    height: 1em;
+    height: 1.5em;
     width: auto;
     object-fit: contain;
     display: inline-block;
-    vertical-align: -0.12em;
+    vertical-align: -0.20em;
     margin-right: 0.2em;
   "
 /><strong>Motto: Bad security practices should always be compiler errors!</strong>
