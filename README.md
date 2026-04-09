@@ -78,6 +78,13 @@ Individual graphs contain their own execution instructions; treat them as **exec
 
 ---
 
+## Documentation and tutorials
+
+- **[Design documents](compiler/silica-compiler/design_documents/README.md)** — Indexed specifications, plans, and design notes in [`compiler/silica-compiler/design_documents/`](compiler/silica-compiler/design_documents/); start with the [language specification](compiler/silica-compiler/design_documents/silica-specification.md) and [additional compiler rules](compiler/silica-compiler/design_documents/silica-specification-additional.md). These are **working documents** and change with the implementation.
+- **[Tutorials and how-tos](compiler/silica-compiler/tutorials_and_howtos/README.md)** — Hands-on guides in [`compiler/silica-compiler/tutorials_and_howtos/`](compiler/silica-compiler/tutorials_and_howtos/) (actors, regions, lists, blocks, and related topics).
+
+---
+
 ## Building the compiler
 
 Instructions below follow the **roadmap phases** described earlier (Phase 2 = current FFI-and-toolchain work; Phase 3 = projected runtime and compiler architecture). They do **not** refer to the numbered **bootstrap pipeline phases** inside [build-plan.md](compiler/silica-compiler/design_documents/build-plan.md).
