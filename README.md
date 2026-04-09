@@ -8,7 +8,7 @@ Silica is a **systems language** that is **functional**: explicit effects, **act
 
 ---
 
-> <img src="./silica_icon_tiny.png" alt="" width="28" height="28" style="vertical-align: middle;" /> **Motto: Bad security practices should always be compiler errors!**
+> <img src="./silica_icon_tiny.png" alt="" style="height: 1.2em; width: auto; vertical-align: -0.2em; margin-right: 0.2em;" /><strong>Motto:</strong><br /><strong>Bad security practices should always be compiler errors!</strong>
 
 ---
 
