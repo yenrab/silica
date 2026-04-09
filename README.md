@@ -1,14 +1,14 @@
-<div align="center">
 
-![Silica logo — stylized SiO₂ molecule](./silica_icon_small.png)
 
-</div>
+Silica logo — stylized SiO₂ molecule
+
+
 
 # Silica
 
-**Silica's target to be the world’s most secure language and runtime—without asking you to fight the tools to get there.** Security is not a bolt-on checklist; it is woven through the language model, the compiler, and the runtime so that ordinary code reads clearly and dangerous patterns fail early, with explanations you can act on.
+**Silica's target is to be the world’s most secure language and runtime—without asking you to fight the tools to get there.** With Silica, security is not a bolt-on checklist; it is woven through the language model, the compiler, and the runtime so that ordinary code reads clearly and dangerous patterns fail early, with explanations you can act on.
 
-Silica is a **functional systems language**: explicit effects, **actor-based** message passing, and **region-based memory** with **no garbage collector**. You keep predictable performance and a small conceptual surface area, while the type system and compiler shoulder much of the burden that other ecosystems leave to discipline, reviews, and production incidents.
+Silica is a **systems language** that is **functional**: explicit effects, **actor-based** message passing, and **region-based memory** with **no garbage collection**. You keep predictable performance and a small conceptual surface area, while the type system and compiler shoulder much of the burden that other ecosystems leave to discipline, reviews, and production incidents.
 
 **Bad security practices should always have been compiler errors!**
 
@@ -25,8 +25,8 @@ Silica is a **functional systems language**: explicit effects, **actor-based** m
 
 ### A runtime built for isolation and recovery
 
-- **Unsafe worlds stay outside your safe core.** When you must touch C or other unsafe libraries, a **brokered IPC** design keeps the safe application free of in-process FFI to untrusted code: separate channels, validated messages, no shared memory with the worker, centralized policy—so isolation and recovery are architectural, not aspirational. See [brokered IPC architecture](compiler/silica-compiler/design_documents/brokered_ipc_isolation_architecture.md).
-- **BEAM-inspired fault containment, native speed.** The runtime direction is **lightweight processes** with independent stacks/heaps, message passing, and “let it crash” semantics at the process level—paired with hardware-assisted safety (e.g. **MTE** on AArch64) so faults become controlled events where possible, not silent corruption. See [crash containment design](compiler/silica-compiler/design_documents/beam_like_crash_containment_design_notes.md).
+- **Unsafe worlds stay outside your safe core** (proposed). When you must touch C or other unsafe libraries, a **brokered IPC** design keeps the safe application free of in-process FFI to untrusted code: separate channels, validated messages, no shared memory with the worker, centralized policy—so isolation and recovery are architectural, not aspirational. See [brokered IPC architecture](compiler/silica-compiler/design_documents/brokered_ipc_isolation_architecture.md).
+- **BEAM-inspired fault containment, native speed.** The runtime direction is **lightweight actors** with independent stacks and no heap, message passing, and “let it crash” semantics at the process level—paired with hardware-assisted safety (e.g. **MTE** on AArch64) so faults become controlled events where possible, not silent corruption. See [crash containment design](compiler/silica-compiler/design_documents/beam_like_crash_containment_design_notes.md).
 
 ### Still easy to read, write, and tool
 
@@ -43,7 +43,7 @@ This is a rare moment: a language whose **security story and runtime architectur
 - how **isolation** and **crypto** defaults look in practice;
 - and how **compiler errors** and **specifications** stay aligned so security is teachable, not tribal.
 
-If you care about **secure-by-construction systems**, **native performance**, and **clarity of intent**, Silica is built to reward that investment. The [compiler build plan](compiler/silica-compiler/design_documents/build-plan.md) outlines the toolchain roadmap; the [code organization](compiler/silica-compiler/design_documents/silica-compiler-code-organization.md) document helps you navigate the tree.
+If you care about **secure-by-construction systems**, **native performance**, and **clarity of intent**, Silica is built to reward that investment. [Where the project is headed](#where-the-project-is-headed-roadmap-phases) outlines the language and compiler roadmap for in-flight work; the [code organization](compiler/silica-compiler/design_documents/silica-compiler-code-organization.md) document helps you navigate the tree.
 
 ### Where the project is headed (roadmap phases)
 
@@ -63,16 +63,18 @@ The numbering here is the **language and platform roadmap** the bootstrap compil
 
 ### Compiler-building tools
 
-The directory [`compiler/silica-compiler/compiler-building-tools/`](compiler/silica-compiler/compiler-building-tools/) holds **JSON-LD agent specifications** (GAB / AALang–style graphs). In compatible AI-assisted workflows—typically by opening a given `.jsonld` file as the task context—the assistant follows that graph as a **specialized “tool agent”** for compiler work: structured prompts, modes, and guardrails rather than ad hoc chat.
+The directory `[compiler/silica-compiler/compiler-building-tools/](compiler/silica-compiler/compiler-building-tools/)` holds **JSON-LD agent specifications** (GAB / AALang–style graphs). In compatible AI-assisted workflows—typically by opening a given `.jsonld` file as the task context—the assistant follows that graph as a **specialized “tool agent”** for compiler work: structured prompts, modes, and guardrails rather than ad hoc chat.
 
 You do not need every file for day-to-day hacking; pick the graph that matches what you are doing. At a high level:
 
-| Area | Examples (file names) |
-|------|------------------------|
+
+| Area                              | Examples (file names)                                                                                                                                                                                                                                                                                                           |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Compiler pipeline scaffolding** | Code generators / builders for the major phases—`silica-lexer-code-generator`, `silica-parser-code-generator`, `silica-typechecker-code-generator`, `silica-effect-code-generator`, `silica-sir_generator_builder`, `silica-codegen-code-generator`, `silica-emitter_builder`, plus `main_generator` for wiring a `main` entry. |
-| **Planning and integration** | `silica-compiler-phase-planning-tool` (phase design and coordination), `silica-CI` (driving CI-style checks), `golden-fail-generator` (golden / failure test workflows around trial outputs). |
-| **Documentation** | `silica_doc_generator` — guided doc generation aligned with project conventions. |
-| **Focused design discussions** | `tuple_recursion_discussion`, `memory_regions_discussion`, `device-io-sequence-block-tool` — structured exploration of specific language and runtime topics. |
+| **Planning and integration**      | `silica-compiler-phase-planning-tool` (phase design and coordination), `silica-CI` (driving CI-style checks), `golden-fail-generator` (golden / failure test workflows around trial outputs).                                                                                                                                   |
+| **Documentation**                 | `silica_doc_generator` — guided doc generation aligned with project conventions.                                                                                                                                                                                                                                                |
+| **Focused design discussions**    | `tuple_recursion_discussion`, `memory_regions_discussion`, `device-io-sequence-block-tool` — structured exploration of specific language and runtime topics.                                                                                                                                                                    |
+
 
 Individual graphs contain their own execution instructions; treat them as **executable playbooks** for the assistant, not plain documentation.
 
@@ -80,8 +82,8 @@ Individual graphs contain their own execution instructions; treat them as **exec
 
 ## Documentation and tutorials
 
-- **[Design documents](compiler/silica-compiler/design_documents/README.md)** — Indexed specifications, plans, and design notes in [`compiler/silica-compiler/design_documents/`](compiler/silica-compiler/design_documents/); start with the [language specification](compiler/silica-compiler/design_documents/silica-specification.md) and [additional compiler rules](compiler/silica-compiler/design_documents/silica-specification-additional.md). These are **working documents** and change with the implementation.
-- **[Tutorials and how-tos](compiler/silica-compiler/tutorials_and_howtos/README.md)** — Hands-on guides in [`compiler/silica-compiler/tutorials_and_howtos/`](compiler/silica-compiler/tutorials_and_howtos/) (actors, regions, lists, blocks, and related topics).
+- **[Design documents](compiler/silica-compiler/design_documents/README.md)** — Indexed specifications, plans, and design notes in `[compiler/silica-compiler/design_documents/](compiler/silica-compiler/design_documents/)`; start with the [language specification](compiler/silica-compiler/design_documents/silica-specification.md) and [additional compiler rules](compiler/silica-compiler/design_documents/silica-specification-additional.md). These are **working documents** and change with the implementation.
+- **[Tutorials and how-tos](compiler/silica-compiler/tutorials_and_howtos/README.md)** — Hands-on guides in `[compiler/silica-compiler/tutorials_and_howtos/](compiler/silica-compiler/tutorials_and_howtos/)` (actors, regions, lists, blocks, and related topics).
 
 ---
 
@@ -89,18 +91,20 @@ Individual graphs contain their own execution instructions; treat them as **exec
 
 Instructions below follow the **roadmap phases** described earlier (Phase 2 = current FFI-and-toolchain work; Phase 3 = projected runtime and compiler architecture). They do **not** refer to the numbered **bootstrap pipeline phases** inside [build-plan.md](compiler/silica-compiler/design_documents/build-plan.md).
 
-**Platform notice (temporary):** The build and link path is **validated on Apple Silicon (arm64 macOS)** only. Other chips are not supported end-to-end yet. **Early contribution opportunity:** help bring additional targets online by adding or completing an **emitter backend** under [`compiler/silica-compiler/src/emitter/`](compiler/silica-compiler/src/emitter/) (see existing `apple_silicon/`), wiring `TARGET=…` in the [`Makefile`](compiler/silica-compiler/src/Makefile), and extending toolchain/triple notes in the [build plan](compiler/silica-compiler/design_documents/build-plan.md) as needed. That work is a concrete way to support new CPUs and boards before the runtime roadmap in Phase 3 lands.
+**Platform notice (temporary):** The build and link path is **validated on Apple Silicon (arm64 macOS)** only. Other chips are not supported end-to-end yet. **Early contribution opportunity:** help bring additional targets online by adding or completing an **emitter backend** under `[compiler/silica-compiler/src/emitter/](compiler/silica-compiler/src/emitter/)` (see existing `apple_silicon/`), wiring `TARGET=…` in the `[Makefile](compiler/silica-compiler/src/Makefile)`, and extending toolchain/triple notes in the [build plan](compiler/silica-compiler/design_documents/build-plan.md) as needed. That work is a concrete way to support new CPUs and boards before the runtime roadmap in Phase 3 lands.
 
 ### Phase 2 (current): bootstrap compiler + self-hosted `silica-compiler`
 
 **1. Install tooling**
 
-| Requirement | Role |
-|-------------|------|
-| **Rust** (`rustc`, `cargo`) | **1.70+** — builds the bootstrap compiler ([`compiler/silica-bootstrap-compiler`](compiler/silica-bootstrap-compiler)). |
-| **GNU Make** | Drives the Silica-in-Silica compiler build under [`compiler/silica-compiler/src`](compiler/silica-compiler/src). |
-| **LLVM tools** | `llvm-as` and `llc` assemble and lower the generated LLVM IR; a **C linker** (typically **Clang**) links `main.o` with the bootstrap static runtime. The Phase 2 `Makefile` looks for tools on `PATH` and, on Apple Silicon Homebrew installs, under `/opt/homebrew/opt/llvm/bin/`. |
-| **Optional: LLVM 15** | Enables the bootstrap compiler’s **LLVM bitcode backend** (`llvm_backend` feature). Set `LLVM_SYS_150_PREFIX` to your LLVM 15 prefix if you build with that feature. See [`compiler/silica-bootstrap-compiler/README.md`](compiler/silica-bootstrap-compiler/README.md). |
+
+| Requirement                 | Role                                                                                                                                                                                                                                                                                |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Rust** (`rustc`, `cargo`) | **1.70+** — builds the bootstrap compiler (`[compiler/silica-bootstrap-compiler](compiler/silica-bootstrap-compiler)`).                                                                                                                                                             |
+| **GNU Make**                | Drives the Silica-in-Silica compiler build under `[compiler/silica-compiler/src](compiler/silica-compiler/src)`.                                                                                                                                                                    |
+| **LLVM tools**              | `llvm-as` and `llc` assemble and lower the generated LLVM IR; a **C linker** (typically **Clang**) links `main.o` with the bootstrap static runtime. The Phase 2 `Makefile` looks for tools on `PATH` and, on Apple Silicon Homebrew installs, under `/opt/homebrew/opt/llvm/bin/`. |
+| **Optional: LLVM 15**       | Enables the bootstrap compiler’s **LLVM bitcode backend** (`llvm_backend` feature). Set `LLVM_SYS_150_PREFIX` to your LLVM 15 prefix if you build with that feature. See `[compiler/silica-bootstrap-compiler/README.md](compiler/silica-bootstrap-compiler/README.md)`.            |
+
 
 The self-hosted compiler build uses the bootstrap compiler **without** the LLVM backend feature (`cargo build --release --no-default-features`) so the pipeline stays consistent with text IR generation and the LLVM tools above.
 
@@ -146,11 +150,11 @@ Phase 3 brings in the **brokered IPC runtime**, an **actor-structured `silica-co
 
 ## Building the Continuous Integration trials
 
-The **CI trials** live under [`compiler/silica-compiler/trials/`](compiler/silica-compiler/trials/). Each subdirectory (e.g. `atoms_addition`, `structs_addition`) holds Silica sources and golden files (`.ascomp` assembly, `.scout` expected output). The top-level [`Makefile`](compiler/silica-compiler/trials/Makefile) drives the same checks automation would: compile every listed `.silica` with the **self-hosted** `silica-compiler`, compare generated assembly to the checked-in baseline, assemble and link, run the binaries, and compare stdout/exit code to `.scout`.
+The **CI trials** live under `[compiler/silica-compiler/trials/](compiler/silica-compiler/trials/)`. Each subdirectory (e.g. `atoms_addition`, `structs_addition`) holds Silica sources and golden files (`.ascomp` assembly, `.scout` expected output). The top-level `[Makefile](compiler/silica-compiler/trials/Makefile)` drives the same checks automation would: compile every listed `.silica` with the **self-hosted** `silica-compiler`, compare generated assembly to the checked-in baseline, assemble and link, run the binaries, and compare stdout/exit code to `.scout`.
 
 **Prerequisite:** build `compiler/silica-compiler/src/silica-compiler` as in **Phase 2** above. The trials invoke `../src/silica-compiler` by path.
 
-Run the full CI pipeline with **`make integrate`** (compile every trial, diff assembly against `.ascomp`, link, run, diff output against `.scout`). That target is also the Makefile’s default, so plain `make` runs the same steps.
+Run the full CI pipeline with `**make integrate`** (compile every trial, diff assembly against `.ascomp`, link, run, diff output against `.scout`). That target is also the Makefile’s default, so plain `make` runs the same steps.
 
 ```bash
 cd compiler/silica-compiler/trials
@@ -161,11 +165,11 @@ Other useful targets:
 
 - `make clean` — remove generated executables, `.sams`, `.o`, `.sout` (keeps golden `.ascomp` and `.scout`).
 - `make help` — list targets and trial subdirectories.
-- [`rebuild-silica-configs.sh`](compiler/silica-compiler/trials/rebuild-silica-configs.sh) — refresh each subdir’s `silica.config` from `*.silica` without compiling.
+- `[rebuild-silica-configs.sh](compiler/silica-compiler/trials/rebuild-silica-configs.sh)` — refresh each subdir’s `silica.config` from `*.silica` without compiling.
 
 The trial harness assumes the same **Apple Silicon / macOS** toolchain as the Phase 2 build (assembly and linking use the host SDK and arm64). For details per trial, see READMEs under specific trial directories where present.
 
-Ad hoc language experiments also exist under [`compiler/experiments/`](compiler/experiments/) (separate Makefiles; not the same integrated golden-file pipeline as the CI trials).
+Ad hoc language experiments also exist under `[compiler/experiments/](compiler/experiments/)` (separate Makefiles; not the same integrated golden-file pipeline as the CI trials).
 
 ## License
 
