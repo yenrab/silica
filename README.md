@@ -1,5 +1,7 @@
 <div align="center">
-  <img src="silica_icon.png" alt="Silica logo: stylized SiO₂ molecule" width="220" />
+
+![Silica logo — stylized SiO₂ molecule](./silica_icon.png)
+
 </div>
 
 # Silica
