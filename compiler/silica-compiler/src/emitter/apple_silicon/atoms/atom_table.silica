@@ -47,10 +47,11 @@ fn empty_atom_table() -> AtomTable {
 
 // Add lexeme to table if not present; return (updated_table, index). First added = index 0.
 // When new (idx == next_index), cons lexeme to lexemes for rodata emission.
+// Uses lexicographic BST (bst_insert_string) so distinct atom lexemes (e.g. :ok, :fail) never collide.
 fn add_atom(table: AtomTable, lexeme: string, next_index: int64) -> (AtomTable, int64) {
     case table.is_empty of {
         true -> do
-            (root: BstNode, idx: int64) <- bst@bst_insert(bst@empty_node(), lexeme, next_index);
+            (root: BstNode, idx: int64) <- bst@bst_insert_string(bst@empty_node(), lexeme, next_index);
             new_lexemes: ListAtomLexeme <- case idx == next_index of {
                 true -> cons_lexeme(lexeme, table.lexemes);
                 false -> table.lexemes
@@ -58,7 +59,7 @@ fn add_atom(table: AtomTable, lexeme: string, next_index: int64) -> (AtomTable, 
             (AtomTable { is_empty: false, root: root, lexemes: new_lexemes }, idx)
         end;
         false -> do
-            (new_root: BstNode, idx: int64) <- bst@bst_insert(table.root, lexeme, next_index);
+            (new_root: BstNode, idx: int64) <- bst@bst_insert_string(table.root, lexeme, next_index);
             new_lexemes: ListAtomLexeme <- case idx == next_index of {
                 true -> cons_lexeme(lexeme, table.lexemes);
                 false -> table.lexemes
@@ -72,7 +73,7 @@ fn add_atom(table: AtomTable, lexeme: string, next_index: int64) -> (AtomTable, 
 fn atom_lexeme_to_index(table: AtomTable, lexeme: string) -> int64 {
     case table.is_empty of {
         true -> 0 - 1;
-        false -> bst@bst_lookup(table.root, lexeme)
+        false -> bst@bst_lookup_string(table.root, lexeme)
     }
 }
 
@@ -135,8 +136,12 @@ fn collect_atoms_from_functions(fns: ListSIRFunction, table: AtomTable, next_ind
 }
 
 // Build atom table from SIR module. Returns table where index 0 = first atom seen, etc.
+// cpu_topology / core_type (spec appendix): only :efficiency and :performance — reserve indices 0 and 1
+// so _silica_rt_get_cpu_topology / _silica_rt_get_core_capabilities match emit_atom_const / case patterns.
 fn build_atom_table(sir_module: SIRModule) -> AtomTable {
-    (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, empty_atom_table(), 0);
+    (t_eff: AtomTable, _: int64) <- add_atom(empty_atom_table(), ":efficiency", 0);
+    (t_both: AtomTable, _: int64) <- add_atom(t_eff, ":performance", 1);
+    (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, t_both, 2);
     table
 }
 

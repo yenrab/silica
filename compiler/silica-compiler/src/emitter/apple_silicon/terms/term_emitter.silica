@@ -1524,7 +1524,13 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> "";
                     false -> tuple_base_reg_raw_rp
                 };
-                effective_base_rp: string <- case len(tuple_base_reg_rp) > 0 and tuple_base_reg_rp == "X0" of { true -> "X11"; false -> tuple_base_reg_rp };
+                // Remap X0 -> X11 for LDR addressing when binding still says X0 (call returned pointer in X0).
+                // If %v is already bound to X11, do not MOV X11, X0 — X0 may hold an unrelated value.
+                // When base is X0: MOV X11, X0 only for the first field (byte offset 0). Later fields use
+                // [X11, #off] — X11 still holds the struct after that first load; a second MOV from X0 would
+                // copy a stale value (e.g. list_length result) after X0 was clobbered.
+                base_rp_was_x0: bool <- len(tuple_base_reg_rp) > 0 and tuple_base_reg_rp == "X0";
+                effective_base_rp: string <- case base_rp_was_x0 of { true -> "X11"; false -> tuple_base_reg_rp };
                 record_ty: string <- term.inner.type_name;
                 byte_off: int64 <- prims_record@offset_bytes_before_field(record_ty, term.value);
                 proj_mem_ref_rp: string <- case len(tuple_base_reg_rp) > 0 of {
@@ -1543,7 +1549,13 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 proj_prefix_rp: string <- prims_tuple@ldr_prefix_for_type(term.type_name);
                 proj_dest_num_rp: string <- case len(dest) > 0 of { true -> substring(dest, 1, len(dest)); false -> "0" };
                 proj_ldr_reg_rp: string <- concat(proj_prefix_rp, proj_dest_num_rp);
-                preserve_base_rp: string <- case effective_base_rp == "X11" of { true -> "    MOV X11, X0\n"; false -> "" };
+                preserve_base_rp: string <- case base_rp_was_x0 of {
+                    true -> case byte_off == 0 of {
+                        true -> "    MOV X11, X0\n";
+                        false -> ""
+                    };
+                    false -> ""
+                };
                 concat(preserve_base_rp, concat("    LDR ", concat(proj_ldr_reg_rp, concat(", ", proj_mem_ref_rp))))
             end;
             false -> case term.name == "tuple_proj" of {
@@ -1578,7 +1590,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> "";
                     false -> tuple_base_reg_raw
                 };
-                effective_base: string <- case len(tuple_base_reg) > 0 and tuple_base_reg == "X0" of { true -> "X11"; false -> tuple_base_reg };
+                base_was_x0: bool <- len(tuple_base_reg) > 0 and tuple_base_reg == "X0";
+                effective_base: string <- case base_was_x0 of { true -> "X11"; false -> tuple_base_reg };
                 proj_index: int64 <- string_parse@string_to_int64(term.right_expr.value);
                 proj_count: int64 <- case len(term.value) > 0 of { true -> string_parse@string_to_int64(term.value); false -> 0 };
                 needs_chase: bool <- proj_count > 2 and proj_index > 0 and len(tuple_base_reg) > 0;
@@ -1601,14 +1614,21 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 proj_prefix: string <- prims_tuple@ldr_prefix_for_type(term.type_name);
                 proj_dest_num: string <- case len(dest) > 0 of { true -> substring(dest, 1, len(dest)); false -> "0" };
                 proj_ldr_reg: string <- concat(proj_prefix, proj_dest_num);
-                preserve_base: string <- case effective_base == "X11" of { true -> "    MOV X11, X0\n"; false -> "" };
+                // Same X0/X11 discipline as record_proj: only index 0 copies X0→X11; later indices use [X11,#off].
+                preserve_base: string <- case base_was_x0 of {
+                    true -> case proj_index == 0 of {
+                        true -> "    MOV X11, X0\n";
+                        false -> ""
+                    };
+                    false -> ""
+                };
                 case needs_chase of {
                     true -> do
                         // For 3+ element tuples stored as (first, ptr_to_flat_rest):
                         // Follow one pointer at [base+8], then flat access at [(index-1)*8].
                         // saved_ptr_reg (e.g. X12 for top-level params, or the actual reg for nested tuples)
                         // is already incorporated into effective_base via tuple_base_reg above.
-                        setup_chase: string <- case effective_base == "X11" of { true -> preserve_base; false -> "" };
+                        setup_chase: string <- preserve_base;
                         ptr_follow: string <- concat("    LDR X11, [", concat(effective_base, ", #8]\n"));
                         rest_offset: string <- chase_offset_str((proj_index - 1) * 8);
                         final_ldr: string <- concat("    LDR ", concat(proj_ldr_reg, concat(", [X11, ", concat(rest_offset, "]"))));

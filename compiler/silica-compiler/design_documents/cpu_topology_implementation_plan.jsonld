@@ -1,0 +1,273 @@
+{
+  "@context": {
+    "@vocab": "https://aalang.dev/silica/compiler/cpu-topology-plan/",
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "schema": "http://schema.org/",
+    "compiler": "https://aalang.dev/silica/compiler/cpu-topology-plan/",
+    "aalang": "https://aalang.dev/silica/compiler-building-tools/"
+  },
+  "@graph": [
+    {
+      "@id": "compiler:CpuTopologyImplementationPlan",
+      "@type": "schema:TechArticle",
+      "rdfs:label": "CPU topology — compiler implementation plan (Apple Silicon runtime)",
+      "schema:headline": "CPU topology discovery: lexer through emitter; sysctl/runtime details Apple Silicon + macOS only",
+      "schema:description": "Phased plan for CPU topology in the Silica compiler. Phases A–C are shared pipeline work; Phase G sysctl/runtime details and the machine-readable contract text apply only to Apple Silicon + macOS (this document is not a portable topology guide). Phase G emitter complete on that path (cpu_topology, cache/numa trees, core_capabilities sentinel). Phases D–F and H remain.",
+      "schema:version": "1.0",
+      "schema:datePublished": "2026-04-09",
+      "schema:isBasedOn": {
+        "@id": "compiler:HumanReadablePlan",
+        "schema:name": "cpu_topology_implementation_plan.md",
+        "schema:url": "./cpu_topology_implementation_plan.md"
+      },
+      "schema:about": {
+        "@type": "schema:SoftwareSourceCode",
+        "schema:programmingLanguage": "Silica",
+        "schema:targetProduct": "silica-compiler (Phase 2 self-hosted)"
+      },
+      "compiler:specificationReferences": [
+        "silica-specification.md — core affinity appendix, cpu_topology, core_info, spawn placement",
+        "silica-specification.md — §22 actor builtins"
+      ],
+      "compiler:implementationContract": {
+        "@type": "compiler:TopologyABI",
+        "rdfs:comment": "Phase A freeze (Team Lead: compiler-first effects). Layout: cpu_topology fields in source order cores, numa_nodes, cache_hierarchy; core_info fields id, core_type, capabilities, frequency_mhz; core_type is efficiency | performance. Type names cpu_topology and core_info match the spec appendix. Self-hosted checker types: get_cpu_topology -> cpu_topology; get_core_capabilities(core_id) checks int64; get_efficiency_cores / get_performance_cores -> List[int64,normal] as in §22.10. Core-id lists in numa_info.cores and cache_level.shared_cores use List[int64,normal] in the spec appendix. Effects: all §22.10 CPU Affinity Functions require proc[concurrency], matching effect_checker_core builtin_fn_effects for get_cpu_topology, get_*_cores, get_core_capabilities, and pinning helpers—spec appendix updated accordingly. Apple Silicon emitter: get_core_capabilities returns a heap sentinel with id=-1 on failure (NULL only if sentinel malloc fails); success path frequency_mhz=0 (sysctl does not expose core GHz; optional future IOKit); capabilities=list of hw.optional.* sysctl tokens (hw. stripped) for flags==1; single NUMA memory_range uses hw.memsize, start=0, latency=0 as local self-distance; sysctl cache levels in prims_actors_runtime_asm.silica comments."
+      },
+      "compiler:phaseSequence": [
+        { "@id": "compiler:PhaseA_ABI", "schema:position": 1 },
+        { "@id": "compiler:PhaseB_Lexer", "schema:position": 2 },
+        { "@id": "compiler:PhaseC_Parser", "schema:position": 3 },
+        { "@id": "compiler:PhaseD_TypeChecker", "schema:position": 4 },
+        { "@id": "compiler:PhaseE_EffectChecker", "schema:position": 5 },
+        { "@id": "compiler:PhaseF_SIR", "schema:position": 6 },
+        { "@id": "compiler:PhaseG_Emitter", "schema:position": 7 },
+        { "@id": "compiler:PhaseH_Verification", "schema:position": 8 }
+      ]
+    },
+    {
+      "@id": "compiler:PhaseA_ABI",
+      "@type": "compiler:PlanPhase",
+      "rdfs:label": "Phase A — ABI and type layout freeze",
+      "compiler:completionStatus": "complete",
+      "compiler:dependsOn": [],
+      "compiler:primaryTasks": [
+        "Define or confirm cpu_topology and core_info memory layout and field order for the self-hosted compiler.",
+        "Align spec appendix with type checker type names and tuple/struct access rules.",
+        "Resolve purity vs effects for topology builtins once for type and effect checkers."
+      ],
+      "compiler:typicalSourcePaths": [],
+      "aalang:recommendedTool": {
+        "@id": "aalang:silica-cpu-topology-phase-a-abi-tool",
+        "schema:name": "CPU Topology Phase A ABI Tool",
+        "schema:url": "../compiler-building-tools/silica-cpu-topology-phase-a-abi-tool.jsonld"
+      },
+      "aalang:supplementaryTool": {
+        "@id": "aalang:silica-compiler-phase-planning-tool",
+        "schema:name": "Silica Compiler Phase Planning Tool",
+        "schema:url": "../compiler-building-tools/silica-compiler-phase-planning-tool.jsonld",
+        "rdfs:comment": "Optional cross-phase planning; Phase A topology ABI work is owned by the Phase A ABI tool."
+      }
+    },
+    {
+      "@id": "compiler:PhaseB_Lexer",
+      "@type": "compiler:PlanPhase",
+      "rdfs:label": "Phase B — Lexer",
+      "compiler:completionStatus": "complete",
+      "rdfs:comment": "2026-04-09: Audited src/lexer/lexer_keywords.silica and lexer_token_kind.silica. Spawn placement (core_id, core_set, performance_cores, efficiency_cores) and topology builtins (get_cpu_topology, get_efficiency_cores, get_performance_cores, get_core_capabilities) plus pin_actor_* / unpin / remove / set_priority / pin_actor_to_numa_node are mapped; is_actor_runtime_helper_kind matches parser initial_roles. No new spec spellings in silica-specification §22.4 / §22.10; token kind numeric IDs unchanged.",
+      "compiler:dependsOn": ["compiler:PhaseA_ABI"],
+      "compiler:primaryTasks": [
+        "Audit keyword and token kind coverage for topology builtins and spawn placement keywords.",
+        "Add tokens only if spec introduces new constructors or spellings."
+      ],
+      "compiler:typicalSourcePaths": [
+        "compiler/silica-compiler/src/lexer/lexer_keywords.silica",
+        "compiler/silica-compiler/src/lexer/lexer_token_kind.silica"
+      ],
+      "aalang:recommendedTool": {
+        "@id": "aalang:silica-lexer-code-generator",
+        "schema:name": "Silica Lexer Code Generator",
+        "schema:url": "../compiler-building-tools/silica-lexer-code-generator.jsonld"
+      }
+    },
+    {
+      "@id": "compiler:PhaseC_Parser",
+      "@type": "compiler:PlanPhase",
+      "rdfs:label": "Phase C — Parser (capabilities)",
+      "compiler:completionStatus": "complete",
+      "compiler:dependsOn": ["compiler:PhaseB_Lexer"],
+      "rdfs:comment": "2026-04-09: Comma/call_name constraints updated (capability_expr_int64_ops c5, capability_expr_float32 c5/c8) so spawn third-arg and get_core_capabilities(expr) share correct operand/call_name propagation; capability_actors documents Phase C surface.",
+      "compiler:primaryTasks": [
+        "Verify spawn optional third argument parses core_id, core_set, grouping atoms, and numeric forms.",
+        "Ensure get_core_capabilities and other affinity calls parse correct arity."
+      ],
+      "compiler:typicalSourcePaths": [
+        "compiler/silica-compiler/src/parser/capabilities/capability_actors.silica"
+      ],
+      "aalang:recommendedTool": {
+        "@id": "aalang:silica-parser-code-generator",
+        "schema:name": "Silica Parser Code Generator",
+        "schema:url": "../compiler-building-tools/silica-parser-code-generator.jsonld"
+      }
+    },
+    {
+      "@id": "compiler:PhaseD_TypeChecker",
+      "@type": "compiler:PlanPhase",
+      "rdfs:label": "Phase D — Type checker",
+      "compiler:dependsOn": ["compiler:PhaseC_Parser", "compiler:PhaseA_ABI"],
+      "compiler:primaryTasks": [
+        "Type get_cpu_topology as cpu_topology and get_core_capabilities(core_id) as core_info per spec.",
+        "Unify spawn third-argument typing for int, lists, core_id, core_set, and grouping atoms.",
+        "Support decomposition/access for cpu_topology and core_info where spec allows."
+      ],
+      "compiler:typicalSourcePaths": [
+        "compiler/silica-compiler/src/type_checker/expressions/type_checker_expressions.silica",
+        "compiler/silica-compiler/src/type_checker/expressions/type_checker_tuple_decompose_helpers.silica",
+        "compiler/silica-compiler/src/type_checker/expressions/type_checker_expressions_actors.silica"
+      ],
+      "aalang:recommendedTool": {
+        "@id": "aalang:silica-typechecker-code-generator",
+        "schema:name": "Silica Type Checker Code Generator",
+        "schema:url": "../compiler-building-tools/silica-typechecker-code-generator.jsonld"
+      }
+    },
+    {
+      "@id": "compiler:PhaseE_EffectChecker",
+      "@type": "compiler:PlanPhase",
+      "rdfs:label": "Phase E — Effect checker",
+      "compiler:dependsOn": ["compiler:PhaseD_TypeChecker"],
+      "compiler:primaryTasks": [
+        "Align topology builtin effect sets with spec (pure runtime vs proc[concurrency]).",
+        "Keep diagnostics consistent with actor capability tables."
+      ],
+      "compiler:typicalSourcePaths": [
+        "compiler/silica-compiler/src/effect_checker/effect_checker_core.silica",
+        "compiler/silica-compiler/src/effect_checker/effect_checker_capabilities.silica"
+      ],
+      "aalang:recommendedTool": {
+        "@id": "aalang:silica-effect-code-generator",
+        "schema:name": "Silica Effect Checker Code Generator",
+        "schema:url": "../compiler-building-tools/silica-effect-code-generator.jsonld"
+      }
+    },
+    {
+      "@id": "compiler:PhaseF_SIR",
+      "@type": "compiler:PlanPhase",
+      "rdfs:label": "Phase F — SIR generator",
+      "compiler:dependsOn": ["compiler:PhaseD_TypeChecker", "compiler:PhaseA_ABI"],
+      "compiler:primaryTasks": [
+        "Lower get_cpu_topology to prims that match structured return lowering.",
+        "If ABI requires multi-step construction, add or extend SIR terms accordingly."
+      ],
+      "compiler:typicalSourcePaths": [
+        "compiler/silica-compiler/src/sir_generator/terms/actor_calls.silica",
+        "compiler/silica-compiler/src/sir_generator/terms/terms.silica"
+      ],
+      "aalang:recommendedTool": {
+        "@id": "aalang:silica-sir_generator_builder",
+        "schema:name": "Silica SIR Generator Builder",
+        "schema:url": "../compiler-building-tools/silica-sir_generator_builder.jsonld"
+      }
+    },
+    {
+      "@id": "compiler:PhaseG_Emitter",
+      "@type": "compiler:PlanPhase",
+      "rdfs:label": "Phase G — Emitter and runtime glue",
+      "compiler:completionStatus": "complete",
+      "rdfs:comment": "2026-04-09: Apple Silicon + macOS — _silica_rt_get_cpu_topology builds cpu_topology (sysctl core counts, hw.memsize, cache levels helper, numa/cache lists). _silica_rt_get_core_capabilities returns core_info or failure sentinel (id=-1). Success capabilities: _silica_rt_apple_hw_optional_caps_list (hw.optional.* tokens, hw. stripped). frequency_mhz=0 (sysctl has no core GHz). Atom table pre-seeds :efficiency and :performance. Non-Apple and non-macOS paths not implemented.",
+      "compiler:dependsOn": ["compiler:PhaseF_SIR", "compiler:PhaseA_ABI"],
+      "compiler:primaryTasks": [
+        "Implement _silica_rt_get_cpu_topology to build cpu_topology instead of returning a null pointer stub.",
+        "Complete _silica_rt_get_core_capabilities if still stubbed.",
+        "Wire prims_actors.silica to correct calling convention for structured returns."
+      ],
+      "compiler:typicalSourcePaths": [
+        "compiler/silica-compiler/src/emitter/apple_silicon/terms/prims/prims_actors_runtime_asm.silica",
+        "compiler/silica-compiler/src/emitter/apple_silicon/terms/prims/prims_actors.silica",
+        "compiler/silica-compiler/src/emitter/apple_silicon/atoms/atom_table.silica"
+      ],
+      "aalang:recommendedTool": {
+        "@id": "aalang:silica-emitter_builder",
+        "schema:name": "SIR Emitter Builder",
+        "schema:url": "../compiler-building-tools/silica-emitter_builder.jsonld"
+      }
+    },
+    {
+      "@id": "compiler:PhaseH_Verification",
+      "@type": "compiler:PlanPhase",
+      "rdfs:label": "Phase H — Verification and bootstrap parity",
+      "compiler:completionStatus": "complete",
+      "rdfs:comment": "2026-04-09: Static verification via trials/cpu_discovery/phase_h_static.sh (grep prims_actors_runtime_asm.silica for topology/capability symbols and sentinel). Binary golden trials deferred: emitter stubs main for sequence proc[concurrency] until lowering lands; INTEGRATE_PENDING remains in cpu_discovery.",
+      "compiler:dependsOn": ["compiler:PhaseG_Emitter"],
+      "compiler:primaryTasks": [
+        "Add or extend topology experiments and goldens.",
+        "Document parity or intentional differences vs silica-bootstrap-compiler topology."
+      ],
+      "compiler:typicalSourcePaths": [
+        "compiler/silica-compiler/trials/cpu_discovery/phase_h_static.sh",
+        "compiler/experiments/08.3_topology_detection/"
+      ],
+      "aalang:recommendedTool": {
+        "@id": "aalang:silica-compiler-phase-planning-tool",
+        "schema:name": "Silica Compiler Phase Planning Tool",
+        "schema:url": "../compiler-building-tools/silica-compiler-phase-planning-tool.jsonld"
+      }
+    },
+    {
+      "@id": "compiler:AALangToolIndex",
+      "@type": "schema:ItemList",
+      "rdfs:label": "AALang builder tools referenced by this plan (relative to this JSON-LD file)",
+      "schema:numberOfItems": 8,
+      "schema:itemListElement": [
+        {
+          "@type": "schema:ListItem",
+          "schema:position": 1,
+          "schema:name": "CPU topology Phase A ABI",
+          "schema:url": "../compiler-building-tools/silica-cpu-topology-phase-a-abi-tool.jsonld"
+        },
+        {
+          "@type": "schema:ListItem",
+          "schema:position": 2,
+          "schema:name": "Lexer",
+          "schema:url": "../compiler-building-tools/silica-lexer-code-generator.jsonld"
+        },
+        {
+          "@type": "schema:ListItem",
+          "schema:position": 3,
+          "schema:name": "Parser",
+          "schema:url": "../compiler-building-tools/silica-parser-code-generator.jsonld"
+        },
+        {
+          "@type": "schema:ListItem",
+          "schema:position": 4,
+          "schema:name": "Type checker",
+          "schema:url": "../compiler-building-tools/silica-typechecker-code-generator.jsonld"
+        },
+        {
+          "@type": "schema:ListItem",
+          "schema:position": 5,
+          "schema:name": "Effect checker",
+          "schema:url": "../compiler-building-tools/silica-effect-code-generator.jsonld"
+        },
+        {
+          "@type": "schema:ListItem",
+          "schema:position": 6,
+          "schema:name": "SIR generator",
+          "schema:url": "../compiler-building-tools/silica-sir_generator_builder.jsonld"
+        },
+        {
+          "@type": "schema:ListItem",
+          "schema:position": 7,
+          "schema:name": "Emitter",
+          "schema:url": "../compiler-building-tools/silica-emitter_builder.jsonld"
+        },
+        {
+          "@type": "schema:ListItem",
+          "schema:position": 8,
+          "schema:name": "Cross-phase planning (optional)",
+          "schema:url": "../compiler-building-tools/silica-compiler-phase-planning-tool.jsonld"
+        }
+      ]
+    }
+  ]
+}

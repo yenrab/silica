@@ -37,7 +37,7 @@ Silica is a **systems language** that is **functional**: explicit effects, **act
 ### A runtime built for isolation and recovery
 
 - **Unsafe worlds stay outside your safe core** (proposed). When you must touch C or other unsafe libraries, a **brokered IPC** design keeps the safe application free of in-process FFI to untrusted code: separate channels, validated messages, no shared memory with the worker, centralized policy—so isolation and recovery are architectural, not aspirational. See [brokered IPC architecture](compiler/silica-compiler/design_documents/brokered_ipc_isolation_architecture.md).
-- **BEAM-inspired fault containment, native speed.** The runtime direction is **lightweight actors** running concurrenlty with independent stacks and no heap, message passing, and “let it crash” semantics at the process level—paired with hardware-assisted safety (e.g. **MTE** on AArch64) so faults become controlled events where possible, not silent corruption. See [crash containment design](compiler/silica-compiler/design_documents/beam_like_crash_containment_design_notes.md).
+- **BEAM-inspired fault containment, native speed.** The runtime direction is **lightweight actors** running concurrenlty with independent stacks and no heap, message passing, and “let it crash” semantics at the process level—paired with hardware-assisted safety (e.g. **MTE** on AArch64) so faults become controlled events, not silent corruption. See [crash containment design](compiler/silica-compiler/design_documents/beam_like_crash_containment_design_notes.md).
 
 ### Still easy to read, write, and tool
 

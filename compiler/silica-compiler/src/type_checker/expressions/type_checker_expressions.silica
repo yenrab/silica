@@ -436,10 +436,10 @@ fn actor_runtime_builtin_return_type(name: string) -> string {
         "pin_actor_to_numa_node" -> "(int64,affinity_error)";
         "unpin_actor" -> "atom";
         "set_actor_priority" -> "atom";
-        "get_cpu_topology" -> "cpu_topology";
+        "get_cpu_topology" -> "{ cores: List[{ id: int64, core_type: atom, capabilities: List[string,normal], frequency_mhz: int64 },normal], numa_nodes: List[{ id: int64, cores: List[int64,normal], memory_ranges: List[{ start_address: int64, size: int64, latency: int64 },normal] },normal], cache_hierarchy: { levels: List[{ level: int64, size_kb: int64, line_size: int64, associativity: int64, shared_cores: List[int64,normal] },normal] } }";
         "get_efficiency_cores" -> "List[int64,normal]";
         "get_performance_cores" -> "List[int64,normal]";
-        "get_core_capabilities" -> "core_info";
+        "get_core_capabilities" -> "{ id: int64, core_type: atom, capabilities: List[string,normal], frequency_mhz: int64 }";
         "get_actor_memory_usage" -> "int64";
         "migrate_actor" -> "atom";
         "move" -> "atom";
@@ -727,7 +727,7 @@ fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContex
                                                                     aff_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(place_e, context);
                                                                     case is_valid_core_affinity_type(aff_t) of {
                                                                         true -> check_actor_spawn_result_type(expr, expected_type);
-                                                                        false -> type_checker_core@type_check_err("E2005", place_e.location, concat("spawn: core affinity argument must be int64 (core ID) or List[int64] (core set), got ", aff_t), "sect15")
+                                                                        false -> type_checker_core@type_check_err("E2005", place_e.location, concat("spawn: invalid core affinity (use int64, List[int64,normal], core_id(int64), core_set(...), performance_cores, or efficiency_cores); got ", aff_t), "sect15")
                                                                     }
                                                                 end
                                                             }
@@ -748,9 +748,54 @@ fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContex
     }
 }
 
-// §4.6 / §15.1.1: valid core affinity types for spawn's 3rd argument.
+// §4.6 / §15.1.1: valid core affinity types for spawn's 3rd argument (int, list, core_id/core_set, grouping keywords).
 fn is_valid_core_affinity_type(t: string) -> bool {
-    t == "int64" or t == "List[int64,normal]"
+    t == "int64"
+        or t == "List[int64,normal]"
+        or t == "spawn_affinity_performance_cores"
+        or t == "spawn_affinity_efficiency_cores"
+}
+
+// Spawn placement constructors (spec §4.6 / §15.1.1): core_id(int64) and core_set(List[int64,normal]).
+fn check_spawn_affinity_constructor_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    case expr.name == "core_id" of {
+        true -> case ac == 1 of {
+            false -> type_checker_core@type_check_err("E2005", expr.location, "core_id expects 1 argument (core id: int64) §15.1.1", "sect15");
+            true -> do
+                r0: TypeCheckResult <- check_expr(expr.inner, "int64", context);
+                case r0.is_ok of {
+                    false -> r0;
+                    true -> case expected_type == "discard" of {
+                        true -> type_checker_core@type_check_ok();
+                        false -> case expected_type == "int64" of {
+                            true -> type_checker_core@type_check_ok();
+                            false -> type_checker_core@type_check_err("E2003", expr.location, concat("core_id(...) has type int64, expected ", expected_type), "sect15")
+                        }
+                    }
+                }
+            end
+        };
+        false -> case expr.name == "core_set" of {
+            true -> case ac == 1 of {
+                false -> type_checker_core@type_check_err("E2005", expr.location, "core_set expects 1 argument (core set: List[int64,normal]) §15.1.1", "sect15");
+                true -> do
+                    r1: TypeCheckResult <- check_expr(expr.inner, "List[int64,normal]", context);
+                    case r1.is_ok of {
+                        false -> r1;
+                        true -> case expected_type == "discard" of {
+                            true -> type_checker_core@type_check_ok();
+                            false -> case expected_type == "List[int64,normal]" of {
+                                true -> type_checker_core@type_check_ok();
+                                false -> type_checker_core@type_check_err("E2003", expr.location, concat("core_set(...) has type List[int64,normal], expected ", expected_type), "sect15")
+                            }
+                        }
+                    }
+                end
+            };
+            false -> type_checker_core@type_check_err("E2005", expr.location, "internal: not a spawn affinity constructor", "sect15")
+        }
+    }
 }
 
 fn check_actor_spawn_result_type(expr: Expr, expected_type: string) -> TypeCheckResult {
@@ -1012,7 +1057,10 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
                                                                                         end;
                                                                                         false -> case type_checker_lists@is_list_primitive_name(expr.name) of {
                                                                                             true -> check_list_primitive_call(expr, expected_type, context);
-                                                                                            false -> check_user_defined_call(expr, expected_type, context)
+                                                                                            false -> case expr.name == "core_id" or expr.name == "core_set" of {
+                                                                                                true -> check_spawn_affinity_constructor_call(expr, expected_type, context);
+                                                                                                false -> check_user_defined_call(expr, expected_type, context)
+                                                                                            }
                                                                                         }
                                                                                     }
                                                                             }
@@ -2013,17 +2061,21 @@ fn check_struct_literal_chain(expr: Expr, expected_type: string, context: TypeCo
 fn check_struct_literal_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case expected_type == "discard" of {
         true -> check_struct_literal_discard_chain(expr, context);
-        false -> case type_checker_record_types@record_type_starts(expected_type) of {
-            false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat("expected record type, got ", expected_type), ""), "sect3");
-            true -> do
-                n_type: int64 <- type_checker_record_types@count_record_fields(expected_type);
-                n_lit: int64 <- count_struct_chain_nodes(expr);
-                case n_type == n_lit of {
-                    false -> type_checker_core@type_check_err("E2003", expr.location, "struct literal field count does not match record type", "sect3");
-                    true -> check_struct_literal_chain(expr, expected_type, context)
-                }
-            end
-        }
+        false -> do
+            exp_rec: string <- type_checker_record_types@expand_named_topology_type(expected_type);
+            rec_expected: string <- case len(exp_rec) > 0 of { true -> exp_rec; false -> expected_type };
+            case type_checker_record_types@record_type_starts(rec_expected) of {
+                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat("expected record type, got ", expected_type), ""), "sect3");
+                true -> do
+                    n_type: int64 <- type_checker_record_types@count_record_fields(rec_expected);
+                    n_lit: int64 <- count_struct_chain_nodes(expr);
+                    case n_type == n_lit of {
+                        false -> type_checker_core@type_check_err("E2003", expr.location, "struct literal field count does not match record type", "sect3");
+                        true -> check_struct_literal_chain(expr, rec_expected, context)
+                    }
+                end
+            }
+        end
     }
 }
 
@@ -2031,28 +2083,32 @@ fn check_field_access_expr(expr: Expr, expected_type: string, context: TypeConte
     base_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
     case len(base_t) == 0 of {
         true -> type_checker_core@type_check_err("E2005", expr.location, "cannot infer type of field access base", "sect3");
-        false -> case type_checker_record_types@record_type_starts(base_t) of {
-            false -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("field access base must be record type, got ", base_t), ""), "sect3");
-            true -> do
-                ft: string <- type_checker_record_types@find_field_type_in_record(base_t, expr.name);
-                case len(ft) == 0 of {
-                    true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("no field ", expr.name), " on record type"), "sect3");
-                    false -> do
-                        rbase: TypeCheckResult <- check_expr(expr.inner, base_t, context);
-                        case rbase.is_ok of {
-                            false -> rbase;
-                            true -> case expected_type == "discard" of {
-                                true -> type_checker_core@type_check_ok();
-                                false -> case type_checker_tuple_decompose_helpers@types_equal(ft, expected_type) of {
+        false -> do
+            exp_base: string <- type_checker_record_types@expand_named_topology_type(base_t);
+            rec_base: string <- case len(exp_base) > 0 of { true -> exp_base; false -> base_t };
+            case type_checker_record_types@record_type_starts(rec_base) of {
+                false -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("field access base must be record or topology type (cpu_topology, core_info, ...), got ", base_t), ""), "sect3");
+                true -> do
+                    ft: string <- type_checker_record_types@find_field_type_in_record(rec_base, expr.name);
+                    case len(ft) == 0 of {
+                        true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("no field ", expr.name), " on record type"), "sect3");
+                        false -> do
+                            rbase: TypeCheckResult <- check_expr(expr.inner, base_t, context);
+                            case rbase.is_ok of {
+                                false -> rbase;
+                                true -> case expected_type == "discard" of {
                                     true -> type_checker_core@type_check_ok();
-                                    false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("field has type ", ft), ", expected "), expected_type), ""), "sect3")
+                                    false -> case type_checker_tuple_decompose_helpers@types_equal(ft, expected_type) of {
+                                        true -> type_checker_core@type_check_ok();
+                                        false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("field has type ", ft), ", expected "), expected_type), ""), "sect3")
+                                    }
                                 }
                             }
-                        }
-                    end
-                }
-            end
-        }
+                        end
+                    }
+                end
+            }
+        end
     }
 }
 

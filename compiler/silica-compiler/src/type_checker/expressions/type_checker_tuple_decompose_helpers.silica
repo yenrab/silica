@@ -5,6 +5,7 @@ use parser_ast;
 use type_checker_core;
 use type_checker_lists;
 use type_checker_record_types;
+use type_checker_expressions_actors;
 
 export infer_expr_type/2;
 export infer_struct_literal_type/2;
@@ -135,11 +136,33 @@ fn infer_actor_runtime_return(name: string) -> string {
         "pin_actor_to_numa_node" -> "(int64,affinity_error)";
         "unpin_actor" -> "atom";
         "set_actor_priority" -> "atom";
-        "get_cpu_topology" -> "cpu_topology";
+        "get_cpu_topology" -> "{ cores: List[{ id: int64, core_type: atom, capabilities: List[string,normal], frequency_mhz: int64 },normal], numa_nodes: List[{ id: int64, cores: List[int64,normal], memory_ranges: List[{ start_address: int64, size: int64, latency: int64 },normal] },normal], cache_hierarchy: { levels: List[{ level: int64, size_kb: int64, line_size: int64, associativity: int64, shared_cores: List[int64,normal] },normal] } }";
         "get_efficiency_cores" -> "List[int64,normal]";
         "get_performance_cores" -> "List[int64,normal]";
-        "get_core_capabilities" -> "core_info";
+        "get_core_capabilities" -> "{ id: int64, core_type: atom, capabilities: List[string,normal], frequency_mhz: int64 }";
         _: string -> ""
+    }
+}
+
+fn infer_core_id_placement(expr: Expr, context: TypeContext) -> string {
+    ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    case ac == 1 of {
+        false -> "";
+        true -> do
+            it: string <- infer_expr_type(expr.inner, context);
+            case it == "int64" of { true -> "int64"; false -> "" }
+        end
+    }
+}
+
+fn infer_core_set_placement(expr: Expr, context: TypeContext) -> string {
+    ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    case ac == 1 of {
+        false -> "";
+        true -> do
+            it: string <- infer_expr_type(expr.inner, context);
+            case it == "List[int64,normal]" of { true -> it; false -> "" }
+        end
     }
 }
 
@@ -152,22 +175,28 @@ fn infer_call_expr_type(expr: Expr, context: TypeContext) -> string {
                 true -> "boolean";
                 false -> case expr.name == "send" of {
                     true -> "atom";
-                    false -> do
-                        rt: string <- infer_actor_runtime_return(expr.name);
-                        case len(rt) > 0 of {
-                            true -> rt;
+                    false -> case expr.name == "core_id" of {
+                        true -> infer_core_id_placement(expr, context);
+                        false -> case expr.name == "core_set" of {
+                            true -> infer_core_set_placement(expr, context);
                             false -> do
-                                (found: bool, typ: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
-                                case found of {
-                                    true -> parse_function_return_from_scheme(typ);
-                                    false -> case type_checker_lists@is_list_primitive_name(expr.name) of {
-                                        true -> type_checker_lists@infer_list_primitive_return(expr);
-                                        false -> ""
-                                    }
+                                rt: string <- infer_actor_runtime_return(expr.name);
+                                case len(rt) > 0 of {
+                                    true -> rt;
+                                    false -> do
+                                        (found: bool, typ: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
+                                        case found of {
+                                            true -> parse_function_return_from_scheme(typ);
+                                            false -> case type_checker_lists@is_list_primitive_name(expr.name) of {
+                                                true -> type_checker_lists@infer_list_primitive_return(expr);
+                                                false -> ""
+                                            }
+                                        }
+                                    end
                                 }
                             end
                         }
-                    end
+                    }
                 }
             }
         }
@@ -178,8 +207,16 @@ fn infer_expr_type(expr: Expr, context: TypeContext) -> string {
     case expr.kind of {
         0 -> infer_literal_type(expr.value);
         1 -> do
-            (found: bool, resolved: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
-            case found of { true -> resolved; false -> "" }
+            case expr.name == "performance_cores" of {
+                true -> "spawn_affinity_performance_cores";
+                false -> case expr.name == "efficiency_cores" of {
+                    true -> "spawn_affinity_efficiency_cores";
+                    false -> do
+                        (found: bool, resolved: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
+                        case found of { true -> resolved; false -> "" }
+                    end
+                }
+            }
         end;
         2 -> infer_expr_type(expr.inner, context);
         3 -> infer_binary_expr_type(expr, context);
@@ -262,10 +299,14 @@ fn infer_field_access_type(expr: Expr, context: TypeContext) -> string {
     base_t: string <- infer_expr_type(expr.inner, context);
     case len(base_t) == 0 of {
         true -> "";
-        false -> case type_checker_record_types@record_type_starts(base_t) of {
-            false -> "";
-            true -> type_checker_record_types@find_field_type_in_record(base_t, expr.name)
-        }
+        false -> do
+            exp: string <- type_checker_record_types@expand_named_topology_type(base_t);
+            effective: string <- case len(exp) > 0 of { true -> exp; false -> base_t };
+            case type_checker_record_types@record_type_starts(effective) of {
+                false -> "";
+                true -> type_checker_record_types@find_field_type_in_record(effective, expr.name)
+            }
+        end
     }
 }
 

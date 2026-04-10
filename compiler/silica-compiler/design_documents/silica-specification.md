@@ -13434,7 +13434,7 @@ Get CPU topology information as a JSON string.
 ```
 type numa_info = {
     id: int,
-    cores: list<int>,
+    cores: List[int64,normal],
     memory_ranges: list<memory_range>
 }
 
@@ -13453,7 +13453,7 @@ type cache_level = {
     size_kb: int,
     line_size: int,
     associativity: int,
-    shared_cores: list<int>
+    shared_cores: List[int64,normal]
 }
 
 type cpu_topology = {
@@ -13479,13 +13479,13 @@ type affinity_error =
 ```
 
 **CPU Affinity Functions:**
-All CPU affinity functions are pure runtime functions (no effects required):
+These built-ins are part of the actor runtime and scheduler surface. **Every function listed below requires `proc[concurrency]`**, consistent with §22.4 Actor Operations and with how the self-hosted compiler classifies actor runtime helpers (topology discovery, pinning, removal, and priority). They are not pure, effect-free operations.
 
 ```
 // CPU topology and status discovery
 get_cpu_topology() -> cpu_topology
-get_efficiency_cores() -> list<int>
-get_performance_cores() -> list<int>
+get_efficiency_cores() -> List[int64,normal]
+get_performance_cores() -> List[int64,normal]
 get_core_capabilities(core_id: int) -> core_info
 
 // Actor pinning operations
@@ -13510,6 +13510,16 @@ set_actor_priority(actor: actor_ref, priority: priority_level) -> atom
 Actor pinning functions return a tuple `(int64, affinity_error)`:
 - On success: `(1, affinity_error)` where `affinity_error` is empty/unused
 - On failure: `(0, affinity_error)` where `affinity_error` indicates the failure reason
+
+**`get_core_capabilities(core_id)` result contract:**
+
+The static return type is `core_info`. Implementations **must** distinguish success from query failure without relying on effects or exceptions:
+
+- **Success:** `id >= 0`. The value identifies a logical core consistent with `get_cpu_topology().cores` and with `get_efficiency_cores()` / `get_performance_cores()`. `core_type` is `efficiency` or `performance`. **`capabilities`** lists implementation-defined feature **strings** (for example sysctl-derived **`optional.*`** / **`optional.arm.FEAT_*`** tokens on **Apple Silicon + macOS**—see [`cpu_topology_implementation_plan.md`](./cpu_topology_implementation_plan.md)). **`frequency_mhz`** is the nominal or max clock in **MHz** when the host reports it; **`0`** means **not reported** by that implementation’s discovery path (distinct from failure, which uses **`id < 0`**).
+- **Failure:** `id < 0`. Callers **must** treat the result as a failure sentinel: **do not** interpret `core_type`, `capabilities`, or `frequency_mhz` as describing a real core. Reference emitters use **`id == -1`**, with empty `capabilities`, `frequency_mhz == 0`, and `core_type` set to a placeholder encoding. Typical failure conditions include invalid or out-of-range `core_id`, host query failure, or unsupported platform for structured discovery.
+- **Allocation failure:** If the runtime cannot allocate memory for a normal or failure `core_info` value, behavior is **implementation-defined** (for example a null or invalid reference where the ABI returns a pointer).
+
+Platform-specific sysctl keys, NUMA layout, and cache-level details for **Apple Silicon on macOS** are described in [`cpu_topology_implementation_plan.md`](./cpu_topology_implementation_plan.md) (that document is scoped to that runtime; other platforms need their own notes).
 
 **Actor Pinning Behavior:**
 All actors are pinned to their initial core assignment until `remove_actor()` is called. Once an actor is pinned:

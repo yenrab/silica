@@ -39,6 +39,10 @@ integrate:
 			$(MAKE) -C $$dir || failed=1; \
 			continue; \
 		fi; \
+		if [ "$$dir" = "cpu_discovery" ] && [ -f "cpu_discovery/INTEGRATE_PENDING" ]; then \
+			echo "SKIP: cpu_discovery (INTEGRATE_PENDING — see cpu_discovery/README.md)"; \
+			continue; \
+		fi; \
 		cd $$dir && \
 		ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true; \
 		if [ ! -s silica.config ]; then \

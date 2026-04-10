@@ -31,9 +31,20 @@ fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int6
         "unit" -> const_unit@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table);
         "fn_ptr" -> do
             label: string <- term.value;
-            adrp: string <- concat(concat(concat(concat("    ADRP ", dest), ", "), concat(label, "@PAGE")), "\n");
-            add_line: string <- concat(concat(concat(concat("    ADD ", dest), ", "), concat(concat(dest, ", "), concat(label, "@PAGEOFF"))), "");
-            concat(adrp, add_line)
+            // ADRP/ADD only accept X/W general-purpose regs, never D/S — load address in X8 then copy to dest.
+            adrp: string <- concat(concat(concat("    ADRP X8, ", label), "@PAGE"), "\n");
+            add_line: string <- concat(concat(concat("    ADD X8, X8, ", label), "@PAGEOFF"), "\n");
+            core: string <- concat(adrp, add_line);
+            case dest == "X8" of {
+                true -> core;
+                false -> do
+                    d0: string <- substring(dest, 0, 1);
+                    case d0 == "D" or d0 == "S" of {
+                        true -> concat(core, concat(concat("    FMOV ", dest), ", X8\n"));
+                        false -> concat(core, concat(concat("    MOV ", dest), ", X8\n"))
+                    }
+                end
+            }
         end;
         _: string -> case len(dest) > 0 of {
             true -> case substring(dest, 0, 1) == "S" of {
