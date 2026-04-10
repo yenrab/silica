@@ -13,6 +13,7 @@ export actor_prim_is_unary/1;
 export actor_prim_is_ternary/1;
 export emit_prim_op/2;
 export module_uses_actor_prims/1;
+export gpr_x_view/1;
 
 fn term_has_actor_prim(term: SIRTerm) -> bool {
     case term.kind < 0 of {
@@ -90,36 +91,63 @@ fn asm_bl(label: string) -> string {
     concat(concat("    BL ", label), "\n")
 }
 
-fn mov_dest_from_x0(dest: string) -> string {
-    case dest == "X0" of {
-        true -> "";
-        false -> concat(concat(concat("    MOV ", dest), ", X0"), "\n")
+// Runtime returns in X0 (or W0 for some narrow/bool paths). LLVM rejects `MOV Wn, X0`; use `MOV Wn, W0` then.
+// For actor_ref / int64 / pointers / lists, use full `MOV Xn, X0` (Wn and Xn are the same AArch64 GPR).
+// `substring(s, start, end)` uses end exclusive (same as var.silica emit_var_reg).
+// Used by term_emitter spill path (spawn/call may assign W* dest for GPR values).
+fn gpr_x_view(dest: string) -> string {
+    case len(dest) > 1 and substring(dest, 0, 1) == "W" of {
+        true -> concat("X", substring(dest, 1, len(dest)));
+        false -> dest
     }
 }
 
+fn prim_return_uses_w32_from_x0(result_type: string) -> bool {
+    result_type == "int32" or result_type == "int16" or result_type == "int8"
+        or result_type == "uint32" or result_type == "uint16" or result_type == "uint8"
+        or result_type == "bool"
+}
+
+fn mov_dest_from_x0_for_type(dest: string, result_type: string) -> string {
+    case dest == "X0" of {
+        true -> "";
+        false -> case prim_return_uses_w32_from_x0(result_type) of {
+            true -> case len(dest) > 0 and substring(dest, 0, 1) == "W" of {
+                true -> case dest == "W0" of {
+                    true -> "    MOV W0, W0\n";
+                    false -> concat(concat(concat("    MOV ", dest), ", W0"), "\n")
+                };
+                false -> concat(concat(concat("    MOV ", dest), ", X0"), "\n")
+            };
+            false -> concat(concat(concat("    MOV ", gpr_x_view(dest)), ", X0"), "\n")
+        }
+    }
+}
+
+// 3-arg: term_emitter saves initial state to X11 before building the behavior/placement tuple (which reuses X9).
 fn emit_spawn(dest: string, term: SIRTerm) -> string {
     three: bool <- term.right_expr.kind == 6 and term.right_expr.name == "tuple_make";
     case three of {
-        true -> concat(concat("    MOV X0, X9\n    LDR X1, [X10]\n    LDR X12, [X10, #8]\n    MOV W2, W12\n", asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0(dest));
-        false -> concat(concat("    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n", asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0(dest))
+        true -> concat(concat("    MOV X0, X11\n    LDR X1, [X10]\n    LDR X12, [X10, #8]\n    MOV W2, W12\n", asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, term.type_name));
+        false -> concat(concat("    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n", asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, term.type_name))
     }
 }
 
-fn emit_send(dest: string) -> string {
-    concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_send")), mov_dest_from_x0(dest))
+fn emit_send(dest: string, term: SIRTerm) -> string {
+    concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_send")), mov_dest_from_x0_for_type(dest, term.type_name))
 }
 
-fn emit_actor_call(dest: string) -> string {
-    concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_call")), mov_dest_from_x0(dest))
+fn emit_actor_call(dest: string, term: SIRTerm) -> string {
+    concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_call")), mov_dest_from_x0_for_type(dest, term.type_name))
 }
 
-fn emit_actor_cast(dest: string) -> string {
+fn emit_actor_cast(dest: string, term: SIRTerm) -> string {
     // bool in W0 per AAPCS; widen to X for dest
-    concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_cast")), mov_dest_from_x0(dest))
+    concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl("_silica_rt_actor_cast")), mov_dest_from_x0_for_type(dest, term.type_name))
 }
 
-fn emit_self(dest: string) -> string {
-    concat(asm_bl("_silica_rt_actor_self"), mov_dest_from_x0(dest))
+fn emit_self(dest: string, term: SIRTerm) -> string {
+    concat(asm_bl("_silica_rt_actor_self"), mov_dest_from_x0_for_type(dest, term.type_name))
 }
 
 fn runtime_label(name: string) -> string {
@@ -143,44 +171,44 @@ fn runtime_label(name: string) -> string {
     }
 }
 
-fn emit_runtime_nullary(dest: string, name: string) -> string {
-    concat(asm_bl(runtime_label(name)), mov_dest_from_x0(dest))
+fn emit_runtime_nullary(dest: string, term: SIRTerm) -> string {
+    concat(asm_bl(runtime_label(term.name)), mov_dest_from_x0_for_type(dest, term.type_name))
 }
 
-fn emit_runtime_unary(dest: string, name: string) -> string {
-    concat(concat("    MOV X0, X9\n", asm_bl(runtime_label(name))), mov_dest_from_x0(dest))
+fn emit_runtime_unary(dest: string, term: SIRTerm) -> string {
+    concat(concat("    MOV X0, X9\n", asm_bl(runtime_label(term.name))), mov_dest_from_x0_for_type(dest, term.type_name))
 }
 
-fn emit_runtime_binary(dest: string, name: string) -> string {
-    concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl(runtime_label(name))), mov_dest_from_x0(dest))
+fn emit_runtime_binary(dest: string, term: SIRTerm) -> string {
+    concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl(runtime_label(term.name))), mov_dest_from_x0_for_type(dest, term.type_name))
 }
 
-fn emit_runtime_ternary(dest: string, name: string) -> string {
-    concat(concat("    MOV X0, X9\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n", asm_bl(runtime_label(name))), mov_dest_from_x0(dest))
+fn emit_runtime_ternary(dest: string, term: SIRTerm) -> string {
+    concat(concat("    MOV X0, X9\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n", asm_bl(runtime_label(term.name))), mov_dest_from_x0_for_type(dest, term.type_name))
 }
 
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     case term.name of {
         "spawn" -> emit_spawn(dest, term);
-        "send" -> emit_send(dest);
-        "actor_call" -> emit_actor_call(dest);
-        "actor_cast" -> emit_actor_cast(dest);
-        "self" -> emit_self(dest);
-        "get_cpu_topology" -> emit_runtime_nullary(dest, term.name);
-        "get_efficiency_cores" -> emit_runtime_nullary(dest, term.name);
-        "get_performance_cores" -> emit_runtime_nullary(dest, term.name);
-        "get_core_capabilities" -> emit_runtime_unary(dest, term.name);
-        "pin_actor_to_core" -> emit_runtime_binary(dest, term.name);
-        "pin_actor_to_efficiency_core" -> emit_runtime_unary(dest, term.name);
-        "pin_actor_to_performance_core" -> emit_runtime_unary(dest, term.name);
-        "pin_actor_realtime" -> emit_runtime_binary(dest, term.name);
-        "remove_actor" -> emit_runtime_unary(dest, term.name);
-        "pin_actor_to_numa_node" -> emit_runtime_binary(dest, term.name);
-        "unpin_actor" -> emit_runtime_unary(dest, term.name);
-        "set_actor_priority" -> emit_runtime_binary(dest, term.name);
-        "get_actor_memory_usage" -> emit_runtime_unary(dest, term.name);
-        "migrate_actor" -> emit_runtime_binary(dest, term.name);
-        "move" -> emit_runtime_ternary(dest, term.name);
+        "send" -> emit_send(dest, term);
+        "actor_call" -> emit_actor_call(dest, term);
+        "actor_cast" -> emit_actor_cast(dest, term);
+        "self" -> emit_self(dest, term);
+        "get_cpu_topology" -> emit_runtime_nullary(dest, term);
+        "get_efficiency_cores" -> emit_runtime_nullary(dest, term);
+        "get_performance_cores" -> emit_runtime_nullary(dest, term);
+        "get_core_capabilities" -> emit_runtime_unary(dest, term);
+        "pin_actor_to_core" -> emit_runtime_binary(dest, term);
+        "pin_actor_to_efficiency_core" -> emit_runtime_unary(dest, term);
+        "pin_actor_to_performance_core" -> emit_runtime_unary(dest, term);
+        "pin_actor_realtime" -> emit_runtime_binary(dest, term);
+        "remove_actor" -> emit_runtime_unary(dest, term);
+        "pin_actor_to_numa_node" -> emit_runtime_binary(dest, term);
+        "unpin_actor" -> emit_runtime_unary(dest, term);
+        "set_actor_priority" -> emit_runtime_binary(dest, term);
+        "get_actor_memory_usage" -> emit_runtime_unary(dest, term);
+        "migrate_actor" -> emit_runtime_binary(dest, term);
+        "move" -> emit_runtime_ternary(dest, term);
         _: string -> concat(concat("    ; unsupported actor prim: ", term.name), "\n")
     }
 }

@@ -35,9 +35,11 @@ export term_to_asm/11;
 export emit_function_tail_user_call_root/14;
 export term_to_asm_debug/12;
 export term_to_asm_debug_with_outer/13;
+export type_name_is_list_like/1;
 
-// int64/uint64/boolean let RHS in X0 is overwritten by device_io syscalls (write), print helpers, and later actor_call/actor_cast before the let body runs.
-// Spill to callee-saved X19–X22 in order (same pool as actor_ref); emitter_core emits STP/LDP pairs (see needs_actor_ref_x21_x22_frame).
+// Any let RHS in a caller-saved GPR (X0–X7, X9–X11, X13–X15) is overwritten by device_io
+// syscalls (write/SVC), print helpers (BL), and later actor_call/actor_cast before the let body runs.
+// Spill to callee-saved X19–X28 in order (pairs saved in emitter_core prologue per spill-eligible let count).
 fn spill_reg_chain_from_outer(outer_reg: string) -> string {
     case var@is_reg_bound(outer_reg, "X19") of {
         false -> "X19";
@@ -47,28 +49,94 @@ fn spill_reg_chain_from_outer(outer_reg: string) -> string {
                 false -> "X21";
                 true -> case var@is_reg_bound(outer_reg, "X22") of {
                     false -> "X22";
-                    true -> ""
+                    true -> case var@is_reg_bound(outer_reg, "X23") of {
+                        false -> "X23";
+                        true -> case var@is_reg_bound(outer_reg, "X24") of {
+                            false -> "X24";
+                            true -> case var@is_reg_bound(outer_reg, "X25") of {
+                                false -> "X25";
+                                true -> case var@is_reg_bound(outer_reg, "X26") of {
+                                    false -> "X26";
+                                    true -> case var@is_reg_bound(outer_reg, "X27") of {
+                                        false -> "X27";
+                                        true -> case var@is_reg_bound(outer_reg, "X28") of {
+                                            false -> "X28";
+                                            true -> ""
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+// Parser joins list types with spaces (e.g. "List [int64, normal]"), not only "List[int64, normal]".
+fn type_name_is_list_like(type_name: string) -> bool {
+    case len(type_name) >= 5 and substring(type_name, 0, 5) == "List[" of {
+        true -> true;
+        false -> case len(type_name) >= 6 and substring(type_name, 0, 6) == "List [" of {
+            true -> true;
+            false -> false
+        }
+    }
+}
+
+// Types whose let RHS is a single GPR that must survive across device_io / BL (lists, strings, aggregates).
+fn let_rhs_type_spills_across_io(type_name: string) -> bool {
+    case type_name of {
+        "int64" -> true;
+        "uint64" -> true;
+        "boolean" -> true;
+        "bool" -> true;
+        "actor_ref" -> true;
+        "string" -> true;
+        _: string -> case type_name_is_list_like(type_name) of {
+            true -> true;
+            false -> case reg_conventions@is_tuple_type(type_name) of {
+                true -> true;
+                false -> case len(type_name) >= 1 and substring(type_name, 0, 1) == "{" of {
+                    true -> true;
+                    false -> false
+                }
+            }
+        }
+    }
+}
+
+fn is_caller_saved_gpr(reg: string) -> bool {
+    xreg: string <- case len(reg) > 1 and substring(reg, 0, 1) == "W" of {
+        true -> concat("X", substring(reg, 1, len(reg)));
+        false -> reg
+    };
+    case xreg == "X0" or xreg == "X1" or xreg == "X2" or xreg == "X3" of {
+        true -> true;
+        false -> case xreg == "X4" or xreg == "X5" or xreg == "X6" or xreg == "X7" of {
+            true -> true;
+            false -> case xreg == "X9" or xreg == "X10" or xreg == "X11" of {
+                true -> true;
+                false -> xreg == "X13" or xreg == "X14" or xreg == "X15"
+            }
+        }
+    }
+}
+
 fn compute_let_rhs_spill_reg(term: SIRTerm, rhs_reg: string, outer_reg: string) -> string {
-    case rhs_reg == "X0" of {
+    case is_caller_saved_gpr(rhs_reg) of {
         false -> "";
-        true -> case term.type_name of {
-            "int64" -> spill_reg_chain_from_outer(outer_reg);
-            "uint64" -> spill_reg_chain_from_outer(outer_reg);
-            "boolean" -> spill_reg_chain_from_outer(outer_reg);
-            "actor_ref" -> spill_reg_chain_from_outer(outer_reg);
-            _: string -> ""
+        true -> case let_rhs_type_spills_across_io(term.type_name) of {
+            true -> spill_reg_chain_from_outer(outer_reg);
+            false -> ""
         }
     }
 }
 
 fn mov_spill_from_rhs(rhs_reg: string, spill_reg: string) -> string {
-    concat(concat(concat("    MOV ", spill_reg), ", "), concat(rhs_reg, "\n"))
+    src: string <- prims_actors@gpr_x_view(rhs_reg);
+    concat(concat(concat("    MOV ", spill_reg), ", "), concat(src, "\n"))
 }
 
 // Total stack bytes to deallocate for tuple-constructed call arguments.
@@ -1775,6 +1843,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 true -> do term_to_asm_opt_bound_debug(term.inner, "X9", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                 false -> term_to_asm_opt_bound(term.inner, "X9", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                             };
+                            spawn_three: bool <- term.name == "spawn" and term.right_expr.kind == 6 and term.right_expr.name == "tuple_make";
+                            init_hold_spawn: string <- case spawn_three of { true -> "    MOV X11, X9\n"; false -> "" };
                             right_asm_a: string <- case debug of {
                                 true -> do term_to_asm_opt_bound_debug(term.right_expr, "X10", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                 false -> term_to_asm_opt_bound(term.right_expr, "X10", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
@@ -1785,7 +1855,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(tuple_bytes_a), "\n"));
                                 false -> ""
                             };
-                            concat(concat(concat(concat(concat(left_asm_a, "\n"), concat(right_asm_a, "\n")), op_asm_a), "\n"), tuple_sp_restore_a)
+                            concat(concat(concat(concat(concat(concat(left_asm_a, "\n"), init_hold_spawn), concat(right_asm_a, "\n")), op_asm_a), "\n"), tuple_sp_restore_a)
                         end
                     }
                 }

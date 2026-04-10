@@ -3081,12 +3081,13 @@ performance_cores                     // Built-in: high-performance cores
 efficiency_cores                      // Built-in: low-power efficiency cores
 ```
 
-These types are used with the `spawn()` function to control actor placement:
+The `spawn()` function accepts **only** a single logical core index for placement: a **`uint64`** value or **`core_id(n)`** with **`n: uint64`**. Use `get_cpu_topology()`, `get_efficiency_cores()`, or `get_performance_cores()` to obtain ids, then pass one id.
+
+`core_set`, lists of core ids, `performance_cores`, and `efficiency_cores` are **not** valid as `spawn`'s third argument.
 
 ```silica
-spawn(initial_state, behavior, performance_cores)
+spawn(initial_state, behavior, 0)
 spawn(initial_state, behavior, core_id(0))
-spawn(initial_state, behavior, core_set([0, 1, 2]))
 ```
 
 ### 4.7 SIMD Vector Types
@@ -7080,10 +7081,12 @@ alloc_ref(r, 42)    // Runtime error: capability violation
 Actors are created with initial state and behavior function:
 
 ```
-spawn(initial_state, behavior_fn [, core_affinity]) -> actor_ref
+spawn(initial_state, behavior_fn [, core_id]) -> actor_ref
 ```
 
 When `initial_state` contains a region handle, the handle is moved from `spawn` to the actor. The actor receives exclusive ownership of the region.
+
+**Optional core id:** When present, the third argument must be a **`uint64`** logical core id or **`core_id(n)`** with **`n: uint64`**. It must not be a list of cores, `core_set(...)`, `performance_cores`, or `efficiency_cores`.
 
 The `spawn()` function is the execution point for actor creation. It returns an `actor_ref` handle that can be used with `call()`, `cast()`, and control operations like `pin_actor_to_core()`. The actor begins executing immediately when `spawn()` is called.
 
@@ -7577,14 +7580,8 @@ end function
 When an actor is spawned with core affinity:
 
 ```silica
-// Pin actor to performance cores
-actor_ref: actor_ref <- spawn(initial_state, behavior, performance_cores)
-
-// Pin actor to specific core
+// Pin actor to a specific logical core (uint64 id from topology)
 actor_ref: actor_ref <- spawn(initial_state, behavior, core_id(0))
-
-// Pin actor to core set
-actor_ref: actor_ref <- spawn(initial_state, behavior, core_set([0, 1, 2]))
 ```
 
 The runtime:
@@ -7699,7 +7696,7 @@ end function
 | **Frequency Scaling** | CPU frequency adjusts based on load | Performance varies with frequency | Request max frequency for high-priority actors |
 | **Core Parking** | Efficiency cores powered down | Minimal impact on active actors | Use `migrate_actor()` if needed |
 | **Thermal Throttling** | Cores throttle when hot | Performance degradation on hot cores | Use `migrate_actor()` to move to cooler cores |
-| **Energy Optimization** | Initial actor placement considers efficiency | Placement at spawn time based on affinity | Specify `performance_cores` or `efficiency_cores` at spawn |
+| **Energy Optimization** | Initial actor placement considers efficiency | Placement at spawn time based on affinity | Choose a core id (e.g. from topology lists) and pass `uint64` to `spawn` |
 
 **Power Management Integration:**
 
@@ -13283,7 +13280,7 @@ buffer_capacity(buffer) -> int
 
 #### Spawning Actors
 ```
-spawn(initial_state, behavior [, core_affinity]) -> actor_ref proc[concurrency]
+spawn(initial_state, behavior [, core_id]) -> actor_ref proc[concurrency]
 ```
 
 Creates a new actor with the given initial state and behavior function. The behavior function has type `(Msg, State) -> (:reply, Reply, State) | (:no_reply, State)`.
@@ -13318,12 +13315,8 @@ Returns the current actor's reference. Can be used to send messages back to the 
 
 **Note**: `call()` and `cast()` may be used from within actor behavior functions (and elsewhere) when the enclosing `sequence` declares the required effects (see §15.1.2, §16.1).
 
-**Core Affinity Parameter:**
-The `spawn()` function accepts an optional third parameter for CPU core affinity:
-- `performance_cores` - Place actor on high-performance cores
-- `efficiency_cores` - Place actor on low-power efficiency cores
-- `core_id(n)` - Place actor on specific core ID
-- `core_set([id1, id2, ...])` - Place actor on any core in the set
+**Core id parameter:**
+The `spawn()` function accepts an optional third argument: a **`uint64`** logical core id, or **`core_id(n)`** with **`n: uint64`**. Lists of ids, `core_set`, `performance_cores`, and `efficiency_cores` are not accepted; use topology builtins to pick an id, then pass it here.
 
 ### 22.5 Print Functions
 
@@ -13631,7 +13624,7 @@ Actors are managed by the runtime:
 The runtime provides intelligent CPU scheduling with optional affinity controls:
 
 - **NUMA-Aware Scheduling**: Initial scheduling considers memory locality to minimize cross-NUMA communication latency
-- **Core Affinity Control**: Developers can specify core affinity at spawn time using `core_id`, `core_set`, `performance_cores`, or `efficiency_cores`
+- **Core Affinity Control**: Developers pass a single **`uint64`** core id (or `core_id(...)`) at `spawn` time; pinning helpers and topology queries refine placement afterward
 - **Core Type Awareness**: Distinguishes between efficiency cores (power-optimized) and performance cores (speed-optimized)
 - **Manual Migration**: Application code can explicitly migrate actors using `migrate_actor()` to respond to thermal or load conditions
 - **Monitoring Support**: Runtime provides temperature and load information for application-driven optimization decisions

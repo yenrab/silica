@@ -65,7 +65,7 @@ The core actor pipeline — `spawn`, `call`, `cast`, `send`, `self`, and the gen
 
 ### 1d. Core Affinity Argument Typing ✅ DONE
 
-**Spec**: §4.6, §15.1.1 — spawn's optional 3rd argument validated as `int64` or `List[int64,normal]`.
+**Spec**: §4.6, §15.1.1 — spawn's optional 3rd argument validated as `uint64` (or `core_id(uint64)`); lists, `core_set`, `performance_cores`, and `efficiency_cores` are rejected.
 
 **Files modified**: `src/type_checker/expressions/type_checker_expressions.silica`
 

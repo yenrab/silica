@@ -15,7 +15,7 @@
 
 ## Objective
 
-Deliver **end-to-end compiler and runtime support** for **structured CPU topology discovery** so user code can call `get_cpu_topology()` and obtain a real `cpu_topology` value (not a stub), use `get_core_capabilities(core_id)` per spec, and compose results with `spawn` placement (`core_id`, `core_set`, `performance_cores`, `efficiency_cores`). The list helpers `get_efficiency_cores()` / `get_performance_cores()` are already implemented in the AArch64 runtime; this plan focuses on closing the **`cpu_topology` / `core_info`** path and any remaining **placement / typing** gaps.
+Deliver **end-to-end compiler and runtime support** for **structured CPU topology discovery** so user code can call `get_cpu_topology()` and obtain a real `cpu_topology` value (not a stub), use `get_core_capabilities(core_id)` per spec, and pass a chosen **`uint64`** core id as `spawn`'s optional third argument. The list helpers `get_efficiency_cores()` / `get_performance_cores()` are already implemented in the AArch64 runtime; this plan focuses on closing the **`cpu_topology` / `core_info`** path and any remaining **placement / typing** gaps.
 
 ---
 
@@ -111,7 +111,7 @@ The following is implemented in `src/emitter/apple_silicon/terms/prims/prims_act
 
 1. `type_checker_expressions.silica` (and helpers): validate `get_core_capabilities(core_id: int)` → `core_info` (or spec-equivalent type string).
 2. Tuple decomposition / field access for `cpu_topology` and `core_info` if users bind or pattern-match results (`type_checker_tuple_decompose_helpers.silica`).
-3. Revisit spawn third-argument typing: `int64`, list forms, `core_id`, `core_set`, and grouping atoms **one unified** validation path.
+3. Spawn third-argument typing: **`uint64`** (or `core_id(uint64)` only); reject lists, `core_set`, and grouping atoms.
 
 **Files (typical)**: `src/type_checker/expressions/type_checker_expressions.silica`, `type_checker_tuple_decompose_helpers.silica`, `type_checker_expressions_actors.silica`
 

@@ -33,6 +33,12 @@ Actor memory architecture: **growable per-actor stacks**, lazy page migration, i
 
 ---
 
+## [actor_spawn_core_affinity_os_semantics.md](./actor_spawn_core_affinity_os_semantics.md)
+
+**OS semantics** for **`spawn`** with a **single core id** (`uint64`): how macOS, Linux, FreeBSD, Solaris/illumos, and Windows interpret affinity vs. hints, carrier threads vs. actors, and pointers to topology and emitter plans.
+
+---
+
 ## [beam_like_crash_containment_design_notes.md](./beam_like_crash_containment_design_notes.md)
 
 **BEAM-like lightweight process** semantics on a **native** runtime: fault isolation between processes, MTE/hardware hooks, when the runtime may recover vs. abort, and the relationship to memory safety in user code.

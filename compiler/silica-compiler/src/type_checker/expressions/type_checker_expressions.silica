@@ -690,10 +690,25 @@ fn check_actor_self_call(expr: Expr, expected_type: string, context: TypeContext
     }
 }
 
+// §15.1.1: optional third argument is exactly one logical core id (`uint64`), or `core_id(uint64)`.
+// Lists, `core_set`, `performance_cores`, and `efficiency_cores` are rejected here (not a range or set).
+fn check_spawn_core_id_placement(place_e: Expr, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    case place_e.kind == 20 of {
+        true -> type_checker_core@type_check_err("E2005", place_e.location, "spawn: third argument must be a single uint64 core id (not a list of cores) §15.1.1", "sect15");
+        false -> case place_e.kind == 1 and (place_e.name == "performance_cores" or place_e.name == "efficiency_cores") of {
+            true -> type_checker_core@type_check_err("E2005", place_e.location, "spawn: third argument must be a uint64 core id (not performance_cores or efficiency_cores) §15.1.1", "sect15");
+            false -> case place_e.kind == 5 of {
+                true -> type_checker_core@type_check_err("E2005", place_e.location, "spawn: third argument must be uint64 or core_id(uint64), got atom §15.1.1", "sect15");
+                false -> check_expr(place_e, "uint64", context)
+            }
+        }
+    }
+}
+
 fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 or ac == 3 of {
-        false -> type_checker_core@type_check_err("E2005", expr.location, "spawn expects 2 or 3 arguments: (initial_state, behavior_fn [, core_affinity]) §15.1.1", "sect15");
+        false -> type_checker_core@type_check_err("E2005", expr.location, "spawn expects 2 or 3 arguments: (initial_state, behavior_fn [, core_id]) §15.1.1", "sect15");
         true -> do
             init_e: Expr <- type_checker_expressions_actors@spawn_init_expr(expr);
             beh_e: Expr <- type_checker_expressions_actors@spawn_behavior_expr(expr);
@@ -720,16 +735,10 @@ fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContex
                                                     true -> case ac == 3 of {
                                                         true -> do
                                                             place_e: Expr <- type_checker_expressions_actors@spawn_placement_expr(expr);
-                                                            r_pl: TypeCheckResult <- check_expr(place_e, "discard", context);
+                                                            r_pl: TypeCheckResult <- check_spawn_core_id_placement(place_e, context);
                                                             case r_pl.is_ok of {
                                                                 false -> r_pl;
-                                                                true -> do
-                                                                    aff_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(place_e, context);
-                                                                    case is_valid_core_affinity_type(aff_t) of {
-                                                                        true -> check_actor_spawn_result_type(expr, expected_type);
-                                                                        false -> type_checker_core@type_check_err("E2005", place_e.location, concat("spawn: invalid core affinity (use int64, List[int64,normal], core_id(int64), core_set(...), performance_cores, or efficiency_cores); got ", aff_t), "sect15")
-                                                                    }
-                                                                end
+                                                                true -> check_actor_spawn_result_type(expr, expected_type)
                                                             }
                                                         end;
                                                         false -> check_actor_spawn_result_type(expr, expected_type)
@@ -748,29 +757,22 @@ fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContex
     }
 }
 
-// §4.6 / §15.1.1: valid core affinity types for spawn's 3rd argument (int, list, core_id/core_set, grouping keywords).
-fn is_valid_core_affinity_type(t: string) -> bool {
-    t == "int64"
-        or t == "List[int64,normal]"
-        or t == "spawn_affinity_performance_cores"
-        or t == "spawn_affinity_efficiency_cores"
-}
-
-// Spawn placement constructors (spec §4.6 / §15.1.1): core_id(int64) and core_set(List[int64,normal]).
+// Spawn: optional `core_id(x)` wrapper — x must be uint64; result is uint64 (same as spawn's third argument).
+// `core_set` and list / performance_cores / efficiency_cores placement forms are not supported for spawn.
 fn check_spawn_affinity_constructor_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case expr.name == "core_id" of {
         true -> case ac == 1 of {
-            false -> type_checker_core@type_check_err("E2005", expr.location, "core_id expects 1 argument (core id: int64) §15.1.1", "sect15");
+            false -> type_checker_core@type_check_err("E2005", expr.location, "core_id expects 1 argument (core id: uint64) §15.1.1", "sect15");
             true -> do
-                r0: TypeCheckResult <- check_expr(expr.inner, "int64", context);
+                r0: TypeCheckResult <- check_expr(expr.inner, "uint64", context);
                 case r0.is_ok of {
                     false -> r0;
                     true -> case expected_type == "discard" of {
                         true -> type_checker_core@type_check_ok();
-                        false -> case expected_type == "int64" of {
+                        false -> case expected_type == "uint64" of {
                             true -> type_checker_core@type_check_ok();
-                            false -> type_checker_core@type_check_err("E2003", expr.location, concat("core_id(...) has type int64, expected ", expected_type), "sect15")
+                            false -> type_checker_core@type_check_err("E2003", expr.location, concat("core_id(...) has type uint64, expected ", expected_type), "sect15")
                         }
                     }
                 }
@@ -779,19 +781,22 @@ fn check_spawn_affinity_constructor_call(expr: Expr, expected_type: string, cont
         false -> case expr.name == "core_set" of {
             true -> case ac == 1 of {
                 false -> type_checker_core@type_check_err("E2005", expr.location, "core_set expects 1 argument (core set: List[int64,normal]) §15.1.1", "sect15");
-                true -> do
-                    r1: TypeCheckResult <- check_expr(expr.inner, "List[int64,normal]", context);
-                    case r1.is_ok of {
-                        false -> r1;
-                        true -> case expected_type == "discard" of {
-                            true -> type_checker_core@type_check_ok();
-                            false -> case expected_type == "List[int64,normal]" of {
+                true -> case expected_type == "uint64" of {
+                    true -> type_checker_core@type_check_err("E2005", expr.location, "spawn's third argument is a uint64 core id, not core_set(...) §15.1.1", "sect15");
+                    false -> do
+                        r1: TypeCheckResult <- check_expr(expr.inner, "List[int64,normal]", context);
+                        case r1.is_ok of {
+                            false -> r1;
+                            true -> case expected_type == "discard" of {
                                 true -> type_checker_core@type_check_ok();
-                                false -> type_checker_core@type_check_err("E2003", expr.location, concat("core_set(...) has type List[int64,normal], expected ", expected_type), "sect15")
+                                false -> case expected_type == "List[int64,normal]" of {
+                                    true -> type_checker_core@type_check_ok();
+                                    false -> type_checker_core@type_check_err("E2003", expr.location, concat("core_set(...) has type List[int64,normal], expected ", expected_type), "sect15")
+                                }
                             }
                         }
-                    }
-                end
+                    end
+                }
             };
             false -> type_checker_core@type_check_err("E2005", expr.location, "internal: not a spawn affinity constructor", "sect15")
         }
