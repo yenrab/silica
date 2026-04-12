@@ -23,7 +23,7 @@ Silica is a **systems language** that is **functional**: explicit effects, **act
     vertical-align: -0.5em;
     margin-right: 0.2em;
   "
-/><strong>Motto: Bad security practices should always be compiler errors!</strong>
+/><strong>Motto: Secure by default — fail soft, never fail silent</strong>
 
 ---
 
