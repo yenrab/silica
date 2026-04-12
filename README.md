@@ -83,7 +83,7 @@ The **bootstrap compiler** is complete; ongoing work below is grouped by whether
 
 **Phase 2 (in progress)**
 
-- **Foreign interoperability:** call into **existing C libraries** and into **any library that exposes a C-compatible ABI** (a stable C calling convention and linkable symbols) via **FFI bindings**, instead of rewriting the ecosystem in pure Silica. That lets Silica programs use mature native code where appropriate while **brokered isolation** (below) stays the path for untrusted or high-risk components.
+- **Foreign interoperability:** call into **existing C libraries** and into **any library that exposes a C-compatible ABI** (a stable C calling convention and linkable symbols) via **FFI bindings**, instead of rewriting the ecosystem in pure Silica. That lets Silica programs use mature code in unsafe languages to get us  started.
 
 **Phase 3 (next up)**
 
