@@ -21,6 +21,12 @@ Use the entries below for **quick navigation**. Each item links to a file in thi
 
 ---
 
+## [execution-environments-hosted-vs-bare-metal.md](./execution-environments-hosted-vs-bare-metal.md)
+
+**Reader-oriented overview** of how **OS-hosted** processes vs **OS-free** / bare-metal targets affect **memory `Space` guarantees** and **actor core placement**, with pointers to normative spec sections and related plans.
+
+---
+
 ## [actor_growable_stack_design.md](./actor_growable_stack_design.md)
 
 Actor memory architecture: **growable per-actor stacks**, lazy page migration, isolation vs. the older per-actor heap sketch, NUMA-oriented behavior, and cleanup on actor termination.
