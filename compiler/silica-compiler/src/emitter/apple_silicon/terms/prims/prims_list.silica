@@ -1,17 +1,21 @@
 // List prim emission: list_nil, list_cons, list_length, list_head, list_remove_head
 // list_implementation_design.md §5–§6: immutable spine; v1 uses classic cons nodes in heap (malloc)
-// Layout per node: [0:8] = head (zero-extended for narrow types), [8:16] = tail pointer (0 = nil)
-// Empty list: Xn = 0
+// Layout per node: [0:payload) = head (flat layout matches tuple_make/record_make; scalars use 8 bytes),
+// [payload:payload+8) = tail pointer (0 = nil). Empty list: Xn = 0
 
 use sir_ast;
 use reg_conventions;
 use var;
+use prims_tuple;
+use prims_record;
+use atom_table;
 
 export is_list_prim/1;
 export emit_prim_op/2;
 export module_uses_list_prims/1;
 export emit_list_length_helper/0;
 export emit_region_alloc_stub/0;
+export list_element_payload_bytes/1;
 
 fn is_list_prim(name: string) -> bool {
     name == "list_nil" or name == "list_cons" or name == "list_length" or name == "list_head" or name == "list_remove_head"
@@ -71,78 +75,185 @@ fn module_uses_list_prims(sir_module: SIRModule) -> bool {
     list_prim_in_functions(sir_module.functions)
 }
 
+// Comma at depth 0; depth increases for [, (, {; decreases for ], ), }.
+fn find_first_comma_depth0_pb(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "[" or c == "{" of {
+                true -> find_first_comma_depth0_pb(s, i + 1, depth + 1);
+                false -> case c == ")" or c == "]" or c == "}" of {
+                    true -> find_first_comma_depth0_pb(s, i + 1, depth - 1);
+                    false -> case c == "," of {
+                        true -> case depth == 0 of {
+                            true -> i;
+                            false -> find_first_comma_depth0_pb(s, i + 1, depth)
+                        };
+                        false -> find_first_comma_depth0_pb(s, i + 1, depth)
+                    }
+                }
+            }
+        end
+    }
+}
+
+// Strips spaces so "List [ T , mem ]" becomes "List[T,mem]".
+fn list_elem_type_from_list_t(list_t: string) -> string {
+    t: string <- prims_record@strip_spaces_rt(list_t);
+    case len(t) < 6 of {
+        true -> "";
+        false -> case substring(t, 0, 5) == "List[" of {
+            false -> "";
+            true -> case substring(t, len(t) - 1, len(t)) == "]" of {
+                false -> "";
+                true -> do
+                    inner: string <- substring(t, 5, len(t) - 1);
+                    inner_trim: string <- prims_record@strip_spaces_rt(inner);
+                    comma: int64 <- find_first_comma_depth0_pb(inner_trim, 0, 0);
+                    case comma >= len(inner_trim) of {
+                        true -> inner_trim;
+                        false -> prims_record@strip_spaces_rt(substring(inner_trim, 0, comma))
+                    }
+                end
+            }
+        }
+    }
+}
+
+fn list_tail_offset_from_inner_list(inner_list: SIRTerm) -> int64 {
+    em: string <- list_elem_type_from_list_t(inner_list.type_name);
+    case len(em) == 0 of {
+        true -> 8;
+        false -> list_element_payload_bytes(em)
+    }
+}
+
+// Flat byte size of one list element in a cons cell (matches record_make / tuple_make stack allocation).
+fn list_element_payload_bytes(elem_t: string) -> int64 {
+    case reg_conventions@is_inline_struct_type(elem_t) of {
+        true -> case prims_record@record_type_has_only_scalar_fields(elem_t) of {
+            true -> prims_record@record_type_value_flat_byte_size(elem_t);
+            false -> prims_record@record_type_flat_stack_bytes(elem_t)
+        };
+        false -> case reg_conventions@is_tuple_type(elem_t) of {
+            true -> prims_tuple@flat_alloc_size(prims_tuple@count_type_elements(elem_t));
+            false -> 8
+        }
+    }
+}
+
 fn emit_list_nil(dest: string) -> string {
     concat(concat("    MOV ", dest), ", #0\n")
 }
 
-// X1 = head (element), X2 = tail list pointer. Result in dest.
-// Save X1/X2 across BL (caller-saved by AArch64 calling convention).
-fn emit_list_cons(dest: string) -> string {
-    save: string <- "    STP X1, X2, [SP, #-16]!\n";
-    mov_sz: string <- "    MOV X0, #16\n";
-    bl_m: string <- "    BL _silica_rt_region_alloc\n";
-    restore: string <- "    LDP X1, X2, [SP], #16\n";
-    st_h: string <- "    STR X1, [X0]\n";
-    st_t: string <- "    STR X2, [X0, #8]\n";
-    mov_d: string <- concat(concat("    MOV ", dest), ", X0\n");
-    concat(concat(concat(concat(concat(concat(save, mov_sz), bl_m), restore), st_h), st_t), mov_d)
-}
-
-// X9 = list pointer (cons cell). Load first element into dest (narrow types use W*).
-fn emit_list_head(term: SIRTerm, dest: string) -> string {
-    ed: string <- case reg_conventions@is_narrow_type(term.type_name) of {
-        true -> case len(dest) > 0 of {
-            true -> case substring(dest, 0, 1) == "X" of {
-                true -> concat("W", substring(dest, 1, len(dest)));
-                false -> dest
-            };
-            false -> dest
-        };
-        false -> dest
-    };
-    case reg_conventions@is_narrow_type(term.type_name) of {
-        true -> case term.type_name of {
-            "int8" -> concat(concat(concat(concat("    LDRSB ", ed), ", [X9]"), ""), "\n");
-            "uint8" -> concat(concat(concat(concat("    LDRB ", ed), ", [X9]"), ""), "\n");
-            "int16" -> concat(concat(concat(concat("    LDRSH ", ed), ", [X9]"), ""), "\n");
-            "uint16" -> concat(concat(concat(concat("    LDRH ", ed), ", [X9]"), ""), "\n");
-            _: string -> concat(concat(concat(concat("    LDR ", ed), ", [X9]"), ""), "\n")
-        };
-        false -> concat(concat(concat(concat("    LDR ", dest), ", [X9]"), ""), "\n")
+fn copy_head_payload_asm_loop(i: int64, words: int64, acc: string) -> string {
+    case i >= words of {
+        true -> acc;
+        false -> do
+            offb: int64 <- i * 8;
+            off: string <- atom_table@int64_to_decimal_string(offb);
+            pair: string <- concat("    LDR X3, [X1, #", concat(off, concat("]\n    STR X3, [X0, #", concat(off, "]\n"))));
+            copy_head_payload_asm_loop(i + 1, words, concat(acc, pair))
+        end
     }
 }
 
-fn emit_list_remove_head(dest: string) -> string {
-    concat(concat(concat(concat("    LDR ", dest), ", [X9, #8]"), ""), "\n")
+fn copy_head_payload_asm(payload: int64) -> string {
+    copy_head_payload_asm_loop(0, payload / 8, "")
 }
 
-// X9 = list ptr (emitter loads arg into X9; MOV X0,X9 before BL). Avoids clobbering X0 when a prior
-// length(...) returned the count in X0 and the next length(...) needs a different list pointer.
-// Result length in dest (int64); helper still uses X0 as per calling convention after MOV X0,X9.
-fn emit_list_length(dest: string) -> string {
+// X1 = head (value or pointer to stack-built aggregate), X2 = tail list pointer. Result in dest.
+fn emit_list_cons(term: SIRTerm, dest: string) -> string {
+    payload: int64 <- list_element_payload_bytes(term.inner.type_name);
+    node_sz: int64 <- payload + 8;
+    node_sz_s: string <- atom_table@int64_to_decimal_string(node_sz);
+    save: string <- "    STP X1, X2, [SP, #-16]!\n";
+    mov_sz: string <- concat("    MOV X0, #", concat(node_sz_s, "\n"));
+    bl_m: string <- "    BL _silica_rt_region_alloc\n";
+    restore: string <- "    LDP X1, X2, [SP], #16\n";
+    store_head_and_tail: string <- case payload > 8 of {
+        true -> do
+            copy_asm: string <- copy_head_payload_asm(payload);
+            pay_s: string <- atom_table@int64_to_decimal_string(payload);
+            st_t: string <- concat("    STR X2, [X0, #", concat(pay_s, "]\n"));
+            concat(copy_asm, st_t)
+        end;
+        false -> do
+            st_h: string <- "    STR X1, [X0]\n";
+            pay_s8: string <- atom_table@int64_to_decimal_string(payload);
+            st_t: string <- concat("    STR X2, [X0, #", concat(pay_s8, "]\n"));
+            concat(st_h, st_t)
+        end
+    };
+    mov_d: string <- concat(concat("    MOV ", dest), ", X0\n");
+    concat(concat(concat(concat(concat(save, mov_sz), bl_m), restore), store_head_and_tail), mov_d)
+}
+
+// X9 = list pointer (cons cell). Load first element into dest (narrow types use W*).
+// Aggregate heads live at [X9] with the same flat layout as record_make; expose address in dest.
+fn emit_list_head(term: SIRTerm, dest: string) -> string {
+    case reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name) of {
+        true -> concat(concat(concat(concat("    MOV ", dest), ", X9"), ""), "\n");
+        false -> do
+            ed: string <- case reg_conventions@is_narrow_type(term.type_name) of {
+                true -> case len(dest) > 0 of {
+                    true -> case substring(dest, 0, 1) == "X" of {
+                        true -> concat("W", substring(dest, 1, len(dest)));
+                        false -> dest
+                    };
+                    false -> dest
+                };
+                false -> dest
+            };
+            case reg_conventions@is_narrow_type(term.type_name) of {
+                true -> case term.type_name of {
+                    "int8" -> concat(concat(concat(concat("    LDRSB ", ed), ", [X9]"), ""), "\n");
+                    "uint8" -> concat(concat(concat(concat("    LDRB ", ed), ", [X9]"), ""), "\n");
+                    "int16" -> concat(concat(concat(concat("    LDRSH ", ed), ", [X9]"), ""), "\n");
+                    "uint16" -> concat(concat(concat(concat("    LDRH ", ed), ", [X9]"), ""), "\n");
+                    _: string -> concat(concat(concat(concat("    LDR ", ed), ", [X9]"), ""), "\n")
+                };
+                false -> concat(concat(concat(concat("    LDR ", dest), ", [X9]"), ""), "\n")
+            }
+        end
+    }
+}
+
+fn emit_list_remove_head(term: SIRTerm, dest: string) -> string {
+    pay: int64 <- list_tail_offset_from_inner_list(term.inner);
+    pay_s: string <- atom_table@int64_to_decimal_string(pay);
+    concat(concat(concat(concat(concat(concat("    LDR ", dest), ", [X9, #"), pay_s), "]"), ""), "\n")
+}
+
+// X9 = list ptr. X2 = tail field byte offset (element payload size). Result length in dest.
+fn emit_list_length(term: SIRTerm, dest: string) -> string {
+    off: int64 <- list_tail_offset_from_inner_list(term.inner);
+    off_s: string <- atom_table@int64_to_decimal_string(off);
     mov_arg: string <- "    MOV X0, X9\n";
+    mov_off: string <- concat("    MOV X2, #", concat(off_s, "\n"));
     bl_h: string <- "    BL L_list_length_helper\n";
     mov_out: string <- case dest == "X0" of {
         true -> "";
         false -> concat(concat("    MOV ", dest), ", X0\n")
     };
-    concat(concat(mov_arg, bl_h), mov_out)
+    concat(concat(concat(mov_arg, mov_off), bl_h), mov_out)
 }
 
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     case term.name of {
         "list_nil" -> emit_list_nil(dest);
-        "list_cons" -> emit_list_cons(dest);
-        "list_length" -> emit_list_length(dest);
+        "list_cons" -> emit_list_cons(term, dest);
+        "list_length" -> emit_list_length(term, dest);
         "list_head" -> emit_list_head(term, dest);
-        "list_remove_head" -> emit_list_remove_head(dest);
+        "list_remove_head" -> emit_list_remove_head(term, dest);
         _: string -> concat(concat("    ; unsupported list prim: ", term.name), "\n")
     }
 }
 
-// Shared helper: X0 = list head pointer, returns X0 = length (uint64).
+// X0 = list head pointer; X2 = byte offset from node start to tail pointer field. Returns X0 = length.
 fn emit_list_length_helper() -> string {
-    "L_list_length_helper:\n    MOV X1, X0\n    MOV X0, #0\nL_list_len_loop:\n    CBZ X1, L_list_len_done\n    ADD X0, X0, #1\n    LDR X1, [X1, #8]\n    B L_list_len_loop\nL_list_len_done:\n    RET\n"
+    "L_list_length_helper:\n    MOV X4, X0\n    MOV X3, X2\n    MOV X0, #0\nL_list_len_loop:\n    CBZ X4, L_list_len_done\n    ADD X0, X0, #1\n    ADD X5, X4, X3\n    LDR X4, [X5]\n    B L_list_len_loop\nL_list_len_done:\n    RET\n"
 }
 
 // Lightweight _silica_rt_region_alloc that just forwards to _malloc.

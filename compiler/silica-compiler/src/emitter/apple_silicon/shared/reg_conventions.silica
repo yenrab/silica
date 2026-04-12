@@ -8,6 +8,9 @@ export is_float64_type/1;
 export is_float32_type/1;
 export is_float16_type/1;
 export is_tuple_type/1;
+export is_inline_struct_type/1;
+export is_aggregate_struct_or_tuple_return_type/1;
+export float_scalar_literal_pool_ptr_reg/1;
 
 fn is_narrow_type(type_name: string) -> bool {
     type_name == "int32" or type_name == "int16" or type_name == "int8" or type_name == "uint32" or type_name == "uint16" or type_name == "uint8"
@@ -37,8 +40,43 @@ fn is_tuple_type(type_name: string) -> bool {
     }
 }
 
+// Inline struct: { f1: T1, f2: T2, ... } — same pointer/flat return path as tuples in the emitter.
+fn is_inline_struct_type(type_name: string) -> bool {
+    case len(type_name) >= 1 of {
+        true -> substring(type_name, 0, 1) == "{";
+        false -> false
+    }
+}
+
+fn is_aggregate_struct_or_tuple_return_type(type_name: string) -> bool {
+    case is_tuple_type(type_name) of {
+        true -> true;
+        false -> is_inline_struct_type(type_name)
+    }
+}
+
 // Reg prefix: "X" (int64/uint64/pointer/tuple), "W" (narrow), "D" (float64), "S" (float32), "H" (float16)
 // Tuple types are pointers; must use X (64-bit), not W
+// ADRP base for float literal loads: X0 for low-index scalar temps (functions goldens); X10 for reg 9+ and multi-digit (tuple temps like D9).
+fn float_scalar_literal_pool_ptr_reg(dest: string) -> string {
+    case len(dest) < 2 of {
+        true -> "X10";
+        false -> do
+            p: string <- substring(dest, 0, 1);
+            case p == "S" or p == "D" or p == "H" of {
+                false -> "X10";
+                true -> case len(dest) > 2 of {
+                    true -> "X10";
+                    false -> case substring(dest, 1, 2) == "9" of {
+                        true -> "X10";
+                        false -> "X0"
+                    }
+                }
+            }
+        end
+    }
+}
+
 fn reg_prefix_for_type(type_name: string) -> string {
     case type_name == "float64" of {
         true -> "D";

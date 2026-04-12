@@ -4,33 +4,38 @@
 
 main.acc:     STP X29, X30, [SP, #-16]!
     STP X19, X20, [SP, #-16]!
-    MOV X12, X0
-    MOV X13, X1
+    STP X21, X22, [SP, #-16]!
+    MOV X19, X0
+    MOV X21, X1
     MOV X20, X2
 
-    MOV X9, X12
-    MOV X10, X13
+    MOV X9, X19
+    MOV X10, X21
 
 
     ADD X0, X9, X10
-    MOV X19, X0
+    MOV X22, X0
     MOV X9, #0
     STR X9, [X20, #0]
-    MOV X9, X19
+    MOV X9, X22
     STR X9, [X20, #8]
-    MOV X9, X19
+    MOV X9, X22
     STR X9, [X20, #16]
     MOV X0, X20
+    LDP X21, X22, [SP], #16
     LDP X19, X20, [SP], #16
     LDP X29, X30, [SP], #16
     RET
 
 main:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
     STP X21, X22, [SP, #-16]!
 
     MOV X9, #0
-    ADRP X10, main.acc@PAGE
-    ADD X10, X10, main.acc@PAGEOFF
+    ADRP X8, main.acc@PAGE
+    ADD X8, X8, main.acc@PAGEOFF
+    MOV X10, X8
+
     MOV X0, X9
     MOV X1, X10
     MOV W2, WZR
@@ -38,8 +43,10 @@ main:     STP X29, X30, [SP, #-16]!
 
     MOV X19, X0
     MOV X9, #0
-    ADRP X10, main.acc@PAGE
-    ADD X10, X10, main.acc@PAGEOFF
+    ADRP X8, main.acc@PAGE
+    ADD X8, X8, main.acc@PAGEOFF
+    MOV X10, X8
+
     MOV X0, X9
     MOV X1, X10
     MOV W2, WZR
@@ -112,6 +119,7 @@ main:     STP X29, X30, [SP, #-16]!
 
     MOV X0, #1
     LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
     LDP X29, X30, [SP], #16
     RET
 L_pi_helper:
@@ -544,15 +552,236 @@ Lloh5:
 	.loh AdrpLdr	Lloh4, Lloh5
 	.cfi_endproc
                                         ; -- End function
-	.globl	_silica_rt_get_cpu_topology     ; -- Begin function silica_rt_get_cpu_topology
+	.globl	_silica_rt_get_cpu_topology
 	.p2align	2
-_silica_rt_get_cpu_topology:            ; @silica_rt_get_cpu_topology
+_silica_rt_get_cpu_topology:
 	.cfi_startproc
-; %bb.0:
-	mov	x0, #0                          ; =0x0
+	stp	x29, x30, [sp, #-96]!
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	stp	x23, x24, [sp, #48]
+	stp	x25, x26, [sp, #64]
+	stp	x27, x28, [sp, #80]
+	mov	x29, sp
+	sub	sp, sp, #16
+	mov	w0, #4
+	str	w0, [sp, #8]
+	str	wzr, [sp]
+	adrp	x0, L_hw_perf0_str@PAGE
+	add	x0, x0, L_hw_perf0_str@PAGEOFF
+	mov	x1, sp
+	add	x2, sp, #8
+	mov	x3, xzr
+	mov	x4, xzr
+	bl	_sysctlbyname
+	cbnz	w0, L_topo_sysctl_fail
+	ldr	w19, [sp]
+	mov	w0, #4
+	str	w0, [sp, #8]
+	str	wzr, [sp]
+	adrp	x0, L_hw_perf1_str@PAGE
+	add	x0, x0, L_hw_perf1_str@PAGEOFF
+	mov	x1, sp
+	add	x2, sp, #8
+	mov	x3, xzr
+	mov	x4, xzr
+	bl	_sysctlbyname
+	cbnz	w0, L_topo_sysctl_fail
+	ldr	w20, [sp]
+	add	sp, sp, #16
+	add	w21, w19, w20
+	cbz	w21, L_topo_fail_zero
+	bl	_silica_rt_apple_hw_optional_caps_list
+	mov	x26, x0
+	mov	x22, xzr
+	subs	w9, w21, #1
+	b.lt	L_topo_after_cores
+L_topo_core_loop:
+	mov	w10, w9
+	mov	x0, #32
+	bl	_malloc
+	cbz	x0, L_topo_fail_zero
+	mov	x23, x0
+	uxtw	x10, w10
+	str	x10, [x23]
+	cmp	w10, w19
+	mov	w11, #1
+	mov	w12, #0
+	csel	w11, w11, w12, lt
+	uxtw	x11, w11
+	str	x11, [x23, #8]
+	str	x26, [x23, #16]
+	str	xzr, [x23, #24]
+	mov	x0, #16
+	bl	_malloc
+	cbz	x0, L_topo_fail_zero
+	mov	x1, x23
+	mov	x2, x22
+	str	x1, [x0]
+	str	x2, [x0, #8]
+	mov	x22, x0
+	subs	w9, w9, #1
+	b.ge	L_topo_core_loop
+L_topo_after_cores:
+	mov	x0, xzr
+	uxtw	x1, w21
+	bl	_silica_rt_build_int_range_list
+	mov	x24, x0
+	mov	x28, x24
+	adrp	x0, L_hw_memsize_str@PAGE
+	add	x0, x0, L_hw_memsize_str@PAGEOFF
+	bl	_silica_rt_sysctl_u64
+	cbz	x0, L_topo_fail_zero
+	mov	x27, x0
+	mov	x0, #24
+	bl	_malloc
+	cbz	x0, L_topo_fail_zero
+; memory_range: one NUMA node (Apple Silicon has no multi-domain sysctl matrix). start=0 = domain origin in this layout;
+; macOS sysctl does not expose physical DRAM base per node — size is real (hw.memsize bytes). latency=0 = local self-
+; distance (ACPI SLIT-style relative units: same node as itself), not an OS picoseconds value.
+	str	xzr, [x0]
+	str	x27, [x0, #8]
+	str	xzr, [x0, #16]
+	mov	x23, x0
+	mov	x0, #16
+	bl	_malloc
+	cbz	x0, L_topo_fail_zero
+	str	x23, [x0]
+	str	xzr, [x0, #8]
+	mov	x23, x0
+	mov	x0, #24
+	bl	_malloc
+	cbz	x0, L_topo_fail_zero
+	str	xzr, [x0]
+	str	x28, [x0, #8]
+	str	x23, [x0, #16]
+	mov	x23, x0
+	mov	x0, #16
+	bl	_malloc
+	cbz	x0, L_topo_fail_zero
+	str	x23, [x0]
+	str	xzr, [x0, #8]
+	mov	x26, x0
+	uxtw	x0, w19
+	uxtw	x1, w20
+	uxtw	x2, w21
+	mov	x3, x28
+	bl	_silica_rt_apple_build_cache_levels
+	mov	x25, x0
+	mov	x0, #24
+	bl	_malloc
+	cbz	x0, L_topo_fail_zero
+	str	x22, [x0]
+	str	x26, [x0, #8]
+	str	x25, [x0, #16]
+	b	L_topo_epilogue
+L_topo_sysctl_fail:
+	add	sp, sp, #16
+L_topo_fail_zero:
+; OOM / sysctl / zero-core failure: still return a non-NULL 24-byte record (cores, numa_nodes, cache_hierarchy
+; pointers all nil) so Silica callers can field-load and length(empty) without SIGSEGV. If malloc fails, return NULL.
+	mov	x0, #24
+	bl	_malloc
+	cbz	x0, L_topo_null_ret
+	stp	xzr, xzr, [x0]
+	str	xzr, [x0, #16]
+	b	L_topo_epilogue
+L_topo_null_ret:
+	mov	x0, xzr
+L_topo_epilogue:
+	ldp	x27, x28, [sp, #80]
+	ldp	x25, x26, [sp, #64]
+	ldp	x23, x24, [sp, #48]
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #96
 	ret
 	.cfi_endproc
-                                        ; -- End function
+	.globl	_silica_rt_get_core_capabilities
+	.p2align	2
+_silica_rt_get_core_capabilities:
+	.cfi_startproc
+	stp	x29, x30, [sp, #-80]!
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	stp	x23, x24, [sp, #48]
+	stp	x25, x26, [sp, #64]
+	mov	x29, sp
+	mov	x28, x0
+	sub	sp, sp, #16
+	mov	w0, #4
+	str	w0, [sp, #8]
+	str	wzr, [sp]
+	adrp	x0, L_hw_perf0_str@PAGE
+	add	x0, x0, L_hw_perf0_str@PAGEOFF
+	mov	x1, sp
+	add	x2, sp, #8
+	mov	x3, xzr
+	mov	x4, xzr
+	bl	_sysctlbyname
+	cbnz	w0, L_cap_sysctl_fail
+	ldr	w19, [sp]
+	mov	w0, #4
+	str	w0, [sp, #8]
+	str	wzr, [sp]
+	adrp	x0, L_hw_perf1_str@PAGE
+	add	x0, x0, L_hw_perf1_str@PAGEOFF
+	mov	x1, sp
+	add	x2, sp, #8
+	mov	x3, xzr
+	mov	x4, xzr
+	bl	_sysctlbyname
+	cbnz	w0, L_cap_sysctl_fail
+	ldr	w20, [sp]
+	add	sp, sp, #16
+	add	w21, w19, w20
+	cmp	x28, #0
+	b.lt	L_cap_emit_sentinel
+	uxtw	x8, w21
+	cmp	x28, x8
+	b.hs	L_cap_emit_sentinel
+	mov	x0, #32
+	bl	_malloc
+	cbz	x0, L_cap_emit_sentinel
+	mov	x23, x0
+	str	x28, [x23]
+	uxtw	x9, w19
+	cmp	x28, x9
+	mov	w11, #1
+	mov	w12, #0
+	csel	w11, w11, w12, lt
+	uxtw	x11, w11
+	str	x11, [x23, #8]
+	bl	_silica_rt_apple_hw_optional_caps_list
+	str	x0, [x23, #16]
+	str	xzr, [x23, #24]
+	mov	x0, x23
+	b	L_cap_epilogue
+L_cap_sysctl_fail:
+	add	sp, sp, #16
+	b	L_cap_emit_sentinel
+; Failure / OOM: heap core_info with id=-1 (sentinel); core_type=0 (:efficiency); caps/freq zero — distinguish from valid id>=0.
+L_cap_emit_sentinel:
+	mov	x0, #32
+	bl	_malloc
+	cbz	x0, L_cap_sentinel_oom
+	mvn	x1, xzr
+	str	x1, [x0]
+	str	xzr, [x0, #8]
+	str	xzr, [x0, #16]
+	str	xzr, [x0, #24]
+	b	L_cap_epilogue
+L_cap_sentinel_oom:
+	mov	x0, xzr
+	b	L_cap_epilogue
+L_cap_epilogue:
+	ldp	x25, x26, [sp, #64]
+	ldp	x23, x24, [sp, #48]
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #80
+	ret
+	.cfi_endproc
 	.globl	_silica_rt_get_efficiency_cores ; -- Begin function silica_rt_get_efficiency_cores
 	.p2align	2
 _silica_rt_get_efficiency_cores:        ; @silica_rt_get_efficiency_cores
@@ -657,15 +886,6 @@ LBBpc_fail:
 	ldp	x20, x19, [sp], #32
 	ret
 	.loh AdrpAdd	Lloh10, Lloh11
-	.cfi_endproc
-                                        ; -- End function
-	.globl	_silica_rt_get_core_capabilities ; -- Begin function silica_rt_get_core_capabilities
-	.p2align	2
-_silica_rt_get_core_capabilities:       ; @silica_rt_get_core_capabilities
-	.cfi_startproc
-; %bb.0:
-	mov	x0, #0                          ; =0x0
-	ret
 	.cfi_endproc
                                         ; -- End function
 	.globl	_silica_rt_pin_actor_to_core    ; -- Begin function silica_rt_pin_actor_to_core
@@ -882,6 +1102,58 @@ L_hw_perf0_str:
 	.asciz	"hw.perflevel0.physicalcpu"
 L_hw_perf1_str:
 	.asciz	"hw.perflevel1.physicalcpu"
+L_hw_memsize_str:
+	.asciz	"hw.memsize"
+L_hw_cachelinesize_str:
+	.asciz	"hw.cachelinesize"
+L_hw_nperflevels_str:
+	.asciz	"hw.nperflevels"
+L_hw_l3cachesize_str:
+	.asciz	"hw.l3cachesize"
+L_hw_l1dcachesize_str:
+	.asciz	"hw.l1dcachesize"
+L_hw_l2cachesize_str:
+	.asciz	"hw.l2cachesize"
+L_hw_pl0_l1d_str:
+	.asciz	"hw.perflevel0.l1dcachesize"
+L_hw_pl0_l2_str:
+	.asciz	"hw.perflevel0.l2cachesize"
+L_hw_pl1_l1d_str:
+	.asciz	"hw.perflevel1.l1dcachesize"
+L_hw_pl1_l2_str:
+	.asciz	"hw.perflevel1.l2cachesize"
+L_sc_opt_neon:
+	.asciz	"hw.optional.neon"
+L_tok_opt_neon:
+	.asciz	"optional.neon"
+L_sc_opt_armv8crc:
+	.asciz	"hw.optional.armv8_crc32"
+L_tok_opt_armv8crc:
+	.asciz	"optional.armv8_crc32"
+L_sc_opt_arm64:
+	.asciz	"hw.optional.arm64"
+L_tok_opt_arm64:
+	.asciz	"optional.arm64"
+L_sc_opt_lse:
+	.asciz	"hw.optional.arm.FEAT_LSE"
+L_tok_opt_lse:
+	.asciz	"optional.arm.FEAT_LSE"
+L_sc_opt_sha512:
+	.asciz	"hw.optional.arm.FEAT_SHA512"
+L_tok_opt_sha512:
+	.asciz	"optional.arm.FEAT_SHA512"
+L_sc_opt_sha256:
+	.asciz	"hw.optional.arm.FEAT_SHA256"
+L_tok_opt_sha256:
+	.asciz	"optional.arm.FEAT_SHA256"
+L_sc_opt_aes:
+	.asciz	"hw.optional.arm.FEAT_AES"
+L_tok_opt_aes:
+	.asciz	"optional.arm.FEAT_AES"
+L_sc_opt_advsimd:
+	.asciz	"hw.optional.AdvSIMD"
+L_tok_opt_advsimd:
+	.asciz	"optional.AdvSIMD"
 	.section	__TEXT,__text,regular,pure_instructions
 	.p2align	2                               ; -- Begin function silica_rt_build_int_range_list
 _silica_rt_build_int_range_list:        ; @silica_rt_build_int_range_list
@@ -924,6 +1196,403 @@ LBBrl_done:
 	ret
 	.cfi_endproc
                                         ; -- End function
+; X0 = sysctl name cstring. Returns W0 = int32 value, or -1 on failure.
+	.p2align	2
+_silica_rt_sysctl_i32:
+	stp	x29, x30, [sp, #-32]!
+	stp	x19, x20, [sp, #16]
+	mov	x29, sp
+	mov	x19, x0
+	sub	sp, sp, #16
+	mov	w0, #4
+	str	w0, [sp, #8]
+	str	wzr, [sp]
+	mov	x0, x19
+	mov	x1, sp
+	add	x2, sp, #8
+	mov	x3, xzr
+	mov	x4, xzr
+	bl	_sysctlbyname
+	cbnz	w0, L_si32_fail
+	ldr	w0, [sp]
+	add	sp, sp, #16
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #32
+	ret
+L_si32_fail:
+	mov	w0, #-1
+	add	sp, sp, #16
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #32
+	ret
+; X0 = C string pointer, X1 = tail (cons list or 0). Returns X0 = new head; malloc fail returns X1.
+	.p2align	2
+_silica_rt_cons_cstr_list:
+	stp	x29, x30, [sp, #-32]!
+	stp	x19, x20, [sp, #16]
+	mov	x29, sp
+	mov	x19, x0
+	mov	x20, x1
+	mov	x0, #16
+	bl	_malloc
+	cbz	x0, L_ccl_fail
+	str	x19, [x0]
+	str	x20, [x0, #8]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #32
+	ret
+L_ccl_fail:
+	mov	x0, x20
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #32
+	ret
+; Machine-wide sysctl hw.optional.* flags -> cons list of cstrings (see cpu_topology_implementation_plan).
+	.globl	_silica_rt_apple_hw_optional_caps_list
+	.p2align	2
+_silica_rt_apple_hw_optional_caps_list:
+	stp	x29, x30, [sp, #-64]!
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	stp	x23, x24, [sp, #48]
+	mov	x29, sp
+	mov	x19, xzr
+	adrp	x0, L_sc_opt_neon@PAGE
+	add	x0, x0, L_sc_opt_neon@PAGEOFF
+	bl	_silica_rt_sysctl_i32
+	cmp	w0, #1
+	b.ne	L_iho_1
+	adrp	x0, L_tok_opt_neon@PAGE
+	add	x0, x0, L_tok_opt_neon@PAGEOFF
+	mov	x1, x19
+	bl	_silica_rt_cons_cstr_list
+	mov	x19, x0
+L_iho_1:
+	adrp	x0, L_sc_opt_armv8crc@PAGE
+	add	x0, x0, L_sc_opt_armv8crc@PAGEOFF
+	bl	_silica_rt_sysctl_i32
+	cmp	w0, #1
+	b.ne	L_iho_2
+	adrp	x0, L_tok_opt_armv8crc@PAGE
+	add	x0, x0, L_tok_opt_armv8crc@PAGEOFF
+	mov	x1, x19
+	bl	_silica_rt_cons_cstr_list
+	mov	x19, x0
+L_iho_2:
+	adrp	x0, L_sc_opt_arm64@PAGE
+	add	x0, x0, L_sc_opt_arm64@PAGEOFF
+	bl	_silica_rt_sysctl_i32
+	cmp	w0, #1
+	b.ne	L_iho_3
+	adrp	x0, L_tok_opt_arm64@PAGE
+	add	x0, x0, L_tok_opt_arm64@PAGEOFF
+	mov	x1, x19
+	bl	_silica_rt_cons_cstr_list
+	mov	x19, x0
+L_iho_3:
+	adrp	x0, L_sc_opt_lse@PAGE
+	add	x0, x0, L_sc_opt_lse@PAGEOFF
+	bl	_silica_rt_sysctl_i32
+	cmp	w0, #1
+	b.ne	L_iho_4
+	adrp	x0, L_tok_opt_lse@PAGE
+	add	x0, x0, L_tok_opt_lse@PAGEOFF
+	mov	x1, x19
+	bl	_silica_rt_cons_cstr_list
+	mov	x19, x0
+L_iho_4:
+	adrp	x0, L_sc_opt_sha512@PAGE
+	add	x0, x0, L_sc_opt_sha512@PAGEOFF
+	bl	_silica_rt_sysctl_i32
+	cmp	w0, #1
+	b.ne	L_iho_5
+	adrp	x0, L_tok_opt_sha512@PAGE
+	add	x0, x0, L_tok_opt_sha512@PAGEOFF
+	mov	x1, x19
+	bl	_silica_rt_cons_cstr_list
+	mov	x19, x0
+L_iho_5:
+	adrp	x0, L_sc_opt_sha256@PAGE
+	add	x0, x0, L_sc_opt_sha256@PAGEOFF
+	bl	_silica_rt_sysctl_i32
+	cmp	w0, #1
+	b.ne	L_iho_6
+	adrp	x0, L_tok_opt_sha256@PAGE
+	add	x0, x0, L_tok_opt_sha256@PAGEOFF
+	mov	x1, x19
+	bl	_silica_rt_cons_cstr_list
+	mov	x19, x0
+L_iho_6:
+	adrp	x0, L_sc_opt_aes@PAGE
+	add	x0, x0, L_sc_opt_aes@PAGEOFF
+	bl	_silica_rt_sysctl_i32
+	cmp	w0, #1
+	b.ne	L_iho_7
+	adrp	x0, L_tok_opt_aes@PAGE
+	add	x0, x0, L_tok_opt_aes@PAGEOFF
+	mov	x1, x19
+	bl	_silica_rt_cons_cstr_list
+	mov	x19, x0
+L_iho_7:
+	adrp	x0, L_sc_opt_advsimd@PAGE
+	add	x0, x0, L_sc_opt_advsimd@PAGEOFF
+	bl	_silica_rt_sysctl_i32
+	cmp	w0, #1
+	b.ne	L_iho_done
+	adrp	x0, L_tok_opt_advsimd@PAGE
+	add	x0, x0, L_tok_opt_advsimd@PAGEOFF
+	mov	x1, x19
+	bl	_silica_rt_cons_cstr_list
+	mov	x19, x0
+L_iho_done:
+	mov	x0, x19
+	ldp	x23, x24, [sp, #48]
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #64
+	ret
+; X0 = sysctl name cstring. Returns X0 = uint64 (0 on failure).
+	.p2align	2
+_silica_rt_sysctl_u64:
+	stp	x29, x30, [sp, #-48]!
+	stp	x19, x20, [sp, #16]
+	mov	x29, sp
+	mov	x19, x0
+	sub	sp, sp, #16
+	mov	w0, #8
+	str	w0, [sp, #8]
+	stp	xzr, xzr, [sp]
+	mov	x0, x19
+	mov	x1, sp
+	add	x2, sp, #8
+	mov	x3, xzr
+	mov	x4, xzr
+	bl	_sysctlbyname
+	cbnz	w0, L_s64_fail
+	ldr	x0, [sp]
+	add	sp, sp, #16
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #48
+	ret
+L_s64_fail:
+	mov	x0, xzr
+	add	sp, sp, #16
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #48
+	ret
+; Apple Silicon cache_info.levels: sysctl exposes per-cluster L1D/L2 (hw.perflevel0/1.*), aggregate hw.l1d/l2/l3,
+; hw.cachelinesize, hw.nperflevels. Not exposed in sysctl: SLC/unified last-level cache as a stable L3; associativity
+; (we store 0). X0=P, X1=E, X2=total, X3=all-core-ids list. Returns X0 = list head (cons spine) or 0.
+	.globl	_silica_rt_apple_build_cache_levels
+	.p2align	2
+_silica_rt_apple_build_cache_levels:
+	stp	x29, x30, [sp, #-160]!
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	stp	x23, x24, [sp, #48]
+	stp	x25, x26, [sp, #64]
+	stp	x27, x28, [sp, #80]
+	mov	x29, sp
+	sub	sp, sp, #48
+	mov	x19, x0
+	mov	x20, x1
+	mov	x21, x2
+	mov	x28, x3
+	mov	x22, xzr
+	adrp	x0, L_hw_cachelinesize_str@PAGE
+	add	x0, x0, L_hw_cachelinesize_str@PAGEOFF
+	bl	_silica_rt_sysctl_u64
+	mov	x23, x0
+	mov	x0, xzr
+	uxtw	x1, w19
+	bl	_silica_rt_build_int_range_list
+	mov	x24, x0
+	cbz	w20, L_bc_no_epl
+	uxtw	x0, w19
+	uxtw	x1, w20
+	bl	_silica_rt_build_int_range_list
+	mov	x25, x0
+	b	L_bc_have_epl
+L_bc_no_epl:
+	mov	x25, xzr
+L_bc_have_epl:
+	mov	x0, xzr
+	uxtw	x1, w21
+	bl	_silica_rt_build_int_range_list
+	mov	x26, x0
+	sub	sp, sp, #16
+	mov	w0, #4
+	str	w0, [sp, #8]
+	str	wzr, [sp]
+	adrp	x0, L_hw_nperflevels_str@PAGE
+	add	x0, x0, L_hw_nperflevels_str@PAGEOFF
+	mov	x1, sp
+	add	x2, sp, #8
+	mov	x3, xzr
+	mov	x4, xzr
+	bl	_sysctlbyname
+	cbnz	w0, L_bc_nperf_fail
+	ldr	w27, [sp]
+	add	sp, sp, #16
+	cmp	w27, #2
+	b.hs	L_bc_dual
+	b	L_bc_agg
+L_bc_nperf_fail:
+	add	sp, sp, #16
+L_bc_agg:
+	adrp	x0, L_hw_l3cachesize_str@PAGE
+	add	x0, x0, L_hw_l3cachesize_str@PAGEOFF
+	bl	_silica_rt_sysctl_u64
+	cbz	x0, L_bc_a_skip_l3
+	lsr	x2, x0, #10
+	cbz	x2, L_bc_a_skip_l3
+	mov	x1, #3
+	mov	x3, x23
+	mov	x4, xzr
+	mov	x5, x26
+	bl	L_bc_push
+	mov	x22, x0
+L_bc_a_skip_l3:
+	adrp	x0, L_hw_l2cachesize_str@PAGE
+	add	x0, x0, L_hw_l2cachesize_str@PAGEOFF
+	bl	_silica_rt_sysctl_u64
+	cbz	x0, L_bc_a_skip_l2
+	lsr	x2, x0, #10
+	cbz	x2, L_bc_a_skip_l2
+	mov	x1, #2
+	mov	x3, x23
+	mov	x4, xzr
+	mov	x5, x26
+	bl	L_bc_push
+	mov	x22, x0
+L_bc_a_skip_l2:
+	adrp	x0, L_hw_l1dcachesize_str@PAGE
+	add	x0, x0, L_hw_l1dcachesize_str@PAGEOFF
+	bl	_silica_rt_sysctl_u64
+	cbz	x0, L_bc_done
+	lsr	x2, x0, #10
+	cbz	x2, L_bc_done
+	mov	x1, #1
+	mov	x3, x23
+	mov	x4, xzr
+	mov	x5, x26
+	bl	L_bc_push
+	mov	x22, x0
+	b	L_bc_done
+L_bc_dual:
+	adrp	x0, L_hw_l3cachesize_str@PAGE
+	add	x0, x0, L_hw_l3cachesize_str@PAGEOFF
+	bl	_silica_rt_sysctl_u64
+	cbz	x0, L_bc_d_skip_l3
+	lsr	x2, x0, #10
+	cbz	x2, L_bc_d_skip_l3
+	mov	x1, #3
+	mov	x3, x23
+	mov	x4, xzr
+	mov	x5, x26
+	bl	L_bc_push
+	mov	x22, x0
+L_bc_d_skip_l3:
+	cbz	w20, L_bc_d_skip_el2
+	adrp	x0, L_hw_pl1_l2_str@PAGE
+	add	x0, x0, L_hw_pl1_l2_str@PAGEOFF
+	bl	_silica_rt_sysctl_u64
+	cbz	x0, L_bc_d_skip_el2
+	lsr	x2, x0, #10
+	cbz	x2, L_bc_d_skip_el2
+	mov	x1, #2
+	mov	x3, x23
+	mov	x4, xzr
+	mov	x5, x25
+	bl	L_bc_push
+	mov	x22, x0
+L_bc_d_skip_el2:
+	cbz	w19, L_bc_d_skip_pl2
+	adrp	x0, L_hw_pl0_l2_str@PAGE
+	add	x0, x0, L_hw_pl0_l2_str@PAGEOFF
+	bl	_silica_rt_sysctl_u64
+	cbz	x0, L_bc_d_skip_pl2
+	lsr	x2, x0, #10
+	cbz	x2, L_bc_d_skip_pl2
+	mov	x1, #2
+	mov	x3, x23
+	mov	x4, xzr
+	mov	x5, x24
+	bl	L_bc_push
+	mov	x22, x0
+L_bc_d_skip_pl2:
+	cbz	w20, L_bc_d_skip_el1
+	adrp	x0, L_hw_pl1_l1d_str@PAGE
+	add	x0, x0, L_hw_pl1_l1d_str@PAGEOFF
+	bl	_silica_rt_sysctl_u64
+	cbz	x0, L_bc_d_skip_el1
+	lsr	x2, x0, #10
+	cbz	x2, L_bc_d_skip_el1
+	mov	x1, #1
+	mov	x3, x23
+	mov	x4, xzr
+	mov	x5, x25
+	bl	L_bc_push
+	mov	x22, x0
+L_bc_d_skip_el1:
+	cbz	w19, L_bc_done
+	adrp	x0, L_hw_pl0_l1d_str@PAGE
+	add	x0, x0, L_hw_pl0_l1d_str@PAGEOFF
+	bl	_silica_rt_sysctl_u64
+	cbz	x0, L_bc_done
+	lsr	x2, x0, #10
+	cbz	x2, L_bc_done
+	mov	x1, #1
+	mov	x3, x23
+	mov	x4, xzr
+	mov	x5, x24
+	bl	L_bc_push
+	mov	x22, x0
+L_bc_done:
+	mov	x0, x22
+	add	sp, sp, #48
+	ldp	x27, x28, [sp, #80]
+	ldp	x25, x26, [sp, #64]
+	ldp	x23, x24, [sp, #48]
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #160
+	ret
+; X22=head X1=level X2=size_kb X3=line X4=assoc X5=shared -> X0=new head
+L_bc_push:
+	stp	x29, x30, [sp, #-64]!
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	mov	x29, sp
+	mov	x19, x22
+	mov	x20, x1
+	mov	x21, x2
+	mov	x0, #40
+	bl	_malloc
+	cbz	x0, L_bcp_fail
+	str	x20, [x0]
+	str	x21, [x0, #8]
+	str	x3, [x0, #16]
+	str	x4, [x0, #24]
+	str	x5, [x0, #32]
+	mov	x1, x0
+	mov	x2, x19
+	mov	x0, #16
+	bl	_malloc
+	cbz	x0, L_bcp_fail
+	str	x1, [x0]
+	str	x2, [x0, #8]
+	mov	x6, x0
+	ldp	x19, x20, [sp, #16]
+	ldp	x21, x22, [sp, #32]
+	ldp	x29, x30, [sp], #64
+	mov	x0, x6
+	ret
+L_bcp_fail:
+	mov	x0, x19
+	ldp	x19, x20, [sp, #16]
+	ldp	x21, x22, [sp, #32]
+	ldp	x29, x30, [sp], #64
+	ret
 .tbss _tl_current_actor$tlv$init, 8, 3  ; @tl_current_actor
 
 	.section	__DATA,__thread_vars,thread_local_variables

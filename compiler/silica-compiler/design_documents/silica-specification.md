@@ -5,6 +5,8 @@
 | Document | Purpose |
 |----------|---------|
 | [silica-specification-additional.md](silica-specification-additional.md) | Compiler failure rules: anti-patterns that must fail at compile time |
+| [silica_actor_capabilities_specification.md](silica_actor_capabilities_specification.md) | Actor capabilities, protocol-typed references, and message-order guarantees (draft extension) |
+| [memory-effects-aarch64-implementation-plan.md](memory-effects-aarch64-implementation-plan.md) | Memory `Space` model for OS-free AArch64 and embedded targets (implementation plan) |
 
 ---
 
@@ -4399,6 +4401,8 @@ Silica defines several built-in effects that track different kinds of side effec
 - `hot_swap` - Code loading (dynamic loading, JIT, self-modifying code). On AArch64, requires `ISB` barrier to ensure instruction fetch sees code writes.
 - `register_rwr` - Direct device register access via mmap (read and write). On AArch64, requires `DSB SY` before and `ISB` after for device ordering.
 
+**Memory effect guarantees (hosting; normative at this time):** The **distinct hardware behaviors** associated with each `mem(Space)` and region `Space` (write-back, write-through, non-cacheable normal, device, and atomic backing rules in **§12.1.1** and following) are **fully supported and guaranteed only on OS-free executions**—for example bare-metal **boards**, firmware, or any environment where the **Silica runtime and linker script control** how memory regions are mapped and which **cacheability / ordering attributes** apply. On **OS-hosted** programs—**macOS**, **Linux**, **Windows**, **Solaris**, and comparable multiprogramming systems—application memory is exposed through the **traditional flat virtual address model** historically rooted in Unix and the **PDP-11** view of a process: ordinary allocations receive **uniform, OS-chosen** attributes, not a portable, per-allocation choice of Silica memory spaces. Because the **operating system controls and shares physical RAM** among processes, that model **cannot be sidestepped** by a portable application runtime to obtain, for all Silica regions, the same per-space **page-table / MAIR-class** distinctions the language describes. On OS-hosted targets, `mem(Space)` and `region(R, Space)` remain in the **type and effect system** for static discipline, documentation, and integration with **non-portable** or **driver-mediated** buffers where available, but **this specification does not guarantee**, at this time, that each memory space maps to **different hardware attributes** on those OSes. See **§12.1.1.0**.
+
 **Note**: Message type safety for actors is ensured through:
 1. Function parameter types (behavior functions receive typed messages)
 2. The `ActorMessage` trait (all message types must satisfy this trait via explicit `impl`; see §16.3.2)
@@ -5825,20 +5829,30 @@ alloc_region(device) -> region(R, device) proc[mem(device)]  // Driver library o
 - **atomic**: Use for memory regions containing atomic references that will be accessed by multiple actors concurrently.
 - **device**: Reserved for future device driver library. Application code should not use device memory directly.
 
+#### 12.1.1.0 Memory spaces: OS-free guarantee vs OS-hosted programs
+
+**Normative (at this time):** Silica **fully supports** the memory-effect and region **Space** vocabulary—including distinct **cache policies**, **shareability**, and **device** vs **normal** distinctions as defined in this chapter—**only on OS-free systems**. Examples include **bare-metal boards**, **microcontroller** targets where the Silica runtime owns the memory map, **single-application firmware**, and **any execution environment** where there is **no general-purpose OS** interposing a process model and a single default mapping policy for all user allocations. On such targets, the implementation maps each `Space` to the **appropriate hardware mechanisms** for that architecture (for AArch64, **§12.1.1.1**; for other chips, the corresponding cache, MPU/MMU, bus, or memory-controller attributes as documented for that board—e.g. **ESP32-S3** and similar SoCs under **Espressif IDF**-style control of internal RAM, external RAM, and peripherals).
+
+**OS-hosted systems**—including **macOS**, **Linux**, **Windows**, **Solaris**, and analogous OSes—present memory to applications using the **classic PDP-11–era model** carried forward into modern Unix and Windows: a **flat virtual address space** per process with **ordinary heap and anonymous mappings** subject to **kernel-defined** caching and coherency, **not** application-selectable MAIR indices or equivalent per Silica region. The **OS must arbitrate shared RAM**; portable user-space code therefore **cannot** rely on sidestepping that model to obtain, for **every** `alloc_region(Space)`, hardware attributes that match **normal_writethrough**, **normal_noncacheable**, or **device** as specified here. Implementations on OS-hosted targets may still use **`mem(Space)`** for **static checking**, **API clarity**, and **bridges** to **special allocations** (drivers, pinned DMA buffers) where the platform provides them, but **this specification does not guarantee** distinct hardware-backed spaces for generic Silica regions on those OSes **at this time**.
+
+Implementations **SHOULD** document, per target, whether execution is **OS-free** (full space semantics) or **OS-hosted** (discipline without guaranteed attribute differentiation).
+
 #### 12.1.1.1 AArch64 Memory Attribute Mapping
 
-Silica memory spaces map directly to AArch64 memory attributes configured in the `MAIR_EL1` (Memory Attribute Indirection Register). The compiler and runtime configure these attributes to ensure correct hardware behavior.
+On **AArch64 OS-free** (or otherwise **EL1-controlled**) Silica runtimes, memory spaces map directly to AArch64 memory attributes configured in the `MAIR_EL1` (Memory Attribute Indirection Register). The compiler and runtime configure these attributes so that region backing storage uses the intended hardware behavior. On **OS-hosted** AArch64 programs, the application may **not** control `MAIR_EL1` or per-page attribute indices for ordinary allocations; see **§12.1.1.0**.
 
 **MAIR_EL1 Runtime Initialization:**
+
+The following applies where the Silica runtime **may program AArch64 memory attributes**—principally **OS-free** firmware or **EL1** Silica images (see **§12.1.1.0**). **OS-hosted** application processes **do not** program `MAIR_EL1` for ordinary allocations; their memory model remains kernel-defined.
 
 The runtime initializes `MAIR_EL1` during program startup to configure memory attributes:
 
 1. **Initialization Timing**: `MAIR_EL1` is configured once during program initialization, before any memory regions are allocated
-2. **Privilege Level**: `MAIR_EL1` configuration requires EL1 privilege level (kernel mode). User-space programs rely on the kernel to configure `MAIR_EL1` or use system calls to request memory attribute configuration
-3. **Configuration Method**: The runtime uses system calls (e.g., `mmap()` with `MAP_ANONYMOUS` and memory attribute hints) or kernel interfaces to configure memory attributes
-4. **Error Handling**: If `MAIR_EL1` configuration fails, the runtime falls back to default memory attributes (typically write-back cacheable)
-5. **Per-Process Configuration**: `MAIR_EL1` is typically configured per-process, allowing different processes to use different memory attribute mappings
-6. **Attribute Persistence**: Once configured, `MAIR_EL1` attributes persist for the lifetime of the process
+2. **Privilege Level**: Programming `MAIR_EL1` requires **EL1** (or higher). **OS-free** Silica runtimes at EL1 set it directly. **OS-hosted** user-space processes **cannot** set it portably for app heap; the kernel owns page attributes
+3. **Configuration Method**: **OS-free:** direct `MSR MAIR_EL1` (or bootloader-established values). **OS-hosted:** only indirect, non-portable kernel or driver paths—**not** guaranteed for generic `alloc_region(Space)` (§12.1.1.0)
+4. **Error Handling**: If configuration is unavailable or fails, the implementation falls back to documented default attributes (typically write-back cacheable) and **SHOULD** report reduced `Space` capability
+5. **Scope**: Where EL1 is shared (e.g. multiprogramming at EL1), attribute configuration is **system-defined**; **§12.1.1.0** governs whether per-space guarantees apply
+6. **Persistence**: Once configured for that execution environment, `MAIR_EL1` attribute bytes used by Silica mappings persist until the environment reinitializes them
 
 **System Register Access:**
 
@@ -8192,14 +8206,14 @@ The `message` argument must satisfy `ActorMessage` — typically `expr impl Acto
 Messages can be sent asynchronously without blocking, with success/failure indication:
 
 ```
-cast(actor: actor_ref, message: ActorMessage) -> boolean proc[concurrency]
+cast(actor: actor_ref, message: ActorMessage) -> atom proc[concurrency]
 ```
 
 **Semantics:**
 - **Non-Blocking**: The caller returns immediately; the message is queued and processing continues without waiting for a response
 - **No Reply Expected**: The target behavior must return `(:no_reply, new_state)` — no reply is sent back to the caller
-- **Immediate Death Detection**: Returns `false` immediately if the actor is already dead (does not queue the message)
-- **Success/Failure**: Returns `true` if the message was successfully enqueued (actor exists and alive), `false` if the actor doesn't exist or is dead
+- **Immediate Death Detection**: Raises `actor_not_found` immediately if the actor is already dead (does not queue the message)
+- **Success/Failure**: Message is successfully enqueued if the actor exists and is alive; raises `actor_not_found` if the actor doesn't exist or is dead
 
 **Behavior Function Contract**: The target actor must be spawned with a **cast-only** behavior function that returns `(:no_reply, new_state)`.
 
@@ -8232,8 +8246,8 @@ Messages are delivered exactly once, in FIFO order. The actor runtime processes 
 When a message is sent to an actor that has terminated, the following behavior applies:
 
 - **Messages are Dropped**: Messages sent to terminated actors are dropped (not queued) and will never be delivered
-- **No Error Raised**: The `send()` and `cast()` operations do not raise errors when targeting terminated actors (asynchronous send semantics)
-- **Optional Logging**: The runtime may optionally log warnings about messages sent to terminated actors, but this is implementation-dependent and does not affect program behavior
+- **Exception Raised**: Both `call()` and `cast()` raise `actor_not_found` when targeting a terminated actor, providing consistent error handling across all message-sending operations
+- **Explicit Handling Required**: Callers must handle the `actor_not_found` exception when sending messages to actors that may have terminated
 - **No Delivery Guarantee**: There is no guarantee that messages sent to an actor will be delivered if the actor terminates before message processing
 
 **Termination Detection:**
@@ -8253,13 +8267,13 @@ actor_b_ref: actor_ref <- spawn(initial_state, behavior_fn);
 // ... Actor B terminates ...
 
 // Actor A sends message (cast) to terminated Actor B
-cast(actor_b_ref, SomeMessage {});  // Returns false, no error raised
+cast(actor_b_ref, SomeMessage {});  // Raises actor_not_found exception
 
 // Actor A calls (expects reply) from terminated Actor B
 call(actor_b_ref, SomeRequest {});  // Raises actor_not_found exception
 
-// Optional: Runtime may log warning (implementation-dependent)
-// Warning: "Message sent to terminated actor"
+// Both operations consistently raise actor_not_found when targeting a terminated actor
+// Caller must handle the exception explicitly
 ```
 
 **Race Conditions:**
@@ -8325,17 +8339,17 @@ While mailboxes are unbounded, developers should be aware of memory implications
 
 **Message Acceptance Guarantees:**
 
-Both `send()` and `cast()` guarantee message acceptance:
+Both `send()` and `cast()` guarantee message acceptance or raise `actor_not_found`:
 
 - **`send()` Function**: Always accepts messages - never fails due to mailbox capacity
   - Messages are always queued successfully
   - No blocking - returns immediately after queuing message
   - No capacity errors - mailboxes never reject messages
   
-- **`cast()` Function**: Always accepts messages from existing actors - returns `false` only if actor doesn't exist
-  - Returns `true` if message was successfully enqueued (actor exists)
-  - Returns `false` only if actor doesn't exist (terminated or invalid actor reference)
-  - Never returns `false` due to mailbox capacity - mailboxes are unbounded
+- **`cast()` Function**: Accepts messages from existing actors or raises `actor_not_found`
+  - Message is successfully enqueued if actor exists and is alive
+  - Raises `actor_not_found` if the actor doesn't exist or has terminated
+  - Never fails due to mailbox capacity - mailboxes are unbounded
 
 **Performance Characteristics:**
 
@@ -8347,7 +8361,7 @@ Unbounded mailboxes provide predictable performance characteristics:
 - **Processing Latency**: Message processing latency may increase as queue size grows (more messages to process)
 
 **Cross-References:**
-- See Section 16.1.2 (Asynchronous Cast) for `cast()` return value semantics
+- See Section 16.1.2 (Asynchronous Cast) for `cast()` exception handling semantics
 - See Section 16.1.1 (Asynchronous Send) for `send()` behavior
 - See Section 15.1.2.2 (Actor Migration Overhead and Behavior) for message delivery during migration
 - See Section 12.1 (Region-Based Memory Management) for memory management details
@@ -8392,15 +8406,15 @@ The message parameter is automatically provided by the actor runtime when a mess
 | Aspect | `call()` | `cast()` |
 |--------|----------|---------|
 | **Blocking** | Yes — caller blocks until reply | No — returns immediately |
-| **Return Value** | Reply from behavior | Boolean (actor exists?) |
+| **Return Value** | Reply from behavior | `atom` (always returns unit on success) |
 | **Behavior Return** | `(:reply, reply_value, new_state)` | `(:no_reply, new_state)` |
 | **Use Case** | Request-reply patterns | Fire-and-forget notifications |
-| **Exception on Fail** | `timeout_error` or `actor_not_found` | Returns `false` |
+| **Exception on Fail** | `actor_not_found` | `actor_not_found` |
 
 **Usage Guidance:**
 - Use `call()` for **request-reply** patterns where the caller needs a response before continuing
 - Use `cast()` for **notifications** or **commands** where no reply is expected
-- Use `cast()` to detect actor existence (returns `boolean`)
+- Both operations provide consistent error handling via `actor_not_found` exception when the target actor is terminated
 
 ### 16.2.6 Compiler Type Checking for Calling Conventions
 
@@ -8692,7 +8706,7 @@ The `reply_to` field is optional - messages without it cannot be used for cast-b
 - **Compile-Time Verification**: Field access (e.g., `reply_to`) is verified at compile time - attempting to access a field that doesn't exist in the message type results in a compile-time error
 - **Immutability**: Message data cannot be mutated after sending
 - **Isolation**: Message contents are copied between actors
-- **Cast Success Indication**: `cast()` returns `boolean` indicating success/failure of message enqueueing
+- **Cast Exception Handling**: `cast()` raises `actor_not_found` exception if the target actor has terminated
 - **Actor Reference Type**: `actor_ref` is a primitive type (like `int` or `boolean`), not parameterized by message type
 
 ## 17. Atomic Operations
@@ -13294,10 +13308,10 @@ Sends a message to an actor and **blocks** until a reply is received. The target
 
 #### Asynchronous Cast (Fire-and-Forget)
 ```
-cast(actor: actor_ref, message: ActorMessage) -> boolean proc[concurrency]
+cast(actor: actor_ref, message: ActorMessage) -> atom proc[concurrency]
 ```
 
-Sends a message to an actor and **returns immediately** without waiting for a response. The target behavior should return `(:no_reply, new_state)`. Returns `true` if the message was successfully enqueued (actor exists), `false` if the actor doesn't exist.
+Sends a message to an actor and **returns immediately** without waiting for a response. The target behavior should return `(:no_reply, new_state)`. Raises `actor_not_found` if the actor doesn't exist or has terminated.
 
 #### Runtime Message Reception
 ```
@@ -14130,7 +14144,7 @@ This section provides a quick reference for performance characteristics document
 | Operation | Typical Latency | Throughput | Notes |
 |-----------|-----------------|-------------|-------|
 | `send()` message enqueue | 10-50ns | 10-50M messages/sec | Unbounded mailbox, O(1) enqueue |
-| `cast()` message enqueue | 10-50ns | 10-50M messages/sec | Same as `send()`, returns success status |
+| `cast()` message enqueue | 10-50ns | 10-50M messages/sec | Same as `send()`, raises `actor_not_found` if target terminated |
 | Message delivery (same core) | 50-200ns | 5-20M messages/sec | Includes actor scheduling overhead |
 | Message delivery (cross-core) | 100-500ns | 2-10M messages/sec | Includes cache coherency and scheduling |
 | Message delivery (cross-NUMA) | 200-1000ns | 1-5M messages/sec | Includes NUMA access latency |
@@ -15176,7 +15190,7 @@ When a trait is used directly as a type (e.g., `ActorMessage`), it represents an
 **Example:**
 ```silica
 // ActorMessage can be used as a type; payloads use expr impl ActorMessage {} at call sites
-cast(actor_ref, message: ActorMessage) -> boolean proc[concurrency]
+cast(actor_ref, message: ActorMessage) -> atom proc[concurrency]
 ```
 
 #### 30.1.6 Trait Bounds

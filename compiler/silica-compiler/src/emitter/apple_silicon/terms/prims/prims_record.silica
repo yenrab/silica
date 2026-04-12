@@ -15,6 +15,90 @@ export record_type_braces_balanced/1;
 export record_case_inner_body/1;
 export record_case_field_step/1;
 export record_field_segment_name_sub/1;
+export record_type_flat_stack_bytes/1;
+export record_type_has_only_scalar_fields/1;
+export record_type_value_flat_byte_size/1;
+
+fn record_type_has_only_scalar_fields(record_str: string) -> bool {
+    t: string <- strip_spaces_rt(record_str);
+    case record_type_starts(t) of {
+        false -> true;
+        true -> has_only_scalar_fields_inner_loop(extract_braced_body(t))
+    }
+}
+
+// True when every field type is a scalar or a (possibly nested) record whose leaves are all scalars.
+fn has_only_scalar_fields_inner_loop(remaining: string) -> bool {
+    inner: string <- strip_spaces_rt(remaining);
+    case len(inner) == 0 of {
+        true -> true;
+        false -> do
+            (seg, rest) <- record_case_field_step(inner);
+            (fname, fty) <- record_field_segment_name_sub(seg);
+            case len(fname) == 0 of {
+                true -> has_only_scalar_fields_inner_loop(rest);
+                false -> case inner_field_scalar_ok_for_inline(fty) of {
+                    false -> false;
+                    true -> has_only_scalar_fields_inner_loop(rest)
+                }
+            }
+        end
+    }
+}
+
+// Only int/uint/bool/float leaves participate in value-flat nested records (trial 08).
+// List, string, atom, tuples, etc. keep pointer/nested stack layout (trials 04, 07, 10).
+fn value_flat_leaf_field_type_p(fty: string) -> bool {
+    t: string <- strip_spaces_rt(fty);
+    t == "int64" or t == "int32" or t == "int16" or t == "int8" or
+    t == "uint64" or t == "uint32" or t == "uint16" or t == "uint8" or
+    t == "bool" or t == "float64" or t == "float32" or t == "float16"
+}
+
+fn inner_field_scalar_ok_for_inline(fty: string) -> bool {
+    t: string <- strip_spaces_rt(fty);
+    case record_type_starts(t) of {
+        true -> record_type_has_only_scalar_fields(t);
+        false -> case len(t) > 0 and substring(t, 0, 1) == "(" of {
+            true -> false;
+            false -> value_flat_leaf_field_type_p(t)
+        }
+    }
+}
+
+fn field_value_flat_slot_bytes(fty: string) -> int64 {
+    t: string <- strip_spaces_rt(fty);
+    case record_type_starts(t) of {
+        true -> case record_type_has_only_scalar_fields(t) of {
+            true -> record_type_value_flat_byte_size(t);
+            false -> slot_bytes_for_field_type(t)
+        };
+        false -> slot_bytes_for_field_type(t)
+    }
+}
+
+fn sum_field_value_flat_loop(remaining: string) -> int64 {
+    inner: string <- strip_spaces_rt(remaining);
+    case len(inner) == 0 of {
+        true -> 0;
+        false -> do
+            (seg, rest) <- record_case_field_step(inner);
+            (fname, fty) <- record_field_segment_name_sub(seg);
+            case len(fname) == 0 of {
+                true -> sum_field_value_flat_loop(rest);
+                false -> field_value_flat_slot_bytes(fty) + sum_field_value_flat_loop(rest)
+            }
+        end
+    }
+}
+
+fn record_type_value_flat_byte_size(record_str: string) -> int64 {
+    t: string <- strip_spaces_rt(record_str);
+    case record_type_starts(t) of {
+        false -> 8;
+        true -> sum_field_value_flat_loop(extract_braced_body(t))
+    }
+}
 
 fn strip_spaces_rt(s: string) -> string {
     strip_spaces_rt_from(s, 0, "")
@@ -228,7 +312,7 @@ fn offset_bytes_before_field_in_content(content: string, field: string, start: i
                     fty: string <- strip_spaces_rt(substring(seg, colon + 1, len(seg)));
                     case fname == field of {
                         true -> acc;
-                        false -> offset_bytes_before_field_in_content(content, field, seg_end + 1, acc + slot_bytes_for_field_type(fty))
+                        false -> offset_bytes_before_field_in_content(content, field, seg_end + 1, acc + field_value_flat_slot_bytes(fty))
                     }
                 end
             }
@@ -310,5 +394,47 @@ fn record_field_segment_name_sub(seg: string) -> (string, string) {
     case colon < 0 of {
         true -> ("", "");
         false -> (strip_spaces_rt(substring(seg, 0, colon)), strip_spaces_rt(substring(seg, colon + 1, len(seg))))
+    }
+}
+
+// Stack bytes for a record_make of this type (shell + nested aggregate field values), for list node payload sizing.
+fn nested_stack_bytes_for_field_type(fty: string) -> int64 {
+    t: string <- strip_spaces_rt(fty);
+    case record_type_starts(t) of {
+        true -> record_type_flat_stack_bytes(t);
+        false -> case len(t) > 0 and substring(t, 0, 1) == "(" of {
+            true -> prims_tuple@flat_alloc_size(prims_tuple@count_type_elements(t));
+            false -> 0
+        }
+    }
+}
+
+fn record_fields_nested_stack_bytes_loop(remaining_inner: string) -> int64 {
+    inner: string <- strip_spaces_rt(remaining_inner);
+    case len(inner) == 0 of {
+        true -> 0;
+        false -> do
+            (seg, rest) <- record_case_field_step(inner);
+            (fname, fty) <- record_field_segment_name_sub(seg);
+            here: int64 <- case len(fname) == 0 of {
+                true -> 0;
+                false -> nested_stack_bytes_for_field_type(fty)
+            };
+            here + record_fields_nested_stack_bytes_loop(rest)
+        end
+    }
+}
+
+fn record_type_flat_stack_bytes(record_str: string) -> int64 {
+    case record_type_starts(strip_spaces_rt(record_str)) of {
+        false -> 8;
+        true -> do
+            R: string <- strip_spaces_rt(record_str);
+            content: string <- extract_braced_body(R);
+            cnt: int64 <- count_record_fields(R);
+            shell: int64 <- prims_tuple@flat_alloc_size(cnt);
+            nest: int64 <- record_fields_nested_stack_bytes_loop(content);
+            shell + nest
+        end
     }
 }

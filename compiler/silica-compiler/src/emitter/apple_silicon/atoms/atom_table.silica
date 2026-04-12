@@ -135,14 +135,62 @@ fn collect_atoms_from_functions(fns: ListSIRFunction, table: AtomTable, next_ind
     }
 }
 
-// Build atom table from SIR module. Returns table where index 0 = first atom seen, etc.
-// cpu_topology / core_type (spec appendix): only :efficiency and :performance — reserve indices 0 and 1
-// so _silica_rt_get_cpu_topology / _silica_rt_get_core_capabilities match emit_atom_const / case patterns.
+// True when module uses CPU topology atom ABI: runtime fills core_type as 0=:efficiency, 1=:performance
+// (see prims_actors_runtime_asm.silica). Only then pre-seed those lexemes so indices match user case patterns.
+// Programs that never touch topology must not reserve0/1 — otherwise :ok and other atoms shift (e.g. main exit code).
+fn sir_term_needs_topology_atom_indices(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> do
+            local: bool <- case term.kind of {
+                0 -> case term.type_name == "atom" of {
+                    true -> term.value == ":efficiency" or term.value == ":performance";
+                    false -> false
+                };
+                6 -> term.name == "get_cpu_topology" or term.name == "get_core_capabilities" or term.name == "get_efficiency_cores" or term.name == "get_performance_cores";
+                _: int64 -> false
+            };
+            case local of {
+                true -> true;
+                false -> case sir_term_needs_topology_atom_indices(term.inner) of {
+                    true -> true;
+                    false -> sir_term_needs_topology_atom_indices(term.right_expr)
+                }
+            }
+        end
+    }
+}
+
+fn sir_module_needs_topology_atom_indices_loop(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case sir_term_needs_topology_atom_indices(fns.head.body) of {
+            true -> true;
+            false -> sir_module_needs_topology_atom_indices_loop(fns.tail)
+        }
+    }
+}
+
+fn sir_module_needs_topology_atom_indices(sir_module: SIRModule) -> bool {
+    sir_module_needs_topology_atom_indices_loop(sir_module.functions)
+}
+
+// Build atom table from SIR module. Index 0 = first atom added / first reserved slot.
+// Topology modules: reserve :efficiency=0, :performance=1 then collect (matches runtime stubs).
+// Other modules: collect from empty table so e.g. :ok stays 0 when it is the only atom.
 fn build_atom_table(sir_module: SIRModule) -> AtomTable {
-    (t_eff: AtomTable, _: int64) <- add_atom(empty_atom_table(), ":efficiency", 0);
-    (t_both: AtomTable, _: int64) <- add_atom(t_eff, ":performance", 1);
-    (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, t_both, 2);
-    table
+    case sir_module_needs_topology_atom_indices(sir_module) of {
+        true -> do
+            (t_eff: AtomTable, _: int64) <- add_atom(empty_atom_table(), ":efficiency", 0);
+            (t_both: AtomTable, _: int64) <- add_atom(t_eff, ":performance", 1);
+            (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, t_both, 2);
+            table
+        end;
+        false -> do
+            (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, empty_atom_table(), 0);
+            table
+        end
+    }
 }
 
 // Reverse lexemes list so first-added is at head; matches BST index 0 = first-added for rodata labels.

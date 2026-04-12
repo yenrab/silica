@@ -19,6 +19,124 @@ export emit_flat_store/3;
 export emit_flat_mov_dest/1;
 export index_to_offset/1;
 export ldr_prefix_for_type/1;
+export tuple_field_start_byte_offset/2;
+export tuple_type_uses_boxed_float32/1;
+
+fn strip_ty_leading(s: string) -> string {
+    case len(s) == 0 of {
+        true -> "";
+        false -> case substring(s, 0, 1) == " " of {
+            true -> strip_ty_leading(substring(s, 1, len(s)));
+            false -> s
+        }
+    }
+}
+
+fn strip_ty_trailing(s: string) -> string {
+    case len(s) == 0 of {
+        true -> "";
+        false -> case substring(s, len(s) - 1, len(s)) == " " of {
+            true -> strip_ty_trailing(substring(s, 0, len(s) - 1));
+            false -> s
+        }
+    }
+}
+
+fn strip_ty(s: string) -> string {
+    strip_ty_trailing(strip_ty_leading(s))
+}
+
+fn tuple_inner_content(type_name: string) -> string {
+    substring(type_name, 1, len(type_name) - 1)
+}
+
+fn next_comma_top_level(inner: string, start: int64, depth: int64) -> int64 {
+    case start >= len(inner) of {
+        true -> -1;
+        false -> case substring(inner, start, start + 1) of {
+            "(" -> next_comma_top_level(inner, start + 1, depth + 1);
+            ")" -> next_comma_top_level(inner, start + 1, depth - 1);
+            "," -> case depth == 0 of {
+                true -> start;
+                false -> next_comma_top_level(inner, start + 1, depth)
+            };
+            _: string -> next_comma_top_level(inner, start + 1, depth)
+        }
+    }
+}
+
+fn tuple_type_segment_at(inner: string, idx: int64) -> string {
+    case idx == 0 of {
+        true -> do
+            c: int64 <- next_comma_top_level(inner, 0, 0);
+            case c < 0 of {
+                true -> inner;
+                false -> substring(inner, 0, c)
+            }
+        end;
+        false -> do
+            c: int64 <- next_comma_top_level(inner, 0, 0);
+            case c < 0 of {
+                true -> "";
+                false -> tuple_type_segment_at(substring(inner, c + 1, len(inner)), idx - 1)
+            }
+        end
+    }
+}
+
+fn tuple_type_nth_element(type_name: string, idx: int64) -> string {
+    tuple_type_segment_at(tuple_inner_content(type_name), idx)
+}
+
+fn field_stride_for_tuple_elem(type_name: string, i: int64, total_elems: int64) -> int64 {
+    seg: string <- strip_ty(tuple_type_nth_element(type_name, i));
+    case reg_conventions@is_float32_type(seg) and total_elems > 1 of {
+        true -> 16;
+        false -> 8
+    }
+}
+
+fn accum_field_start_bytes(type_name: string, i: int64, target_idx: int64, total_elems: int64) -> int64 {
+    case i >= target_idx of {
+        true -> 0;
+        false -> do
+            st: int64 <- field_stride_for_tuple_elem(type_name, i, total_elems);
+            st + accum_field_start_bytes(type_name, i + 1, target_idx, total_elems)
+        end
+    }
+}
+
+// Byte offset of field `field_idx` (0-based), matching emit_flat_tuple_stores (boxed float32 uses 16 bytes).
+fn tuple_field_start_byte_offset(type_name: string, field_idx: int64) -> int64 {
+    total_elems: int64 <- count_type_elements(type_name);
+    accum_field_start_bytes(type_name, 0, field_idx, total_elems)
+}
+
+fn scan_tuple_has_f32(type_name: string, i: int64, cnt: int64) -> bool {
+    case i >= cnt of {
+        true -> false;
+        false -> do
+            seg: string <- strip_ty(tuple_type_nth_element(type_name, i));
+            case reg_conventions@is_float32_type(seg) of {
+                true -> true;
+                false -> scan_tuple_has_f32(type_name, i + 1, cnt)
+            }
+        end
+    }
+}
+
+fn tuple_type_uses_boxed_float32(type_name: string) -> bool {
+    case len(type_name) < 2 or substring(type_name, 0, 1) != "(" of {
+        true -> false;
+        false -> do
+            cnt: int64 <- count_type_elements(type_name);
+            case cnt > 1 of {
+                true -> scan_tuple_has_f32(type_name, 0, cnt);
+                false -> false
+            }
+        end
+    }
+}
 
 fn count_flat_elements(term: SIRTerm) -> int64 {
     type_count: int64 <- count_type_elements(term.type_name);

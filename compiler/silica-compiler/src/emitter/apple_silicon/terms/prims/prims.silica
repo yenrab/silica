@@ -27,7 +27,10 @@ fn dest_for_type(dest: string, type_name: string) -> string {
             "D0" -> "D0";
             "D1" -> "D1";
             "D2" -> "D2";
-            _: string -> dest
+            _: string -> case len(dest) > 0 and substring(dest, 0, 1) == "X" of {
+                true -> concat("D", substring(dest, 1, len(dest)));
+                false -> dest
+            }
         };
         false -> case reg_conventions@is_float32_type(type_name) of {
             true -> case dest of {
@@ -37,7 +40,10 @@ fn dest_for_type(dest: string, type_name: string) -> string {
                 "S0" -> "S0";
                 "S1" -> "S1";
                 "S2" -> "S2";
-                _: string -> dest
+                _: string -> case len(dest) > 0 and substring(dest, 0, 1) == "X" of {
+                    true -> concat("S", substring(dest, 1, len(dest)));
+                    false -> dest
+                }
             };
             false -> case reg_conventions@is_float16_type(type_name) of {
                 true -> case dest of {
@@ -47,7 +53,10 @@ fn dest_for_type(dest: string, type_name: string) -> string {
                     "H0" -> "H0";
                     "H1" -> "H1";
                     "H2" -> "H2";
-                    _: string -> dest
+                    _: string -> case len(dest) > 0 and substring(dest, 0, 1) == "X" of {
+                        true -> concat("H", substring(dest, 1, len(dest)));
+                        false -> dest
+                    }
                 };
                 false -> case reg_conventions@is_narrow_type(type_name) of {
                     true -> case len(dest) > 0 of {
@@ -65,6 +74,10 @@ fn is_comparison_prim(name: string) -> bool {
     name == "lt" or name == "gt" or name == "le" or name == "ge"
 }
 
+fn bool_result_compare_prim(term: SIRTerm) -> bool {
+    term.type_name == "bool" and (is_comparison_prim(term.name) or term.name == "eq" or term.name == "nq")
+}
+
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     // Tuple projection dispatches to prims_tuple (tuple_make handled by term_emitter flat layout).
     // Check before narrow/float so "(int16,...)" etc. don't match "int16".
@@ -75,11 +88,14 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
             false -> case prims_memory@is_memory_prim(term.name) of {
             true -> prims_memory@emit_prim_op(term, dest);
             false -> do
-    dispatch_type: string <- case term.type_name == "bool" and is_comparison_prim(term.name) of {
+    dispatch_type: string <- case bool_result_compare_prim(term) of {
         true -> term.inner.type_name;
         false -> term.type_name
     };
-    dest_reg: string <- dest_for_type(dest, dispatch_type);
+    dest_reg: string <- case bool_result_compare_prim(term) of {
+        true -> dest;
+        false -> dest_for_type(dest, dispatch_type)
+    };
     case dispatch_type of {
         "float64" -> prims_float64@emit_prim_op(term, dest_reg);
         "float32" -> prims_float32@emit_prim_op(term, dest_reg);

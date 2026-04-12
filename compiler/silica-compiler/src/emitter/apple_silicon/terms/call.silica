@@ -11,26 +11,24 @@ use emitter_effects;
 use control;
 
 export emit_call_body/2;
+export emit_call_body_effects/3;
 export emit_call_body_with_callee/3;
 export emit_tail_call_body/2;
 
-// Emit call: load callee address (ADRP+ADD) then BLR; result in X0.
-// BLR takes a register on AArch64. Mach-O: sym@PAGE / sym@PAGEOFF.
-// term.value carries the call's effect set (SIR text format).
-fn emit_call_body(term: SIRTerm, dest: string) -> string {
-    call_effects: string <- term.value;
+fn emit_call_body_effects(term: SIRTerm, dest: string, effect_value: string) -> string {
+    call_effects: string <- effect_value;
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
     callee: string <- term.name;
-    adrp_part: string <- concat(concat(concat("    ADRP X8, ", callee), "@PAGE"), "\n");
-    add_part: string <- concat(concat(concat("    ADD X8, X8, ", callee), "@PAGEOFF"), "\n");
-    adrp_line: string <- concat(concat(adrp_part, add_part), "    BLR X8");
+    adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
+    add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
+    adrp_line: string <- concat(concat(adrp_part, add_part), "    BLR X9");
     // No move when result already in dest: X0/W0 (int), D0 (float64), S0 (float32)
     result_mov: string <- case dest == "X0" of {
         true -> "";
         false -> case len(dest) > 0 of {
-            true -> case substring(dest, 0, 1) == "W" or substring(dest, 0, 1) == "D" or substring(dest, 0, 1) == "S" of {
+            true -> case substring(dest, 0, 1) == "W" or substring(dest, 0, 1) == "D" or substring(dest, 0, 1) == "S" or substring(dest, 0, 1) == "H" of {
                 true -> "";
                 false -> concat("\n", concat(concat(concat("    MOV ", dest), ", X0"), ""))
             };
@@ -52,6 +50,10 @@ fn emit_call_body(term: SIRTerm, dest: string) -> string {
     concat(with_post, result_mov)
 }
 
+fn emit_call_body(term: SIRTerm, dest: string) -> string {
+    emit_call_body_effects(term, dest, term.value)
+}
+
 // Tail call (SIRTerm kind 5): args already in registers — release frame, then BR (no BLR / no return to this frame).
 // recursion_implementation.md Phase 5: native tail transfer; fn_effects controls DMB+LDP like epilogue (atomic release).
 fn emit_tail_call_body(term: SIRTerm, fn_effects: string) -> string {
@@ -59,9 +61,9 @@ fn emit_tail_call_body(term: SIRTerm, fn_effects: string) -> string {
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
     callee: string <- term.name;
-    adrp_part: string <- concat(concat(concat("    ADRP X8, ", callee), "@PAGE"), "\n");
-    add_part: string <- concat(concat(concat("    ADD X8, X8, ", callee), "@PAGEOFF"), "\n");
-    br_line: string <- concat(concat(adrp_part, add_part), "    BR X8");
+    adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
+    add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
+    br_line: string <- concat(concat(adrp_part, add_part), "    BR X9");
     frame_rel: string <- control@function_tail_frame_release(fn_effects);
     with_comment: string <- case len(eff_comment) > 0 of {
         true -> concat(eff_comment, "\n");
@@ -80,14 +82,14 @@ fn emit_call_body_with_callee(term: SIRTerm, dest: string, callee: string) -> st
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
-    adrp_part: string <- concat(concat(concat("    ADRP X8, ", callee), "@PAGE"), "\n");
-    add_part: string <- concat(concat(concat("    ADD X8, X8, ", callee), "@PAGEOFF"), "\n");
-    adrp_line: string <- concat(concat(adrp_part, add_part), "    BLR X8");
-    // No move when result already in dest: X0/W0 (int), D0 (float64), S0 (float32)
+    adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
+    add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
+    adrp_line: string <- concat(concat(adrp_part, add_part), "    BLR X9");
+    // No move when result already in dest: X0/W0 (int), D0/S0/H0 (float)
     result_mov: string <- case dest == "X0" of {
         true -> "";
         false -> case len(dest) > 0 of {
-            true -> case substring(dest, 0, 1) == "W" or substring(dest, 0, 1) == "D" or substring(dest, 0, 1) == "S" of {
+            true -> case substring(dest, 0, 1) == "W" or substring(dest, 0, 1) == "D" or substring(dest, 0, 1) == "S" or substring(dest, 0, 1) == "H" of {
                 true -> "";
                 false -> concat("\n", concat(concat(concat("    MOV ", dest), ", X0"), ""))
             };

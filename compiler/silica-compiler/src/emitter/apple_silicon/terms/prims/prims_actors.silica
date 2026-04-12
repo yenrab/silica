@@ -6,6 +6,10 @@
 // Structured returns (cpu_topology, core_info, List[...]): runtime passes a heap pointer in X0 per AAPCS; Phase G fills layout in prims_actors_runtime_asm.silica.
 
 use sir_ast;
+use reg_conventions;
+use atom_table;
+use prims_record;
+use prims_tuple;
 
 export is_actor_prim/1;
 export actor_prim_is_nullary/1;
@@ -91,6 +95,65 @@ fn asm_bl(label: string) -> string {
     concat(concat("    BL ", label), "\n")
 }
 
+fn spawn_init_stack_round16(nbytes: int64) -> int64 {
+    (nbytes + 15) / 16 * 16
+}
+
+fn spawn_init_stack_bytes(inner: SIRTerm) -> int64 {
+    case inner.kind == 6 and inner.name == "record_make" of {
+        true -> do
+            Rm: string <- inner.type_name;
+            case prims_record@record_type_has_only_scalar_fields(Rm) of {
+                true -> spawn_init_stack_round16(prims_record@record_type_value_flat_byte_size(Rm));
+                false -> do
+                    cr: int64 <- prims_record@count_record_fields(Rm);
+                    prims_tuple@flat_alloc_size(cr)
+                end
+            }
+        end;
+        false -> case inner.kind == 6 and inner.name == "tuple_make" of {
+            true -> do
+                cf: int64 <- prims_tuple@count_flat_elements(inner);
+                prims_tuple@flat_alloc_size(cf)
+            end;
+            false -> 0
+        }
+    }
+}
+
+fn spawn_init_needs_heap_copy(inner: SIRTerm) -> bool {
+    inner.kind == 6 and (inner.name == "record_make" or inner.name == "tuple_make")
+        and reg_conventions@is_aggregate_struct_or_tuple_return_type(inner.type_name)
+}
+
+fn heap_promote_copy_words(idx: int64, words: int64) -> string {
+    case idx >= words of {
+        true -> "";
+        false -> do
+            off: int64 <- idx * 8;
+            pair: string <- concat(concat(concat(concat("    LDR X3, [X1, #", atom_table@int64_to_decimal_string(off)), "]\n    STR X3, [X4, #"), atom_table@int64_to_decimal_string(off)), "]\n");
+            concat(pair, heap_promote_copy_words(idx + 1, words))
+        end
+    }
+}
+
+// Copy stack-built initial state to the heap so actor threads do not retain pointers into the caller stack.
+fn heap_promote_stack_aggregate_x0(nbytes: int64) -> string {
+    case nbytes <= 0 of {
+        true -> "";
+        false -> do
+            words: int64 <- nbytes / 8;
+            case words <= 0 of {
+                true -> "";
+                false -> do
+                    copy_asm: string <- heap_promote_copy_words(0, words);
+                    concat(concat(concat(concat("    SUB SP, SP, #16\n    STR X0, [SP, #8]\n    MOV X0, #", atom_table@int64_to_decimal_string(nbytes)), "\n    BL _silica_rt_region_alloc\n    MOV X4, X0\n    LDR X1, [SP, #8]\n"), copy_asm), "    MOV X0, X4\n    ADD SP, SP, #16\n")
+                end
+            }
+        end
+    }
+}
+
 // Runtime returns in X0 (or W0 for some narrow/bool paths). LLVM rejects `MOV Wn, X0`; use `MOV Wn, W0` then.
 // For actor_ref / int64 / pointers / lists, use full `MOV Xn, X0` (Wn and Xn are the same AArch64 GPR).
 // `substring(s, start, end)` uses end exclusive (same as var.silica emit_var_reg).
@@ -129,7 +192,22 @@ fn emit_spawn(dest: string, term: SIRTerm) -> string {
     three: bool <- term.right_expr.kind == 6 and term.right_expr.name == "tuple_make";
     case three of {
         true -> concat(concat("    MOV X0, X11\n    LDR X1, [X10]\n    LDR X12, [X10, #8]\n    MOV W2, W12\n", asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, term.type_name));
-        false -> concat(concat("    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n", asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, term.type_name))
+        false -> do
+            nb: int64 <- spawn_init_stack_bytes(term.inner);
+            copy_init: bool <- spawn_init_needs_heap_copy(term.inner) and nb > 0;
+            case copy_init of {
+                true -> do
+                    promote: string <- heap_promote_stack_aggregate_x0(nb);
+                    pop_stack: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nb), "\n"));
+                    pre: string <- concat("    MOV X12, X10\n    MOV X0, X9\n", promote);
+                    mid: string <- concat(pre, "    MOV X9, X0\n    MOV X10, X12\n    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n");
+                    after_spawn: string <- concat(mid, asm_bl("_silica_rt_actor_spawn"));
+                    with_dest: string <- concat(after_spawn, mov_dest_from_x0_for_type(dest, term.type_name));
+                    concat(with_dest, pop_stack)
+                end;
+                false -> concat(concat("    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n", asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, term.type_name))
+            }
+        end
     }
 }
 
@@ -183,8 +261,9 @@ fn emit_runtime_binary(dest: string, term: SIRTerm) -> string {
     concat(concat("    MOV X0, X9\n    MOV X1, X10\n", asm_bl(runtime_label(term.name))), mov_dest_from_x0_for_type(dest, term.type_name))
 }
 
+// First operand (actor_ref) is in X11: term_emitter saves X9→X11 before tuple_make into X10 (tuple emission clobbers X9).
 fn emit_runtime_ternary(dest: string, term: SIRTerm) -> string {
-    concat(concat("    MOV X0, X9\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n", asm_bl(runtime_label(term.name))), mov_dest_from_x0_for_type(dest, term.type_name))
+    concat(concat("    MOV X0, X11\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n", asm_bl(runtime_label(term.name))), mov_dest_from_x0_for_type(dest, term.type_name))
 }
 
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {

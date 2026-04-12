@@ -8,6 +8,8 @@ use type_checker_record_types;
 use type_checker_expressions_actors;
 
 export infer_expr_type/2;
+export infer_binop_left_preferred_operand_type/2;
+export infer_binop_operand_type_for_sir/3;
 export infer_struct_literal_type/2;
 export types_equal/2;
 export add_bindings_to_context/2;
@@ -32,6 +34,20 @@ fn tuple_needs_parens(type_str: string) -> bool {
     len(type_str) >= 2 and substring(type_str, 0, 1) == "("
 }
 
+fn numeric_literal_contains_dot_from(value: string, pos: int64, length: int64) -> bool {
+    case pos >= length of {
+        true -> false;
+        false -> case substring(value, pos, pos + 1) == "." of {
+            true -> true;
+            false -> numeric_literal_contains_dot_from(value, pos + 1, length)
+        }
+    }
+}
+
+fn numeric_literal_contains_dot(value: string) -> bool {
+    numeric_literal_contains_dot_from(value, 0, len(value))
+}
+
 fn infer_literal_type(value: string) -> string {
     case len(value) == 0 of {
         true -> "int64";
@@ -46,7 +62,10 @@ fn infer_literal_type(value: string) -> string {
                             true -> "float32";
                             false -> case substring(value, len(value) - 1, len(value)) == "h" of {
                                 true -> "float16";
-                                false -> "int64"
+                                false -> case numeric_literal_contains_dot(value) of {
+                                    true -> "float32";
+                                    false -> "int64"
+                                }
                             }
                         };
                         false -> "int64"
@@ -99,6 +118,83 @@ fn is_logical_op_infer(op: string) -> bool {
 }
 
 // Kind 3: match check_binary_op — arithmetic result type = operand type when both agree; comparisons/logical -> boolean.
+fn is_floatish_type_infer(t: string) -> bool {
+    t == "float16" or t == "float32" or t == "float64" or t == "float"
+}
+
+// print_int32 / let x: int32 = ... pass enclosing int32; literals still infer int64 — use W prims, not X with W dest.
+fn is_narrow_integral_binop_context(t: string) -> bool {
+    t == "int32" or t == "int16" or t == "int8" or t == "uint32" or t == "uint16" or t == "uint8"
+}
+
+fn negate_builtin_operand_type(name: string) -> string {
+    case name of {
+        "negate_float16" -> "float16";
+        "negate_float32" -> "float32";
+        "negate_float64" -> "float64";
+        _: string -> ""
+    }
+}
+
+// SIR lowering for kind-3 binary: when enclosing context fixes the numeric type (float* or narrow int),
+// use it so literals don't default to int64 and get int64 prims with a W/S/D/H dest from the caller.
+fn infer_binop_operand_type_for_sir(expr: Expr, context: TypeContext, enclosing_expected: string) -> string {
+    op: string <- expr.value;
+    case is_arithmetic_op_infer(op) of {
+        true -> case is_floatish_type_infer(enclosing_expected) of {
+            true -> enclosing_expected;
+            false -> case is_narrow_integral_binop_context(enclosing_expected) of {
+                true -> enclosing_expected;
+                false -> infer_binop_left_preferred_operand_type(expr, context)
+            }
+        };
+        false -> infer_binop_left_preferred_operand_type(expr, context)
+    }
+}
+
+// SIR lowering: pick a concrete operand type for binary prims. Comparisons/arithmetic may pair a
+// float call with a decimal literal that still infers as int64 (-2.5 has no 'h' suffix); prefer any floatish side.
+fn infer_binop_left_preferred_operand_type(expr: Expr, context: TypeContext) -> string {
+    case expr.kind == 3 of {
+        true -> do
+            op: string <- expr.value;
+            raw_lt: string <- infer_expr_type(expr.inner, context);
+            lt: string <- case len(raw_lt) > 0 of {
+                true -> raw_lt;
+                false -> case expr.inner.kind == 1 of {
+                    true -> negate_builtin_operand_type(expr.inner.name);
+                    false -> case expr.inner.kind == 4 of {
+                        true -> negate_builtin_operand_type(expr.inner.name);
+                        false -> ""
+                    }
+                }
+            };
+            raw_rt: string <- infer_expr_type(expr.right_expr, context);
+            rt: string <- case len(raw_rt) > 0 of {
+                true -> raw_rt;
+                false -> case expr.right_expr.kind == 1 of {
+                    true -> negate_builtin_operand_type(expr.right_expr.name);
+                    false -> case expr.right_expr.kind == 4 of {
+                        true -> negate_builtin_operand_type(expr.right_expr.name);
+                        false -> ""
+                    }
+                }
+            };
+            case is_arithmetic_op_infer(op) or is_comparison_op_infer(op) or is_logical_op_infer(op) of {
+                true -> case is_floatish_type_infer(lt) of {
+                    true -> lt;
+                    false -> case is_floatish_type_infer(rt) of {
+                        true -> rt;
+                        false -> case len(lt) > 0 of { true -> lt; false -> rt }
+                    }
+                };
+                false -> lt
+            }
+        end;
+        false -> infer_expr_type(expr, context)
+    }
+}
+
 fn infer_binary_expr_type(expr: Expr, context: TypeContext) -> string {
     op: string <- expr.value;
     case is_arithmetic_op_infer(op) of {

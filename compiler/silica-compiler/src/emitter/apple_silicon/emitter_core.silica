@@ -33,9 +33,67 @@ use reg_conventions;
 use prims_actors;
 use prims_actors_runtime_asm;
 use recursion_support;
+use var;
 
 export emit_module/1;
 export emit_module_debug/2;
+
+fn aggregate_return_heap_stub_fn(fn_val: SIRFunction) -> bool {
+    case fn_val.body.kind == 5 of {
+        true -> false;
+        false -> reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type)
+    }
+}
+
+fn aggregate_return_heap_stub_scan(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case aggregate_return_heap_stub_fn(fns.head) of {
+            true -> true;
+            false -> aggregate_return_heap_stub_scan(fns.tail)
+        }
+    }
+}
+
+fn module_needs_aggregate_return_heap_stub(sir_module: SIRModule) -> bool {
+    aggregate_return_heap_stub_scan(sir_module.functions)
+}
+
+fn term_has_aggregate_stack_let(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            2 -> do
+                rhs_agg: bool <- term.inner.kind == 6 and (term.inner.name == "record_make" or term.inner.name == "tuple_make");
+                rhs_agg or term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr)
+            end;
+            3 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
+            4 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
+            5 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
+            6 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
+            7 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
+            8 -> term_has_aggregate_stack_let(term.inner) or term_has_aggregate_stack_let(term.right_expr);
+            _: int64 -> false
+        }
+    }
+}
+
+fn module_has_aggregate_stack_let_scan(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_aggregate_stack_let(fns.head.body) of {
+            true -> true;
+            false -> module_has_aggregate_stack_let_scan(fns.tail)
+        }
+    }
+}
+
+fn module_needs_region_alloc_for_aggregate_copy(sir_module: SIRModule) -> bool {
+    case module_needs_aggregate_return_heap_stub(sir_module) of {
+        true -> true;
+        false -> module_has_aggregate_stack_let_scan(sir_module.functions)
+    }
+}
 
 // Emit AArch64 assembly for a SIR module.
 // Input: SIRModule (from sir_generator, post-optimization)
@@ -62,7 +120,7 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
     float64_literal_table: Float64LiteralTable <- float64_literal_pool@build_float64_literal_table(sir_module);
     float32_literal_table: Float32LiteralTable <- float32_literal_pool@build_float32_literal_table(sir_module);
     string_literal_table: StringLiteralTable <- string_literal_pool@build_string_literal_table(sir_module);
-    funcs: string <- emit_functions(sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, false);
+    funcs: string <- emit_functions(sir_module.functions, sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, false);
     needs_region_overflow_helper: bool <- prims_memory@module_uses_region_allocation(sir_module);
     region_overflow_helper: string <- case needs_region_overflow_helper of {
         true -> concat("\n", prims_memory@emit_region_overflow_helper());
@@ -147,11 +205,18 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
         true -> concat("\n", prims_actors_runtime_asm@emit_actor_runtime_helpers());
         false -> ""
     };
+    needs_alloc_region_stub: bool <- prims_memory@module_uses_alloc_region(sir_module);
     needs_region_alloc_stub: bool <- case needs_actor_rt_helper of {
         true -> false;
         false -> case needs_list_length_helper of {
             true -> true;
-            false -> needs_region_overflow_helper
+            false -> case needs_region_overflow_helper of {
+                true -> true;
+                false -> case needs_alloc_region_stub of {
+                    true -> true;
+                    false -> module_needs_region_alloc_for_aggregate_copy(sir_module)
+                }
+            }
         }
     };
     region_alloc_stub_asm: string <- case needs_region_alloc_stub of {
@@ -267,7 +332,7 @@ fn emit_module_debug(sir_module: SIRModule, debug: bool) -> string proc[DeviceIO
     float64_literal_table: Float64LiteralTable <- float64_literal_pool@build_float64_literal_table(sir_module);
     float32_literal_table: Float32LiteralTable <- float32_literal_pool@build_float32_literal_table(sir_module);
     string_literal_table: StringLiteralTable <- string_literal_pool@build_string_literal_table(sir_module);
-    funcs: string <- emit_functions(sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug);
+    funcs: string <- emit_functions(sir_module.functions, sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug);
     needs_region_overflow_helper: bool <- prims_memory@module_uses_region_allocation(sir_module);
     region_overflow_helper: string <- case needs_region_overflow_helper of {
         true -> concat("\n", prims_memory@emit_region_overflow_helper());
@@ -352,11 +417,18 @@ fn emit_module_debug(sir_module: SIRModule, debug: bool) -> string proc[DeviceIO
         true -> concat("\n", prims_actors_runtime_asm@emit_actor_runtime_helpers());
         false -> ""
     };
+    needs_alloc_region_stub: bool <- prims_memory@module_uses_alloc_region(sir_module);
     needs_region_alloc_stub: bool <- case needs_actor_rt_helper of {
         true -> false;
         false -> case needs_list_length_helper of {
             true -> true;
-            false -> needs_region_overflow_helper
+            false -> case needs_region_overflow_helper of {
+                true -> true;
+                false -> case needs_alloc_region_stub of {
+                    true -> true;
+                    false -> module_needs_region_alloc_for_aggregate_copy(sir_module)
+                }
+            }
         }
     };
     region_alloc_stub_asm: string <- case needs_region_alloc_stub of {
@@ -453,13 +525,13 @@ fn asm_header(name: string) -> string {
     concat(".text\n", concat(concat(".global ", name), "\n"))
 }
 
-fn emit_functions(fns: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool) -> string proc[DeviceIO] {
+fn emit_functions(fns: ListSIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool) -> string proc[DeviceIO] {
     do
     case fns.is_nil of {
         true -> "";
         false -> do
-            fn_asm: string <- emit_sir_function(fns.head, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug);
-            rest_asm: string <- emit_functions(fns.tail, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug);
+            fn_asm: string <- emit_sir_function(fns.head, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug);
+            rest_asm: string <- emit_functions(fns.tail, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug);
             case rest_asm == "" of {
                 true -> fn_asm;
                 false -> concat(concat(fn_asm, "\n"), rest_asm)
@@ -469,36 +541,78 @@ fn emit_functions(fns: ListSIRFunction, table: AtomTable, int64_table: Int64Prin
     end
 }
 
-// AArch64 AAPCS64: int args X0-X7 (or W0-W7 for narrow), float64 D0-D7, float32 S0-S7
-// param_type: use actual param type so tuple/string/pointer params get X (64-bit), not W
-fn param_reg_for_index(i: int64, param_type: string) -> string {
+// AArch64 AAPCS64: GPR and FP argument slots are allocated independently (mixed calls: e.g. X0, S0, X1).
+fn param_consumes_fp_only(ptype: string) -> bool {
+    reg_conventions@is_float64_type(ptype) or reg_conventions@is_float32_type(ptype) or reg_conventions@is_float16_type(ptype)
+}
+
+fn aapcs_abi_reg_digit(slot: int64) -> string {
+    case slot of {
+        0 -> "0";
+        1 -> "1";
+        2 -> "2";
+        3 -> "3";
+        4 -> "4";
+        5 -> "5";
+        6 -> "6";
+        7 -> "7";
+        _: int64 -> "0"
+    }
+}
+
+fn aapcs_next_gpr_after_type(ptype: string, gpr_slot: int64) -> int64 {
+    case param_consumes_fp_only(ptype) of {
+        true -> gpr_slot;
+        false -> gpr_slot + 1
+    }
+}
+
+fn aapcs_next_fp_after_type(ptype: string, fp_slot: int64) -> int64 {
+    case param_consumes_fp_only(ptype) of {
+        true -> fp_slot + 1;
+        false -> fp_slot
+    }
+}
+
+// GPR/FP slot indices for the parameter at idx (before assigning this param's register).
+fn aapcs_arg_slots_at_index(param_types: string, idx: int64) -> (int64, int64) {
+    case idx <= 0 of {
+        true -> (0, 0);
+        false -> do
+            prev: int64 <- idx - 1;
+            (g0: int64, f0: int64) <- aapcs_arg_slots_at_index(param_types, prev);
+            pt_prev: string <- param_type_at_index(param_types, prev);
+            (aapcs_next_gpr_after_type(pt_prev, g0), aapcs_next_fp_after_type(pt_prev, f0))
+        end
+    }
+}
+
+fn param_reg_for_aapcs_slots(gpr_slot: int64, fp_slot: int64, param_type: string) -> string {
     is_tuple: bool <- len(param_type) >= 2 and substring(param_type, 0, 1) == "(";
     is_string: bool <- param_type == "string";
     is_pointer: bool <- is_tuple or is_string;
     is_narrow: bool <- param_type == "int32" or param_type == "int16" or param_type == "int8" or param_type == "uint32" or param_type == "uint16" or param_type == "uint8" or param_type == "bool";
-    is_float64: bool <- param_type == "float64";
-    is_float32: bool <- param_type == "float32";
-    prefix: string <- case is_float64 of {
-        true -> "D";
-        false -> case is_float32 of {
-            true -> "S";
-            false -> case is_pointer of {
-                true -> "X";
-                false -> case is_narrow of { true -> "W"; false -> "X" }
+    case reg_conventions@is_float64_type(param_type) of {
+        true -> concat("D", aapcs_abi_reg_digit(fp_slot));
+        false -> case reg_conventions@is_float32_type(param_type) of {
+            true -> concat("S", aapcs_abi_reg_digit(fp_slot));
+            false -> case reg_conventions@is_float16_type(param_type) of {
+                true -> concat("H", aapcs_abi_reg_digit(fp_slot));
+                false -> case is_pointer of {
+                    true -> concat("X", aapcs_abi_reg_digit(gpr_slot));
+                    false -> case is_narrow of {
+                        true -> concat("W", aapcs_abi_reg_digit(gpr_slot));
+                        false -> concat("X", aapcs_abi_reg_digit(gpr_slot))
+                    }
+                }
             }
         }
-    };
-    case i of {
-        0 -> concat(prefix, "0");
-        1 -> concat(prefix, "1");
-        2 -> concat(prefix, "2");
-        3 -> concat(prefix, "3");
-        4 -> concat(prefix, "4");
-        5 -> concat(prefix, "5");
-        6 -> concat(prefix, "6");
-        7 -> concat(prefix, "7");
-        _: int64 -> concat(prefix, "0")
     }
+}
+
+fn param_reg_for_index(param_types: string, idx: int64, param_type: string) -> string {
+    (gs: int64, fs: int64) <- aapcs_arg_slots_at_index(param_types, idx);
+    param_reg_for_aapcs_slots(gs, fs, param_type)
 }
 
 fn param_type_at_index(param_types: string, idx: int64) -> string {
@@ -512,14 +626,17 @@ fn param_type_at_index(param_types: string, idx: int64) -> string {
     }
 }
 
-fn bind_reg_for_param(idx: int64, ptype: string, string_shadow: bool, second_param_shadow: bool) -> string {
-    reg: string <- param_reg_for_index(idx, ptype);
+fn bind_reg_for_param(param_types: string, idx: int64, ptype: string, string_shadow: bool, second_param_shadow: bool) -> string {
+    reg: string <- param_reg_for_index(param_types, idx, ptype);
     first_in_x19: bool <- string_shadow and idx == 0 and (ptype == "string" or term_emitter@type_name_is_list_like(ptype));
     case first_in_x19 of {
         true -> "X19";
         false -> case second_param_shadow and idx == 1 of {
             true -> "X20";
-            false -> reg
+            false -> case idx == 0 and reg_conventions@is_aggregate_struct_or_tuple_return_type(ptype) of {
+                true -> "X11";
+                false -> reg
+            }
         }
     }
 }
@@ -551,20 +668,33 @@ fn count_gpr64_params(param_types: string) -> int64 {
     count_gpr64_params_from(param_types, 0)
 }
 
-// After MOV X12,X0 / MOV X13,X1 at function entry, var lookups use X12/X13 instead of ABI X0/X1.
-// Use X12/X13 (not X9/X10): print_int64 helper (L_pi_helper) clobbers X9 and X10 across BL.
-fn bind_reg_int64_abi_shadow(idx: int64, ptype: string, string_shadow: bool, second_param_shadow: bool) -> string {
-    case is_gpr64_param_type(ptype) of {
-        true -> case idx of {
-            0 -> "X12";
-            1 -> "X13";
-            _: int64 -> param_reg_for_index(idx, ptype)
-        };
-        false -> bind_reg_for_param(idx, ptype, string_shadow, second_param_shadow)
+// int64 ABI shadow (MOV X19,X0 / X20,X1) only applies when X0 and X1 are the first two *GPR64* arguments.
+// Struct/tuple/string/etc. in X0 must not be copied as if it were int64 (e.g. move_point(struct, int64, int64)).
+fn first_param_is_gpr64(param_types: string) -> bool {
+    case len(param_types) == 0 of {
+        true -> false;
+        false -> is_gpr64_param_type(param_type_at_index(param_types, 0))
     }
 }
 
-fn build_param_outer_reg_int64_abi_shadow_loop(param_names: string, param_types: string, idx: int64, acc: string, string_shadow: bool, second_param_shadow: bool) -> string {
+// After MOV X19,X0 / MOV X20,X1 at function entry, var lookups use X19/X20 instead of ABI X0/X1.
+// X19/X20 are callee-saved: values survive BLR to user functions (X12–X15 are caller-saved and unsafe).
+// Still avoids X9/X10: print_int64 helper (L_pi_helper) clobbers those across BL; helpers preserve X19–X28 per AAPCS64.
+fn bind_reg_int64_abi_shadow(param_types: string, idx: int64, ptype: string, string_shadow: bool, second_param_shadow: bool, reply_sret_second_uses_x21: bool, hold_second_in_x21: bool) -> string {
+    case is_gpr64_param_type(ptype) of {
+        true -> case idx of {
+            0 -> "X19";
+            1 -> case reply_sret_second_uses_x21 of { true -> "X21"; false -> "X20" };
+            _: int64 -> param_reg_for_index(param_types, idx, ptype)
+        };
+        false -> case idx == 1 and hold_second_in_x21 of {
+            true -> "X21";
+            false -> bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow)
+        }
+    }
+}
+
+fn build_param_outer_reg_int64_abi_shadow_loop(param_names: string, param_types: string, idx: int64, acc: string, string_shadow: bool, second_param_shadow: bool, reply_sret_second_uses_x21: bool, hold_second_in_x21: bool) -> string {
     pipe: int64 <- find_pipe_in_param_names(param_names, 0);
     ptype: string <- param_type_at_index(param_types, idx);
     case pipe < 0 of {
@@ -572,7 +702,7 @@ fn build_param_outer_reg_int64_abi_shadow_loop(param_names: string, param_types:
             true -> acc;
             false -> do
                 prefixed: string <- concat("%", param_names);
-                br: string <- bind_reg_int64_abi_shadow(idx, ptype, string_shadow, second_param_shadow);
+                br: string <- bind_reg_int64_abi_shadow(param_types, idx, ptype, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21);
                 sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
                 concat(acc, concat(sep, concat(prefixed, concat("=", br))))
             end
@@ -582,45 +712,91 @@ fn build_param_outer_reg_int64_abi_shadow_loop(param_names: string, param_types:
             rest: string <- case pipe + 1 < len(param_names) of { true -> substring(param_names, pipe + 1, len(param_names)); false -> "" };
             rest_types: string <- case pipe + 1 < len(param_types) of { true -> substring(param_types, pipe + 1, len(param_types)); false -> "" };
             prefixed: string <- concat("%", first);
-            br: string <- bind_reg_int64_abi_shadow(idx, ptype, string_shadow, second_param_shadow);
+            br: string <- bind_reg_int64_abi_shadow(param_types, idx, ptype, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21);
             sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
             part: string <- concat(sep, concat(prefixed, concat("=", br)));
             base: string <- case len(acc) == 0 of {
                 true -> do
                     pt0: string <- param_type_at_index(param_types, 0);
-                    case is_gpr64_param_type(pt0) of { true -> "X12"; false -> param_reg_for_index(0, pt0) }
+                    case is_gpr64_param_type(pt0) of { true -> "X19"; false -> param_reg_for_index(param_types, 0, pt0) }
                 end;
                 false -> acc
             };
             next_acc: string <- concat(base, part);
-            build_param_outer_reg_int64_abi_shadow_loop(rest, rest_types, idx + 1, next_acc, string_shadow, second_param_shadow)
+            build_param_outer_reg_int64_abi_shadow_loop(rest, rest_types, idx + 1, next_acc, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21)
         end
     }
 }
 
-fn build_param_outer_reg_int64_abi_shadow(param_names: string, param_types: string, string_shadow: bool, second_param_shadow: bool) -> string {
+fn build_param_outer_reg_int64_abi_shadow(param_names: string, param_types: string, string_shadow: bool, second_param_shadow: bool, reply_sret_second_uses_x21: bool, hold_second_in_x21: bool) -> string {
     case len(param_names) == 0 of {
         true -> "";
         false -> do
             first_ptype: string <- param_type_at_index(param_types, 0);
-            first_base: string <- case is_gpr64_param_type(first_ptype) of { true -> "X12"; false -> param_reg_for_index(0, first_ptype) };
-            build_param_outer_reg_int64_abi_shadow_loop(param_names, param_types, 0, first_base, string_shadow, second_param_shadow)
+            first_base: string <- case is_gpr64_param_type(first_ptype) of { true -> "X19"; false -> param_reg_for_index(param_types, 0, first_ptype) };
+            build_param_outer_reg_int64_abi_shadow_loop(param_names, param_types, 0, first_base, string_shadow, second_param_shadow, reply_sret_second_uses_x21, hold_second_in_x21)
         end
     }
 }
 
-fn emit_int64_abi_shadow_moves(param_types: string) -> string {
+fn emit_int64_abi_shadow_moves(param_types: string, reply_sret_second_uses_x21: bool, hold_second_in_x21: bool) -> string {
     c: int64 <- count_gpr64_params(param_types);
     case c >= 2 of {
-        true -> "    MOV X12, X0\n    MOV X13, X1\n";
+        true -> case reply_sret_second_uses_x21 of {
+            true -> "    MOV X19, X0\n    MOV X21, X1\n";
+            false -> "    MOV X19, X0\n    MOV X20, X1\n"
+        };
         false -> case c == 1 of {
-            true -> "    MOV X12, X0\n";
+            true -> case hold_second_in_x21 of {
+                true -> "    MOV X19, X0\n    MOV X21, X1\n";
+                false -> "    MOV X19, X0\n"
+            };
             false -> ""
         }
     }
 }
 
-// True when we must copy ABI GPR args to X9/X10 before any device_io in the body (e.g. println before param uses).
+// True when the body contains a BL (user call) or BL-producing prim (actor helpers, list_length, list_cons).
+// These clobber X0–X18 so any live value in caller-saved regs must be spilled to callee-saved regs.
+fn body_has_bl_producing_prim(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            4 -> true;
+            6 -> case prims_actors@is_actor_prim(term.name) or term.name == "list_length" or term.name == "list_cons" of {
+                true -> true;
+                false -> case body_has_bl_producing_prim(term.inner) of {
+                    true -> true;
+                    false -> body_has_bl_producing_prim(term.right_expr)
+                }
+            };
+            2 -> case body_has_bl_producing_prim(term.inner) of {
+                true -> true;
+                false -> body_has_bl_producing_prim(term.right_expr)
+            };
+            3 -> case body_has_bl_producing_prim(term.inner) of {
+                true -> true;
+                false -> body_has_bl_producing_prim(term.right_expr)
+            };
+            5 -> case body_has_bl_producing_prim(term.inner) of {
+                true -> true;
+                false -> body_has_bl_producing_prim(term.right_expr)
+            };
+            7 -> case body_has_bl_producing_prim(term.inner) of {
+                true -> true;
+                false -> body_has_bl_producing_prim(term.right_expr)
+            };
+            8 -> case body_has_bl_producing_prim(term.inner) of {
+                true -> true;
+                false -> body_has_bl_producing_prim(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+// True when we must copy ABI GPR args from X0/X1 into callee-saved regs before device_io / BL.
+// Requires the first parameter to be int64/uint64 so X0 is that value; otherwise X0 may be struct/string/etc.
 fn needs_int64_abi_entry_shadow(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
@@ -628,14 +804,60 @@ fn needs_int64_abi_entry_shadow(fn_val: SIRFunction) -> bool {
             true -> false;
             false -> do
                 c: int64 <- count_gpr64_params(fn_val.param_types);
-                case c >= 2 of {
-                    true -> true;
-                    false -> case c == 1 of {
-                        true -> emitter_effects@has_device_io(fn_val.effects);
-                        false -> false
+                fp_gpr: bool <- first_param_is_gpr64(fn_val.param_types);
+                case fp_gpr of {
+                    false -> false;
+                    true -> case c >= 2 of {
+                        true -> true;
+                        false -> case c == 1 of {
+                            true -> emitter_effects@has_device_io(fn_val.effects) or body_has_bl_producing_prim(fn_val.body);
+                            false -> false
+                        }
                     }
                 }
             end
+        }
+    }
+}
+
+fn param_list_has_second_param(param_names: string) -> bool {
+    find_pipe_in_param_names(param_names, 0) >= 0
+}
+
+fn second_param_is_non_float(param_types: string) -> bool {
+    pipe: int64 <- find_pipe_in_param_names(param_types, 0);
+    case pipe < 0 of {
+        true -> false;
+        false -> do
+            p1: string <- param_type_at_index(param_types, 1);
+            case p1 == "float64" or p1 == "float32" of {
+                true -> false;
+                false -> true
+            }
+        end
+    }
+}
+
+// First param int64 in X0 (shadowed to X19); second param in X1 (struct/actor_ref/etc.) but only one GPR64 —
+// BL clobbers X1. Copy X1→X21 and bind the second param to X21 (X20 may hold temps after prims; forwarder cast).
+fn needs_second_param_x21_bl_survival(fn_val: SIRFunction) -> bool {
+    case fn_val.body.kind == 5 of {
+        true -> false;
+        false -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
+            true -> false;
+            false -> case first_param_is_gpr64(fn_val.param_types) of {
+                false -> false;
+                true -> case count_gpr64_params(fn_val.param_types) == 1 of {
+                    false -> false;
+                    true -> case param_list_has_second_param(fn_val.param_names) of {
+                        false -> false;
+                        true -> case second_param_is_non_float(fn_val.param_types) of {
+                            false -> false;
+                            true -> emitter_effects@has_device_io(fn_val.effects) or body_has_bl_producing_prim(fn_val.body)
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -679,6 +901,45 @@ fn behavior_return_is_atom_3_tuple(return_type: string) -> bool {
     }
 }
 
+// Strip a spine of SIR let (kind 2) nodes to the first non-let subexpression.
+fn sir_strip_lets_to_tail(term: SIRTerm) -> SIRTerm {
+    case term.kind == 2 of {
+        true -> sir_strip_lets_to_tail(term.right_expr);
+        false -> term
+    }
+}
+
+fn sir_tail_is_aggregate_tuple_or_record_make(term: SIRTerm) -> bool {
+    term.kind == 6 and (term.name == "tuple_make" or term.name == "record_make")
+        and reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name)
+}
+
+// Let tail with aggregate tuple/record return uses aggregate_return_heap_promote_x0 + ADD SP in term_emitter;
+// epilogue tuple_ret_dealloc would pop again and corrupt the frame (e.g. main.forwarder / actor_behavior_forward_cast).
+fn tuple_return_stack_already_freed_in_body(body: SIRTerm) -> bool {
+    case body.kind == 2 of {
+        true -> sir_tail_is_aggregate_tuple_or_record_make(sir_strip_lets_to_tail(body));
+        false -> false
+    }
+}
+
+// `let r = aggregate_make ...; r` — return value lives in caller X8 (sret), not on callee SP; skip epilogue ADD SP.
+fn tuple_return_id_ret_aggregate_var(body: SIRTerm) -> bool {
+    case body.kind == 2 of {
+        false -> false;
+        true -> body.right_expr.kind == 1 and body.right_expr.name == body.name and reg_conventions@is_aggregate_struct_or_tuple_return_type(body.inner.type_name)
+    }
+}
+
+// Tail is tuple_make/record_make (e.g. `(a,b,c)`); same sret path as id_ret.
+fn tuple_return_tail_aggregate_make(body: SIRTerm) -> bool {
+    sir_tail_is_aggregate_tuple_or_record_make(sir_strip_lets_to_tail(body))
+}
+
+fn tuple_callee_skips_tuple_ret_dealloc(body: SIRTerm) -> bool {
+    tuple_return_stack_already_freed_in_body(body) or tuple_return_id_ret_aggregate_var(body) or tuple_return_tail_aggregate_make(body)
+}
+
 // Actor runtime passes X2 = sret pointer; store reply tuple there (not callee stack). Skip when first param uses X19 shadow (string or list; X20 may hold second param shadow).
 fn use_actor_reply_sret_buffer(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
@@ -693,6 +954,17 @@ fn use_actor_reply_sret_buffer(fn_val: SIRFunction) -> bool {
     }
 }
 
+// Reply sret uses X20 for the buffer pointer (MOV X20, X2) after int64 ABI shadow MOV X19,X0 / MOV X20,X1 — that clobbers the second GPR parameter. When both apply and there are two int64/uint64 params, hold the second param in X21 instead (prologue must save X21 via needs_actor_ref_x21_x22_frame).
+fn actor_reply_sret_second_param_uses_x21(fn_val: SIRFunction) -> bool {
+    case use_actor_reply_sret_buffer(fn_val) of {
+        false -> false;
+        true -> case needs_int64_abi_entry_shadow(fn_val) of {
+            false -> false;
+            true -> count_gpr64_params(fn_val.param_types) >= 2
+        }
+    }
+}
+
 fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int64, acc: string, string_shadow: bool, second_param_shadow: bool) -> string {
     pipe: int64 <- find_pipe_in_param_names(param_names, 0);
     ptype: string <- param_type_at_index(param_types, idx);
@@ -701,7 +973,7 @@ fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int
             true -> acc;
             false -> do
                 prefixed: string <- concat("%", param_names);
-                br: string <- bind_reg_for_param(idx, ptype, string_shadow, second_param_shadow);
+                br: string <- bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow);
                 sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
                 concat(acc, concat(sep, concat(prefixed, concat("=", br))))
             end
@@ -711,10 +983,10 @@ fn build_param_outer_reg_loop(param_names: string, param_types: string, idx: int
             rest: string <- case pipe + 1 < len(param_names) of { true -> substring(param_names, pipe + 1, len(param_names)); false -> "" };
             rest_types: string <- case pipe + 1 < len(param_types) of { true -> substring(param_types, pipe + 1, len(param_types)); false -> "" };
             prefixed: string <- concat("%", first);
-            br: string <- bind_reg_for_param(idx, ptype, string_shadow, second_param_shadow);
+            br: string <- bind_reg_for_param(param_types, idx, ptype, string_shadow, second_param_shadow);
             sep: string <- case len(acc) == 0 of { true -> ""; false -> "|" };
             part: string <- concat(sep, concat(prefixed, concat("=", br)));
-            base: string <- case len(acc) == 0 of { true -> param_reg_for_index(0, ptype); false -> acc };
+            base: string <- case len(acc) == 0 of { true -> param_reg_for_index(param_types, idx, ptype); false -> acc };
             next_acc: string <- concat(base, part);
             build_param_outer_reg_loop(rest, rest_types, idx + 1, next_acc, string_shadow, second_param_shadow)
         end
@@ -736,9 +1008,35 @@ fn build_param_outer_reg(param_names: string, param_types: string, string_shadow
         true -> "";
         false -> do
             first_ptype: string <- param_type_at_index(param_types, 0);
-            first_reg: string <- param_reg_for_index(0, first_ptype);
+            first_reg: string <- case reg_conventions@is_aggregate_struct_or_tuple_return_type(first_ptype) of {
+                true -> "X11";
+                false -> param_reg_for_index(param_types, 0, first_ptype)
+            };
             second_ps: bool <- second_param_shadow_enabled(param_types, string_shadow);
             build_param_outer_reg_loop(param_names, param_types, 0, first_reg, string_shadow, second_ps)
+        end
+    }
+}
+
+// Inline struct/tuple in X0 at entry: copy to X11 once so record_proj can use [X11,#off] after X0 is clobbered
+// (first field accessed may not be at offset 0). Skip when string/list shadow uses X19 or int64 ABI shadow uses X19/X20.
+// Tail-call bodies (kind 5) still need this when the callee is not passed the aggregate unchanged (e.g. load a field
+// then BR to another function — see calculate_order_total loading order.items before tail-calling sum_items).
+fn first_param_aggregate_needs_x11_base(fn_val: SIRFunction) -> bool {
+    case len(fn_val.param_types) == 0 of {
+        true -> false;
+        false -> do
+            p0: string <- param_type_at_index(fn_val.param_types, 0);
+            case reg_conventions@is_aggregate_struct_or_tuple_return_type(p0) of {
+                false -> false;
+                true -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
+                    true -> false;
+                    false -> case needs_int64_abi_entry_shadow(fn_val) of {
+                        true -> false;
+                        false -> true
+                    }
+                }
+            }
         end
     }
 }
@@ -777,6 +1075,96 @@ fn second_param_shadow_enabled(param_types: string, string_shadow: bool) -> bool
     }
 }
 
+// List case branches: (1) cons tail and (2) aggregate head pointers must survive BL calls in the branch
+// body. Both use spill_reg_chain_from_outer (X19–X28). Weight each binding by 3 so small functions
+// still reserve enough STP/LDP pairs (see sum_segment_energies / sum_items).
+fn list_cons_pattern_tail_nonwild(name: string) -> int64 {
+    pipe_n: int64 <- var@find_pipe_from(name, 0);
+    case pipe_n < 0 of {
+        true -> 0;
+        false -> do
+            right_pat: string <- substring(name, pipe_n + 1, len(name));
+            case right_pat == "_" of {
+                true -> 0;
+                false -> 1
+            }
+        end
+    }
+}
+
+fn list_cons_pattern_head_aggregate_nonwild(branch: SIRTerm) -> int64 {
+    case branch.value == "list_cons" of {
+        false -> 0;
+        true -> do
+            pipe_n: int64 <- var@find_pipe_from(branch.name, 0);
+            case pipe_n < 0 of {
+                true -> 0;
+                false -> do
+                    left_pat: string <- substring(branch.name, 0, pipe_n);
+                    case left_pat == "_" of {
+                        true -> 0;
+                        false -> do
+                            pipe_t: int64 <- var@find_pipe_from(branch.type_name, 0);
+                            case pipe_t < 0 of {
+                                true -> 0;
+                                false -> do
+                                    head_t: string <- substring(branch.type_name, 0, pipe_t);
+                                    case reg_conventions@is_aggregate_struct_or_tuple_return_type(head_t) of {
+                                        true -> 1;
+                                        false -> 0
+                                    }
+                                end
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn count_list_cons_nonwild_tail_bindings(term: SIRTerm) -> int64 {
+    case term.kind < 0 of {
+        true -> 0;
+        false -> case term.kind of {
+            8 -> do
+                extra: int64 <- case term.value == "list_cons" of {
+                    true -> list_cons_pattern_tail_nonwild(term.name);
+                    false -> 0
+                };
+                extra + count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr)
+            end;
+            2 -> count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr);
+            3 -> count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr);
+            4 -> count_list_cons_nonwild_tail_bindings(term.inner);
+            5 -> count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr);
+            6 -> count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr);
+            7 -> count_list_cons_nonwild_tail_bindings(term.inner) + count_list_cons_nonwild_tail_bindings(term.right_expr);
+            _: int64 -> 0
+        }
+    }
+}
+
+fn count_list_cons_aggregate_head_nonwild_bindings(term: SIRTerm) -> int64 {
+    case term.kind < 0 of {
+        true -> 0;
+        false -> case term.kind of {
+            8 -> list_cons_pattern_head_aggregate_nonwild(term) + count_list_cons_aggregate_head_nonwild_bindings(term.inner) + count_list_cons_aggregate_head_nonwild_bindings(term.right_expr);
+            2 -> count_list_cons_aggregate_head_nonwild_bindings(term.inner) + count_list_cons_aggregate_head_nonwild_bindings(term.right_expr);
+            3 -> count_list_cons_aggregate_head_nonwild_bindings(term.inner) + count_list_cons_aggregate_head_nonwild_bindings(term.right_expr);
+            4 -> count_list_cons_aggregate_head_nonwild_bindings(term.inner);
+            5 -> count_list_cons_aggregate_head_nonwild_bindings(term.inner) + count_list_cons_aggregate_head_nonwild_bindings(term.right_expr);
+            6 -> count_list_cons_aggregate_head_nonwild_bindings(term.inner) + count_list_cons_aggregate_head_nonwild_bindings(term.right_expr);
+            7 -> count_list_cons_aggregate_head_nonwild_bindings(term.inner) + count_list_cons_aggregate_head_nonwild_bindings(term.right_expr);
+            _: int64 -> 0
+        }
+    }
+}
+
+fn count_callee_saved_spill_pressure(term: SIRTerm) -> int64 {
+    count_spill_eligible_lets_in_term(term) + count_list_cons_nonwild_tail_bindings(term) * 3 + count_list_cons_aggregate_head_nonwild_bindings(term) * 3
+}
+
 // Count non-discarded let bindings whose type is spill-eligible (not float, not unit).
 // Used to decide how many callee-saved register pairs (X19–X28) to save in the prologue.
 // Overcounting is harmless (a few extra STP/LDP instructions); undercounting corrupts the caller's callee-saved state.
@@ -802,74 +1190,41 @@ fn count_spill_eligible_lets_in_term(term: SIRTerm) -> int64 {
     }
 }
 
-// True when the body contains a BL-producing prim (actor helpers, list_length, list_cons).
-// These clobber X0–X18 so any live value in caller-saved regs must be spilled to callee-saved regs.
-fn body_has_bl_producing_prim(term: SIRTerm) -> bool {
-    case term.kind < 0 of {
+// STP/LDP X21,X22 when spill pressure (lets + weighted list-cons tails) reaches 3, or when X21 holds the second GPR parameter (actor reply sret + int64 shadow).
+fn needs_actor_ref_x21_x22_frame(fn_val: SIRFunction) -> bool {
+    case fn_val.body.kind == 5 of {
         true -> false;
-        false -> case term.kind of {
-            6 -> case prims_actors@is_actor_prim(term.name) or term.name == "list_length" or term.name == "list_cons" of {
+        false -> case actor_reply_sret_second_param_uses_x21(fn_val) of {
+            true -> true;
+            false -> case needs_second_param_x21_bl_survival(fn_val) of {
                 true -> true;
-                false -> case body_has_bl_producing_prim(term.inner) of {
-                    true -> true;
-                    false -> body_has_bl_producing_prim(term.right_expr)
-                }
-            };
-            2 -> case body_has_bl_producing_prim(term.inner) of {
-                true -> true;
-                false -> body_has_bl_producing_prim(term.right_expr)
-            };
-            3 -> case body_has_bl_producing_prim(term.inner) of {
-                true -> true;
-                false -> body_has_bl_producing_prim(term.right_expr)
-            };
-            4 -> body_has_bl_producing_prim(term.inner);
-            5 -> case body_has_bl_producing_prim(term.inner) of {
-                true -> true;
-                false -> body_has_bl_producing_prim(term.right_expr)
-            };
-            7 -> case body_has_bl_producing_prim(term.inner) of {
-                true -> true;
-                false -> body_has_bl_producing_prim(term.right_expr)
-            };
-            8 -> case body_has_bl_producing_prim(term.inner) of {
-                true -> true;
-                false -> body_has_bl_producing_prim(term.right_expr)
-            };
-            _: int64 -> false
+                false -> count_callee_saved_spill_pressure(fn_val.body) >= 3
+            }
         }
     }
 }
 
-// STP/LDP X21,X22 when three or more spill-eligible lets exist.
-fn needs_actor_ref_x21_x22_frame(fn_val: SIRFunction) -> bool {
-    case fn_val.body.kind == 5 of {
-        true -> false;
-        false -> count_spill_eligible_lets_in_term(fn_val.body) >= 3
-    }
-}
-
-// STP/LDP X23,X24 when five or more spill-eligible lets exist.
+// STP/LDP X23,X24 when pressure reaches 5.
 fn needs_callee_x23_x24_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
-        false -> count_spill_eligible_lets_in_term(fn_val.body) >= 5
+        false -> count_callee_saved_spill_pressure(fn_val.body) >= 5
     }
 }
 
-// STP/LDP X25,X26 when seven or more spill-eligible lets exist.
+// STP/LDP X25,X26 when pressure reaches 7.
 fn needs_callee_x25_x26_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
-        false -> count_spill_eligible_lets_in_term(fn_val.body) >= 7
+        false -> count_callee_saved_spill_pressure(fn_val.body) >= 7
     }
 }
 
-// STP/LDP X27,X28 when nine or more spill-eligible lets exist.
+// STP/LDP X27,X28 when pressure reaches 9.
 fn needs_callee_x27_x28_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
-        false -> count_spill_eligible_lets_in_term(fn_val.body) >= 9
+        false -> count_callee_saved_spill_pressure(fn_val.body) >= 9
     }
 }
 
@@ -880,17 +1235,20 @@ fn needs_callee_x27_x28_frame(fn_val: SIRFunction) -> bool {
 fn function_needs_callee_saved_x19_x20_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
-        false -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
-            true -> false;
-            false -> case use_actor_reply_sret_buffer(fn_val) of {
-                true -> true;
-                false -> case emitter_effects@has_concurrency(fn_val.effects) of {
+        false -> case needs_int64_abi_entry_shadow(fn_val) of {
+            true -> true;
+            false -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
+                true -> false;
+                false -> case use_actor_reply_sret_buffer(fn_val) of {
                     true -> true;
-                    false -> case emitter_effects@has_device_io(fn_val.effects) of {
+                    false -> case emitter_effects@has_concurrency(fn_val.effects) of {
                         true -> true;
-                        false -> case reg_conventions@is_tuple_type(fn_val.return_type) of {
+                        false -> case emitter_effects@has_device_io(fn_val.effects) of {
                             true -> true;
-                            false -> fn_val.return_type == "int64" or fn_val.return_type == "uint64" or body_has_bl_producing_prim(fn_val.body)
+                            false -> case reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type) of {
+                                true -> true;
+                                false -> fn_val.return_type == "int64" or fn_val.return_type == "uint64" or body_has_bl_producing_prim(fn_val.body)
+                            }
                         }
                     }
                 }
@@ -899,7 +1257,7 @@ fn function_needs_callee_saved_x19_x20_frame(fn_val: SIRFunction) -> bool {
     }
 }
 
-fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool) -> string proc[DeviceIO] {
+fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool) -> string proc[DeviceIO] {
     do
     entry_label: string <- entry_point_label(fn_val.name);
     eff_comment: string <- emitter_effects@fn_effect_annotation(fn_val.effects);
@@ -908,9 +1266,12 @@ fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64Pr
         true -> "S0";
         false -> case fn_val.return_type == "float64" of {
             true -> "D0";
-            false -> case fn_val.return_type == "int32" or fn_val.return_type == "int16" or fn_val.return_type == "int8" or fn_val.return_type == "uint32" or fn_val.return_type == "uint16" or fn_val.return_type == "uint8" of {
-                true -> concat("W", "0");
-                false -> "X0"
+            false -> case fn_val.return_type == "float16" of {
+                true -> "H0";
+                false -> case fn_val.return_type == "int32" or fn_val.return_type == "int16" or fn_val.return_type == "int8" or fn_val.return_type == "uint32" or fn_val.return_type == "uint16" or fn_val.return_type == "uint8" of {
+                    true -> concat("W", "0");
+                    false -> "X0"
+                }
             }
         }
     };
@@ -918,12 +1279,18 @@ fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64Pr
     second_param_shadow: bool <- second_param_shadow_enabled(fn_val.param_types, string_shadow);
     param_outer: string <- build_param_outer_reg(fn_val.param_names, fn_val.param_types, string_shadow);
     use_int64_abi_shadow: bool <- needs_int64_abi_entry_shadow(fn_val);
+    reply_sret_second_x21: bool <- actor_reply_sret_second_param_uses_x21(fn_val);
+    hold_second_param_in_x21: bool <- needs_second_param_x21_bl_survival(fn_val);
     param_outer_for_body: string <- case use_int64_abi_shadow of {
-        true -> build_param_outer_reg_int64_abi_shadow(fn_val.param_names, fn_val.param_types, string_shadow, second_param_shadow);
+        true -> build_param_outer_reg_int64_abi_shadow(fn_val.param_names, fn_val.param_types, string_shadow, second_param_shadow, reply_sret_second_x21, hold_second_param_in_x21);
         false -> param_outer
     };
     int64_abi_shadow_asm: string <- case use_int64_abi_shadow of {
-        true -> emit_int64_abi_shadow_moves(fn_val.param_types);
+        true -> emit_int64_abi_shadow_moves(fn_val.param_types, reply_sret_second_x21, hold_second_param_in_x21);
+        false -> ""
+    };
+    aggregate_x11_mov: string <- case first_param_aggregate_needs_x11_base(fn_val) of {
+        true -> "    MOV X11, X0\n";
         false -> ""
     };
     actor_sret_mov: string <- case use_actor_reply_sret_buffer(fn_val) of {
@@ -932,7 +1299,10 @@ fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64Pr
     };
     param_outer_emit: string <- case use_actor_reply_sret_buffer(fn_val) of {
         true -> concat(param_outer_for_body, "|_tuple_sret=X20");
-        false -> param_outer_for_body
+        false -> case reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type) of {
+            true -> concat(param_outer_for_body, "|_callee_sret=X8");
+            false -> param_outer_for_body
+        }
     };
     shadow_prologue: string <- case string_shadow of {
         true -> case second_param_shadow of {
@@ -961,31 +1331,61 @@ fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64Pr
         true -> "    STP X27, X28, [SP, #-16]!\n";
         false -> ""
     };
-    prologue_full: string <- concat(prologue, concat(shadow_prologue, concat(callee_saved_frame, concat(actor_x21_x22_frame, concat(callee_x23_x24_frame, concat(callee_x25_x26_frame, concat(callee_x27_x28_frame, concat(int64_abi_shadow_asm, actor_sret_mov))))))));
-    body: string <- case fn_val.body.kind == 5 of {
-        true -> term_emitter@emit_function_tail_user_call_root(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer_emit, fn_val.effects, debug);
-        false -> term_emitter@term_to_asm_debug_with_outer(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer_emit, debug)
+    prologue_full: string <- concat(prologue, concat(shadow_prologue, concat(callee_saved_frame, concat(actor_x21_x22_frame, concat(callee_x23_x24_frame, concat(callee_x25_x26_frame, concat(callee_x27_x28_frame, concat(int64_abi_shadow_asm, concat(aggregate_x11_mov, actor_sret_mov)))))))));
+    main_kind5_no_tail: bool <- recursion_support@main_kind5_body_uses_non_tail_call(fn_val.name, fn_val.return_type, fn_val.body, all_functions);
+    main_k5_asm_line_before_call: string <- case main_kind5_no_tail of {
+        true -> case fn_val.return_type == "float32" or fn_val.return_type == "float64" or fn_val.return_type == "float16" of {
+            true -> "";
+            false -> "    ; unsupported term kind ?"
+        };
+        false -> ""
     };
-    float_to_exit: string <- case fn_val.body.kind == 5 of {
+    kind5_tail_returns_directly: bool <- fn_val.body.kind == 5 and main_kind5_no_tail == false;
+    // Direct body: tuple_make may use |_tuple_sret=X8 (no BL inside the make). record_make always uses stack
+    // in term_emitter; do not tag X8 here so epilogue/dealloc paths stay consistent.
+    body_outer_root: string <- case fn_val.body.kind == 6 and (fn_val.body.name == "tuple_make" or fn_val.body.name == "record_make") and reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type) of {
+        true -> case use_actor_reply_sret_buffer(fn_val) of {
+            true -> param_outer_emit;
+            false -> case fn_val.body.name == "tuple_make" of {
+                true -> concat(param_outer_emit, "|_tuple_sret=X8");
+                false -> param_outer_emit
+            }
+        };
+        false -> param_outer_emit
+    };
+    body: string <- case fn_val.body.kind == 5 of {
+        true -> case main_kind5_no_tail of {
+            true -> term_emitter@emit_function_non_tail_user_call_root(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer_emit, fn_val.effects, debug, main_k5_asm_line_before_call);
+            false -> term_emitter@emit_function_tail_user_call_root(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer_emit, fn_val.effects, debug)
+        };
+        false -> term_emitter@term_to_asm_debug_with_outer(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, body_outer_root, debug)
+    };
+    float_to_exit: string <- case kind5_tail_returns_directly of {
         true -> "";
         false -> case main_returns_float64(fn_val.name, fn_val.return_type) of {
             true -> "    FCVTZS W0, D0\n";
             false -> case main_returns_float32(fn_val.name, fn_val.return_type) of {
                 true -> "    FCVTZS W0, S0\n";
-                false -> ""
+                false -> case main_returns_float16(fn_val.name, fn_val.return_type) of {
+                    true -> "    FCVTZS W0, H0\n";
+                    false -> ""
+                }
             }
         }
     };
-    tuple_ret_dealloc: string <- case fn_val.body.kind == 5 of {
+    tuple_ret_dealloc: string <- case kind5_tail_returns_directly of {
         true -> "";
         false -> case reg_conventions@is_tuple_type(fn_val.return_type) of {
             true -> case use_actor_reply_sret_buffer(fn_val) of {
                 true -> "";
-                false -> do
-                    tc: int64 <- prims_tuple@count_type_elements(fn_val.return_type);
-                    ts: int64 <- prims_tuple@flat_alloc_size(tc);
-                    concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(ts), "\n"))
-                end
+                false -> case tuple_callee_skips_tuple_ret_dealloc(fn_val.body) of {
+                    true -> "";
+                    false -> do
+                        tc: int64 <- prims_tuple@count_type_elements(fn_val.return_type);
+                        ts: int64 <- prims_tuple@flat_alloc_size(tc);
+                        concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(ts), "\n"))
+                    end
+                }
             };
             false -> ""
         }
@@ -1011,7 +1411,7 @@ fn emit_sir_function(fn_val: SIRFunction, table: AtomTable, int64_table: Int64Pr
         false -> ""
     };
     // Restore in reverse order of save: X27,X28 → X25,X26 → X23,X24 → X21,X22 → X19,X20
-    epilogue: string <- case fn_val.body.kind == 5 of {
+    epilogue: string <- case kind5_tail_returns_directly of {
         true -> "";
         false -> case string_shadow of {
             true -> do
@@ -1052,6 +1452,19 @@ fn main_returns_float64(name: string, return_type: string) -> bool {
 // True when main returns float32: emit FCVTZS W0, S0 so process exit code reflects computed value.
 fn main_returns_float32(name: string, return_type: string) -> bool {
     case return_type == "float32" of {
+        true -> case name of {
+            "main" -> true;
+            "main.main" -> true;
+            "main.m" -> true;
+            _: string -> false
+        };
+        false -> false
+    }
+}
+
+// True when main returns float16: emit FCVTZS W0, H0 so process exit code reflects computed value.
+fn main_returns_float16(name: string, return_type: string) -> bool {
+    case return_type == "float16" of {
         true -> case name of {
             "main" -> true;
             "main.main" -> true;

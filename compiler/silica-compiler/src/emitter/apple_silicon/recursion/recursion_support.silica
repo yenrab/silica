@@ -4,6 +4,7 @@
 use sir_ast;
 
 export module_uses_tail_calls/1;
+export main_kind5_body_uses_non_tail_call/4;
 export emit_recursion_bss_section/0;
 export emit_recursion_phase_header_comment/0;
 export emit_fuel_backedge_stub_comment/0;
@@ -50,16 +51,113 @@ fn emit_stack_trace_hook_comment() -> string {
     "    ; p4 observability: frame -> (fn id, source id) map; filter trampoline frames\n"
 }
 
-fn module_uses_tail_calls_functions(fns: ListSIRFunction) -> bool {
+fn is_main_entry(name: string) -> bool {
+    case name of {
+        "main" -> true;
+        "main.main" -> true;
+        "main.m" -> true;
+        _: string -> false
+    }
+}
+
+fn sir_find_function_by_name(fns: ListSIRFunction, name: string) -> SIRFunction {
+    case fns.is_nil of {
+        true -> sir_ast@dummy_sir_function();
+        false -> case fns.head.name == name of {
+            true -> fns.head;
+            false -> sir_find_function_by_name(fns.tail, name)
+        }
+    }
+}
+
+// Callee function can reach itself via call graph (direct, tail, or via helpers e.g. ack -> ack_nonzero -> ack).
+fn callee_reaches_self_via_calls(all_functions: ListSIRFunction, callee: string) -> bool {
+    target_fn: SIRFunction <- sir_find_function_by_name(all_functions, callee);
+    case len(target_fn.name) == 0 of {
+        true -> false;
+        false -> reachable_from_term_tree_for_target(all_functions, target_fn.body, callee, 0, 24)
+    }
+}
+
+fn reachable_from_term_tree_for_target(all_functions: ListSIRFunction, term: SIRTerm, target: string, depth: int64, max_depth: int64) -> bool {
+    case depth > max_depth of {
+        true -> false;
+        false -> case term.kind < 0 of {
+            true -> false;
+            false -> case term.kind == 4 or term.kind == 5 of {
+                true -> do
+                    hits_target: bool <- term.name == target;
+                    via_body: bool <- case hits_target of {
+                        true -> true;
+                        false -> do
+                            next_fn: SIRFunction <- sir_find_function_by_name(all_functions, term.name);
+                            case len(next_fn.name) == 0 of {
+                                true -> false;
+                                false -> reachable_from_term_tree_for_target(all_functions, next_fn.body, target, depth + 1, max_depth)
+                            }
+                        end
+                    };
+                    case via_body of {
+                        true -> true;
+                        false -> do
+                            li: bool <- case term.inner.kind < 0 of {
+                                true -> false;
+                                false -> reachable_from_term_tree_for_target(all_functions, term.inner, target, depth + 1, max_depth)
+                            };
+                            ri: bool <- case term.right_expr.kind < 0 of {
+                                true -> false;
+                                false -> reachable_from_term_tree_for_target(all_functions, term.right_expr, target, depth + 1, max_depth)
+                            };
+                            li or ri
+                        end
+                    }
+                end;
+                false -> do
+                    l2: bool <- case term.inner.kind < 0 of {
+                        true -> false;
+                        false -> reachable_from_term_tree_for_target(all_functions, term.inner, target, depth + 1, max_depth)
+                    };
+                    r2: bool <- case term.right_expr.kind < 0 of {
+                        true -> false;
+                        false -> reachable_from_term_tree_for_target(all_functions, term.right_expr, target, depth + 1, max_depth)
+                    };
+                    l2 or r2
+                end
+            }
+        }
+    }
+}
+
+// main + kind 5: BLR when callee is not on a self-reach cycle (plain add); BR when it is (factorial, sum_to, ack). Float main always BLR.
+fn main_kind5_body_uses_non_tail_call(name: string, return_type: string, body: SIRTerm, all_functions: ListSIRFunction) -> bool {
+    case body.kind == 5 of {
+        false -> false;
+        true -> case is_main_entry(name) of {
+            false -> false;
+            true -> case return_type == "float32" or return_type == "float64" or return_type == "float16" of {
+                true -> true;
+                false -> case callee_reaches_self_via_calls(all_functions, body.name) of {
+                    true -> false;
+                    false -> true
+                }
+            }
+        }
+    }
+}
+
+fn module_uses_tail_calls_functions(fns: ListSIRFunction, all_functions: ListSIRFunction) -> bool {
     case fns.is_nil of {
         true -> false;
         false -> case fns.head.body.kind == 5 of {
-            true -> true;
-            false -> module_uses_tail_calls_functions(fns.tail)
+            true -> case main_kind5_body_uses_non_tail_call(fns.head.name, fns.head.return_type, fns.head.body, all_functions) of {
+                true -> module_uses_tail_calls_functions(fns.tail, all_functions);
+                false -> true
+            };
+            false -> module_uses_tail_calls_functions(fns.tail, all_functions)
         }
     }
 }
 
 fn module_uses_tail_calls(sir_mod: SIRModule) -> bool {
-    module_uses_tail_calls_functions(sir_mod.functions)
+    module_uses_tail_calls_functions(sir_mod.functions, sir_mod.functions)
 }
