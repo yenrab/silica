@@ -4,11 +4,11 @@
 
 # Silica
 
-**Silica's target is to be the world’s most secure language and runtime—without asking you to fight the tools to get there.** With Silica, security is not a bolt-on checklist; it is woven through the language model, the compiler, and the runtime so that ordinary code reads clearly and dangerous patterns fail early, with explanations you can act on.
+**Silica's target is to be the world’s most secure language and runtime—without asking you to fight the tools to get there.** With Silica, security is not a bolt-on checklist; it is woven through the language model, the compiler, and the runtime so that ordinary code reads clearly and dangerous patterns fail during compile-time, with explanations you can act on.
 
-Silica is a **systems language** that is **functional**: explicit effects, **actor-based** message passing, and **region-based memory** with **no garbage collection**. You keep **predictable performance** and a **small conceptual surface area**, while the type system and compiler shoulder much of what other ecosystems leave to discipline, reviews, and production incidents. **With Silica, you stay in control without being overwhelmed.**
+Silica is a highly concurrent **systems language** that is **functional**: explicit effects, **actor-based** message passing, and **region-based memory** with **no garbage collection**. Many other stacks treat **memory**, **concurrency**, and **observable behavior** as separate concerns—each papered over with conventions, reviews, and runtime luck. Silica **weaves them into one model**: regions and lifetimes give memory a coherent story **without** a collector; actors default to **isolation and messages** instead of ad hoc sharing; effects on types make mutation and all kinds of I/O something the compiler **checks**, not something teams infer from names and docs. That integration dramatically narrows how bugs can hide: whole classes of memory and concurrency mistakes fail **at compile time** with explanations tied to the spec, and ordinary modules stay easier to audit because intent is explicit. You keep **predictable performance** and a **small conceptual surface area**. **With Silica, you stay in control without being overwhelmed.**
 
-**Silica** is built for **today’s silicon** and the facilities real cores expose now—so you are not stuck translating ideas through **obsolete machine models** or carry-over abstractions from another era. The language and runtime **line up with modern chip design**: what you write maps to **performance aligned with the hardware** you can actually buy and use, not to a nostalgic picture of how chips and computers used to work.
+**Silica** is built for **today’s silicon** and **what real cores actually expose to software today**—so you are not stuck translating ideas through **obsolete machine models** or carry-over abstractions from another era. Real machines reward **locality**, **parallelism without accidental sharing**, and **contained failure**; the language and runtime are shaped so those ideas stay first-class, not bolted on after the fact. What you write maps to **performance aligned with the hardware** you can actually buy and use, not to a nostalgic picture of how chips and computers used to work.
 
 ---
 
@@ -23,7 +23,7 @@ Silica is a **systems language** that is **functional**: explicit effects, **act
     vertical-align: -0.5em;
     margin-right: 0.2em;
   "
-/><strong>Motto: Secure by default — fail soft, never fail silent</strong>
+/><strong>Motto: Secure by default at compile time — fail soft, never fail silent</strong>
 
 ---
 
@@ -66,10 +66,34 @@ The **bootstrap compiler** is complete; ongoing work below is grouped by whether
 
 **Phase 2 (in progress)**
 
+**Here’s where you could help**
+
+**Immutable lists and lowering**
+
 - **Fast Map, Filter, and Reduce:** make **immutable list** traversals use **vector-sized chunks** in **region-backed** storage—so the usual functional pipeline stays expressive in source while the emitter can target **SIMD-friendly** layouts and avoid redundant allocations. See [list implementation design](compiler/silica-compiler/design_documents/list_implementation_design.md) (kernel ops and lowering).
+
+**Compiler rules and diagnostics**
+
 - **Compiler errors for anti-patterns:** the self-hosted compiler reports **hard errors** for **dead bindings**, **duplicate work**, **redundant arithmetic**, **loop-invariant mistakes**, and other patterns spelled out in [additional compiler rules](compiler/silica-compiler/design_documents/silica-specification-additional.md)—so inefficient or ambiguous code is fixed at the source, not silently “optimized away.”
 - **Fine-tuning compiler errors:** refine **diagnostics** for the current pipeline—clearer messages, stable **error codes**, accurate locations, and **spec-linked** references (see §1.6 of the [language specification](compiler/silica-compiler/design_documents/silica-specification.md))—so fixing mistakes stays fast while the self-hosted compiler matures. Carry **diagnostic quality** forward as further language features land—new rules for **crypto**, **numerics**, **IPC**, and **verification**-oriented feedback—with the same bar: **human-readable** and **machine-friendly** errors that stay aligned with the specification.
+
+**CI and golden trials**
+
 - **CI trial edge-case additions:** grow `[compiler/silica-compiler/trials/](compiler/silica-compiler/trials/)` with scenarios that stress the self-hosted pipeline—corner cases for parsing, types, effects, and codegen—so `make integrate` stays the gate for regressions on golden assembly (`.ascomp`) and output (`.scout`).
+
+**Chip, OS, and bare-metal support**
+
+The self-hosted toolchain is **validated end-to-end on macOS with Apple Silicon (AArch64)**. The table is **not a timeline** and **not a rigid pecking order**: **Planned focus** is **where work is intended to go next**—counting **within each strand** only (hosted vs bare metal stay **parallel**). Smaller numbers mean **sooner planned attention**, not a guarantee every row advances in lockstep or that cross-strand rows compete. Rows are **sorted by that band**; when two rows share the same band, **Hosted** is listed before **bare metal** for readability, not as ranking one strand above the other. Among bare-metal rows in the same band, **ESP32-S3** is listed first—there is **already a volunteer** driving that bring-up. If you enjoy **ABIs, triples, link steps, CI on new hosts, or bringing up a small runtime on a board with no OS**, pick a row and open a discussion or PR—see the [build plan](compiler/silica-compiler/design_documents/build-plan.md), `TARGET=…` and emitter layout under `[compiler/silica-compiler/src/emitter/](compiler/silica-compiler/src/emitter/)`, and [hosted vs bare-metal execution](compiler/silica-compiler/design_documents/execution-environments-hosted-vs-bare-metal.md).
+
+| Planned focus | Strand | Target | Why it helps |
+| ------------: | ------ | ------ | ------------ |
+| 1 | Hosted (chip + OS) | Linux on AArch64 | Same ISA as today’s primary machine, different syscall/link story; ARM cloud and desktop Linux for contributors and trials. |
+| 1 | Bare metal (OS-free, by chip) | ESP32-S3 (Xtensa LX7) | **Volunteer in flight**—this is the **first bare-metal bring-up planned** for this chip (ROM/startup, linker, and runtime on a widely used dev-board line). |
+| 1 | Bare metal (OS-free, by chip) | AArch64 | **Real cores without a full OS**; see [memory effects on AArch64 / OS-free targets](compiler/silica-compiler/design_documents/memory-effects-aarch64-implementation-plan.md); ABI/runtime on a minimal environment. |
+| 2 | Hosted (chip + OS) | Linux on x86_64 | Broad server and desktop footprint; strong payoff for CI and for developers not on Apple hardware. |
+| 2 | Bare metal (OS-free, by chip) | RISC-V (application-profile cores) | Broad embedded/accelerator footprint; calling convention, linker/platform story, trials or hardware-in-the-loop. |
+| 3 | Hosted (chip + OS) | Windows (x86_64; AArch64 when there is demand) | Lowers the barrier for contributors and teams on Windows workstations. |
+| 3 | Bare metal (OS-free, by chip) | Common MCU classes (e.g. 32-bit embedded) | Longer tail of boards/ISAs; linker scripts, platform packages, minimal-runtime contract per profile. |
 
 **Phase 3 (next up)**
 
@@ -91,20 +115,7 @@ The **bootstrap compiler** is complete; ongoing work below is grouped by whether
 
 ### Compiler-building tools
 
-The directory `[compiler/silica-compiler/compiler-building-tools/](compiler/silica-compiler/compiler-building-tools/)` holds **JSON-LD agent specifications** (GAB / AALang–style graphs). In compatible AI-assisted workflows—typically by opening a given `.jsonld` file as the task context—the assistant follows that graph as a **specialized “tool agent”** for compiler work: structured prompts, modes, and guardrails rather than ad hoc chat.
-
-You do not need every file for day-to-day hacking; pick the graph that matches what you are doing. At a high level:
-
-
-| Area                              | Examples (file names)                                                                                                                                                                                                                                                                                                           |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Compiler pipeline scaffolding** | Code generators / builders for the major phases—`silica-lexer-code-generator`, `silica-parser-code-generator`, `silica-typechecker-code-generator`, `silica-effect-code-generator`, `silica-sir_generator_builder`, `silica-codegen-code-generator`, `silica-emitter_builder`, plus `main_generator` for wiring a `main` entry. |
-| **Planning and integration**      | `silica-compiler-phase-planning-tool` (phase design and coordination), `silica-CI` (driving CI-style checks), `golden-fail-generator` (golden / failure test workflows around trial outputs).                                                                                                                                   |
-| **Documentation**                 | `silica_doc_generator` — guided doc generation aligned with project conventions.                                                                                                                                                                                                                                                |
-| **Focused design discussions**    | `tuple_recursion_discussion`, `memory_regions_discussion`, `device-io-sequence-block-tool` — structured exploration of specific language and runtime topics.                                                                                                                                                                    |
-
-
-Individual graphs contain their own execution instructions; treat them as **executable playbooks** for the assistant, not plain documentation.
+Tools for generating compiler code and coordinating Phase 2 work live under [`compiler/silica-compiler/compiler-building-tools/`](compiler/silica-compiler/compiler-building-tools/). For JSON-LD agent graphs, which files to use, and how they fit AI-assisted workflows, see **[compiler/silica-compiler/compiler-building-tools/README.md](compiler/silica-compiler/compiler-building-tools/README.md)**.
 
 ---
 
