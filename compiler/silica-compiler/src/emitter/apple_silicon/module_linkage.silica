@@ -1,0 +1,144 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Module linkage for AArch64 emission (silica-specification.md §19.3).
+// Cross-module calls use module@function in source; SIR stores the same (see user_call_callee_sir_name).
+// Local calls use a bare function name; the caller module comes from outer_reg |_lm=.
+// SIR may use a legacy main.* prefix on function names; asm_symbol_for_definition maps that to {module}.{fn}.
+
+use sir_ast;
+use var;
+
+export asm_symbol_for_definition/2;
+export asm_linkage_symbol_for_call/2;
+export sir_name_from_export_fn_name/1;
+export module_defines_program_main/2;
+export format_used_modules_comment/1;
+export emit_export_global_directives/2;
+
+fn starts_with_main_dot(s: string) -> bool {
+    len(s) >= 5 and substring(s, 0, 5) == "main."
+}
+
+// First "@" in callee name, or -1 (spec §19.3.2 module@function).
+fn first_at_in_callee(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "@" of {
+            true -> i;
+            false -> first_at_in_callee(s, i + 1)
+        }
+    }
+}
+
+// ("", whole) if unqualified; else (module, function) for module@function.
+fn split_qualified_callee(sir_callee: string) -> (string, string) {
+    at: int64 <- first_at_in_callee(sir_callee, 0);
+    case at < 0 of {
+        true -> ("", sir_callee);
+        false -> (substring(sir_callee, 0, at), substring(sir_callee, at + 1, len(sir_callee)))
+    }
+}
+
+// Align with user_calls@qual_name / definition lowering: parser entry alias "m" -> "main".
+fn qual_fn_name_for_linkage(name: string) -> string {
+    case name of {
+        "m" -> "main";
+        _: string -> name
+    }
+}
+
+// Program entry label is always `main` (spec 19.1, linker convention).
+fn asm_symbol_for_definition(module_name: string, sir_fn_name: string) -> string {
+    case sir_fn_name == "main" or sir_fn_name == "main.main" or sir_fn_name == "main.m" of {
+        true -> "main";
+        false -> case starts_with_main_dot(sir_fn_name) of {
+            true -> concat(module_name, concat(".", substring(sir_fn_name, 5, len(sir_fn_name))));
+            false -> sir_fn_name
+        }
+    }
+}
+
+// Map SIR callee string to assembly symbol. outer_reg may carry |_lm=mod from emitter_core
+// (caller's module for unqualified / local calls only).
+fn asm_linkage_symbol_for_call(outer_reg: string, sir_callee: string) -> string {
+    (qmod: string, qfn: string) <- split_qualified_callee(sir_callee);
+    case len(qmod) > 0 of {
+        true -> asm_symbol_for_definition(qmod, qual_fn_name_for_linkage(qfn));
+        false -> do
+            lm: string <- var@find_sp_binding(outer_reg, "_lm");
+            mod: string <- case len(lm) > 0 of {
+                true -> lm;
+                false -> "main"
+            };
+            asm_symbol_for_definition(mod, qual_fn_name_for_linkage(sir_callee))
+        end
+    }
+}
+
+// Export declarations list bare names; align with sir_generator qual_name for non-entry fns.
+fn sir_name_from_export_fn_name(fn_name: string) -> string {
+    case fn_name of {
+        "main" -> "main";
+        "m" -> "main";
+        _: string -> concat("main.", fn_name)
+    }
+}
+
+fn module_defines_program_main_loop(fns: ListSIRFunction, module_name: string) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case asm_symbol_for_definition(module_name, fns.head.name) == "main" of {
+            true -> true;
+            false -> module_defines_program_main_loop(fns.tail, module_name)
+        }
+    }
+}
+
+fn module_defines_program_main(sir_module: SIRModule) -> bool {
+    module_defines_program_main_loop(sir_module.functions, sir_module.module_name)
+}
+
+fn format_used_modules_nonempty(uses: ListSirString) -> string {
+    case uses.tail.is_nil of {
+        true -> uses.head;
+        false -> concat(uses.head, concat(", ", format_used_modules_nonempty(uses.tail)))
+    }
+}
+
+fn format_used_modules_comment(uses: ListSirString) -> string {
+    case uses.is_nil of {
+        true -> "";
+        false -> concat("    ; use ", concat(format_used_modules_nonempty(uses), "\n"))
+    }
+}
+
+fn emit_export_global_directives_loop(exps: ListSIRExportItem, module_name: string, acc: string) -> string {
+    case exps.is_nil of {
+        true -> acc;
+        false -> do
+            sir_n: string <- sir_name_from_export_fn_name(exps.head.fn_name);
+            sym: string <- asm_symbol_for_definition(module_name, sir_n);
+            line: string <- concat(concat(".global ", sym), "\n");
+            emit_export_global_directives_loop(exps.tail, module_name, concat(acc, line))
+        end
+    }
+}
+
+fn emit_export_global_directives(exports: ListSIRExportItem, module_name: string) -> string {
+    emit_export_global_directives_loop(exports, module_name, "")
+}

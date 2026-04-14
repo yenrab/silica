@@ -100,7 +100,7 @@ The self-hosted toolchain is **validated end-to-end on macOS with Apple Silicon 
 
 - **Assembly optimization:** tighten and tune **AArch64** emission (instruction choice, scheduling, and related emitter paths) for better performance and smaller binaries without weakening the trials’ contract with checked-in baselines.
 - **Compiler architecture:** **re-engineer `silica-compiler`** so it is structured around **Silica actors**—dogfooding the concurrency model in the toolchain itself while simplifying the compiler's source code.
-- **Numeric tower:** **automatic big integers** (`Auto BigInt`), **automatic big floats** (`Auto BigFloat`), **rationals** plus **automatic big rationals** (`Auto BigRational`) as first-class directions for precise and overflow-safe numerics.
+- **Extended numerics:** first-class **big integers**, **big floats**, **rationals**, and **big rationals** as distinct explicit types (no implicit widening or automatic promotion between numeric kinds).
 - **Formal methods:** deepen **Curry–Howard**–aligned reasoning and proof tooling on top of the type system. See [formal verification specification](compiler/silica-compiler/design_documents/silica-formal-verification-specification.md).
 - **Cryptography:** realize the **language-level cryptographic guardrails** (secret/public labels, constant-time discipline, protected buffers, and related rules). See [crypto proposal](compiler/silica-compiler/design_documents/crypto-proposal-introduction.md).
 

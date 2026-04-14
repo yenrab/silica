@@ -39,6 +39,14 @@ integrate:
 			$(MAKE) -C $$dir || failed=1; \
 			continue; \
 		fi; \
+		if [ "$$dir" = "modules_addition" ] && [ -f "modules_addition/INTEGRATE_PENDING" ]; then \
+			echo "SKIP: modules_addition (INTEGRATE_PENDING — see modules_addition/INTEGRATE_PENDING)"; \
+			continue; \
+		fi; \
+		if [ "$$dir" = "modules_addition" ]; then \
+			$(MAKE) -C $$dir || failed=1; \
+			continue; \
+		fi; \
 		if [ "$$dir" = "cpu_discovery" ] && [ -f "cpu_discovery/INTEGRATE_PENDING" ]; then \
 			echo "SKIP: cpu_discovery (INTEGRATE_PENDING — see cpu_discovery/README.md)"; \
 			continue; \
@@ -117,6 +125,10 @@ clean:
 		dir=$${dir%/}; \
 		echo "Cleaning $$dir..."; \
 		if [ "$$dir" = "error_enforcement_addition" ]; then \
+			$(MAKE) -C $$dir clean; \
+			continue; \
+		fi; \
+		if [ "$$dir" = "modules_addition" ]; then \
 			$(MAKE) -C $$dir clean; \
 			continue; \
 		fi; \

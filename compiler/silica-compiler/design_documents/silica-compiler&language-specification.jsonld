@@ -21,14 +21,14 @@
       "description": "Anti-patterns that cause hard errors at compile time. The compiler must fail when any of these patterns are detected.",
       "sourceDocument": "silica-specification-additional.md",
       "rules": [
-        {"rule": "3.1", "name": "Unused Bindings", "description": "A let binding whose variable is never used is a compile error", "errorMessage": "Unused binding: <name> — remove it or use it."},
+        {"rule": "3.1", "name": "Unused Bindings", "description": "A <- binding whose variable is never used is a compile error", "errorMessage": "Unused binding: <name> — remove it or use it."},
         {"rule": "3.2", "name": "Duplicate Computation (CSE)", "description": "Computing the same expression twice in the same scope with the same inputs is a compile error", "errorMessage": "Duplicate computation: same expression appears twice — bind to a variable and reuse."},
         {"rule": "3.3", "name": "Redundant Algebraic Operations", "description": "Redundant operations (x * 1, x + 0, x * 0, x & 0, x | ~0, etc.) are compile errors", "errorMessage": "Redundant operation: <expr> — simplify to <simplified>."},
         {"rule": "3.4", "name": "Invariant Guards in Case Expressions", "description": "A guard that does not depend on any pattern bindings is a compile error", "errorMessage": "Guard does not depend on pattern bindings — move it before the case or restructure."},
         {"rule": "3.5", "name": "Loop-Invariant Code", "description": "An expression inside a loop that does not depend on any loop variables is a compile error", "errorMessage": "Loop-invariant expression — move outside the loop."},
         {"rule": "3.6", "name": "Constant Hoisting", "description": "A constant expression inside a loop body is a compile error", "errorMessage": "Constant expression in loop body — move outside the loop."},
         {"rule": "3.7", "name": "Redundant Constant Expressions", "description": "Literal constant expressions that can be simplified (e.g., 2 + 3 instead of 5) are compile errors", "errorMessage": "Redundant constant expression: <expr> — use <minimal>."},
-        {"rule": "3.8", "name": "Strength Reduction", "description": "Multiplying by a literal power of two (e.g., x * 8) is a compile error; use shift instead", "errorMessage": "Multiply by power of two — use shift: <expr> → <shift_expr>."}
+        {"rule": "3.8", "name": "Strength Reduction", "description": "Multiplying by a literal power of two (e.g., x * 8) is a compile error; the compiler lowers these internally", "errorMessage": "Multiply by literal power of two: <expr> — the compiler will lower this to a shift; simplify or use a named constant."}
       ]
     },
     {
@@ -218,12 +218,14 @@
         {
           "@id": "silica:ModuleAndImportClarity",
           "name": "Module and Import Clarity",
-          "description": "Explicit module declarations and imports",
+          "description": "Explicit module imports and module-qualified function calls. Local functions are called by name; imported functions require module@function syntax.",
           "examples": [
             "use calculator;",
-            "export add/2;"
+            "export add/2;",
+            "calculator@add(3, 4)",
+            "local_fn(42)"
           ],
-          "benefit": "Makes dependencies explicit and traceable"
+          "benefit": "Every cross-module call names its source module at the call site, making dependencies explicit and eliminating name conflicts"
         }
       ]
     },
@@ -340,8 +342,8 @@
         "fn", "for", "from", "hot_swap", "if", "impl", "import", "int8",
         "int16", "int32", "int64", "lifetime", "mailbox", "mem", "module", "network_io", "normal", "not",
         "of", "performance_cores", "proc", "produces", "pub", "pure", "recv", "ref", "region", "register_rwr",
-        "self", "send", "sequence", "spawn", "string", "struct", "trait", "true", "type",
-        "underscore", "unit", "use", "where"
+        "return", "self", "send", "sequence", "spawn", "string", "struct", "trait", "true", "type",
+        "uint8", "uint16", "uint32", "uint64", "underscore", "unit", "use", "where"
       ]
     },
     {
@@ -402,9 +404,9 @@
             "whitespace": ["space", "tab", "newline", "carriage return"],
             "grouping": ["(", ")", "{", "}", "[", "]", ","],
             "operators": ["+", "-", "*", "/", "%", "<", ">", "=", "!", ":", ";", ".", "|"],
-            "other": ["&", "#", "?", "~", "^", "backtick", "backslash"]
+            "other": ["&", "@", "#", "?", "~", "^", "backtick", "backslash"]
           },
-          "atomDelimiterNote": "@ is never used as an atom delimiter; @ is reserved for module@function qualified calls.",
+          "atomDelimiterNote": "@ is both an atom delimiter and the module@function qualified call operator. As a delimiter, it ensures atom names like :foo cannot accidentally extend into @bar.",
           "examples": [":ok", ":error", ":not_found", ":ready", ":pending", ":done", ":🔥", ":café", ":_private"],
           "description": "Symbolic constants prefixed with colon, compared by identity, stored in compile-time atom table"
         }
@@ -540,11 +542,26 @@
       "@id": "silica:FunctionCalls",
       "@type": "SyntaxElement",
       "rdfs:label": "Function Calls",
-      "grammar": "function_call ::= expression \"(\" [argument_list] \")\" | qualified_method_call",
+      "grammar": "function_call ::= local_function_call | module_qualified_call | qualified_method_call",
+      "localFunctionCall": {
+        "grammar": "local_function_call ::= identifier \"(\" [argument_list] \")\"",
+        "description": "Invokes a function defined in the same module. No module qualifier needed.",
+        "example": "add(3, 4)"
+      },
+      "moduleQualifiedCall": {
+        "grammar": "module_qualified_call ::= identifier \"@\" identifier \"(\" [argument_list] \")\"",
+        "description": "Invokes an exported function from an imported module. The module must be imported with a use declaration. The @ operator separates the module name from the function name.",
+        "example": "math_utils@add(3, 4)"
+      },
       "qualifiedMethodCall": {
-        "grammar": "qualified_method_call ::= identifier \"@\" identifier \"(\" [argument_list] \")\"",
-        "description": "The @ operator discriminates between the module name and the function name for any function that exists in a different module than the one in which it is being used",
-        "example": "ModuleName@function_name(args)"
+        "grammar": "qualified_method_call ::= identifier \".\" identifier \"(\" [argument_list] \")\"",
+        "description": "Explicitly calls a trait method using TraitName.method_name syntax for disambiguation when multiple traits define methods with the same name.",
+        "example": "Loggable.log(obj, 1)"
+      },
+      "nameResolution": {
+        "localFunctions": "An unqualified call (function_name(args)) always resolves to a function defined in the same file.",
+        "importedFunctions": "A qualified call (module_name@function_name(args)) always resolves to an exported function in the named module.",
+        "noConflict": "Because imported functions must be qualified with their module name, multiple modules may export identically named functions without conflict."
       }
     },
     {
@@ -791,12 +808,15 @@
       "@type": "SpecificationSection",
       "rdfs:label": "19. Module System",
       "sectionNumber": 19,
-      "description": "Module system for organizing code",
+      "description": "Filename-based module system with qualified cross-module calls",
       "keyConcepts": [
-        "module declarations",
-        "import declarations (use module;)",
-        "export declarations (export function/arity;)",
-        "Module search paths"
+        "Filename-based modules (math_utils.silica creates module math_utils)",
+        "Import declarations (use module_name;)",
+        "Export declarations (export function/arity;)",
+        "Module-qualified calls for imported functions (module_name@function_name(args))",
+        "Unqualified calls for local functions (function_name(args))",
+        "No name conflicts: module qualification disambiguates identically named exports",
+        "Module search paths (-I or --search-path)"
       ]
     },
     {
@@ -944,12 +964,16 @@
       "@id": "silica:ModuleSystem",
       "@type": "Concept",
       "rdfs:label": "Module System",
-      "description": "Module system for code organization",
+      "description": "Filename-based module system. Modules are derived from filenames (math_utils.silica becomes module math_utils). Imported functions are called with module-qualified syntax (module@function); local functions are called by name alone.",
       "declarations": [
-        "module name; - module declaration",
-        "use module; - import declaration",
-        "export function/arity; - export declaration"
+        "use module_name; - import a module, enabling module_name@function(...) calls",
+        "export function/arity; - export functions for use by other modules"
       ],
+      "nameResolution": {
+        "localCall": "function_name(args) - calls a function defined in the same file",
+        "importedCall": "module_name@function_name(args) - calls an exported function from an imported module",
+        "disambiguation": "Module-qualified calls eliminate name conflicts; multiple imported modules may export the same function name without error"
+      },
       "searchPaths": {
         "default": "current directory (.)",
         "options": "--search-path <path> or -I <path>",

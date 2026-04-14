@@ -1,3 +1,20 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
 // Term dispatcher: Expr -> SIRTerm (Expr.kind registry)
 // Delegates to literals, identifiers per Expr.kind
 // Core+extensions: add capability = add file + one case branch here
@@ -296,7 +313,7 @@ fn add_bindings_to_context(context: TypeContext, bindings: ListTupleDecomposeBin
         true -> context;
         false -> do
             b: TupleDecomposeBinding <- bindings.head;
-            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, b.name, b.type_str, parser_ast@empty_effect_name_list());
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, b.name, b.type_str, parser_ast@empty_effect_name_list(), "");
             new_context: TypeContext <- TypeContext { env: new_env };
             add_bindings_to_context(new_context, bindings.tail)
         end
@@ -456,11 +473,49 @@ fn first_formal_param_type_from_scheme(func_type: string) -> string {
     }
 }
 
+// In-unit copy: cross-.ll return of string from type_checker_core lookup segfaults for module@fn (bootstrap macOS).
+fn first_at_sir_call_name(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "@" of {
+            true -> i;
+            false -> first_at_sir_call_name(s, i + 1)
+        }
+    }
+}
+
+fn lookup_fn_type_by_name_and_module_sir(env: ListSymbolEntry, fn_name: string, required_module: string) -> string {
+    case env.is_nil of {
+        true -> "";
+        false -> case env.head.name == fn_name and env.head.is_effect_alias == false of {
+            true -> case len(required_module) == 0 of {
+                true -> case env.head.source_module == "" of {
+                    true -> env.head.type_name;
+                    false -> lookup_fn_type_by_name_and_module_sir(env.tail, fn_name, required_module)
+                };
+                false -> case env.head.source_module == required_module of {
+                    true -> env.head.type_name;
+                    false -> lookup_fn_type_by_name_and_module_sir(env.tail, fn_name, required_module)
+                }
+            };
+            false -> lookup_fn_type_by_name_and_module_sir(env.tail, fn_name, required_module)
+        }
+    }
+}
+
+fn lookup_function_type_for_call_sir(env: ListSymbolEntry, composite_name: string) -> string {
+    at: int64 <- first_at_sir_call_name(composite_name, 0);
+    case at < 0 of {
+        true -> lookup_fn_type_by_name_and_module_sir(env, composite_name, "");
+        false -> lookup_fn_type_by_name_and_module_sir(env, substring(composite_name, at + 1, len(composite_name)), substring(composite_name, 0, at))
+    }
+}
+
 fn user_call_first_arg_expected_type(context: TypeContext, callee_name: string, inferred: string) -> string {
-    (found: bool, func_type: string) <- type_checker_core@lookup_symbol_found(context.env, callee_name);
-    case found of {
-        false -> inferred;
-        true -> do
+    func_type: string <- lookup_function_type_for_call_sir(context.env, callee_name);
+    case len(func_type) == 0 of {
+        true -> inferred;
+        false -> do
             first_ty: string <- first_formal_param_type_from_scheme(func_type);
             case len(first_ty) > 0 of {
                 true -> first_ty;
@@ -471,10 +526,10 @@ fn user_call_first_arg_expected_type(context: TypeContext, callee_name: string, 
 }
 
 fn user_call_expects_single_tuple_param(context: TypeContext, name: string) -> bool {
-    (found: bool, func_type: string) <- type_checker_core@lookup_symbol_found(context.env, name);
-    case found of {
-        false -> false;
-        true -> do
+    func_type: string <- lookup_function_type_for_call_sir(context.env, name);
+    case len(func_type) == 0 of {
+        true -> false;
+        false -> do
             params_inner: string <- sir_params_inner_from_func_type(func_type);
             case len(params_inner) < 2 of {
                 true -> false;
@@ -533,7 +588,7 @@ fn lower_sequence_body_to_lets(context: TypeContext, body_expr: Expr, result_exp
                 };
                 bind_type: string <- types@type_name_to_sir(body_expr.value);
                 prefixed: string <- concat("%", body_expr.name);
-                new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, body_expr.name, body_expr.value, parser_ast@empty_effect_name_list());
+                new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, body_expr.name, body_expr.value, parser_ast@empty_effect_name_list(), "");
                 new_context: TypeContext <- TypeContext { env: new_env };
                 inner_body: SIRTerm <- lower_sequence_body_to_lets(new_context, body_expr.right_expr, result_expr, expected_type, true, body_expr.name, body_expr.value);
                 SIRTerm { kind: 2, type_name: bind_type, value: "", name: prefixed, inner: rhs, right_expr: inner_body }
@@ -603,7 +658,7 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
             rhs: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, expr.value);
             bind_type: string <- types@type_name_to_sir(expr.value);
             prefixed: string <- concat("%", expr.name);
-            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, expr.value, parser_ast@empty_effect_name_list());
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, expr.value, parser_ast@empty_effect_name_list(), "");
             new_context: TypeContext <- TypeContext { env: new_env };
             body: SIRTerm <- expr_to_sir_in_let_body(new_context, expr.right_expr, expr.name, expr.value, expected_type);
             SIRTerm { kind: 2, type_name: bind_type, value: "", name: prefixed, inner: rhs, right_expr: body }
@@ -878,26 +933,42 @@ fn build_rest_chain_in_body(context: TypeContext, curried: Expr, bound_name: str
     }
 }
 
+// Cross-module (spec §19, §3.3.2): module@function for imported calls, bare name for local.
+fn user_call_callee_sir_name(context: TypeContext, composite: string) -> string {
+    (mod_part: string, fn_part: string) <- type_checker_core@split_module_qualified_call_name(composite);
+    case len(mod_part) > 0 of {
+        true -> concat(mod_part, concat("@", fn_part));
+        false -> do
+            src: string <- type_checker_core@lookup_symbol_source_module(context.env, fn_part);
+            case len(src) > 0 of {
+                true -> concat(src, concat("@", fn_part));
+                false -> user_calls@qual_name(fn_part)
+            }
+        end
+    }
+}
+
 fn build_user_call_from_expr_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
+    callee: string <- user_call_callee_sir_name(context, expr.name);
     case expr.inner.kind < 0 of {
-        true -> user_calls@build_user_call_0(expr.name, expected_type, recursion_terms@user_call_effect_value_fn(expr));
+        true -> user_calls@build_user_call_0(callee, expected_type, recursion_terms@user_call_effect_value_fn(expr));
         false -> case expr.right_expr.kind < 0 of {
             true -> do
                 inferred1: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                 arg1_type: string <- user_call_first_arg_expected_type(context, expr.name, inferred1);
                 arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg1_type);
-                user_calls@build_user_call_1(expr.name, arg1, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                user_calls@build_user_call_1(callee, arg1, expected_type, recursion_terms@user_call_effect_value_fn(expr))
             end;
             false -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
                 true -> do
                     arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                     arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg1_type);
                     rest: SIRTerm <- build_rest_chain_in_body(context, expr.right_expr, bound_name, bound_type);
-                    user_calls@build_user_call_with_rest(expr.name, arg1, rest, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                    user_calls@build_user_call_with_rest(callee, arg1, rest, expected_type, recursion_terms@user_call_effect_value_fn(expr))
                 end;
                 false -> case user_call_expects_single_tuple_param(context, expr.name) of {
                     true -> do
-                        (found: bool, func_type: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
+                        func_type: string <- lookup_function_type_for_call_sir(context.env, expr.name);
                         tuple_param: string <- sir_params_inner_from_func_type(func_type);
                         first_type: string <- tuple_first_element_type(tuple_param);
                         second_type: string <- tuple_rest_element_type(tuple_param);
@@ -905,14 +976,14 @@ fn build_user_call_from_expr_in_body(context: TypeContext, expr: Expr, bound_nam
                         arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, second_type);
                         sir_type: string <- types@type_name_to_sir(tuple_param);
                         tuple_arg: SIRTerm <- SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: arg1, right_expr: arg2 };
-                        user_calls@build_user_call_1(expr.name, tuple_arg, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                        user_calls@build_user_call_1(callee, tuple_arg, expected_type, recursion_terms@user_call_effect_value_fn(expr))
                     end;
                     false -> do
                         arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                         arg2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr, context);
                         arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg1_type);
                         arg2: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, arg2_type);
-                        user_calls@build_user_call_2(expr.name, arg1, arg2, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                        user_calls@build_user_call_2(callee, arg1, arg2, expected_type, recursion_terms@user_call_effect_value_fn(expr))
                     end
                 }
             }
@@ -936,25 +1007,26 @@ fn build_rest_chain(context: TypeContext, curried: Expr) -> SIRTerm {
 }
 
 fn build_user_call_from_expr(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    callee: string <- user_call_callee_sir_name(context, expr.name);
     case expr.inner.kind < 0 of {
-        true -> user_calls@build_user_call_0(expr.name, expected_type, recursion_terms@user_call_effect_value_fn(expr));
+        true -> user_calls@build_user_call_0(callee, expected_type, recursion_terms@user_call_effect_value_fn(expr));
         false -> case expr.right_expr.kind < 0 of {
             true -> do
                 inferred1: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                 arg1_type: string <- user_call_first_arg_expected_type(context, expr.name, inferred1);
                 arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
-                user_calls@build_user_call_1(expr.name, arg1, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                user_calls@build_user_call_1(callee, arg1, expected_type, recursion_terms@user_call_effect_value_fn(expr))
             end;
             false -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
                 true -> do
                     arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                     arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
                     rest: SIRTerm <- build_rest_chain(context, expr.right_expr);
-                    user_calls@build_user_call_with_rest(expr.name, arg1, rest, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                    user_calls@build_user_call_with_rest(callee, arg1, rest, expected_type, recursion_terms@user_call_effect_value_fn(expr))
                 end;
                 false -> case user_call_expects_single_tuple_param(context, expr.name) of {
                     true -> do
-                        (found: bool, func_type: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
+                        func_type: string <- lookup_function_type_for_call_sir(context.env, expr.name);
                         tuple_param: string <- sir_params_inner_from_func_type(func_type);
                         first_type: string <- tuple_first_element_type(tuple_param);
                         second_type: string <- tuple_rest_element_type(tuple_param);
@@ -962,14 +1034,14 @@ fn build_user_call_from_expr(context: TypeContext, expr: Expr, expected_type: st
                         arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, second_type);
                         sir_type: string <- types@type_name_to_sir(tuple_param);
                         tuple_arg: SIRTerm <- SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: arg1, right_expr: arg2 };
-                        user_calls@build_user_call_1(expr.name, tuple_arg, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                        user_calls@build_user_call_1(callee, tuple_arg, expected_type, recursion_terms@user_call_effect_value_fn(expr))
                     end;
                     false -> do
                         arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                         arg2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr, context);
                         arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
                         arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, arg2_type);
-                        user_calls@build_user_call_2(expr.name, arg1, arg2, expected_type, recursion_terms@user_call_effect_value_fn(expr))
+                        user_calls@build_user_call_2(callee, arg1, arg2, expected_type, recursion_terms@user_call_effect_value_fn(expr))
                     end
                 }
             }
@@ -1011,14 +1083,15 @@ fn root_body_is_tail_user_call(expr: Expr) -> bool {
 }
 
 fn build_user_call_from_expr_tail(context: TypeContext, expr: Expr, expected_type: string) -> SIRTerm {
+    callee: string <- user_call_callee_sir_name(context, expr.name);
     case expr.inner.kind < 0 of {
-        true -> user_calls@build_tail_call_0(expr.name, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr));
+        true -> user_calls@build_tail_call_0(callee, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr));
         false -> case expr.right_expr.kind < 0 of {
             true -> do
                 inferred1: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                 arg1_type: string <- user_call_first_arg_expected_type(context, expr.name, inferred1);
                 arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
-                user_calls@build_tail_call_1(expr.name, arg1, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
+                user_calls@build_tail_call_1(callee, arg1, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
             end;
             false -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
                 true -> do
@@ -1026,11 +1099,11 @@ fn build_user_call_from_expr_tail(context: TypeContext, expr: Expr, expected_typ
                     arg1_type: string <- user_call_first_arg_expected_type(context, expr.name, inferred1);
                     arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
                     rest: SIRTerm <- build_rest_chain(context, expr.right_expr);
-                    user_calls@build_tail_call_with_rest(expr.name, arg1, rest, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
+                    user_calls@build_tail_call_with_rest(callee, arg1, rest, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
                 end;
                 false -> case user_call_expects_single_tuple_param(context, expr.name) of {
                     true -> do
-                        (found: bool, func_type: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
+                        func_type: string <- lookup_function_type_for_call_sir(context.env, expr.name);
                         tuple_param: string <- sir_params_inner_from_func_type(func_type);
                         first_type: string <- tuple_first_element_type(tuple_param);
                         second_type: string <- tuple_rest_element_type(tuple_param);
@@ -1038,14 +1111,14 @@ fn build_user_call_from_expr_tail(context: TypeContext, expr: Expr, expected_typ
                         arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, second_type);
                         sir_type: string <- types@type_name_to_sir(tuple_param);
                         tuple_arg: SIRTerm <- SIRTerm { kind: 6, type_name: sir_type, value: "", name: "tuple_make", inner: arg1, right_expr: arg2 };
-                        user_calls@build_tail_call_1(expr.name, tuple_arg, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
+                        user_calls@build_tail_call_1(callee, tuple_arg, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
                     end;
                     false -> do
                         arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                         arg2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr, context);
                         arg1: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg1_type);
                         arg2: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, arg2_type);
-                        user_calls@build_tail_call_2(expr.name, arg1, arg2, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
+                        user_calls@build_tail_call_2(callee, arg1, arg2, expected_type, recursion_terms@user_call_effect_value_fn_tail(expr))
                     end
                 }
             }
@@ -1280,7 +1353,7 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
             rhs: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, expr.value);
             bind_type: string <- types@type_name_to_sir(expr.value);
             prefixed: string <- concat("%", expr.name);
-            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, expr.value, parser_ast@empty_effect_name_list());
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, expr.value, parser_ast@empty_effect_name_list(), "");
             new_context: TypeContext <- TypeContext { env: new_env };
             body: SIRTerm <- expr_to_sir_in_let_body(new_context, expr.right_expr, expr.name, expr.value, expected_type);
             SIRTerm { kind: 2, type_name: bind_type, value: "", name: prefixed, inner: rhs, right_expr: body }
@@ -1368,7 +1441,7 @@ fn expr_to_sir(context: TypeContext, expr: Expr) -> SIRTerm {
 // --- case expression (Expr kind 13) -> SIR kind 3; branch list kind 7; branch kind 8 ---
 
 fn extend_context_for_bind(ctx: TypeContext, name: string, ast_type: string) -> TypeContext {
-    new_env: ListSymbolEntry <- type_checker_core@add_symbol(ctx.env, name, ast_type, parser_ast@empty_effect_name_list());
+    new_env: ListSymbolEntry <- type_checker_core@add_symbol(ctx.env, name, ast_type, parser_ast@empty_effect_name_list(), "");
     TypeContext { env: new_env }
 }
 

@@ -1,16 +1,35 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
 // Type checker runner - type_check_program, orchestration
 // Two-pass: add all declarations to symbol table, then check all bodies
-// Handles tag 0 (function declarations) and tag 1 (effect declarations)
+// Handles tag 0 (functions), tag 1 (effects), tag 2 (use), tag 3 (export), tag 4 (module) via type_checker_modules.
 
 use parser_ast;
 use type_checker_core;
 use type_checker_declarations_functions;
+use type_checker_modules;
 
 export type_check_program/2;
+export type_check_program_with_module_world/4;
+export type_check_program_with_world_bundle/4;
+export module_world_typecheck_outcome/4;
 
-// First pass: add all declarations to context
-// tag 0 = function declaration (name, return type, declared effects)
-// tag 1 = effect alias declaration (name, constituent effects)
+// First pass: single-file (no imports). use/export/module decls are skipped except local functions and effects.
 fn add_all_declarations(decls: ListDeclaration, context: TypeContext) -> TypeContext {
     case decls.is_nil of {
         true -> context;
@@ -29,7 +48,6 @@ fn add_all_declarations(decls: ListDeclaration, context: TypeContext) -> TypeCon
     }
 }
 
-
 // Second pass: check all function bodies, stop on first error
 fn check_all_declarations(decls: ListDeclaration, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case decls.is_nil of {
@@ -47,9 +65,22 @@ fn check_all_declarations(decls: ListDeclaration, context: TypeContext) -> TypeC
     }
 }
 
-// Type-check program. Returns (result, updated_context). Use updated_context for SIR generation.
+// Type-check program (single compilation unit, no cross-module world). Skips use/export/module for symbol table.
 fn type_check_program(program: Program, context: TypeContext) -> (TypeCheckResult, TypeContext) proc[DeviceIO] {
     ctx_with_decls: TypeContext <- add_all_declarations(program.declarations, context);
     result: TypeCheckResult <- check_all_declarations(program.declarations, ctx_with_decls);
     (result, ctx_with_decls)
+}
+
+// Multi-module: `current_module` is filename stem (e.g. main); `world` lists other modules' ASTs. Validates §19 use/export/module.
+fn type_check_program_with_module_world(program: Program, current_module: string, world: ListNamedProgram, context: TypeContext) -> (TypeCheckResult, TypeContext) proc[DeviceIO] {
+    type_checker_modules@type_check_program_with_modules(program, current_module, world, context)
+}
+
+fn type_check_program_with_world_bundle(program: Program, current_module: string, world: ListNamedProgram, context: TypeContext) -> TypeCheckWithContext proc[DeviceIO] {
+    type_checker_modules@type_check_program_with_modules_world_bundle(program, current_module, world, context)
+}
+
+fn module_world_typecheck_outcome(program: Program, current_module: string, world: ListNamedProgram, context: TypeContext) -> ModuleTypecheckOutcome proc[DeviceIO] {
+    type_checker_modules@type_check_program_with_modules_outcome(program, current_module, world, context)
 }

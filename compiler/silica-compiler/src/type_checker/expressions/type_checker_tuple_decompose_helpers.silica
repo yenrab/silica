@@ -1,3 +1,20 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
 // Helpers for tuple decomposition type checking. No dependency on type_checker_expressions.
 // Uses parser_ast's TupleDecomposeBinding and ListTupleDecomposeBinding from the structured pattern.
 
@@ -262,6 +279,45 @@ fn infer_core_set_placement(expr: Expr, context: TypeContext) -> string {
     }
 }
 
+// Same semantics as type_checker_core lookup_fn_type_by_name_and_module + lookup_function_type_for_call.
+// Must live in this .ll: cross-module string return from core `fn` to this `fn` segfaults (e.g. mod@fn for +).
+fn first_at_infer_call_name(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "@" of {
+            true -> i;
+            false -> first_at_infer_call_name(s, i + 1)
+        }
+    }
+}
+
+fn lookup_fn_type_by_name_and_module_infer(env: ListSymbolEntry, fn_name: string, required_module: string) -> string {
+    case env.is_nil of {
+        true -> "";
+        false -> case env.head.name == fn_name and env.head.is_effect_alias == false of {
+            true -> case len(required_module) == 0 of {
+                true -> case env.head.source_module == "" of {
+                    true -> env.head.type_name;
+                    false -> lookup_fn_type_by_name_and_module_infer(env.tail, fn_name, required_module)
+                };
+                false -> case env.head.source_module == required_module of {
+                    true -> env.head.type_name;
+                    false -> lookup_fn_type_by_name_and_module_infer(env.tail, fn_name, required_module)
+                }
+            };
+            false -> lookup_fn_type_by_name_and_module_infer(env.tail, fn_name, required_module)
+        }
+    }
+}
+
+fn lookup_function_type_for_call_infer(env: ListSymbolEntry, composite_name: string) -> string {
+    at: int64 <- first_at_infer_call_name(composite_name, 0);
+    case at < 0 of {
+        true -> lookup_fn_type_by_name_and_module_infer(env, composite_name, "");
+        false -> lookup_fn_type_by_name_and_module_infer(env, substring(composite_name, at + 1, len(composite_name)), substring(composite_name, 0, at))
+    }
+}
+
 fn infer_call_expr_type(expr: Expr, context: TypeContext) -> string {
     case expr.name == "spawn" of {
         true -> "actor_ref";
@@ -280,8 +336,8 @@ fn infer_call_expr_type(expr: Expr, context: TypeContext) -> string {
                                 case len(rt) > 0 of {
                                     true -> rt;
                                     false -> do
-                                        (found: bool, typ: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
-                                        case found of {
+                                        typ: string <- lookup_function_type_for_call_infer(context.env, expr.name);
+                                        case len(typ) > 0 of {
                                             true -> parse_function_return_from_scheme(typ);
                                             false -> case type_checker_lists@is_list_primitive_name(expr.name) of {
                                                 true -> type_checker_lists@infer_list_primitive_return(expr);
@@ -458,7 +514,7 @@ fn add_bindings_to_context(context: TypeContext, bindings: ListTupleDecomposeBin
         true -> context;
         false -> do
             b: TupleDecomposeBinding <- bindings.head;
-            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, b.name, b.type_str, parser_ast@empty_effect_name_list());
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, b.name, b.type_str, parser_ast@empty_effect_name_list(), "");
             new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
             add_bindings_to_context(new_context, bindings.tail)
         end
@@ -968,7 +1024,7 @@ fn case_extend_record_fields_rem(context: TypeContext, rem: string, scrutinee_ty
                                 false -> case_extend_record_fields_rem(context, rest, scrutinee_type);
                                 true -> do
                                     ctx2: TypeContext <- case spi.pattern_kind of {
-                                        2 -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, spi.bind_name, spi.bind_type, parser_ast@empty_effect_name_list()));
+                                        2 -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, spi.bind_name, spi.bind_type, parser_ast@empty_effect_name_list(), ""));
                                         8 -> case_extend_record_fields_rem(context, type_checker_record_types@record_case_inner_body(spi.bind_type), fty);
                                         _: int64 -> context
                                     };
@@ -1008,18 +1064,18 @@ fn case_extend_context_for_pattern(context: TypeContext, scrutinee_type: string,
         false -> context;
         true -> case pi.pattern_kind of {
             2 -> case types_equal(scrutinee_type, pi.bind_type) of {
-                true -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list()));
+                true -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), ""));
                 false -> context
             };
             6 -> case case_list_cons_matches(pi, scrutinee_type) of {
                 false -> context;
                 true -> do
                     ctx_after_head: TypeContext <- case len(pi.bind_name) > 0 and pi.bind_name != "_" of {
-                        true -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list()));
+                        true -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), ""));
                         false -> context
                     };
                     case len(pi.list_tail_name) > 0 and pi.list_tail_name != "_" of {
-                        true -> type_checker_core@type_context_with_env(ctx_after_head, type_checker_core@add_symbol(ctx_after_head.env, pi.list_tail_name, pi.list_tail_type, parser_ast@empty_effect_name_list()));
+                        true -> type_checker_core@type_context_with_env(ctx_after_head, type_checker_core@add_symbol(ctx_after_head.env, pi.list_tail_name, pi.list_tail_type, parser_ast@empty_effect_name_list(), ""));
                         false -> ctx_after_head
                     }
                 end

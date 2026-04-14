@@ -173,6 +173,14 @@ impl CodeGenerator {
         self.trait_impls = trait_impls;
     }
 
+    /// When `SILICA_BOOTSTRAP_TRACE_CALLS` is set, print call-lowering decisions (text IR backend).
+    #[cfg(not(feature = "llvm_backend"))]
+    fn trace_call_emit(&self, message: impl AsRef<str>) {
+        if std::env::var_os("SILICA_BOOTSTRAP_TRACE_CALLS").is_some() {
+            eprintln!("[silica-bootstrap:call] {}", message.as_ref());
+        }
+    }
+
     /// Generate a unique register name
     fn next_register(&mut self) -> String {
         let reg = format!("t{}", self.register_counter);
@@ -2737,9 +2745,16 @@ impl CodeGenerator {
                                 }
                             })
                             .collect();
-                        // Use function signature to determine argument types
-                        // When sret is used, param_types[0] is sret; use param_types[i+1] for the i-th call arg
-                        let param_offset = if param_types.len() > processed_args.len() { 1 } else { 0 };
+                        // When sret is used, param_types[0] is the hidden sret pointer. Skip it for user
+                        // args. Use param_types.len() > processed_args.len() so we match
+                        // generate_function_body_text and stay correct if function_return_types is missing
+                        // for this qualified name (otherwise cross-module calls can shift args and corrupt
+                        // pointers passed as struct parameters, e.g. TypeContext).
+                        let param_offset: usize = if param_types.len() > processed_args.len() {
+                            1
+                        } else {
+                            0
+                        };
                         let typed_args: Vec<String> = processed_args.iter().enumerate()
                             .map(|(i, arg)| {
                                 if let Some(expected_type) = param_types.get(i + param_offset) {
@@ -3001,6 +3016,12 @@ impl CodeGenerator {
                     ))?;
 
                 let fixed_args_str = args_str.replace("i64 %tuple_alloc_", "i8* %tuple_alloc_");
+                self.trace_call_emit(format!(
+                    "same-module call {} llvm_return={} sret={}",
+                    qualified_func_name,
+                    return_type,
+                    return_type == "i8*"
+                ));
                 // sret: allocate slot, pass as first arg, call void, load result
                 if return_type == "i8*" {
                     let sret_slot = format!("%sret_slot_{}", self.instructions.len());
@@ -3020,13 +3041,32 @@ impl CodeGenerator {
                     Ok(Some(format!("{} {}", return_type, temp_reg)))
                 }
             }
-            // Check if it's an imported function
+            // Check if it's an imported function (`use` — unqualified name resolves to another module)
             else if let Some(symbol_table) = &self.symbol_table {
                 let mut found = false;
                 for (imported_module_name, module_symbols) in &symbol_table.modules {
-                    if let Some(_symbol_info) = module_symbols.get(func_name) {
-                        // Found imported function - use module-qualified name for call
+                    if module_symbols.get(func_name).is_some() {
                         let imported_qualified = format!("{}.{}", imported_module_name, func_name);
+                        // Old path always emitted `call i64 @...`, which breaks callees lowered with
+                        // sret (string, tuple, struct, named record). Reuse module-call lowering.
+                        if self.functions.contains_key(&imported_qualified) {
+                            self.trace_call_emit(format!(
+                                "import call {} -> generate_module_call (sret-aware)",
+                                imported_qualified
+                            ));
+                            let module_call = ModuleCallExpr {
+                                module: imported_module_name.clone(),
+                                function: func_name.clone(),
+                                arguments: call.arguments.clone(),
+                                location: call.location.clone(),
+                            };
+                            found = true;
+                            return self.generate_module_call(&module_call);
+                        }
+                        self.trace_call_emit(format!(
+                            "import call {} not in functions map; legacy heuristic (may be wrong)",
+                            imported_qualified
+                        ));
                         let mut arg_strs = Vec::new();
                         for arg in &call.arguments {
                             if let Some(arg_val) = self.generate_expression(arg)? {
@@ -3036,26 +3076,26 @@ impl CodeGenerator {
                             }
                         }
 
-                        // For LLVM IR function calls, arguments should have type prefixes
-                        let typed_args: Vec<String> = arg_strs.iter()
+                        let typed_args: Vec<String> = arg_strs
+                            .iter()
                             .map(|arg| {
-                                if arg.starts_with("i64 ") || arg.starts_with("i32 ") || arg.starts_with("i1 ") || arg.starts_with("i8* ") {
-                                    arg.clone() // Already has type prefix
+                                if arg.starts_with("i64 ")
+                                    || arg.starts_with("i32 ")
+                                    || arg.starts_with("i1 ")
+                                    || arg.starts_with("i8* ")
+                                {
+                                    arg.clone()
                                 } else if arg.contains("getelementptr") {
-                                    // getelementptr produces a pointer (i8* or ptr); string literals use this
                                     format!("i8* {}", arg)
                                 } else if arg.starts_with('%') && arg.contains("alloc") {
-                                    // Allocation results are pointers (i8*)
                                     format!("i8* {}", arg)
                                 } else if arg.starts_with('%') {
-                                    // Assume i64 type for registers (most common case)
                                     format!("i64 {}", arg)
                                 } else {
-                                    format!("i64 {}", arg) // Add type prefix for bare constants
+                                    format!("i64 {}", arg)
                                 }
                             })
                             .map(|arg| {
-                                // Clean up duplicate type prefixes - more aggressive
                                 if arg.contains("i32 i32 ") {
                                     arg.replace("i32 i32 ", "i32 ")
                                 } else if arg.contains("i64 i64 ") {
@@ -3069,12 +3109,14 @@ impl CodeGenerator {
                                 }
                             })
                             .collect();
-                        let args_str = typed_args.iter()
+                        let args_str = typed_args
+                            .iter()
                             .map(|a| Self::normalize_typed_call_arg(a))
                             .collect::<Vec<_>>()
                             .join(", ");
                         let temp_reg = format!("%t{}", self.instructions.len());
-                        let call_instr = format!("  {} = call i64 @{}({})", temp_reg, imported_qualified, args_str);
+                        let call_instr =
+                            format!("  {} = call i64 @{}({})", temp_reg, imported_qualified, args_str);
                         self.instructions.push(call_instr);
 
                         found = true;
@@ -3138,9 +3180,12 @@ impl CodeGenerator {
                         }
                     })
                     .collect();
-                // Use function signature to determine argument types
-                // When sret is used, param_types[0] is sret; use param_types[i+1] for the i-th call arg
-                let param_offset = if param_types.len() > processed_args.len() { 1 } else { 0 };
+                // Hidden sret slot is extra LLVM param 0; align user args (see generate_call).
+                let param_offset: usize = if param_types.len() > processed_args.len() {
+                    1
+                } else {
+                    0
+                };
                 let typed_args: Vec<String> = processed_args.iter().enumerate()
                     .map(|(i, arg)| {
                         if let Some(expected_type) = param_types.get(i + param_offset) {
@@ -3363,6 +3408,14 @@ impl CodeGenerator {
         let return_type_str = self.function_return_types.get(&qualified_name)
             .cloned()
             .unwrap_or_else(|| "i64".to_string());
+
+        self.trace_call_emit(format!(
+            "module-call {} llvm_return={} sret={} in_functions={}",
+            qualified_name,
+            return_type_str,
+            return_type_str == "i8*",
+            self.functions.contains_key(&qualified_name)
+        ));
 
         // Look up function and generate call
         let args_str = typed_args.iter()
@@ -9330,14 +9383,18 @@ impl CodeGenerator {
                 // Expand type aliases so e.g. Named("boolean") -> Bool and we get i1, not ptr
                 let expanded_field_ty = self.expand_type_aliases_codegen(field_ty);
                 let (field_llvm_type, _, _) = self.get_llvm_type_info(&expanded_field_ty);
-                // Compute byte offset from preceding fields
+                // Compute byte offset from preceding fields, then align for target field
                 let mut offset: i64 = 0;
                 for (_, ft) in fields.iter().take(field_index) {
-                    let (_, size, align) = self.get_llvm_type_info(ft);
+                    let expanded_ft = self.expand_type_aliases_codegen(ft);
+                    let (_, size, align) = self.get_llvm_type_info(&expanded_ft);
                     let aligned = ((offset + align - 1) / align) * align;
                     offset = aligned + size;
                 }
-                (field_index, field_llvm_type, offset)
+                // Align offset for the target field's alignment requirement
+                let (_, _, target_align) = self.get_llvm_type_info(&expanded_field_ty);
+                let aligned_offset = ((offset + target_align - 1) / target_align) * target_align;
+                (field_index, field_llvm_type, aligned_offset)
             }
             _ => {
                 return Err(CompilerError::codegen_error(format!("Cannot access field '{}' on non-struct type {:?}", field_access.field, expanded_object_type)));
@@ -13813,7 +13870,9 @@ impl TypeMap {
             Type::PerformanceCores => "i32".to_string(),
             Type::EfficiencyCores => "i32".to_string(),
             Type::Variable(_) => "i64".to_string(),
-            Type::Named(_) => "i64".to_string(),
+            // Opaque struct / imported named types use the same pointer representation as tuples
+            // and records. (Previously i64, which mis-typed cross-.ll calls and corrupted pointers.)
+            Type::Named(_) => "i8*".to_string(),
             Type::Closure { .. } => "i8*".to_string(), // Closure objects as opaque pointers
             Type::Sum(_) => "i8*".to_string(), // Sum types as opaque pointers
             Type::Scheme { .. } => "i8*".to_string(), // Type schemes as opaque pointers

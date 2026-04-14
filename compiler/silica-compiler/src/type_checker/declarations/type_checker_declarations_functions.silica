@@ -1,3 +1,20 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
 // Capability: check function declaration (Declaration tag 0)
 // Adds function to symbol table, checks body expression
 // User-defined functions: store full function type (params -> return) for call resolution
@@ -12,6 +29,7 @@ use type_checker_record_types;
 
 export add_function/2;
 export check_body/2;
+export build_function_type/1;
 
 // Build function type string "(T1,T2) -> R" from declaration. ListParam order: head=last param, tail=earlier params.
 fn param_types_str(params: ListParam) -> string {
@@ -24,6 +42,7 @@ fn param_types_str(params: ListParam) -> string {
     }
 }
 
+// Exported for module export surface (§19.2) and cross-module type checking.
 fn build_function_type(decl: Declaration) -> string {
     params_str: string <- param_types_str(decl.parameters);
     case decl.parameters.is_nil of {
@@ -35,7 +54,7 @@ fn build_function_type(decl: Declaration) -> string {
 // Add function name with full function type (params -> return) for call resolution. Used for first pass (all decls).
 fn add_function(decl: Declaration, context: TypeContext) -> TypeContext {
     func_type: string <- build_function_type(decl);
-    new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, decl.name, func_type, decl.declared_effects);
+    new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, decl.name, func_type, decl.declared_effects, "");
     TypeContext { env: new_env }
 }
 
@@ -44,7 +63,7 @@ fn add_params_to_context_loop(params: ListParam, context: TypeContext) -> TypeCo
         true -> context;
         false -> do
             p: Param <- params.head;
-            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, p.name, p.type_name, parser_ast@empty_effect_name_list());
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, p.name, p.type_name, parser_ast@empty_effect_name_list(), "");
             add_params_to_context_loop(params.tail, type_checker_core@type_context_with_env(context, new_env))
         end
     }
@@ -95,6 +114,7 @@ fn validate_params_loop(params: ListParam) -> TypeCheckResult proc[DeviceIO] {
 // Validate memory region return types (ref, region, buf) before checking body.
 // Validate param types (memory region params) before checking body.
 fn check_body(decl: Declaration, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    println(concat("[TC-DEBUG] check_body enter fn=", decl.name));
     params_result: TypeCheckResult <- validate_params_loop(decl.parameters);
     case params_result.is_ok of {
         false -> params_result;
@@ -112,6 +132,7 @@ fn check_body_after_params(decl: Declaration, context: TypeContext) -> TypeCheck
         false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
             true -> check_body_memory_region_return(decl, context_with_params);
             false -> do
+                println(concat("[TC-DEBUG] check_body_after_params check_expr fn=", decl.name));
                 body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, context_with_params);
                 case body_result.is_ok of {
                     false -> body_result;

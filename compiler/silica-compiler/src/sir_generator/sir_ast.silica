@@ -1,14 +1,39 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
 // SIR internal data structures (AST representation)
 // SIR is held in memory; text .sir format is for debugging/export only
 
 export SIRTerm/0;
 export SIRFunction/0;
 export ListSIRFunction/0;
+export ListSirString/0;
+export SIRExportItem/0;
+export ListSIRExportItem/0;
 export SIRModule/0;
 export dummy_sir_term/0;
 export dummy_sir_function/0;
 export cons_sir_functions/2;
 export nil_sir_functions/0;
+export nil_sir_strings/0;
+export cons_sir_string/2;
+export dummy_export_item/0;
+export nil_sir_exports/0;
+export cons_sir_export/2;
 
 // SIRTerm: kind 0=const, 1=var, 2=let, 3=case, 4=call, 5=tail_call, 6=prim,
 //   tail_call: same slot layout as call (name=callee, inner/ right_expr=args, value=effects+|sir_rec:...)
@@ -42,8 +67,29 @@ struct ListSIRFunction {
     tail: ListSIRFunction
 }
 
+// §19.3: imported module names (from `use`), in source order across declarations
+struct ListSirString {
+    is_nil: bool,
+    head: string,
+    tail: ListSirString
+}
+
+// §19.2: export surface name/arity as in source
+struct SIRExportItem {
+    fn_name: string,
+    arity: string
+}
+
+struct ListSIRExportItem {
+    is_nil: bool,
+    head: SIRExportItem,
+    tail: ListSIRExportItem
+}
+
 struct SIRModule {
     module_name: string,
+    used_modules: ListSirString,
+    exports: ListSIRExportItem,
     functions: ListSIRFunction
 }
 
@@ -63,6 +109,28 @@ fn cons_sir_functions(fn_val: SIRFunction, rest: ListSIRFunction) -> ListSIRFunc
 fn nil_sir_functions() -> ListSIRFunction {
     ph: ListSIRFunction <- ListSIRFunction { is_nil: true, head: dummy_sir_function(), tail: ph };
     ph
+}
+
+fn nil_sir_strings() -> ListSirString {
+    ph: ListSirString <- ListSirString { is_nil: true, head: "", tail: ph };
+    ph
+}
+
+fn cons_sir_string(s: string, rest: ListSirString) -> ListSirString {
+    ListSirString { is_nil: false, head: s, tail: rest }
+}
+
+fn dummy_export_item() -> SIRExportItem {
+    SIRExportItem { fn_name: "", arity: "" }
+}
+
+fn nil_sir_exports() -> ListSIRExportItem {
+    ph: ListSIRExportItem <- ListSIRExportItem { is_nil: true, head: dummy_export_item(), tail: ph };
+    ph
+}
+
+fn cons_sir_export(item: SIRExportItem, rest: ListSIRExportItem) -> ListSIRExportItem {
+    ListSIRExportItem { is_nil: false, head: item, tail: rest }
 }
 
 // Debug: convert SIR term/module to readable text (for debugging emitter branch logic)
@@ -147,6 +215,33 @@ fn sir_function_to_text(fn_val: SIRFunction) -> string {
     concat(concat(concat(concat(concat(concat("fn ", fn_val.name), " -> "), concat(fn_val.return_type, " ")), concat(fn_val.effects, " ")), "body: "), body_str)
 }
 
+fn sir_used_modules_to_text(uses: ListSirString, acc: string) -> string {
+    case uses.is_nil of {
+        true -> acc;
+        false -> do
+            rest: string <- sir_used_modules_to_text(uses.tail, acc);
+            case len(rest) > 0 of {
+                true -> concat(concat(uses.head, ", "), rest);
+                false -> uses.head
+            }
+        end
+    }
+}
+
+fn sir_exports_to_text(exps: ListSIRExportItem, acc: string) -> string {
+    case exps.is_nil of {
+        true -> acc;
+        false -> do
+            one: string <- concat(concat(exps.head.fn_name, "/"), exps.head.arity);
+            rest: string <- sir_exports_to_text(exps.tail, acc);
+            case len(rest) > 0 of {
+                true -> concat(concat(one, ", "), rest);
+                false -> one
+            }
+        end
+    }
+}
+
 fn sir_module_to_text_acc(fns: ListSIRFunction, acc: string) -> string {
     case fns.is_nil of {
         true -> acc;
@@ -163,6 +258,14 @@ fn sir_module_to_text_acc(fns: ListSIRFunction, acc: string) -> string {
 
 fn sir_module_to_text(sir_module: SIRModule) -> string {
     header: string <- concat(concat("SIRModule ", sir_module.module_name), "\n");
+    uses_line: string <- case sir_module.used_modules.is_nil of {
+        true -> "";
+        false -> concat(concat(" use ", sir_used_modules_to_text(sir_module.used_modules, "")), "\n")
+    };
+    exports_line: string <- case sir_module.exports.is_nil of {
+        true -> "";
+        false -> concat(concat("  export ", sir_exports_to_text(sir_module.exports, "")), "\n")
+    };
     funcs: string <- sir_module_to_text_acc(sir_module.functions, "");
-    concat(header, funcs)
+    concat(concat(concat(header, uses_line), exports_line), funcs)
 }

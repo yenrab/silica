@@ -1,3 +1,20 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
 // Emitter core: SIRModule -> AArch64 assembly
 // Entry point: orchestrates emission of SIR to assembly text
 
@@ -33,6 +50,7 @@ use reg_conventions;
 use prims_actors;
 use prims_actors_runtime_asm;
 use recursion_support;
+use module_linkage;
 use var;
 
 export emit_module/1;
@@ -106,10 +124,10 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
             p1: string <- recursion_support@emit_recursion_phase_header_comment();
             p4: string <- recursion_support@emit_stack_trace_hook_comment();
             p6: string <- recursion_support@emit_trampoline_fallback_stub();
-            base: string <- asm_header(sir_module.module_name);
+            base: string <- emit_module_asm_prelude(sir_module);
             concat(concat(concat(concat(concat(concat(bss, "\n"), base), "\n"), p1), concat("\n", concat(p4, concat("\n", p6)))), "\n")
         end;
-        false -> asm_header(sir_module.module_name)
+        false -> emit_module_asm_prelude(sir_module)
     };
     table: AtomTable <- atom_table@build_atom_table(sir_module);
     int64_table: Int64PrintTable <- int_rodata@build_int64_print_table(sir_module);
@@ -120,7 +138,7 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
     float64_literal_table: Float64LiteralTable <- float64_literal_pool@build_float64_literal_table(sir_module);
     float32_literal_table: Float32LiteralTable <- float32_literal_pool@build_float32_literal_table(sir_module);
     string_literal_table: StringLiteralTable <- string_literal_pool@build_string_literal_table(sir_module);
-    funcs: string <- emit_functions(sir_module.functions, sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, false);
+    funcs: string <- emit_functions(sir_module.functions, sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, false, sir_module.module_name);
     needs_region_overflow_helper: bool <- prims_memory@module_uses_region_allocation(sir_module);
     region_overflow_helper: string <- case needs_region_overflow_helper of {
         true -> concat("\n", prims_memory@emit_region_overflow_helper());
@@ -318,10 +336,10 @@ fn emit_module_debug(sir_module: SIRModule, debug: bool) -> string proc[DeviceIO
             p1: string <- recursion_support@emit_recursion_phase_header_comment();
             p4: string <- recursion_support@emit_stack_trace_hook_comment();
             p6: string <- recursion_support@emit_trampoline_fallback_stub();
-            base: string <- asm_header(sir_module.module_name);
+            base: string <- emit_module_asm_prelude(sir_module);
             concat(concat(concat(concat(concat(concat(bss, "\n"), base), "\n"), p1), concat("\n", concat(p4, concat("\n", p6)))), "\n")
         end;
-        false -> asm_header(sir_module.module_name)
+        false -> emit_module_asm_prelude(sir_module)
     };
     table: AtomTable <- atom_table@build_atom_table(sir_module);
     int64_table: Int64PrintTable <- int_rodata@build_int64_print_table(sir_module);
@@ -332,7 +350,7 @@ fn emit_module_debug(sir_module: SIRModule, debug: bool) -> string proc[DeviceIO
     float64_literal_table: Float64LiteralTable <- float64_literal_pool@build_float64_literal_table(sir_module);
     float32_literal_table: Float32LiteralTable <- float32_literal_pool@build_float32_literal_table(sir_module);
     string_literal_table: StringLiteralTable <- string_literal_pool@build_string_literal_table(sir_module);
-    funcs: string <- emit_functions(sir_module.functions, sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug);
+    funcs: string <- emit_functions(sir_module.functions, sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug, sir_module.module_name);
     needs_region_overflow_helper: bool <- prims_memory@module_uses_region_allocation(sir_module);
     region_overflow_helper: string <- case needs_region_overflow_helper of {
         true -> concat("\n", prims_memory@emit_region_overflow_helper());
@@ -521,17 +539,26 @@ fn emit_module_debug(sir_module: SIRModule, debug: bool) -> string proc[DeviceIO
     end
 }
 
-fn asm_header(name: string) -> string {
-    concat(".text\n", concat(concat(".global ", name), "\n"))
+// Spec 19: assembly linkage — module comment, `use` list, .global for exports, .global main when defined.
+fn emit_module_asm_prelude(sir_module: SIRModule) -> string {
+    text: string <- ".text\n";
+    mod_line: string <- concat("    ; Silica module ", concat(sir_module.module_name, "\n"));
+    use_line: string <- module_linkage@format_used_modules_comment(sir_module.used_modules);
+    exp: string <- module_linkage@emit_export_global_directives(sir_module.exports, sir_module.module_name);
+    main_g: string <- case module_linkage@module_defines_program_main(sir_module) of {
+        true -> ".global main\n";
+        false -> ""
+    };
+    concat(concat(concat(concat(text, mod_line), use_line), exp), main_g)
 }
 
-fn emit_functions(fns: ListSIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool) -> string proc[DeviceIO] {
+fn emit_functions(fns: ListSIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool, module_name: string) -> string proc[DeviceIO] {
     do
     case fns.is_nil of {
         true -> "";
         false -> do
-            fn_asm: string <- emit_sir_function(fns.head, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug);
-            rest_asm: string <- emit_functions(fns.tail, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug);
+            fn_asm: string <- emit_sir_function(fns.head, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug, module_name);
+            rest_asm: string <- emit_functions(fns.tail, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug, module_name);
             case rest_asm == "" of {
                 true -> fn_asm;
                 false -> concat(concat(fn_asm, "\n"), rest_asm)
@@ -1257,9 +1284,9 @@ fn function_needs_callee_saved_x19_x20_frame(fn_val: SIRFunction) -> bool {
     }
 }
 
-fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool) -> string proc[DeviceIO] {
+fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool, module_name: string) -> string proc[DeviceIO] {
     do
-    entry_label: string <- entry_point_label(fn_val.name);
+    entry_label: string <- module_linkage@asm_symbol_for_definition(module_name, fn_val.name);
     eff_comment: string <- emitter_effects@fn_effect_annotation(fn_val.effects);
     prologue: string <- control@function_prologue_with_effects(entry_label, fn_val.effects);
     dest_reg: string <- case fn_val.return_type == "float32" of {
@@ -1304,6 +1331,13 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
             false -> param_outer_for_body
         }
     };
+    // Module linkage: |_lm= must not be the whole outer string — base_reg_of/extract_sp_bindings expect
+    // "BASE|bindings". Zero-arg functions had param_outer_emit "" and produced "|_lm=mod", which broke
+    // that invariant and could crash the host (silica_string_len on bad pointer). Use X0 as synthetic base.
+    param_outer_emit_lm: string <- case len(param_outer_emit) > 0 of {
+        true -> concat(param_outer_emit, concat("|_lm=", module_name));
+        false -> concat("X0|_lm=", module_name)
+    };
     shadow_prologue: string <- case string_shadow of {
         true -> case second_param_shadow of {
             true -> "    STP X19, X20, [SP, #-16]!\n    MOV X19, X0\n    MOV X20, X1\n";
@@ -1345,18 +1379,18 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
     // in term_emitter; do not tag X8 here so epilogue/dealloc paths stay consistent.
     body_outer_root: string <- case fn_val.body.kind == 6 and (fn_val.body.name == "tuple_make" or fn_val.body.name == "record_make") and reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type) of {
         true -> case use_actor_reply_sret_buffer(fn_val) of {
-            true -> param_outer_emit;
+            true -> param_outer_emit_lm;
             false -> case fn_val.body.name == "tuple_make" of {
-                true -> concat(param_outer_emit, "|_tuple_sret=X8");
-                false -> param_outer_emit
+                true -> concat(param_outer_emit_lm, "|_tuple_sret=X8");
+                false -> param_outer_emit_lm
             }
         };
-        false -> param_outer_emit
+        false -> param_outer_emit_lm
     };
     body: string <- case fn_val.body.kind == 5 of {
         true -> case main_kind5_no_tail of {
-            true -> term_emitter@emit_function_non_tail_user_call_root(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer_emit, fn_val.effects, debug, main_k5_asm_line_before_call);
-            false -> term_emitter@emit_function_tail_user_call_root(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer_emit, fn_val.effects, debug)
+            true -> term_emitter@emit_function_non_tail_user_call_root(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer_emit_lm, fn_val.effects, debug, main_k5_asm_line_before_call);
+            false -> term_emitter@emit_function_tail_user_call_root(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer_emit_lm, fn_val.effects, debug)
         };
         false -> term_emitter@term_to_asm_debug_with_outer(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, body_outer_root, debug)
     };
@@ -1475,12 +1509,3 @@ fn main_returns_float16(name: string, return_type: string) -> bool {
     }
 }
 
-// Use "main" as label for main entry point; never emit main.main or main.m
-fn entry_point_label(name: string) -> string {
-    case name of {
-        "main.main" -> "main";
-        "main.m" -> "main";
-        "main" -> "main";
-        _: string -> name
-    }
-}

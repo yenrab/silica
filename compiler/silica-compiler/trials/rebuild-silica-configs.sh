@@ -10,6 +10,9 @@ for d in "$ROOT"/*/; do
   if [[ "$base" == "error_enforcement_addition" ]]; then
     continue
   fi
+  if [[ "$base" == "modules_addition" ]]; then
+    continue
+  fi
   (cd "$d" && ls -1 *.silica 2>/dev/null | grep '\.silica$' > silica.config || true)
   n="$(wc -l < "$d/silica.config" 2>/dev/null | tr -d ' ')"
   echo "$base: silica.config ($n sources)"

@@ -28,13 +28,13 @@ Rather than optimizing away inefficient or redundant code, Silica enforces that 
 
 ### 3.1 Unused Bindings (Dead Code)
 
-**Rule**: A `let` binding whose variable is never used is a compile error.
+**Rule**: A `<-` binding whose variable is never used is a compile error.
 
 **Anti-pattern**: Dead code; bindings that serve no purpose.
 
 **Error message**: "Unused binding: `<name>` — remove it or use it."
 
-**Applies to**: SIR `let` terms and equivalent source-level bindings.
+**Applies to**: Source-level `pattern <- expression` bindings (represented as `let` terms in SIR).
 
 ---
 
@@ -123,17 +123,19 @@ Rather than optimizing away inefficient or redundant code, Silica enforces that 
 
 ### 3.8 Strength Reduction (Multiply by Power of Two)
 
-**Rule**: Multiplying by a literal power of two (e.g. `x * 8`) is a compile error; use a shift instead.
+**Rule**: Multiplying by a literal power of two (e.g. `x * 8`) is a compile error. The compiler performs strength reduction automatically; the programmer should not write multiplications that are trivially reducible to shifts.
 
-**Anti-pattern**: Obscuring intent; the programmer should use the explicit shift for clarity and to avoid relying on optimizer strength reduction.
+**Anti-pattern**: Writing multiplications by powers of two that the compiler will internally lower to shifts; the programmer should write the minimal form.
 
-**Error message**: "Multiply by power of two — use shift: `<expr>` → `<shift_expr>`."
+**Error message**: "Multiply by literal power of two: `<expr>` — the compiler will lower this to a shift; simplify or use a named constant."
 
 **Applies to**: `prim` multiply with literal power-of-two operand; source-level multiplication.
 
+**Note**: Silica does not expose shift operators (`<<`, `>>`) as surface-language operators. The compiler's code generator handles strength reduction internally. This rule exists to flag trivially reducible multiplications at the source level.
+
 **Examples**:
-- `x * 8` → error: use `x << 3`
-- `x * 16` → error: use `x << 4`
+- `x * 8` → error: redundant literal power-of-two multiply
+- `x * 16` → error: redundant literal power-of-two multiply
 
 ---
 

@@ -5,7 +5,7 @@
 COMPILER_BINARY := target/release/silica-boot
 
 # Experiments directory (one level up)
-EXPERIMENTS_DIR := ../experiments
+EXPERIMENTS_DIR := ../experiments_to_test_bootstrap_only
 
 .DEFAULT_GOAL := all
 .PHONY: all clean clean-compiler clean-experiments compiler experiments help
@@ -93,5 +93,5 @@ help:
 	@echo ""
 	@echo "Directory structure:"
 	@echo "  .                 - Rust compiler implementation (current directory)"
-	@echo "  ../experiments/   - Language feature tests"
+	@echo "  ../experiments_to_test_bootstrap_only/ - Language feature tests"
 	@echo "  ../stdlib/        - Standard library modules"

@@ -1,3 +1,20 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
 // call term emission (SIRTerm kind 4)
 // sir_emitter_pattern_spec §7.4: call -> BLR callee; result in X0
 // Effect-aware: barriers before/after effectful calls per spec §9.1.1 Effect-to-Barrier Mapping
@@ -9,18 +26,19 @@
 use sir_ast;
 use emitter_effects;
 use control;
+use module_linkage;
 
-export emit_call_body/2;
-export emit_call_body_effects/3;
+export emit_call_body/3;
+export emit_call_body_effects/4;
 export emit_call_body_with_callee/3;
-export emit_tail_call_body/2;
+export emit_tail_call_body/3;
 
-fn emit_call_body_effects(term: SIRTerm, dest: string, effect_value: string) -> string {
+fn emit_call_body_effects(term: SIRTerm, dest: string, effect_value: string, outer_reg: string) -> string {
     call_effects: string <- effect_value;
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
-    callee: string <- term.name;
+    callee: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.name);
     adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
     add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
     adrp_line: string <- concat(concat(adrp_part, add_part), "    BLR X9");
@@ -50,17 +68,17 @@ fn emit_call_body_effects(term: SIRTerm, dest: string, effect_value: string) -> 
     concat(with_post, result_mov)
 }
 
-fn emit_call_body(term: SIRTerm, dest: string) -> string {
-    emit_call_body_effects(term, dest, term.value)
+fn emit_call_body(term: SIRTerm, dest: string, outer_reg: string) -> string {
+    emit_call_body_effects(term, dest, term.value, outer_reg)
 }
 
 // Tail call (SIRTerm kind 5): args already in registers — release frame, then BR (no BLR / no return to this frame).
 // recursion_implementation.md Phase 5: native tail transfer; fn_effects controls DMB+LDP like epilogue (atomic release).
-fn emit_tail_call_body(term: SIRTerm, fn_effects: string) -> string {
+fn emit_tail_call_body(term: SIRTerm, fn_effects: string, outer_reg: string) -> string {
     call_effects: string <- term.value;
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
-    callee: string <- term.name;
+    callee: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.name);
     adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
     add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
     br_line: string <- concat(concat(adrp_part, add_part), "    BR X9");

@@ -1,3 +1,20 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
 // Expression type-check dispatcher: Expr kind 0-4
 // Delegates to literals, identifiers; handles binary ops and calls inline (recursive)
 
@@ -957,7 +974,7 @@ fn check_actor_concurrency_call(expr: Expr, expected_type: string, context: Type
     }
 }
 
-fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_memory_regions@is_region_builtin_call(expr.name) of {
         true -> check_region_builtin_call(expr, expected_type, context);
         false -> case is_actor_concurrency_builtin(expr.name) of {
@@ -1090,6 +1107,54 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
         }
         }
     }
+    }
+}
+
+// Mirror of type_checker_core lookup_fn_type_by_name_and_module + lookup_function_type_for_call.
+// Qualified calls: in-TU string return; also first_at for routing before check_call (must appear above check_call).
+fn first_at_in_expr_call_name(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "@" of {
+            true -> i;
+            false -> first_at_in_expr_call_name(s, i + 1)
+        }
+    }
+}
+
+fn lookup_fn_type_by_name_and_module_local(env: ListSymbolEntry, fn_name: string, required_module: string) -> string {
+    case env.is_nil of {
+        true -> "";
+        false -> case env.head.name == fn_name and env.head.is_effect_alias == false of {
+            true -> case len(required_module) == 0 of {
+                true -> case env.head.source_module == "" of {
+                    true -> env.head.type_name;
+                    false -> lookup_fn_type_by_name_and_module_local(env.tail, fn_name, required_module)
+                };
+                false -> case env.head.source_module == required_module of {
+                    true -> env.head.type_name;
+                    false -> lookup_fn_type_by_name_and_module_local(env.tail, fn_name, required_module)
+                }
+            };
+            false -> lookup_fn_type_by_name_and_module_local(env.tail, fn_name, required_module)
+        }
+    }
+}
+
+fn lookup_function_type_for_call_local(env: ListSymbolEntry, composite_name: string) -> string {
+    at: int64 <- first_at_in_expr_call_name(composite_name, 0);
+    case at < 0 of {
+        true -> lookup_fn_type_by_name_and_module_local(env, composite_name, "");
+        false -> lookup_fn_type_by_name_and_module_local(env, substring(composite_name, at + 1, len(composite_name)), substring(composite_name, 0, at))
+    }
+}
+
+fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+    // Module-qualified calls (spec §19.3.2): use first_at in this TU. Routing via
+    // type_checker_core@call_name_is_module_qualified misclassified on bootstrap (deep builtin chain / stack).
+    case first_at_in_expr_call_name(expr.name, 0) >= 0 of {
+        true -> check_user_defined_call(expr, expected_type, context);
+        false -> check_call_builtins_dispatch(expr, expected_type, context)
     }
 }
 
@@ -1233,9 +1298,9 @@ fn count_call_args_user_call(expr: Expr) -> int64 {
 }
 
 fn check_user_call_result_user_call(expr: Expr, expected_type: string, return_type: string) -> TypeCheckResult {
-    case expected_type of {
-        "discard" -> type_checker_core@type_check_ok();
-        _: string -> case expected_type == return_type of {
+    case expected_type == "discard" of {
+        true -> type_checker_core@type_check_ok();
+        false -> case expected_type == return_type of {
             true -> type_checker_core@type_check_ok();
             false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat(expr.name, " returns "), return_type), ", expected "), expected_type), "sect6")
         }
@@ -1288,12 +1353,13 @@ fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_typ
     }
 }
 
-
 fn check_user_defined_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
-    (found: bool, resolved_type: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
-    case found of {
-        false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown or unsupported function: ", expr.name), "sect6");
-        true -> case is_function_type_user_call(resolved_type) of {
+    println(concat("[TC-DEBUG] check_user_defined_call lookup name=", expr.name));
+    resolved_type: string <- lookup_function_type_for_call_local(context.env, expr.name);
+    println(concat("[TC-DEBUG] check_user_defined_call lookup done name=", expr.name));
+    case len(resolved_type) == 0 of {
+        true -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown or unsupported function: ", expr.name), "sect6");
+        false -> case is_function_type_user_call(resolved_type) of {
             false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " is not a function"), "sect6");
             true -> check_user_defined_call_parsed(expr, expected_type, context, resolved_type)
         }
@@ -1404,7 +1470,7 @@ fn enrich_env_for_actor_spawn(env: ListSymbolEntry, var_name: string, bind_type:
                 true -> do
                     (beh_found: bool, beh_type: string) <- type_checker_core@lookup_symbol_found(context.env, beh_e.name);
                     case beh_found of {
-                        true -> type_checker_core@add_symbol(env, concat("__actor_beh__", var_name), beh_type, parser_ast@empty_effect_name_list());
+                        true -> type_checker_core@add_symbol(env, concat("__actor_beh__", var_name), beh_type, parser_ast@empty_effect_name_list(), "");
                         false -> env
                     }
                 end;
@@ -1415,7 +1481,7 @@ fn enrich_env_for_actor_spawn(env: ListSymbolEntry, var_name: string, bind_type:
                 true -> do
                     (st_found: bool, st_type: string) <- type_checker_core@lookup_symbol_found(context.env, state_e.name);
                     case st_found and type_checker_memory_regions@is_memory_region_type(st_type) of {
-                        true -> type_checker_core@add_symbol(env1, state_e.name, "moved_region", parser_ast@empty_effect_name_list());
+                        true -> type_checker_core@add_symbol(env1, state_e.name, "moved_region", parser_ast@empty_effect_name_list(), "");
                         false -> env1
                     }
                 end;
@@ -1448,7 +1514,7 @@ fn check_let_after_validation(expr: Expr, expected_type: string, context: TypeCo
             case rhs_result.is_ok of {
                 false -> rhs_result;
                 true -> do
-                    base_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, bind_type, parser_ast@empty_effect_name_list());
+                    base_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, bind_type, parser_ast@empty_effect_name_list(), "");
                     new_env: ListSymbolEntry <- enrich_env_for_actor_spawn(base_env, expr.name, bind_type, expr.inner, context);
                     new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
                     body_result: TypeCheckResult <- check_expr(expr.right_expr, expected_type, new_context);
@@ -1468,7 +1534,7 @@ fn context_after_sequence_body(body: Expr, context: TypeContext) -> TypeContext 
             new_context: TypeContext <- case is_discard of {
                 true -> context;
                 false -> do
-                    base_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, body.name, body.value, parser_ast@empty_effect_name_list());
+                    base_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, body.name, body.value, parser_ast@empty_effect_name_list(), "");
                     enriched_env: ListSymbolEntry <- enrich_env_for_actor_spawn(base_env, body.name, body.value, body.inner, context);
                     type_checker_core@type_context_with_env(context, enriched_env)
                 end

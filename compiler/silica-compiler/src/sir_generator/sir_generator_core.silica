@@ -1,6 +1,24 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
 // Core sir_generator infrastructure (base)
 // Entry point: Program + TypeContext -> SIRModule (internal representation)
 // Core+extensions pattern: orchestrates via dispatchers; no AST construct knowledge
+// §19: module name (filename stem and/or explicit `module`), `use`, `export` recorded on SIRModule
 
 use parser_ast;
 use type_checker_core;
@@ -8,17 +26,96 @@ use sir_ast;
 use dispatcher;
 
 export emit_program/2;
+export emit_program_for_unit/3;
 
-// Default module name until module support exists
-fn module_name() -> string {
-    "main"
+// Filename stem when known (§19.1.1); else "" to fall back on explicit `module` or "main"
+fn module_name_for_sir(compilation_unit: string, decls: ListDeclaration) -> string {
+    case len(compilation_unit) > 0 of {
+        true -> compilation_unit;
+        false -> do
+            ex: string <- explicit_module_decl_name(decls);
+            case len(ex) > 0 of {
+                true -> ex;
+                false -> "main"
+            }
+        end
+    }
+}
+
+fn explicit_module_decl_name(decls: ListDeclaration) -> string {
+    case decls.is_nil of {
+        true -> "";
+        false -> case decls.head.tag == 4 of {
+            true -> decls.head.name;
+            false -> explicit_module_decl_name(decls.tail)
+        }
+    }
+}
+
+fn append_sir_strings(a: ListSirString, b: ListSirString) -> ListSirString {
+    case a.is_nil of {
+        true -> b;
+        false -> sir_ast@cons_sir_string(a.head, append_sir_strings(a.tail, b))
+    }
+}
+
+fn params_to_used_modules(params: ListParam) -> ListSirString {
+    case params.is_nil of {
+        true -> sir_ast@nil_sir_strings();
+        false -> sir_ast@cons_sir_string(params.head.name, params_to_used_modules(params.tail))
+    }
+}
+
+fn collect_used_modules(decls: ListDeclaration) -> ListSirString {
+    case decls.is_nil of {
+        true -> sir_ast@nil_sir_strings();
+        false -> case decls.head.tag == 2 of {
+            true -> append_sir_strings(params_to_used_modules(decls.head.parameters), collect_used_modules(decls.tail));
+            false -> collect_used_modules(decls.tail)
+        }
+    }
+}
+
+fn params_to_export_items(params: ListParam) -> ListSIRExportItem {
+    case params.is_nil of {
+        true -> sir_ast@nil_sir_exports();
+        false -> do
+            item: SIRExportItem <- SIRExportItem { fn_name: params.head.name, arity: params.head.type_name };
+            sir_ast@cons_sir_export(item, params_to_export_items(params.tail))
+        end
+    }
+}
+
+fn append_sir_exports(a: ListSIRExportItem, b: ListSIRExportItem) -> ListSIRExportItem {
+    case a.is_nil of {
+        true -> b;
+        false -> sir_ast@cons_sir_export(a.head, append_sir_exports(a.tail, b))
+    }
+}
+
+fn collect_exports(decls: ListDeclaration) -> ListSIRExportItem {
+    case decls.is_nil of {
+        true -> sir_ast@nil_sir_exports();
+        false -> case decls.head.tag == 3 of {
+            true -> append_sir_exports(params_to_export_items(decls.head.parameters), collect_exports(decls.tail));
+            false -> collect_exports(decls.tail)
+        }
+    }
 }
 
 // Build SIR for a Program. Returns SIRModule (internal representation).
 // Precondition: type checking has succeeded; AST has no dummy nodes in traversed paths.
+// Uses compilation unit name "" (see emit_program_for_unit).
 fn emit_program(program: Program, context: TypeContext) -> SIRModule proc[mem(normal)] {
+    emit_program_for_unit(program, context, "")
+}
+
+fn emit_program_for_unit(program: Program, context: TypeContext, compilation_unit: string) -> SIRModule proc[mem(normal)] {
     fns: ListSIRFunction <- emit_declarations(program.declarations, context);
-    SIRModule { module_name: module_name(), functions: fns }
+    uses: ListSirString <- collect_used_modules(program.declarations);
+    exps: ListSIRExportItem <- collect_exports(program.declarations);
+    nm: string <- module_name_for_sir(compilation_unit, program.declarations);
+    SIRModule { module_name: nm, used_modules: uses, exports: exps, functions: fns }
 }
 
 // Traverse ListDeclaration; dispatcher delegates per Declaration.tag.
