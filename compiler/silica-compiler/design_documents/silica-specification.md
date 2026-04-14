@@ -46,16 +46,17 @@ Silica is designed to be both LLM-friendly and human-readable. The following des
 - **Benefit**: Reduces parsing ambiguity and makes code structure immediately apparent
 
 #### 1.3.3 Consistent Naming Conventions
-- Type names use PascalCase: `Point`, `OptionInt`, `ResultIntString`
+- **Built-in** type identifiers (`int64`, `string`, `List[…]`, …) and other predefined names follow the spelling given in §4; composite types are **structural** and written **inline** (§3.4.2), not introduced as new identifiers.
 - Function and variable names use snake_case: `add_numbers`, `my_value`
 - Keywords are lowercase: `fn`, `struct`, `trait`, `impl`
 - **Benefit**: Predictable patterns that LLMs can learn and apply consistently
 
 #### 1.3.4 Concrete Types Over Generics
-- Instead of generic `Option<T>`, use concrete types: `OptionInt`, `OptionString`
-- Instead of generic `Result<T, E>`, use concrete types: `ResultIntString`
-- Trait-based polymorphism provides flexibility without generic complexity
-- **Benefit**: Eliminates type inference ambiguity, making code more explicit and easier to parse
+- Silica has **no generic type parameters** (§1.2): there is no `Option<T>` or `Result<T, E>` in the type system.
+- Optional and fallible values are ordinary **sum types** (tagged unions) with **concrete** payload types written **inline** wherever a type is required, e.g. `Some(int64) | None` or `Ok(int64) | Error(string)` (§3.4.2, §4.2.5).
+- Silica has **no custom types** (no user-declared type names); the same inline sum shapes are used in application code and in library APIs (§20.1).
+- **Traits** (e.g. `OptionLike`, `ResultLike`) supply shared operations by implementing them for specific **inline** type expressions, without introducing generics.
+- **Benefit**: Every type occurrence is syntactically concrete, which avoids generic-inference ambiguity and keeps parsing and reading straightforward for tools and humans.
 
 #### 1.3.5 Structured Pattern Matching
 - Pattern matching uses explicit type annotations: `n: int64 if n > 0 -> ...`
@@ -213,7 +214,7 @@ efficiency_cores else end        enum      export    false     float16   float32
 float64    fn         for        from      hot_swap   if        impl      import    int8
 int16      int32      int64      lifetime  mailbox  mem       module    network_io normal    not
 of         performance_cores proc      produces  pub       pure      recv      ref       region    register_rwr return
-self       send       sequence   spawn     string    struct    trait     true      type
+self       sequence   spawn     string    struct    trait     true      type
 uint8      uint16     uint32     uint64    underscore unit       use        where
 ```
 
@@ -348,7 +349,12 @@ Examples:
 
 ##### Function and Type Operators
 ```
-"->"  ":"   "::"
+"->"  ":"   "::"  "#"
+```
+
+##### Module Qualification Operator
+```
+"@"
 ```
 
 ##### Grouping and Separation
@@ -428,7 +434,7 @@ expression ::= literal
 
 ```
 
-**Actor message marker (postfix):** `expr impl ActorMessage impl_marker_body` attaches the `ActorMessage` marker to the **payload** `expr` for type checking. The body is empty or `{}` only — `ActorMessage` has no methods (§16.3.2). This form is the usual way to satisfy `ActorMessage` at `send` and `cast` call sites. `impl_marker_body` is defined in §3.4.9.
+**Actor message marker (postfix):** `expr impl ActorMessage impl_marker_body` attaches the `ActorMessage` marker to the **payload** `expr` for type checking. The body is empty or `{}` only — `ActorMessage` has no methods (§16.3.2). This form is the usual way to satisfy `ActorMessage` at `call` and `cast` call sites. `impl_marker_body` is defined in §3.4.9.
 
 #### 3.3.1 Literals
 ```
@@ -443,15 +449,24 @@ literal ::= integer_literal
 
 #### 3.3.2 Function Calls
 ```
-function_call ::= expression "(" [argument_list] ")"
+function_call ::= local_function_call
+                 | module_qualified_call
                  | qualified_method_call
+
+local_function_call ::= identifier "(" [argument_list] ")"
+
+module_qualified_call ::= identifier "@" identifier "(" [argument_list] ")"
 
 qualified_method_call ::= identifier "." identifier "(" [argument_list] ")"
 
 argument_list ::= expression {"," expression}
 ```
 
-Qualified method calls allow explicit disambiguation of method calls when multiple traits define methods with the same name. The syntax `TraitName.method_name(args)` explicitly calls the method from the specified trait.
+**Local function calls** invoke functions defined in the same module using `function_name(args)`.
+
+**Module-qualified calls** invoke functions from an imported module using `module_name@function_name(args)`. The module must first be imported with a `use` declaration. The `@` operator separates the module name from the function name.
+
+**Qualified method calls** allow explicit disambiguation of method calls when multiple traits define methods with the same name. The syntax `TraitName.method_name(args)` explicitly calls the method from the specified trait.
 
 **Qualified Method Call Examples:**
 
@@ -1645,9 +1660,9 @@ fn counter_actor(
 }
 ```
 
-#### 3.4.2 Types are inline only (no user-declared type names)
+#### 3.4.2 Types are inline only (no custom types)
 
-Silica **does not** provide declarations that introduce a **new user-defined type name**. There is no `type Ping = …`, no `struct Ping { … }`, and no `enum` that binds a fresh type identifier for application code. **Composite types are always structural and written inline** wherever a type is required (parameters, returns, `impl … for …`, pattern annotations, etc.): tuples `(T1, …, Tn)`, inline records `{ f1: T1, …, fn: Tn }`, tagged tuples `( :tag, T1, …)` (§3.7), lists, variants written as sum types, and combinations thereof.
+Silica **does not** provide **custom types**: declarations that introduce a **new user-defined type name** are absent. There is no `type Ping = …`, no `struct Ping { … }`, and no `enum` that binds a fresh type identifier for application code. **Composite types are always structural and written inline** wherever a type is required (parameters, returns, `impl … for …`, pattern annotations, etc.): tuples `(T1, …, Tn)`, inline records `{ f1: T1, …, fn: Tn }`, tagged tuples `( :tag, T1, …)` (§3.7), lists, variants written as sum types, and combinations thereof.
 
 **Record values (struct literals only):** Values of record type are always written as **struct literals** (§3.3.7)—for example `p: { x: int64, y: int64 } <- { x: 42, y: 23 }` or `{ x: 42, y: 23 }` in an expression. The reserved keyword `struct` does **not** begin a record type declaration; unnamed record shape is carried by inline `{ field: Type, … }` in type positions and `{ field: expression, … }` in expression positions.
 
@@ -1655,7 +1670,7 @@ The identifiers `int64`, `string`, `atom`, and other **built-in** names are pred
 
 **Ill-formed:** any declaration of the form `type Name = …` or `struct Name { … }` or `enum Name { … }` as a user-defined type definition.
 
-**Note:** Some later sections and examples may still show `type … =` or `struct …` for historical reasons; those forms are **not** part of the Silica surface language described here.
+**Note:** Some later sections use `type … =` only as **expository shorthand** for built-in or runtime concepts, or as non-normative sketches; they are **not** valid user source for introducing names (§3.4.2). Any example that looks like a `type` alias for application data should be read as the corresponding **inline** type instead.
 
 #### 3.4.3 Effect Declarations
 ```
@@ -1730,58 +1745,46 @@ enum Message {
 
 #### 3.4.8 Trait Declarations
 
-Traits are independent, reusable behavioral components. Each trait formally declares:
-- **Provided methods**: Fully implemented methods with bodies. May call required methods via dynamic dispatch.
-- **Required methods**: Method signatures (no body) that implementing types must provide.
-- **Conflicts**: Compiler error if two traits are applied to the same type and both provide/require the same method name.
+Traits are independent, reusable behavioral components. Each trait formally declares methods as either **required** (signature only) or **provided** (with full body). Traits never reference or compose with other traits; each is completely self-contained.
 
-Traits never reference or compose with other traits; each is completely self-contained.
+**Core Concepts:**
+- **Provided methods**: Fully implemented methods with bodies. May call required methods via dynamic dispatch. Can be overridden by implementations.
+- **Required methods**: Method signatures (no body) that implementing types must provide. Compile error if not implemented.
+- **Marker traits**: Empty traits with no methods, used for type-checking only (e.g., ActorMessage).
 
+**Syntax:**
 ```
-trait_declaration ::= "trait" identifier "{" trait_section* "}" ";"
+trait_declaration ::= "trait" identifier "{" trait_section* "}"
 
-trait_section ::= provided_section | required_section | marker_trait
+trait_section ::= provided_section | required_section | /* empty for marker traits */
 
 provided_section ::= "provided" "{" provided_method+ "}"
 provided_method ::= "fn" identifier parameter_list [":" type] "{" expression "}"
 
 required_section ::= "required" "{" required_method+ "}"
 required_method ::= "fn" identifier parameter_list [":" type]
-
-marker_trait ::= /* empty - for marker traits with no methods */
 ```
 
-**Provided Methods:**
-- Must have full implementation with body
-- May call required methods via dynamic dispatch (resolved at runtime based on implementation)
-- Can be overridden by implementations
+**Examples:**
 
-**Required Methods:**
-- Only specify signature, no body
-- Must be implemented by types that claim the trait
-- Compile error if not provided in impl
-
-**Marker Traits:**
-- No provided or required sections
-- Used for type-checking only (e.g., ActorMessage)
-- Attached via `impl ActorMessage { }` with empty body
-
-Examples:
+Simple trait with only required methods:
 ```silica
-trait Display {
-    provided {
-        fn to_string(self) -> string {
-            "default_display"
-        }
+trait Comparable {
+    required {
+        fn equals(self, other) -> boolean
+        fn less_than(self, other) -> boolean
     }
 }
+```
 
+Trait with provided methods that call required methods:
+```silica
 trait Drawable {
     provided {
         fn render(self) -> atom {
             // Dynamic dispatch to required methods
-            pos: { x: int64, y: int64 } <- self.position();
-            bounds: { width: int64, height: int64 } <- self.bounds();
+            pos: { x: int64, y: int64 } <- self.position()
+            bounds: { width: int64, height: int64 } <- self.bounds()
             atom
         }
     }
@@ -1791,33 +1794,39 @@ trait Drawable {
         fn bounds(self) -> { width: int64, height: int64 }
     }
 }
+```
 
-trait Comparable {
-    required {
-        fn equals(self, other) -> boolean
-        fn less_than(self, other) -> boolean
+Trait with provided methods only:
+```silica
+trait Display {
+    provided {
+        fn to_string(self) -> string {
+            "default_display"
+        }
     }
 }
+```
 
+Marker trait (empty—no methods):
+```silica
 trait ActorMessage {
-    // Marker trait - no provided/required
+    // Marker trait - used for type-checking only
 }
 ```
 
 #### 3.4.9 Implementation Declarations
 
-Implementations attach traits to inline types. For each required method in a trait, the implementation must provide a body. Provided methods from the trait are automatically available; implementations may override them.
+Implementations attach traits to inline types. For each required method in a trait, the implementation must provide a body. Provided methods are automatically available and can be overridden.
 
+**Syntax:**
 ```
-impl_declaration ::= "impl" trait_name "for" type "{" impl_items "}" ";"
+impl_declaration ::= "impl" trait_name "for" type "{" impl_items "}"
                   | impl_actor_message_decl
 
-impl_actor_message_decl ::= "impl" "ActorMessage" "for" type impl_marker_body ";"
-                          | tagged_tuple_type "impl" "ActorMessage" impl_marker_body ";"
+impl_actor_message_decl ::= "impl" "ActorMessage" "for" type impl_marker_body
+                          | tagged_tuple_type "impl" "ActorMessage" impl_marker_body
 
 impl_marker_body ::= /* empty */ | "{" "}"
-
-trait_name ::= identifier
 
 impl_items ::= [impl_item]
 impl_item  ::= required_impl | provided_override
@@ -1829,35 +1838,13 @@ provided_override ::= "fn" identifier parameter_list [":" type] "{" expression "
 **Implementation Rules:**
 - Must implement all required methods from the trait (compile error if any are missing)
 - May override any provided method from the trait
-- If multiple traits are applied to the same type and they conflict (both define/require the same method), compiler error
-- No trait-to-trait references; each trait implementation is independent
+- Traits do not inherit or compose; each trait implementation on a type is independent
+- No trait-to-trait references; traits are completely self-contained
 
-Examples:
+**Examples:**
+
+Implementing required methods:
 ```silica
-impl Drawable for { x: int64, y: int64, width: int64, height: int64 } {
-    // Implement required methods
-    fn position(self) -> { x: int64, y: int64 } {
-        { x: self.x, y: self.y }
-    }
-    
-    fn bounds(self) -> { width: int64, height: int64 } {
-        { width: self.width, height: self.height }
-    }
-    
-    // Override provided method (optional)
-    fn render(self) -> atom {
-        // Custom render logic for this type
-        atom
-    }
-}
-
-impl Display for { x: int64, y: int64, width: int64, height: int64 } {
-    // No required methods in Display, but can override its provided
-    fn to_string(self) -> string {
-        "window_struct"
-    }
-}
-
 impl Comparable for { x: int64, y: int64, width: int64, height: int64 } {
     fn equals(self, other) -> boolean {
         self.x == other.x && self.y == other.y && 
@@ -1868,17 +1855,275 @@ impl Comparable for { x: int64, y: int64, width: int64, height: int64 } {
         (self.width * self.height) < (other.width * other.height)
     }
 }
+```
 
+Implementing required methods and overriding provided:
+```silica
+impl Drawable for { x: int64, y: int64, width: int64, height: int64 } {
+    fn position(self) -> { x: int64, y: int64 } {
+        { x: self.x, y: self.y }
+    }
+    
+    fn bounds(self) -> { width: int64, height: int64 } {
+        { width: self.width, height: self.height }
+    }
+    
+    fn render(self) -> atom {
+        // Override provided method
+        atom
+    }
+}
+```
+
+Multiple traits on a single type:
+```silica
+impl Display for { x: int64, y: int64, width: int64, height: int64 } {
+    fn to_string(self) -> string { "window_struct" }
+}
+
+impl Comparable for { x: int64, y: int64, width: int64, height: int64 } {
+    fn equals(self, other) -> boolean { self.x == other.x && self.y == other.y }
+    fn less_than(self, other) -> boolean { self.x < other.x }
+}
+```
+
+Marker trait implementation:
+```silica
 impl ActorMessage for (:window_event, int64) { }
 ```
 
-**`ActorMessage` implementations:** `ActorMessage` is a marker trait (no methods). Valid forms are: (1) **postfix on the payload** — `expr impl ActorMessage {}` (§3.3, §16.3.2); (2) **type-level** — `impl_actor_message_decl` (§16.3.2) or `impl ActorMessage for type { }` with an **empty** `impl_items` block, when the same inline type is reused and you do not want to repeat the postfix. The compiler **must not** infer `ActorMessage` without one of these forms.
+**`ActorMessage` implementations:** Valid forms are: (1) **postfix on the payload** — `expr impl ActorMessage {}` (§3.3, §16.3.2); (2) **type-level** — `impl ActorMessage for type { }` with empty body, when reusing types. The compiler **must not** infer `ActorMessage` without explicit impl.
 
-**Method Dispatch:**
-- When a provided method calls a required method, the call is dynamically dispatched to the implementation's version of that method
-- Qualified method calls use syntax: `TraitName.method_name(value)` to explicitly specify which trait's version to call
+#### 3.4.10 Dynamic Dispatch
 
-#### 3.4.10 Module Declarations
+When a provided method calls a required method, the call is **dynamically dispatched** at runtime to the implementation's version of that method. This allows provided methods to define common logic while delegating to type-specific implementations.
+
+**Example:**
+
+```silica
+trait Drawable {
+    provided {
+        fn render(self) -> atom {
+            // Dynamically calls the implementation's position() and bounds()
+            pos: { x: int64, y: int64 } <- self.position()
+            bounds: { width: int64, height: int64 } <- self.bounds()
+            atom
+        }
+    }
+    
+    required {
+        fn position(self) -> { x: int64, y: int64 }
+        fn bounds(self) -> { width: int64, height: int64 }
+    }
+}
+
+impl Drawable for { x: int64, y: int64, width: int64, height: int64 } {
+    fn position(self) -> { x: int64, y: int64 } { { x: self.x, y: self.y } }
+    fn bounds(self) -> { width: int64, height: int64 } { { width: self.width, height: self.height } }
+}
+
+impl Drawable for { center: { x: int64, y: int64 }, radius: int64 } {
+    fn position(self) -> { x: int64, y: int64 } { self.center }
+    fn bounds(self) -> { width: int64, height: int64 } { { width: self.radius * 2, height: self.radius * 2 } }
+}
+
+fn draw(shape) -> atom {
+    // Calls render(), which dynamically dispatches to the implementation's position() and bounds()
+    Drawable.render(shape)
+}
+```
+
+When `render()` executes, it calls `position()` and `bounds()` on the actual type at runtime, allowing the same provided logic to work with different type implementations.
+
+#### 3.4.11 Trait Method Disambiguation
+
+**Problem: Multiple Traits with Same Method Name**
+
+When a type implements multiple traits that define methods with the same name, the compiler cannot automatically determine which trait's method to call:
+
+```silica
+trait Logger {
+    required {
+        fn log(self, msg: string) -> atom
+    }
+}
+
+trait Debugger {
+    required {
+        fn log(self, msg: string) -> atom  // Same method name
+    }
+}
+
+impl Logger for { name: string } {
+    fn log(self, msg: string) -> atom { print_string(msg) }
+}
+
+impl Debugger for { name: string } {
+    fn log(self, msg: string) -> atom { print_string("DEBUG: " + msg) }
+}
+
+fn run(tool: { name: string }) -> atom {
+    // ERROR: Which log() - from Logger or Debugger?
+    tool.log("message")
+}
+```
+
+**Solution: Qualified Method Calls**
+
+Use qualified method names (`TraitName.method_name()`) to specify which trait's method to call:
+
+```
+qualified_method_call ::= trait_name "." method_name "(" [arguments] ")"
+```
+
+```silica
+fn run(tool: { name: string }) -> atom {
+    Logger.log(tool, "info")      // Explicitly call Logger's log()
+    Debugger.log(tool, "debug")   // Explicitly call Debugger's log()
+}
+```
+
+**Disambiguation Rules:**
+
+1. **Unique Method Names**: If method names are unique across all implemented traits, no qualification needed
+2. **Ambiguous Method Names**: If multiple traits define the same method name, qualification is required
+3. **Qualified Syntax**: Use `TraitName.method_name(value, ...)` for explicit trait selection
+4. **Self Parameter**: Qualified calls pass `self` as the first parameter explicitly
+
+**Compiler Error for Missing Disambiguation:**
+
+```
+❌ Compilation error: AmbiguousMethodError at example.silica:10:5 [E4000]
+
+Ambiguous method call: log()
+Multiple traits define log(): Logger, Debugger
+Use qualified name: Logger.log() or Debugger.log()
+See specification: spec:§3.4.11
+```
+
+**Best Practices:**
+1. **Use Descriptive Names**: Prefer `log_message()` over `log()` in trait definitions
+2. **Namespace Methods**: Use trait-specific prefixes: `logger_log()`, `debugger_log()`
+3. **Avoid Generic Names**: Don't use generic names like `get()`, `set()` in multiple traits
+4. **Document Intent**: If ambiguity is unavoidable, document which trait applies
+
+#### 3.4.12 Type Implementation Disambiguation
+
+**Problem: Same Trait, Different Type Implementations**
+
+When a single trait has multiple implementations for different types, the compiler cannot determine which implementation to use if the argument's type is ambiguous:
+
+```silica
+trait Display {
+    required {
+        fn format(self) -> string
+    }
+}
+
+impl Display for int32 {
+    fn format(self) = "int32: " + int_to_string(self)
+}
+
+impl Display for int64 {
+    fn format(self) = "int64: " + int_to_string(self)
+}
+
+fn test() -> string {
+    // ERROR: Which implementation? int32 or int64?
+    Display.format(42)
+}
+```
+
+The compiler cannot determine whether the literal `42` should be treated as `int32` or `int64`.
+
+**Solution: Type Annotation with `#`**
+
+Use the type annotation operator `#` to specify the exact type:
+
+```
+type_annotation_expression ::= expression "#" type
+```
+
+```silica
+fn test() -> string {
+    result1: string <- Display.format(42 # int32)  // Use int32 implementation
+    result2: string <- Display.format(42 # int64)  // Use int64 implementation
+    result1  // "int32: 42"
+}
+```
+
+**Type Annotation Rules:**
+
+1. **Required When Ambiguous**: Type annotation is required when the argument type cannot be inferred
+2. **Multiple Implementations**: Use `#` to explicitly select which type implementation to invoke
+3. **No Conversion**: Type annotation specifies type, does not convert or transform the value
+4. **Works with All Expressions**: Works with variables, literals, and complex expressions
+
+**Examples:**
+
+```silica
+trait Numeric {
+    required {
+        fn double(self) -> self
+    }
+}
+
+impl Numeric for int32 { fn double(self) = self * 2 }
+impl Numeric for int64 { fn double(self) = self * 2 }
+impl Numeric for float32 { fn double(self) = self * 2.0 }
+impl Numeric for float64 { fn double(self) = self * 2.0 }
+
+fn calculations() -> (int32, int64, float32, float64) {
+    a: int32 <- Numeric.double(10 # int32)        // int32 implementation
+    b: int64 <- Numeric.double(10 # int64)        // int64 implementation
+    c: float32 <- Numeric.double(3.5 # float32)   // float32 implementation
+    d: float64 <- Numeric.double(3.5 # float64)   // float64 implementation
+    (a, b, c, d)
+}
+```
+
+**Compiler Error for Missing Type Annotation:**
+
+```
+❌ Compilation error: AmbiguousTypeImplementationError at example.silica:5:10 [E4001]
+
+Cannot infer type for trait method call: Display.format()
+Multiple implementations exist: Display for int32, Display for int64
+Use type annotation: value # type to disambiguate
+Example: Display.format(42 # int32)
+See specification: spec:§3.4.12
+```
+
+**Precedence Note:** Type annotation `#` binds tighter than all binary operators (see §3.9). For example, `42 # int32 + 5` parses as `(42 # int32) + 5`.
+
+**Related:** See Section 3.3.11 (Type Annotation Expressions) for general syntax.
+
+#### 3.4.13 Actor System Traits
+
+Silica provides marker traits for the actor system:
+
+**ActorState Trait:**
+```silica
+trait ActorState {
+    // Marker trait - no methods required
+}
+```
+
+Types used as actor initial state in `spawn(initial_state, ...)` must implement `ActorState`. Only **inline** composite types with explicit `impl ActorState for …` implement this trait — no blanket implementations for primitive types.
+
+**ActorMessage Trait:**
+```silica
+trait ActorMessage {
+    // Marker trait - no methods required
+}
+```
+
+Types used as messages in `call()` and `cast()` must implement `ActorMessage` through **`expr impl ActorMessage {}`** (on the payload) and/or explicit type-level `impl ActorMessage for type { }`. The compiler does not infer `ActorMessage` from type structure alone. See §16.3.2 for tagged tuple forms.
+
+**Trait-as-Type:**
+When a trait is used directly as a type (e.g., `ActorMessage`), it represents any concrete type implementing that trait, resolved at compile time.
+
+#### 3.4.14 Module Declarations
 ```
 module_declaration ::= "module" identifier ";"
 ```
@@ -1992,15 +2237,58 @@ Example:
 constructor_call ::= identifier "::" identifier ["(" expression ")"]
 ```
 
+**Note:** Sum-type variants are constructed **without** a type-name qualifier (e.g. `Some(42)`, `None`); there are no custom type names to place before `::` (§3.4.2). The `::` form remains available where the grammar uses module or namespace qualification, not for user-defined type aliases.
+
 Example:
 ```silica
-OptionInt::Some(42)
-ResultIntString::Ok(100)
+Some(42)
+Ok(100)
 ```
 
-**Note**: Constructor calls do not use generic type parameters. Types are inferred from the variant type name (e.g., `OptionInt` for an option containing `int`, `ResultIntString` for a result with `int` success and `string` error).
+**Note**: Constructor calls do not use generic type parameters. The enclosing **inline** sum type (e.g. `Some(int) | None`, `Ok(int) | Error(string)`) is determined from the context of the expression—there is no separate type name to qualify (§3.4.2).
 
-#### 3.3.11 Cast Expressions
+#### 3.3.11 Type Annotation Expressions
+
+Type annotation expressions specify the type of a value to resolve ambiguity, particularly when calling trait methods with multiple type implementations.
+
+```
+type_annotation_expression ::= expression "#" type
+```
+
+**Syntax:**
+```silica
+value # type
+```
+
+**Semantics:**
+Type annotation does not perform a conversion. It specifies which type the compiler should assign to an expression. This is especially useful when:
+1. A value's type is ambiguous (e.g., a numeric literal without context)
+2. Calling trait methods where multiple implementations exist for different types
+3. Distinguishing between different type implementations of the same trait
+
+**Examples:**
+```silica
+// Disambiguate numeric literals
+result: int32 <- 42 # int32
+other: int64 <- 42 # int64
+
+// Call trait methods with specific type implementations
+trait Display {
+    fn format(self) -> string
+}
+
+impl Display for int32 { fn format(self) = "int32: " + int_to_string(self) }
+impl Display for int64 { fn format(self) = "int64: " + int_to_string(self) }
+
+// Explicitly select which implementation to use
+s1: string <- Display.format(42 # int32)
+s2: string <- Display.format(42 # int64)
+```
+
+**Type Checking:**
+The expression `value # type` succeeds if the compiler can confirm that `value` can be assigned type `type`. No implicit conversions occur; the value must be structurally compatible with the type.
+
+#### 3.3.12 Cast Expressions
 ```
 cast_expression ::= "cast" "(" expression "," expression ")"
 ```
@@ -2751,7 +3039,8 @@ From highest to lowest precedence:
 
 1. Function application (left associative)
 2. Unary operators: `not` (right associative)
-3. Binary operators:
+3. Type annotation: `#` (left associative)
+4. Binary operators:
    - `*`, `/`, `%` (left associative)
    - `+`, `-` (left associative)
    - `<`, `<=`, `>`, `>=` (non-associative)
@@ -2760,6 +3049,8 @@ From highest to lowest precedence:
    - `or` (left associative)
 
 Parentheses can be used to override precedence.
+
+**Type annotation precedence note:** Type annotation binds tighter than all binary operators. For example, `42 # int32 + 5` parses as `(42 # int32) + 5`, not `42 # (int32 + 5)`.
 
 ## 4. Built-in Types
 
@@ -3037,7 +3328,7 @@ region(L1, device)                  // device memory (driver library only)
 
 The lifetime identifier (e.g. `L1`) is obtained from `fresh_lifetime()` and must be unique among region allocations in the same or composable scope.
 
-**Region Handle Move Semantics:** Region handles are move-only; they cannot be copied. When a region handle is passed to any function, ownership transfers (the handle is moved). The function must return the handle to the caller. This ensures exactly one handle exists per region at any time. See §12.1.5 for the special case of `spawn`.
+**Region Handle Move Semantics:** Region handles are move-only; they cannot be copied. When a region handle is passed to any function, ownership transfers (the handle is moved). The function must return the handle to the caller. This ensures exactly one handle exists per region at any time. See §12.1.5 for the special case of `spawn`, and §12.1.6 when a region (or related resources) is carried **inside an actor message** (`call`, `cast`).
 
 #### 4.4.3 Reference Types
 Reference types represent pointers to memory: `ref(L, Space, T)`.
@@ -3507,15 +3798,13 @@ Actors handle exceptions independently, providing isolation:
 fn safe_calculator(msg: { command: string, value: int64 }, state: int64) -> int64 {
     case msg.command of {
         "divide" -> {
-            // Division with error handling
             divisor: int64 <- msg.value;
-            if divisor == 0 {
-                // Return error response (no exception thrown)
-                { result: 0, error: Some(DivisionByZero) }
-            } else {
-                // Successful division
-                result: int64 <- state / divisor;
-                { result: result, error: None }
+            case divisor == 0 of {
+                true -> { result: 0, error: Some(DivisionByZero) };
+                false -> {
+                    result: int64 <- state / divisor;
+                    { result: result, error: None }
+                }
             }
         }
         "multiply" -> {
@@ -3551,13 +3840,10 @@ The runtime maps AArch64 hardware exceptions to Silica error types:
 Always check conditions before operations that may generate hardware exceptions:
 
 ```silica
-fn safe_divide(x: int64, y: int64) -> ResultInt64String {
-    if y == 0 {
-        // Check before division to avoid hardware exception
-        Error("Division by zero")
-    } else {
-        // Safe division (no hardware exception)
-        Ok(x / y)
+fn safe_divide(x: int64, y: int64) -> Ok(int64) | Error(string) {
+    case y == 0 of {
+        true -> Error("Division by zero");
+        false -> Ok(x / y)
     }
 }
 ```
@@ -3567,12 +3853,10 @@ fn safe_divide(x: int64, y: int64) -> ResultInt64String {
 Use Result types to propagate errors without exceptions:
 
 ```silica
-type ResultInt64String = Ok(int64) | Error(string)
-
-fn process_with_errors(x: int64, y: int64) -> ResultInt64String {
+fn process_with_errors(x: int64, y: int64) -> Ok(int64) | Error(string) {
     sequence
         // Chain operations with error handling
-        result1: ResultInt64String <- safe_divide(x, y);
+        result1: Ok(int64) | Error(string) <- safe_divide(x, y);
     produces pure case result1 of {
             Ok(value) -> {
                 // Continue processing
@@ -3592,20 +3876,19 @@ fn process_with_errors(x: int64, y: int64) -> ResultInt64String {
 Actors handle exceptions independently, providing isolation:
 
 ```silica
-// Actor with robust error handling
-fn robust_actor(msg: Request, state: State) -> State {
+// Actor with robust error handling (inline record state; §3.4.2)
+fn robust_actor(
+    msg: { value1: int64, value2: int64 },
+    state: { value: int64, error_count: int64 }
+) -> { value: int64, error_count: int64 } {
     sequence
-        // Attempt operation with error handling
-        result: ResultInt64String <- process_with_errors(msg.value1, msg.value2);
+        result: Ok(int64) | Error(string) <- process_with_errors(msg.value1, msg.value2);
     produces pure case result of {
             Ok(value) -> {
-                // Update state on success
-                State {value: value, error_count: state.error_count}
+                { value: value, error_count: state.error_count }
             }
             Error(msg) -> {
-                // Handle error without crashing actor
-                // Log error, update error count, continue processing
-                State {value: state.value, error_count: state.error_count + 1}
+                { value: state.value, error_count: state.error_count + 1 }
             }
         }
     end
@@ -3626,13 +3909,10 @@ Exception handling has performance implications:
 **Example 1: Division by Zero Prevention**
 
 ```silica
-fn safe_division(x: int64, y: int64) -> ResultInt64String {
-    // Check before division (avoids hardware exception)
-    if y == 0 {
-        Error("Division by zero")
-    } else {
-        // Safe division (no hardware exception generated)
-        Ok(x / y)
+fn safe_division(x: int64, y: int64) -> Ok(int64) | Error(string) {
+    case y == 0 of {
+        true -> Error("Division by zero");
+        false -> Ok(x / y)
     }
 }
 ```
@@ -3640,13 +3920,10 @@ fn safe_division(x: int64, y: int64) -> ResultInt64String {
 **Example 2: Memory Access Validation**
 
 ```silica
-fn safe_memory_access(ref: ref(R, normal, int), index: int) -> ResultInt64String {
-    // Validate index before access (avoids hardware exception)
-    if index < 0 or index >= buffer_length(ref) {
-        Error("Index out of bounds")
-    } else {
-        // Safe access (no hardware exception generated)
-        Ok(read_ref(ref, index))
+fn safe_memory_access(ref: ref(R, normal, int), index: int) -> Ok(int64) | Error(string) {
+    case index < 0 or index >= buffer_length(ref) of {
+        true -> Error("Index out of bounds");
+        false -> Ok(read_ref(ref, index))
     }
 }
 ```
@@ -3654,20 +3931,17 @@ fn safe_memory_access(ref: ref(R, normal, int), index: int) -> ResultInt64String
 **Example 3: MTE Tag Validation**
 
 ```silica
-fn safe_tagged_access(ptr: ref(R, normal, NodeData)) -> ResultNodeDataString {
-    // Check tag before access (avoids MTE hardware exception)
+fn safe_tagged_access(ptr: ref(R, normal, { payload: int64 })) -> Ok({ payload: int64 }) | Error(string) {
     tag_valid: boolean <- check_tag_nodedata(ptr);
-    if not tag_valid {
-        Error("Tag mismatch - potential use-after-free")
-    } else {
-        // Safe access (no MTE hardware exception generated)
-        Ok(read_ref(ptr))
+    case tag_valid of {
+        false -> Error("Tag mismatch - potential use-after-free");
+        true -> Ok(read_ref(ptr))
     }
 }
 ```
 
 **Cross-References:**
-- See Section 20.1.2 (Result Type) for Result type usage
+- See §20.1.2 (fallible results, inline sum types) for `Ok(…) | Error(…)` usage
 - See Section 15.3 (Actor Failure and Supervision) for actor exception handling
 - See Section 21.3.3 (MTE Runtime Integration) for MTE exception handling
 - See Section 21.4.5 (PAC Authentication Failure Handling) for PAC exception handling
@@ -3772,12 +4046,7 @@ Built-in type constructors:
 - `ref<R, S, T>` - reference in region R, space S, to type T
 - `buf<R, S, T, N>` - buffer in region R, space S, of N elements of type T
 
-User-defined types are declared with concrete types:
-
-```
-type int_stack = { elements: list<int>, size: int }
-type string_map = { data: list<pair<string, string>>, size: int }
-```
+Composite types are written **inline** only (§3.4.2). For example, a stack holding integers might use the parameter type `{ elements: List[int32, normal], size: int32 }`—not a separate named alias.
 
 ### 8.2 Type Equivalence and Subtyping
 
@@ -3913,15 +4182,8 @@ All inline struct instances automatically implement `Collectable`:
 // This struct instance automatically implements Collectable
 ```
 
-**Enum Types (Automatic Collectable):**
-All enum types automatically implement `Collectable`:
-```silica
-enum OptionInt {
-    None,
-    Some(int64)
-}
-// OptionInt automatically implements Collectable
-```
+**Inline sum types (Automatic Collectable):**
+Inline sum types (§4.2.5) whose components satisfy the usual `Collectable` rules automatically implement `Collectable` by language rule; no explicit `impl` is required.
 
 **List Type (Automatic Collectable):**
 The `List` type itself automatically implements `Collectable`, enabling nested lists:
@@ -3949,21 +4211,15 @@ trait Display {
     fn show(self: Self) -> string;
 }
 
-// Define types
-type Point2D = {x: int64, y: int64};
-type Rectangle = {width: int64, height: int64};
-
-// Implement trait for different types
-impl Display for Point2D {
-    fn show(self: Point2D) -> string {
-        // Format point as string
+// Implement trait for different inline record types
+impl Display for {x: int64, y: int64} {
+    fn show(self: {x: int64, y: int64}) -> string {
         format("Point({}, {})", self.x, self.y)
     }
 }
 
-impl Display for Rectangle {
-    fn show(self: Rectangle) -> string {
-        // Format rectangle as string
+impl Display for {width: int64, height: int64} {
+    fn show(self: {width: int64, height: int64}) -> string {
         format("Rectangle({}x{})", self.width, self.height)
     }
 }
@@ -3974,14 +4230,12 @@ fn print_display(value: Display) -> atom {
     print_string(str)
 }
 
-// Usage: Both Point2D and Rectangle can be passed to print_display
+// Usage: both shapes implement Display
 fn example() -> atom {
-    point: Point2D <- Point2D {x: 3, y: 7};
-    rect: Rectangle <- Rectangle {width: 4, height: 5};
-    
-    // Both types implement Display, so both can be used
-    print_display(point);  // Calls Point2D.show()
-    print_display(rect);   // Calls Rectangle.show()
+    point: {x: int64, y: int64} <- {x: 3, y: 7};
+    rect: {width: int64, height: int64} <- {width: 4, height: 5};
+    print_display(point);
+    print_display(rect)
 }
 ```
 
@@ -3997,37 +4251,28 @@ trait Math {
     fn compute(self: Self, other: int64) -> int64;
 }
 
-// Type implementing multiple traits
-type Point2D = {x: int64, y: int64};
-
-impl Display for Point2D {
-    fn show(self: Point2D) -> string {
+impl Display for {x: int64, y: int64} {
+    fn show(self: {x: int64, y: int64}) -> string {
         format("Point({}, {})", self.x, self.y)
     }
 }
 
-impl Math for Point2D {
-    fn compute(self: Point2D, other: int64) -> int64 {
+impl Math for {x: int64, y: int64} {
+    fn compute(self: {x: int64, y: int64}, other: int64) -> int64 {
         (self.x + self.y) * other
     }
 }
 
 // Function requiring multiple trait constraints
 fn print_and_compute(value: Display, math_value: Math, scale: int64) -> atom {
-    // Use Display trait
     str: string <- value.show();
     print_string(str);
-    
-    // Use Math trait
     result: int64 <- math_value.compute(scale);
     print_int64(result)
 }
 
-// Usage: Point2D implements both traits
 fn example() -> atom {
-    point: Point2D <- Point2D {x: 2, y: 3};
-    
-    // Point2D can be used for both Display and Math constraints
+    point: {x: int64, y: int64} <- {x: 2, y: 3};
     print_and_compute(point, point, 4)
 }
 ```
@@ -4041,35 +4286,29 @@ trait Comparable {
     fn less_than(self: Self, other: Self) -> boolean;
 }
 
-// Implement trait for different types
-type Person = {name: string, age: int64};
-
-impl Comparable for Person {
-    fn equals(self: Person, other: Person) -> boolean {
+impl Comparable for {name: string, age: int64} {
+    fn equals(self: {name: string, age: int64}, other: {name: string, age: int64}) -> boolean {
         self.name == other.name and self.age == other.age
     }
     
-    fn less_than(self: Person, other: Person) -> boolean {
+    fn less_than(self: {name: string, age: int64}, other: {name: string, age: int64}) -> boolean {
         self.age < other.age
     }
 }
 
 // Function using trait constraint
 fn find_maximum(a: Comparable, b: Comparable) -> Comparable {
-    if a.less_than(b) {
-        b
-    } else {
-        a
+    case a.less_than(b) of {
+        true -> b;
+        false -> a
     }
 }
 
-// Usage: Person implements Comparable
-fn example() -> Person {
-    person1: Person <- Person {name: "Alice", age: 30};
-    person2: Person <- Person {name: "Bob", age: 25};
-    
-    // Person can be used where Comparable is required
-    max_person: Person <- find_maximum(person1, person2);
+// Usage: inline person record implements Comparable
+fn example() -> {name: string, age: int64} {
+    person1: {name: string, age: int64} <- {name: "Alice", age: 30};
+    person2: {name: string, age: int64} <- {name: "Bob", age: 25};
+    max_person: {name: string, age: int64} <- find_maximum(person1, person2);
     max_person
 }
 ```
@@ -4114,7 +4353,7 @@ fn example() -> atom {
 
 **Key Points:**
 
-1. **No Structural Subtyping**: `Point2D` and `Rectangle` are not subtypes of each other, even if they have similar structure
+1. **No Structural Subtyping**: Distinct inline record types (e.g. `{x: int64, y: int64}` and `{width: int64, height: int64}`) are not subtypes of each other, even if they have similar structure
 2. **Trait-Based Polymorphism**: Types implementing the same trait can be used interchangeably in trait-constrained contexts
 3. **Explicit Trait Constraints**: Function parameters specify trait requirements (e.g., `value: Display`)
 4. **Multiple Trait Implementation**: Types can implement multiple traits
@@ -4144,17 +4383,14 @@ trait Debug {
     fn debug(self: Self) -> string;
 }
 
-// Type implementing multiple traits
-type Point2D = {x: int64, y: int64};
-
-impl Display for Point2D {
-    fn show(self: Point2D) -> string {
+impl Display for {x: int64, y: int64} {
+    fn show(self: {x: int64, y: int64}) -> string {
         format("Point({}, {})", self.x, self.y)
     }
 }
 
-impl Debug for Point2D {
-    fn debug(self: Point2D) -> string {
+impl Debug for {x: int64, y: int64} {
+    fn debug(self: {x: int64, y: int64}) -> string {
         format("Point2D {{ x: {}, y: {} }}", self.x, self.y)
     }
 }
@@ -4177,19 +4413,16 @@ trait Deserialize {
     fn deserialize(data: string) -> Self;
 }
 
-// Type implementing both traits
-type User = {id: int64, name: string};
-
-impl Serialize for User {
-    fn serialize(self: User) -> string {
+impl Serialize for {id: int64, name: string} {
+    fn serialize(self: {id: int64, name: string}) -> string {
         format("{{id: {}, name: \"{}\"}}", self.id, self.name)
     }
 }
 
-impl Deserialize for User {
-    fn deserialize(data: string) -> User {
+impl Deserialize for {id: int64, name: string} {
+    fn deserialize(data: string) -> {id: int64, name: string} {
         // Parse JSON-like string (simplified)
-        User {id: 1, name: "Alice"}
+        {id: 1, name: "Alice"}
     }
 }
 
@@ -4246,17 +4479,17 @@ fn process_any_value(value: AnyValue) -> atom {
 **Pattern 1: Marker Traits**
 ```silica
 // Marker trait (no methods, just type safety)
-trait Sendable {
-    // No methods - just marks types as safe to send between actors
+trait Passable {
+    // No methods - just marks types as safe to pass between actors
 }
 
-// Implement for types that can be sent
-impl Sendable for int64;
-impl Sendable for string;
+// Implement for types that can be passed between actors
+impl Passable for int64;
+impl Passable for string;
 
 // Function requiring marker trait
-fn send_message(msg: Sendable) -> atom {
-    // Can send any Sendable type
+fn cast_message(msg: Passable) -> atom {
+    // Can pass any Passable type
 }
 ```
 
@@ -4267,12 +4500,8 @@ trait Buildable {
     fn build(self: Self) -> Self;
 }
 
-// Type with builder methods
-type Config = {host: string, port: int64};
-
-impl Buildable for Config {
-    fn build(self: Config) -> Config {
-        // Validate and build configuration
+impl Buildable for {host: string, port: int64} {
+    fn build(self: {host: string, port: int64}) -> {host: string, port: int64} {
         self
     }
 }
@@ -4290,26 +4519,20 @@ trait SortStrategy {
     fn sort(self: Self, data: list<int64>) -> list<int64>;
 }
 
-// Different sorting strategies
-type QuickSort = unit;
-type MergeSort = unit;
-
-impl SortStrategy for QuickSort {
-    fn sort(self: QuickSort, data: list<int64>) -> list<int64> {
-        // Quick sort implementation
+// Different strategies as distinct inline tagged shapes (§3.7)
+impl SortStrategy for (:quick, unit) {
+    fn sort(self: (:quick, unit), data: List[int64, normal]) -> List[int64, normal] {
         data
     }
 }
 
-impl SortStrategy for MergeSort {
-    fn sort(self: MergeSort, data: list<int64>) -> list<int64> {
-        // Merge sort implementation
+impl SortStrategy for (:merge, unit) {
+    fn sort(self: (:merge, unit), data: List[int64, normal]) -> List[int64, normal] {
         data
     }
 }
 
-// Function using strategy trait
-fn sort_data(strategy: SortStrategy, data: list<int64>) -> list<int64> {
+fn sort_data(strategy: SortStrategy, data: List[int64, normal]) -> List[int64, normal] {
     strategy.sort(data)
 }
 ```
@@ -4714,7 +4937,7 @@ fn complex_operation() -> int {
         
         // Statement 3: concurrency
         actor_ref: actor_ref <- spawn(initial_state, behavior_fn);
-        send(actor_ref, SomeMessage {});
+        cast(actor_ref, SomeMessage {});
     produces
         pure read_ref(ref)  // Combined: [mem(normal), device_io, concurrency]
     end
@@ -4778,18 +5001,19 @@ Effects compose correctly even with conditional execution:
 ```silica
 fn conditional_effects(condition: boolean) -> int {
     sequence proc[mem(normal), device_io]
-    produces pure if condition {
-            // Branch 1: mem(normal) and device_io
-            r: region(R, normal) <- alloc_region(normal);
-            ref: ref(R, normal, int) <- alloc_ref(r, 42);
-            print_string("Branch 1");
-            read_ref(ref)
-        } else {
-            // Branch 2: device_io only
-            print_string("Branch 2");
-            0
-        }
-        // Combined: [mem(normal), device_io] (union of both branches)
+        result: int <- case condition of {
+            true -> {
+                r: region(R, normal) <- alloc_region(normal);
+                ref: ref(R, normal, int) <- alloc_ref(r, 42);
+                print_string("Branch 1");
+                read_ref(ref)
+            };
+            false -> {
+                print_string("Branch 2");
+                0
+            }
+        };
+    produces pure result
     end
 }
 ```
@@ -6685,9 +6909,9 @@ produces pure () end
 For recursive data structures containing references, lifetime analysis tracks references through the structure:
 
 ```
-// Inline struct type with recursive reference
-type NodeType = { value: int64, next: OptionRefNode }
-type OptionRefNode = Some(ref(L, normal, NodeType)) | None
+// Singly linked list via recursive tuple and ref? (§4.2.2): a cell is
+// ref(R, normal, (int64, ref?(R, normal, rec))) with rec = (int64, ref?(R, normal, rec)).
+// End of list uses :none in the ref? slot instead of Some(next).
 ```
 
 When analyzing recursive structures:
@@ -6700,6 +6924,8 @@ The compiler analyzes region lifetimes across function boundaries:
 - Return values containing references must ensure the region outlives the return
 - Return values containing regions extend the region lifetime to the caller (regions are not deallocated when returned)
 - Function calls propagate region lifetime constraints
+
+<a id="spec-region-handles-actor-spawn"></a>
 
 #### 12.1.5 Region Handles and Actor Spawn
 
@@ -6720,6 +6946,16 @@ Once spawned, the actor exclusively owns the region. The spawner cannot access t
 - **Use case**: Use when an actor should have exclusive access to data for its entire lifetime.
 
 See §15.1.1 (Actor Creation) for the `spawn` function signature.
+
+<a id="spec-region-handles-actor-messages"></a>
+
+#### 12.1.6 Region Handles in Actor Messages
+
+When the **message** operand to `call()` or `cast()` (Chapter 16) **contains** a region handle or other **move-only** values tied to a region’s ownership—`region(R, Space)`, `buf(...)`, `ref(...)`, and any composite message payload that embeds them under the usual linearity rules—the same **move** discipline applies as for ordinary function arguments (§4.4.2). Ownership **transfers from the actor that issued the `call` or `cast` to the receiving actor** when the message is **submitted** for delivery: that actor’s bindings that were moved **must not** be used afterward; misuse is a **compile-time error**.
+
+**`call()` and replies:** If the behavior returns `(:reply, reply_value, new_state)` and `reply_value` carries region-owned data back to the caller, ownership of that payload **returns** to the **caller** by the same move/return rules as a function result—the reply path is not a second, hidden copy.
+
+**No cross-actor sharing:** A region is **owned by at most one actor at a time**; actor communication transfers ownership by **message moves**, not by shared mutable heaps. See also §15.1.2.2 (actor stack architecture).
 
 ### 12.2 Reference Semantics
 
@@ -7025,8 +7261,7 @@ proc[] int = alloc_ref(r, 42)    // Type checks!
 Case expressions must cover all possible values:
 
 ```
-type OptionInt = Some(int64) | None
-
+// opt : Some(int64) | None
 case opt of {
     Some(x: int64) -> x
     // Missing None case: compilation error
@@ -7046,8 +7281,8 @@ Actors have isolated state and communication:
 Messages maintain happens-before relationships:
 
 ```
-send(actor1, msg1)
-send(actor1, msg2)
+cast(actor1, msg1)
+cast(actor1, msg2)
 // actor1 receives msg1 before msg2
 ```
 
@@ -7177,8 +7412,8 @@ use my_actors;
 
 fn main() -> atom {
     sequence proc[concurrency]
-        counter: actor_ref <- spawn(0, my_actors::counter_handler);
-        logger: actor_ref <- spawn(0, my_actors::log_handler);
+        counter: actor_ref <- spawn(0, my_actors@counter_handler);
+        logger: actor_ref <- spawn(0, my_actors@log_handler);
     produces pure :ok end
 }
 ```
@@ -7222,7 +7457,7 @@ actor_loop(state, behavior) {
     result <- behavior(message, state)          // user behavior returns action
     case result of {
         (:reply, reply_value, new_state) -> {
-            send_reply_to_caller(origin, reply_value)
+            reply_to_caller(origin, reply_value)
             actor_loop(new_state, behavior)
         }
         (:no_reply, new_state) -> {
@@ -7234,7 +7469,7 @@ actor_loop(state, behavior) {
 
 **Receiving**: The `recv()` operation is performed only by the actor runtime, **between** behavior invocations. User-defined behavior functions receive the message and current state as parameters; they **never** call `recv()` directly. The `recv()` function is not user-callable and is an internal runtime operation.
 
-**Sending**: The behavior function **may** perform `call()`, `cast()`, and other concurrency effects **inside** its body (typically within `sequence` blocks that declare the required effects).
+**Outbound messaging**: The behavior function **may** perform `call()`, `cast()`, and other concurrency effects **inside** its body (typically within `sequence` blocks that declare the required effects).
 
 **Recursion Constraint**: Behavior functions (handlers) are **not allowed to be recursive**. A behavior function cannot call itself, either directly or indirectly through other functions.
 
@@ -7243,6 +7478,8 @@ actor_loop(state, behavior) {
 - Recursion would complicate stack management and predictability
 - The runtime owns the message loop; user code does not implement recursion over messages
 - If recursive logic is needed, structure it as non-recursive message-driven state machines
+
+<a id="spec-actor-stack-architecture"></a>
 
 #### 15.1.2.2 Actor Stack Architecture
 
@@ -7296,7 +7533,7 @@ fn main() -> atom {
 
 #### 15.1.2.1 Actor Termination
 
-**Graceful Shutdown Protocol:** Actors do not have an explicit built-in termination function. Instead, termination is accomplished by sending **shutdown messages** to the actor. The behavior function must:
+**Graceful Shutdown Protocol:** Actors do not have an explicit built-in termination function. Instead, termination is accomplished by delivering **shutdown messages** (via `call` or `cast`) to the actor. The behavior function must:
 
 1. Handle shutdown message types (application-defined, e.g., `:shutdown`, `(:terminate, reason)`)
 2. Perform cleanup operations as needed
@@ -8034,7 +8271,7 @@ Message ordering is preserved across migration:
 
 Message delivery operations are atomic with respect to migration:
 
-1. **Send Atomicity**: A `send()` operation either completes before migration starts or after migration completes - never during migration
+1. **Cast atomicity**: A `cast()` operation either completes before migration starts or after migration completes - never during migration
 2. **Receive Atomicity**: A `recv()` operation processes messages atomically - either all messages from a batch or none
 3. **Migration Barrier**: Migration acts as a barrier - no message operations occur during the migration window
 
@@ -8050,15 +8287,15 @@ The migration window is the period during which an actor is transitioning betwee
 **Example: Message Delivery During Migration**
 
 ```silica
-// Actor A sends messages to Actor B
-send(actor_b, msg1)  // Delivered before migration
-send(actor_b, msg2)  // Delivered before migration
+// Actor A casts messages to Actor B
+cast(actor_b, msg1)  // Delivered before migration
+cast(actor_b, msg2)  // Delivered before migration
 
 // Runtime decides to migrate Actor B (migration window starts)
 // Migration occurs (1-20 microseconds)
 
-send(actor_b, msg3)  // Queued during migration, delivered after migration completes
-send(actor_b, msg4)  // Delivered after migration completes
+cast(actor_b, msg3)  // Queued during migration, delivered after migration completes
+cast(actor_b, msg4)  // Delivered after migration completes
 
 // Actor B processes messages in order: msg1, msg2, msg3, msg4
 ```
@@ -8067,7 +8304,7 @@ send(actor_b, msg4)  // Delivered after migration completes
 
 When messages are sent from one core to an actor on another core:
 
-1. **Cross-Core Send**: `send()` operation may complete before message reaches target core
+1. **Cross-core cast**: `cast()` operation may complete before message reaches target core
 2. **Message Routing**: Runtime routes messages to correct core based on actor's current location
 3. **Location Tracking**: Runtime tracks actor location and updates routing when migration occurs
 4. **Delivery Guarantee**: Messages are guaranteed to reach the actor regardless of migration timing
@@ -8116,7 +8353,7 @@ fn counter(msg: { command: string, reply_to: actor_ref }, state: int64) -> int64
         result: int64 <- case msg of {
             {command: "increment", reply_to} -> state + 1,
             {command: "get", reply_to} -> {
-                // Send response back using cast
+                // Cast response back to the requester
                 cast(reply_to, { result: state } impl ActorMessage {});
                 state
             },
@@ -8161,13 +8398,13 @@ Actor failures don't affect other actors:
 actor1: actor_ref <- spawn((), fragile_behavior)
 actor2: actor_ref <- spawn((), robust_behavior)
 
-send(actor1, "quit")    // actor1 terminates
-send(actor2, "ping")    // actor2 continues normally
+cast(actor1, "quit")    // actor1 terminates
+cast(actor2, "ping")    // actor2 continues normally
 ```
 
 ## 16. Message Passing
 
-### 16.1 Message Send Semantics
+### 16.1 Call and cast semantics
 
 #### 16.1.1 Synchronous Call
 Messages can be sent synchronously, with the caller blocking until a reply is received:
@@ -8178,7 +8415,7 @@ call(actor: actor_ref, message: ActorMessage) -> Reply proc[concurrency]
 
 **Semantics:**
 - **Blocking**: The caller is suspended until the target actor returns a reply via the `(:reply, reply_value, new_state)` tuple
-- **Immediate Death Detection**: If the target actor is dead or terminates before sending a reply, `call()` immediately raises `actor_not_found` (not `timeout_error`)
+- **Immediate Death Detection**: If the target actor is dead or terminates before returning a reply, `call()` immediately raises `actor_not_found` (not `timeout_error`)
 - **Message Delivery**: The message is queued in the target actor's mailbox like any other message (if the actor is alive)
 - **Reply Value**: The return type is determined by the `reply_value` in the behavior's `(:reply, reply_value, new_state)` return tuple, verified at compile time to match the `call()` return type
 
@@ -8225,7 +8462,7 @@ cast(actor: actor_ref, message: ActorMessage) -> atom proc[concurrency]
 Mailboxes are unbounded queues that can grow without limit, so messages are never rejected due to mailbox capacity. The `message` argument must satisfy `ActorMessage` — typically `expr impl ActorMessage {}` (§3.3, §16.3.2) or a type that has `impl ActorMessage for T` in scope.
 
 #### 16.1.3 Message Ordering
-Each actor's mailbox is a queue containing all messages from all actors sending it messages. Messages are processed in standard queue ordering: first-received, first-processed (FIFO). Messages from the same sender maintain order relative to each other, but messages from different senders are interleaved in the order they arrive at the actor's mailbox. Both `call()` and `cast()` messages are interleaved in arrival order.
+Each actor's mailbox is a queue containing all messages from all actors that **call** or **cast** to it. Messages are processed in standard queue ordering: first-received, first-processed (FIFO). Messages from the same origin actor maintain order relative to each other, but messages from different origin actors are interleaved in the order they arrive at the actor's mailbox. Both `call()` and `cast()` messages are interleaved in arrival order.
 
 ```
 call(actor, msg1)
@@ -8236,9 +8473,9 @@ cast(actor, msg3)
 ```
 
 #### 16.1.4 Message Delivery
-Messages are delivered exactly once, in FIFO order. The actor runtime processes messages from the mailbox queue sequentially, passing each message to the behavior function along with the current state. The behavior function returns a tagged tuple that indicates whether to send a reply and what the new state should be:
+Messages are delivered exactly once, in FIFO order. The actor runtime processes messages from the mailbox queue sequentially, passing each message to the behavior function along with the current state. The behavior function returns a tagged tuple that indicates whether to return a reply (for `call()`) and what the new state should be:
 
-- **`(:reply, reply_value, new_state)`** — For `call()` messages: send `reply_value` back to the caller, update state to `new_state`
+- **`(:reply, reply_value, new_state)`** — For `call()` messages: return `reply_value` to the caller, update state to `new_state`
 - **`(:no_reply, new_state)`** — For `cast()` messages: no reply sent, update state to `new_state`
 
 **Message Delivery to Terminated Actors:**
@@ -8246,8 +8483,8 @@ Messages are delivered exactly once, in FIFO order. The actor runtime processes 
 When a message is sent to an actor that has terminated, the following behavior applies:
 
 - **Messages are Dropped**: Messages sent to terminated actors are dropped (not queued) and will never be delivered
-- **Exception Raised**: Both `call()` and `cast()` raise `actor_not_found` when targeting a terminated actor, providing consistent error handling across all message-sending operations
-- **Explicit Handling Required**: Callers must handle the `actor_not_found` exception when sending messages to actors that may have terminated
+- **Exception Raised**: Both `call()` and `cast()` raise `actor_not_found` when targeting a terminated actor, providing consistent error handling across all message-passing operations
+- **Explicit Handling Required**: Callers must handle the `actor_not_found` exception when calling or casting to actors that may have terminated
 - **No Delivery Guarantee**: There is no guarantee that messages sent to an actor will be delivered if the actor terminates before message processing
 
 **Termination Detection:**
@@ -8260,13 +8497,13 @@ An actor is considered terminated when:
 **Message Delivery Semantics:**
 
 ```silica
-// Actor A sends message to Actor B
+// Actor A casts a message to Actor B
 actor_b_ref: actor_ref <- spawn(initial_state, behavior_fn);
 
 // Actor B terminates (for any reason)
 // ... Actor B terminates ...
 
-// Actor A sends message (cast) to terminated Actor B
+// Actor A casts a message to terminated Actor B
 cast(actor_b_ref, SomeMessage {});  // Raises actor_not_found exception
 
 // Actor A calls (expects reply) from terminated Actor B
@@ -8278,7 +8515,7 @@ call(actor_b_ref, SomeRequest {});  // Raises actor_not_found exception
 
 **Race Conditions:**
 
-There is a potential race condition between actor termination and message sending:
+There is a potential race condition between actor termination and message passing:
 
 - **Message Sent Before Termination**: If a message is sent before the actor terminates, it will be delivered normally
 - **Message Sent After Termination**: If a message is sent after the actor terminates, it will be dropped
@@ -8289,7 +8526,7 @@ There is a potential race condition between actor termination and message sendin
 To avoid message loss:
 - Use actor supervision and monitoring to detect actor termination
 - Implement application-level acknowledgments for critical messages
-- Use actor references that are known to be alive before sending messages
+- Use actor references that are known to be alive before calling or casting
 
 ### 16.2 Message Receive Semantics
 
@@ -8300,7 +8537,7 @@ Message reception is handled automatically by the actor runtime system. The `rec
 recv() -> Msg proc[concurrency]  // Runtime internal function
 ```
 
-User behavior functions receive messages as parameters rather than calling `recv()` directly. **Sending** (`send`, `cast`, etc.) is **allowed** inside the behavior body when effects permit; only **reception** is reserved to the runtime loop (see §15.1.2).
+User behavior functions receive messages as parameters rather than calling `recv()` directly. **Outbound messaging** (`call`, `cast`, etc.) is **allowed** inside the behavior body when effects permit; only **reception** is reserved to the runtime loop (see §15.1.2).
 
 #### 16.2.2 Mailbox Semantics
 Each actor has a single mailbox that queues incoming messages:
@@ -8339,9 +8576,9 @@ While mailboxes are unbounded, developers should be aware of memory implications
 
 **Message Acceptance Guarantees:**
 
-Both `send()` and `cast()` guarantee message acceptance or raise `actor_not_found`:
+`cast()` operations guarantee message acceptance or raise `actor_not_found`:
 
-- **`send()` Function**: Always accepts messages - never fails due to mailbox capacity
+- **`cast()`** always accepts messages - never fails due to mailbox capacity
   - Messages are always queued successfully
   - No blocking - returns immediately after queuing message
   - No capacity errors - mailboxes never reject messages
@@ -8357,12 +8594,12 @@ Unbounded mailboxes provide predictable performance characteristics:
 
 - **Enqueue Performance**: Message enqueueing is O(1) amortized - constant time per message
 - **Memory Allocation**: Memory allocation occurs as needed, with minimal overhead per allocation
-- **Queue Growth**: Queue growth is transparent to senders - no performance degradation as queue grows
+- **Queue Growth**: Queue growth is transparent to producers—no performance degradation as queue grows
 - **Processing Latency**: Message processing latency may increase as queue size grows (more messages to process)
 
 **Cross-References:**
 - See Section 16.1.2 (Asynchronous Cast) for `cast()` exception handling semantics
-- See Section 16.1.1 (Asynchronous Send) for `send()` behavior
+- See Section 16.1.1 (Asynchronous cast) for `cast()` behavior
 - See Section 15.1.2.2 (Actor Migration Overhead and Behavior) for message delivery during migration
 - See Section 12.1 (Region-Based Memory Management) for memory management details
 
@@ -8401,7 +8638,7 @@ The message parameter is automatically provided by the actor runtime when a mess
 
 ### 16.2.5 Call vs Cast
 
-**Synchronous `call()`** and asynchronous **`cast()`** provide two message-sending patterns:
+**Synchronous `call()`** and asynchronous **`cast()`** provide two message-passing patterns:
 
 | Aspect | `call()` | `cast()` |
 |--------|----------|---------|
@@ -8480,7 +8717,7 @@ error: cannot call(self(), ...)
 
 **Rationale**: The calling actor is suspended waiting for a reply from the same actor that is handling the current message. The reply can never come, resulting in permanent deadlock.
 
-**Alternative**: If an actor needs to send itself a message, use `cast(self(), ...)` (asynchronous), which enqueues the message for later processing after the current message completes.
+**Alternative**: If an actor needs to message itself, use `cast(self(), ...)` (asynchronous), which enqueues the message for later processing after the current message completes.
 
 #### 16.2.6.6 Migration Message Handling
 
@@ -8496,7 +8733,7 @@ error: cannot call(self(), ...)
 
 ### 16.2.7 Supervisor Actors (Future Definition)
 
-**Concept**: Supervisor actors monitor and manage child actors. They are implemented using **traits** (see §9, Trait System).
+**Concept**: Supervisor actors monitor and manage child actors. They are implemented using **traits** (see §3.4.8, Trait Declarations).
 
 **Status**: Supervisor trait definitions and supervisor patterns are not yet fully specified. They will be defined in a future expansion of this specification (§15.4, Supervision and Fault Tolerance).
 
@@ -8504,14 +8741,14 @@ error: cannot call(self(), ...)
 
 ### 16.2.8 Backpressure and Mailbox Management
 
-**No Built-in Backpressure**: The runtime does not provide automatic backpressure mechanisms. Mailboxes are unbounded and will grow indefinitely if senders vastly outpace receivers.
+**No Built-in Backpressure**: The runtime does not provide automatic backpressure mechanisms. Mailboxes are unbounded and will grow indefinitely if producers vastly outpace receivers.
 
 **Programmer Responsibility**: Applications must implement backpressure strategies suitable for their use case:
 
-- **Request/Response Pattern**: Use `call()` instead of `cast()` to naturally slow senders (caller blocks until reply)
-- **Explicit Acknowledgments**: Have receivers send acknowledgment messages back to senders
+- **Request/Response Pattern**: Use `call()` instead of `cast()` to naturally slow producers (caller blocks until reply)
+- **Explicit Acknowledgments**: Have receivers cast acknowledgment messages back to producers
 - **Bounded Queues**: Maintain application-level message queues with size limits
-- **Throttling**: Have senders monitor receiver state and throttle message rate
+- **Throttling**: Have producers monitor receiver state and throttle message rate
 - **Priority Queues**: Route critical messages separately from bulk messages
 
 **Example: Backpressure via Acknowledgments**
@@ -8526,7 +8763,7 @@ fn worker(msg: (:ack), state: int64) -> (:no_reply, int64) {
 fn producer(worker_ref: actor_ref) -> atom {
     sequence proc[concurrency]
         _: boolean <- cast(worker_ref, (:work, 42) impl ActorMessage {});
-        // Wait for acknowledgment before sending next message
+        // Wait for acknowledgment before the next cast
         ack_msg: (:ack) <- recv();
     produces pure :ok end
 }
@@ -8546,7 +8783,7 @@ trait ActorState {
 Only the `initial_state` parameter in `spawn(initial_state, ...)` must implement `ActorState`. The trait is only implemented for **inline** composite types (records, tuples, etc.) with an explicit `impl ActorState for …` in scope (§3.4.2) — no blanket implementations for primitive types.
 
 #### 16.3.2 ActorMessage Trait
-The `ActorMessage` trait is a **marker trait** used only for type checking: it declares **no methods** and carries **no associated functions**. Sending is performed exclusively through `send()` and `cast()`; implementations do not define behavior.
+The `ActorMessage` trait is a **marker trait** used only for type checking: it declares **no methods** and carries **no associated functions**. Mailbox delivery uses **`call()`** (synchronous) and **`cast()`** (asynchronous); implementations do not define behavior.
 
 ```
 trait ActorMessage {
@@ -8554,11 +8791,11 @@ trait ActorMessage {
 }
 ```
 
-**Required explicit marker.** A type may be used as the payload of `send()` or `cast()` **only** if `ActorMessage` is established by one of the forms below. The compiler **must not** infer `ActorMessage` from the structure of the payload alone (no automatic or default implementation).
+**Required explicit marker.** A type may be used as the payload of `cast()` **only** if `ActorMessage` is established by one of the forms below. The compiler **must not** infer `ActorMessage` from the structure of the payload alone (no automatic or default implementation).
 
 **Forms** (marker only; **no trait methods** — empty `{}` when a brace body is present):
 
-1. **In-place payload marker (usual at `send` / `cast`):** `expr impl ActorMessage impl_marker_body` as the **message operand** (§3.3). The postfix binds to `expr` (the message value). `impl_marker_body` is empty or `{}` only. **Example:** `send(peer, (:job, "run", 7) impl ActorMessage {})`.
+1. **In-place payload marker (usual at `cast` / `cast`):** `expr impl ActorMessage impl_marker_body` as the **message operand** (§3.3). The postfix binds to `expr` (the message value). `impl_marker_body` is empty or `{}` only. **Example:** `cast(peer, (:job, "run", 7) impl ActorMessage {})`.
 2. **Type-level (optional, for reuse):** `impl ActorMessage for T;` or `impl_actor_message_decl` / `impl_declaration` with empty body (§3.4.9), where `T` is an **inline** type expression (§3.4.2).
 3. **Tagged tuple alternate spelling** (§16.3.2.1): `(:tag, T1, …, Tn) impl ActorMessage;` — equivalent to `impl ActorMessage for (:tag, T1, …, Tn);`.
 
@@ -8587,8 +8824,8 @@ fn worker(
 
 fn client(peer: actor_ref, reply: actor_ref) -> atom {
     sequence proc[concurrency]
-        send(peer, (:job, "run", 7) impl ActorMessage {});
-        send(peer, { seq: 1, reply_to: reply } impl ActorMessage {});
+        cast(peer, (:job, "run", 7) impl ActorMessage {});
+        cast(peer, { seq: 1, reply_to: reply } impl ActorMessage {});
     produces
         pure ()
     end
@@ -8599,22 +8836,22 @@ The `impl ActorMessage {}` suffix is required on each message operand unless a m
 
 #### 16.3.2.0.1 ActorMessage Marker Syntax Quick Reference
 
-**Usual Pattern (at `send` and `cast` call sites):**
+**Usual Pattern (at `call` and `cast` call sites):**
 ```silica
-send(actor_ref, MESSAGE_VALUE impl ActorMessage {})
+cast(actor_ref, MESSAGE_VALUE impl ActorMessage {})
 cast(actor_ref, MESSAGE_VALUE impl ActorMessage {})
 ```
 
 **Examples:**
 ```silica
 // Inline record message
-send(actor, { command: "start", reply_to: self() } impl ActorMessage {})
+cast(actor, { command: "start", reply_to: self() } impl ActorMessage {})
 
 // Tagged tuple message
-send(actor, (:ping, 42) impl ActorMessage {})
+cast(actor, (:ping, 42) impl ActorMessage {})
 
 // Primitive type (if ActorMessage is implemented for it)
-send(actor, "hello" impl ActorMessage {})
+cast(actor, "hello" impl ActorMessage {})
 ```
 
 **When Optional:** The `impl ActorMessage {}` suffix can be omitted if a type-level declaration exists in scope:
@@ -8622,7 +8859,7 @@ send(actor, "hello" impl ActorMessage {})
 impl ActorMessage for { command: string, reply_to: actor_ref };
 
 // Now you can omit the postfix:
-send(actor, { command: "go", reply_to: self() })  // ✓ works
+cast(actor, { command: "go", reply_to: self() })  // ✓ works
 ```
 
 **Type-Level Declaration (for reuse):**
@@ -8631,9 +8868,9 @@ send(actor, { command: "go", reply_to: self() })  // ✓ works
 impl ActorMessage for { seq: int64, reply_to: actor_ref };
 
 // Use multiple times without postfix
-send(actor1, { seq: 1, reply_to: self() })
-send(actor2, { seq: 2, reply_to: self() })
-send(actor3, { seq: 3, reply_to: self() })
+cast(actor1, { seq: 1, reply_to: self() })
+cast(actor2, { seq: 2, reply_to: self() })
+cast(actor3, { seq: 3, reply_to: self() })
 ```
 
 #### 16.3.2.1 Tagged tuple messages (user-defined inline types)
@@ -8656,7 +8893,7 @@ The second form is an **alternate spelling** of the first for tagged tuple types
 Values can be sent with the **in-place** marker (usual form):
 
 ```silica
-send(actor, (:bob, 42) impl ActorMessage {})
+cast(actor, (:bob, 42) impl ActorMessage {})
 cast(actor, (:ping, "hi", 7) impl ActorMessage {})
 ```
 
@@ -8681,17 +8918,17 @@ Messages must satisfy `ActorMessage` through an **in-place** postfix on the oper
 actor_ref: actor_ref <- spawn(0, handler)
 cast(actor_ref, { data: 42, reply_to: some_actor } impl ActorMessage {})
 cast(actor_ref, 42 impl ActorMessage {})
-send(actor, (1, true) impl ActorMessage {})
+cast(actor, (1, true) impl ActorMessage {})
 ```
 
 #### 16.3.4 Cast-Back Pattern
-Messages can include a `reply_to` field containing an `actor_ref` for sending responses back:
+Messages can include a `reply_to` field containing an `actor_ref` for casting responses back:
 
 ```
 fn handler(msg: { data: int64, reply_to: actor_ref }, state: State) -> State {
     case msg of
         {data, reply_to} ->
-            // Process request and send response back
+            // Process request and cast response back
             cast(reply_to, { result: data * 2 } impl ActorMessage {})
             // ... update state ...
     end
@@ -8704,7 +8941,7 @@ The `reply_to` field is optional - messages without it cannot be used for cast-b
 - **Type Safety**: Messages are type-checked at compile time — they must satisfy `ActorMessage` (§16.3.2) via `expr impl ActorMessage {}` on the payload and/or explicit type-level `impl` in scope
 - **Trait Checking**: All type inference and trait checking happens at compile time, not runtime
 - **Compile-Time Verification**: Field access (e.g., `reply_to`) is verified at compile time - attempting to access a field that doesn't exist in the message type results in a compile-time error
-- **Immutability**: Message data cannot be mutated after sending
+- **Immutability**: Message data cannot be mutated after it is queued for delivery
 - **Isolation**: Message contents are copied between actors
 - **Cast Exception Handling**: `cast()` raises `actor_not_found` exception if the target actor has terminated
 - **Actor Reference Type**: `actor_ref` is a primitive type (like `int` or `boolean`), not parameterized by message type
@@ -8777,11 +9014,10 @@ fn publish(new_data: Data) -> atom proc[mem(normal), atomic] {
 
 // Consumer (Actor B)
 fn consume() -> Data proc[mem(normal), atomic] {
-    ready_flag: boolean <- atomic_load(ready, acquire);  // Acquire synchronization
-    if ready_flag {
-        read_ref(data)  // Guaranteed to see the data written before release
-    } else {
-        initial_data
+    ready_flag: boolean <- atomic_load(ready, acquire);
+    case ready_flag of {
+        true -> read_ref(data);
+        false -> initial_data
     }
 }
 ```
@@ -8850,40 +9086,41 @@ fn check_flag() -> boolean proc[mem(normal), atomic] {
 
 **Producer-Consumer Pattern:**
 ```silica
-// Shared buffer with atomic head/tail pointers
-type ring_buffer = {
-    data: buf(R, normal, int64, 100),
-    head: ref(R, atomic, int64),
-    tail: ref(R, atomic, int64)
-}
-
+// Shared buffer with atomic head/tail pointers (inline record type repeated at each use; §3.4.2)
 // Producer: publish items
-fn produce(buffer: ring_buffer, item: int64) -> boolean proc[mem(normal), atomic] {
+fn produce(
+    buffer: { data: buf(R, normal, int64, 100), head: ref(R, atomic, int64), tail: ref(R, atomic, int64) },
+    item: int64
+) -> boolean proc[mem(normal), atomic] {
     head: int64 <- atomic_load(buffer.head, acquire);
     tail: int64 <- atomic_load(buffer.tail, relaxed);
     
     next_head: int64 <- (head + 1) % 100;
-    if next_head == tail {
-        false  // Buffer full
-    } else {
-        write_buf(buffer.data, head, item);
-        atomic_store(buffer.head, next_head, release);  // Release: item visible
-        true
+    case next_head == tail of {
+        true -> false;
+        false -> {
+            write_buf(buffer.data, head, item);
+            atomic_store(buffer.head, next_head, release);
+            true
+        }
     }
 }
 
 // Consumer: consume items
-fn consume(buffer: ring_buffer) -> OptionInt64 proc[mem(normal), atomic] {
+fn consume(
+    buffer: { data: buf(R, normal, int64, 100), head: ref(R, atomic, int64), tail: ref(R, atomic, int64) }
+) -> Some(int64) | None proc[mem(normal), atomic] {
     tail: int64 <- atomic_load(buffer.tail, acquire);  // Acquire: see producer releases
     head: int64 <- atomic_load(buffer.head, relaxed);
     
-    if tail == head {
-        None  // Buffer empty
-    } else {
-        item: int64 <- read_buf(buffer.data, tail);
-        next_tail: int64 <- (tail + 1) % 100;
-        atomic_store(buffer.tail, next_tail, release);  // Release: consumption visible
-        Some(item)
+    case tail == head of {
+        true -> None;
+        false -> {
+            item: int64 <- read_buf(buffer.data, tail);
+            next_tail: int64 <- (tail + 1) % 100;
+            atomic_store(buffer.tail, next_tail, release);
+            Some(item)
+        }
     }
 }
 ```
@@ -8903,41 +9140,36 @@ fn prepare_and_signal(new_data: SharedData) -> atom proc[mem(normal), atomic] {
 
 // Actor B: Wait and read
 fn wait_and_read() -> SharedData proc[mem(normal), atomic] {
-    ready: boolean <- atomic_load(ready_flag, acquire);  // Acquire: see release
-    if ready {
-        read_ref(data)  // Guaranteed to see data written before release
-    } else {
-        initial_data
+    ready: boolean <- atomic_load(ready_flag, acquire);
+    case ready of {
+        true -> read_ref(data);
+        false -> initial_data
     }
 }
 ```
 
 **Lock-Free Stack:**
 ```silica
-type stack_node = {
-    value: int64,
-    next: ref(R, normal, stack_node)
+// Cells: ref(R, normal, (int64, ref?(R, normal, rec))) with rec the full cell tuple (§4.2.2).
+// Stack head holds ref(R, atomic, ref(R, normal, (int64, ref?(R, normal, rec)))).
+fn push(
+    stack: { top: ref(R, atomic, ref(R, normal, (int64, ref?(R, normal, rec)))) },
+    value: int64
+) -> atom proc[mem(normal), atomic] {
+    new_cell: ref(R, normal, (int64, ref?(R, normal, rec))) <- alloc_ref(region, (value, :none));
+    try_push(stack, new_cell)
 }
 
-type lock_free_stack = {
-    top: ref(R, atomic, ref(R, normal, stack_node))
-}
-
-fn push(stack: lock_free_stack, value: int64) -> atom proc[mem(normal), atomic] {
-    new_node: ref(R, normal, stack_node) <- alloc_ref(region, {value: value, next: null});
-    
-    loop {
-        old_top: ref(R, normal, stack_node) <- atomic_load(stack.top, acquire);
-        write_ref(new_node.next, old_top);
-        
-        // Compare-and-swap with acq_rel for both read and write ordering
-        result: {ok, ref(R, normal, stack_node)} | {fail, ref(R, normal, stack_node)} 
-            <- atomic_compare_exchange(stack.top, old_top, new_node, acq_rel);
-        
-        case result of {
-            {ok, _} -> return;  // Success
-            {fail, current_top} -> write_ref(new_node.next, current_top);  // Retry
-        }
+fn try_push(
+    stack: { top: ref(R, atomic, ref(R, normal, (int64, ref?(R, normal, rec)))) },
+    new_cell: ref(R, normal, (int64, ref?(R, normal, rec)))
+) -> atom proc[mem(normal), atomic] {
+    old_top: ref(R, normal, (int64, ref?(R, normal, rec))) <- atomic_load(stack.top, acquire);
+    result: {ok, ref(R, normal, (int64, ref?(R, normal, rec)))} | {fail, ref(R, normal, (int64, ref?(R, normal, rec)))}
+        <- atomic_compare_exchange(stack.top, old_top, new_cell, acq_rel);
+    case result of {
+        {ok, _: ref(R, normal, (int64, ref?(R, normal, rec)))} -> :ok;
+        {fail, _: ref(R, normal, (int64, ref?(R, normal, rec)))} -> try_push(stack, new_cell)
     }
 }
 ```
@@ -8982,13 +9214,13 @@ fn update_stats_fast(increment: int64) -> atom proc[mem(normal), atomic] {
 // Coordination path: message passing
 fn request_detailed_report(reply_to: actor_ref) -> atom proc[concurrency] {
     current_stats: Stats <- atomic_load(shared_stats, acquire);
-    send(reply_to, ReportMsg {stats: current_stats});
+    cast(reply_to, ReportMsg {stats: current_stats});
 }
 ```
 
 **Happens-Before with Actors:**
 ```silica
-// Atomic release in one actor, message send, atomic acquire in another
+// Atomic release in one actor, message cast, atomic acquire in another
 flag: ref(R, atomic, boolean) <- alloc_atomic(region, false);
 
 // Actor A
@@ -8999,8 +9231,8 @@ fn actor_a_behavior(msg: StartMsg, state: unit) -> atom proc[mem(normal), atomic
     // Release: all prior writes visible
     atomic_store(flag, true, release);
     
-    // Send message (happens after release)
-    send(actor_b_ref, DataReadyMsg {});
+    // Cast message (happens after release)
+    cast(actor_b_ref, DataReadyMsg {});
     ()
 }
 
@@ -9186,39 +9418,38 @@ Returns `{ok, old_value}` if successful, `{fail, current_value}` if the value wa
 
 #### 17.4.1 SPSC Queue Example
 ```
-type spsc_queue<R, T> = {
-    buf: buf(R, normal, T, Capacity),
-    capacity: int,
-    head: ref(R, atomic, int),
-    tail: ref(R, atomic, int)
+// Example element type int64, fixed capacity 1024; queue value is an inline record (§3.4.2)
+fn spsc_enqueue(
+    queue: { buf: buf(R, normal, int64, 1024), capacity: int, head: ref(R, atomic, int), tail: ref(R, atomic, int) },
+    item: int64
+) -> boolean proc[mem(normal), atomic] {
+    tail: int <- atomic_load(queue.tail, acquire);
+    head: int <- atomic_load(queue.head, acquire);
+    next_tail: int <- (tail + 1) % queue.capacity;
+    case next_tail == head of {
+        true -> false;
+        false -> {
+            write_buf(queue.buf, tail, item);
+            atomic_store(queue.tail, next_tail, release);
+            true
+        }
+    }
 }
 
-fn spsc_send(queue, item) -> boolean proc[mem(normal), atomic] {
-    tail: int <- atomic_load(queue.tail, acquire)
-    head: int <- atomic_load(queue.head, acquire)
-
-    next_tail = (tail + 1) % queue.capacity
-    if next_tail == head {
-        return false    // queue full
+fn spsc_recv(
+    queue: { buf: buf(R, normal, int64, 1024), capacity: int, head: ref(R, atomic, int), tail: ref(R, atomic, int) }
+) -> Some(int64) | None proc[mem(normal), atomic] {
+    head: int <- atomic_load(queue.head, acquire);
+    tail: int <- atomic_load(queue.tail, acquire);
+    case head == tail of {
+        true -> None;
+        false -> {
+            item: int64 <- read_buf(queue.buf, head);
+            next_head: int <- (head + 1) % queue.capacity;
+            atomic_store(queue.head, next_head, release);
+            Some(item)
+        }
     }
-
-    write_buf(queue.buf, tail, item)
-    atomic_store(queue.tail, next_tail, release)
-    return true
-}
-
-fn spsc_recv(queue) -> option<T> proc[mem(normal), atomic] {
-    head: int <- atomic_load(queue.head, acquire)
-    tail: int <- atomic_load(queue.tail, acquire)
-
-    if head == tail {
-        return None     // queue empty
-    }
-
-    item: T <- read_buf(queue.buf, head)
-    next_head = (head + 1) % queue.capacity
-    atomic_store(queue.head, next_head, release)
-    return Some(item)
 }
 ```
 
@@ -9228,8 +9459,8 @@ fn spsc_recv(queue) -> option<T> proc[mem(normal), atomic] {
 
 #### 18.1.1 Actor Message Ordering
 ```
-send(actorA, msg1)
-send(actorA, msg2)
+cast(actorA, msg1)
+cast(actorA, msg2)
 ```
 establishes: `msg1` happens-before `msg2` in actorA
 
@@ -9264,7 +9495,7 @@ Between actors, only explicit synchronization establishes ordering:
 ```
 // Actor 1
 atomic_store(flag, true, release)
-send(actor2, data)
+cast(actor2, data)
 
 // Actor 2 behavior function
 fn process_message(msg: Data, state: unit) -> atom {
@@ -9373,8 +9604,8 @@ fn producer_behavior(msg: unit, state: ProducerState) -> ProducerState proc[mem(
     // Release: ensures data write is visible before flag write
     atomic_store(state.ready_flag, true, release);  // STLR instruction
     
-    // Send message (happens after release)
-    send(consumer_ref, DataReadyMsg {});
+    // Cast message (happens after release)
+    cast(consumer_ref, DataReadyMsg {});
     state
 }
 
@@ -9661,7 +9892,7 @@ The following tables provide comprehensive guidance for selecting appropriate ba
 | Ensure all memory operations complete before continuing | DSB | `DSB ISH` | Device access, cache maintenance, system configuration | ~50-200 cycles |
 | Ensure instruction fetch sees prior memory writes | ISB | `ISB` | Code loading, self-modifying code, security updates | ~100-500 cycles (pipeline flush) |
 | Acquire semantics (load ordering) | Load-Acquire | `LDAR`, `LDAXR` | Read synchronization, actor message reception | Minimal (hardware-supported) |
-| Release semantics (store ordering) | Store-Release | `STLR`, `STLXR` | Write synchronization, actor message sending | Minimal (hardware-supported) |
+| Release semantics (store ordering) | Store-Release | `STLR`, `STLXR` | Write synchronization, actor message casting | Minimal (hardware-supported) |
 
 **Table 2: Barrier Scope Selection**
 
@@ -9731,7 +9962,7 @@ The following tables provide comprehensive guidance for selecting appropriate ba
 - See Section 18.2.3.1 (Memory Barrier Instruction Mapping) for instruction mapping details
 - See Section 12.1.1.1 (AArch64 Memory Attribute Mapping) for memory space configuration
 - See Section 15.1.2.1 (AArch64 Runtime Integration) for actor synchronization barrier usage
-- See Section 16.1.1 (Asynchronous Send) for message passing barrier requirements
+- See Section 16.1.1 (Asynchronous cast) for message passing barrier requirements
 
 **Example: Producer-Consumer with Barriers**
 
@@ -9757,11 +9988,14 @@ STLR  W0, [X3]      // Store-release: ensures data store visible before flag sto
 ```silica
 // Consumer (Actor 2)
 fn consumer(msg: unit, state: ConsumerState) -> ConsumerState proc[mem(normal), atomic] {
-    ready: boolean <- atomic_load(state.ready_flag, acquire);  // LDAR instruction
-    if ready {
-        value: int <- read_ref(state.data);  // Guaranteed to see producer's write
+    ready: boolean <- atomic_load(state.ready_flag, acquire);
+    case ready of {
+        true -> {
+            value: int <- read_ref(state.data);
+            state
+        };
+        false -> state
     }
-    state
 }
 ```
 
@@ -9806,19 +10040,19 @@ actor1_state = actor2.state.field  // ✗ No shared state access
 ```
 
 #### 18.3.3 Message Immutability
-Messages cannot be mutated after sending:
+Messages cannot be mutated after they are queued for delivery:
 
 ```
 mutable_data = {value: 42}
-send(actor, mutable_data)
+cast(actor, mutable_data)
 // Cannot modify mutable_data.value here
 // Actor receives immutable copy
 ```
 
 ### 18.4 Deadlock Freedom
 
-#### 18.4.1 No Blocking Sends
-Send operations never block - no send-side deadlocks.
+#### 18.4.1 Non-blocking `cast()` enqueue
+`cast()` does not block when enqueueing—mailboxes are unbounded, so there are no enqueue-side deadlocks waiting for capacity. (`call()` blocks until a reply, by design.)
 
 #### 18.4.2 Actor Autonomy
 Actors process messages independently - no circular wait conditions.
@@ -9911,374 +10145,95 @@ use math_utils;                    // import single module
 use collections, io, string;      // import multiple modules
 ```
 
-- All exported functions from imported modules become available in the current scope
+- Importing a module makes its exported functions available for qualified calls
 - No selective imports - all exports are imported
-- No module renaming - imported modules are accessed by their original names
 - Imports must appear at the top level of a module (before any function definitions)
 
 #### 19.3.2 Name Resolution
-Imported functions are accessed directly by name:
 
+**Local functions** (defined in the same file) are called directly by name:
+
+```silica
+fn double(x: int) -> int { x + x }
+
+fn main() -> int {
+    double(21)
+}
 ```
+
+**Imported functions** (from another module) are called with module-qualified syntax using the `@` operator: `module_name@function_name(args)`:
+
+```silica
 use math_utils;
 
 fn main() -> int {
     sequence
-        result:int <- add(3, 4);   // 'add' from math_utils module
-    produces pure multiply(result, 2)        // 'multiply' from math_utils module
+        result:int <- math_utils@add(3, 4);
+    produces pure math_utils@multiply(result, 2)
     end
 }
 ```
 
-#### 19.3.3 Name Conflicts
+The `@` operator separates the module name (which matches the filename without the `.silica` extension) from the function name. The module must be imported with a `use` declaration before its functions can be called.
 
-**Conflict Detection:**
+#### 19.3.3 Name Disambiguation
 
-- If two imported modules export functions with the same name, it's a compiler error
-- Variable shadowing is not allowed; attempting to shadow a variable causes a compilation error
-- Explicit qualification is not supported - conflicts must be resolved by renaming or restructuring
-
-**Conflict Detection Order:**
-
-When multiple modules are imported in a single `use` statement, conflicts are detected as follows:
-
-1. **Module Processing Order**: Modules are processed in the order they appear in the `use` statement:
-   ```silica
-   use module_a, module_b, module_c;
-   ```
-   Processing order: `module_a` → `module_b` → `module_c`
-
-2. **Conflict Detection**: All conflicts are detected and reported together, not just the first conflict:
-   - The compiler collects all exported symbols from all imported modules
-   - It identifies all name conflicts across all modules
-   - All conflicts are reported in a single error message
-
-3. **Conflict Reporting**: When conflicts are detected, the error message includes:
-   - All conflicting function names
-   - The modules that export each conflicting name
-   - The order in which modules were processed
-
-**Conflict Detection Algorithm:**
-
-```pseudocode
-function detect_name_conflicts(imported_modules):
-    // Collect all exported symbols from all modules
-    all_symbols = {}
-    module_symbols = {}
-    
-    for each module in imported_modules:
-        exports = get_module_exports(module)
-        module_symbols[module] = exports
-        
-        for each symbol in exports:
-            if symbol.name not in all_symbols:
-                all_symbols[symbol.name] = []
-            all_symbols[symbol.name].append({module: module, symbol: symbol})
-        end for
-    end for
-    
-    // Detect conflicts
-    conflicts = []
-    for each symbol_name, symbol_list in all_symbols:
-        if length(symbol_list) > 1:
-            // Multiple modules export the same name
-            conflicts.append({
-                name: symbol_name,
-                modules: [s.module for s in symbol_list],
-                symbols: symbol_list
-            })
-        end if
-    end for
-    
-    // Report all conflicts together
-    if conflicts:
-        error("Name conflicts detected: " + format_conflicts(conflicts))
-    end if
-end function
-```
-
-**Conflict Detection Example:**
+Because imported functions are always called with module-qualified syntax (`module_name@function_name(args)`), multiple modules may export functions with the same name without conflict. The module name in the call unambiguously identifies which function is being invoked.
 
 ```silica
 // math.silica
 export add/2, multiply/2;
-
-// string.silica
-export add/2, concat/2;
+fn add(x: int, y: int) -> int { x + y }
+fn multiply(x: int, y: int) -> int { x * y }
 
 // collections.silica
 export add/2, remove/1;
+fn add(list: List[int64, normal], item: int64) -> List[int64, normal] { ... }
+fn remove(list: List[int64, normal]) -> List[int64, normal] { ... }
 
 // main.silica
-use math, string, collections;  // Error: add/2 conflict across 3 modules
-```
+use math, collections;
 
-**Error Message Format:**
-
-```
-❌ Compilation error: NameConflict error at main.silica:1:1 [E4001]
-
-Name conflict detected: function 'add/2' is exported by multiple modules.
-Conflicting modules (in import order):
-  - math
-  - string
-  - collections
-
-See specification: spec:§19.3.3
-
-<!-- SILICA-ERROR-METADATA
-{
-  "@context": "https://aalang.dev/silica-dev/error/",
-  "errorCode": "E4001",
-  "errorType": "error",
-  "severity": "error",
-  "location": {
-    "file": "main.silica",
-    "line": 1,
-    "column": 1,
-    "offset": 0
-  },
-  "specification": {
-    "section": "§19.3.3"
-  },
-  "conflict": {
-    "symbol": "add/2",
-    "conflicting_modules": ["math", "string", "collections"],
-    "import_order": ["math", "string", "collections"]
-  }
-}
--->
-```
-
-**Multiple Conflicts:**
-
-If multiple name conflicts exist, all are reported:
-
-```silica
-// math.silica
-export add/2, subtract/2;
-
-// string.silica
-export add/2, subtract/2;  // Both add/2 and subtract/2 conflict
-
-// main.silica
-use math, string;  // Error: 2 conflicts reported together
-```
-
-**Error Message for Multiple Conflicts:**
-
-```
-❌ Compilation error: NameConflict error at main.silica:1:1 [E4001]
-
-Multiple name conflicts detected:
-1. Function 'add/2' is exported by: math, string
-2. Function 'subtract/2' is exported by: math, string
-
-See specification: spec:§19.3.3
-```
-
-**Conflict Resolution Strategies:**
-
-When name conflicts occur, developers can resolve them using the following strategies:
-
-**Strategy 1: Module Restructuring**
-
-Restructure modules to avoid conflicts by creating more specific module names:
-
-**Before (Conflict):**
-```silica
-// math.silica
-export add/2, multiply/2;
-
-// string.silica
-export add/2;  // Conflict: add/2 already exported by math
-
-// main.silica
-use math, string;  // Error: add/2 conflict
-```
-
-**After (Resolved):**
-```silica
-// math_utils.silica
-export add/2, multiply/2;
-
-// string_utils.silica
-export concat/2;  // Renamed from add/2 to concat/2
-
-// main.silica
-use math_utils, string_utils;  // No conflict
-```
-
-**Strategy 2: Function Renaming**
-
-Rename conflicting functions in one of the modules:
-
-**Before (Conflict):**
-```silica
-// collections.silica
-export add/2;  // Add element to collection
-
-// math.silica
-export add/2;  // Add two numbers
-
-// main.silica
-use collections, math;  // Error: add/2 conflict
-```
-
-**After (Resolved):**
-```silica
-// collections.silica
-export add_element/2;  // Renamed to avoid conflict
-
-// math.silica
-export add/2;  // Keep original name
-
-// main.silica
-use collections, math;  // No conflict: add_element/2 vs add/2
-```
-
-**Strategy 3: Module Hierarchy (Future Consideration)**
-
-While Silica doesn't currently support module hierarchies, future versions may support:
-
-```silica
-// Proposed future syntax (not currently supported)
-use math::arithmetic;
-use math::geometry;
-use string::operations;
-```
-
-**Strategy 4: Selective Import Pattern**
-
-Create wrapper modules that selectively re-export functions:
-
-**Before (Conflict):**
-```silica
-// io.silica
-export read/1, write/2;
-
-// network.silica
-export read/1, send/2;  // Conflict: read/1
-
-// main.silica
-use io, network;  // Error: read/1 conflict
-```
-
-**After (Resolved):**
-```silica
-// io.silica
-export read_file/1, write_file/2;
-
-// network.silica
-export read_socket/1, send/2;
-
-// main.silica
-use io, network;  // No conflict: read_file/1 vs read_socket/1
-```
-
-**Naming Conventions to Avoid Conflicts:**
-
-1. **Use Descriptive Names**: Prefer `add_numbers/2` over `add/2` when context is unclear
-2. **Use Module Prefixes**: Consider prefixing functions with module context (e.g., `math_add/2`, `string_add/2`)
-3. **Use Namespace-Style Names**: Use underscores to create logical namespaces (e.g., `list_add/2`, `set_add/2`)
-
-**Common Conflict Patterns:**
-
-**Pattern 1: Generic Function Names**
-
-Avoid overly generic names that are likely to conflict:
-
-```silica
-// Bad: Too generic
-export add/2, get/1, set/2, create/1
-
-// Good: More specific
-export add_element/2, get_value/1, set_value/2, create_instance/1
-```
-
-**Pattern 2: Standard Library Names**
-
-Avoid conflicts with standard library function names:
-
-```silica
-// Bad: Conflicts with stdlib
-export print/1, read/1, write/2
-
-// Good: More specific
-export print_debug/1, read_config/1, write_log/2
-```
-
-**Pattern 3: Common Operations**
-
-Common operations (add, remove, get, set) are prone to conflicts:
-
-```silica
-// Bad: Common names
-export add/2, remove/1, get/1
-
-// Good: Context-specific names
-export add_to_list/2, remove_from_set/1, get_map_value/1
-```
-
-**Conflict Resolution Workflow:**
-
-1. **Identify Conflict**: Compiler reports conflict with module and function names
-2. **Analyze Usage**: Determine which module's function is more commonly used
-3. **Choose Strategy**: Select appropriate resolution strategy (restructuring, renaming, etc.)
-4. **Refactor**: Apply chosen strategy to resolve conflict
-5. **Verify**: Recompile to ensure conflict is resolved
-
-**Example: Complete Conflict Resolution**
-
-**Initial State (Conflict):**
-```silica
-// calculator.silica
-export add/2, subtract/2, multiply/2;
-
-// list_ops.silica
-export add/2, remove/1;  // Conflict: add/2
-
-// main.silica
-use calculator, list_ops;  // Error: add/2 conflict
-```
-
-**Resolution:**
-```silica
-// calculator.silica (unchanged)
-export add/2, subtract/2, multiply/2;
-
-// list_ops.silica (renamed function)
-export append/2, remove/1;  // Renamed add/2 to append/2
-
-// main.silica (no conflict)
-use calculator, list_ops;
-
-fn example() -> int64 {
+fn main() -> int {
     sequence
-        // Use calculator.add/2
-        sum: int64 <- add(3, 4);
-        
-        // Use list_ops.append/2 (renamed from add/2)
-        // (list operations would use append/2)
+        sum: int <- math@add(3, 4);             // calls add from math
+        list: List[int64, normal] <- collections@add(my_list, sum);  // calls add from collections
     produces pure sum
     end
 }
 ```
 
-**Best Practices:**
+**Local vs. imported name overlap:**
 
-1. **Plan Module Structure**: Design module structure to minimize conflicts
-2. **Use Descriptive Names**: Choose function names that clearly indicate purpose
-3. **Document Naming Conventions**: Establish team naming conventions to avoid conflicts
-4. **Review Dependencies**: Review module dependencies before finalizing function names
-5. **Refactor Early**: Resolve conflicts as soon as they're detected
+If a local function has the same name as an exported function in an imported module, there is no ambiguity:
+- An unqualified call (`function_name(args)`) always refers to the local function.
+- A qualified call (`module_name@function_name(args)`) always refers to the imported function.
+
+```silica
+use math;
+
+fn add(a: int, b: int) -> int { a + b + 1 }
+
+fn main() -> int {
+    sequence
+        local_result: int <- add(3, 4);       // calls local add (returns 8)
+        imported_result: int <- math@add(3, 4); // calls math module's add (returns 7)
+    produces pure imported_result
+    end
+}
+```
+
+**Validation errors related to qualified calls:**
+
+- **Unknown module**: Using `module_name@function_name(args)` where `module_name` has not been imported with `use` is a compilation error
+- **Unknown function**: Using `module_name@function_name(args)` where `function_name` is not exported by `module_name` is a compilation error
 
 #### 19.3.4 Module System Design Principles
 Silica's module system is designed to be:
-- **Simple**: No complex hierarchical namespaces or selective imports
-- **Explicit**: All exports and imports are clearly declared
-- **Safe**: Name conflicts are caught at compile time
-- **Scalable**: Separate compilation with proper dependency tracking
+- **Simple**: Flat, filename-based modules with no hierarchical namespaces or selective imports
+- **Explicit**: Every cross-module call names its source module at the call site via `module@function`
+- **Unambiguous**: Qualified calls make name conflicts impossible; any number of modules may export the same function name
+- **Scalable**: Modules compile separately with dependency-ordered compilation and parallel codegen
 
 ### 19.4 Module Dependencies
 
@@ -10297,8 +10252,8 @@ use math_utils;
 
 fn main() -> int {
     sequence
-        sum:int <- add(3, 4);        // uses function from math_utils
-        product:int <- multiply(sum, 2);  // uses another function from math_utils
+        sum:int <- math_utils@add(3, 4);
+        product:int <- math_utils@multiply(sum, 2);
     produces pure product
     end
 }
@@ -10583,7 +10538,8 @@ silica-comp -I modules -I stdlib main.silica
 - **Duplicate Exports**: Same function exported multiple times
 
 #### 19.6.3 Import Validation Errors
-- **Name Conflicts**: Multiple imported modules export the same function name
+- **Unknown Module in Qualified Call**: Using `module_name@function_name(args)` where `module_name` has not been imported with `use`
+- **Unknown Function in Qualified Call**: Using `module_name@function_name(args)` where `function_name` is not exported by `module_name`
 - **Invalid Module Reference**: Importing a module that fails to parse or type-check
 
 #### 19.6.4 Error Examples
@@ -10594,40 +10550,37 @@ use nonexistent;
 // Error: function 'divide' not defined in this module
 export divide/2;
 
-// Error: both 'math' and 'advanced_math' export 'add'
-use math, advanced_math;  // if both export add/2
+// Error: module 'utils' not imported (no 'use utils;' declaration)
+fn main() -> int { utils@helper(42) }
+
+// Error: function 'divide' not exported by module 'math'
+use math;
+fn main() -> int { math@divide(10, 2) }
 ```
 
 ## 20. Standard Library
 
 ### 20.1 Core Types
 
-#### 20.1.1 Option Type
-Represents optional values using concrete variant types:
+#### 20.1.1 Optional values (inline sum types)
+
+Optional values are written as **inline** sums `Some(T) | None` (§3.4.2, §4.2.5)—there is no `Option<T>` and no separate option **type name** per `T`.
 
 ```
-// Concrete option types for common cases
-type OptionInt = Some(int) | None
-type OptionString = Some(string) | None
-type OptionBoolean = Some(boolean) | None
-// Additional concrete types can be defined as needed
-
-// Common Option trait for shared operations
 trait OptionLike {
     fn is_some(self: Self) -> boolean;
     fn is_none(self: Self) -> boolean;
 }
 
-// Implement OptionLike for concrete option types
-impl OptionLike for OptionInt {
-    fn is_some(self: OptionInt) -> boolean {
+// Example: one element type; the library may repeat the same pattern for other `T` as separate `impl`s
+impl OptionLike for Some(int) | None {
+    fn is_some(self: Some(int) | None) -> boolean {
         case self of
             Some(_) -> true
             None -> false
         end
     }
-    
-    fn is_none(self: OptionInt) -> boolean {
+    fn is_none(self: Some(int) | None) -> boolean {
         case self of
             Some(_) -> false
             None -> true
@@ -10635,48 +10588,38 @@ impl OptionLike for OptionInt {
     }
 }
 
-// Type-specific operations
-fn unwrap_int(opt: OptionInt) -> int {
+fn unwrap_int(opt: Some(int) | None) -> int {
     case opt of
         Some(value) -> value
         None -> panic("unwrap on None")
     end
 }
 
-fn find_index_int(list: ListInt, item: int) -> OptionInt {
+fn find_index_int(list: List[int, normal], item: int) -> Some(int) | None {
     // returns Some(index) or None
-    // Implementation...
 }
 ```
 
-**Note**: Silica uses concrete option types rather than generic types. For each element type, a corresponding option type is defined (e.g., `OptionInt` for `int`, `OptionString` for `string`). The `OptionLike` trait provides common operations across all option types.
+**Note:** There are no user-defined aliases such as `OptionInt`; the shape `Some(int) | None` appears **inline** in signatures and variables. `OptionLike` is implemented per concrete inline sum as needed.
 
-#### 20.1.2 Result Type
-Represents computation results or errors using concrete variant types:
+#### 20.1.2 Fallible results (inline sum types)
+
+Results use **inline** sums such as `Ok(T) | Error(E)` (§4.2.5)—there is no `Result<T, E>`.
 
 ```
-// Concrete result types for common cases
-type ResultIntString = Ok(int) | Error(string)
-type ResultStringInt = Ok(string) | Error(int)
-type ResultIntInt = Ok(int) | Error(int)
-// Additional concrete types can be defined as needed
-
-// Common Result trait for shared operations
 trait ResultLike {
     fn is_ok(self: Self) -> boolean;
     fn is_error(self: Self) -> boolean;
 }
 
-// Implement ResultLike for concrete result types
-impl ResultLike for ResultIntString {
-    fn is_ok(self: ResultIntString) -> boolean {
+impl ResultLike for Ok(int) | Error(string) {
+    fn is_ok(self: Ok(int) | Error(string)) -> boolean {
         case self of
             Ok(_) -> true
             Error(_) -> false
         end
     }
-    
-    fn is_error(self: ResultIntString) -> boolean {
+    fn is_error(self: Ok(int) | Error(string)) -> boolean {
         case self of
             Ok(_) -> false
             Error(_) -> true
@@ -10684,104 +10627,33 @@ impl ResultLike for ResultIntString {
     }
 }
 
-// Type-specific operations
-fn unwrap_ok_int_string(result: ResultIntString) -> int {
+fn unwrap_ok_int_string(result: Ok(int) | Error(string)) -> int {
     case result of
         Ok(value) -> value
         Error(_) -> panic("unwrap on Error")
     end
 }
 
-fn parse_int(s: string) -> ResultIntString {
+fn parse_int(s: string) -> Ok(int) | Error(string) {
     // returns Ok(value) or Error("invalid number")
-    // Implementation...
 }
 ```
 
-**Note**: Silica uses concrete result types rather than generic types. For each success/error type combination, a corresponding result type is defined (e.g., `ResultIntString` for `int` success and `string` error). The `ResultLike` trait provides common operations across all result types.
+**Note:** Each distinct pair of success and error payload types is expressed as its own **inline** sum in API signatures, not as a named `Result…` alias.
 
-#### 20.1.3 List Type
-Immutable functional lists using variant types per element type:
+#### 20.1.3 List types
+
+Lists are the built-in types `List[ElementType]` / `List[ElementType, Space]` (§4.2.4). Elements must be `Collectable` (§8.2.4). Operations are provided per element type; signatures use the **full** list type inline, for example:
 
 ```
-// Marker trait: any type implementing this can be in a list
-trait Listable {
-    // Marker trait, no methods needed
-}
-
-// Implement Listable for all types that can be in lists
-impl Listable for int;
-impl Listable for string;
-impl Listable for boolean;
-// User-defined types can implement Listable trait
-
-// Type descriptor for Listable types (used in constructor)
-type ListableType = Int | String | Boolean | CustomType
-
-// Variant types per element type (functional/immutable lists)
-type ListInt = Nil | Cons(int, ListInt)
-type ListString = Nil | Cons(string, ListString)
-type ListBoolean = Nil | Cons(boolean, ListBoolean)
-// Additional list types can be defined for other Listable types
-
-// Common List trait for shared operations
-trait List {
-    fn length(self: Self) -> int;
-    fn is_empty(self: Self) -> boolean;
-}
-
-// Implement List trait for concrete list types
-impl List for ListInt {
-    fn length(self: ListInt) -> int {
-        case self of
-            Nil -> 0
-            Cons(_, tail) -> 1 + tail.length()
-        end
-    }
-    
-    fn is_empty(self: ListInt) -> boolean {
-        case self of
-            Nil -> true
-            Cons(_, _) -> false
-        end
-    }
-}
-
-// Constructor: takes ListableType enum, compiler infers return type
-fn create_list(element_type: ListableType) -> ListInt proc[mem(normal)]  // if element_type == Int
-fn create_list(element_type: ListableType) -> ListString proc[mem(normal)]  // if element_type == String
-// Compiler infers return type from element_type parameter
-
-// Empty list literal syntax
-fn empty_list() -> ListInt {
-    Nil  // or use [] literal syntax
-}
-
-// Functional cons: adds to front, returns NEW list (immutable)
-fn cons(list: ListInt, item: int) -> ListInt proc[mem(normal)] {
-    // Create new list with item as head, old list as tail
-    // Original list unchanged (immutable)
-    Cons(item, list)
-}
-
-// Head returns concrete element type (compile-time inference)
-fn head(list: ListInt) -> int {
-    case list of
-        Nil -> panic("head on empty list")
-        Cons(head, _) -> head
-    end
-}
-
-// Tail preserves type and returns new list (immutable)
-fn tail(list: ListInt) -> ListInt {
-    case list of
-        Nil -> panic("tail on empty list")
-        Cons(_, tail) -> tail
-    end
-}
+fn length_int64(list: List[int64, normal]) -> int64
+fn is_empty_int64(list: List[int64, normal]) -> boolean
+fn cons_int64(list: List[int64, normal], item: int64) -> List[int64, normal] proc[mem(normal)]
+fn head_int64(list: List[int64, normal]) -> int64
+fn tail_int64(list: List[int64, normal]) -> List[int64, normal]
 ```
 
-**Note**: Silica uses functional/immutable lists. Lists are variant types where each element type has its own list type (e.g., `ListInt` for lists of `int`). The `Listable` trait marks types that can be stored in lists. All list operations preserve immutability - `cons` returns a new list, original lists are never modified. Type inference is compile-time only - mixing types in one list is a compile-time error.
+**Note:** There is no separate `ListInt` / `Cons` / `Nil` variant family in the surface language; immutability and structural sharing follow §4.2.4.
 
 ### 20.2 Core Functions
 
@@ -10802,23 +10674,17 @@ fn contains(s: string, substr: string) -> boolean
 
 #### 20.2.3 List Functions
 
-List functions use concrete types (ListInt, ListString, etc.). Examples shown for ListInt - similar functions exist for other list types.
+List functions are overloaded or suffixed per **element type**; parameters use explicit `List[ElementType, Space]` (§4.2.4). Examples for `int64` / `normal`:
 
 ```
-// ListInt functions
-fn length_int(list: ListInt) -> int64
-fn is_empty_int(list: ListInt) -> boolean
-fn nth_int(list: ListInt, index: int64) -> OptionInt
-fn append_int(list1: ListInt, list2: ListInt) -> ListInt
-fn map_int_int(list: ListInt, f: fn(int64) -> int64) -> ListInt
-fn map_int_string(list: ListInt, f: fn(int64) -> string) -> ListString
-fn filter_int(list: ListInt, pred: fn(int64) -> boolean) -> ListInt
-fn fold_int_int(list: ListInt, init: int64, f: fn(int64, int64) -> int64) -> int64
-
-// Similar functions exist for other list types:
-// ListString: length_string, append_string, map_string_string, etc.
-// ListBoolean: length_boolean, append_boolean, map_boolean_boolean, etc.
-// Each concrete list type has its own set of functions
+fn length_int(list: List[int64, normal]) -> int64
+fn is_empty_int(list: List[int64, normal]) -> boolean
+fn nth_int(list: List[int64, normal], index: int64) -> Some(int64) | None
+fn append_int(list1: List[int64, normal], list2: List[int64, normal]) -> List[int64, normal]
+fn map_int_int(list: List[int64, normal], f: fn(int64) -> int64) -> List[int64, normal]
+fn map_int_string(list: List[int64, normal], f: fn(int64) -> string) -> List[string, normal]
+fn filter_int(list: List[int64, normal], pred: fn(int64) -> boolean) -> List[int64, normal]
+fn fold_int_int(list: List[int64, normal], init: int64, f: fn(int64, int64) -> int64) -> int64
 ```
 
 #### 20.2.4 IO Functions
@@ -10842,14 +10708,13 @@ Assertions check for programming errors during development and testing. When an 
 - Supervisors can catch this and decide whether to restart or escalate
 - Failed assertions should not occur in production code
 - Unlike exceptions, assertions are for catching logic errors, not recoverable runtime conditions
-```
 
 ### 20.3 Actor Utilities
 
 #### 20.3.1 Actor Registry
 ```
 fn register(name: string, actor: actor_ref<Msg>) -> atom proc[concurrency]
-fn lookup(name: string) -> option<actor_ref<Msg>> proc[concurrency]
+fn lookup(name: string) -> Some(actor_ref<Msg>) | None proc[concurrency]
 ```
 
 #### 20.3.2 Message Broadcasting
@@ -10937,7 +10802,7 @@ module net.tcp {
     pub fn accept(sock: tcp_socket)
         -> result<tcp_connection, net_error> proc[networking]
 
-    pub fn send(sock: tcp_connection, data: buf(R, normal, uint8, size))
+    pub fn write(sock: tcp_connection, data: buf(R, normal, uint8, size))
         -> result<int, net_error> proc[networking]
 
     pub fn receive(sock: tcp_connection, buffer: buf(R, normal, uint8, max_size))
@@ -10957,7 +10822,7 @@ module net.udp {
     pub type udp_socket = socket<udp>
     pub type udp_endpoint = socket_addr
 
-    pub fn send_to(sock: udp_socket, data: buf(R, normal, uint8, size), dest: socket_addr)
+    pub fn transmit_to(sock: udp_socket, data: buf(R, normal, uint8, size), dest: socket_addr)
         -> result<int, net_error> proc[networking]
 
     pub fn receive_from(sock: udp_socket, buffer: buf(R, normal, uint8, max_size))
@@ -11160,15 +11025,19 @@ Programs using optional features must check availability:
 use arch.sve
 
 fn vector_operation(data: *int32, len: int) -> atom proc[mem(normal)] {
-    if has_sve() then
-        // Use SVE operations
-        pred: Pred <- sve.create_pred_true(len)
-        vec: VecInt32 <- sve.load_vector_int32(data, Some(pred))
-        // ... SVE operations ...
-    else
-        // Fallback to scalar operations
-        // ... scalar implementation ...
-    end
+    case has_sve() of {
+        true -> {
+            pred: Pred <- sve.create_pred_true(len);
+            vec: VecInt32 <- sve.load_vector_int32(data, Some(pred));
+            // ... SVE operations ...
+            :ok
+        };
+        false -> {
+            // Fallback to scalar operations
+            // ... scalar implementation ...
+            :ok
+        }
+    }
 }
 ```
 
@@ -11310,16 +11179,23 @@ Programs should check for specific SVE2 features before use:
 use arch.sve
 
 fn matrix_operation(data: *int8, len: int) -> atom proc[mem(normal)] {
-    if has_sve2() and has_sve2_i8mm() then
-        // Use SVE2 Int8 matrix multiplication
-        // ... SVE2 I8MM operations ...
-    else if has_sve() then
-        // Fallback to SVE operations
-        // ... SVE operations ...
-    else
-        // Fallback to scalar operations
-        // ... scalar implementation ...
-    end
+    case (has_sve2() and has_sve2_i8mm(), has_sve()) of {
+        (true, _: boolean) -> {
+            // Use SVE2 Int8 matrix multiplication
+            // ... SVE2 I8MM operations ...
+            :ok
+        };
+        (false, true) -> {
+            // Fallback to SVE operations
+            // ... SVE operations ...
+            :ok
+        };
+        (false, false) -> {
+            // Fallback to scalar operations
+            // ... scalar implementation ...
+            :ok
+        }
+    }
 }
 ```
 
@@ -11633,26 +11509,30 @@ When working with fixed-size buffers (`buf(R, Space, T, N)`), SVE operations han
 
 ```
 fn process_buffer(buf: buf(R, normal, int32, 100), len: int) -> atom proc[mem(normal)] {
-    // Calculate number of full vectors
     elements_per_vector: int <- get_sve_elements_int32();
     full_vectors: int <- len / elements_per_vector;
     remainder: int <- len % elements_per_vector;
-    
-    // Process full vectors
-    i: int <- 0;
-    while i < full_vectors {
-        // Process one vector
-        offset: int <- i * elements_per_vector;
-        vec: VecInt32 <- sve.load_vector_int32(&buf[offset], Some(create_pred_true(elements_per_vector)));
-        // ... process vector ...
-        i <- i + 1;
+    process_full_vectors(buf, 0, full_vectors, elements_per_vector);
+    case remainder > 0 of {
+        false -> :ok;
+        true -> {
+            remainder_pred: Pred <- create_pred_true(remainder);
+            vec: VecInt32 <- sve.load_vector_int32(&buf[full_vectors * elements_per_vector], Some(remainder_pred));
+            // ... process remainder ...
+            :ok
+        }
     }
-    
-    // Process remainder with predicate
-    if remainder > 0 {
-        remainder_pred: Pred <- create_pred_true(remainder);
-        vec: VecInt32 <- sve.load_vector_int32(&buf[full_vectors * elements_per_vector], Some(remainder_pred));
-        // ... process remainder ...
+}
+
+fn process_full_vectors(buf: buf(R, normal, int32, 100), i: int, count: int, elems: int) -> atom proc[mem(normal)] {
+    case i < count of {
+        false -> :ok;
+        true -> {
+            offset: int <- i * elems;
+            vec: VecInt32 <- sve.load_vector_int32(&buf[offset], Some(create_pred_true(elems)));
+            // ... process vector ...
+            process_full_vectors(buf, i + 1, count, elems)
+        }
     }
 }
 ```
@@ -11877,28 +11757,34 @@ Programs must be written to handle variable vector lengths gracefully:
 use module arch.sve
 
 fn adaptive_vector_processing(data: *int32, len: int) -> atom proc[mem(normal)] {
-    // Query vector length at runtime (not compile-time constant)
     elements_per_vector: int <- get_sve_elements_int32();
-    
-    // Calculate number of full vectors
     full_vectors: int <- len / elements_per_vector;
     remainder: int <- len % elements_per_vector;
-    
-    // Process full vectors (adapts to any vector length)
-    i: int <- 0;
-    while i < full_vectors {
-        offset: int <- i * elements_per_vector;
-        // Vector operation processes exactly elements_per_vector elements
-        vec: VecInt32 <- sve.load_vector_int32(&data[offset], Some(create_pred_true(elements_per_vector)));
-        // ... process vector ...
-        i <- i + 1;
+    process_vectors(data, 0, full_vectors, elements_per_vector);
+    process_remainder(data, full_vectors, elements_per_vector, remainder)
+}
+
+fn process_vectors(data: *int32, i: int, count: int, elems: int) -> atom proc[mem(normal)] {
+    case i < count of {
+        false -> :ok;
+        true -> {
+            offset: int <- i * elems;
+            vec: VecInt32 <- sve.load_vector_int32(&data[offset], Some(create_pred_true(elems)));
+            // ... process vector ...
+            process_vectors(data, i + 1, count, elems)
+        }
     }
-    
-    // Process remainder (handles any remainder size)
-    if remainder > 0 {
-        remainder_pred: Pred <- create_pred_true(remainder);
-        vec: VecInt32 <- sve.load_vector_int32(&data[full_vectors * elements_per_vector], Some(remainder_pred));
-        // ... process remainder ...
+}
+
+fn process_remainder(data: *int32, full_vectors: int, elems: int, remainder: int) -> atom proc[mem(normal)] {
+    case remainder > 0 of {
+        false -> :ok;
+        true -> {
+            remainder_pred: Pred <- create_pred_true(remainder);
+            vec: VecInt32 <- sve.load_vector_int32(&data[full_vectors * elems], Some(remainder_pred));
+            // ... process remainder ...
+            :ok
+        }
     }
 }
 ```
@@ -11932,15 +11818,10 @@ expected_elements: int <- 16;  // Expected elements per vector
 
 fn check_vector_length() -> boolean proc[] {
     actual_elements: int <- get_sve_elements_int32();
-    
-    // Detect vector length change
-    if actual_elements != expected_elements {
-        // Vector length changed - program must adapt
-        return false;
-    else
-        // Vector length matches expected
-        return true;
-    end
+    case actual_elements != expected_elements of {
+        true -> false;
+        false -> true
+    }
 }
 ```
 
@@ -12318,9 +12199,9 @@ Programs can query tag storage capacity:
 
 ```
 // Query tag storage capacity (if supported by runtime)
-get_tag_storage_capacity() -> OptionInt64  // Returns Some(capacity) or None
-get_tag_storage_usage() -> OptionInt64     // Returns Some(usage) or None
-get_tag_storage_available() -> OptionInt64  // Returns Some(available) or None
+get_tag_storage_capacity() -> Some(int64) | None // Returns Some(capacity) or None
+get_tag_storage_usage() -> Some(int64) | None     // Returns Some(usage) or None
+get_tag_storage_available() -> Some(int64) | None  // Returns Some(available) or None
 ```
 
 **Note**: Tag storage capacity queries are optional and may not be available on all implementations. Programs should handle `None` return values gracefully.
@@ -12714,11 +12595,10 @@ fn allocate_with_tag_reuse() -> ref(R, normal, NodeData) proc[mem(normal)] {
 ```silica
 fn check_tag_space_usage() -> boolean proc[] {
     // Runtime monitors tag space usage internally
-    // Programs can query tag space status (if runtime provides API)
-    // For now, tag exhaustion is handled transparently by runtime
-    
+    // Programs can query tag space status (runtime provides API)
+    // Tag exhaustion is handled transparently by runtime
     // Allocation always succeeds (may use software fallback)
-    return true
+    true
 }
 ```
 
@@ -13304,14 +13184,14 @@ Creates a new actor with the given initial state and behavior function. The beha
 call(actor: actor_ref, message: ActorMessage) -> Reply proc[concurrency]
 ```
 
-Sends a message to an actor and **blocks** until a reply is received. The target behavior must return `(:reply, reply_value, new_state)`. Returns the `reply_value` sent back by the behavior. Raises `timeout_error` if no reply is received within the timeout period (default 5 seconds), or `actor_not_found` if the actor has terminated.
+**Calls** an actor with a message and **blocks** until a reply is received. The target behavior must return `(:reply, reply_value, new_state)`. Returns the `reply_value` from the behavior. Raises `timeout_error` if no reply is received within the timeout period (default 5 seconds), or `actor_not_found` if the actor has terminated.
 
 #### Asynchronous Cast (Fire-and-Forget)
 ```
 cast(actor: actor_ref, message: ActorMessage) -> atom proc[concurrency]
 ```
 
-Sends a message to an actor and **returns immediately** without waiting for a response. The target behavior should return `(:no_reply, new_state)`. Raises `actor_not_found` if the actor doesn't exist or has terminated.
+**Casts** a message to an actor and **returns immediately** without waiting for a response. The target behavior should return `(:no_reply, new_state)`. Raises `actor_not_found` if the actor doesn't exist or has terminated.
 
 #### Runtime Message Reception
 ```
@@ -13325,7 +13205,7 @@ The `recv()` operation is a **runtime internal function** and cannot be called d
 self() -> actor_ref proc[concurrency]
 ```
 
-Returns the current actor's reference. Can be used to send messages back to the caller (for cast-back patterns in behaviors, or to include in message payloads).
+Returns the current actor's reference. Can be used to `call` or `cast` back to the caller (for reply patterns in behaviors, or to include in message payloads).
 
 **Note**: `call()` and `cast()` may be used from within actor behavior functions (and elsewhere) when the enclosing `sequence` declares the required effects (see §15.1.2, §16.1).
 
@@ -13603,7 +13483,7 @@ length_bytes(s: string) -> int64            // byte length; one of two user-avai
 length_chars(s: string) -> int64           // character count; one of two user-available string length functions
 string_concat(s1: string, s2: string) -> string
 string_slice(s: string, start: int, end: int) -> string
-string_to_int(s: string) -> option<int>
+string_to_int(s: string) -> Some(int) | None
 int_to_string(n: int) -> string
 ```
 
@@ -13725,11 +13605,11 @@ Runtime catches and reports errors:
 Errors propagate through the process system:
 
 ```
-fn safe_divide(x: int, y: int) -> result<int, string> proc[] {
-    if y == 0 {
-        return Error("division by zero")
+fn safe_divide(x: int, y: int) -> Ok(int) | Error(string) {
+    case y == 0 of {
+        true -> Error("division by zero");
+        false -> Ok(x / y)
     }
-    return Ok(x / y)
 }
 
 // Usage
@@ -13752,7 +13632,7 @@ The compiler must ensure:
 - **Type Soundness**: Well-typed programs don't go wrong
 - **Effect Tracking**: All effects properly tracked and enforced
 - **Memory Safety**: No dangling pointers or use-after-free
-- **Concurrency Safety**: No data races or invalid message sends
+- **Concurrency Safety**: No data races or invalid message casts
 
 #### 22.1.2 Optimization Requirements
 The compiler should perform:
@@ -14143,13 +14023,12 @@ This section provides a quick reference for performance characteristics document
 
 | Operation | Typical Latency | Throughput | Notes |
 |-----------|-----------------|-------------|-------|
-| `send()` message enqueue | 10-50ns | 10-50M messages/sec | Unbounded mailbox, O(1) enqueue |
-| `cast()` message enqueue | 10-50ns | 10-50M messages/sec | Same as `send()`, raises `actor_not_found` if target terminated |
+| `cast()` message enqueue | 10-50ns | 10-50M messages/sec | Unbounded mailbox, O(1) enqueue; raises `actor_not_found` if target terminated |
 | Message delivery (same core) | 50-200ns | 5-20M messages/sec | Includes actor scheduling overhead |
 | Message delivery (cross-core) | 100-500ns | 2-10M messages/sec | Includes cache coherency and scheduling |
 | Message delivery (cross-NUMA) | 200-1000ns | 1-5M messages/sec | Includes NUMA access latency |
 
-**Cross-Reference**: See Section 16.1 (Message Send Semantics) and Section 15.1.2.1 (AArch64 Runtime Integration) for detailed message passing semantics.
+**Cross-Reference**: See Section 16.1 (Call and cast semantics) and Section 15.1.2.1 (AArch64 Runtime Integration) for detailed message passing semantics.
 
 **Pattern Matching Performance:**
 
@@ -14204,7 +14083,7 @@ This section provides a quick reference for performance characteristics document
 **Cross-References:**
 - See Section 12.1.1.2 (Memory Space Runtime Guarantees) for memory space latency details
 - See Section 17.2 (Memory Ordering Semantics) for atomic operation details
-- See Section 16.1 (Message Send Semantics) for message passing details
+- See Section 16.1 (Call and cast semantics) for message passing details
 - See Section 3.6.5 (AArch64-Specific Pattern Matching Optimizations) for pattern matching details
 - See Section 21.1 (SVE) and Section 21.2 (NEON) for vector operation details
 
@@ -14402,12 +14281,14 @@ fn actor_a_behavior(msg: Message, state: State) -> State proc[mem(normal), mem(a
 
 // Source code (Actor B)
 fn actor_b_behavior(msg: Message, state: State) -> State proc[mem(normal), mem(atomic), atomic, concurrency] {
-    // Wait for data to be published
     ready: boolean <- atomic_load(publish_flag, acquire);
-    if ready {
-        data: Data <- read_ref(shared_data_ref);  // Read published data
+    case ready of {
+        true -> {
+            data: Data <- read_ref(shared_data_ref);
+            state
+        };
+        false -> state
     }
-    state
 }
 ```
 
@@ -14622,8 +14503,8 @@ Silica compiles all modules in a program together:
 
 **Symbol Resolution:**
 - **Global Symbol Table**: All exported functions are collected into a global namespace
-- **Import Resolution**: `use` declarations make exported symbols available locally
-- **Link-Time Verification**: Ensures all imports can be satisfied
+- **Import Resolution**: `use` declarations register modules for qualified calls (`module_name@function_name`); the linker verifies that all referenced module/function pairs can be satisfied
+- **Link-Time Verification**: Ensures all qualified calls resolve to valid exported functions
 
 #### 25.3.2 Hardware-Aware Linking
 
@@ -14874,10 +14755,10 @@ Step through Silica code with source line mapping:
 
 ```silica
 fn factorial(n: int) -> int {
-    if n <= 1 {           // Breakpoint here
-        return 1
+    case n <= 1 of {
+        true -> 1;                    // Breakpoint here
+        false -> n * factorial(n - 1)
     }
-    return n * factorial(n - 1)
 }
 ```
 
@@ -14898,7 +14779,7 @@ actor counter {
 Trace message passing between actors:
 
 ```
-Actor A sends: increment()
+Actor A casts: increment()
   ↓
 Actor B receives: increment()
   ↓
@@ -14906,364 +14787,6 @@ Actor B state: 0 → 1
 ```
 
 ## 30. Advanced Type System
-
-### 30.1 Traits
-
-#### 30.1.1 Trait Definitions
-Traits define interfaces that types can implement:
-
-```silica
-trait Display {
-    fn to_string(self) -> string
-}
-
-trait Comparable {
-    fn equals(self, other) -> boolean
-    fn less_than(self, other) -> boolean
-}
-```
-
-#### 30.1.2 Multiple Trait Implementation
-Types can implement any number of independent traits. Traits do not inherit from or include other traits. Instead, types compose behavior by implementing multiple traits directly.
-
-**Independent Traits:**
-```silica
-trait Printable {
-    fn to_string(self) -> string
-}
-
-trait Debug {
-    fn debug_string(self) -> string
-}
-
-trait Serializable {
-    fn serialize(self) -> bytes
-}
-
-trait Comparable {
-    fn equals(self, other) -> boolean
-}
-```
-
-**Implementing Multiple Traits on a Type:**
-```silica
-impl Printable for { name: string, version: int } {
-    fn to_string(self) = format("{} v{}", self.name, self.version)
-}
-
-impl Debug for { name: string, version: int } {
-    fn debug_string(self) = format("Widget {{ name: {}, version: {} }}", self.name, self.version)
-}
-
-impl Serializable for { name: string, version: int } {
-    fn serialize(self) = encode(self.name, self.version)
-}
-
-impl Comparable for { name: string, version: int } {
-    fn equals(self, other) = self.name == other.name && self.version == other.version
-}
-```
-
-**Important Notes:**
-- Each trait is independent and self-contained
-- Types implement each trait separately via `impl`
-- A type can implement as many traits as needed
-- Trait implementations are independent of each other
-
-**Method Name Disambiguation:**
-
-When a type implements multiple traits that define methods with the same name, use qualified method names (`traitname.functionname`) to disambiguate:
-
-```silica
-trait Reader {
-    fn read(self: Self) -> int64;
-}
-
-trait Writer {
-    fn read(self: Self) -> int64;  // Same method name as Reader
-}
-
-// A type implementing both traits
-impl Reader for { data: int64 } {
-    fn read(self) -> int64 { self.data }
-}
-
-impl Writer for { data: int64 } {
-    fn read(self) -> int64 { self.data + 1 }
-}
-
-fn process(value: { data: int64 }) -> int64 {
-    // Use qualified names to disambiguate
-    reader_result: int64 <- Reader.read(value);
-    writer_result: int64 <- Writer.read(value);
-    reader_result + writer_result
-}
-```
-
-**Disambiguation Syntax:**
-
-```
-qualified_method_call ::= trait_name "." method_name "(" [arguments] ")"
-```
-
-**Disambiguation Rules:**
-
-1. **Unique Method Names**: If method names are unique across all implemented traits, no disambiguation needed
-2. **Ambiguous Method Names**: If multiple traits define the same method name, must use qualified name
-3. **Trait Method Access**: Use `TraitName.method_name()` to call methods from specific traits
-4. **Self Parameter**: Qualified method calls still pass `self` as the first parameter
-
-#### 30.1.3 Disambiguation Requirements
-
-This section clarifies when trait method disambiguation is required versus optional, and provides guidance for avoiding ambiguity.
-
-**When Disambiguation is Required:**
-
-Disambiguation is **required** when:
-
-1. **Multiple Traits Define Same Method**: Two or more implemented traits define methods with identical names and signatures
-2. **Explicit Trait Selection**: The programmer wants to explicitly call a method from a specific trait
-
-**When Disambiguation is Optional:**
-
-Disambiguation is **optional** when:
-
-1. **Unique Method Names**: Method names are unique across all implemented traits
-2. **No Ambiguity**: The compiler can unambiguously determine which method to call
-
-**Disambiguation Decision Tree:**
-
-```
-Is method name unique across all implemented traits?
-├─ Yes → No disambiguation needed
-└─ No → Is method defined in multiple traits?
-    ├─ Yes → Disambiguation required
-    └─ No → No disambiguation needed
-```
-
-**Examples: Unambiguous Cases (No Disambiguation Needed)**
-
-```silica
-trait Reader {
-    fn read(self: Self) -> int64;
-}
-
-trait Writer {
-    fn write(self: Self, data: int64) -> int64;  // Different name
-}
-
-impl Reader for { data: int64 } {
-    fn read(self) -> int64 { self.data }
-}
-
-impl Writer for { data: int64 } {
-    fn write(self, data: int64) -> int64 { data }
-}
-
-// No disambiguation needed: method names are unique
-fn process(value: { data: int64 }) -> int64 {
-    value2: int64 <- value.read();        // Unambiguous: only Reader.read()
-    value.write(value2)                   // Unambiguous: only Writer.write()
-}
-```
-
-**Examples: Ambiguous Cases (Disambiguation Required)**
-
-```silica
-trait Logger {
-    fn log(self: Self, msg: string) -> atom;
-}
-
-trait Debugger {
-    fn log(self: Self, msg: string) -> atom;  // Same name and signature
-}
-
-impl Logger for { name: string } {
-    fn log(self, msg: string) -> atom { print_string(msg) }
-}
-
-impl Debugger for { name: string } {
-    fn log(self, msg: string) -> atom { print_string("DEBUG: " + msg) }
-}
-
-// Disambiguation required: both Logger and Debugger define log()
-fn run(tool: { name: string }) -> atom {
-    Logger.log(tool, "info");      // Required: specify Logger.log()
-    Debugger.log(tool, "debug");   // Required: specify Debugger.log()
-}
-```
-
-**Best Practices for Trait Design:**
-
-To avoid disambiguation requirements:
-
-1. **Use Descriptive Method Names**: Prefer `read_from_file()` over `read()` when multiple traits might define `read()`
-2. **Namespace Methods**: Use trait-specific prefixes: `logger_log()`, `debug_log()`
-3. **Avoid Common Names**: Avoid generic method names like `get()`, `set()`, `process()` in multiple traits
-4. **Document Ambiguity**: If ambiguity is intentional, document which trait's method should be used
-
-**Example: Well-Designed Traits (No Ambiguity)**
-
-```silica
-trait FileReader {
-    fn read_file(self: Self, path: string) -> string;
-}
-
-trait NetworkReader {
-    fn read_socket(self: Self, sock: socket) -> string;
-}
-
-impl FileReader for { base_path: string } {
-    fn read_file(self, path: string) -> string { ... }
-}
-
-impl NetworkReader for { base_path: string } {
-    fn read_socket(self, sock: socket) -> string { ... }
-}
-
-// No disambiguation needed: method names are distinct
-fn read_all(reader: { base_path: string }) -> string {
-    file_data: string <- reader.read_file("data.txt");      // Unambiguous
-    socket_data: string <- reader.read_socket(sock);        // Unambiguous
-    file_data + socket_data
-}
-```
-
-**Compiler Error for Missing Disambiguation:**
-
-When disambiguation is required but not provided, the compiler reports:
-
-```
-❌ Compilation error: AmbiguousMethodError at example.silica:10:5 [E4000]
-
-Ambiguous method call: log()
-Multiple traits define log(): Logger, Debugger
-Use qualified name: Logger.log() or Debugger.log()
-See specification: spec:§30.1.3
-```
-
-**Cross-References:**
-- See Section 30.1.2 (Multiple Trait Implementation) for trait composition semantics
-- See Section 3.3.2 (Function Calls) for qualified method call syntax
-
-#### 30.1.4 Implementation Requirements
-Types implement traits with concrete methods:
-
-```silica
-impl Display for int {
-    fn to_string(self) = int_to_string(self)
-}
-
-impl Comparable for int {
-    fn equals(self, other) = self == other
-    fn compare(self, other) =
-        if self < other { Less }
-        else if self > other { Greater }
-        else { Equal }
-}
-```
-
-#### 30.1.5 Actor System Traits
-Silica provides two marker traits for the actor system:
-
-**ActorState Trait:**
-```silica
-trait ActorState {
-    // No methods required - marker trait for type safety
-}
-```
-
-Types used as actor initial state in `spawn(initial_state, ...)` must implement `ActorState`. Only **inline** composite types with an explicit `impl ActorState for …` in scope implement this trait (§3.4.2) — no blanket implementations for primitive types.
-
-**ActorMessage Trait:**
-```silica
-trait ActorMessage {
-    // No methods required - marker trait for type safety
-}
-```
-
-Types used as messages in `send()` or `cast()` must implement `ActorMessage` through **`expr impl ActorMessage {}` on the payload** and/or explicit type-level `impl` (§16.3.2). The compiler does not infer `ActorMessage` from type structure alone. Tagged tuple types use the forms in §16.3.2.1.
-
-**Trait-as-Type:**
-When a trait is used directly as a type (e.g., `ActorMessage`), it represents any concrete type implementing that trait. This is resolved at compile time through trait implementation checking.
-
-**Example:**
-```silica
-// ActorMessage can be used as a type; payloads use expr impl ActorMessage {} at call sites
-cast(actor_ref, message: ActorMessage) -> atom proc[concurrency]
-```
-
-#### 30.1.6 Trait Bounds
-Functions can require trait implementations:
-
-```silica
-fn print_value(x) -> atom where Display {
-    print(to_string(x))
-}
-```
-
-#### 30.1.7 Implementing Multiple Traits
-Each trait is implemented independently for a type. A type can implement as many traits as needed:
-
-```silica
-trait Printable {
-    fn to_string(self) -> string
-}
-
-trait Debug {
-    fn debug_string(self) -> string
-}
-
-impl Printable for int {
-    fn to_string(self) = int_to_string(self)
-}
-
-impl Debug for int {
-    fn debug_string(self) = format("int: {}", self)
-}
-
-impl Printable for boolean {
-    fn to_string(self) = if self { "true" } else { "false" }
-}
-```
-
-### 30.2 Trait Composition
-
-#### 30.2.1 Multiple Trait Implementation
-Types can implement multiple traits:
-
-```silica
-impl Display for { name: string, age: int } {
-    fn to_string(self) = format("Person({}, {})", self.name, self.age)
-}
-
-impl Comparable for { name: string, age: int } {
-    fn equals(self, other) = self.name == other.name && self.age == other.age
-    fn less_than(self, other) = self.age < other.age
-}
-```
-
-#### 30.2.2 Complex Trait Relationships
-Types can implement traits that require coordination between multiple traits:
-
-```silica
-trait Display {
-    fn to_string(self) -> string
-}
-
-trait Debug {
-    fn debug_string(self) -> string
-}
-
-// A type that implements both traits
-impl Display for { x: int, y: int } {
-    fn to_string(self) = format("({}, {})", self.x, self.y)
-}
-
-impl Debug for { x: int, y: int } {
-    fn debug_string(self) = format("Point {{ x: {}, y: {} }}", self.x, self.y)
-}
-```
 
 ---
 
