@@ -1984,17 +1984,8 @@ fn parse_list_literal_type_suffix(after_rbracket: ListTokenSlot, kinds: TokenKin
                         true -> ("", after_colon);
                         false -> case token_is_list_type_name(after_colon.head.token, kinds) of {
                             true -> do
-                                slots_at_list: ListTokenSlot <- after_colon;
-                                after_list_kw: ListTokenSlot <- after_colon.tail;
-                                rest_after_type: ListTokenSlot <- case slots_is_nil(after_list_kw) of {
-                                    true -> after_list_kw;
-                                    false -> case after_list_kw.head.token.kind == kinds.left_bracket of {
-                                        true -> skip_square_bracket_group_depth(after_list_kw.tail, kinds, 1);
-                                        false -> after_list_kw
-                                    }
-                                };
-                                type_str: string <- slot_lexemes_join(take_prefix_slots(slots_at_list, rest_after_type));
-                                (type_str, rest_after_type)
+                                tr_lit: TupleTypeResult <- parser_tuples@extract_list_type_from_slots(after_colon);
+                                (tr_lit.type_str, tr_lit.rest_slots)
                             end;
                             false -> ("", after_rbracket)
                         }
@@ -2245,6 +2236,32 @@ fn skip_square_bracket_group_depth(slots: ListTokenSlot, kinds: TokenKinds, dept
     }
 }
 
+fn join_lexemes_space(acc: string, lexeme: string) -> string {
+    case len(acc) == 0 of {
+        true -> lexeme;
+        false -> concat(acc, concat(" ", lexeme))
+    }
+}
+
+// Same traversal as skip_square_bracket_group_depth; accumulates lexemes like slot_lexemes_join for tokens inside
+// the matching `]` (the closing `]` that ends the group is not appended). Used for generic call `[T,S]` text so we
+// do not rely on take_prefix_slots(inner, rest) — ListTokenSlot `==` may not be pointer identity, yielding empty join.
+fn skip_square_bracket_group_depth_join(slots: ListTokenSlot, kinds: TokenKinds, depth: int64, acc: string) -> (string, ListTokenSlot) proc[DeviceIO] {
+    case slots.is_nil of {
+        true -> (acc, slots);
+        false -> case slots.head.token.kind == kinds.left_bracket of {
+            true -> skip_square_bracket_group_depth_join(slots.tail, kinds, depth + 1, join_lexemes_space(acc, slots.head.token.lexeme));
+            false -> case slots.head.token.kind == kinds.right_bracket of {
+                true -> case depth == 1 of {
+                    true -> (acc, slots.tail);
+                    false -> skip_square_bracket_group_depth_join(slots.tail, kinds, depth - 1, join_lexemes_space(acc, slots.head.token.lexeme))
+                };
+                false -> skip_square_bracket_group_depth_join(slots.tail, kinds, depth, join_lexemes_space(acc, slots.head.token.lexeme))
+            }
+        }
+    }
+}
+
 // List[...] type text: parser_tuples@extract_list_type_from_slots (used for `ident : List[...] <-` bindings).
 
 fn extract_binding_list(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
@@ -2334,21 +2351,19 @@ fn extract_optional_generic_type_args_after_name(rest_after_name: ListTokenSlot)
         false -> case slots_head(rest_after_name).token.kind == kinds.left_bracket of {
             true -> case constraint_core@slot_role(slots_head(rest_after_name)) == capability_list@role_call_gen_lbracket() of {
                 true -> do
-                    rest_after_brackets: ListTokenSlot <- skip_square_bracket_group_depth(slots_tail(rest_after_name), kinds, 1);
+                    (type_join: string, rest_after_brackets: ListTokenSlot) <- skip_square_bracket_group_depth_join(slots_tail(rest_after_name), kinds, 1, "");
                     rest_at_lparen: ListTokenSlot <- skip_leading_whitespace_slots(rest_after_brackets);
-                    inner_slots: ListTokenSlot <- slots_tail(rest_after_name);
-                    type_args: string <- strip_trailing_rbracket_type_arg_join(slot_lexemes_join(take_prefix_slots(inner_slots, rest_after_brackets)));
+                    type_args: string <- strip_trailing_rbracket_type_arg_join(type_join);
                     (type_args, rest_at_lparen)
                 end;
                 false -> do
-                    rest_after_brackets: ListTokenSlot <- skip_square_bracket_group_depth(slots_tail(rest_after_name), kinds, 1);
-                    rest_at_lparen: ListTokenSlot <- skip_leading_whitespace_slots(rest_after_brackets);
+                    (type_join2: string, rest_after_brackets2: ListTokenSlot) <- skip_square_bracket_group_depth_join(slots_tail(rest_after_name), kinds, 1, "");
+                    rest_at_lparen: ListTokenSlot <- skip_leading_whitespace_slots(rest_after_brackets2);
                     case slots_is_nil(rest_at_lparen) of {
                         true -> ("", rest_after_name);
                         false -> case slots_head(rest_at_lparen).token.kind == kinds.left_paren of {
                             true -> do
-                                inner_slots: ListTokenSlot <- slots_tail(rest_after_name);
-                                type_args: string <- strip_trailing_rbracket_type_arg_join(slot_lexemes_join(take_prefix_slots(inner_slots, rest_after_brackets)));
+                                type_args: string <- strip_trailing_rbracket_type_arg_join(type_join2);
                                 (type_args, rest_at_lparen)
                             end;
                             false -> ("", rest_after_name)

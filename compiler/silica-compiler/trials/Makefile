@@ -44,7 +44,7 @@ integrate:
 			continue; \
 		fi; \
 		if [ "$$dir" = "modules_addition" ]; then \
-			$(MAKE) -C $$dir || failed=1; \
+			$(MAKE) -C $$dir integrate || failed=1; \
 			continue; \
 		fi; \
 		if [ "$$dir" = "cpu_discovery" ] && [ -f "cpu_discovery/INTEGRATE_PENDING" ]; then \

@@ -1,0 +1,535 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Module checking phase: after parsing, before type checking (spec §19.2–19.3).
+// Validates `use` against silica.config, module-qualified calls vs `use`, and cross-module export surfaces.
+
+use parser_ast;
+use type_checker_core;
+
+struct ListString {
+    is_nil: bool,
+    head: string,
+    tail: ListString
+}
+
+fn empty_list_string() -> ListString {
+    nil_placeholder: ListString <- ListString { is_nil: true, head: "", tail: nil_placeholder };
+    nil_placeholder
+}
+
+fn cons_string(s: string, tail: ListString) -> ListString {
+    ListString { is_nil: false, head: s, tail: tail }
+}
+
+struct ParsedFile {
+    path: string,
+    program: Program
+}
+
+struct ListParsedFile {
+    is_nil: bool,
+    head: ParsedFile,
+    tail: ListParsedFile
+}
+
+fn empty_parsed_files() -> ListParsedFile {
+    dummy_prog: Program <- Program { declarations: parser_ast@empty_list_decl(), location: parser_ast@zero_location() };
+    dummy: ParsedFile <- ParsedFile { path: "", program: dummy_prog };
+    nil_pf: ListParsedFile <- ListParsedFile { is_nil: true, head: dummy, tail: nil_pf };
+    nil_pf
+}
+
+fn cons_parsed_file(path: string, program: Program, tail: ListParsedFile) -> ListParsedFile {
+    ListParsedFile { is_nil: false, head: ParsedFile { path: path, program: program }, tail: tail }
+}
+
+fn reverse_parsed_files(lst: ListParsedFile, acc: ListParsedFile) -> ListParsedFile {
+    case lst.is_nil of {
+        true -> acc;
+        false -> reverse_parsed_files(lst.tail, cons_parsed_file(lst.head.path, lst.head.program, acc))
+    }
+}
+
+fn find_program_in_parsed(all: ListParsedFile, path: string) -> (bool, Program) {
+    case all.is_nil of {
+        true -> (false, Program { declarations: parser_ast@empty_list_decl(), location: parser_ast@zero_location() });
+        false -> case all.head.path == path of {
+            true -> (true, all.head.program);
+            false -> find_program_in_parsed(all.tail, path)
+        }
+    }
+}
+
+fn find_last_slash_from(s: string, pos: int64) -> int64 {
+    case pos < 0 of {
+        true -> -1;
+        false -> case substring(s, pos, pos + 1) == "/" of {
+            true -> pos;
+            false -> find_last_slash_from(s, pos - 1)
+        }
+    }
+}
+
+fn find_last_slash(s: string) -> int64 {
+    find_last_slash_from(s, len(s) - 1)
+}
+
+// Module stem from path: "foo/bar.silica" -> "bar", "test.silica" -> "test"
+fn module_from_path(path: string) -> string {
+    last_slash: int64 <- find_last_slash(path);
+    base: string <- case last_slash >= 0 of {
+        true -> substring(path, last_slash + 1, len(path));
+        false -> path
+    };
+    case ends_with(base, ".silica") of {
+        true -> substring(base, 0, len(base) - 7);
+        false -> base
+    }
+}
+
+fn module_name_in_config_files(mod_name: string, config_files: ListString) -> bool {
+    case config_files.is_nil of {
+        true -> false;
+        false -> do
+            stem: string <- module_from_path(config_files.head);
+            case stem == mod_name of {
+                true -> true;
+                false -> module_name_in_config_files(mod_name, config_files.tail)
+            }
+        end
+    }
+}
+
+fn validate_use_params_against_config(params: ListParam, config_files: ListString, rest_decls: ListDeclaration) -> (bool, string, SourceLocation, string, string) {
+    case params.is_nil of {
+        true -> validate_use_declarations_against_config(rest_decls, config_files);
+        false -> case module_name_in_config_files(params.head.name, config_files) of {
+            true -> validate_use_params_against_config(params.tail, config_files, rest_decls);
+            false -> do
+                msg: string <- concat(concat("unknown module in use: ", params.head.name), " (spec 19.3)");
+                (false, "E1009", params.head.location, msg, "sect19.3")
+            end
+        }
+    }
+}
+
+fn validate_use_declarations_against_config(decls: ListDeclaration, config_files: ListString) -> (bool, string, SourceLocation, string, string) {
+    case decls.is_nil of {
+        true -> (true, "", parser_ast@zero_location(), "", "");
+        false -> case decls.head.tag == 2 of {
+            true -> validate_use_params_against_config(decls.head.parameters, config_files, decls.tail);
+            false -> validate_use_declarations_against_config(decls.tail, config_files)
+        }
+    }
+}
+
+fn use_params_name_module(params: ListParam, mod_name: string) -> bool {
+    case params.is_nil of {
+        true -> false;
+        false -> case params.head.name == mod_name of {
+            true -> true;
+            false -> use_params_name_module(params.tail, mod_name)
+        }
+    }
+}
+
+fn decls_have_use_for_module(decls: ListDeclaration, mod_name: string) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 2 of {
+            true -> case use_params_name_module(decls.head.parameters, mod_name) of {
+                true -> true;
+                false -> decls_have_use_for_module(decls.tail, mod_name)
+            };
+            false -> decls_have_use_for_module(decls.tail, mod_name)
+        }
+    }
+}
+
+fn validate_expr_pair_for_qualified_uses(inner: Expr, right: Expr, all_decls: ListDeclaration) -> (int64, string, SourceLocation, string, string) {
+    (i_ok: int64, i_code: string, i_loc: SourceLocation, i_msg: string, i_spec: string) <- validate_expr_qualified_uses(inner, all_decls);
+    case i_ok == 0 of {
+        false -> (i_ok, i_code, i_loc, i_msg, i_spec);
+        true -> validate_expr_qualified_uses(right, all_decls)
+    }
+}
+
+fn validate_kind4_call_module_use(expr: Expr, all_decls: ListDeclaration) -> (int64, string, SourceLocation, string, string) {
+    case type_checker_core@call_name_is_module_qualified(expr.name) of {
+        false -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls);
+        true -> do
+            (qmod: string, _: string) <- type_checker_core@split_module_qualified_call_name(expr.name);
+            case len(qmod) > 0 of {
+                false -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls);
+                true -> case decls_have_use_for_module(all_decls, qmod) of {
+                    true -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls);
+                    false -> do
+                        p1: string <- concat("module-qualified call ", expr.name);
+                        p2: string <- concat(p1, " requires `use ");
+                        msg: string <- concat(p2, concat(qmod, "` (spec 19.3)"));
+                        (1, "E1010", expr.location, msg, "sect19.3")
+                    end
+                }
+            }
+        end
+    }
+}
+
+fn validate_expr_qualified_uses(expr: Expr, all_decls: ListDeclaration) -> (int64, string, SourceLocation, string, string) {
+    case expr.kind < 0 of {
+        true -> (0, "", parser_ast@zero_location(), "", "");
+        false -> case expr.kind == 4 of {
+            true -> validate_kind4_call_module_use(expr, all_decls);
+            false -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls)
+        }
+    }
+}
+
+fn validate_decls_qualified_calls(decls: ListDeclaration, all_decls: ListDeclaration) -> (int64, string, SourceLocation, string, string) {
+    case decls.is_nil of {
+        true -> (0, "", parser_ast@zero_location(), "", "");
+        false -> case decls.head.tag == 0 of {
+            true -> do
+                (b_ok: int64, b_code: string, b_loc: SourceLocation, b_msg: string, b_spec: string) <- validate_expr_qualified_uses(decls.head.body, all_decls);
+                case b_ok == 0 of {
+                    false -> (b_ok, b_code, b_loc, b_msg, b_spec);
+                    true -> validate_decls_qualified_calls(decls.tail, all_decls)
+                }
+            end;
+            false -> validate_decls_qualified_calls(decls.tail, all_decls)
+        }
+    }
+}
+
+fn validate_module_qualified_calls_have_use(program: Program) -> (int64, string, SourceLocation, string, string) {
+    validate_decls_qualified_calls(program.declarations, program.declarations)
+}
+
+fn is_decimal_digit_char_module(c: string) -> bool {
+    c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9"
+}
+
+fn parse_unsigned_decimal_loop_module(s: string, i: int64, acc: int64) -> (bool, int64) {
+    case i >= len(s) of {
+        true -> (true, acc);
+        false -> do
+            ch: string <- substring(s, i, i + 1);
+            case is_decimal_digit_char_module(ch) of {
+                false -> (false, 0);
+                true -> do
+                    digit: int64 <- case ch of {
+                        "0" -> 0;
+                        "1" -> 1;
+                        "2" -> 2;
+                        "3" -> 3;
+                        "4" -> 4;
+                        "5" -> 5;
+                        "6" -> 6;
+                        "7" -> 7;
+                        "8" -> 8;
+                        _: string -> 9
+                    };
+                    parse_unsigned_decimal_loop_module(s, i + 1, acc * 10 + digit)
+                end
+            }
+        end
+    }
+}
+
+fn parse_unsigned_decimal_module(s: string) -> (bool, int64) {
+    case len(s) == 0 of {
+        true -> (false, 0);
+        false -> parse_unsigned_decimal_loop_module(s, 0, 0)
+    }
+}
+
+fn list_param_length_decl(params: ListParam) -> int64 {
+    case params.is_nil of {
+        true -> 0;
+        false -> 1 + list_param_length_decl(params.tail)
+    }
+}
+
+fn count_user_call_args_expr(expr: Expr) -> int64 {
+    case expr.inner.kind == -1 of {
+        true -> 0;
+        false -> case expr.right_expr.kind == -1 of {
+            true -> 1;
+            false -> case expr.right_expr.kind == 4 of {
+                true -> 1 + count_user_call_args_expr(expr.right_expr);
+                false -> 2
+            }
+        }
+    }
+}
+
+fn qual_callee_name_for_export_check(raw: string) -> string {
+    case raw of {
+        "m" -> "main";
+        _: string -> raw
+    }
+}
+
+fn find_program_by_module_name(parsed: ListParsedFile, mod_name: string) -> (bool, Program) {
+    case parsed.is_nil of {
+        true -> (false, Program { declarations: parser_ast@empty_list_decl(), location: parser_ast@zero_location() });
+        false -> case module_from_path(parsed.head.path) == mod_name of {
+            true -> (true, parsed.head.program);
+            false -> find_program_by_module_name(parsed.tail, mod_name)
+        }
+    }
+}
+
+fn export_params_match_fn_arity(params: ListParam, fn_name: string, arity: int64) -> bool {
+    case params.is_nil of {
+        true -> false;
+        false -> case params.head.name == fn_name of {
+            true -> do
+                (ok_ar: bool, ar: int64) <- parse_unsigned_decimal_module(params.head.type_name);
+                case ok_ar of {
+                    false -> export_params_match_fn_arity(params.tail, fn_name, arity);
+                    true -> case ar == arity of {
+                        true -> true;
+                        false -> export_params_match_fn_arity(params.tail, fn_name, arity)
+                    }
+                }
+            end;
+            false -> export_params_match_fn_arity(params.tail, fn_name, arity)
+        }
+    }
+}
+
+fn module_exports_fn_arity(decls: ListDeclaration, fn_name: string, arity: int64) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 3 of {
+            true -> case export_params_match_fn_arity(decls.head.parameters, fn_name, arity) of {
+                true -> true;
+                false -> module_exports_fn_arity(decls.tail, fn_name, arity)
+            };
+            false -> module_exports_fn_arity(decls.tail, fn_name, arity)
+        }
+    }
+}
+
+fn module_defines_fn_with_arity(decls: ListDeclaration, fn_name: string, arity: int64) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 0 of {
+            true -> case decls.head.name == fn_name of {
+                true -> case list_param_length_decl(decls.head.parameters) == arity of {
+                    true -> true;
+                    false -> module_defines_fn_with_arity(decls.tail, fn_name, arity)
+                };
+                false -> module_defines_fn_with_arity(decls.tail, fn_name, arity)
+            };
+            false -> module_defines_fn_with_arity(decls.tail, fn_name, arity)
+        }
+    }
+}
+
+fn validate_expr_pair_export_surface(inner: Expr, right: Expr, all_decls: ListDeclaration, all_parsed: ListParsedFile) -> (int64, string, SourceLocation, string, string) {
+    (i_ok: int64, i_code: string, i_loc: SourceLocation, i_msg: string, i_spec: string) <- validate_expr_export_surface(inner, all_decls, all_parsed);
+    case i_ok == 0 of {
+        false -> (i_ok, i_code, i_loc, i_msg, i_spec);
+        true -> validate_expr_export_surface(right, all_decls, all_parsed)
+    }
+}
+
+fn validate_kind4_call_export_surface(expr: Expr, all_decls: ListDeclaration, all_parsed: ListParsedFile) -> (int64, string, SourceLocation, string, string) {
+    case type_checker_core@call_name_is_module_qualified(expr.name) of {
+        false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
+        true -> do
+            (qmod: string, qfn_raw: string) <- type_checker_core@split_module_qualified_call_name(expr.name);
+            qfn: string <- qual_callee_name_for_export_check(qfn_raw);
+            case len(qmod) > 0 of {
+                false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
+                true -> case decls_have_use_for_module(all_decls, qmod) of {
+                    false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
+                    true -> do
+                        (pf: bool, tprog: Program) <- find_program_by_module_name(all_parsed, qmod);
+                        case pf of {
+                            false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
+                            true -> do
+                                ac: int64 <- count_user_call_args_expr(expr);
+                                case module_exports_fn_arity(tprog.declarations, qfn, ac) of {
+                                    true -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
+                                    false -> case module_defines_fn_with_arity(tprog.declarations, qfn, ac) of {
+                                        true -> do
+                                            msg: string <- concat(concat(concat(concat("cross-module call ", expr.name), " is not listed in export surface of module "), qmod), " (spec 19.2)");
+                                            (1, "E1011", expr.location, msg, "sect19.2")
+                                        end;
+                                        false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed)
+                                    }
+                                }
+                            end
+                        }
+                    end
+                }
+            }
+        end
+    }
+}
+
+fn validate_expr_export_surface(expr: Expr, all_decls: ListDeclaration, all_parsed: ListParsedFile) -> (int64, string, SourceLocation, string, string) {
+    case expr.kind < 0 of {
+        true -> (0, "", parser_ast@zero_location(), "", "");
+        false -> case expr.kind == 4 of {
+            true -> validate_kind4_call_export_surface(expr, all_decls, all_parsed);
+            false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed)
+        }
+    }
+}
+
+fn validate_decls_export_surface(decls: ListDeclaration, all_decls: ListDeclaration, all_parsed: ListParsedFile) -> (int64, string, SourceLocation, string, string) {
+    case decls.is_nil of {
+        true -> (0, "", parser_ast@zero_location(), "", "");
+        false -> case decls.head.tag == 0 of {
+            true -> do
+                (b_ok: int64, b_code: string, b_loc: SourceLocation, b_msg: string, b_spec: string) <- validate_expr_export_surface(decls.head.body, all_decls, all_parsed);
+                case b_ok == 0 of {
+                    false -> (b_ok, b_code, b_loc, b_msg, b_spec);
+                    true -> validate_decls_export_surface(decls.tail, all_decls, all_parsed)
+                }
+            end;
+            false -> validate_decls_export_surface(decls.tail, all_decls, all_parsed)
+        }
+    }
+}
+
+fn validate_cross_module_export_surface(program: Program, all_parsed: ListParsedFile) -> (int64, string, SourceLocation, string, string) {
+    validate_decls_export_surface(program.declarations, program.declarations, all_parsed)
+}
+
+// Each export entry must name a function defined in this unit with matching arity (spec §19.2.1). E4010 / E4014.
+fn validate_export_items_match_declarations(items: ListParam, whole: ListDeclaration) -> (int64, string, SourceLocation, string, string) {
+    case items.is_nil of {
+        true -> (0, "", parser_ast@zero_location(), "", "");
+        false -> do
+            (ok_ar: bool, ar: int64) <- parse_unsigned_decimal_module(items.head.type_name);
+            case ok_ar of {
+                false -> (1, "E4014", items.head.location, "export arity must be a non-negative decimal (spec 19.2)", "sect19.2");
+                true -> case module_defines_fn_with_arity(whole, items.head.name, ar) of {
+                    false -> do
+                        msg: string <- concat(concat(concat(concat("exported function not found or arity mismatch: ", items.head.name), "/"), items.head.type_name), " (spec 19.2.1)");
+                        (1, "E4010", items.head.location, msg, "sect19.2.1")
+                    end;
+                    true -> validate_export_items_match_declarations(items.tail, whole)
+                }
+            }
+        end
+    }
+}
+
+fn validate_exports_match_functions_program(decls: ListDeclaration) -> (int64, string, SourceLocation, string, string) {
+    case decls.is_nil of {
+        true -> (0, "", parser_ast@zero_location(), "", "");
+        false -> case decls.head.tag == 3 of {
+            true -> do
+                (st: int64, ec: string, eloc: SourceLocation, emsg: string, espec: string) <- validate_export_items_match_declarations(decls.head.parameters, decls);
+                case st == 0 of {
+                    false -> (st, ec, eloc, emsg, espec);
+                    true -> validate_exports_match_functions_program(decls.tail)
+                }
+            end;
+            false -> validate_exports_match_functions_program(decls.tail)
+        }
+    }
+}
+
+// Runs all module checks. Returns status 0 on success; on failure, status 1 and ModuleError fields (code, loc, message, spec section id).
+fn module_checker_check_program(program: Program, config_files: ListString, all_parsed: ListParsedFile) -> (int64, string, SourceLocation, string, string) {
+    (use_ok: bool, use_code: string, use_loc: SourceLocation, use_msg: string, use_spec: string) <- validate_use_declarations_against_config(program.declarations, config_files);
+    case use_ok of {
+        false -> do
+            err_code: string <- case use_code == "" of {
+                true -> "E1009";
+                false -> use_code
+            };
+            spec_sec: string <- case use_spec == "" of {
+                true -> "sect19.3";
+                false -> use_spec
+            };
+            (1, err_code, use_loc, use_msg, spec_sec)
+        end;
+        true -> do
+            (qual_st: int64, qual_code: string, qual_loc: SourceLocation, qual_msg: string, qual_spec: string) <- validate_module_qualified_calls_have_use(program);
+            case qual_st == 0 of {
+                false -> do
+                    qec: string <- case qual_code == "" of {
+                        true -> "E1010";
+                        false -> qual_code
+                    };
+                    qss: string <- case qual_spec == "" of {
+                        true -> "sect19.3";
+                        false -> qual_spec
+                    };
+                    (1, qec, qual_loc, qual_msg, qss)
+                end;
+                true -> do
+                    (exm_st: int64, exm_code: string, exm_loc: SourceLocation, exm_msg: string, exm_spec: string) <- validate_exports_match_functions_program(program.declarations);
+                    case exm_st == 0 of {
+                        false -> do
+                            exmc: string <- case exm_code == "" of {
+                                true -> "E4010";
+                                false -> exm_code
+                            };
+                            exms: string <- case exm_spec == "" of {
+                                true -> case exmc == "E4014" of {
+                                    true -> "sect19.2";
+                                    false -> "sect19.2.1"
+                                };
+                                false -> exm_spec
+                            };
+                            (1, exmc, exm_loc, exm_msg, exms)
+                        end;
+                        true -> do
+                            (exp_st: int64, exp_code: string, exp_loc: SourceLocation, exp_msg: string, exp_spec: string) <- validate_cross_module_export_surface(program, all_parsed);
+                            case exp_st == 0 of {
+                                false -> do
+                                    eec: string <- case exp_code == "" of {
+                                        true -> "E1011";
+                                        false -> exp_code
+                                    };
+                                    ess: string <- case exp_spec == "" of {
+                                        true -> "sect19.2";
+                                        false -> exp_spec
+                                    };
+                                    (1, eec, exp_loc, exp_msg, ess)
+                                end;
+                                true -> (0, "", parser_ast@zero_location(), "", "")
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+export ListString/0;
+export ParsedFile/0;
+export ListParsedFile/0;
+export empty_list_string/0;
+export cons_string/2;
+export empty_parsed_files/0;
+export cons_parsed_file/3;
+export reverse_parsed_files/2;
+export find_program_in_parsed/2;
+export module_from_path/1;
+export module_checker_check_program/3;

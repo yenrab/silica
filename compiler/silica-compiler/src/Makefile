@@ -11,7 +11,7 @@ TARGET ?= apple_silicon
 
 SILICA_COMPILER := ../../silica-bootstrap-compiler/target/release/silica-boot
 RUNTIME_LIB := ../../silica-bootstrap-compiler/target/release/libsilica_compiler.a
-SEARCH_PATHS := -I lexer -I parser -I parser/capabilities -I parser/declarations -I parser/expressions -I parser/patterns -I parser/types -I parser/effects -I type_checker -I type_checker/declarations -I type_checker/expressions -I type_checker/traits -I effect_checker -I sir_generator -I sir_generator/declarations -I sir_generator/terms -I sir_generator/types -I sir_generator/patterns -I sir_generator/effects -I emitter -I emitter/$(TARGET) -I emitter/$(TARGET)/atoms -I emitter/$(TARGET)/constraints -I emitter/$(TARGET)/terms -I emitter/$(TARGET)/terms/prims -I emitter/$(TARGET)/terms/const -I emitter/$(TARGET)/terms/let -I emitter/$(TARGET)/terms/call -I emitter/$(TARGET)/shared -I emitter/$(TARGET)/control -I emitter/$(TARGET)/effects -I emitter/$(TARGET)/recursion -I data_structures -I build_output -I diagnostics -I ../stdlib
+SEARCH_PATHS := -I lexer -I parser -I parser/capabilities -I parser/declarations -I parser/expressions -I parser/patterns -I parser/types -I parser/effects -I type_checker -I type_checker/declarations -I type_checker/expressions -I type_checker/traits -I module_checker -I effect_checker -I sir_generator -I sir_generator/declarations -I sir_generator/terms -I sir_generator/types -I sir_generator/patterns -I sir_generator/effects -I emitter -I emitter/$(TARGET) -I emitter/$(TARGET)/atoms -I emitter/$(TARGET)/constraints -I emitter/$(TARGET)/terms -I emitter/$(TARGET)/terms/prims -I emitter/$(TARGET)/terms/const -I emitter/$(TARGET)/terms/let -I emitter/$(TARGET)/terms/call -I emitter/$(TARGET)/shared -I emitter/$(TARGET)/control -I emitter/$(TARGET)/effects -I emitter/$(TARGET)/recursion -I data_structures -I build_output -I diagnostics -I ../stdlib
 
 # LLVM toolchain (for .ll -> .o and linking)
 LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "llvm-as"))
@@ -34,6 +34,8 @@ PARSER_FILES := $(wildcard parser/*.silica parser/*/*.silica)
 PARSER_MODULES := $(patsubst %.silica,%,$(PARSER_FILES))
 TYPE_CHECKER_FILES := $(wildcard type_checker/*.silica type_checker/*/*.silica)
 TYPE_CHECKER_MODULES := $(patsubst %.silica,%,$(TYPE_CHECKER_FILES))
+MODULE_CHECKER_FILES := $(wildcard module_checker/*.silica)
+MODULE_CHECKER_MODULES := $(patsubst %.silica,%,$(MODULE_CHECKER_FILES))
 EFFECT_CHECKER_FILES := $(wildcard effect_checker/*.silica)
 EFFECT_CHECKER_MODULES := $(patsubst %.silica,%,$(EFFECT_CHECKER_FILES))
 
@@ -48,10 +50,11 @@ EXECUTABLE := silica-compiler
 LEXER_LL := $(addsuffix .ll, $(LEXER_MODULES))
 PARSER_LL := $(addsuffix .ll, $(PARSER_MODULES))
 TYPE_CHECKER_LL := $(addsuffix .ll, $(TYPE_CHECKER_MODULES))
+MODULE_CHECKER_LL := $(addsuffix .ll, $(MODULE_CHECKER_MODULES))
 EFFECT_CHECKER_LL := $(addsuffix .ll, $(EFFECT_CHECKER_MODULES))
 
 # Subdirectories with Makefiles (build order respects dependencies)
-SUBDIRS := lexer parser type_checker effect_checker sir_generator emitter
+SUBDIRS := lexer parser type_checker module_checker effect_checker sir_generator emitter
 
 .PHONY: all clean executables modules subdirs help $(SUBDIRS)
 
@@ -69,7 +72,7 @@ $(SUBDIRS):
 	@$(MAKE) -C $@ QUIET=1 TARGET=$(TARGET)
 
 # Compile lexer, parser, type_checker, and effect_checker modules
-modules: $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(EFFECT_CHECKER_LL)
+modules: $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(MODULE_CHECKER_LL) $(EFFECT_CHECKER_LL)
 
 # Compile lexer module files
 lexer/%.ll: lexer/%.silica $(SILICA_COMPILER)
@@ -83,13 +86,17 @@ parser/%.ll: parser/%.silica $(LEXER_LL) $(SILICA_COMPILER)
 type_checker/%.ll: type_checker/%.silica $(LEXER_LL) $(PARSER_LL) $(SILICA_COMPILER)
 	@$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
+# Module checker (after parser + type_checker core for qualified-call helpers)
+module_checker/%.ll: module_checker/%.silica $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(SILICA_COMPILER)
+	@$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+
 # Compile main executable (LLVM IR -> object -> linked binary)
 executables: $(EXECUTABLE)
 
 # Main LLVM IR depends on subdirs, lexer, parser, type_checker, effect_checker, and emitter (main.silica imports emitter_core)
 EMITTER_FILES := $(wildcard emitter/$(TARGET)/*.silica emitter/$(TARGET)/*/*.silica emitter/$(TARGET)/*/*/*.silica)
 BUILD_OUTPUT_FILES := $(wildcard build_output/*.silica)
-$(MAIN_LL): $(MAIN_FILE) subdirs $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(EFFECT_CHECKER_LL) $(EMITTER_FILES) $(BUILD_OUTPUT_FILES) $(SILICA_COMPILER)
+$(MAIN_LL): $(MAIN_FILE) subdirs $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(MODULE_CHECKER_LL) $(EFFECT_CHECKER_LL) $(EMITTER_FILES) $(BUILD_OUTPUT_FILES) $(SILICA_COMPILER)
 	@$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
 
 # main.ll -> main.bc (bitcode)
@@ -117,6 +124,7 @@ clean:
 	rm -f lexer/*.ll
 	rm -f parser/*.ll parser/*/*.ll
 	rm -f type_checker/*.ll type_checker/*/*.ll
+	rm -f module_checker/*.ll
 	rm -f effect_checker/*.ll
 	@echo "✅ Clean complete"
 

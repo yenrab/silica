@@ -203,6 +203,30 @@ fn skip_square_bracket_group_depth_pt(slots: ListTokenSlot, kinds: TokenKinds, d
     }
 }
 
+fn join_lexemes_space_pt(acc: string, lexeme: string) -> string {
+    case len(acc) == 0 of {
+        true -> lexeme;
+        false -> concat(acc, concat(" ", lexeme))
+    }
+}
+
+// Like skip_square_bracket_group_depth_pt but accumulates lexemes; includes the closing `]` that matches the initial depth.
+fn skip_square_bracket_group_depth_join_close_pt(slots: ListTokenSlot, kinds: TokenKinds, depth: int64, acc: string) -> (string, ListTokenSlot) proc[DeviceIO] {
+    case slots.is_nil of {
+        true -> (acc, slots);
+        false -> case slots.head.token.kind == kinds.left_bracket of {
+            true -> skip_square_bracket_group_depth_join_close_pt(slots.tail, kinds, depth + 1, join_lexemes_space_pt(acc, slots.head.token.lexeme));
+            false -> case slots.head.token.kind == kinds.right_bracket of {
+                true -> case depth == 1 of {
+                    true -> (join_lexemes_space_pt(acc, slots.head.token.lexeme), slots.tail);
+                    false -> skip_square_bracket_group_depth_join_close_pt(slots.tail, kinds, depth - 1, join_lexemes_space_pt(acc, slots.head.token.lexeme))
+                };
+                false -> skip_square_bracket_group_depth_join_close_pt(slots.tail, kinds, depth, join_lexemes_space_pt(acc, slots.head.token.lexeme))
+            }
+        }
+    }
+}
+
 // `List[T, ...]` at the start of a type (params, tuple decompose, return types).
 fn extract_list_type_from_slots(slots: ListTokenSlot) -> TupleTypeResult proc[DeviceIO] {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
@@ -213,10 +237,10 @@ fn extract_list_type_from_slots(slots: ListTokenSlot) -> TupleTypeResult proc[De
                 true -> TupleTypeResult { type_str: "", rest_slots: slots };
                 false -> case slots.tail.head.token.kind == kinds.left_bracket of {
                     true -> do
-                        slots_at_list: ListTokenSlot <- slots;
+                        list_kw: string <- slots.head.token.lexeme;
                         after_list_kw: ListTokenSlot <- slots.tail;
-                        rest_after_type: ListTokenSlot <- skip_square_bracket_group_depth_pt(after_list_kw.tail, kinds, 1);
-                        type_str: string <- slot_lexemes_join_pt(take_prefix_slots_pt(slots_at_list, rest_after_type));
+                        acc0: string <- join_lexemes_space_pt(list_kw, after_list_kw.head.token.lexeme);
+                        (type_str: string, rest_after_type: ListTokenSlot) <- skip_square_bracket_group_depth_join_close_pt(after_list_kw.tail, kinds, 1, acc0);
                         TupleTypeResult { type_str: type_str, rest_slots: rest_after_type }
                     end;
                     false -> TupleTypeResult { type_str: "", rest_slots: slots }

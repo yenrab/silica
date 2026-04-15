@@ -1,5 +1,6 @@
 # Module trials: library sources under lib/ have no main(). Only entry-point units are linked and run.
-# Uses checked-in silica.config (lists lib/*.silica + root entry *.silica). Top-level trials/Makefile delegates here.
+# Uses checked-in silica.config (lists lib/*.silica + root entry *.silica).
+# Default `make` compiles only; `make integrate` runs assembly diffs, link, run, and output diffs.
 
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 SILICA_COMPILER := $(THIS_DIR)../../src/silica-compiler
@@ -20,36 +21,39 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 # Dynamically extract entry points from silica.config: files without path separators (i.e., in current dir)
 ENTRYPOINTS := $(patsubst %.silica,%,$(filter-out lib/%,$(shell cat silica.config | grep -v '^$$')))
 
-.PHONY: integrate clean help
+.PHONY: all integrate clean help
 
-.DEFAULT_GOAL := integrate
+.DEFAULT_GOAL := all
 
-integrate:
+all:
+	@cd "$(THIS_DIR)" && \
+	rm -f *.sams lib/*.sams && \
+	echo "Compiling with silica-compiler..." && \
+	if ! "$(SILICA_COMPILER)"; then \
+		echo "FAIL: Compilation failed"; \
+		exit 1; \
+	fi && \
+	echo "✅ Assembly generated"
+
+integrate: all
 	@failed=0; \
 	cd "$(THIS_DIR)" && \
-	rm -f *.sams lib/*.sams && \
-	echo "Compiling with silica-compiler (multi-module silica.config)..." && \
-	if ! "$(SILICA_COMPILER)"; then \
-		echo "FAIL: Compilation failed in modules_addition"; \
-		exit 1; \
-	fi; \
-	"$(THIS_DIR)/fix_symbol_visibility.sh"; \
 	for base in $(ENTRYPOINTS); do \
 		sams="$$base.sams"; \
 		if [ ! -f "$$sams" ]; then \
-			echo "FAIL: modules_addition/$$base: missing $$sams"; \
+			echo "❌❌ $$base: missing $$sams"; \
 			failed=1; \
 			continue; \
 		fi; \
 		if [ ! -f "$$base.ascomp" ]; then \
-			echo "FAIL: modules_addition/$$base: no .ascomp file"; \
+			echo "❌❌ $$base has no .ascomp file"; \
 			failed=1; \
 		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
-			echo "FAIL: modules_addition/$$base .sams differs from .ascomp"; \
+			echo "❌❌ $$base .sams differs from .ascomp"; \
 			diff -Bw "$$sams" "$$base.ascomp" || true; \
 			failed=1; \
 		else \
-			echo "OK: modules_addition/$$base assembly matches .ascomp"; \
+			echo "✅✅ $$base assembly matches .ascomp"; \
 		fi; \
 	done; \
 	for base in $(ENTRYPOINTS); do \
@@ -83,14 +87,14 @@ integrate:
 			{ ./"$$base" 2>&1; echo $$?; } > "$$base.sout"; \
 			if [ -f "$$base.scout" ]; then \
 				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
-					echo "FAIL: modules_addition/$$base .sout differs from .scout"; \
+					echo "❌❌ $$base .sout differs from .scout"; \
 					diff -Bw "$$base.sout" "$$base.scout" || true; \
 					failed=1; \
 				else \
-					echo "OK: modules_addition/$$base output matches .scout"; \
+					echo "✅✅ $$base output matches .scout"; \
 				fi; \
 			else \
-				echo "FAIL: modules_addition/$$base has no .scout file"; \
+				echo "❌❌ $$base has no .scout file"; \
 				failed=1; \
 			fi; \
 		fi; \
@@ -103,8 +107,8 @@ clean:
 	for base in $(ENTRYPOINTS); do \
 		rm -f "$$base" "$$base.o"; \
 	done && \
-	echo "Clean modules_addition"
+	echo "✅ Clean complete"
 
 help:
 	@echo "modules_addition: multi-file module trials; lib/*.silica are libraries (no main)."
-	@echo "Targets: integrate, clean"
+	@echo "Targets: all (default, compile only), integrate (assembly/output checks + run), clean"

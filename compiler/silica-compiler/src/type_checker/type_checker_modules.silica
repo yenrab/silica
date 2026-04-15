@@ -244,41 +244,6 @@ fn accum_exports_local_duplicates(decls: ListDeclaration, marks: ListModuleExpor
     }
 }
 
-fn validate_exports_match_functions(decls: ListDeclaration, err_loc: SourceLocation) -> TypeCheckResult {
-    case decls.is_nil of {
-        true -> type_checker_core@type_check_ok();
-        false -> case decls.head.tag == 3 of {
-            true -> do
-                r_items: TypeCheckResult <- validate_export_items_match(decls.head.parameters, decls, err_loc);
-                case r_items.is_ok of {
-                    true -> validate_exports_match_functions(decls.tail, err_loc);
-                    false -> r_items
-                }
-            end;
-            false -> validate_exports_match_functions(decls.tail, err_loc)
-        }
-    }
-}
-
-fn validate_export_items_match(items: ListParam, whole: ListDeclaration, err_loc: SourceLocation) -> TypeCheckResult {
-    case items.is_nil of {
-        true -> type_checker_core@type_check_ok();
-        false -> do
-            (ok_ar: bool, ar: int64) <- parse_unsigned_decimal(items.head.type_name);
-            case ok_ar of {
-                false -> type_checker_core@type_check_err("E4014", items.head.location, "export arity must be a non-negative decimal (spec 19.2)", "sect19.2");
-                true -> do
-                    (fd: bool, _: Declaration) <- find_function_decl_by_name_arity(whole, items.head.name, ar);
-                    case fd of {
-                        false -> type_checker_core@type_check_err("E4010", items.head.location, concat(concat(concat(concat("exported function not found or arity mismatch: ", items.head.name), "/"), items.head.type_name), " (spec 19.2.1)"), "sect19.2.1");
-                        true -> validate_export_items_match(items.tail, whole, err_loc)
-                    }
-                end
-            }
-        end
-    }
-}
-
 fn validate_use_before_functions(decls: ListDeclaration, seen_function: bool) -> TypeCheckResult {
     case decls.is_nil of {
         true -> type_checker_core@type_check_ok();
@@ -413,12 +378,7 @@ fn validate_module_program_surface(program: Program, current_module: string) -> 
                             (dup_e: TypeCheckResult, _: ListModuleExportMark) <- accum_exports_local_duplicates(program.declarations, empty_export_marks(), program.location);
                             case dup_e.is_ok of {
                                 false -> dup_e;
-                                true -> do match_e: TypeCheckResult <- validate_exports_match_functions(program.declarations, program.location);
-                                    case match_e.is_ok of {
-                                        false -> match_e;
-                                        true -> type_checker_core@type_check_ok()
-                                    }
-                                end
+                                true -> type_checker_core@type_check_ok()
                             }
                         end
                     }

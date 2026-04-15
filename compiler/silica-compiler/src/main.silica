@@ -33,62 +33,7 @@ use sir_ast;
 use emitter_core;
 use build_output;
 use diagnostics_core;
-
-// List of strings for config parsing and dependency tracking
-struct ListString {
-    is_nil: bool,
-    head: string,
-    tail: ListString
-}
-
-fn empty_list_string() -> ListString {
-    nil_placeholder: ListString <- ListString { is_nil: true, head: "", tail: nil_placeholder };
-    nil_placeholder
-}
-
-fn cons_string(s: string, tail: ListString) -> ListString {
-    ListString { is_nil: false, head: s, tail: tail }
-}
-
-// Parsed config units (path + AST) for multi-module type checking (spec §19).
-struct ParsedFile {
-    path: string,
-    program: Program
-}
-
-struct ListParsedFile {
-    is_nil: bool,
-    head: ParsedFile,
-    tail: ListParsedFile
-}
-
-fn empty_parsed_files() -> ListParsedFile {
-    dummy_prog: Program <- Program { declarations: parser_ast@empty_list_decl(), location: parser_ast@zero_location() };
-    dummy: ParsedFile <- ParsedFile { path: "", program: dummy_prog };
-    nil_pf: ListParsedFile <- ListParsedFile { is_nil: true, head: dummy, tail: nil_pf };
-    nil_pf
-}
-
-fn cons_parsed_file(path: string, program: Program, tail: ListParsedFile) -> ListParsedFile {
-    ListParsedFile { is_nil: false, head: ParsedFile { path: path, program: program }, tail: tail }
-}
-
-fn reverse_parsed_files(lst: ListParsedFile, acc: ListParsedFile) -> ListParsedFile {
-    case lst.is_nil of {
-        true -> acc;
-        false -> reverse_parsed_files(lst.tail, cons_parsed_file(lst.head.path, lst.head.program, acc))
-    }
-}
-
-fn find_program_in_parsed(all: ListParsedFile, path: string) -> (bool, Program) {
-    case all.is_nil of {
-        true -> (false, Program { declarations: parser_ast@empty_list_decl(), location: parser_ast@zero_location() });
-        false -> case all.head.path == path of {
-            true -> (true, all.head.program);
-            false -> find_program_in_parsed(all.tail, path)
-        }
-    }
-}
+use module_checker_core;
 
 fn build_module_world(all: ListParsedFile, exclude_path: string) -> ListNamedProgram {
     case all.is_nil of {
@@ -134,7 +79,8 @@ fn parse_all_files_recursive(files: ListString, acc: ListParsedFile) -> (bool, L
     }
 }
 
-fn compile_parsed_list(sorted: ListString, parsed: ListParsedFile) -> int64 proc[DeviceIO] {
+// all_config_files: every path from silica.config (not the recursive suffix) — needed for `use` / module@ validation per unit.
+fn compile_parsed_list(sorted: ListString, parsed: ListParsedFile, all_config_files: ListString) -> int64 proc[DeviceIO] {
     case sorted.is_nil of {
         true -> 0;
         false -> do
@@ -146,11 +92,11 @@ fn compile_parsed_list(sorted: ListString, parsed: ListParsedFile) -> int64 proc
                     print(sorted.head);
                     1
                 end;
-                true -> compile_parsed_unit(sorted.head, prog, world)
+                true -> compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed)
             };
             case code != 0 of {
                 true -> code;
-                false -> compile_parsed_list(sorted.tail, parsed)
+                false -> compile_parsed_list(sorted.tail, parsed, all_config_files)
             }
         end
     }
@@ -160,35 +106,6 @@ fn list_string_length(lst: ListString) -> int64 {
     case lst.is_nil of {
         true -> 0;
         false -> 1 + list_string_length(lst.tail)
-    }
-}
-
-// Get module name from file path: "foo/bar.silica" -> "bar", "test.silica" -> "test"
-fn module_from_path(path: string) -> string {
-    // Find last slash
-    last_slash: int64 <- find_last_slash(path);
-    base: string <- case last_slash >= 0 of {
-        true -> substring(path, last_slash + 1, len(path));
-        false -> path
-    };
-    // Remove .silica suffix
-    case ends_with(base, ".silica") of {
-        true -> substring(base, 0, len(base) - 7);
-        false -> base
-    }
-}
-
-fn find_last_slash(s: string) -> int64 {
-    find_last_slash_from(s, len(s) - 1)
-}
-
-fn find_last_slash_from(s: string, pos: int64) -> int64 {
-    case pos < 0 of {
-        true -> -1;
-        false -> case substring(s, pos, pos + 1) == "/" of {
-            true -> pos;
-            false -> find_last_slash_from(s, pos - 1)
-        }
     }
 }
 
@@ -551,71 +468,81 @@ fn debug_walk_decls(decls: ListDeclaration) -> int64 proc[DeviceIO] {
 }
 
 // Type-check, effect-check, SIR, emit for one unit; module_world is other parsed units (spec §19).
-fn compile_parsed_unit(filename: string, program: Program, module_world: ListNamedProgram) -> int64 proc[DeviceIO] {
-    println("  Type checking...");
-    context: TypeContext <- type_checker_core@create_type_context();
-    mod_name: string <- module_from_path(filename);
-    // Flat ModuleTypecheckOutcome from type_checker_modules (not via runner): one fewer cross-.ll return hop;
-    // pair + outcome are built entirely in type_checker_modules.ll.
-    tc_out: ModuleTypecheckOutcome <- type_checker_modules@type_check_program_with_modules_outcome(program, mod_name, module_world, context);
-    case tc_out.is_ok of {
+// config_files: full silica.config path list — module checker validates `use` before type checking.
+// all_parsed: every ParsedFile from this compile — module checker verifies cross-module exports (§19.2).
+fn compile_parsed_unit(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile) -> int64 proc[DeviceIO] {
+    println("  Module checking...");
+    (mc_st: int64, mc_code: string, mc_loc: SourceLocation, mc_msg: string, mc_spec: string) <- module_checker_core@module_checker_check_program(program, config_files, all_parsed);
+    case mc_st == 0 of {
+        false -> do
+            diagnostics_core@print_compiler_error("ModuleError", mc_code, mc_loc, mc_msg, mc_spec);
+            1
+        end;
         true -> do
-            println("  Effect checking...");
-            effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(program);
-            case effect_result.is_ok of {
+            println("  Type checking...");
+            context: TypeContext <- type_checker_core@create_type_context();
+            mod_name: string <- module_checker_core@module_from_path(filename);
+            tc_out: ModuleTypecheckOutcome <- type_checker_modules@type_check_program_with_modules_outcome(program, mod_name, module_world, context);
+            case tc_out.is_ok of {
                 true -> do
-                    _: int64 <- case debug_compile(filename) of {
+                    println("  Effect checking...");
+                    effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(program);
+                    case effect_result.is_ok of {
                         true -> do
-                            println("  [DEBUG AST] decl-count walk:");
-                            debug_walk_decls(program.declarations);
+                            _: int64 <- case debug_compile(filename) of {
+                                true -> do
+                                    println("  [DEBUG AST] decl-count walk:");
+                                    debug_walk_decls(program.declarations);
+                                    0
+                                end;
+                                false -> 0
+                            };
+                            println("  Generating SIR...");
+                            sir_module: SIRModule <- sir_generator_core@emit_program_for_unit(program, tc_out.context, mod_name);
+                            _: int64 <- case debug_compile(filename) of {
+                                true -> do
+                                    println("  [DEBUG SIR]:");
+                                    println(sir_ast@sir_module_to_text(sir_module));
+                                    0
+                                end;
+                                false -> 0
+                            };
+                            println("  Emitting...");
+                            asm: string <- case debug_compile(filename) of {
+                                true -> emitter_core@emit_module_debug(sir_module, true);
+                                false -> emitter_core@emit_module(sir_module)
+                            };
+                            build_output@write_assembly(filename, asm);
+                            println(concat("Successfully built ", mod_name));
                             0
                         end;
-                        false -> 0
-                    };
-                    println("  Generating SIR...");
-                    sir_module: SIRModule <- sir_generator_core@emit_program_for_unit(program, tc_out.context, mod_name);
-                    _: int64 <- case debug_compile(filename) of {
-                        true -> do
-                            println("  [DEBUG SIR]:");
-                            println(sir_ast@sir_module_to_text(sir_module));
-                            0
-                        end;
-                        false -> 0
-                    };
-                    println("  Emitting...");
-                    asm: string <- case debug_compile(filename) of {
-                        true -> emitter_core@emit_module_debug(sir_module, true);
-                        false -> emitter_core@emit_module(sir_module)
-                    };
-                    build_output@write_assembly(filename, asm);
-                    println(concat("Successfully built ", mod_name));
-                    0
+                        false -> do
+                            effect_error_code: string <- case effect_result.error_code == "" of {
+                                true -> "E3000";
+                                false -> effect_result.error_code
+                            };
+                            effect_spec_section: string <- case effect_result.spec_section == "" of {
+                                true -> "sect9";
+                                false -> effect_result.spec_section
+                            };
+                            diagnostics_core@print_compiler_error("EffectError", effect_error_code, effect_result.error_location, effect_result.error_message, effect_spec_section);
+                            1
+                        end
+                    }
                 end;
                 false -> do
-                    effect_error_code: string <- case effect_result.error_code == "" of {
-                        true -> "E3000";
-                        false -> effect_result.error_code
+                    error_code: string <- case tc_out.error_code == "" of {
+                        true -> "E2000";
+                        false -> tc_out.error_code
                     };
-                    effect_spec_section: string <- case effect_result.spec_section == "" of {
-                        true -> "sect9";
-                        false -> effect_result.spec_section
+                    spec_section: string <- case tc_out.spec_section == "" of {
+                        true -> "sect6";
+                        false -> tc_out.spec_section
                     };
-                    diagnostics_core@print_compiler_error("EffectError", effect_error_code, effect_result.error_location, effect_result.error_message, effect_spec_section);
+                    diagnostics_core@print_compiler_error("TypeError", error_code, tc_out.error_location, tc_out.error_message, spec_section);
                     1
                 end
             }
-        end;
-        false -> do
-            error_code: string <- case tc_out.error_code == "" of {
-                true -> "E2000";
-                false -> tc_out.error_code
-            };
-            spec_section: string <- case tc_out.spec_section == "" of {
-                true -> "sect6";
-                false -> tc_out.spec_section
-            };
-            diagnostics_core@print_compiler_error("TypeError", error_code, tc_out.error_location, tc_out.error_message, spec_section);
-            1
         end
     }
 }
@@ -639,7 +566,7 @@ fn compile_file(filename: string) -> int64 proc[DeviceIO] {
         false -> 0
     };
     case parse_result.is_ok of {
-        true -> compile_parsed_unit(filename, parse_result.program, type_checker_modules@empty_named_program_list());
+        true -> compile_parsed_unit(filename, parse_result.program, type_checker_modules@empty_named_program_list(), cons_string(filename, empty_list_string()), cons_parsed_file(filename, parse_result.program, empty_parsed_files()));
         false -> do
             error_code: string <- case parse_result.error_code == "" of {
                 true -> "E1001";
@@ -663,7 +590,7 @@ fn compile_all_files(sorted_files: ListString) -> int64 proc[DeviceIO] {
             (ok_parse: bool, parsed_all: ListParsedFile) <- parse_all_files_recursive(sorted_files, empty_parsed_files());
             case ok_parse of {
                 false -> 1;
-                true -> compile_parsed_list(sorted_files, parsed_all)
+                true -> compile_parsed_list(sorted_files, parsed_all, sorted_files)
             }
         end
     }
