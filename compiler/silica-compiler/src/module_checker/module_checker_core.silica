@@ -20,6 +20,7 @@
 
 use parser_ast;
 use type_checker_core;
+use diagnostics_core;
 
 struct ListString {
     is_nil: bool,
@@ -343,6 +344,77 @@ fn module_defines_fn_with_arity(decls: ListDeclaration, fn_name: string, arity: 
     }
 }
 
+// Entry alias `m` matches SIR lowering (spec 19.1 / linker `main`).
+fn program_defines_main_zero(decls: ListDeclaration) -> bool {
+    case module_defines_fn_with_arity(decls, "main", 0) of {
+        true -> true;
+        false -> module_defines_fn_with_arity(decls, "m", 0)
+    }
+}
+
+fn program_fn_decl_count(decls: ListDeclaration) -> int64 {
+    case decls.is_nil of {
+        true -> 0;
+        false -> case decls.head.tag == 0 of {
+            true -> 1 + program_fn_decl_count(decls.tail);
+            false -> program_fn_decl_count(decls.tail)
+        }
+    }
+}
+
+fn program_has_function_exports(decls: ListDeclaration) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 3 of {
+            true -> case decls.head.parameters.is_nil of {
+                true -> program_has_function_exports(decls.tail);
+                false -> true
+            };
+            false -> program_has_function_exports(decls.tail)
+        }
+    }
+}
+
+fn program_has_use_declarations(decls: ListDeclaration) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 2 of {
+            true -> true;
+            false -> program_has_use_declarations(decls.tail)
+        }
+    }
+}
+
+fn first_function_declaration_location(decls: ListDeclaration) -> SourceLocation {
+    case decls.is_nil of {
+        true -> parser_ast@zero_location();
+        false -> case decls.head.tag == 0 of {
+            true -> decls.head.location;
+            false -> first_function_declaration_location(decls.tail)
+        }
+    }
+}
+
+// Standalone units (no `use`) must be an executable (main/0) or a library (export). Compiler submodules
+// that are fragments use `use` and are exempt. See trials: no_main_no_exports_nonempty_module.
+// Returns 1 = violation (E4016), 0 = ok. Int64-only result avoids tuple-destructuring codegen issues.
+fn entry_shape_status(program: Program) -> int64 {
+    n: int64 <- program_fn_decl_count(program.declarations);
+    case n == 0 of {
+        true -> 0;
+        false -> case program_defines_main_zero(program.declarations) of {
+            true -> 0;
+            false -> case program_has_function_exports(program.declarations) of {
+                true -> 0;
+                false -> case program_has_use_declarations(program.declarations) of {
+                    true -> 0;
+                    false -> 1
+                }
+            }
+        }
+    }
+}
+
 fn validate_expr_pair_export_surface(inner: Expr, right: Expr, all_decls: ListDeclaration, all_parsed: ListParsedFile) -> (int64, string, SourceLocation, string, string) {
     (i_ok: int64, i_code: string, i_loc: SourceLocation, i_msg: string, i_spec: string) <- validate_expr_export_surface(inner, all_decls, all_parsed);
     case i_ok == 0 of {
@@ -452,8 +524,9 @@ fn validate_exports_match_functions_program(decls: ListDeclaration) -> (int64, s
     }
 }
 
-// Runs all module checks. Returns status 0 on success; on failure, status 1 and ModuleError fields (code, loc, message, spec section id).
-fn module_checker_check_program(program: Program, config_files: ListString, all_parsed: ListParsedFile) -> (int64, string, SourceLocation, string, string) {
+// Runs all module checks. Returns 0 on success, 1 on failure. Prints ModuleError via diagnostics_core
+// (avoids returning a 5-tuple to main.silica — tuple codegen can mis-read the status field).
+fn module_checker_check_program(program: Program, config_files: ListString, all_parsed: ListParsedFile) -> int64 proc[DeviceIO] {
     (use_ok: bool, use_code: string, use_loc: SourceLocation, use_msg: string, use_spec: string) <- validate_use_declarations_against_config(program.declarations, config_files);
     case use_ok of {
         false -> do
@@ -465,54 +538,69 @@ fn module_checker_check_program(program: Program, config_files: ListString, all_
                 true -> "sect19.3";
                 false -> use_spec
             };
-            (1, err_code, use_loc, use_msg, spec_sec)
+            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", err_code, use_loc, use_msg, spec_sec);
+            1
         end;
         true -> do
-            (qual_st: int64, qual_code: string, qual_loc: SourceLocation, qual_msg: string, qual_spec: string) <- validate_module_qualified_calls_have_use(program);
-            case qual_st == 0 of {
-                false -> do
-                    qec: string <- case qual_code == "" of {
-                        true -> "E1010";
-                        false -> qual_code
-                    };
-                    qss: string <- case qual_spec == "" of {
-                        true -> "sect19.3";
-                        false -> qual_spec
-                    };
-                    (1, qec, qual_loc, qual_msg, qss)
-                end;
+            es: int64 <- entry_shape_status(program);
+            case es == 1 of {
                 true -> do
-                    (exm_st: int64, exm_code: string, exm_loc: SourceLocation, exm_msg: string, exm_spec: string) <- validate_exports_match_functions_program(program.declarations);
-                    case exm_st == 0 of {
+                    loc: SourceLocation <- first_function_declaration_location(program.declarations);
+                    msg: string <- "module must define main/0 or export at least one function (spec 19.1)";
+                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E4016", loc, msg, "sect19.1");
+                    1
+                end;
+                false -> do
+                    (qual_st: int64, qual_code: string, qual_loc: SourceLocation, qual_msg: string, qual_spec: string) <- validate_module_qualified_calls_have_use(program);
+                    case qual_st == 0 of {
                         false -> do
-                            exmc: string <- case exm_code == "" of {
-                                true -> "E4010";
-                                false -> exm_code
+                            qec: string <- case qual_code == "" of {
+                                true -> "E1010";
+                                false -> qual_code
                             };
-                            exms: string <- case exm_spec == "" of {
-                                true -> case exmc == "E4014" of {
-                                    true -> "sect19.2";
-                                    false -> "sect19.2.1"
-                                };
-                                false -> exm_spec
+                            qss: string <- case qual_spec == "" of {
+                                true -> "sect19.3";
+                                false -> qual_spec
                             };
-                            (1, exmc, exm_loc, exm_msg, exms)
+                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", qec, qual_loc, qual_msg, qss);
+                            1
                         end;
                         true -> do
-                            (exp_st: int64, exp_code: string, exp_loc: SourceLocation, exp_msg: string, exp_spec: string) <- validate_cross_module_export_surface(program, all_parsed);
-                            case exp_st == 0 of {
+                            (exm_st: int64, exm_code: string, exm_loc: SourceLocation, exm_msg: string, exm_spec: string) <- validate_exports_match_functions_program(program.declarations);
+                            case exm_st == 0 of {
                                 false -> do
-                                    eec: string <- case exp_code == "" of {
-                                        true -> "E1011";
-                                        false -> exp_code
+                                    exmc: string <- case exm_code == "" of {
+                                        true -> "E4010";
+                                        false -> exm_code
                                     };
-                                    ess: string <- case exp_spec == "" of {
-                                        true -> "sect19.2";
-                                        false -> exp_spec
+                                    exms: string <- case exm_spec == "" of {
+                                        true -> case exmc == "E4014" of {
+                                            true -> "sect19.2";
+                                            false -> "sect19.2.1"
+                                        };
+                                        false -> exm_spec
                                     };
-                                    (1, eec, exp_loc, exp_msg, ess)
+                                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", exmc, exm_loc, exm_msg, exms);
+                                    1
                                 end;
-                                true -> (0, "", parser_ast@zero_location(), "", "")
+                                true -> do
+                                    (exp_st: int64, exp_code: string, exp_loc: SourceLocation, exp_msg: string, exp_spec: string) <- validate_cross_module_export_surface(program, all_parsed);
+                                    case exp_st == 0 of {
+                                        false -> do
+                                            eec: string <- case exp_code == "" of {
+                                                true -> "E1011";
+                                                false -> exp_code
+                                            };
+                                            ess: string <- case exp_spec == "" of {
+                                                true -> "sect19.2";
+                                                false -> exp_spec
+                                            };
+                                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", eec, exp_loc, exp_msg, ess);
+                                            1
+                                        end;
+                                        true -> 0
+                                    }
+                                end
                             }
                         end
                     }

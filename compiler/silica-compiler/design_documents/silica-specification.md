@@ -214,7 +214,7 @@ efficiency_cores else end        enum      export    false     float16   float32
 float64    fn         for        from      hot_swap   if        impl      import    int8
 int16      int32      int64      lifetime  mailbox  mem       module    network_io normal    not
 of         performance_cores proc      produces  pub       pure      recv      ref       region    register_rwr return
-self       sequence   spawn     string    struct    trait     true      type
+sequence   spawn     string    struct    trait     true      type
 uint8      uint16     uint32     uint64    underscore unit       use        where
 ```
 
@@ -406,10 +406,14 @@ declaration ::= function_declaration
               | effect_declaration
               | import_declaration
               | export_declaration
-              | trait_declaration
-              | impl_declaration
+              | export_trait_declaration
+              | required_section
+              | provided_section
+              | impl_fn_declaration
               | module_declaration
 ```
+
+**Trait files.** A trait file (e.g. `shape.silica`) is itself a module. Its top-level declarations are `export_trait_declaration`, `export_fn_decl`, `required_section`, `provided_section`, and `impl_fn_declaration` items — there is no wrapping `trait Name { }` block. Other files use the trait via `use shape;` and call methods as `shape@method(value)`.
 
 **Inline types and struct values.** Silica does not use top-level declarations to introduce new user-defined record or enum **names** (see §3.4.2). Record **types** are written inline as `{ field: Type, ... }` wherever a type is required. Record **values** are always **struct literals** (§3.3.7): either an anonymous `{ field: expression, ... }` or, where the grammar allows a disambiguating name for a value, `identifier { field: expression, ... }`. There is no `struct TypeName { ... }` declaration form in the surface language.
 
@@ -451,38 +455,30 @@ literal ::= integer_literal
 ```
 function_call ::= local_function_call
                  | module_qualified_call
-                 | qualified_method_call
 
 local_function_call ::= identifier "(" [argument_list] ")"
 
 module_qualified_call ::= identifier "@" identifier "(" [argument_list] ")"
-
-qualified_method_call ::= identifier "." identifier "(" [argument_list] ")"
 
 argument_list ::= expression {"," expression}
 ```
 
 **Local function calls** invoke functions defined in the same module using `function_name(args)`.
 
-**Module-qualified calls** invoke functions from an imported module using `module_name@function_name(args)`. The module must first be imported with a `use` declaration. The `@` operator separates the module name from the function name.
+**Module-qualified calls** invoke functions from an imported module using `module_name@function_name(args)`. The module must first be imported with a `use` declaration. The `@` operator separates the module name from the function name. This same syntax is used for trait method calls — because each trait lives in its own file (module), `shape@area(rect)` calls the `area` method from the `shape` trait module.
 
-**Qualified method calls** allow explicit disambiguation of method calls when multiple traits define methods with the same name. The syntax `TraitName.method_name(args)` explicitly calls the method from the specified trait.
-
-**Qualified Method Call Examples:**
+**Module-qualified call examples:**
 
 ```silica
-// Multiple traits define log() method
-trait Loggable {
-    fn log(self: Self, level: int64) -> int64;
+use shape;
+use logger;
+
+fn example(r: { width: int64, height: int64 }) -> int64 {
+    shape@area(r)         // trait method call via module@method syntax
 }
 
-trait Debuggable {
-    fn log(self: Self, level: int64) -> int64;
-}
-
-// Explicit disambiguation using qualified call
-fn example(obj: Loggable) -> int64 {
-    Loggable.log(obj, 1)  // Qualified call: explicitly use Loggable.log()
+fn log_example(msg: string) -> atom {
+    logger@write(msg)     // regular module call — same syntax
 }
 ```
 
@@ -1666,7 +1662,7 @@ Silica **does not** provide **custom types**: declarations that introduce a **ne
 
 **Record values (struct literals only):** Values of record type are always written as **struct literals** (§3.3.7)—for example `p: { x: int64, y: int64 } <- { x: 42, y: 23 }` or `{ x: 42, y: 23 }` in an expression. The reserved keyword `struct` does **not** begin a record type declaration; unnamed record shape is carried by inline `{ field: Type, … }` in type positions and `{ field: expression, … }` in expression positions.
 
-The identifiers `int64`, `string`, `atom`, and other **built-in** names are predefined. **Trait implementations** attach to these **inline type expressions**, for example `impl ActorMessage for { seq: int64 };` or `impl ActorMessage for (:ping, int64);` (§16.3.2).
+The identifiers `int64`, `string`, `atom`, and other **built-in** names are predefined. **Trait implementations** attach to these **inline type expressions** via `impl fn` entries in the trait's file (§3.4.8), for example `impl { seq: int64 };` or `impl (:ping, int64);` in `actormessage.silica` (§16.3.2).
 
 **Ill-formed:** any declaration of the form `type Name = …` or `struct Name { … }` or `enum Name { … }` as a user-defined type definition.
 
@@ -1687,10 +1683,13 @@ module_list ::= identifier {"," identifier}
 #### 3.4.5 Export Declarations
 ```
 export_declaration ::= "export" export_list ";"
+                     | "export" "trait" identifier ";"
 
 export_list ::= export_item {"," export_item}
 export_item ::= identifier "/" integer_literal
 ```
+
+The `export trait TraitName;` form appears at the top of a trait file to declare that this file defines the named trait. It is distinct from a regular function export. Methods of the trait are exported separately using the `identifier "/" integer_literal` form (e.g. `export area/1;`).
 
 #### 3.4.6 Struct Declarations (superseded by §3.4.2)
 
@@ -1745,292 +1744,230 @@ enum Message {
 
 #### 3.4.8 Trait Declarations
 
-Traits are independent, reusable behavioral components. Each trait formally declares methods as either **required** (signature only) or **provided** (with full body). Traits never reference or compose with other traits; each is completely self-contained.
+A trait is declared in a file named after the trait. The filename (without `.silica`) is the trait name and module name. The file contains export declarations, a `required` block, an optional `provided` block, and `impl fn` declarations — all at the top level with no wrapping `trait Name { }` block.
+
+**File = Trait Rule**: `shape.silica` defines the `Shape` trait and all its implementations. Other modules `use shape;` and call `shape@area(rect)`.
 
 **Core Concepts:**
-- **Provided methods**: Fully implemented methods with bodies. May call required methods via dynamic dispatch. Can be overridden by implementations.
-- **Required methods**: Method signatures (no body) that implementing types must provide. Compile error if not implemented.
-- **Marker traits**: Empty traits with no methods, used for type-checking only (e.g., ActorMessage).
+- **Provided methods**: Fully implemented methods with bodies. May call required methods via the trait's own module call (e.g. `shape@area(s)`). Can be overridden by `impl fn` declarations.
+- **Required methods**: Method signatures (no body) that implementing types must provide via `impl fn`. Compile error if not implemented for a used concrete type.
+- **Marker traits**: Traits with no methods — just `export trait MarkerName;`. Implementations use `impl ConcreteType;`.
 
 **Syntax:**
 ```
-trait_declaration ::= "trait" identifier "{" trait_section* "}"
+trait_file ::= export_trait_decl {export_fn_decl} [required_section] [provided_section] {impl_fn_decl}
 
-trait_section ::= provided_section | required_section | /* empty for marker traits */
-
-provided_section ::= "provided" "{" provided_method+ "}"
-provided_method ::= "fn" identifier parameter_list [":" type] "{" expression "}"
+export_trait_decl ::= "export" "trait" identifier ";"
+export_fn_decl    ::= "export" identifier "/" integer_literal ";"
 
 required_section ::= "required" "{" required_method+ "}"
-required_method ::= "fn" identifier parameter_list [":" type]
+required_method  ::= "fn" identifier "(" parameter_list ")" "->" type ";"
+
+provided_section ::= "provided" "{" provided_method+ "}"
+provided_method  ::= "fn" identifier "(" parameter_list ")" "->" type "{" expression "}"
+
+impl_fn_decl ::= "impl" "fn" identifier "(" parameter_list ")" "->" type "{" expression "}"
 ```
 
-**Examples:**
+**Marker Traits** (no methods):
+```
+marker_trait_file ::= export_trait_decl {impl_type_decl}
+impl_type_decl ::= "impl" type ";"
+```
 
-Simple trait with only required methods:
+**Example — trait with required and provided:**
 ```silica
-trait Comparable {
-    required {
-        fn equals(self, other) -> boolean
-        fn less_than(self, other) -> boolean
+// shape.silica
+export trait Shape;
+export area/1;
+export is_larger_than/2;
+
+required {
+    fn area(s: Shape) -> int64;
+}
+
+provided {
+    fn is_larger_than(s: Shape, other: Shape) -> bool {
+        shape@area(s) > shape@area(other)
     }
+}
+
+impl fn area(r: { width: int64, height: int64 }) -> int64 {
+    r.width * r.height
+}
+
+impl fn area(p: { x: int64, y: int64, radius: int64 }) -> int64 {
+    p.radius * p.radius * 3
 }
 ```
 
-Trait with provided methods that call required methods:
+**Example — using the trait:**
 ```silica
-trait Drawable {
-    provided {
-        fn render(self) -> atom {
-            // Dynamic dispatch to required methods
-            pos: { x: int64, y: int64 } <- self.position()
-            bounds: { width: int64, height: int64 } <- self.bounds()
-            atom
-        }
-    }
-    
-    required {
-        fn position(self) -> { x: int64, y: int64 }
-        fn bounds(self) -> { width: int64, height: int64 }
-    }
+// geometry_operations.silica
+use shape;
+
+export largest/2;
+
+fn largest(s1: Shape, s2: Shape) -> bool {
+    shape@is_larger_than(s1, s2)
 }
 ```
 
-Trait with provided methods only:
+**Example — marker trait:**
 ```silica
-trait Display {
-    provided {
-        fn to_string(self) -> string {
-            "default_display"
-        }
-    }
-}
-```
+// actormessage.silica
+export trait ActorMessage;
 
-Marker trait (empty—no methods):
-```silica
-trait ActorMessage {
-    // Marker trait - used for type-checking only
-}
+impl (:window_event, int64);
+impl (:mouse_click, int64, int64);
 ```
 
 #### 3.4.9 Implementation Declarations
 
-Implementations attach traits to inline types. For each required method in a trait, the implementation must provide a body. Provided methods are automatically available and can be overridden.
+Implementations are declared using `impl fn` at the top level of the trait's file. Each `impl fn` provides the body for a `required` method for a specific concrete type. The concrete type is determined by the parameter type — no `for TypeName` clause is needed.
 
 **Syntax:**
 ```
-impl_declaration ::= "impl" trait_name "for" type "{" impl_items "}"
-                  | impl_actor_message_decl
+impl_fn_decl ::= "impl" "fn" identifier "(" parameter_list ")" "->" type "{" expression "}"
+```
 
-impl_actor_message_decl ::= "impl" "ActorMessage" "for" type impl_marker_body
-                          | tagged_tuple_type "impl" "ActorMessage" impl_marker_body
+**Rules:**
+- `impl fn` declarations appear only in the trait's own file (the file named after the trait)
+- The compiler matches `impl fn name` to `required fn name/arity` by name and arity
+- The concrete type of the first parameter determines which type this implementation covers
+- All `required` methods must have at least one `impl fn` per concrete type, or the compiler errors
+- `provided` methods do not require `impl fn` — they are inherited automatically by all implementing types
+- `provided` methods may be overridden with `impl fn` using the same name
 
+**Example:**
+```silica
+// comparable.silica
+export trait Comparable;
+export equals/2;
+export less_than/2;
+
+required {
+    fn equals(a: Comparable, b: Comparable) -> bool;
+    fn less_than(a: Comparable, b: Comparable) -> bool;
+}
+
+impl fn equals(a: { name: string, age: int64 }, b: { name: string, age: int64 }) -> bool {
+    a.name == b.name and a.age == b.age
+}
+
+impl fn less_than(a: { name: string, age: int64 }, b: { name: string, age: int64 }) -> bool {
+    a.age < b.age
+}
+
+impl fn equals(a: int64, b: int64) -> bool {
+    a == b
+}
+
+impl fn less_than(a: int64, b: int64) -> bool {
+    a < b
+}
+```
+
+**`ActorMessage` implementations:** Valid forms are: (1) **postfix on the payload** — `expr impl ActorMessage {}` (§3.3, §16.3.2); (2) **type-level** — `impl ConcreteType;` in `actormessage.silica`, when reusing types. The compiler **must not** infer `ActorMessage` without explicit impl.
+
+```
 impl_marker_body ::= /* empty */ | "{" "}"
-
-impl_items ::= [impl_item]
-impl_item  ::= required_impl | provided_override
-
-required_impl ::= "fn" identifier parameter_list [":" type] "{" expression "}"
-provided_override ::= "fn" identifier parameter_list [":" type] "{" expression "}"
 ```
-
-**Implementation Rules:**
-- Must implement all required methods from the trait (compile error if any are missing)
-- May override any provided method from the trait
-- Traits do not inherit or compose; each trait implementation on a type is independent
-- No trait-to-trait references; traits are completely self-contained
-
-**Examples:**
-
-Implementing required methods:
-```silica
-impl Comparable for { x: int64, y: int64, width: int64, height: int64 } {
-    fn equals(self, other) -> boolean {
-        self.x == other.x && self.y == other.y && 
-        self.width == other.width && self.height == other.height
-    }
-    
-    fn less_than(self, other) -> boolean {
-        (self.width * self.height) < (other.width * other.height)
-    }
-}
-```
-
-Implementing required methods and overriding provided:
-```silica
-impl Drawable for { x: int64, y: int64, width: int64, height: int64 } {
-    fn position(self) -> { x: int64, y: int64 } {
-        { x: self.x, y: self.y }
-    }
-    
-    fn bounds(self) -> { width: int64, height: int64 } {
-        { width: self.width, height: self.height }
-    }
-    
-    fn render(self) -> atom {
-        // Override provided method
-        atom
-    }
-}
-```
-
-Multiple traits on a single type:
-```silica
-impl Display for { x: int64, y: int64, width: int64, height: int64 } {
-    fn to_string(self) -> string { "window_struct" }
-}
-
-impl Comparable for { x: int64, y: int64, width: int64, height: int64 } {
-    fn equals(self, other) -> boolean { self.x == other.x && self.y == other.y }
-    fn less_than(self, other) -> boolean { self.x < other.x }
-}
-```
-
-Marker trait implementation:
-```silica
-impl ActorMessage for (:window_event, int64) { }
-```
-
-**`ActorMessage` implementations:** Valid forms are: (1) **postfix on the payload** — `expr impl ActorMessage {}` (§3.3, §16.3.2); (2) **type-level** — `impl ActorMessage for type { }` with empty body, when reusing types. The compiler **must not** infer `ActorMessage` without explicit impl.
 
 #### 3.4.10 Dynamic Dispatch
 
-When a provided method calls a required method, the call is **dynamically dispatched** at runtime to the implementation's version of that method. This allows provided methods to define common logic while delegating to type-specific implementations.
+When a provided method calls a required method, the call is **dynamically dispatched** at runtime to the implementation's version of that method. This allows provided methods to define common logic while delegating to type-specific implementations. Inside a `provided` block, required methods are called using the trait's own module name via the `@` operator.
 
 **Example:**
 
 ```silica
-trait Drawable {
-    provided {
-        fn render(self) -> atom {
-            // Dynamically calls the implementation's position() and bounds()
-            pos: { x: int64, y: int64 } <- self.position()
-            bounds: { width: int64, height: int64 } <- self.bounds()
-            atom
-        }
+// drawable.silica
+export trait Drawable;
+export render/1;
+export position/1;
+export bounds/1;
+
+required {
+    fn position(d: Drawable) -> { x: int64, y: int64 };
+    fn bounds(d: Drawable) -> { width: int64, height: int64 };
+}
+
+provided {
+    fn render(d: Drawable) -> atom {
+        pos: { x: int64, y: int64 } <- drawable@position(d);
+        b: { width: int64, height: int64 } <- drawable@bounds(d);
+        atom
     }
-    
-    required {
-        fn position(self) -> { x: int64, y: int64 }
-        fn bounds(self) -> { width: int64, height: int64 }
-    }
 }
 
-impl Drawable for { x: int64, y: int64, width: int64, height: int64 } {
-    fn position(self) -> { x: int64, y: int64 } { { x: self.x, y: self.y } }
-    fn bounds(self) -> { width: int64, height: int64 } { { width: self.width, height: self.height } }
+impl fn position(r: { x: int64, y: int64, width: int64, height: int64 }) -> { x: int64, y: int64 } {
+    { x: r.x, y: r.y }
 }
 
-impl Drawable for { center: { x: int64, y: int64 }, radius: int64 } {
-    fn position(self) -> { x: int64, y: int64 } { self.center }
-    fn bounds(self) -> { width: int64, height: int64 } { { width: self.radius * 2, height: self.radius * 2 } }
+impl fn bounds(r: { x: int64, y: int64, width: int64, height: int64 }) -> { width: int64, height: int64 } {
+    { width: r.width, height: r.height }
 }
 
-fn draw(shape) -> atom {
-    // Calls render(), which dynamically dispatches to the implementation's position() and bounds()
-    Drawable.render(shape)
+impl fn position(c: { center: { x: int64, y: int64 }, radius: int64 }) -> { x: int64, y: int64 } {
+    c.center
+}
+
+impl fn bounds(c: { center: { x: int64, y: int64 }, radius: int64 }) -> { width: int64, height: int64 } {
+    { width: c.radius * 2, height: c.radius * 2 }
 }
 ```
 
-When `render()` executes, it calls `position()` and `bounds()` on the actual type at runtime, allowing the same provided logic to work with different type implementations.
+```silica
+// caller
+use drawable;
+
+fn draw(shape: Drawable) -> atom {
+    drawable@render(shape)
+}
+```
+
+When `render` executes, it calls `position` and `bounds` on the actual concrete type at runtime via `drawable@position(d)` and `drawable@bounds(d)`, allowing the same provided logic to work with different type implementations.
 
 #### 3.4.11 Trait Method Disambiguation
 
-**Problem: Multiple Traits with Same Method Name**
+Under Silica's trait system, every trait method call explicitly names the trait module using the `@` operator: `traitname@method(value)`. Because the trait name is always present at the call site, ambiguity between traits that define the same method name is impossible.
 
-When a type implements multiple traits that define methods with the same name, the compiler cannot automatically determine which trait's method to call:
-
+**Example — two traits with the same method name, no conflict:**
 ```silica
-trait Logger {
-    required {
-        fn log(self, msg: string) -> atom
-    }
-}
-
-trait Debugger {
-    required {
-        fn log(self, msg: string) -> atom  // Same method name
-    }
-}
-
-impl Logger for { name: string } {
-    fn log(self, msg: string) -> atom { print_string(msg) }
-}
-
-impl Debugger for { name: string } {
-    fn log(self, msg: string) -> atom { print_string("DEBUG: " + msg) }
-}
+use logger;
+use debugger;
 
 fn run(tool: { name: string }) -> atom {
-    // ERROR: Which log() - from Logger or Debugger?
-    tool.log("message")
+    logger@log(tool, "info message");
+    debugger@log(tool, "debug message")
 }
 ```
 
-**Solution: Qualified Method Calls**
-
-Use qualified method names (`TraitName.method_name()`) to specify which trait's method to call:
-
-```
-qualified_method_call ::= trait_name "." method_name "(" [arguments] ")"
-```
-
-```silica
-fn run(tool: { name: string }) -> atom {
-    Logger.log(tool, "info")      // Explicitly call Logger's log()
-    Debugger.log(tool, "debug")   // Explicitly call Debugger's log()
-}
-```
-
-**Disambiguation Rules:**
-
-1. **Unique Method Names**: If method names are unique across all implemented traits, no qualification needed
-2. **Ambiguous Method Names**: If multiple traits define the same method name, qualification is required
-3. **Qualified Syntax**: Use `TraitName.method_name(value, ...)` for explicit trait selection
-4. **Self Parameter**: Qualified calls pass `self` as the first parameter explicitly
-
-**Compiler Error for Missing Disambiguation:**
-
-```
-❌ Compilation error: AmbiguousMethodError at example.silica:10:5 [E4000]
-
-Ambiguous method call: log()
-Multiple traits define log(): Logger, Debugger
-Use qualified name: Logger.log() or Debugger.log()
-See specification: spec:§3.4.11
-```
-
-**Best Practices:**
-1. **Use Descriptive Names**: Prefer `log_message()` over `log()` in trait definitions
-2. **Namespace Methods**: Use trait-specific prefixes: `logger_log()`, `debugger_log()`
-3. **Avoid Generic Names**: Don't use generic names like `get()`, `set()` in multiple traits
-4. **Document Intent**: If ambiguity is unavoidable, document which trait applies
+Each call unambiguously identifies its source trait. No qualified disambiguation syntax is needed.
 
 #### 3.4.12 Type Implementation Disambiguation
 
 **Problem: Same Trait, Different Type Implementations**
 
-When a single trait has multiple implementations for different types, the compiler cannot determine which implementation to use if the argument's type is ambiguous:
+When a single trait has multiple `impl fn` declarations for different concrete types, the compiler cannot determine which implementation to use if the argument's type is ambiguous:
 
 ```silica
-trait Display {
-    required {
-        fn format(self) -> string
-    }
+// display.silica
+export trait Display;
+export format/1;
+
+required {
+    fn format(d: Display) -> string;
 }
 
-impl Display for int32 {
-    fn format(self) = "int32: " + int_to_string(self)
-}
+impl fn format(n: int32) -> string { "int32: " ++ int_to_string(n) }
+impl fn format(n: int64) -> string { "int64: " ++ int_to_string(n) }
+```
 
-impl Display for int64 {
-    fn format(self) = "int64: " + int_to_string(self)
-}
-
+```silica
 fn test() -> string {
     // ERROR: Which implementation? int32 or int64?
-    Display.format(42)
+    display@format(42)
 }
 ```
 
@@ -2046,9 +1983,9 @@ type_annotation_expression ::= expression "#" type
 
 ```silica
 fn test() -> string {
-    result1: string <- Display.format(42 # int32)  // Use int32 implementation
-    result2: string <- Display.format(42 # int64)  // Use int64 implementation
-    result1  // "int32: 42"
+    result1: string <- display@format(42 # int32);
+    result2: string <- display@format(42 # int64);
+    result1
 }
 ```
 
@@ -2059,38 +1996,15 @@ fn test() -> string {
 3. **No Conversion**: Type annotation specifies type, does not convert or transform the value
 4. **Works with All Expressions**: Works with variables, literals, and complex expressions
 
-**Examples:**
-
-```silica
-trait Numeric {
-    required {
-        fn double(self) -> self
-    }
-}
-
-impl Numeric for int32 { fn double(self) = self * 2 }
-impl Numeric for int64 { fn double(self) = self * 2 }
-impl Numeric for float32 { fn double(self) = self * 2.0 }
-impl Numeric for float64 { fn double(self) = self * 2.0 }
-
-fn calculations() -> (int32, int64, float32, float64) {
-    a: int32 <- Numeric.double(10 # int32)        // int32 implementation
-    b: int64 <- Numeric.double(10 # int64)        // int64 implementation
-    c: float32 <- Numeric.double(3.5 # float32)   // float32 implementation
-    d: float64 <- Numeric.double(3.5 # float64)   // float64 implementation
-    (a, b, c, d)
-}
-```
-
 **Compiler Error for Missing Type Annotation:**
 
 ```
 ❌ Compilation error: AmbiguousTypeImplementationError at example.silica:5:10 [E4001]
 
-Cannot infer type for trait method call: Display.format()
-Multiple implementations exist: Display for int32, Display for int64
+Cannot infer type for trait method call: display@format()
+Multiple implementations exist: impl fn format for int32, impl fn format for int64
 Use type annotation: value # type to disambiguate
-Example: Display.format(42 # int32)
+Example: display@format(42 # int32)
 See specification: spec:§3.4.12
 ```
 
@@ -2100,25 +2014,29 @@ See specification: spec:§3.4.12
 
 #### 3.4.13 Actor System Traits
 
-Silica provides marker traits for the actor system:
+Silica provides marker traits for the actor system. These are stdlib traits defined in their own files.
 
-**ActorState Trait:**
+**ActorState Trait (`actorstate.silica`):**
 ```silica
-trait ActorState {
-    // Marker trait - no methods required
-}
+// actorstate.silica (stdlib)
+export trait ActorState;
+
+// Types used as actor initial state must declare impl:
+// impl { field1: T1, field2: T2 };
 ```
 
-Types used as actor initial state in `spawn(initial_state, ...)` must implement `ActorState`. Only **inline** composite types with explicit `impl ActorState for …` implement this trait — no blanket implementations for primitive types.
+Types used as actor initial state in `spawn(initial_state, ...)` must implement `ActorState`. Only **inline** composite types with explicit `impl ConcreteType;` in `actorstate.silica` implement this trait — no blanket implementations for primitive types.
 
-**ActorMessage Trait:**
+**ActorMessage Trait (`actormessage.silica`):**
 ```silica
-trait ActorMessage {
-    // Marker trait - no methods required
-}
+// actormessage.silica (stdlib)
+export trait ActorMessage;
+
+// Types used as messages must declare impl:
+// impl (:tag, payload_type);
 ```
 
-Types used as messages in `call()` and `cast()` must implement `ActorMessage` through **`expr impl ActorMessage {}`** (on the payload) and/or explicit type-level `impl ActorMessage for type { }`. The compiler does not infer `ActorMessage` from type structure alone. See §16.3.2 for tagged tuple forms.
+Types used as messages in `call()` and `cast()` must implement `ActorMessage` through **`expr impl ActorMessage {}`** (on the payload) and/or explicit type-level `impl ConcreteType;` in `actormessage.silica`. The `expr impl ActorMessage {}` postfix form is syntactic sugar that the compiler desugars to an `impl` lookup in `actormessage.silica`. The compiler does not infer `ActorMessage` from type structure alone. See §16.3.2 for tagged tuple forms.
 
 **Trait-as-Type:**
 When a trait is used directly as a type (e.g., `ActorMessage`), it represents any concrete type implementing that trait, resolved at compile time.
@@ -2273,16 +2191,12 @@ result: int32 <- 42 # int32
 other: int64 <- 42 # int64
 
 // Call trait methods with specific type implementations
-trait Display {
-    fn format(self) -> string
-}
-
-impl Display for int32 { fn format(self) = "int32: " + int_to_string(self) }
-impl Display for int64 { fn format(self) = "int64: " + int_to_string(self) }
+// (display.silica defines: impl fn format(n: int32) -> string { ... }
+//                          impl fn format(n: int64) -> string { ... })
 
 // Explicitly select which implementation to use
-s1: string <- Display.format(42 # int32)
-s2: string <- Display.format(42 # int64)
+s1: string <- display@format(42 # int32)
+s2: string <- display@format(42 # int64)
 ```
 
 **Type Checking:**
@@ -3390,30 +3304,27 @@ Silica provides first-class SIMD vector types for AArch64 architectures using co
 #### 4.7.1 Marker Traits for Vector Elements
 
 ```
-// Marker trait for NEON 128-bit vector elements
-trait Vec128Element {
-    // Marker trait, no methods needed
-}
+// vec128element.silica — marker trait for NEON 128-bit vector elements
+export trait Vec128Element;
 
-// Marker trait for SVE scalable vector elements
-trait VecElement {
-    // Marker trait, no methods needed
-}
+impl int8;
+impl int16;
+impl int32;
+impl int64;
+impl float32;
+```
 
-// Implement traits for supported types
-impl Vec128Element for int8;
-impl Vec128Element for int16;
-impl Vec128Element for int32;
-impl Vec128Element for int64;
-impl Vec128Element for float32;
+```
+// vecelement.silica — marker trait for SVE scalable vector elements
+export trait VecElement;
 
-impl VecElement for int8;
-impl VecElement for int16;
-impl VecElement for int32;
-impl VecElement for int64;
-impl VecElement for float16;
-impl VecElement for float32;
-impl VecElement for float64;
+impl int8;
+impl int16;
+impl int32;
+impl int64;
+impl float16;
+impl float32;
+impl float64;
 ```
 
 #### 4.7.2 NEON 128-bit Vector Types
@@ -4078,64 +3989,63 @@ Silica has no structural subtyping - all types must match exactly. Polymorphism 
 ```
 
 **Trait-Based Polymorphism:**
-Traits are independent behavioral specifications. Multiple traits can be implemented on the same type; if they conflict (both define/require the same method), the compiler produces an error.
+Traits are independent behavioral specifications. Multiple traits can be implemented for the same concrete type. Since every call site names the trait explicitly via `@`, conflicts between traits that define the same method name are impossible.
 
 ```silica
-// Each trait is completely independent
-trait Display {
-    provided {
-        fn to_string(self) -> string { "default" }
-    }
+// display.silica — each trait is in its own file
+export trait Display;
+export to_string/1;
+
+provided {
+    fn to_string(d: Display) -> string { "default" }
 }
 
-trait Comparable {
-    required {
-        fn equals(self, other) -> boolean
-    }
+impl fn to_string(n: int64) -> string { "int" }
+```
+
+```silica
+// comparable.silica
+export trait Comparable;
+export equals/2;
+
+required {
+    fn equals(a: Comparable, b: Comparable) -> bool;
 }
 
-// Implement both traits on int64
-impl Display for int64 {
-    fn to_string(self) -> string { 
-        // convert int to string 
-        "int"
-    }
+impl fn equals(a: int64, b: int64) -> bool {
+    a == b
 }
+```
 
-impl Comparable for int64 {
-    fn equals(self, other) -> boolean { 
-        self == other 
-    }
-}
+```silica
+// usage
+use display;
+use comparable;
 
-// Call trait methods using qualified names
 fn describe(value: int64) -> string {
-    Display.to_string(value)
+    display@to_string(value)
 }
 
-fn compare_values(a: int64, b: int64) -> boolean {
-    Comparable.equals(a, b)
+fn compare_values(a: int64, b: int64) -> bool {
+    comparable@equals(a, b)
 }
 ```
 
 **Trait Independence:**
 - Traits never reference or inherit from other traits
 - No trait-to-trait composition
-- Multiple traits on the same type are checked for conflicts
-- Compiler error if two traits both define/require the same method name on the same type
+- Each trait lives in its own file; `traitname@method(value)` calls are always unambiguous
 
 #### 8.2.4 Collectable Trait
 
 The `Collectable` trait is a marker trait indicating that a type can be collected in lists. Marker traits have no provided or required methods; they serve only for compile-time type checking.
 
 ```silica
-trait Collectable {
-    // Marker trait - no provided or required methods
-    // Indicates that a type can be collected in List[ElementType]
-}
+// collectable.silica (stdlib)
+export trait Collectable;
 
-// Automatically implemented for all inline struct instances
-impl Collectable for { x: int64, y: int64 } { }
+// Automatically declared for all inline struct instances (by language rule)
+impl { x: int64, y: int64 };
 
 // Can be checked at compile time
 fn collect_items(items: List[Collectable]) -> int64 {
@@ -4206,31 +4116,32 @@ The `List` type itself automatically implements `Collectable`, enabling nested l
 **Example 1: Basic Trait Polymorphism**
 
 ```silica
-// Define trait
-trait Display {
-    fn show(self: Self) -> string;
+// display.silica
+export trait Display;
+export show/1;
+
+required {
+    fn show(d: Display) -> string;
 }
 
-// Implement trait for different inline record types
-impl Display for {x: int64, y: int64} {
-    fn show(self: {x: int64, y: int64}) -> string {
-        format("Point({}, {})", self.x, self.y)
-    }
+impl fn show(p: {x: int64, y: int64}) -> string {
+    format("Point({}, {})", p.x, p.y)
 }
 
-impl Display for {width: int64, height: int64} {
-    fn show(self: {width: int64, height: int64}) -> string {
-        format("Rectangle({}x{})", self.width, self.height)
-    }
+impl fn show(r: {width: int64, height: int64}) -> string {
+    format("Rectangle({}x{})", r.width, r.height)
 }
+```
 
-// Function using trait constraint
+```silica
+// usage
+use display;
+
 fn print_display(value: Display) -> atom {
-    str: string <- value.show();
+    str: string <- display@show(value);
     print_string(str)
 }
 
-// Usage: both shapes implement Display
 fn example() -> atom {
     point: {x: int64, y: int64} <- {x: 3, y: 7};
     rect: {width: int64, height: int64} <- {width: 4, height: 5};
@@ -4242,32 +4153,42 @@ fn example() -> atom {
 **Example 2: Multiple Trait Constraints**
 
 ```silica
-// Define multiple traits
-trait Display {
-    fn show(self: Self) -> string;
+// display.silica
+export trait Display;
+export show/1;
+
+required {
+    fn show(d: Display) -> string;
 }
 
-trait Math {
-    fn compute(self: Self, other: int64) -> int64;
+impl fn show(p: {x: int64, y: int64}) -> string {
+    format("Point({}, {})", p.x, p.y)
+}
+```
+
+```silica
+// math.silica
+export trait Math;
+export compute/2;
+
+required {
+    fn compute(m: Math, other: int64) -> int64;
 }
 
-impl Display for {x: int64, y: int64} {
-    fn show(self: {x: int64, y: int64}) -> string {
-        format("Point({}, {})", self.x, self.y)
-    }
+impl fn compute(p: {x: int64, y: int64}, other: int64) -> int64 {
+    (p.x + p.y) * other
 }
+```
 
-impl Math for {x: int64, y: int64} {
-    fn compute(self: {x: int64, y: int64}, other: int64) -> int64 {
-        (self.x + self.y) * other
-    }
-}
+```silica
+// usage
+use display;
+use math;
 
-// Function requiring multiple trait constraints
 fn print_and_compute(value: Display, math_value: Math, scale: int64) -> atom {
-    str: string <- value.show();
+    str: string <- display@show(value);
     print_string(str);
-    result: int64 <- math_value.compute(scale);
+    result: int64 <- math@compute(math_value, scale);
     print_int64(result)
 }
 
@@ -4280,31 +4201,36 @@ fn example() -> atom {
 **Example 3: Trait Constraints in Function Parameters**
 
 ```silica
-// Define trait
-trait Comparable {
-    fn equals(self: Self, other: Self) -> boolean;
-    fn less_than(self: Self, other: Self) -> boolean;
+// comparable.silica
+export trait Comparable;
+export equals/2;
+export less_than/2;
+
+required {
+    fn equals(a: Comparable, b: Comparable) -> bool;
+    fn less_than(a: Comparable, b: Comparable) -> bool;
 }
 
-impl Comparable for {name: string, age: int64} {
-    fn equals(self: {name: string, age: int64}, other: {name: string, age: int64}) -> boolean {
-        self.name == other.name and self.age == other.age
-    }
-    
-    fn less_than(self: {name: string, age: int64}, other: {name: string, age: int64}) -> boolean {
-        self.age < other.age
-    }
+impl fn equals(a: {name: string, age: int64}, b: {name: string, age: int64}) -> bool {
+    a.name == b.name and a.age == b.age
 }
 
-// Function using trait constraint
+impl fn less_than(a: {name: string, age: int64}, b: {name: string, age: int64}) -> bool {
+    a.age < b.age
+}
+```
+
+```silica
+// usage
+use comparable;
+
 fn find_maximum(a: Comparable, b: Comparable) -> Comparable {
-    case a.less_than(b) of {
+    case comparable@less_than(a, b) of {
         true -> b;
         false -> a
     }
 }
 
-// Usage: inline person record implements Comparable
 fn example() -> {name: string, age: int64} {
     person1: {name: string, age: int64} <- {name: "Alice", age: 30};
     person2: {name: string, age: int64} <- {name: "Bob", age: 25};
@@ -4316,160 +4242,168 @@ fn example() -> {name: string, age: int64} {
 **Example 4: Trait-Based Collections**
 
 ```silica
-// Define trait for collection elements
-trait CollectionElement {
-    fn to_string(self: Self) -> string;
+// collectionelement.silica
+export trait CollectionElement;
+export to_string/1;
+
+required {
+    fn to_string(e: CollectionElement) -> string;
 }
 
-// Implement trait for different types
-impl CollectionElement for int64 {
-    fn to_string(self: int64) -> string {
-        format("{}", self)
-    }
+impl fn to_string(n: int64) -> string {
+    format("{}", n)
 }
 
-impl CollectionElement for string {
-    fn to_string(self: string) -> string {
-        self
-    }
+impl fn to_string(s: string) -> string {
+    s
 }
+```
 
-// Function operating on collections of trait-constrained elements
+```silica
+// usage
+use collectionelement;
+
 fn print_collection_element(elem: CollectionElement) -> atom {
-    str: string <- elem.to_string();
+    str: string <- collectionelement@to_string(elem);
     print_string(str)
 }
 
-// Usage: Both int64 and string can be used
 fn example() -> atom {
     num: int64 <- 42;
     text: string <- "Hello";
-    
-    // Both types implement CollectionElement
-    print_collection_element(num);   // Calls int64.to_string()
-    print_collection_element(text);  // Calls string.to_string()
+    print_collection_element(num);
+    print_collection_element(text)
 }
 ```
 
 **Key Points:**
 
 1. **No Structural Subtyping**: Distinct inline record types (e.g. `{x: int64, y: int64}` and `{width: int64, height: int64}`) are not subtypes of each other, even if they have similar structure
-2. **Trait-Based Polymorphism**: Types implementing the same trait can be used interchangeably in trait-constrained contexts
+2. **Trait-Based Polymorphism**: Types with `impl fn` declarations in the trait's file can be used interchangeably in trait-constrained contexts
 3. **Explicit Trait Constraints**: Function parameters specify trait requirements (e.g., `value: Display`)
-4. **Multiple Trait Implementation**: Types can implement multiple traits
-5. **Trait Method Dispatch**: Method calls on trait-constrained values dispatch to the appropriate implementation based on the actual type
+4. **Multiple Trait Implementation**: Types can have `impl fn` declarations across multiple trait files
+5. **Trait Method Dispatch**: `traitname@method(value)` dispatches to the appropriate `impl fn` based on the concrete type at compile time
 
 **Difference from Structural Subtyping:**
 
 - **Structural Subtyping**: Types with same structure are automatically compatible
-- **Trait-Based Polymorphism**: Types must explicitly implement traits to be compatible
+- **Trait-Based Polymorphism**: Types must have explicit `impl fn` entries in the trait file to be compatible
 - **Explicit vs. Implicit**: Trait implementation is explicit, structural subtyping is implicit
 
 #### 8.2.4 Trait Composition and Design Patterns
 
-Trait-based polymorphism enables powerful design patterns through trait composition and combination.
+Trait-based polymorphism enables powerful design patterns. Types can participate in multiple traits by having `impl fn` declarations in each respective trait file.
 
 **Trait Composition Patterns:**
 
-Types can implement multiple traits to create rich interfaces:
-
 **Example 1: Multiple Trait Implementation**
 ```silica
-trait Display {
-    fn show(self: Self) -> string;
+// display.silica
+export trait Display;
+export show/1;
+
+required {
+    fn show(d: Display) -> string;
 }
 
-trait Debug {
-    fn debug(self: Self) -> string;
+impl fn show(p: {x: int64, y: int64}) -> string {
+    format("Point({}, {})", p.x, p.y)
+}
+```
+
+```silica
+// debug.silica
+export trait Debug;
+export debug/1;
+
+required {
+    fn debug(d: Debug) -> string;
 }
 
-impl Display for {x: int64, y: int64} {
-    fn show(self: {x: int64, y: int64}) -> string {
-        format("Point({}, {})", self.x, self.y)
-    }
+impl fn debug(p: {x: int64, y: int64}) -> string {
+    format("Point2D {{ x: {}, y: {} }}", p.x, p.y)
 }
+```
 
-impl Debug for {x: int64, y: int64} {
-    fn debug(self: {x: int64, y: int64}) -> string {
-        format("Point2D {{ x: {}, y: {} }}", self.x, self.y)
-    }
-}
+```silica
+// usage
+use debug;
 
-// Function requiring a specific trait
 fn print_debug(value: Debug) -> atom {
-    debug_str: string <- value.debug();
+    debug_str: string <- debug@debug(value);
     print_string(debug_str)
 }
 ```
 
 **Example 2: Multiple Trait Constraints**
 ```silica
-// Define independent traits
-trait Serialize {
-    fn serialize(self: Self) -> string;
+// serialize.silica
+export trait Serialize;
+export serialize/1;
+
+required {
+    fn serialize(s: Serialize) -> string;
 }
 
-trait Deserialize {
-    fn deserialize(data: string) -> Self;
+impl fn serialize(r: {id: int64, name: string}) -> string {
+    format("{{id: {}, name: \"{}\"}}", r.id, r.name)
+}
+```
+
+```silica
+// deserialize.silica
+export trait Deserialize;
+export deserialize/1;
+
+required {
+    fn deserialize(data: string) -> Deserialize;
 }
 
-impl Serialize for {id: int64, name: string} {
-    fn serialize(self: {id: int64, name: string}) -> string {
-        format("{{id: {}, name: \"{}\"}}", self.id, self.name)
-    }
+impl fn deserialize(data: string) -> {id: int64, name: string} {
+    // Parse JSON-like string (simplified)
+    {id: 1, name: "Alice"}
 }
+```
 
-impl Deserialize for {id: int64, name: string} {
-    fn deserialize(data: string) -> {id: int64, name: string} {
-        // Parse JSON-like string (simplified)
-        {id: 1, name: "Alice"}
-    }
-}
+```silica
+// usage
+use serialize;
+use deserialize;
 
-// Function requiring both traits
-fn round_trip(value: Serialize, deserializer: Deserialize) -> atom {
-    // Serialize value
-    serialized: string <- value.serialize();
-    
-    // Deserialize using different type's deserializer
-    // (Note: This is a simplified example - actual usage would be type-specific)
+fn round_trip(value: Serialize) -> atom {
+    serialized: string <- serialize@serialize(value);
+    // further processing...
+    atom
 }
 ```
 
 **Example 3: Trait-Based Type Erasure**
 ```silica
-// Trait for type-erased values
-trait AnyValue {
-    fn type_name(self: Self) -> string;
-    fn to_string(self: Self) -> string;
+// anyvalue.silica
+export trait AnyValue;
+export type_name/1;
+export to_string/1;
+
+required {
+    fn type_name(v: AnyValue) -> string;
+    fn to_string(v: AnyValue) -> string;
 }
 
-// Implement for different types
-impl AnyValue for int64 {
-    fn type_name(self: int64) -> string {
-        "int64"
-    }
-    
-    fn to_string(self: int64) -> string {
-        format("{}", self)
-    }
-}
+impl fn type_name(n: int64) -> string { "int64" }
+impl fn to_string(n: int64) -> string { format("{}", n) }
 
-impl AnyValue for string {
-    fn type_name(self: string) -> string {
-        "string"
-    }
-    
-    fn to_string(self: string) -> string {
-        self
-    }
-}
+impl fn type_name(s: string) -> string { "string" }
+impl fn to_string(s: string) -> string { s }
+```
 
-// Function accepting any type-erased value
+```silica
+// usage
+use anyvalue;
+
 fn process_any_value(value: AnyValue) -> atom {
-    type_name: string <- value.type_name();
-    str_value: string <- value.to_string();
-    print_string(type_name);
+    type_str: string <- anyvalue@type_name(value);
+    str_value: string <- anyvalue@to_string(value);
+    print_string(type_str);
     print_string(str_value)
 }
 ```
@@ -4478,98 +4412,109 @@ fn process_any_value(value: AnyValue) -> atom {
 
 **Pattern 1: Marker Traits**
 ```silica
-// Marker trait (no methods, just type safety)
-trait Passable {
-    // No methods - just marks types as safe to pass between actors
-}
+// passable.silica
+export trait Passable;
 
 // Implement for types that can be passed between actors
-impl Passable for int64;
-impl Passable for string;
+impl int64;
+impl string;
+```
 
-// Function requiring marker trait
+```silica
+// usage
+use passable;
+
 fn cast_message(msg: Passable) -> atom {
-    // Can pass any Passable type
+    // Can accept any Passable type
+    atom
 }
 ```
 
 **Pattern 2: Builder Pattern with Traits**
 ```silica
-// Trait for buildable types
-trait Buildable {
-    fn build(self: Self) -> Self;
+// buildable.silica
+export trait Buildable;
+export build/1;
+
+required {
+    fn build(b: Buildable) -> Buildable;
 }
 
-impl Buildable for {host: string, port: int64} {
-    fn build(self: {host: string, port: int64}) -> {host: string, port: int64} {
-        self
-    }
+impl fn build(cfg: {host: string, port: int64}) -> {host: string, port: int64} {
+    cfg
 }
+```
 
-// Builder function using trait
+```silica
+// usage
+use buildable;
+
 fn create_config(builder: Buildable) -> Buildable {
-    builder.build()
+    buildable@build(builder)
 }
 ```
 
 **Pattern 3: Strategy Pattern with Traits**
 ```silica
-// Strategy trait
-trait SortStrategy {
-    fn sort(self: Self, data: list<int64>) -> list<int64>;
+// sortstrategy.silica
+export trait SortStrategy;
+export sort/2;
+
+required {
+    fn sort(s: SortStrategy, data: List[int64]) -> List[int64];
 }
 
 // Different strategies as distinct inline tagged shapes (§3.7)
-impl SortStrategy for (:quick, unit) {
-    fn sort(self: (:quick, unit), data: List[int64, normal]) -> List[int64, normal] {
-        data
-    }
+impl fn sort(s: (:quick, unit), data: List[int64, normal]) -> List[int64, normal] {
+    data
 }
 
-impl SortStrategy for (:merge, unit) {
-    fn sort(self: (:merge, unit), data: List[int64, normal]) -> List[int64, normal] {
-        data
-    }
+impl fn sort(s: (:merge, unit), data: List[int64, normal]) -> List[int64, normal] {
+    data
 }
+```
+
+```silica
+// usage
+use sortstrategy;
 
 fn sort_data(strategy: SortStrategy, data: List[int64, normal]) -> List[int64, normal] {
-    strategy.sort(data)
+    sortstrategy@sort(strategy, data)
 }
 ```
 
 **Trait-Based Type Checking:**
 
-While Silica requires explicit type annotations for all variable bindings, function parameters, and return types, trait constraints enable flexible type usage through trait-based type checking. The type checker verifies that types implement required traits rather than inferring types.
+While Silica requires explicit type annotations for all variable bindings, function parameters, and return types, trait constraints enable flexible type usage through trait-based type checking. The type checker verifies that types have `impl fn` entries in the relevant trait file rather than inferring types.
 
 **Example: Trait-Based Type Checking**
 ```silica
-// Trait for numeric operations
-trait Numeric {
-    fn add(self: Self, other: Self) -> Self;
-    fn multiply(self: Self, other: Self) -> Self;
+// numeric.silica
+export trait Numeric;
+export add/2;
+export multiply/2;
+
+required {
+    fn add(a: Numeric, b: Numeric) -> Numeric;
+    fn multiply(a: Numeric, b: Numeric) -> Numeric;
 }
 
-impl Numeric for int64 {
-    fn add(self: int64, other: int64) -> int64 {
-        self + other
-    }
-    
-    fn multiply(self: int64, other: int64) -> int64 {
-        self * other
-    }
-}
+impl fn add(a: int64, b: int64) -> int64 { a + b }
+impl fn multiply(a: int64, b: int64) -> int64 { a * b }
+```
 
-// Function with trait constraint - type checker verifies trait implementation
+```silica
+// usage
+use numeric;
+
 fn compute(value: Numeric, factor: Numeric) -> Numeric {
-    // Trait constraint: return type must match input type's trait implementation
-    value.multiply(factor)
+    numeric@multiply(value, factor)
 }
 
-// Usage: Type is explicit but constrained by trait
 fn example() -> int64 {
     x: int64 <- 10;
     y: int64 <- 5;
-    result: int64 <- compute(x, y);  // Type must be explicit, trait checked at compile time
+    result: int64 <- compute(x, y);
     result
 }
 ```
@@ -5714,33 +5659,36 @@ The type checking rule is:
 
 The type checker looks up trait implementations using the following algorithm:
 
-1. **Direct Implementation**: Check if `impl TraitName for τ_e` exists
+1. **Direct Implementation**: Check if an `impl fn TraitMethod` exists in the trait's file for the argument's concrete type
 
 **Trait Constraint Examples:**
 
 ```silica
-// Define trait
-trait Display {
-    fn show(self: Self) -> string;
+// display.silica
+export trait Display;
+export show/1;
+
+required {
+    fn show(d: Display) -> string;
 }
 
-// Implement trait for int64
-impl Display for int64 {
-    fn show(self: int64) -> string {
-        format("{}", self)
-    }
+impl fn show(n: int64) -> string {
+    format("{}", n)
 }
+```
 
-// Function with trait constraint
+```silica
+// usage
+use display;
+
 fn print_value(x: Display) -> atom {
-    str: string <- x.show();
+    str: string <- display@show(x);
     print_string(str)
 }
 
-// Type checking: int64 implements Display
 fn example() -> atom {
     value: int64 <- 42;
-    print_value(value)  // ✓ Valid: int64 implements Display
+    print_value(value)  // Valid: int64 has impl fn show in display.silica
 }
 ```
 
@@ -5749,44 +5697,37 @@ fn example() -> atom {
 When a function requires multiple trait constraints, all constraints must be satisfied:
 
 ```silica
-trait Display {
-    fn show(self: Self) -> string;
-}
+use display;
+use comparable;
 
-trait Comparable {
-    fn equals(self: Self, other: Self) -> boolean;
-}
-
-// Function requiring both traits
-fn print_and_compare(x: Display, y: Comparable) -> boolean {
-    str: string <- x.show();
+fn print_and_compare(x: Display, y: Comparable) -> bool {
+    str: string <- display@show(x);
     print_string(str);
-    y.equals(y, y)
+    comparable@equals(y, y)
 }
 
-// Type checking: Both arguments must implement their respective traits
+// Type checking: Both arguments must have impl fn entries in their respective trait files
 ```
 
 **Trait Constraint Error:**
 
-If an argument type does not implement the required trait, a type error is generated:
+If an argument type does not have an `impl fn` in the required trait's file, a type error is generated:
 
 ```
 Type τ_e does not implement trait TraitName
 Required trait: TraitName
 Argument type: τ_e
+No impl fn found in TraitName's file for type τ_e
 ```
 
 **Example Error:**
 
 ```silica
-trait Display {
-    fn show(self: Self) -> string;
-}
+use display;
 
-// int64 does not implement Display (no impl declaration)
+// int64 has no impl fn show in display.silica
 fn print_value(x: Display) -> atom {
-    str: string <- x.show();
+    str: string <- display@show(x);
     print_string(str)
 }
 
@@ -5800,21 +5741,23 @@ fn example() -> atom {
 
 When calling a method on a trait-constrained value, the compiler resolves the method implementation:
 
-1. **Lookup Implementation**: Find `impl TraitName for τ_e`
-2. **Method Binding**: Bind method call to the implementation's method
-3. **Type Checking**: Verify method signature matches trait definition
+1. **Lookup Implementation**: Find `impl fn MethodName` in the trait's file for the concrete type
+2. **Method Binding**: Bind the `traitname@method(value)` call to the matching `impl fn`
+3. **Type Checking**: Verify method signature matches the `required` definition
 
 **Trait Constraint Propagation:**
 
 Trait constraints propagate through function calls:
 
 ```silica
+use display;
+
 fn helper(x: Display) -> string {
-    x.show()  // Trait constraint propagates: x must implement Display
+    display@show(x)  // Trait constraint propagates: x must implement Display
 }
 
 fn caller(value: int64) -> string {
-    helper(value)  // int64 must implement Display for this to type-check
+    helper(value)  // int64 must have impl fn show in display.silica for this to type-check
 }
 ```
 
@@ -7383,9 +7326,7 @@ fn handler_name(msg: MessageType, state: StateType) -> (:reply, Reply, State) | 
 
 ```silica
 // module my_actors.silica
-
-impl ActorMessage for int64;
-impl ActorState for int64;
+// (int64 impl entries are declared in actormessage.silica and actorstate.silica)
 
 // This is a handler function - nothing special about its definition
 fn counter_handler(msg: int64, state: int64) -> (:reply, int64, int64) {
@@ -7547,7 +7488,7 @@ When a behavior function detects a shutdown signal and returns, the runtime:
 
 **Example:**
 ```silica
-impl ActorMessage for atom;
+// actormessage.silica declares: impl atom;
 
 fn server(msg: atom, state: int64) -> (:no_reply, int64) {
     case msg of {
@@ -8437,7 +8378,7 @@ If the behavior returns `(:reply, int64, State)`, then `call()` returns `int64`.
 - If the behavior returns a union of both `(:reply, ...)` and `(:no_reply, ...)` forms, the compiler reports a **type error**: `"behavior has inconsistent return types; cannot determine if call-safe"`
 - If Reply type does not match expected return type, the compiler reports a **type error**: `"reply type mismatch: expected X, got Y"`
 
-The `message` argument must satisfy `ActorMessage` — typically `expr impl ActorMessage {}` (§3.3, §16.3.2) or a type that has `impl ActorMessage for T` in scope.
+The `message` argument must satisfy `ActorMessage` — typically `expr impl ActorMessage {}` (§3.3, §16.3.2) or a type that has `impl ConcreteType;` registered in `actormessage.silica`.
 
 #### 16.1.2 Asynchronous Cast
 Messages can be sent asynchronously without blocking, with success/failure indication:
@@ -8459,7 +8400,7 @@ cast(actor: actor_ref, message: ActorMessage) -> atom proc[concurrency]
 - If `actor` is spawned with a call-only behavior (returns `(:reply, ...)`), the compiler reports a **type error**: `"cannot cast() to a call-only actor"`
 - If the behavior returns a union of both `(:reply, ...)` and `(:no_reply, ...)` forms, the compiler reports a **type error**: `"behavior has inconsistent return types; cannot determine if cast-safe"`
 
-Mailboxes are unbounded queues that can grow without limit, so messages are never rejected due to mailbox capacity. The `message` argument must satisfy `ActorMessage` — typically `expr impl ActorMessage {}` (§3.3, §16.3.2) or a type that has `impl ActorMessage for T` in scope.
+Mailboxes are unbounded queues that can grow without limit, so messages are never rejected due to mailbox capacity. The `message` argument must satisfy `ActorMessage` — typically `expr impl ActorMessage {}` (§3.3, §16.3.2) or a type that has `impl ConcreteType;` registered in `actormessage.silica`.
 
 #### 16.1.3 Message Ordering
 Each actor's mailbox is a queue containing all messages from all actors that **call** or **cast** to it. Messages are processed in standard queue ordering: first-received, first-processed (FIFO). Messages from the same origin actor maintain order relative to each other, but messages from different origin actors are interleaved in the order they arrive at the actor's mailbox. Both `call()` and `cast()` messages are interleaved in arrival order.
@@ -8753,8 +8694,7 @@ error: cannot call(self(), ...)
 
 **Example: Backpressure via Acknowledgments**
 ```silica
-impl ActorMessage for (:work, int64);
-impl ActorMessage for (:ack);
+// actormessage.silica declares: impl (:work, int64); impl (:ack);
 
 fn worker(msg: (:ack), state: int64) -> (:no_reply, int64) {
     (:no_reply, state)
@@ -8775,33 +8715,37 @@ fn producer(worker_ref: actor_ref) -> atom {
 The `ActorState` trait is a marker trait that must be implemented by types used as actor initial state:
 
 ```
-trait ActorState {
-    // No methods required - marker trait for type safety
-}
+// actorstate.silica (stdlib)
+export trait ActorState;
+
+// Types used as actor initial state must declare impl:
+// impl { field1: T1, field2: T2 };
 ```
 
-Only the `initial_state` parameter in `spawn(initial_state, ...)` must implement `ActorState`. The trait is only implemented for **inline** composite types (records, tuples, etc.) with an explicit `impl ActorState for …` in scope (§3.4.2) — no blanket implementations for primitive types.
+Only the `initial_state` parameter in `spawn(initial_state, ...)` must implement `ActorState`. The trait is only implemented for **inline** composite types (records, tuples, etc.) with an explicit `impl ConcreteType;` in `actorstate.silica` — no blanket implementations for primitive types.
 
 #### 16.3.2 ActorMessage Trait
 The `ActorMessage` trait is a **marker trait** used only for type checking: it declares **no methods** and carries **no associated functions**. Mailbox delivery uses **`call()`** (synchronous) and **`cast()`** (asynchronous); implementations do not define behavior.
 
 ```
-trait ActorMessage {
-    // No methods required - marker trait for type safety
-}
+// actormessage.silica (stdlib)
+export trait ActorMessage;
+
+// Types used as messages must declare impl:
+// impl (:tag, payload_type);
 ```
 
 **Required explicit marker.** A type may be used as the payload of `cast()` **only** if `ActorMessage` is established by one of the forms below. The compiler **must not** infer `ActorMessage` from the structure of the payload alone (no automatic or default implementation).
 
 **Forms** (marker only; **no trait methods** — empty `{}` when a brace body is present):
 
-1. **In-place payload marker (usual at `cast` / `cast`):** `expr impl ActorMessage impl_marker_body` as the **message operand** (§3.3). The postfix binds to `expr` (the message value). `impl_marker_body` is empty or `{}` only. **Example:** `cast(peer, (:job, "run", 7) impl ActorMessage {})`.
-2. **Type-level (optional, for reuse):** `impl ActorMessage for T;` or `impl_actor_message_decl` / `impl_declaration` with empty body (§3.4.9), where `T` is an **inline** type expression (§3.4.2).
-3. **Tagged tuple alternate spelling** (§16.3.2.1): `(:tag, T1, …, Tn) impl ActorMessage;` — equivalent to `impl ActorMessage for (:tag, T1, …, Tn);`.
+1. **In-place payload marker (usual at `cast` / `cast`):** `expr impl ActorMessage impl_marker_body` as the **message operand** (§3.3). The postfix binds to `expr` (the message value). `impl_marker_body` is empty or `{}` only. **Example:** `cast(peer, (:job, "run", 7) impl ActorMessage {})`. This is syntactic sugar that the compiler desugars to an `impl` lookup in `actormessage.silica`.
+2. **Type-level (optional, for reuse):** `impl ConcreteType;` in `actormessage.silica`, where `ConcreteType` is an **inline** type expression (§3.4.2).
+3. **Tagged tuple alternate spelling** (§16.3.2.1): `(:tag, T1, …, Tn) impl ActorMessage;` — equivalent to `impl (:tag, T1, …, Tn);` in `actormessage.silica`.
 
-**Well-formedness:** For `impl ActorMessage for ( :tag, T1, …, Tn)` or for `expr impl ActorMessage {}` where `expr` has a tagged-tuple type, each `Ti` must already satisfy `ActorMessage` (via (1)–(2) at component use sites or type-level `impl`). Similarly for inline records `{ f1: T1, … }`. Mutual recursion is rejected unless resolved by declaration order rules defined by the implementation.
+**Well-formedness:** For `impl (:tag, T1, …, Tn);` in `actormessage.silica` or for `expr impl ActorMessage {}` where `expr` has a tagged-tuple type, each `Ti` must already satisfy `ActorMessage` (via (1)–(2) at component use sites or type-level `impl`). Similarly for inline records `{ f1: T1, … }`. Mutual recursion is rejected unless resolved by declaration order rules defined by the implementation.
 
-**Identity:** There are no user-declared type names (§3.4.2). Two structurally identical inline types are the same type for matching purposes (§8.2.2). `impl ActorMessage for T` applies to that **exact** inline type `T`; `expr impl ActorMessage {}` establishes the marker for the static type of `expr` at that expression.
+**Identity:** There are no user-declared type names (§3.4.2). Two structurally identical inline types are the same type for matching purposes (§8.2.2). `impl ConcreteType;` in `actormessage.silica` applies to that **exact** inline type; `expr impl ActorMessage {}` establishes the marker for the static type of `expr` at that expression.
 
 **Example (worker + client):**
 
@@ -8832,7 +8776,7 @@ fn client(peer: actor_ref, reply: actor_ref) -> atom {
 }
 ```
 
-The `impl ActorMessage {}` suffix is required on each message operand unless a matching type-level `impl ActorMessage for T` is already in scope for that payload type. The `{}` is empty because `ActorMessage` defines no methods.
+The `impl ActorMessage {}` suffix is required on each message operand unless a matching `impl ConcreteType;` entry in `actormessage.silica` is already registered for that payload type. The `{}` is empty because `ActorMessage` defines no methods.
 
 #### 16.3.2.0.1 ActorMessage Marker Syntax Quick Reference
 
@@ -8854,19 +8798,21 @@ cast(actor, (:ping, 42) impl ActorMessage {})
 cast(actor, "hello" impl ActorMessage {})
 ```
 
-**When Optional:** The `impl ActorMessage {}` suffix can be omitted if a type-level declaration exists in scope:
+**When Optional:** The `impl ActorMessage {}` suffix can be omitted if a type-level `impl ConcreteType;` entry in `actormessage.silica` is already registered for that payload type:
 ```silica
-impl ActorMessage for { command: string, reply_to: actor_ref };
+// In actormessage.silica: impl { command: string, reply_to: actor_ref };
 
 // Now you can omit the postfix:
 cast(actor, { command: "go", reply_to: self() })  // ✓ works
 ```
 
-**Type-Level Declaration (for reuse):**
+**Type-Level Declaration (for reuse — in actormessage.silica):**
 ```silica
-// Declare once at module level
-impl ActorMessage for { seq: int64, reply_to: actor_ref };
+// actormessage.silica — declare once
+impl { seq: int64, reply_to: actor_ref };
+```
 
+```silica
 // Use multiple times without postfix
 cast(actor1, { seq: 1, reply_to: self() })
 cast(actor2, { seq: 2, reply_to: self() })
@@ -8880,11 +8826,16 @@ A **tagged tuple type** is written `( :tag, T1, …, Tn)` where `:tag` is an **a
 **Required syntax** — one of the following (no method bodies; `impl_marker_body` per §3.4.9). Component types must already have `ActorMessage` in scope:
 
 ```silica
-impl ActorMessage for int64;
+// In actormessage.silica:
+impl int64;
 
-impl ActorMessage for (:bob, int64);
+impl (:bob, int64);
 
-impl ActorMessage for string;
+impl string;
+```
+
+Or at call site (postfix form):
+```silica
 (:ping, string, int64) impl ActorMessage;
 ```
 
@@ -8897,7 +8848,7 @@ cast(actor, (:bob, 42) impl ActorMessage {})
 cast(actor, (:ping, "hi", 7) impl ActorMessage {})
 ```
 
-Or, if `impl ActorMessage for (:bob, int64)` is in scope, the operand may omit the postfix for that type.
+Or, if `impl (:bob, int64);` is declared in `actormessage.silica`, the operand may omit the postfix for that type.
 
 Behavior functions use the tagged tuple type in the message parameter position:
 
@@ -8912,7 +8863,7 @@ fn worker(msg: (:bob, int64), state: int64) -> int64 proc[concurrency] {
 **Well-formedness:** Each `Ti` in `( :tag, T1, …, Tn)` must satisfy `ActorMessage` (see type-level `impl` or in-place markers on subvalues where applicable) before the tagged-tuple type-level `impl` is accepted.
 
 #### 16.3.3 Message Type Safety
-Messages must satisfy `ActorMessage` through an **in-place** postfix on the operand (§3.3, §16.3.2) **or** a type-level `impl ActorMessage for T` in scope:
+Messages must satisfy `ActorMessage` through an **in-place** postfix on the operand (§3.3, §16.3.2) **or** a type-level `impl ConcreteType;` registered in `actormessage.silica`:
 
 ```silica
 actor_ref: actor_ref <- spawn(0, handler)
@@ -8938,7 +8889,7 @@ fn handler(msg: { data: int64, reply_to: actor_ref }, state: State) -> State {
 The `reply_to` field is optional - messages without it cannot be used for cast-back, but this is enforced at compile time through field access checks. Attempting to access `reply_to` on a message type that doesn't have it results in a compile-time error.
 
 #### 16.3.5 Message Passing Guarantees
-- **Type Safety**: Messages are type-checked at compile time — they must satisfy `ActorMessage` (§16.3.2) via `expr impl ActorMessage {}` on the payload and/or explicit type-level `impl` in scope
+- **Type Safety**: Messages are type-checked at compile time — they must satisfy `ActorMessage` (§16.3.2) via `expr impl ActorMessage {}` on the payload and/or explicit `impl ConcreteType;` in `actormessage.silica`
 - **Trait Checking**: All type inference and trait checking happens at compile time, not runtime
 - **Compile-Time Verification**: Field access (e.g., `reply_to`) is verified at compile time - attempting to access a field that doesn't exist in the message type results in a compile-time error
 - **Immutability**: Message data cannot be mutated after it is queued for delivery
@@ -10567,32 +10518,37 @@ fn main() -> int { math@divide(10, 2) }
 Optional values are written as **inline** sums `Some(T) | None` (§3.4.2, §4.2.5)—there is no `Option<T>` and no separate option **type name** per `T`.
 
 ```
-trait OptionLike {
-    fn is_some(self: Self) -> boolean;
-    fn is_none(self: Self) -> boolean;
+// optionlike.silica (stdlib)
+export trait OptionLike;
+export is_some/1;
+export is_none/1;
+
+required {
+    fn is_some(o: OptionLike) -> bool;
+    fn is_none(o: OptionLike) -> bool;
 }
 
-// Example: one element type; the library may repeat the same pattern for other `T` as separate `impl`s
-impl OptionLike for Some(int) | None {
-    fn is_some(self: Some(int) | None) -> boolean {
-        case self of
-            Some(_) -> true
-            None -> false
-        end
-    }
-    fn is_none(self: Some(int) | None) -> boolean {
-        case self of
-            Some(_) -> false
-            None -> true
-        end
+// Example: one element type; the library may repeat the same pattern for other `T` as separate impl fn
+impl fn is_some(o: Some(int) | None) -> bool {
+    case o of {
+        Some(_: int) -> true;
+        None -> false
     }
 }
+impl fn is_none(o: Some(int) | None) -> bool {
+    case o of {
+        Some(_: int) -> false;
+        None -> true
+    }
+}
+```
 
+```silica
 fn unwrap_int(opt: Some(int) | None) -> int {
-    case opt of
-        Some(value) -> value
+    case opt of {
+        Some(value: int) -> value;
         None -> panic("unwrap on None")
-    end
+    }
 }
 
 fn find_index_int(list: List[int, normal], item: int) -> Some(int) | None {
@@ -10607,31 +10563,36 @@ fn find_index_int(list: List[int, normal], item: int) -> Some(int) | None {
 Results use **inline** sums such as `Ok(T) | Error(E)` (§4.2.5)—there is no `Result<T, E>`.
 
 ```
-trait ResultLike {
-    fn is_ok(self: Self) -> boolean;
-    fn is_error(self: Self) -> boolean;
+// resultlike.silica (stdlib)
+export trait ResultLike;
+export is_ok/1;
+export is_error/1;
+
+required {
+    fn is_ok(r: ResultLike) -> bool;
+    fn is_error(r: ResultLike) -> bool;
 }
 
-impl ResultLike for Ok(int) | Error(string) {
-    fn is_ok(self: Ok(int) | Error(string)) -> boolean {
-        case self of
-            Ok(_) -> true
-            Error(_) -> false
-        end
-    }
-    fn is_error(self: Ok(int) | Error(string)) -> boolean {
-        case self of
-            Ok(_) -> false
-            Error(_) -> true
-        end
+impl fn is_ok(r: Ok(int) | Error(string)) -> bool {
+    case r of {
+        Ok(_: int) -> true;
+        Error(_: string) -> false
     }
 }
+impl fn is_error(r: Ok(int) | Error(string)) -> bool {
+    case r of {
+        Ok(_: int) -> false;
+        Error(_: string) -> true
+    }
+}
+```
 
+```silica
 fn unwrap_ok_int_string(result: Ok(int) | Error(string)) -> int {
-    case result of
-        Ok(value) -> value
-        Error(_) -> panic("unwrap on Error")
-    end
+    case result of {
+        Ok(value: int) -> value;
+        Error(_: string) -> panic("unwrap on Error")
+    }
 }
 
 fn parse_int(s: string) -> Ok(int) | Error(string) {
@@ -11237,19 +11198,8 @@ module arch.sve {
     pub type VecBoolean       // Scalable boolean vector
     pub type Pred          // predicate mask for conditional operations
 
-    // Marker trait for SVE-supported element types
-    trait VecElement {
-        // Marker trait, no methods needed
-    }
-    
-    // Implement VecElement for supported types
-    impl VecElement for int8;
-    impl VecElement for int16;
-    impl VecElement for int32;
-    impl VecElement for int64;
-    impl VecElement for float16;
-    impl VecElement for float32;
-    impl VecElement for float64;
+    // Marker trait for SVE-supported element types is defined in vecelement.silica (stdlib)
+    // with: impl int8; impl int16; impl int32; impl int64; impl float16; impl float32; impl float64;
 }
 ```
 
@@ -11892,17 +11842,8 @@ module arch.neon {
     pub type Vec64Int32    // 64-bit vector of int32 (limited use)
     pub type Vec64Float32  // 64-bit vector of float32 (limited use)
 
-    // Marker trait for NEON-supported element types
-    trait Vec128Element {
-        // Marker trait, no methods needed
-    }
-    
-    // Implement Vec128Element for supported types
-    impl Vec128Element for int8;
-    impl Vec128Element for int16;
-    impl Vec128Element for int32;
-    impl Vec128Element for int64;
-    impl Vec128Element for float32;
+    // Marker trait for NEON-supported element types is defined in vec128element.silica (stdlib)
+    // with: impl int8; impl int16; impl int32; impl int64; impl float32;
 }
 ```
 
@@ -11938,12 +11879,11 @@ module arch.neon {
 Memory Tagging Extensions (MTE) provide hardware-accelerated memory safety through tagged pointers. Types that can be used with MTE must implement the `tagged` trait.
 
 ```
-trait tagged {
-    // Marker trait for types that can be used with MTE
-}
+// tagged.silica — marker trait for types that can be used with MTE
+export trait Tagged;
 
-// Example: Implement tagged trait for an inline struct type
-impl tagged for { value: int64, next: int64 };
+// Example: declare impl for an inline struct type
+impl { value: int64, next: int64 };
 ```
 
 #### 21.3.2 Tagged Pointer Operations
@@ -12716,7 +12656,7 @@ MTE tagging is available for all memory spaces:
 **Example Usage:**
 
 ```silica
-impl tagged for { value: int64, next: int64 };
+// tagged.silica declares: impl { value: int64, next: int64 };
 
 fn example() -> atom {
     sequence proc[mem(normal)]
@@ -12749,12 +12689,11 @@ fn example() -> atom {
 Pointer Authentication Codes (PAC) provide cryptographic signing of pointers for security. Types that can be used with PAC must implement the `authenticated` trait.
 
 ```
-trait authenticated {
-    // Marker trait for types that can be used with PAC
-}
+// authenticated.silica — marker trait for types that can be used with PAC
+export trait Authenticated;
 
-// Example: Implement authenticated trait for an inline struct type
-impl authenticated for { value: int64, metadata: string };
+// Example: declare impl for an inline struct type
+impl { value: int64, metadata: string };
 ```
 
 #### 21.4.2 Authenticated Pointer Operations
@@ -13046,7 +12985,7 @@ PAC integrates with Silica's region-based memory model:
 **Example: Secure Pointer Usage**
 
 ```silica
-impl authenticated for { value: int64, metadata: string };
+// authenticated.silica declares: impl { value: int64, metadata: string };
 
 fn secure_operation(data: { value: int64, metadata: string }) -> atom proc[mem(normal)] {
     sequence proc[mem(normal)]
@@ -13075,16 +13014,12 @@ The Apple Matrix Engine (AMX) provides hardware-accelerated matrix operations. T
 ```
 module arch.apple.amx {
 
-    trait apple_matrix {
-        // Marker trait for types that can be used with AMX
-    }
+    // apple_matrix is a marker trait defined in applematrix.silica
+    // (export trait AppleMatrix; impl { values: buf(R, normal, float32, 16) };)
 
-    // Example: Implement apple_matrix trait for a struct
-    struct MatrixData {
-        values: buf(R, normal, float32, 16)
-    }
-
-    impl apple_matrix for MatrixData;
+    // Example struct (value type, not a named type declaration):
+    // { values: buf(R, normal, float32, 16) }
+    // impl is declared in applematrix.silica
 
     // AMX matrix operations (type must implement apple_matrix trait)
     // For each type that implements the apple_matrix trait, the compiler generates
