@@ -1218,15 +1218,24 @@ fn parse_function_param_count(func_type: string) -> int64 {
         true -> 0;
         false -> do
             params_part: string <- substring(func_type, 0, arrow_pos);
-            case len(params_part) < 2 or substring(params_part, 0, 1) != "(" or substring(params_part, len(params_part) - 1, len(params_part)) != ")" of {
+            case len(params_part) < 1 of {
                 true -> 0;
-                false -> do
-                    inner: string <- trim_leading_user_call(substring(params_part, 1, len(params_part) - 1));
-                    case len(inner) == 0 of {
-                        true -> 0;
-                        false -> parse_param_count_inner(inner)
-                    }
-                end
+                false -> case substring(params_part, 0, 1) == "(" and substring(params_part, len(params_part) - 1, len(params_part)) == ")" of {
+                    true -> do
+                        inner: string <- trim_leading_user_call(substring(params_part, 1, len(params_part) - 1));
+                        case len(inner) == 0 of {
+                            true -> 0;
+                            false -> parse_param_count_inner(inner)
+                        }
+                    end;
+                    false -> do
+                        inner_np: string <- trim_leading_user_call(params_part);
+                        case len(inner_np) == 0 of {
+                            true -> 0;
+                            false -> parse_param_count_inner(inner_np)
+                        }
+                    end
+                }
             }
         end
     }
@@ -1260,9 +1269,12 @@ fn get_params_inner_from_func_type(func_type: string) -> string {
         true -> "";
         false -> do
             params_part: string <- substring(func_type, 0, arrow_pos);
-            case len(params_part) < 2 of {
+            case len(params_part) < 1 of {
                 true -> "";
-                false -> trim_leading_user_call(substring(params_part, 1, len(params_part) - 1))
+                false -> case substring(params_part, 0, 1) == "(" and substring(params_part, len(params_part) - 1, len(params_part)) == ")" of {
+                    true -> trim_leading_user_call(substring(params_part, 1, len(params_part) - 1));
+                    false -> trim_leading_user_call(params_part)
+                }
             }
         end
     }
@@ -1285,16 +1297,94 @@ fn get_first_param_type(params_inner: string) -> (string, string) {
     }
 }
 
+// Args after the first: kind-4 chain nodes only; anything else (non--1, non-4) does not add args (avoids counting 2 for a single-arg call when the tail is not dummy).
+fn count_additional_call_args_user_call(er: Expr) -> int64 {
+    case er.kind == -1 of {
+        true -> 0;
+        false -> case er.kind == 4 of {
+            true -> 1 + count_additional_call_args_user_call(er.right_expr);
+            false -> 0
+        }
+    }
+}
+
 fn count_call_args_user_call(expr: Expr) -> int64 {
     case expr.inner.kind == -1 of {
         true -> 0;
-        false -> case expr.right_expr.kind == -1 of {
-            true -> 1;
-            false -> case expr.right_expr.kind == 4 of {
-                true -> 1 + count_call_args_user_call(expr.right_expr);
-                false -> 2
-            }
+        false -> 1 + count_additional_call_args_user_call(expr.right_expr)
+    }
+}
+
+// Duplicated from type_checker_modules (cannot import modules here — dependency cycle). Used for module@fn resolution from world.
+fn list_param_length_call(ps: ListParam) -> int64 {
+    case ps.is_nil of {
+        true -> 0;
+        false -> 1 + list_param_length_call(ps.tail)
+    }
+}
+
+// Only tag 0: required trait signatures (tag 7) share the same name/arity as impl fn and must not win for `module@fn` resolution.
+fn find_function_decl_by_name_arity_call(decls: ListDeclaration, fn_name: string, arity: int64) -> (bool, Declaration) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case decls.head.tag == 0 of {
+            true -> case decls.head.name == fn_name and list_param_length_call(decls.head.parameters) == arity of {
+                true -> (true, decls.head);
+                false -> find_function_decl_by_name_arity_call(decls.tail, fn_name, arity)
+            };
+            false -> find_function_decl_by_name_arity_call(decls.tail, fn_name, arity)
         }
+    }
+}
+
+fn param_types_str_from_params(params: ListParam) -> string {
+    case params.is_nil of {
+        true -> "";
+        false -> case params.tail.is_nil of {
+            true -> params.head.type_name;
+            false -> concat(concat(param_types_str_from_params(params.tail), ","), params.head.type_name)
+        }
+    }
+}
+
+fn build_function_type_for_decl_call(decl: Declaration) -> string {
+    params_str: string <- param_types_str_from_params(decl.parameters);
+    case decl.parameters.is_nil of {
+        true -> concat("() -> ", decl.return_type_name);
+        false -> concat(concat(concat("(", params_str), ") -> "), decl.return_type_name)
+    }
+}
+
+// §19.3.2: for `module@fn(args)`, use the callee declaration in `world` so arity matches the arg chain (avoids env string / parse_function_param_count skew for trait exports).
+fn try_resolve_qualified_call_func_type(expr: Expr, world: ListNamedProgram) -> (bool, string) {
+    at: int64 <- first_at_in_expr_call_name(expr.name, 0);
+    case at < 0 of {
+        true -> (false, "");
+        false -> do
+            mod_id: string <- substring(expr.name, 0, at);
+            fn_id: string <- substring(expr.name, at + 1, len(expr.name));
+            ac: int64 <- count_call_args_user_call(expr);
+            (pf: bool, pprog: Program) <- parser_ast@find_named_program(mod_id, world);
+            case pf of {
+                false -> (false, "");
+                true -> do
+                    (df: bool, ddecl: Declaration) <- find_function_decl_by_name_arity_call(pprog.declarations, fn_id, ac);
+                    case df of {
+                        true -> (true, build_function_type_for_decl_call(ddecl));
+                        false -> case ac == 0 of {
+                            true -> do
+                                (df1: bool, d1: Declaration) <- find_function_decl_by_name_arity_call(pprog.declarations, fn_id, 1);
+                                case df1 of {
+                                    true -> (true, build_function_type_for_decl_call(d1));
+                                    false -> (false, "")
+                                }
+                            end;
+                            false -> (false, "")
+                        }
+                    }
+                end
+            }
+        end
     }
 }
 
@@ -1313,7 +1403,7 @@ fn check_user_call_result_user_call(expr: Expr, expected_type: string, return_ty
 
 fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_type: string, return_type: string, context: TypeContext, call_expr: Expr, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.inner.kind == -1 of {
-            true -> case len(params_inner) == 0 of {
+        true -> case len(params_inner) == 0 of {
             true -> check_user_call_result_user_call(call_expr, expected_type, return_type, context, world);
             false -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6")
         };
@@ -1325,31 +1415,31 @@ fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_typ
                     r1: TypeCheckResult <- check_expr(expr.inner, first_param, context, world);
                     case r1.is_ok of {
                         false -> r1;
-                        true -> case expr.right_expr.kind == -1 of {
-                            true -> case len(rest_params) == 0 of {
-                                true -> check_user_call_result_user_call(call_expr, expected_type, return_type, context, world);
-                                false -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6")
-                            };
-                            false -> case expr.right_expr.kind == 4 of {
-                                true -> case len(rest_params) == 0 of {
-                                    true -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6");
-                                    false -> check_user_call_args_recursive(expr.right_expr, rest_params, expected_type, return_type, context, call_expr, world)
-                                };
-                                false -> do
-                                    (second_param: string, rest_rest: string) <- get_first_param_type(rest_params);
-                                    case len(second_param) == 0 or len(rest_rest) > 0 of {
+                        true -> case len(rest_params) == 0 of {
+                            true -> check_user_call_result_user_call(call_expr, expected_type, return_type, context, world);
+                            false -> case expr.right_expr.kind == -1 of {
+                                true -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6");
+                                false -> case expr.right_expr.kind == 4 of {
+                                    true -> case len(rest_params) == 0 of {
                                         true -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6");
-                                        false -> do
-                                            r2: TypeCheckResult <- check_expr(expr.right_expr, second_param, context, world);
-                                            case r2.is_ok of {
-                                                false -> r2;
-                                                true -> check_user_call_result_user_call(call_expr, expected_type, return_type, context, world)
-                                            }
-                                        end
-                                    }
-                                end
+                                        false -> check_user_call_args_recursive(expr.right_expr, rest_params, expected_type, return_type, context, call_expr, world)
+                                    };
+                                    false -> do
+                                        (second_param: string, rest_rest: string) <- get_first_param_type(rest_params);
+                                        case len(second_param) == 0 or len(rest_rest) > 0 of {
+                                            true -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6");
+                                            false -> do
+                                                r2: TypeCheckResult <- check_expr(expr.right_expr, second_param, context, world);
+                                                case r2.is_ok of {
+                                                    false -> r2;
+                                                    true -> check_user_call_result_user_call(call_expr, expected_type, return_type, context, world)
+                                                }
+                                            end
+                                        }
+                                    end
+                                }
                             }
-                        };
+                        }
                     }
                 end
             }
@@ -1358,22 +1448,33 @@ fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_typ
 }
 
 fn check_user_defined_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    resolved_type: string <- lookup_function_type_for_call_local(context.env, expr.name);
+    _: unit <- println(concat(concat(concat("DBG check_user_defined_call name=", expr.name), " expected_type="), expected_type));
+    (rw: bool, ft_world: string) <- try_resolve_qualified_call_func_type(expr, world);
+    _: unit <- println(concat(concat(concat("DBG  rw=", case rw of { true -> "true"; false -> "false" }), " ft_world="), ft_world));
+    resolved_type: string <- case rw of {
+        true -> ft_world;
+        false -> lookup_function_type_for_call_local(context.env, expr.name)
+    };
+    _: unit <- println(concat("DBG  resolved_type=", resolved_type));
     case len(resolved_type) == 0 of {
         true -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown or unsupported function: ", expr.name), "sect6");
         false -> case is_function_type_user_call(resolved_type) of {
             false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " is not a function"), "sect6");
-            true -> check_user_defined_call_parsed(expr, expected_type, context, resolved_type, world)
+            true -> check_user_defined_call_parsed(expr, expected_type, context, resolved_type, world, rw)
         }
     }
 }
 
-fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: TypeContext, func_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: TypeContext, func_type: string, world: ListNamedProgram, callee_type_from_world: bool) -> TypeCheckResult proc[DeviceIO] {
     expected_arg_count: int64 <- parse_function_param_count(func_type);
     params_inner: string <- get_params_inner_from_func_type(func_type);
     return_type: string <- parse_function_return_type(func_type);
     arg_count: int64 <- count_call_args_user_call(expr);
-    case arg_count != expected_arg_count of {
+    _: unit <- println(concat(concat(concat("DBG parsed func_type=", func_type), " params_inner="), params_inner));
+    _: unit <- println(concat(concat(concat("DBG parsed eq=", case expected_arg_count == arg_count of { true -> "match"; false -> "MISMATCH" }), " from_world="), case callee_type_from_world of { true -> "yes"; false -> "no" }));
+    case callee_type_from_world of {
+        true -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world);
+        false -> case arg_count != expected_arg_count of {
         true -> case expected_arg_count == 1 of {
             true -> case arg_count == 2 of {
                 true -> case len(params_inner) >= 2 of {
@@ -1400,6 +1501,7 @@ fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: Ty
             }
         };
         false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world)
+        }
     }
 }
 

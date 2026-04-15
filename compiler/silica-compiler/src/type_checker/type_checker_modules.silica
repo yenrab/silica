@@ -106,13 +106,66 @@ fn export_key(fn_name: string, arity_lex: string) -> string {
     concat(concat(fn_name, "/"), arity_lex)
 }
 
-fn find_function_decl_by_name_arity(decls: ListDeclaration, fn_name: string, arity: int64) -> (bool, Declaration) {
+fn dbg_param_dump(ps: ListParam) -> string {
+    case ps.is_nil of {
+        true -> "";
+        false -> concat(concat(concat(ps.head.name, ":"), ps.head.type_name), case ps.tail.is_nil of { true -> ""; false -> concat(",", dbg_param_dump(ps.tail)) })
+    }
+}
+
+fn debug_dump_world(world: ListNamedProgram) -> int64 proc[DeviceIO] {
+    case world.is_nil of {
+        true -> 0;
+        false -> do
+            _: unit <- println(concat("DBG  world entry mod=", world.head.module_name));
+            _: int64 <- debug_dump_decls(world.head.program.declarations);
+            debug_dump_world(world.tail)
+        end
+    }
+}
+
+fn debug_dump_decls(decls: ListDeclaration) -> int64 proc[DeviceIO] {
+    case decls.is_nil of {
+        true -> 0;
+        false -> do
+            tag_str: string <- case decls.head.tag == 0 of {
+                true -> "0";
+                false -> case decls.head.tag == 3 of {
+                    true -> "3";
+                    false -> case decls.head.tag == 5 of {
+                        true -> "5";
+                        false -> case decls.head.tag == 7 of {
+                            true -> "7";
+                            false -> "?"
+                        }
+                    }
+                }
+            };
+            _: unit <- println(concat(concat(concat(concat(concat("DBG decl tag=", tag_str), " name="), decls.head.name), " params="), dbg_param_dump(decls.head.parameters)));
+            debug_dump_decls(decls.tail)
+        end
+    }
+}
+
+fn find_function_decl_by_name_arity_with_tag(decls: ListDeclaration, fn_name: string, arity: int64, want_tag: int64) -> (bool, Declaration) {
     case decls.is_nil of {
         true -> (false, parser_ast@dummy_decl());
-        false -> case decls.head.tag == 0 and decls.head.name == fn_name and list_param_length(decls.head.parameters) == arity of {
-            true -> (true, decls.head);
-            false -> find_function_decl_by_name_arity(decls.tail, fn_name, arity)
+        false -> case decls.head.tag == want_tag of {
+            true -> case decls.head.name == fn_name and list_param_length(decls.head.parameters) == arity of {
+                true -> (true, decls.head);
+                false -> find_function_decl_by_name_arity_with_tag(decls.tail, fn_name, arity, want_tag)
+            };
+            false -> find_function_decl_by_name_arity_with_tag(decls.tail, fn_name, arity, want_tag)
         }
+    }
+}
+
+// Export `f/n`: prefer concrete `impl fn` / ordinary fn (tag 0); else required trait signature (tag 7) when no implementation is present (spec §19.2.1, §3.4.8).
+fn find_function_decl_by_name_arity(decls: ListDeclaration, fn_name: string, arity: int64) -> (bool, Declaration) {
+    (z: bool, d: Declaration) <- find_function_decl_by_name_arity_with_tag(decls, fn_name, arity, 0);
+    case z of {
+        true -> (true, d);
+        false -> find_function_decl_by_name_arity_with_tag(decls, fn_name, arity, 7)
     }
 }
 
@@ -362,7 +415,7 @@ fn validate_module_program_surface(program: Program, current_module: string) -> 
     }
 }
 
-fn add_exported_symbols_from_items(items: ListParam, whole: ListDeclaration, env: ListSymbolEntry, source_mod: string) -> (TypeCheckResult, ListSymbolEntry) {
+fn add_exported_symbols_from_items(items: ListParam, whole: ListDeclaration, env: ListSymbolEntry, source_mod: string) -> (TypeCheckResult, ListSymbolEntry) proc[DeviceIO] {
     case items.is_nil of {
         true -> (type_checker_core@type_check_ok(), env);
         false -> do
@@ -371,10 +424,14 @@ fn add_exported_symbols_from_items(items: ListParam, whole: ListDeclaration, env
                 false -> (type_checker_core@type_check_err("E4014", items.head.location, "invalid export arity", "sect19.2"), env);
                 true -> do
                     (fd: bool, decl: Declaration) <- find_function_decl_by_name_arity(whole, items.head.name, ar);
+                    _: unit <- println(concat(concat(concat("DBG add_export name=", items.head.name), " ar="), items.head.type_name));
+                    _: int64 <- debug_dump_decls(whole);
                     case fd of {
                         false -> (type_checker_core@type_check_err("E4010", items.head.location, "internal: missing export target", "sect19.2"), env);
                         true -> do
                             ft: string <- build_function_type_for_module_export(decl);
+                            _: unit <- println(concat(concat(concat(concat("DBG  fd=true decl.name=", decl.name), " decl.tag="), case decl.tag == 0 of { true -> "0"; false -> case decl.tag == 7 of { true -> "7"; false -> "?" } }), ""));
+                            _: unit <- println(concat("DBG  ft=", ft));
                             (found: bool, _: string) <- lookup_symbol_found_here(env, decl.name);
                             case found of {
                                 true -> (type_checker_core@type_check_err("E4011", items.head.location, concat(concat("symbol already in scope: ", decl.name), " (spec 19.3.3 shadowing)"), "sect19.3.3"), env);
@@ -497,6 +554,10 @@ fn check_all_declarations_functions_only(decls: ListDeclaration, context: TypeCo
 }
 
 fn type_check_program_with_modules(program: Program, current_module: string, world: ListNamedProgram, context: TypeContext) -> (TypeCheckResult, TypeContext) proc[DeviceIO] {
+    _: unit <- println(concat("DBG ===== type_check module=", current_module));
+    _: int64 <- debug_dump_decls(program.declarations);
+    _: unit <- println("DBG world dump:");
+    _: int64 <- debug_dump_world(world);
     surface: TypeCheckResult <- validate_module_program_surface(program, current_module);
     case surface.is_ok of {
         false -> (surface, context);
