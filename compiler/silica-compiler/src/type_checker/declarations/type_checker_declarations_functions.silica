@@ -28,7 +28,7 @@ use type_checker_expressions_actors;
 use type_checker_record_types;
 
 export add_function/2;
-export check_body/2;
+export check_body/3;
 export build_function_type/1;
 
 // Build function type string "(T1,T2) -> R" from declaration. ListParam order: head=last param, tail=earlier params.
@@ -55,7 +55,7 @@ fn build_function_type(decl: Declaration) -> string {
 fn add_function(decl: Declaration, context: TypeContext) -> TypeContext {
     func_type: string <- build_function_type(decl);
     new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, decl.name, func_type, decl.declared_effects, "");
-    TypeContext { env: new_env }
+    type_checker_core@type_context_with_env(context, new_env)
 }
 
 fn add_params_to_context_loop(params: ListParam, context: TypeContext) -> TypeContext {
@@ -113,15 +113,15 @@ fn validate_params_loop(params: ListParam) -> TypeCheckResult proc[DeviceIO] {
 // Reject unit: not a valid return type per language design.
 // Validate memory region return types (ref, region, buf) before checking body.
 // Validate param types (memory region params) before checking body.
-fn check_body(decl: Declaration, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_body(decl: Declaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     params_result: TypeCheckResult <- validate_params_loop(decl.parameters);
     case params_result.is_ok of {
         false -> params_result;
-        true -> check_body_after_params(decl, context)
+        true -> check_body_after_params(decl, context, world)
     }
 }
 
-fn check_body_after_params(decl: Declaration, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     context_with_params: TypeContext <- add_params_to_context(decl, context);
     ret_rec: TypeCheckResult <- validate_record_type_string(decl.return_type_name, decl.return_type_location);
     case ret_rec.is_ok of {
@@ -129,9 +129,9 @@ fn check_body_after_params(decl: Declaration, context: TypeContext) -> TypeCheck
         true -> case decl.return_type_name == "unit" of {
         true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
         false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
-            true -> check_body_memory_region_return(decl, context_with_params);
+            true -> check_body_memory_region_return(decl, context_with_params, world);
             false -> do
-                body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, context_with_params);
+                body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, context_with_params, world);
                 case body_result.is_ok of {
                     false -> body_result;
                     true -> do
@@ -148,12 +148,12 @@ fn check_body_after_params(decl: Declaration, context: TypeContext) -> TypeCheck
     }
 }
 
-fn check_body_memory_region_return(decl: Declaration, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_body_memory_region_return(decl: Declaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(decl.return_type_name, decl.return_type_location);
     case mem_result.is_ok of {
         false -> mem_result;
         true -> do
-            body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, context);
+            body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, context, world);
             case body_result.is_ok of {
                 false -> body_result;
                 true -> do

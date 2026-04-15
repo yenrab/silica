@@ -31,8 +31,9 @@ use type_checker_memory_regions;
 use type_checker_lists;
 use type_checker_expressions_actors;
 use type_checker_record_types;
+use type_checker_traits;
 
-export check_expr/3;
+export check_expr/4;
 
 fn is_primitive_numeric_type_name(t: string) -> bool {
     t == "int8" or t == "int16" or t == "int32" or t == "int64" or t == "uint8" or t == "uint16" or t == "uint32" or t == "uint64" or t == "float16" or t == "float32" or t == "float64"
@@ -64,11 +65,11 @@ fn is_comparison_op_lexeme(op: string) -> bool {
 }
 
 // Try checking both operands with operand_type; return result if both ok.
-fn check_comparison_operands(expr: Expr, operand_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
-    left_result: TypeCheckResult <- check_expr(expr.inner, operand_type, context);
+fn check_comparison_operands(expr: Expr, operand_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    left_result: TypeCheckResult <- check_expr(expr.inner, operand_type, context, world);
     case left_result.is_ok of {
         false -> left_result;
-        true -> check_expr(expr.right_expr, operand_type, context)
+        true -> check_expr(expr.right_expr, operand_type, context, world)
     }
 }
 
@@ -82,56 +83,56 @@ fn bool_result(expected_type: string, location: SourceLocation) -> TypeCheckResu
     }
 }
 
-fn check_comparison_result(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
-    rb: TypeCheckResult <- check_comparison_operands(expr, "boolean", context);
+fn check_comparison_result(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    rb: TypeCheckResult <- check_comparison_operands(expr, "boolean", context, world);
     case rb.is_ok of {
         true -> bool_result(expected_type, expr.location);
-        false -> check_comparison_result_rest(expr, expected_type, context, rb)
+        false -> check_comparison_result_rest(expr, expected_type, context, rb, world)
     }
 }
 
-fn check_comparison_result_rest(expr: Expr, expected_type: string, context: TypeContext, first_err: TypeCheckResult) -> TypeCheckResult proc[DeviceIO] {
-    r64: TypeCheckResult <- check_comparison_operands(expr, "int64", context);
+fn check_comparison_result_rest(expr: Expr, expected_type: string, context: TypeContext, first_err: TypeCheckResult, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    r64: TypeCheckResult <- check_comparison_operands(expr, "int64", context, world);
     case r64.is_ok of {
         true -> bool_result(expected_type, expr.location);
         false -> do
-            r32: TypeCheckResult <- check_comparison_operands(expr, "int32", context);
+            r32: TypeCheckResult <- check_comparison_operands(expr, "int32", context, world);
             case r32.is_ok of {
                 true -> bool_result(expected_type, expr.location);
                 false -> do
-                    r16: TypeCheckResult <- check_comparison_operands(expr, "int16", context);
+                    r16: TypeCheckResult <- check_comparison_operands(expr, "int16", context, world);
                     case r16.is_ok of {
                         true -> bool_result(expected_type, expr.location);
                         false -> do
-                            r8: TypeCheckResult <- check_comparison_operands(expr, "int8", context);
+                            r8: TypeCheckResult <- check_comparison_operands(expr, "int8", context, world);
                             case r8.is_ok of {
                                 true -> bool_result(expected_type, expr.location);
                                 false -> do
-                                    ru64: TypeCheckResult <- check_comparison_operands(expr, "uint64", context);
+                                    ru64: TypeCheckResult <- check_comparison_operands(expr, "uint64", context, world);
                                     case ru64.is_ok of {
                                         true -> bool_result(expected_type, expr.location);
                                         false -> do
-                                            ru32: TypeCheckResult <- check_comparison_operands(expr, "uint32", context);
+                                            ru32: TypeCheckResult <- check_comparison_operands(expr, "uint32", context, world);
                                             case ru32.is_ok of {
                                                 true -> bool_result(expected_type, expr.location);
                                                 false -> do
-                                                    ru16: TypeCheckResult <- check_comparison_operands(expr, "uint16", context);
+                                                    ru16: TypeCheckResult <- check_comparison_operands(expr, "uint16", context, world);
                                                     case ru16.is_ok of {
                                                         true -> bool_result(expected_type, expr.location);
                                                         false -> do
-                                                            ru8: TypeCheckResult <- check_comparison_operands(expr, "uint8", context);
+                                                            ru8: TypeCheckResult <- check_comparison_operands(expr, "uint8", context, world);
                                                             case ru8.is_ok of {
                                                                 true -> bool_result(expected_type, expr.location);
                                                                 false -> do
-                                                                    rf32: TypeCheckResult <- check_comparison_operands(expr, "float32", context);
+                                                                    rf32: TypeCheckResult <- check_comparison_operands(expr, "float32", context, world);
                                                                     case rf32.is_ok of {
                                                                         true -> bool_result(expected_type, expr.location);
                                                                         false -> do
-                                                                            rf16: TypeCheckResult <- check_comparison_operands(expr, "float16", context);
+                                                                            rf16: TypeCheckResult <- check_comparison_operands(expr, "float16", context, world);
                                                                             case rf16.is_ok of {
                                                                                 true -> bool_result(expected_type, expr.location);
                                                                                 false -> do
-                                                                                    rs: TypeCheckResult <- check_comparison_operands(expr, "string", context);
+                                                                                    rs: TypeCheckResult <- check_comparison_operands(expr, "string", context, world);
                                                                                     case rs.is_ok of {
                                                                                         true -> bool_result(expected_type, expr.location);
                                                                                         false -> first_err
@@ -163,7 +164,7 @@ fn is_logical_op_lexeme(op: string) -> bool {
     op == "and" or op == "or"
 }
 
-fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     op: string <- expr.value;
     case is_arithmetic_op_lexeme(op) of {
         true -> do
@@ -181,11 +182,11 @@ fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> T
                 "float16" -> "float16";
                 _: string -> "int64"
             };
-            left_result: TypeCheckResult <- check_expr(expr.inner, operand_type, context);
+            left_result: TypeCheckResult <- check_expr(expr.inner, operand_type, context, world);
             case left_result.is_ok of {
                 false -> left_result;
                 true -> do
-                    right_result: TypeCheckResult <- check_expr(expr.right_expr, operand_type, context);
+                    right_result: TypeCheckResult <- check_expr(expr.right_expr, operand_type, context, world);
                     case right_result.is_ok of {
                         false -> right_result;
                         true -> case expected_type of {
@@ -208,14 +209,14 @@ fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext) -> T
             }
         end;
         false -> case is_comparison_op_lexeme(op) of {
-            true -> check_comparison_result(expr, expected_type, context);
+            true -> check_comparison_result(expr, expected_type, context, world);
             false -> case is_logical_op_lexeme(op) of {
                 true -> do
-                    left_result: TypeCheckResult <- check_expr(expr.inner, "boolean", context);
+                    left_result: TypeCheckResult <- check_expr(expr.inner, "boolean", context, world);
                     case left_result.is_ok of {
                         false -> left_result;
                         true -> do
-                            right_result: TypeCheckResult <- check_expr(expr.right_expr, "boolean", context);
+                            right_result: TypeCheckResult <- check_expr(expr.right_expr, "boolean", context, world);
                             case right_result.is_ok of {
                                 false -> right_result;
                             true -> case expected_type of {
@@ -254,7 +255,7 @@ fn call_third_arg_expr(expr: Expr) -> Expr {
 }
 
 // Memory region built-ins per spec §4.4, §9.2.2, §12, §22
-fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.name == "alloc_region" of {
         true -> do
             mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(expected_type, expr.location);
@@ -283,8 +284,8 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                 case len(region_type) == 0 of {
                     true -> type_checker_core@type_check_err("E2010", expr.location, concat("alloc_ref result must be ref(R, Space, T), got ", expected_type), "sect4.4.2");
                     false -> do
-                        r1: TypeCheckResult <- check_expr(expr.inner, region_type, context);
-                        case r1.is_ok of { false -> r1; true -> check_expr(call_second_arg_expr(expr), elem_type, context) }
+                        r1: TypeCheckResult <- check_expr(expr.inner, region_type, context, world);
+                        case r1.is_ok of { false -> r1; true -> check_expr(call_second_arg_expr(expr), elem_type, context, world) }
                     end
                 }
             end;
@@ -296,7 +297,7 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                         true -> type_checker_core@type_check_err("E2010", expr.location, "read_ref: argument must have ref(R, Space, T) type", "sect4.4.2");
                         false -> case elem_type == expected_type of {
                             false -> type_checker_core@type_check_err("E2010", expr.location, concat(concat("read_ref: element type ", elem_type), concat(" does not match expected ", expected_type)), "sect4.4.2");
-                            true -> check_expr(expr.inner, ref_type, context)
+                            true -> check_expr(expr.inner, ref_type, context, world)
                         }
                     }
                 end;
@@ -307,11 +308,11 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                         case len(elem_type) == 0 of {
                             true -> type_checker_core@type_check_err("E2010", expr.location, "write_ref: first argument must have ref(R, Space, T) type", "sect4.4.2");
                             false -> do
-                                r1: TypeCheckResult <- check_expr(expr.inner, ref_type, context);
+                                r1: TypeCheckResult <- check_expr(expr.inner, ref_type, context, world);
                                 case r1.is_ok of {
                                     false -> r1;
                                     true -> do
-                                        r2: TypeCheckResult <- check_expr(call_second_arg_expr(expr), elem_type, context);
+                                        r2: TypeCheckResult <- check_expr(call_second_arg_expr(expr), elem_type, context, world);
                                         case r2.is_ok of {
                                             false -> r2;
                                             true -> case expected_type == "atom" or expected_type == "discard" of {
@@ -330,8 +331,8 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                             case len(region_type) == 0 of {
                                 true -> type_checker_core@type_check_err("E2010", expr.location, concat("alloc_buf result must be buf(R, Space, T, N), got ", expected_type), "sect4.4.3");
                                 false -> do
-                                    r1: TypeCheckResult <- check_expr(expr.inner, region_type, context);
-                                    case r1.is_ok of { false -> r1; true -> check_expr(call_second_arg_expr(expr), "int64", context) }
+                                    r1: TypeCheckResult <- check_expr(expr.inner, region_type, context, world);
+                                    case r1.is_ok of { false -> r1; true -> check_expr(call_second_arg_expr(expr), "int64", context, world) }
                                 end
                             }
                         end;
@@ -344,8 +345,8 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                                     false -> case elem_type == expected_type of {
                                         false -> type_checker_core@type_check_err("E2010", expr.location, concat(concat("read_buf/buf_load: element type ", elem_type), concat(" does not match expected ", expected_type)), "sect4.4.3");
                                         true -> do
-                                            r1: TypeCheckResult <- check_expr(expr.inner, buf_type, context);
-                                            case r1.is_ok of { false -> r1; true -> check_expr(call_second_arg_expr(expr), "int64", context) }
+                                            r1: TypeCheckResult <- check_expr(expr.inner, buf_type, context, world);
+                                            case r1.is_ok of { false -> r1; true -> check_expr(call_second_arg_expr(expr), "int64", context, world) }
                                         end
                                     }
                                 }
@@ -359,15 +360,15 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                                         false -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
                                             false -> type_checker_core@type_check_err("E2005", expr.location, "write_buf/buf_store requires 3 arguments: (buf, index, value)", "sect12.3.2");
                                             true -> do
-                                                r1: TypeCheckResult <- check_expr(expr.inner, buf_type, context);
+                                                r1: TypeCheckResult <- check_expr(expr.inner, buf_type, context, world);
                                                 case r1.is_ok of {
                                                     false -> r1;
                                                     true -> do
-                                                        r2: TypeCheckResult <- check_expr(expr.right_expr.inner, "int64", context);
+                                                        r2: TypeCheckResult <- check_expr(expr.right_expr.inner, "int64", context, world);
                                                         case r2.is_ok of {
                                                             false -> r2;
                                                             true -> do
-                                                                r3: TypeCheckResult <- check_expr(call_third_arg_expr(expr), elem_type, context);
+                                                                r3: TypeCheckResult <- check_expr(call_third_arg_expr(expr), elem_type, context, world);
                                                                 case r3.is_ok of {
                                                                     false -> r3;
                                                                     true -> case expected_type == "atom" or expected_type == "discard" of {
@@ -401,8 +402,8 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
 
 // Built-in: print_int64/32/16/8, print_uint64/32/16/8 - arg matches type, returns atom
 // Built-in: print_atom(atom:x) - arg atom, returns atom (:ok on success, :fail on failure)
-fn check_print_call(expr: Expr, arg_type: string, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
-    arg_result: TypeCheckResult <- check_expr(expr.inner, arg_type, context);
+fn check_print_call(expr: Expr, arg_type: string, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    arg_result: TypeCheckResult <- check_expr(expr.inner, arg_type, context, world);
     case arg_result.is_ok of {
         false -> arg_result;
         true -> case expected_type of {
@@ -427,8 +428,8 @@ fn negate_builtin_arg_type(name: string) -> string {
     }
 }
 
-fn check_negate_call(expr: Expr, num_type: string, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
-    arg_result: TypeCheckResult <- check_expr(expr.inner, num_type, context);
+fn check_negate_call(expr: Expr, num_type: string, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    arg_result: TypeCheckResult <- check_expr(expr.inner, num_type, context, world);
     case arg_result.is_ok of {
         false -> arg_result;
         true -> case expected_type of {
@@ -483,7 +484,7 @@ fn check_runtime_builtin_return(expr: Expr, inferred: string, expected_type: str
     }
 }
 
-fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     inferred: string <- actor_runtime_builtin_return_type(expr.name);
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case expr.name == "get_cpu_topology" of {
@@ -505,7 +506,7 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                     true -> case ac == 1 of {
                         false -> type_checker_core@type_check_err("E2005", expr.location, "get_core_capabilities expects 1 argument: (core_id: int64)", "sect15");
                         true -> do
-                            r0: TypeCheckResult <- check_expr(expr.inner, "int64", context);
+                            r0: TypeCheckResult <- check_expr(expr.inner, "int64", context, world);
                             case r0.is_ok of {
                                 false -> r0;
                                 true -> check_runtime_builtin_return(expr, inferred, expected_type)
@@ -516,11 +517,11 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                         true -> case ac == 2 of {
                             false -> type_checker_core@type_check_err("E2005", expr.location, "pin_actor_to_core expects 2 arguments: (actor_ref, core_id)", "sect15");
                             true -> do
-                                r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
                                 case r0.is_ok of {
                                     false -> r0;
                                     true -> do
-                                        r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "int64", context);
+                                        r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "int64", context, world);
                                         case r1.is_ok of {
                                             false -> r1;
                                             true -> check_runtime_builtin_return(expr, inferred, expected_type)
@@ -533,11 +534,11 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                             true -> case ac == 2 of {
                                 false -> type_checker_core@type_check_err("E2005", expr.location, "pin_actor_realtime expects 2 arguments: (actor_ref, priority)", "sect15");
                                 true -> do
-                                    r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                    r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
                                     case r0.is_ok of {
                                         false -> r0;
                                         true -> do
-                                            r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "int64", context);
+                                            r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "int64", context, world);
                                             case r1.is_ok of {
                                                 false -> r1;
                                                 true -> check_runtime_builtin_return(expr, inferred, expected_type)
@@ -550,11 +551,11 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                                 true -> case ac == 2 of {
                                     false -> type_checker_core@type_check_err("E2005", expr.location, "set_actor_priority expects 2 arguments: (actor_ref, priority_level)", "sect15");
                                     true -> do
-                                        r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                        r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
                                         case r0.is_ok of {
                                             false -> r0;
                                             true -> do
-                                                r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "discard", context);
+                                                r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "discard", context, world);
                                                 case r1.is_ok of {
                                                     false -> r1;
                                                     true -> check_runtime_builtin_return(expr, inferred, expected_type)
@@ -567,11 +568,11 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                                     true -> case ac == 2 of {
                                         false -> type_checker_core@type_check_err("E2005", expr.location, "pin_actor_to_numa_node expects 2 arguments: (actor_ref, numa_node)", "sect15");
                                         true -> do
-                                            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
                                             case r0.is_ok of {
                                                 false -> r0;
                                                 true -> do
-                                                    r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "discard", context);
+                                                    r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "discard", context, world);
                                                     case r1.is_ok of {
                                                         false -> r1;
                                                         true -> check_runtime_builtin_return(expr, inferred, expected_type)
@@ -584,7 +585,7 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                                         true -> case ac == 1 of {
                                             false -> type_checker_core@type_check_err("E2005", expr.location, "pin_actor_to_efficiency_core expects 1 argument: (actor_ref)", "sect15");
                                             true -> do
-                                                r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
                                                 case r0.is_ok of {
                                                     false -> r0;
                                                     true -> check_runtime_builtin_return(expr, inferred, expected_type)
@@ -595,7 +596,7 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                                             true -> case ac == 1 of {
                                                 false -> type_checker_core@type_check_err("E2005", expr.location, "pin_actor_to_performance_core expects 1 argument: (actor_ref)", "sect15");
                                                 true -> do
-                                                    r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                    r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
                                                     case r0.is_ok of {
                                                         false -> r0;
                                                         true -> check_runtime_builtin_return(expr, inferred, expected_type)
@@ -606,7 +607,7 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                                                 true -> case ac == 1 of {
                                                     false -> type_checker_core@type_check_err("E2005", expr.location, "unpin_actor expects 1 argument: (actor_ref)", "sect15");
                                                     true -> do
-                                                        r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                        r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
                                                         case r0.is_ok of {
                                                             false -> r0;
                                                             true -> check_runtime_builtin_return(expr, inferred, expected_type)
@@ -617,7 +618,7 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                                                     true -> case ac == 1 of {
                                                         false -> type_checker_core@type_check_err("E2005", expr.location, "remove_actor expects 1 argument: (actor_ref)", "sect15");
                                                         true -> do
-                                                            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
                                                             case r0.is_ok of {
                                                                 false -> r0;
                                                                 true -> check_runtime_builtin_return(expr, inferred, expected_type)
@@ -628,7 +629,7 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                                                         true -> case ac == 1 of {
                                                             false -> type_checker_core@type_check_err("E2005", expr.location, "get_actor_memory_usage expects 1 argument: (actor_ref)", "sect15");
                                                             true -> do
-                                                                r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                                r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
                                                                 case r0.is_ok of {
                                                                     false -> r0;
                                                                     true -> check_runtime_builtin_return(expr, inferred, expected_type)
@@ -639,11 +640,11 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                                                             true -> case ac == 2 of {
                                                                 false -> type_checker_core@type_check_err("E2005", expr.location, "migrate_actor expects 2 arguments: (actor_ref, target_core: int64)", "sect15");
                                                                 true -> do
-                                                                    r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                                    r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
                                                                     case r0.is_ok of {
                                                                         false -> r0;
                                                                         true -> do
-                                                                            r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "int64", context);
+                                                                            r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "int64", context, world);
                                                                             case r1.is_ok of {
                                                                                 false -> r1;
                                                                                 true -> check_runtime_builtin_return(expr, inferred, expected_type)
@@ -656,15 +657,15 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                                                                 true -> case ac == 3 of {
                                                                     false -> type_checker_core@type_check_err("E2005", expr.location, "move expects 3 arguments: (actor_ref, from_core: int64, to_core: int64)", "sect15");
                                                                     true -> do
-                                                                        r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+                                                                        r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
                                                                         case r0.is_ok of {
                                                                             false -> r0;
                                                                             true -> do
-                                                                                r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "int64", context);
+                                                                                r1: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "int64", context, world);
                                                                                 case r1.is_ok of {
                                                                                     false -> r1;
                                                                                     true -> do
-                                                                                        r2: TypeCheckResult <- check_expr(call_third_arg_expr(expr), "int64", context);
+                                                                                        r2: TypeCheckResult <- check_expr(call_third_arg_expr(expr), "int64", context, world);
                                                                                         case r2.is_ok of {
                                                                                             false -> r2;
                                                                                             true -> check_runtime_builtin_return(expr, inferred, expected_type)
@@ -709,20 +710,20 @@ fn check_actor_self_call(expr: Expr, expected_type: string, context: TypeContext
 
 // §15.1.1: optional third argument is exactly one logical core id (`uint64`), or `core_id(uint64)`.
 // Lists, `core_set`, `performance_cores`, and `efficiency_cores` are rejected here (not a range or set).
-fn check_spawn_core_id_placement(place_e: Expr, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_spawn_core_id_placement(place_e: Expr, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case place_e.kind == 20 of {
         true -> type_checker_core@type_check_err("E2005", place_e.location, "spawn: third argument must be a single uint64 core id (not a list of cores) §15.1.1", "sect15");
         false -> case place_e.kind == 1 and (place_e.name == "performance_cores" or place_e.name == "efficiency_cores") of {
             true -> type_checker_core@type_check_err("E2005", place_e.location, "spawn: third argument must be a uint64 core id (not performance_cores or efficiency_cores) §15.1.1", "sect15");
             false -> case place_e.kind == 5 of {
                 true -> type_checker_core@type_check_err("E2005", place_e.location, "spawn: third argument must be uint64 or core_id(uint64), got atom §15.1.1", "sect15");
-                false -> check_expr(place_e, "uint64", context)
+                false -> check_expr(place_e, "uint64", context, world)
             }
         }
     }
 }
 
-fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 or ac == 3 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "spawn expects 2 or 3 arguments: (initial_state, behavior_fn [, core_id]) §15.1.1", "sect15");
@@ -746,13 +747,13 @@ fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContex
                                         case len(state_t) == 0 of {
                                             true -> type_checker_core@type_check_err("E2005", expr.location, "spawn: could not parse behavior state parameter type", "sect15");
                                             false -> do
-                                                r_init: TypeCheckResult <- check_expr(init_e, state_t, context);
+                                                r_init: TypeCheckResult <- check_expr(init_e, state_t, context, world);
                                                 case r_init.is_ok of {
                                                     false -> r_init;
                                                     true -> case ac == 3 of {
                                                         true -> do
                                                             place_e: Expr <- type_checker_expressions_actors@spawn_placement_expr(expr);
-                                                            r_pl: TypeCheckResult <- check_spawn_core_id_placement(place_e, context);
+                                                            r_pl: TypeCheckResult <- check_spawn_core_id_placement(place_e, context, world);
                                                             case r_pl.is_ok of {
                                                                 false -> r_pl;
                                                                 true -> check_actor_spawn_result_type(expr, expected_type)
@@ -776,13 +777,13 @@ fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContex
 
 // Spawn: optional `core_id(x)` wrapper — x must be uint64; result is uint64 (same as spawn's third argument).
 // `core_set` and list / performance_cores / efficiency_cores placement forms are not supported for spawn.
-fn check_spawn_affinity_constructor_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_spawn_affinity_constructor_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case expr.name == "core_id" of {
         true -> case ac == 1 of {
             false -> type_checker_core@type_check_err("E2005", expr.location, "core_id expects 1 argument (core id: uint64) §15.1.1", "sect15");
             true -> do
-                r0: TypeCheckResult <- check_expr(expr.inner, "uint64", context);
+                r0: TypeCheckResult <- check_expr(expr.inner, "uint64", context, world);
                 case r0.is_ok of {
                     false -> r0;
                     true -> case expected_type == "discard" of {
@@ -801,7 +802,7 @@ fn check_spawn_affinity_constructor_call(expr: Expr, expected_type: string, cont
                 true -> case expected_type == "uint64" of {
                     true -> type_checker_core@type_check_err("E2005", expr.location, "spawn's third argument is a uint64 core id, not core_set(...) §15.1.1", "sect15");
                     false -> do
-                        r1: TypeCheckResult <- check_expr(expr.inner, "List[int64,normal]", context);
+                        r1: TypeCheckResult <- check_expr(expr.inner, "List[int64,normal]", context, world);
                         case r1.is_ok of {
                             false -> r1;
                             true -> case expected_type == "discard" of {
@@ -838,12 +839,12 @@ fn check_actor_message_satisfies_am(expr: Expr, msg_e: Expr, context: TypeContex
     }
 }
 
-fn check_actor_call_builtin(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_call_builtin(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "call expects 2 arguments: (actor_ref, message) §16.1.1", "sect16");
         true -> do
-            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
             case r0.is_ok of {
                 false -> r0;
                 true -> do
@@ -853,7 +854,7 @@ fn check_actor_call_builtin(expr: Expr, expected_type: string, context: TypeCont
                         false -> "discard"
                     };
                     msg_e: Expr <- call_second_arg_expr(expr);
-                    r1: TypeCheckResult <- check_expr(msg_e, msg_expected, context);
+                    r1: TypeCheckResult <- check_expr(msg_e, msg_expected, context, world);
                     case r1.is_ok of {
                         false -> r1;
                         true -> do
@@ -882,12 +883,12 @@ fn check_actor_call_builtin(expr: Expr, expected_type: string, context: TypeCont
     }
 }
 
-fn check_actor_cast_builtin(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_cast_builtin(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "cast expects 2 arguments: (actor_ref, message) §16.1.2", "sect16");
         true -> do
-            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
             case r0.is_ok of {
                 false -> r0;
                 true -> do
@@ -897,7 +898,7 @@ fn check_actor_cast_builtin(expr: Expr, expected_type: string, context: TypeCont
                         false -> "discard"
                     };
                     msg_e: Expr <- call_second_arg_expr(expr);
-                    r1: TypeCheckResult <- check_expr(msg_e, msg_expected, context);
+                    r1: TypeCheckResult <- check_expr(msg_e, msg_expected, context, world);
                     case r1.is_ok of {
                         false -> r1;
                         true -> do
@@ -917,12 +918,12 @@ fn check_actor_cast_builtin(expr: Expr, expected_type: string, context: TypeCont
     }
 }
 
-fn check_actor_send_builtin(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_send_builtin(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "send expects 2 arguments: (actor_ref, message) §16.1", "sect16");
         true -> do
-            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context);
+            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
             case r0.is_ok of {
                 false -> r0;
                 true -> do
@@ -932,7 +933,7 @@ fn check_actor_send_builtin(expr: Expr, expected_type: string, context: TypeCont
                         false -> "discard"
                     };
                     msg_e: Expr <- call_second_arg_expr(expr);
-                    r1: TypeCheckResult <- check_expr(msg_e, msg_expected, context);
+                    r1: TypeCheckResult <- check_expr(msg_e, msg_expected, context, world);
                     case r1.is_ok of {
                         false -> r1;
                         true -> do
@@ -952,20 +953,20 @@ fn check_actor_send_builtin(expr: Expr, expected_type: string, context: TypeCont
     }
 }
 
-fn check_actor_concurrency_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_concurrency_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case is_actor_runtime_helper_name(expr.name) of {
-        true -> check_actor_runtime_helper_call(expr, expected_type, context);
+        true -> check_actor_runtime_helper_call(expr, expected_type, context, world);
         false -> case expr.name == "recv" of {
             true -> type_checker_core@type_check_err("E2005", expr.location, "recv() is runtime-internal only; user code cannot call recv (§15.1.2)", "sect15");
             false -> case expr.name == "self" of {
                 true -> check_actor_self_call(expr, expected_type, context);
                 false -> case expr.name == "spawn" of {
-                    true -> check_actor_spawn_call(expr, expected_type, context);
+                    true -> check_actor_spawn_call(expr, expected_type, context, world);
                     false -> case expr.name == "call" of {
-                        true -> check_actor_call_builtin(expr, expected_type, context);
+                        true -> check_actor_call_builtin(expr, expected_type, context, world);
                         false -> case expr.name == "cast" of {
-                            true -> check_actor_cast_builtin(expr, expected_type, context);
-                            false -> check_actor_send_builtin(expr, expected_type, context)
+                            true -> check_actor_cast_builtin(expr, expected_type, context, world);
+                            false -> check_actor_send_builtin(expr, expected_type, context, world)
                         }
                     }
                 }
@@ -974,34 +975,34 @@ fn check_actor_concurrency_call(expr: Expr, expected_type: string, context: Type
     }
 }
 
-fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_memory_regions@is_region_builtin_call(expr.name) of {
-        true -> check_region_builtin_call(expr, expected_type, context);
+        true -> check_region_builtin_call(expr, expected_type, context, world);
         false -> case is_actor_concurrency_builtin(expr.name) of {
-            true -> check_actor_concurrency_call(expr, expected_type, context);
+            true -> check_actor_concurrency_call(expr, expected_type, context, world);
             false -> case expr.name == "negate_unit" of {
             true -> type_checker_core@type_check_err("E2003", expr.location, "negation is not supported for unit", "sect6");
             false -> case len(negate_builtin_arg_type(expr.name)) > 0 of {
-                    true -> check_negate_call(expr, negate_builtin_arg_type(expr.name), expected_type, context);
+                    true -> check_negate_call(expr, negate_builtin_arg_type(expr.name), expected_type, context, world);
                     false -> case expr.name == "print_int64" of {
-        true -> check_print_call(expr, "int64", expected_type, context);
+        true -> check_print_call(expr, "int64", expected_type, context, world);
         false -> case expr.name == "print_int32" of {
-            true -> check_print_call(expr, "int32", expected_type, context);
+            true -> check_print_call(expr, "int32", expected_type, context, world);
             false -> case expr.name == "print_int16" of {
-                true -> check_print_call(expr, "int16", expected_type, context);
+                true -> check_print_call(expr, "int16", expected_type, context, world);
                 false -> case expr.name == "print_int8" of {
-                    true -> check_print_call(expr, "int8", expected_type, context);
+                    true -> check_print_call(expr, "int8", expected_type, context, world);
                     false -> case expr.name == "print_uint64" of {
-                        true -> check_print_call(expr, "uint64", expected_type, context);
+                        true -> check_print_call(expr, "uint64", expected_type, context, world);
                         false -> case expr.name == "print_uint32" of {
-                            true -> check_print_call(expr, "uint32", expected_type, context);
+                            true -> check_print_call(expr, "uint32", expected_type, context, world);
                             false -> case expr.name == "print_uint16" of {
-                                true -> check_print_call(expr, "uint16", expected_type, context);
+                                true -> check_print_call(expr, "uint16", expected_type, context, world);
                                 false -> case expr.name == "print_uint8" of {
-                                    true -> check_print_call(expr, "uint8", expected_type, context);
+                                    true -> check_print_call(expr, "uint8", expected_type, context, world);
                                     false -> case expr.name == "print_bool" of {
                                         true -> do
-                                            arg_result: TypeCheckResult <- check_expr(expr.inner, "boolean", context);
+                                            arg_result: TypeCheckResult <- check_expr(expr.inner, "boolean", context, world);
                                             case arg_result.is_ok of {
                                                 false -> arg_result;
                                                 true -> case expected_type of {
@@ -1014,7 +1015,7 @@ fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: Type
                                         end;
                                         false -> case expr.name == "print_atom" of {
                                             true -> do
-                                                arg_result: TypeCheckResult <- check_expr(expr.inner, "atom", context);
+                                                arg_result: TypeCheckResult <- check_expr(expr.inner, "atom", context, world);
                                                 case arg_result.is_ok of {
                                                     false -> arg_result;
                                                     true -> case expected_type of {
@@ -1025,34 +1026,34 @@ fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: Type
                                                 }
                                             end;
                                             false -> case expr.name == "print_float64" of {
-                                                true -> check_print_call(expr, "float64", expected_type, context);
+                                                true -> check_print_call(expr, "float64", expected_type, context, world);
                                                 false -> case expr.name == "print_float32" of {
                                                     true -> do
-                                                        arg_result: TypeCheckResult <- check_expr(expr.inner, "float32", context);
+                                                        arg_result: TypeCheckResult <- check_expr(expr.inner, "float32", context, world);
                                                         type_checker_expressions_float32_calls@check_print_float32_call(expr, expected_type, arg_result)
                                                     end;
                                                     false -> case expr.name == "print_string" of {
-                                                        true -> check_print_call(expr, "string", expected_type, context);
+                                                        true -> check_print_call(expr, "string", expected_type, context, world);
                                                         false -> case expr.name == "println" of {
-                                                            true -> check_print_call(expr, "string", expected_type, context);
+                                                            true -> check_print_call(expr, "string", expected_type, context, world);
                                                             false -> case expr.name == "concat" of {
                                                                 true -> do
-                                                                    a1: TypeCheckResult <- check_expr(expr.inner, "string", context);
-                                                                    a2: TypeCheckResult <- check_expr(expr.right_expr.inner, "string", context);
+                                                                    a1: TypeCheckResult <- check_expr(expr.inner, "string", context, world);
+                                                                    a2: TypeCheckResult <- check_expr(expr.right_expr.inner, "string", context, world);
                                                                     type_checker_expressions_string_calls@check_concatenate_call(expr, expected_type, a1, a2)
                                                                 end;
                                                                     false -> case expr.name == "concatenate" of {
                                                                     true -> do
-                                                                        a1: TypeCheckResult <- check_expr(expr.inner, "string", context);
-                                                                        a2: TypeCheckResult <- check_expr(expr.right_expr.inner, "string", context);
+                                                                        a1: TypeCheckResult <- check_expr(expr.inner, "string", context, world);
+                                                                        a2: TypeCheckResult <- check_expr(expr.right_expr.inner, "string", context, world);
                                                                         type_checker_expressions_string_calls@check_concatenate_call(expr, expected_type, a1, a2)
                                                                     end;
                                                                     false -> case expr.name == "substring" of {
                                                                         true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
                                                                             true -> do
-                                                                                s1: TypeCheckResult <- check_expr(expr.inner, "string", context);
-                                                                                s2: TypeCheckResult <- check_expr(expr.right_expr.inner, "int64", context);
-                                                                                s3: TypeCheckResult <- check_expr(expr.right_expr.right_expr.inner, "int64", context);
+                                                                                s1: TypeCheckResult <- check_expr(expr.inner, "string", context, world);
+                                                                                s2: TypeCheckResult <- check_expr(expr.right_expr.inner, "int64", context, world);
+                                                                                s3: TypeCheckResult <- check_expr(expr.right_expr.right_expr.inner, "int64", context, world);
                                                                                 type_checker_expressions_string_calls@check_substring_call(expr, expected_type, s1, s2, s3)
                                                                             end;
                                                                             false -> type_checker_core@type_check_err("E2005", expr.location, "substring requires 3 arguments: (s: string, start: int64, end: int64)", "sect6")
@@ -1060,28 +1061,28 @@ fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: Type
                                                                         false -> case expr.name == "substring_until_char" of {
                                                                             true -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
                                                                                 true -> do
-                                                                                    u1: TypeCheckResult <- check_expr(expr.inner, "string", context);
-                                                                                    u2: TypeCheckResult <- check_expr(expr.right_expr.inner, "int64", context);
-                                                                                    u3: TypeCheckResult <- check_expr(expr.right_expr.right_expr.inner, "char", context);
+                                                                                    u1: TypeCheckResult <- check_expr(expr.inner, "string", context, world);
+                                                                                    u2: TypeCheckResult <- check_expr(expr.right_expr.inner, "int64", context, world);
+                                                                                    u3: TypeCheckResult <- check_expr(expr.right_expr.right_expr.inner, "char", context, world);
                                                                                     type_checker_expressions_string_calls@check_substring_until_char_call(expr, expected_type, u1, u2, u3)
                                                                                 end;
                                                                                 false -> type_checker_core@type_check_err("E2005", expr.location, "substring_until_char requires 3 arguments: (s: string, start: int64, char: char)", "sect6")
                                                                             };
                                                                             false -> case expr.name == "length_bytes" of {
                                                                                 true -> do
-                                                                                    lb: TypeCheckResult <- check_expr(expr.inner, "string", context);
+                                                                                    lb: TypeCheckResult <- check_expr(expr.inner, "string", context, world);
                                                                                     type_checker_expressions_string_calls@check_length_bytes_call(expr, expected_type, lb)
                                                                                 end;
                                                                                         false -> case expr.name == "length_chars" of {
                                                                                         true -> do
-                                                                                            lc: TypeCheckResult <- check_expr(expr.inner, "string", context);
+                                                                                            lc: TypeCheckResult <- check_expr(expr.inner, "string", context, world);
                                                                                             type_checker_expressions_string_calls@check_length_chars_call(expr, expected_type, lc)
                                                                                         end;
                                                                                         false -> case type_checker_lists@is_list_primitive_name(expr.name) of {
-                                                                                            true -> check_list_primitive_call(expr, expected_type, context);
+                                                                                            true -> check_list_primitive_call(expr, expected_type, context, world);
                                                                                             false -> case expr.name == "core_id" or expr.name == "core_set" of {
-                                                                                                true -> check_spawn_affinity_constructor_call(expr, expected_type, context);
-                                                                                                false -> check_user_defined_call(expr, expected_type, context)
+                                                                                                true -> check_spawn_affinity_constructor_call(expr, expected_type, context, world);
+                                                                                                false -> check_user_defined_call(expr, expected_type, context, world)
                                                                                             }
                                                                                         }
                                                                                     }
@@ -1149,12 +1150,12 @@ fn lookup_function_type_for_call_local(env: ListSymbolEntry, composite_name: str
     }
 }
 
-fn check_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     // Module-qualified calls (spec §19.3.2): use first_at in this TU. Routing via
     // type_checker_core@call_name_is_module_qualified misclassified on bootstrap (deep builtin chain / stack).
     case first_at_in_expr_call_name(expr.name, 0) >= 0 of {
-        true -> check_user_defined_call(expr, expected_type, context);
-        false -> check_call_builtins_dispatch(expr, expected_type, context)
+        true -> check_user_defined_call(expr, expected_type, context, world);
+        false -> check_call_builtins_dispatch(expr, expected_type, context, world)
     }
 }
 
@@ -1297,20 +1298,23 @@ fn count_call_args_user_call(expr: Expr) -> int64 {
     }
 }
 
-fn check_user_call_result_user_call(expr: Expr, expected_type: string, return_type: string) -> TypeCheckResult {
+fn check_user_call_result_user_call(expr: Expr, expected_type: string, return_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
     case expected_type == "discard" of {
         true -> type_checker_core@type_check_ok();
         false -> case expected_type == return_type of {
             true -> type_checker_core@type_check_ok();
-            false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat(expr.name, " returns "), return_type), ", expected "), expected_type), "sect6")
+            false -> case type_checker_traits@actual_type_satisfies_trait_expectation(return_type, expected_type, world) of {
+                true -> type_checker_core@type_check_ok();
+                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat(expr.name, " returns "), return_type), ", expected "), expected_type), "sect6")
+            }
         }
     }
 }
 
-fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_type: string, return_type: string, context: TypeContext, call_expr: Expr) -> TypeCheckResult proc[DeviceIO] {
+fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_type: string, return_type: string, context: TypeContext, call_expr: Expr, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.inner.kind == -1 of {
-        true -> case len(params_inner) == 0 of {
-            true -> check_user_call_result_user_call(call_expr, expected_type, return_type);
+            true -> case len(params_inner) == 0 of {
+            true -> check_user_call_result_user_call(call_expr, expected_type, return_type, context, world);
             false -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6")
         };
         false -> do
@@ -1318,28 +1322,28 @@ fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_typ
             case len(first_param) == 0 of {
                 true -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6");
                 false -> do
-                    r1: TypeCheckResult <- check_expr(expr.inner, first_param, context);
+                    r1: TypeCheckResult <- check_expr(expr.inner, first_param, context, world);
                     case r1.is_ok of {
                         false -> r1;
                         true -> case expr.right_expr.kind == -1 of {
                             true -> case len(rest_params) == 0 of {
-                                true -> check_user_call_result_user_call(call_expr, expected_type, return_type);
+                                true -> check_user_call_result_user_call(call_expr, expected_type, return_type, context, world);
                                 false -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6")
                             };
                             false -> case expr.right_expr.kind == 4 of {
                                 true -> case len(rest_params) == 0 of {
                                     true -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6");
-                                    false -> check_user_call_args_recursive(expr.right_expr, rest_params, expected_type, return_type, context, call_expr)
+                                    false -> check_user_call_args_recursive(expr.right_expr, rest_params, expected_type, return_type, context, call_expr, world)
                                 };
                                 false -> do
                                     (second_param: string, rest_rest: string) <- get_first_param_type(rest_params);
                                     case len(second_param) == 0 or len(rest_rest) > 0 of {
                                         true -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6");
                                         false -> do
-                                            r2: TypeCheckResult <- check_expr(expr.right_expr, second_param, context);
+                                            r2: TypeCheckResult <- check_expr(expr.right_expr, second_param, context, world);
                                             case r2.is_ok of {
                                                 false -> r2;
-                                                true -> check_user_call_result_user_call(call_expr, expected_type, return_type)
+                                                true -> check_user_call_result_user_call(call_expr, expected_type, return_type, context, world)
                                             }
                                         end
                                     }
@@ -1353,18 +1357,18 @@ fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_typ
     }
 }
 
-fn check_user_defined_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_user_defined_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     resolved_type: string <- lookup_function_type_for_call_local(context.env, expr.name);
     case len(resolved_type) == 0 of {
         true -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown or unsupported function: ", expr.name), "sect6");
         false -> case is_function_type_user_call(resolved_type) of {
             false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " is not a function"), "sect6");
-            true -> check_user_defined_call_parsed(expr, expected_type, context, resolved_type)
+            true -> check_user_defined_call_parsed(expr, expected_type, context, resolved_type, world)
         }
     }
 }
 
-fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: TypeContext, func_type: string) -> TypeCheckResult proc[DeviceIO] {
+fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: TypeContext, func_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     expected_arg_count: int64 <- parse_function_param_count(func_type);
     params_inner: string <- get_params_inner_from_func_type(func_type);
     return_type: string <- parse_function_return_type(func_type);
@@ -1375,7 +1379,7 @@ fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: Ty
                 true -> case len(params_inner) >= 2 of {
                     true -> case substring(params_inner, 0, 1) == "(" of {
                         true -> case substring(params_inner, len(params_inner) - 1, len(params_inner)) == ")" of {
-                            true -> check_user_call_two_args_as_tuple(expr, params_inner, expected_type, return_type, context);
+                            true -> check_user_call_two_args_as_tuple(expr, params_inner, expected_type, return_type, context, world);
                             false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
                         };
                         false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
@@ -1387,7 +1391,7 @@ fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: Ty
             false -> case expected_arg_count == 2 of {
                 true -> case arg_count == 1 of {
                     true -> case expr.inner.kind == 9 of {
-                        true -> check_user_call_one_tuple_as_two_args(expr, params_inner, expected_type, return_type, context);
+                        true -> check_user_call_one_tuple_as_two_args(expr, params_inner, expected_type, return_type, context, world);
                         false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
                     };
                     false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
@@ -1395,27 +1399,27 @@ fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: Ty
                 false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
             }
         };
-        false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr)
+        false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world)
     }
 }
 
-fn check_user_call_one_tuple_as_two_args(expr: Expr, params_inner: string, expected_type: string, return_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_user_call_one_tuple_as_two_args(expr: Expr, params_inner: string, expected_type: string, return_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     (first_param: string, rest_params: string) <- get_first_param_type(params_inner);
     (second_param: string, _: string) <- get_first_param_type(rest_params);
     case len(first_param) == 0 or len(second_param) == 0 of {
         true -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6");
         false -> do
             tuple_type: string <- concat(concat(concat(concat("(", first_param), ","), second_param), ")");
-            r1: TypeCheckResult <- check_expr(expr.inner, tuple_type, context);
+            r1: TypeCheckResult <- check_expr(expr.inner, tuple_type, context, world);
             case r1.is_ok of {
                 false -> r1;
-                true -> check_user_call_result_user_call(expr, expected_type, return_type)
+                true -> check_user_call_result_user_call(expr, expected_type, return_type, context, world)
             }
         end
     }
 }
 
-fn check_user_call_two_args_as_tuple(expr: Expr, tuple_param: string, expected_type: string, return_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_user_call_two_args_as_tuple(expr: Expr, tuple_param: string, expected_type: string, return_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     inner: string <- trim_leading_user_call(substring(tuple_param, 1, len(tuple_param) - 1));
     comma_pos: int64 <- find_top_level_comma_user_call(inner, 0, 0);
     case comma_pos >= len(inner) of {
@@ -1423,14 +1427,14 @@ fn check_user_call_two_args_as_tuple(expr: Expr, tuple_param: string, expected_t
         false -> do
             first_type: string <- trim_leading_user_call(substring(inner, 0, comma_pos));
             second_type: string <- trim_leading_user_call(substring(inner, comma_pos + 1, len(inner)));
-            r1: TypeCheckResult <- check_expr(expr.inner, first_type, context);
+            r1: TypeCheckResult <- check_expr(expr.inner, first_type, context, world);
             case r1.is_ok of {
                 false -> r1;
                 true -> do
-                    r2: TypeCheckResult <- check_expr(expr.right_expr, second_type, context);
+                    r2: TypeCheckResult <- check_expr(expr.right_expr, second_type, context, world);
                     case r2.is_ok of {
                         false -> r2;
-                        true -> check_user_call_result_user_call(expr, expected_type, return_type)
+                        true -> check_user_call_result_user_call(expr, expected_type, return_type, context, world)
                     }
                 end
             }
@@ -1441,19 +1445,19 @@ fn check_user_call_two_args_as_tuple(expr: Expr, tuple_param: string, expected_t
 // Let binding: name: type <- rhs; body. Check rhs has declared type, add to env, check body.
 // Reject unit for named variables; allow _ : unit <- expr (discard pattern for expression statements).
 // Memory region types (ref, region, buf) are validated before type checking.
-fn check_let(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_let(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     bind_type: string <- expr.value;
     case type_checker_memory_regions@is_memory_region_type(bind_type) of {
-        true -> check_let_memory_region(expr, expected_type, context, bind_type);
-        false -> check_let_after_validation(expr, expected_type, context, bind_type)
+        true -> check_let_memory_region(expr, expected_type, context, bind_type, world);
+        false -> check_let_after_validation(expr, expected_type, context, bind_type, world)
     }
 }
 
-fn check_let_memory_region(expr: Expr, expected_type: string, context: TypeContext, bind_type: string) -> TypeCheckResult proc[DeviceIO] {
+fn check_let_memory_region(expr: Expr, expected_type: string, context: TypeContext, bind_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(bind_type, expr.location);
     case mem_result.is_ok of {
         false -> mem_result;
-        true -> check_let_after_validation(expr, expected_type, context, bind_type)
+        true -> check_let_after_validation(expr, expected_type, context, bind_type, world)
     }
 }
 
@@ -1490,15 +1494,15 @@ fn enrich_env_for_actor_spawn(env: ListSymbolEntry, var_name: string, bind_type:
     }
 }
 
-fn check_let_after_validation(expr: Expr, expected_type: string, context: TypeContext, bind_type: string) -> TypeCheckResult proc[DeviceIO] {
+fn check_let_after_validation(expr: Expr, expected_type: string, context: TypeContext, bind_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case bind_type == "unit" of {
         true -> case expr.name == "_" of {
             true -> do
-                rhs_result: TypeCheckResult <- check_expr(expr.inner, "discard", context);
+                rhs_result: TypeCheckResult <- check_expr(expr.inner, "discard", context, world);
                 case rhs_result.is_ok of {
                     false -> rhs_result;
                     true -> do
-                        body_result: TypeCheckResult <- check_expr(expr.right_expr, expected_type, context);
+                        body_result: TypeCheckResult <- check_expr(expr.right_expr, expected_type, context, world);
                         body_result
                     end
                 }
@@ -1508,14 +1512,14 @@ fn check_let_after_validation(expr: Expr, expected_type: string, context: TypeCo
         false -> do
             is_discard: bool <- len(expr.name) == 1 and substring(expr.name, 0, 1) == "_";
             rhs_expected: string <- case is_discard of { true -> "discard"; false -> bind_type };
-            rhs_result: TypeCheckResult <- check_expr(expr.inner, rhs_expected, context);
+            rhs_result: TypeCheckResult <- check_expr(expr.inner, rhs_expected, context, world);
             case rhs_result.is_ok of {
                 false -> rhs_result;
                 true -> do
                     base_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, bind_type, parser_ast@empty_effect_name_list(), "");
                     new_env: ListSymbolEntry <- enrich_env_for_actor_spawn(base_env, expr.name, bind_type, expr.inner, context);
                     new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
-                    body_result: TypeCheckResult <- check_expr(expr.right_expr, expected_type, new_context);
+                    body_result: TypeCheckResult <- check_expr(expr.right_expr, expected_type, new_context, world);
                     body_result
                 end
             }
@@ -1553,13 +1557,13 @@ fn context_after_sequence_body(body: Expr, context: TypeContext) -> TypeContext 
 // inner = body (statements before produces), right_expr = result (pure expr); sequence_effects validated by effect checker
 // The produces expr is in scope of all bindings from the body.
 // Phase A lifetime analysis: when return type contains ref/buf, region must be returned (spec §12.1.4).
-fn check_sequence_block(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
-    body_result: TypeCheckResult <- check_expr(expr.inner, "discard", context);
+fn check_sequence_block(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    body_result: TypeCheckResult <- check_expr(expr.inner, "discard", context, world);
     case body_result.is_ok of {
         false -> body_result;
         true -> do
             result_context: TypeContext <- context_after_sequence_body(expr.inner, context);
-            expr_result: TypeCheckResult <- check_expr(expr.right_expr, expected_type, result_context);
+            expr_result: TypeCheckResult <- check_expr(expr.right_expr, expected_type, result_context, world);
             case expr_result.is_ok of {
                 false -> expr_result;
                 true -> type_checker_memory_regions@check_sequence_return_lifetime(expected_type, expr.right_expr.location)
@@ -1577,7 +1581,7 @@ fn tuple_elem_type_for_check(field_type: string) -> string {
 }
 
 // Tuple literal (kind 9): check against expected tuple type "(T1, T2)"
-fn check_tuple_literal_inline(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_tuple_literal_inline(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case len(expected_type) == 7 and substring(expected_type, 0, 1) == "d" and substring(expected_type, 1, 2) == "i" and substring(expected_type, 2, 3) == "s" and substring(expected_type, 3, 4) == "c" and substring(expected_type, 4, 5) == "a" and substring(expected_type, 5, 6) == "r" and substring(expected_type, 6, 7) == "d" of {
         true -> type_checker_core@type_check_ok();
         false -> case len(expected_type) < 2 of {
@@ -1608,11 +1612,11 @@ fn check_tuple_literal_inline(expr: Expr, expected_type: string, context: TypeCo
                         };
                         first_expect: string <- tuple_elem_type_for_check(first_type_wrapped);
                         second_expect: string <- tuple_elem_type_for_check(second_type_wrapped);
-                        first_result: TypeCheckResult <- check_expr(expr.inner, first_expect, context);
+                        first_result: TypeCheckResult <- check_expr(expr.inner, first_expect, context, world);
                         case first_result.is_ok of {
                             false -> first_result;
                             true -> do
-                                second_result: TypeCheckResult <- check_expr(expr.right_expr, second_expect, context);
+                                second_result: TypeCheckResult <- check_expr(expr.right_expr, second_expect, context, world);
                                 second_result
                             end
                         }
@@ -1795,11 +1799,11 @@ fn check_case_guard_invariant(branch: Expr, pi: CasePatternInfo, scrutinee_type:
     }
 }
 
-fn check_case_branch_guard(branch: Expr, pi: CasePatternInfo, ext_ctx: TypeContext, scrutinee_type: string) -> TypeCheckResult proc[DeviceIO] {
+fn check_case_branch_guard(branch: Expr, pi: CasePatternInfo, ext_ctx: TypeContext, scrutinee_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case branch.inner.kind < 0 of {
         true -> type_checker_core@type_check_ok();
         false -> do
-            g: TypeCheckResult <- check_expr(branch.inner, "boolean", ext_ctx);
+            g: TypeCheckResult <- check_expr(branch.inner, "boolean", ext_ctx, world);
             case g.is_ok of {
                 false -> g;
                 true -> check_case_guard_invariant(branch, pi, scrutinee_type)
@@ -1808,7 +1812,7 @@ fn check_case_branch_guard(branch: Expr, pi: CasePatternInfo, ext_ctx: TypeConte
     }
 }
 
-fn check_one_case_branch(branch: Expr, scrutinee_type: string, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_one_case_branch(branch: Expr, scrutinee_type: string, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case branch.kind == 18 of {
         false -> type_checker_core@type_check_err("E2005", branch.location, "malformed case branch", "sect3");
         true -> do
@@ -1819,10 +1823,10 @@ fn check_one_case_branch(branch: Expr, scrutinee_type: string, expected_type: st
                     false -> type_checker_core@type_check_err("E2005", branch.location, "case pattern does not match scrutinee type", "sect3");
                     true -> do
                         ext_ctx: TypeContext <- type_checker_tuple_decompose_helpers@case_extend_context_for_pattern(context, scrutinee_type, branch.value);
-                        guard_r: TypeCheckResult <- check_case_branch_guard(branch, pi, ext_ctx, scrutinee_type);
+                        guard_r: TypeCheckResult <- check_case_branch_guard(branch, pi, ext_ctx, scrutinee_type, world);
                         case guard_r.is_ok of {
                             false -> guard_r;
-                            true -> check_expr(branch.right_expr, expected_type, ext_ctx)
+                            true -> check_expr(branch.right_expr, expected_type, ext_ctx, world)
                         }
                     end
                 }
@@ -1831,17 +1835,17 @@ fn check_one_case_branch(branch: Expr, scrutinee_type: string, expected_type: st
     }
 }
 
-fn check_case_branch_list(branches: Expr, scrutinee_type: string, expected_type: string, context: TypeContext, case_loc: SourceLocation) -> TypeCheckResult proc[DeviceIO] {
+fn check_case_branch_list(branches: Expr, scrutinee_type: string, expected_type: string, context: TypeContext, case_loc: SourceLocation, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case branches.kind == -1 of {
         true -> type_checker_core@type_check_ok();
         false -> case branches.kind == 17 of {
             true -> do
                 b: Expr <- branches.inner;
                 rest: Expr <- branches.right_expr;
-                r: TypeCheckResult <- check_one_case_branch(b, scrutinee_type, expected_type, context);
+                r: TypeCheckResult <- check_one_case_branch(b, scrutinee_type, expected_type, context, world);
                 case r.is_ok of {
                     false -> r;
-                    true -> check_case_branch_list(rest, scrutinee_type, expected_type, context, case_loc)
+                    true -> check_case_branch_list(rest, scrutinee_type, expected_type, context, case_loc, world)
                 }
             end;
             false -> type_checker_core@type_check_err("E2005", case_loc, "malformed case branch list", "sect3")
@@ -1862,7 +1866,7 @@ fn check_case_boolean_exhaustive(branches: Expr, scrutinee_type: string, case_lo
     }
 }
 
-fn check_case_expression(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_case_expression(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.right_expr.kind == -1 of {
         true -> type_checker_core@type_check_err("E2005", expr.location, "case expression must have at least one branch", "sect3");
         false -> do
@@ -1870,11 +1874,11 @@ fn check_case_expression(expr: Expr, expected_type: string, context: TypeContext
             case len(scrutinee_type) == 0 of {
                 true -> type_checker_core@type_check_err("E2005", expr.location, "cannot infer type of case scrutinee", "sect3");
                 false -> do
-                    rscr: TypeCheckResult <- check_expr(expr.inner, scrutinee_type, context);
+                    rscr: TypeCheckResult <- check_expr(expr.inner, scrutinee_type, context, world);
                     case rscr.is_ok of {
                         false -> rscr;
                         true -> do
-                            branches_r: TypeCheckResult <- check_case_branch_list(expr.right_expr, scrutinee_type, expected_type, context, expr.location);
+                            branches_r: TypeCheckResult <- check_case_branch_list(expr.right_expr, scrutinee_type, expected_type, context, expr.location, world);
                             case branches_r.is_ok of {
                                 false -> branches_r;
                                 true -> check_case_boolean_exhaustive(expr.right_expr, scrutinee_type, expr.location)
@@ -1918,7 +1922,7 @@ fn is_true_or_false_identifier(expr: Expr) -> bool {
 }
 
 // List literal (kind 20): value = full List[T, S] on root; inner/right_expr chain like tuple kind 9.
-fn check_list_literal(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_list_literal(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     lit_t: string <- case len(expr.value) > 0 of {
         true -> expr.value;
         false -> expected_type
@@ -1932,7 +1936,7 @@ fn check_list_literal(expr: Expr, expected_type: string, context: TypeContext) -
                     (_ok: bool, elem_t: string, _: string) <- type_checker_lists@parse_list_type_params(lit_t);
                     case expr.inner.kind == -1 of {
                         true -> type_checker_core@type_check_ok();
-                        false -> check_list_elem_tree(expr, elem_t, context)
+                        false -> check_list_elem_tree(expr, elem_t, context, world)
                     }
                 end
             }
@@ -1940,24 +1944,24 @@ fn check_list_literal(expr: Expr, expected_type: string, context: TypeContext) -
     }
 }
 
-fn check_list_elem_tree(expr: Expr, elem_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_list_elem_tree(expr: Expr, elem_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.kind == 20 of {
         true -> do
-            r1: TypeCheckResult <- check_expr(expr.inner, elem_type, context);
+            r1: TypeCheckResult <- check_expr(expr.inner, elem_type, context, world);
             case r1.is_ok of {
                 false -> r1;
                 true -> case expr.right_expr.kind == -1 of {
                     true -> type_checker_core@type_check_ok();
-                    false -> check_list_elem_tree(expr.right_expr, elem_type, context)
+                    false -> check_list_elem_tree(expr.right_expr, elem_type, context, world)
                 }
             }
         end;
-        false -> check_expr(expr, elem_type, context)
+        false -> check_expr(expr, elem_type, context, world)
     }
 }
 
 // Compiler-known list primitives (list_implementation_design.md §7): empty, length, prepend, remove_head, head.
-fn check_list_primitive_call(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_list_primitive_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     (elem: string, space: string) <- type_checker_lists@parse_generic_ts(expr.value);
     case len(elem) == 0 of {
         true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("list primitive ", expr.name), " requires explicit generic type arguments [T, S] or [T]"), "list");
@@ -1983,7 +1987,7 @@ fn check_list_primitive_call(expr: Expr, expected_type: string, context: TypeCon
                         case ac == 1 of {
                             false -> type_checker_core@type_check_err("E2005", expr.location, "length expects 1 argument", "list");
                             true -> do
-                                r1: TypeCheckResult <- check_expr(expr.inner, list_t, context);
+                                r1: TypeCheckResult <- check_expr(expr.inner, list_t, context, world);
                                 case r1.is_ok of {
                                     false -> r1;
                                     true -> case expected_type == "discard" of {
@@ -2003,11 +2007,11 @@ fn check_list_primitive_call(expr: Expr, expected_type: string, context: TypeCon
                             case ac == 2 of {
                                 false -> type_checker_core@type_check_err("E2005", expr.location, "prepend expects 2 arguments (element, list)", "list");
                                 true -> do
-                                    r1: TypeCheckResult <- check_expr(expr.inner, elem, context);
+                                    r1: TypeCheckResult <- check_expr(expr.inner, elem, context, world);
                                     case r1.is_ok of {
                                         false -> r1;
                                         true -> do
-                                            r2: TypeCheckResult <- check_expr(call_second_arg_expr(expr), list_t, context);
+                                            r2: TypeCheckResult <- check_expr(call_second_arg_expr(expr), list_t, context, world);
                                             case r2.is_ok of {
                                                 false -> r2;
                                                 true -> case expected_type == "discard" of {
@@ -2029,7 +2033,7 @@ fn check_list_primitive_call(expr: Expr, expected_type: string, context: TypeCon
                                 case ac == 1 of {
                                     false -> type_checker_core@type_check_err("E2005", expr.location, "remove_head expects 1 argument", "list");
                                     true -> do
-                                        r1: TypeCheckResult <- check_expr(expr.inner, list_t, context);
+                                        r1: TypeCheckResult <- check_expr(expr.inner, list_t, context, world);
                                         case r1.is_ok of {
                                             false -> r1;
                                             true -> case expected_type == "discard" of {
@@ -2049,7 +2053,7 @@ fn check_list_primitive_call(expr: Expr, expected_type: string, context: TypeCon
                                     case ac == 1 of {
                                         false -> type_checker_core@type_check_err("E2005", expr.location, "head expects 1 argument", "list");
                                         true -> do
-                                            r1: TypeCheckResult <- check_expr(expr.inner, list_t, context);
+                                            r1: TypeCheckResult <- check_expr(expr.inner, list_t, context, world);
                                             case r1.is_ok of {
                                                 false -> r1;
                                                 true -> case expected_type == "discard" of {
@@ -2083,7 +2087,7 @@ fn count_struct_chain_nodes(expr: Expr) -> int64 {
     }
 }
 
-fn check_struct_literal_discard_chain(expr: Expr, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_struct_literal_discard_chain(expr: Expr, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.kind == -1 or expr.kind == 999 of {
         true -> type_checker_core@type_check_ok();
         false -> case expr.kind == 21 of {
@@ -2093,10 +2097,10 @@ fn check_struct_literal_discard_chain(expr: Expr, context: TypeContext) -> TypeC
                 case len(it) == 0 of {
                     true -> type_checker_core@type_check_err("E2005", expr.location, "cannot infer field expression type in struct literal", "sect3");
                     false -> do
-                        r1: TypeCheckResult <- check_expr(expr.inner, it, context);
+                        r1: TypeCheckResult <- check_expr(expr.inner, it, context, world);
                         case r1.is_ok of {
                             false -> r1;
-                            true -> check_struct_literal_discard_chain(expr.right_expr, context)
+                            true -> check_struct_literal_discard_chain(expr.right_expr, context, world)
                         }
                     end
                 }
@@ -2105,7 +2109,7 @@ fn check_struct_literal_discard_chain(expr: Expr, context: TypeContext) -> TypeC
     }
 }
 
-fn check_struct_literal_chain(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_struct_literal_chain(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.kind == -1 or expr.kind == 999 of {
         true -> type_checker_core@type_check_ok();
         false -> case expr.kind == 21 of {
@@ -2115,10 +2119,10 @@ fn check_struct_literal_chain(expr: Expr, expected_type: string, context: TypeCo
                 case len(ft) == 0 of {
                     true -> type_checker_core@type_check_err("E2003", expr.location, concat(concat("field ", expr.name), " is not part of the record type"), "sect3");
                     false -> do
-                        r1: TypeCheckResult <- check_expr(expr.inner, ft, context);
+                        r1: TypeCheckResult <- check_expr(expr.inner, ft, context, world);
                         case r1.is_ok of {
                             false -> r1;
-                            true -> check_struct_literal_chain(expr.right_expr, expected_type, context)
+                            true -> check_struct_literal_chain(expr.right_expr, expected_type, context, world)
                         }
                     end
                 }
@@ -2127,9 +2131,9 @@ fn check_struct_literal_chain(expr: Expr, expected_type: string, context: TypeCo
     }
 }
 
-fn check_struct_literal_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_struct_literal_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expected_type == "discard" of {
-        true -> check_struct_literal_discard_chain(expr, context);
+        true -> check_struct_literal_discard_chain(expr, context, world);
         false -> do
             exp_rec: string <- type_checker_record_types@expand_named_topology_type(expected_type);
             rec_expected: string <- case len(exp_rec) > 0 of { true -> exp_rec; false -> expected_type };
@@ -2140,7 +2144,7 @@ fn check_struct_literal_expr(expr: Expr, expected_type: string, context: TypeCon
                     n_lit: int64 <- count_struct_chain_nodes(expr);
                     case n_type == n_lit of {
                         false -> type_checker_core@type_check_err("E2003", expr.location, "struct literal field count does not match record type", "sect3");
-                        true -> check_struct_literal_chain(expr, rec_expected, context)
+                        true -> check_struct_literal_chain(expr, rec_expected, context, world)
                     }
                 end
             }
@@ -2148,7 +2152,7 @@ fn check_struct_literal_expr(expr: Expr, expected_type: string, context: TypeCon
     }
 }
 
-fn check_field_access_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_field_access_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     base_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
     case len(base_t) == 0 of {
         true -> type_checker_core@type_check_err("E2005", expr.location, "cannot infer type of field access base", "sect3");
@@ -2162,7 +2166,7 @@ fn check_field_access_expr(expr: Expr, expected_type: string, context: TypeConte
                     case len(ft) == 0 of {
                         true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("no field ", expr.name), " on record type"), "sect3");
                         false -> do
-                            rbase: TypeCheckResult <- check_expr(expr.inner, base_t, context);
+                            rbase: TypeCheckResult <- check_expr(expr.inner, base_t, context, world);
                             case rbase.is_ok of {
                                 false -> rbase;
                                 true -> case expected_type == "discard" of {
@@ -2182,19 +2186,19 @@ fn check_field_access_expr(expr: Expr, expected_type: string, context: TypeConte
 }
 
 // Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding, 7=boolean literal, 8=string literal, 12=unary minus (forbidden); 20=list literal; 21=struct literal; 22=field access
-fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.kind of {
-        0 -> type_checker_expressions_literals@check_expr(expr, expected_type, context);
+        0 -> type_checker_expressions_literals@check_expr(expr, expected_type, context, world);
         1 -> case is_true_or_false_identifier(expr) of {
-            true -> boolean_type_checker_expressions@check_expr(expr, expected_type, context);
-            false -> type_checker_expressions_identifiers@check_expr(expr, expected_type, context)
+            true -> boolean_type_checker_expressions@check_expr(expr, expected_type, context, world);
+            false -> type_checker_expressions_identifiers@check_expr(expr, expected_type, context, world)
         };
-        2 -> check_expr(expr.inner, expected_type, context);
-        3 -> check_binary_op(expr, expected_type, context);
-        4 -> check_call(expr, expected_type, context);
-        5 -> type_checker_expressions_atoms@check_expr(expr, expected_type, context);
-        6 -> check_let(expr, expected_type, context);
-        7 -> boolean_type_checker_expressions@check_expr(expr, expected_type, context);
+        2 -> check_expr(expr.inner, expected_type, context, world);
+        3 -> check_binary_op(expr, expected_type, context, world);
+        4 -> check_call(expr, expected_type, context, world);
+        5 -> type_checker_expressions_atoms@check_expr(expr, expected_type, context, world);
+        6 -> check_let(expr, expected_type, context, world);
+        7 -> boolean_type_checker_expressions@check_expr(expr, expected_type, context, world);
         8 -> case len(expected_type) == 6 and substring(expected_type, 0, 1) == "s" and substring(expected_type, 1, 2) == "t" and substring(expected_type, 2, 3) == "r" and substring(expected_type, 3, 4) == "i" and substring(expected_type, 4, 5) == "n" and substring(expected_type, 5, 6) == "g" of {
             true -> type_checker_core@type_check_ok();
             false -> case len(expected_type) == 7 and substring(expected_type, 0, 1) == "d" and substring(expected_type, 1, 2) == "i" and substring(expected_type, 2, 3) == "s" and substring(expected_type, 3, 4) == "c" and substring(expected_type, 4, 5) == "a" and substring(expected_type, 5, 6) == "r" and substring(expected_type, 6, 7) == "d" of {
@@ -2202,32 +2206,32 @@ fn check_expr(expr: Expr, expected_type: string, context: TypeContext) -> TypeCh
                 false -> type_checker_core@type_check_err("E2001", expr.location, concat("string literal requires string type, got ", case expected_type of { "" -> "[EMPTY]"; _: string -> expected_type }), "sect6")
             }
         };
-        9 -> check_tuple_literal_inline(expr, expected_type, context);
-        10 -> check_tuple_decompose(expr, expected_type, context);
-        11 -> check_sequence_block(expr, expected_type, context);
+        9 -> check_tuple_literal_inline(expr, expected_type, context, world);
+        10 -> check_tuple_decompose(expr, expected_type, context, world);
+        11 -> check_sequence_block(expr, expected_type, context, world);
         12 -> check_unary_minus_forbidden(expr, context);
-        13 -> check_case_expression(expr, expected_type, context);
-        19 -> check_if_expression(expr, expected_type, context);
-        20 -> check_list_literal(expr, expected_type, context);
-        21 -> check_struct_literal_expr(expr, expected_type, context);
-        22 -> check_field_access_expr(expr, expected_type, context);
+        13 -> check_case_expression(expr, expected_type, context, world);
+        19 -> check_if_expression(expr, expected_type, context, world);
+        20 -> check_list_literal(expr, expected_type, context, world);
+        21 -> check_struct_literal_expr(expr, expected_type, context, world);
+        22 -> check_field_access_expr(expr, expected_type, context, world);
         996 -> type_checker_core@type_check_err("E1040", expr.location, "expected ';' after this statement before the next statement", "sect3");
         997 -> type_checker_core@type_check_err("E1041", expr.location, "the last expression in this block must not be followed by ';'", "sect3");
         _: int64 -> type_checker_core@type_check_ok()
     }
 }
 
-fn check_if_expression(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
-    rc: TypeCheckResult <- check_expr(expr.inner, "boolean", context);
+fn check_if_expression(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    rc: TypeCheckResult <- check_expr(expr.inner, "boolean", context, world);
     case rc.is_ok of {
         false -> rc;
         true -> do
-            rt: TypeCheckResult <- check_expr(expr.right_expr.inner, expected_type, context);
+            rt: TypeCheckResult <- check_expr(expr.right_expr.inner, expected_type, context, world);
             case rt.is_ok of {
                 false -> rt;
                 true -> case expr.right_expr.right_expr.kind < 0 of {
                     true -> type_checker_core@type_check_ok();
-                    false -> check_expr(expr.right_expr.right_expr, expected_type, context)
+                    false -> check_expr(expr.right_expr.right_expr, expected_type, context, world)
                 }
             }
         end
@@ -2236,7 +2240,7 @@ fn check_if_expression(expr: Expr, expected_type: string, context: TypeContext) 
 
 // Tuple decomposition (kind 10): (pattern) <- rhs; body
 // Uses structured pattern_bindings from AST. All elements must be typed; pattern types must match RHS.
-fn check_tuple_decompose(expr: Expr, expected_type: string, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_tuple_decompose(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     rhs_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
     case len(rhs_type) < 2 or substring(rhs_type, 0, 1) != "(" of {
         true -> type_checker_core@type_check_err("E2005", expr.location, concat("tuple decomposition RHS must have tuple type, got ", case len(rhs_type) == 0 of { true -> "[unknown]"; false -> rhs_type }), "sect4");
@@ -2245,23 +2249,23 @@ fn check_tuple_decompose(expr: Expr, expected_type: string, context: TypeContext
             valid_result: TypeCheckResult <- type_checker_tuple_decompose_helpers@pattern_bindings_valid(bindings, expr.location);
             case valid_result.is_ok of {
                 false -> valid_result;
-                true -> check_tuple_decompose_after_valid(expr, expected_type, context, rhs_type, bindings)
+                true -> check_tuple_decompose_after_valid(expr, expected_type, context, rhs_type, bindings, world)
             }
         end
     }
 }
 
-fn check_tuple_decompose_after_valid(expr: Expr, expected_type: string, context: TypeContext, rhs_type: string, bindings: ListTupleDecomposeBinding) -> TypeCheckResult proc[DeviceIO] {
+fn check_tuple_decompose_after_valid(expr: Expr, expected_type: string, context: TypeContext, rhs_type: string, bindings: ListTupleDecomposeBinding, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     match_result: TypeCheckResult <- type_checker_tuple_decompose_helpers@pattern_types_match_rhs(bindings, rhs_type, expr.location);
     case match_result.is_ok of {
         false -> match_result;
         true -> do
-            rhs_result: TypeCheckResult <- check_expr(expr.inner, rhs_type, context);
+            rhs_result: TypeCheckResult <- check_expr(expr.inner, rhs_type, context, world);
             case rhs_result.is_ok of {
                 false -> rhs_result;
                 true -> do
                     extended_context: TypeContext <- type_checker_tuple_decompose_helpers@add_bindings_to_context(context, bindings);
-                    check_expr(expr.right_expr, expected_type, extended_context)
+                    check_expr(expr.right_expr, expected_type, extended_context, world)
                 end
             }
         end

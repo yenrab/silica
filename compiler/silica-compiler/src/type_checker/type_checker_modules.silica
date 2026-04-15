@@ -22,24 +22,11 @@ use parser_ast;
 use type_checker_core;
 use type_checker_declarations_functions;
 
-export NamedProgram/0;
-export ListNamedProgram/0;
 export empty_named_program_list/0;
 export cons_named_program/3;
 export type_check_program_with_modules/4;
 export type_check_program_with_modules_outcome/4;
 export type_check_program_with_modules_world_bundle/4;
-
-struct NamedProgram {
-    module_name: string,
-    program: Program
-}
-
-struct ListNamedProgram {
-    is_nil: bool,
-    head: NamedProgram,
-    tail: ListNamedProgram
-}
 
 struct ModuleExportMark {
     export_key: string,
@@ -53,14 +40,11 @@ struct ListModuleExportMark {
 }
 
 fn empty_named_program_list() -> ListNamedProgram {
-    dummy_prog: Program <- Program { declarations: parser_ast@empty_list_decl(), location: parser_ast@zero_location() };
-    dummy: NamedProgram <- NamedProgram { module_name: "", program: dummy_prog };
-    nil_lp: ListNamedProgram <- ListNamedProgram { is_nil: true, head: dummy, tail: nil_lp };
-    nil_lp
+    parser_ast@empty_named_program_list()
 }
 
 fn cons_named_program(name: string, prog: Program, rest: ListNamedProgram) -> ListNamedProgram {
-    ListNamedProgram { is_nil: false, head: NamedProgram { module_name: name, program: prog }, tail: rest }
+    parser_ast@cons_named_program(name, prog, rest)
 }
 
 fn empty_export_marks() -> ListModuleExportMark {
@@ -122,16 +106,6 @@ fn export_key(fn_name: string, arity_lex: string) -> string {
     concat(concat(fn_name, "/"), arity_lex)
 }
 
-fn find_named_program(name: string, world: ListNamedProgram) -> (bool, Program) {
-    case world.is_nil of {
-        true -> (false, Program { declarations: parser_ast@empty_list_decl(), location: parser_ast@zero_location() });
-        false -> case world.head.module_name == name of {
-            true -> (true, world.head.program);
-            false -> find_named_program(name, world.tail)
-        }
-    }
-}
-
 fn find_function_decl_by_name_arity(decls: ListDeclaration, fn_name: string, arity: int64) -> (bool, Declaration) {
     case decls.is_nil of {
         true -> (false, parser_ast@dummy_decl());
@@ -190,7 +164,7 @@ fn check_use_conflicts_ordered(mod_names: ListParam, world: ListNamedProgram, ma
         true -> type_checker_core@type_check_ok();
         false -> do
             m: string <- mod_names.head.name;
-            (found: bool, prog: Program) <- find_named_program(m, world);
+            (found: bool, prog: Program) <- parser_ast@find_named_program(m, world);
             case found of {
                 false -> type_checker_core@type_check_err("E4002", err_loc, concat(concat("unknown module in use: ", m), " (spec 19.3)"), "sect19.3");
                 true -> do
@@ -449,14 +423,14 @@ fn apply_use_add_symbols_loop(mod_names: ListParam, ctx: TypeContext, world: Lis
         true -> (type_checker_core@type_check_ok(), ctx);
         false -> do
             m: string <- mod_names.head.name;
-            (found: bool, prog: Program) <- find_named_program(m, world);
+            (found: bool, prog: Program) <- parser_ast@find_named_program(m, world);
             case found of {
                 false -> (type_checker_core@type_check_err("E4002", err_loc, concat("unknown module ", m), "sect19.3"), ctx);
                 true -> do
                     (r1: TypeCheckResult, e1: ListSymbolEntry) <- add_all_export_symbols_from_program(prog.declarations, ctx.env, m);
                     case r1.is_ok of {
                         false -> (r1, ctx);
-                        true -> apply_use_add_symbols_loop(mod_names.tail, TypeContext { env: e1 }, world, err_loc)
+                        true -> apply_use_add_symbols_loop(mod_names.tail, type_checker_core@type_context_with_env(ctx, e1), world, err_loc)
                     }
                 end
             }
@@ -492,32 +466,32 @@ fn add_all_declarations_with_world(decls: ListDeclaration, context: TypeContext,
                     true -> do
                         func_ty: string <- build_function_type_for_module_export(decls.head);
                         new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, decls.head.name, func_ty, decls.head.declared_effects, "");
-                        ctx2: TypeContext <- TypeContext { env: new_env };
+                        ctx2: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
                         add_all_declarations_with_world(decls.tail, ctx2, world, current_module)
                     end
                 }
             end;
             1 -> do
                 new_env: ListSymbolEntry <- type_checker_core@add_effect_alias_symbol(context.env, decls.head.name, decls.head.declared_effects);
-                add_all_declarations_with_world(decls.tail, TypeContext { env: new_env }, world, current_module)
+                add_all_declarations_with_world(decls.tail, type_checker_core@type_context_with_env(context, new_env), world, current_module)
             end;
             _: int64 -> add_all_declarations_with_world(decls.tail, context, world, current_module)
         }
     }
 }
 
-fn check_all_declarations_functions_only(decls: ListDeclaration, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+fn check_all_declarations_functions_only(decls: ListDeclaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case decls.is_nil of {
         true -> type_checker_core@type_check_ok();
         false -> case decls.head.tag of {
             0 -> do
-                result: TypeCheckResult <- type_checker_declarations_functions@check_body(decls.head, context);
+                result: TypeCheckResult <- type_checker_declarations_functions@check_body(decls.head, context, world);
                 case result.is_ok of {
-                    true -> check_all_declarations_functions_only(decls.tail, context);
+                    true -> check_all_declarations_functions_only(decls.tail, context, world);
                     false -> result
                 }
             end;
-            _: int64 -> check_all_declarations_functions_only(decls.tail, context)
+            _: int64 -> check_all_declarations_functions_only(decls.tail, context, world)
         }
     }
 }
@@ -531,7 +505,7 @@ fn type_check_program_with_modules(program: Program, current_module: string, wor
             case pass1.is_ok of {
                 false -> (pass1, ctx1);
                 true -> do
-                    body: TypeCheckResult <- check_all_declarations_functions_only(program.declarations, ctx1);
+                    body: TypeCheckResult <- check_all_declarations_functions_only(program.declarations, ctx1, world);
                     (body, ctx1)
                 end
             }

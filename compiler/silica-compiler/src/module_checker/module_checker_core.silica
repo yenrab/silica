@@ -15,8 +15,9 @@
    limitations under the License.
 -}
 
-// Module checking phase: after parsing, before type checking (spec §19.2–19.3).
-// Validates `use` against silica.config, module-qualified calls vs `use`, and cross-module export surfaces.
+// Module checking phase: after parsing, before type checking (spec §19.2–19.3, §3.4.8 trait files).
+// Validates `use` against silica.config, module-qualified calls vs `use`, cross-module export surfaces,
+// and trait-module rules (`export trait` vs filename, exports vs required/provided/impl methods).
 
 use parser_ast;
 use type_checker_core;
@@ -100,6 +101,77 @@ fn module_from_path(path: string) -> string {
     case ends_with(base, ".silica") of {
         true -> substring(base, 0, len(base) - 7);
         false -> base
+    }
+}
+
+fn ascii_char_to_lower(c: string) -> string {
+    case c of {
+        "A" -> "a"; "B" -> "b"; "C" -> "c"; "D" -> "d"; "E" -> "e"; "F" -> "f"; "G" -> "g"; "H" -> "h";
+        "I" -> "i"; "J" -> "j"; "K" -> "k"; "L" -> "l"; "M" -> "m"; "N" -> "n"; "O" -> "o"; "P" -> "p";
+        "Q" -> "q"; "R" -> "r"; "S" -> "s"; "T" -> "t"; "U" -> "u"; "V" -> "v"; "W" -> "w"; "X" -> "x";
+        "Y" -> "y"; "Z" -> "z";
+        _: string -> c
+    }
+}
+
+fn strings_equal_at_ignore_case(a: string, b: string, i: int64, n: int64) -> bool {
+    case i >= n of {
+        true -> true;
+        false -> do
+            ca: string <- substring(a, i, i + 1);
+            cb: string <- substring(b, i, i + 1);
+            case ascii_char_to_lower(ca) == ascii_char_to_lower(cb) of {
+                false -> false;
+                true -> strings_equal_at_ignore_case(a, b, i + 1, n)
+            }
+        end
+    }
+}
+
+fn strings_equal_ascii_ignore_case(a: string, b: string) -> bool {
+    case len(a) == len(b) of {
+        false -> false;
+        true -> strings_equal_at_ignore_case(a, b, 0, len(a))
+    }
+}
+
+fn fold_export_trait_meta(decls: ListDeclaration, count: int64, first_name: string, first_loc: SourceLocation, second_loc: SourceLocation) -> (int64, string, SourceLocation, SourceLocation) {
+    case decls.is_nil of {
+        true -> (count, first_name, first_loc, second_loc);
+        false -> case decls.head.tag == 5 of {
+            true -> case count == 0 of {
+                true -> fold_export_trait_meta(decls.tail, 1, decls.head.name, decls.head.location, second_loc);
+                false -> fold_export_trait_meta(decls.tail, count + 1, first_name, first_loc, decls.head.location)
+            };
+            false -> fold_export_trait_meta(decls.tail, count, first_name, first_loc, second_loc)
+        }
+    }
+}
+
+fn validate_export_trait_declarations(decls: ListDeclaration, current_path: string) -> (int64, string, SourceLocation, string, string) {
+    case len(current_path) == 0 of {
+        true -> (0, "", parser_ast@zero_location(), "", "");
+        false -> do
+            (tc: int64, tn: string, tloc: SourceLocation, dup_loc: SourceLocation) <- fold_export_trait_meta(decls, 0, "", parser_ast@zero_location(), parser_ast@zero_location());
+            case tc == 0 of {
+                true -> (0, "", parser_ast@zero_location(), "", "");
+                false -> case tc > 1 of {
+                    true -> (1, "E4018", dup_loc, "only one export trait declaration per module is allowed (spec 19.2.2)", "sect19.2.2");
+                    false -> do
+                        stem: string <- module_from_path(current_path);
+                        case strings_equal_ascii_ignore_case(tn, stem) of {
+                            true -> (0, "", parser_ast@zero_location(), "", "");
+                            false -> do
+                                m1: string <- concat(concat("export trait name must match module (filename) ", stem), ", found ");
+                                m2: string <- concat(m1, tn);
+                                m3: string <- concat(m2, " (spec 3.4.8)");
+                                (1, "E4017", tloc, m3, "sect3.4.8")
+                            end
+                        }
+                    end
+                }
+            }
+        end
     }
 }
 
@@ -344,6 +416,32 @@ fn module_defines_fn_with_arity(decls: ListDeclaration, fn_name: string, arity: 
     }
 }
 
+// Required trait signatures (tag 7) are part of the trait module surface (spec §3.4.8); `export f/n` may refer to them.
+fn module_declares_fn_or_required_trait_method(decls: ListDeclaration, fn_name: string, arity: int64) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 0 of {
+            true -> case decls.head.name == fn_name of {
+                true -> case list_param_length_decl(decls.head.parameters) == arity of {
+                    true -> true;
+                    false -> module_declares_fn_or_required_trait_method(decls.tail, fn_name, arity)
+                };
+                false -> module_declares_fn_or_required_trait_method(decls.tail, fn_name, arity)
+            };
+            false -> case decls.head.tag == 7 of {
+                true -> case decls.head.name == fn_name of {
+                    true -> case list_param_length_decl(decls.head.parameters) == arity of {
+                        true -> true;
+                        false -> module_declares_fn_or_required_trait_method(decls.tail, fn_name, arity)
+                    };
+                    false -> module_declares_fn_or_required_trait_method(decls.tail, fn_name, arity)
+                };
+                false -> module_declares_fn_or_required_trait_method(decls.tail, fn_name, arity)
+            }
+        }
+    }
+}
+
 // Entry alias `m` matches SIR lowering (spec 19.1 / linker `main`).
 fn program_defines_main_zero(decls: ListDeclaration) -> bool {
     case module_defines_fn_with_arity(decls, "main", 0) of {
@@ -385,6 +483,16 @@ fn program_has_use_declarations(decls: ListDeclaration) -> bool {
     }
 }
 
+fn program_has_export_trait_declaration(decls: ListDeclaration) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 5 of {
+            true -> true;
+            false -> program_has_export_trait_declaration(decls.tail)
+        }
+    }
+}
+
 fn first_function_declaration_location(decls: ListDeclaration) -> SourceLocation {
     case decls.is_nil of {
         true -> parser_ast@zero_location();
@@ -395,8 +503,9 @@ fn first_function_declaration_location(decls: ListDeclaration) -> SourceLocation
     }
 }
 
-// Standalone units (no `use`) must be an executable (main/0) or a library (export). Compiler submodules
-// that are fragments use `use` and are exempt. See trials: no_main_no_exports_nonempty_module.
+// Standalone units (no `use`) must be an executable (main/0) or a library (export). Trait modules may
+// be libraries via `export trait Name;` (spec §3.4.8) with no ordinary `export f/n` lines (e.g. marker traits).
+// Compiler submodules that are fragments use `use` and are exempt. See trials: no_main_no_exports_nonempty_module.
 // Returns 1 = violation (E4016), 0 = ok. Int64-only result avoids tuple-destructuring codegen issues.
 fn entry_shape_status(program: Program) -> int64 {
     n: int64 <- program_fn_decl_count(program.declarations);
@@ -408,7 +517,10 @@ fn entry_shape_status(program: Program) -> int64 {
                 true -> 0;
                 false -> case program_has_use_declarations(program.declarations) of {
                     true -> 0;
-                    false -> 1
+                    false -> case program_has_export_trait_declaration(program.declarations) of {
+                        true -> 0;
+                        false -> 1
+                    }
                 }
             }
         }
@@ -441,7 +553,7 @@ fn validate_kind4_call_export_surface(expr: Expr, all_decls: ListDeclaration, al
                                 ac: int64 <- count_user_call_args_expr(expr);
                                 case module_exports_fn_arity(tprog.declarations, qfn, ac) of {
                                     true -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
-                                    false -> case module_defines_fn_with_arity(tprog.declarations, qfn, ac) of {
+                                    false -> case module_declares_fn_or_required_trait_method(tprog.declarations, qfn, ac) of {
                                         true -> do
                                             msg: string <- concat(concat(concat(concat("cross-module call ", expr.name), " is not listed in export surface of module "), qmod), " (spec 19.2)");
                                             (1, "E1011", expr.location, msg, "sect19.2")
@@ -496,7 +608,7 @@ fn validate_export_items_match_declarations(items: ListParam, whole: ListDeclara
             (ok_ar: bool, ar: int64) <- parse_unsigned_decimal_module(items.head.type_name);
             case ok_ar of {
                 false -> (1, "E4014", items.head.location, "export arity must be a non-negative decimal (spec 19.2)", "sect19.2");
-                true -> case module_defines_fn_with_arity(whole, items.head.name, ar) of {
+                true -> case module_declares_fn_or_required_trait_method(whole, items.head.name, ar) of {
                     false -> do
                         msg: string <- concat(concat(concat(concat("exported function not found or arity mismatch: ", items.head.name), "/"), items.head.type_name), " (spec 19.2.1)");
                         (1, "E4010", items.head.location, msg, "sect19.2.1")
@@ -526,7 +638,8 @@ fn validate_exports_match_functions_program(decls: ListDeclaration) -> (int64, s
 
 // Runs all module checks. Returns 0 on success, 1 on failure. Prints ModuleError via diagnostics_core
 // (avoids returning a 5-tuple to main.silica — tuple codegen can mis-read the status field).
-fn module_checker_check_program(program: Program, config_files: ListString, all_parsed: ListParsedFile) -> int64 proc[DeviceIO] {
+// `current_path`: source path for this unit (used for `export trait` vs filename, spec §3.4.8); may be "" to skip.
+fn module_checker_check_program(program: Program, config_files: ListString, all_parsed: ListParsedFile, current_path: string) -> int64 proc[DeviceIO] {
     (use_ok: bool, use_code: string, use_loc: SourceLocation, use_msg: string, use_spec: string) <- validate_use_declarations_against_config(program.declarations, config_files);
     case use_ok of {
         false -> do
@@ -542,63 +655,80 @@ fn module_checker_check_program(program: Program, config_files: ListString, all_
             1
         end;
         true -> do
-            es: int64 <- entry_shape_status(program);
-            case es == 1 of {
-                true -> do
-                    loc: SourceLocation <- first_function_declaration_location(program.declarations);
-                    msg: string <- "module must define main/0 or export at least one function (spec 19.1)";
-                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E4016", loc, msg, "sect19.1");
+            (tr_st: int64, tr_code: string, tr_loc: SourceLocation, tr_msg: string, tr_spec: string) <- validate_export_trait_declarations(program.declarations, current_path);
+            case tr_st == 0 of {
+                false -> do
+                    trc: string <- case tr_code == "" of {
+                        true -> "E4017";
+                        false -> tr_code
+                    };
+                    trs: string <- case tr_spec == "" of {
+                        true -> "sect3.4.8";
+                        false -> tr_spec
+                    };
+                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", trc, tr_loc, tr_msg, trs);
                     1
                 end;
-                false -> do
-                    (qual_st: int64, qual_code: string, qual_loc: SourceLocation, qual_msg: string, qual_spec: string) <- validate_module_qualified_calls_have_use(program);
-                    case qual_st == 0 of {
-                        false -> do
-                            qec: string <- case qual_code == "" of {
-                                true -> "E1010";
-                                false -> qual_code
-                            };
-                            qss: string <- case qual_spec == "" of {
-                                true -> "sect19.3";
-                                false -> qual_spec
-                            };
-                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", qec, qual_loc, qual_msg, qss);
+                true -> do
+                    es: int64 <- entry_shape_status(program);
+                    case es == 1 of {
+                        true -> do
+                            loc: SourceLocation <- first_function_declaration_location(program.declarations);
+                            msg: string <- "module must define main/0, export at least one function, or export a trait (spec 19.1, 3.4.8)";
+                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E4016", loc, msg, "sect19.1");
                             1
                         end;
-                        true -> do
-                            (exm_st: int64, exm_code: string, exm_loc: SourceLocation, exm_msg: string, exm_spec: string) <- validate_exports_match_functions_program(program.declarations);
-                            case exm_st == 0 of {
+                        false -> do
+                            (qual_st: int64, qual_code: string, qual_loc: SourceLocation, qual_msg: string, qual_spec: string) <- validate_module_qualified_calls_have_use(program);
+                            case qual_st == 0 of {
                                 false -> do
-                                    exmc: string <- case exm_code == "" of {
-                                        true -> "E4010";
-                                        false -> exm_code
+                                    qec: string <- case qual_code == "" of {
+                                        true -> "E1010";
+                                        false -> qual_code
                                     };
-                                    exms: string <- case exm_spec == "" of {
-                                        true -> case exmc == "E4014" of {
-                                            true -> "sect19.2";
-                                            false -> "sect19.2.1"
-                                        };
-                                        false -> exm_spec
+                                    qss: string <- case qual_spec == "" of {
+                                        true -> "sect19.3";
+                                        false -> qual_spec
                                     };
-                                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", exmc, exm_loc, exm_msg, exms);
+                                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", qec, qual_loc, qual_msg, qss);
                                     1
                                 end;
                                 true -> do
-                                    (exp_st: int64, exp_code: string, exp_loc: SourceLocation, exp_msg: string, exp_spec: string) <- validate_cross_module_export_surface(program, all_parsed);
-                                    case exp_st == 0 of {
+                                    (exm_st: int64, exm_code: string, exm_loc: SourceLocation, exm_msg: string, exm_spec: string) <- validate_exports_match_functions_program(program.declarations);
+                                    case exm_st == 0 of {
                                         false -> do
-                                            eec: string <- case exp_code == "" of {
-                                                true -> "E1011";
-                                                false -> exp_code
+                                            exmc: string <- case exm_code == "" of {
+                                                true -> "E4010";
+                                                false -> exm_code
                                             };
-                                            ess: string <- case exp_spec == "" of {
-                                                true -> "sect19.2";
-                                                false -> exp_spec
+                                            exms: string <- case exm_spec == "" of {
+                                                true -> case exmc == "E4014" of {
+                                                    true -> "sect19.2";
+                                                    false -> "sect19.2.1"
+                                                };
+                                                false -> exm_spec
                                             };
-                                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", eec, exp_loc, exp_msg, ess);
+                                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", exmc, exm_loc, exm_msg, exms);
                                             1
                                         end;
-                                        true -> 0
+                                        true -> do
+                                            (exp_st: int64, exp_code: string, exp_loc: SourceLocation, exp_msg: string, exp_spec: string) <- validate_cross_module_export_surface(program, all_parsed);
+                                            case exp_st == 0 of {
+                                                false -> do
+                                                    eec: string <- case exp_code == "" of {
+                                                        true -> "E1011";
+                                                        false -> exp_code
+                                                    };
+                                                    ess: string <- case exp_spec == "" of {
+                                                        true -> "sect19.2";
+                                                        false -> exp_spec
+                                                    };
+                                                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", eec, exp_loc, exp_msg, ess);
+                                                    1
+                                                end;
+                                                true -> 0
+                                            }
+                                        end
                                     }
                                 end
                             }
@@ -620,4 +750,4 @@ export cons_parsed_file/3;
 export reverse_parsed_files/2;
 export find_program_in_parsed/2;
 export module_from_path/1;
-export module_checker_check_program/3;
+export module_checker_check_program/4;

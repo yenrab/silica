@@ -213,7 +213,7 @@ cast       char       concurrency core_id  core_set device_io effect
 efficiency_cores else end        enum      export    false     float16   float32
 float64    fn         for        from      hot_swap   if        impl      import    int8
 int16      int32      int64      lifetime  mailbox  mem       module    network_io normal    not
-of         performance_cores proc      produces  pub       pure      recv      ref       region    register_rwr return
+of         performance_cores proc      produces  provided pub       pure      recv      ref       region    register_rwr required return
 sequence   spawn     string    struct    trait     true      type
 uint8      uint16     uint32     uint64    underscore unit       use        where
 ```

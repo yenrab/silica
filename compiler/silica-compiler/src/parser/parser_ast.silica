@@ -21,6 +21,11 @@
 use lexer_core;
 
 export Program/0;
+export NamedProgram/0;
+export ListNamedProgram/0;
+export empty_named_program_list/0;
+export cons_named_program/3;
+export find_named_program/2;
 export Declaration/0;
 export ListDeclaration/0;
 export Param/0;
@@ -35,6 +40,7 @@ export zero_location/0;
 export dummy_expr/0;
 export dummy_decl/0;
 export empty_list_decl/0;
+export cons_declaration/2;
 export nil_list_param/0;
 export cons_param/2;
 export dummy_effect_name/0;
@@ -114,7 +120,9 @@ struct TypeName {
 }
 
 // Declaration: tag 0 = function declaration, tag 1 = effect alias, tag 2 = use (imports: parameters = module names),
-// tag 3 = export (parameters: name = function, type_name = arity lexeme), tag 4 = module (name = module identifier)
+// tag 3 = export (parameters: name = function, type_name = arity lexeme), tag 4 = module (name = module identifier),
+// tag 5 = export trait (name = trait identifier), tag 6 = trait marker impl `impl Type;` (return_type_name holds type source text),
+// tag 7 = required trait method signature only (same fields as tag 0 but body is dummy; silica-specification §3.4.8)
 struct Declaration {
     tag: int64,
     name: string,
@@ -136,6 +144,18 @@ struct ListDeclaration {
 struct Program {
     declarations: ListDeclaration,
     location: SourceLocation
+}
+
+// Multi-module compilation: one other unit (module name = file stem) for cross-module type and trait checks.
+struct NamedProgram {
+    module_name: string,
+    program: Program
+}
+
+struct ListNamedProgram {
+    is_nil: bool,
+    head: NamedProgram,
+    tail: ListNamedProgram
 }
 
 fn zero_location() -> SourceLocation {
@@ -184,6 +204,10 @@ fn empty_list_decl() -> ListDeclaration {
     nil_placeholder
 }
 
+fn cons_declaration(head_decl: Declaration, tail: ListDeclaration) -> ListDeclaration {
+    ListDeclaration { is_nil: false, head: head_decl, tail: tail }
+}
+
 fn dummy_effect_name() -> EffectName {
     EffectName { name: "", parameter: "", location: zero_location() }
 }
@@ -195,4 +219,25 @@ fn empty_effect_name_list() -> ListEffectName {
 
 fn cons_effect_name(eff: EffectName, list: ListEffectName) -> ListEffectName {
     ListEffectName { is_nil: false, head: eff, tail: list }
+}
+
+fn empty_named_program_list() -> ListNamedProgram {
+    dummy_prog: Program <- Program { declarations: empty_list_decl(), location: zero_location() };
+    dummy: NamedProgram <- NamedProgram { module_name: "", program: dummy_prog };
+    nil_lp: ListNamedProgram <- ListNamedProgram { is_nil: true, head: dummy, tail: nil_lp };
+    nil_lp
+}
+
+fn cons_named_program(name: string, prog: Program, rest: ListNamedProgram) -> ListNamedProgram {
+    ListNamedProgram { is_nil: false, head: NamedProgram { module_name: name, program: prog }, tail: rest }
+}
+
+fn find_named_program(name: string, world: ListNamedProgram) -> (bool, Program) {
+    case world.is_nil of {
+        true -> (false, Program { declarations: empty_list_decl(), location: zero_location() });
+        false -> case world.head.module_name == name of {
+            true -> (true, world.head.program);
+            false -> find_named_program(name, world.tail)
+        }
+    }
 }

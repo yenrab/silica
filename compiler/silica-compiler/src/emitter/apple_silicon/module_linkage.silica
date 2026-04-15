@@ -17,6 +17,7 @@
 
 // Module linkage for AArch64 emission (silica-specification.md §19.3).
 // Cross-module calls use module@function in source; SIR stores the same (see user_call_callee_sir_name).
+// Trait method calls use the same qualified form (trait file = module; §3.4.8, §19.3.2).
 // Local calls use a bare function name; the caller module comes from outer_reg |_lm=.
 // SIR may use a legacy main.* prefix on function names; asm_symbol_for_definition maps that to {module}.{fn}.
 
@@ -29,6 +30,7 @@ export sir_name_from_export_fn_name/1;
 export module_defines_program_main/2;
 export format_used_modules_comment/1;
 export emit_export_global_directives/2;
+export format_trait_metadata_comments/1;
 
 fn starts_with_main_dot(s: string) -> bool {
     len(s) >= 5 and substring(s, 0, 5) == "main."
@@ -141,4 +143,58 @@ fn emit_export_global_directives_loop(exps: ListSIRExportItem, module_name: stri
 
 fn emit_export_global_directives(exports: ListSIRExportItem, module_name: string) -> string {
     emit_export_global_directives_loop(exports, module_name, "")
+}
+
+// silica-specification §3.4.8: trait file surface (export trait, marker impl types, required signatures).
+// Emitted as assembler comments so object text matches SIR module metadata (sir_module_to_text); no runtime effect.
+fn format_export_trait_names_comments_loop(names: ListSirString, acc: string) -> string {
+    case names.is_nil of {
+        true -> acc;
+        false -> format_export_trait_names_comments_loop(names.tail, concat(acc, concat("    ; export_trait ", concat(names.head, "\n"))))
+    }
+}
+
+fn format_marker_impl_types_comments_loop(types: ListSirString, acc: string) -> string {
+    case types.is_nil of {
+        true -> acc;
+        false -> format_marker_impl_types_comments_loop(types.tail, concat(acc, concat("    ; marker_impl ", concat(types.head, "\n"))))
+    }
+}
+
+fn format_one_required_sig_comment(s: SIRRequiredMethodSig) -> string {
+    p1: string <- concat("    ; required_fn ", s.name);
+    p2: string <- concat(p1, " ");
+    p3: string <- concat(p2, s.param_names);
+    p4: string <- concat(p3, " ");
+    p5: string <- concat(p4, s.param_types);
+    p6: string <- concat(p5, " -> ");
+    p7: string <- concat(p6, s.return_type);
+    p8: string <- concat(p7, " ");
+    concat(p8, concat(s.effects, "\n"))
+}
+
+fn format_required_trait_sigs_comments_loop(sigs: ListSIRRequiredMethodSig, acc: string) -> string {
+    case sigs.is_nil of {
+        true -> acc;
+        false -> do
+            line: string <- format_one_required_sig_comment(sigs.head);
+            format_required_trait_sigs_comments_loop(sigs.tail, concat(acc, line))
+        end
+    }
+}
+
+fn format_trait_metadata_comments(sir_module: SIRModule) -> string {
+    t: string <- case sir_module.export_trait_names.is_nil of {
+        true -> "";
+        false -> format_export_trait_names_comments_loop(sir_module.export_trait_names, "")
+    };
+    m: string <- case sir_module.marker_impl_types.is_nil of {
+        true -> "";
+        false -> format_marker_impl_types_comments_loop(sir_module.marker_impl_types, "")
+    };
+    r: string <- case sir_module.required_method_sigs.is_nil of {
+        true -> "";
+        false -> format_required_trait_sigs_comments_loop(sir_module.required_method_sigs, "")
+    };
+    concat(concat(t, m), r)
 }

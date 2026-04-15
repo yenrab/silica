@@ -252,11 +252,44 @@ fn extract_export_declaration(slots: ListTokenSlot) -> (Declaration, ListTokenSl
             false -> (parser_ast@dummy_decl(), slots);
             true -> do
                 exp_loc: SourceLocation <- slots.head.token.location;
-                (params: ListParam, after_exp: ListTokenSlot) <- collect_export_decl_parameters(slots.tail);
-                dummy: Expr <- parser_ast@dummy_expr();
-                zero_loc: SourceLocation <- parser_ast@zero_location();
-                decl: Declaration <- Declaration { tag: 3, name: "", parameters: params, return_type_name: "", return_type_location: zero_loc, location: exp_loc, body: dummy, declared_effects: parser_ast@empty_effect_name_list() };
-                (decl, after_exp)
+                after_export_kw: ListTokenSlot <- skip_leading_whitespace_slots(slots.tail);
+                case after_export_kw.is_nil of {
+                    true -> (parser_ast@dummy_decl(), after_export_kw);
+                    false -> case after_export_kw.head.token.kind == kinds.trait_keyword of {
+                        true -> do
+                            after_trait: ListTokenSlot <- skip_leading_whitespace_slots(after_export_kw.tail);
+                            case after_trait.is_nil of {
+                                true -> (parser_ast@dummy_decl(), after_trait);
+                                false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, after_trait.head.token.kind) of {
+                                    false -> (parser_ast@dummy_decl(), after_trait);
+                                    true -> do
+                                        trait_name: string <- after_trait.head.token.lexeme;
+                                        after_name: ListTokenSlot <- skip_leading_whitespace_slots(after_trait.tail);
+                                        case after_name.is_nil of {
+                                            true -> (parser_ast@dummy_decl(), after_name);
+                                            false -> case after_name.head.token.kind == kinds.semicolon of {
+                                                false -> (parser_ast@dummy_decl(), after_name);
+                                                true -> do
+                                                    dummy_tr: Expr <- parser_ast@dummy_expr();
+                                                    zero_loc_tr: SourceLocation <- parser_ast@zero_location();
+                                                    decl_tr: Declaration <- Declaration { tag: 5, name: trait_name, parameters: parser_ast@nil_list_param(), return_type_name: "", return_type_location: zero_loc_tr, location: exp_loc, body: dummy_tr, declared_effects: parser_ast@empty_effect_name_list() };
+                                                    (decl_tr, after_name.tail)
+                                                end
+                                            }
+                                        }
+                                    end
+                                }
+                            }
+                        end;
+                        false -> do
+                            (params: ListParam, after_exp: ListTokenSlot) <- collect_export_decl_parameters(slots.tail);
+                            dummy: Expr <- parser_ast@dummy_expr();
+                            zero_loc: SourceLocation <- parser_ast@zero_location();
+                            decl: Declaration <- Declaration { tag: 3, name: "", parameters: params, return_type_name: "", return_type_location: zero_loc, location: exp_loc, body: dummy, declared_effects: parser_ast@empty_effect_name_list() };
+                            (decl, after_exp)
+                        end
+                    }
+                }
             end
         }
     }
@@ -526,6 +559,35 @@ fn collect_params_and_find_type_and_body(slots: ListTokenSlot) -> (ListParam, st
     }
 }
 
+// `required` trait methods: signature only, terminated by `;`.
+fn collect_params_and_find_type_and_semicolon(slots: ListTokenSlot) -> (ListParam, string, SourceLocation, ListEffectName, ListTokenSlot) proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (parser_ast@nil_list_param(), "", parser_ast@zero_location(), parser_ast@empty_effect_name_list(), constraint_core@empty_list_slot());
+        false -> case slots.head.token.kind == kinds.left_paren of {
+            true -> case slots.tail.is_nil of {
+                true -> (parser_ast@nil_list_param(), "", parser_ast@zero_location(), parser_ast@empty_effect_name_list(), constraint_core@empty_list_slot());
+                false -> case slots.tail.head.token.kind == kinds.right_paren of {
+                    true -> do
+                        rest_after_rparen: ListTokenSlot <- slots.tail.tail;
+                        (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_semicolon(rest_after_rparen);
+                        (parser_ast@nil_list_param(), ret_type, ret_type_loc, effects, body_slots)
+                    end;
+                    false -> do
+                        (params: ListParam, rest_after_params: ListTokenSlot) <- collect_params_loop(slots.tail, parser_ast@nil_list_param());
+                        (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_semicolon(rest_after_params);
+                        (params, ret_type, ret_type_loc, effects, body_slots)
+                    end
+                }
+            };
+            false -> do
+                (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_semicolon(slots);
+                (parser_ast@nil_list_param(), ret_type, ret_type_loc, effects, body_slots)
+            end
+        }
+    }
+}
+
 fn bindings_to_params(bindings: ListTupleDecomposeBinding) -> ListParam {
     case bindings.is_nil of {
         true -> parser_ast@nil_list_param();
@@ -719,6 +781,20 @@ fn body_slots_after_open_brace(slots: ListTokenSlot) -> ListTokenSlot {
     }
 }
 
+
+// After `-> T` and optional proc effects for trait `required` methods: `-> type ;` (silica-specification §3.4.8).
+fn body_slots_after_semicolon(slots: ListTokenSlot) -> ListTokenSlot {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> trimmed;
+        false -> case trimmed.head.token.kind == kinds.semicolon of {
+            true -> trimmed.tail;
+            false -> constraint_core@empty_list_slot()
+        }
+    }
+}
+
 // Return type and effects are separate: -> int64 proc[device_io] means return_type=int64, effects=[device_io].
 // When proc effects follow, token.lexeme may be empty; derive type from token.kind for type keywords.
 fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListEffectName, ListTokenSlot) proc[DeviceIO] {
@@ -819,6 +895,117 @@ fn find_type_and_body(slots: ListTokenSlot) -> (string, SourceLocation, ListEffe
                                     end;
                                     false -> do
                                         (ret_type: string, ret_type_loc: SourceLocation, _effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_body(rest);
+                                        (ret_type, ret_type_loc, parser_ast@empty_effect_name_list(), body_slots)
+                                    end
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        end
+    }
+    end
+}
+// Same as find_type_and_body but ends with `;` instead of `{` body (trait required methods).
+fn find_type_and_semicolon(slots: ListTokenSlot) -> (string, SourceLocation, ListEffectName, ListTokenSlot) proc[DeviceIO] {
+    do
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> do
+            zero_loc: SourceLocation <- parser_ast@zero_location();
+            empty_effects: ListEffectName <- parser_ast@empty_effect_name_list();
+            empty: ListTokenSlot <- constraint_core@empty_list_slot();
+            ("", zero_loc, empty_effects, empty)
+        end;
+        false -> do
+            first: TokenSlot <- slots.head;
+            rest: ListTokenSlot <- slots.tail;
+            case first.token.kind == kinds.ref_keyword or first.token.kind == kinds.region_keyword or first.token.kind == kinds.buf_keyword of {
+                true -> do
+                    tr: TupleTypeResult <- parser_tuples@extract_parametrized_type_from_slots(slots);
+                    ret_type: string <- tr.type_str;
+                    ret_type_loc: SourceLocation <- first.token.location;
+                    (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(tr.rest_slots);
+                    rest_after_lbrace: ListTokenSlot <- after_effects.tail;
+                    body_slots: ListTokenSlot <- body_slots_after_semicolon(rest_after_lbrace);
+                    from_kind: string <- "";
+                    use_type: string <- ret_type;
+                    ret_empty: string <- case ret_type of { "" -> "ret_empty"; _: string -> "ret_ok" };
+                    from_empty: string <- "from_ok";
+                    use_type_instrumented: string <- case use_type of { "" -> concat("DEBUG:", concat(ret_empty, concat(",", from_empty))); _: string -> use_type };
+                    (use_type_instrumented, ret_type_loc, parser_ast@empty_effect_name_list(), body_slots)
+                end;
+                false -> case first.token.kind == kinds.atomic_keyword of {
+                    true -> case rest.is_nil of {
+                        true -> do
+                            (ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_semicolon(rest);
+                            (ret_type, ret_type_loc, effects, body_slots)
+                        end;
+                        false -> case rest.head.token.kind == kinds.ref_keyword of {
+                            true -> do
+                                tr: TupleTypeResult <- parser_tuples@extract_parametrized_type_from_slots(slots);
+                                ret_type: string <- tr.type_str;
+                                ret_type_loc: SourceLocation <- first.token.location;
+                                (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(tr.rest_slots);
+                                rest_after_lbrace: ListTokenSlot <- after_effects.tail;
+                                body_slots: ListTokenSlot <- body_slots_after_semicolon(rest_after_lbrace);
+                                use_type_instrumented: string <- case ret_type of { "" -> "DEBUG:ref_empty"; _: string -> ret_type };
+                                (use_type_instrumented, ret_type_loc, parser_ast@empty_effect_name_list(), body_slots)
+                            end;
+                            false -> do
+                                (ret_type: string, ret_type_loc: SourceLocation, _effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_semicolon(rest);
+                                (ret_type, ret_type_loc, parser_ast@empty_effect_name_list(), body_slots)
+                            end
+                        }
+                    };
+                    false -> case first.token.kind == kinds.left_paren of {
+                        true -> do
+                            tr: TupleTypeResult <- parser_tuples@extract_tuple_type_from_slots(slots);
+                            ret_type: string <- tr.type_str;
+                            ret_type_loc: SourceLocation <- first.token.location;
+                            (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(tr.rest_slots);
+                            rest_after_lbrace: ListTokenSlot <- after_effects.tail;
+                            body_slots: ListTokenSlot <- body_slots_after_semicolon(rest_after_lbrace);
+                            (ret_type, ret_type_loc, parser_ast@empty_effect_name_list(), body_slots)
+                        end;
+                        false -> case token_is_list_type_name(first.token, kinds) of {
+                            true -> do
+                                tr_li: TupleTypeResult <- parser_tuples@extract_list_type_from_slots(slots);
+                                ret_type_li: string <- tr_li.type_str;
+                                ret_type_loc_li: SourceLocation <- first.token.location;
+                                (effects_li: ListEffectName, after_effects_li: ListTokenSlot) <- collect_optional_proc_effects(tr_li.rest_slots);
+                                rest_after_lbrace_li: ListTokenSlot <- after_effects_li.tail;
+                                body_slots_li: ListTokenSlot <- body_slots_after_semicolon(rest_after_lbrace_li);
+                                (ret_type_li, ret_type_loc_li, parser_ast@empty_effect_name_list(), body_slots_li)
+                            end;
+                            false -> case first.token.kind == kinds.left_brace or first.token.lexeme == "{" of {
+                                true -> do
+                                    tr_ir: TupleTypeResult <- parser_tuples@extract_inline_record_type_from_slots(slots);
+                                    ret_type_ir: string <- tr_ir.type_str;
+                                    ret_type_loc_ir: SourceLocation <- first.token.location;
+                                    (effects_ir: ListEffectName, after_effects_ir: ListTokenSlot) <- collect_optional_proc_effects(tr_ir.rest_slots);
+                                    rest_after_lbrace_ir: ListTokenSlot <- after_effects_ir.tail;
+                                    body_slots_ir: ListTokenSlot <- body_slots_after_semicolon(rest_after_lbrace_ir);
+                                    (ret_type_ir, ret_type_loc_ir, parser_ast@empty_effect_name_list(), body_slots_ir)
+                                end;
+                                false -> case is_type_keyword(kinds, first.token.kind) of {
+                                    true -> do
+                                        ret_type_loc: SourceLocation <- first.token.location;
+                                        rest_after_type: ListTokenSlot <- rest;
+                                        (effects: ListEffectName, after_effects: ListTokenSlot) <- collect_optional_proc_effects(rest_after_type);
+                                        rest_after_lbrace: ListTokenSlot <- after_effects.tail;
+                                        body_slots: ListTokenSlot <- body_slots_after_semicolon(rest_after_lbrace);
+                                        from_kind: string <- kind_to_type_name(first.token.kind);
+                                        ret_lex: string <- first.token.lexeme;
+                                        use_type: string <- case len(from_kind) > 0 of { true -> from_kind; false -> ret_lex };
+                                        ret_empty: string <- case ret_lex of { "" -> "ret_empty"; _: string -> "ret_ok" };
+                                        from_empty: string <- case from_kind of { "" -> "from_empty"; _: string -> "from_ok" };
+                                        use_type_instrumented: string <- case use_type of { "" -> concat("DEBUG:", concat(ret_empty, concat(",", from_empty))); _: string -> use_type };
+                                        (use_type_instrumented, ret_type_loc, parser_ast@empty_effect_name_list(), body_slots)
+                                    end;
+                                    false -> do
+                                        (ret_type: string, ret_type_loc: SourceLocation, _effects: ListEffectName, body_slots: ListTokenSlot) <- find_type_and_semicolon(rest);
                                         (ret_type, ret_type_loc, parser_ast@empty_effect_name_list(), body_slots)
                                     end
                                 }
@@ -3006,6 +3193,210 @@ fn extract_body_expr(slot: TokenSlot) -> Expr {
     }
 }
 
+
+fn append_decl_lists(a: ListDeclaration, b: ListDeclaration) -> ListDeclaration {
+    case a.is_nil of {
+        true -> b;
+        false -> parser_ast@cons_declaration(a.head, append_decl_lists(a.tail, b))
+    }
+}
+
+fn is_required_section_start(slots: ListTokenSlot) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> false;
+        false -> slots.head.token.kind == kinds.required_keyword
+    }
+}
+
+fn is_provided_section_start(slots: ListTokenSlot) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> false;
+        false -> slots.head.token.kind == kinds.provided_keyword
+    }
+}
+
+fn is_impl_fn_decl_start(slots: ListTokenSlot) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> false;
+        false -> case slots.tail.is_nil of {
+            true -> false;
+            false -> do
+                w: ListTokenSlot <- skip_leading_whitespace_slots(slots.tail);
+                case w.is_nil of {
+                    true -> false;
+                    false -> slots.head.token.kind == kinds.impl_keyword and w.head.token.kind == kinds.fn_keyword
+                }
+            end
+        }
+    }
+}
+
+fn is_trait_marker_impl_start(slots: ListTokenSlot) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> false;
+        false -> case slots.tail.is_nil of {
+            true -> false;
+            false -> do
+                w: ListTokenSlot <- skip_leading_whitespace_slots(slots.tail);
+                case w.is_nil of {
+                    true -> false;
+                    false -> case slots.head.token.kind == kinds.impl_keyword of {
+                        true -> w.head.token.kind != kinds.fn_keyword;
+                        false -> false
+                    }
+                }
+            end
+        }
+    }
+}
+
+fn concat_tokens_until_semicolon(slots: ListTokenSlot) -> (string, ListTokenSlot) proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> ("", slots);
+        false -> case slots.head.token.kind == kinds.semicolon of {
+            true -> ("", slots.tail);
+            false -> do
+                piece: string <- slots.head.token.lexeme;
+                (suf: string, after: ListTokenSlot) <- concat_tokens_until_semicolon(slots.tail);
+                full: string <- concat(piece, suf);
+                (full, after)
+            end
+        }
+    }
+}
+
+fn extract_trait_marker_impl(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (parser_ast@dummy_decl(), constraint_core@empty_list_slot());
+        false -> case slots.head.token.kind == kinds.impl_keyword of {
+            false -> (parser_ast@dummy_decl(), slots);
+            true -> do
+                impl_loc: SourceLocation <- slots.head.token.location;
+                after_impl: ListTokenSlot <- skip_leading_whitespace_slots(slots.tail);
+                (type_src: string, after_semi: ListTokenSlot) <- concat_tokens_until_semicolon(after_impl);
+                dummy_b: Expr <- parser_ast@dummy_expr();
+                zero_loc_m: SourceLocation <- parser_ast@zero_location();
+                decl_m: Declaration <- Declaration { tag: 6, name: "", parameters: parser_ast@nil_list_param(), return_type_name: type_src, return_type_location: zero_loc_m, location: impl_loc, body: dummy_b, declared_effects: parser_ast@empty_effect_name_list() };
+                (decl_m, after_semi)
+            end
+        }
+    }
+}
+
+fn extract_impl_fn_function(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) proc[DeviceIO] {
+    extract_function(slots.tail)
+}
+
+fn extract_trait_required_fn(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) proc[DeviceIO] {
+    r1: ListTokenSlot <- slots.tail;
+    fn_name: string <- r1.head.token.lexeme;
+    fn_loc: SourceLocation <- r1.head.token.location;
+    (params: ListParam, ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, after_sig: ListTokenSlot) <- collect_params_and_find_type_and_semicolon(r1.tail);
+    dummy_body: Expr <- parser_ast@dummy_expr();
+    decl: Declaration <- Declaration { tag: 7, name: fn_name, parameters: params, return_type_name: ret_type, return_type_location: ret_type_loc, location: fn_loc, body: dummy_body, declared_effects: effects };
+    (decl, after_sig)
+}
+
+fn declarations_from_slots_trait_required(slots: ListTokenSlot) -> (ListDeclaration, ListTokenSlot) proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> (parser_ast@empty_list_decl(), trimmed);
+        false -> case trimmed.head.token.kind == kinds.right_brace or trimmed.head.token.lexeme == "}" of {
+            true -> (parser_ast@empty_list_decl(), trimmed);
+            false -> do
+                (d: Declaration, rest: ListTokenSlot) <- extract_trait_required_fn(trimmed);
+                (tail_decls: ListDeclaration, final_rest: ListTokenSlot) <- declarations_from_slots_trait_required(rest);
+                (parser_ast@cons_declaration(d, tail_decls), final_rest)
+            end
+        }
+    }
+}
+
+fn declarations_from_slots_trait_provided(slots: ListTokenSlot) -> (ListDeclaration, ListTokenSlot) proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> (parser_ast@empty_list_decl(), trimmed);
+        false -> case trimmed.head.token.kind == kinds.right_brace or trimmed.head.token.lexeme == "}" of {
+            true -> (parser_ast@empty_list_decl(), trimmed);
+            false -> do
+                (d: Declaration, rest: ListTokenSlot) <- extract_function(trimmed);
+                (tail_decls: ListDeclaration, final_rest: ListTokenSlot) <- declarations_from_slots_trait_provided(rest);
+                (parser_ast@cons_declaration(d, tail_decls), final_rest)
+            end
+        }
+    }
+}
+
+fn extract_required_top_level_block(slots: ListTokenSlot) -> (ListDeclaration, ListTokenSlot) proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (parser_ast@empty_list_decl(), constraint_core@empty_list_slot());
+        false -> case slots.head.token.kind == kinds.required_keyword of {
+            false -> (parser_ast@empty_list_decl(), slots);
+            true -> do
+                after_kw: ListTokenSlot <- skip_leading_whitespace_slots(slots.tail);
+                case after_kw.is_nil of {
+                    true -> (parser_ast@empty_list_decl(), after_kw);
+                    false -> case after_kw.head.token.kind == kinds.left_brace or after_kw.head.token.lexeme == "{" of {
+                        false -> (parser_ast@empty_list_decl(), after_kw);
+                        true -> do
+                            inner: ListTokenSlot <- after_kw.tail;
+                            (decls_inner: ListDeclaration, rest_after_inner: ListTokenSlot) <- declarations_from_slots_trait_required(inner);
+                            rest_scan: ListTokenSlot <- skip_leading_whitespace_slots(rest_after_inner);
+                            case rest_scan.is_nil of {
+                                true -> (decls_inner, rest_scan);
+                                false -> case rest_scan.head.token.kind == kinds.right_brace or rest_scan.head.token.lexeme == "}" of {
+                                    true -> (decls_inner, rest_scan.tail);
+                                    false -> (decls_inner, rest_scan)
+                                }
+                            }
+                        end
+                    }
+                }
+            end
+        }
+    }
+}
+
+fn extract_provided_top_level_block(slots: ListTokenSlot) -> (ListDeclaration, ListTokenSlot) proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (parser_ast@empty_list_decl(), constraint_core@empty_list_slot());
+        false -> case slots.head.token.kind == kinds.provided_keyword of {
+            false -> (parser_ast@empty_list_decl(), slots);
+            true -> do
+                after_kw: ListTokenSlot <- skip_leading_whitespace_slots(slots.tail);
+                case after_kw.is_nil of {
+                    true -> (parser_ast@empty_list_decl(), after_kw);
+                    false -> case after_kw.head.token.kind == kinds.left_brace or after_kw.head.token.lexeme == "{" of {
+                        false -> (parser_ast@empty_list_decl(), after_kw);
+                        true -> do
+                            inner: ListTokenSlot <- after_kw.tail;
+                            (decls_inner: ListDeclaration, rest_after_inner: ListTokenSlot) <- declarations_from_slots_trait_provided(inner);
+                            rest_scan: ListTokenSlot <- skip_leading_whitespace_slots(rest_after_inner);
+                            case rest_scan.is_nil of {
+                                true -> (decls_inner, rest_scan);
+                                false -> case rest_scan.head.token.kind == kinds.right_brace or rest_scan.head.token.lexeme == "}" of {
+                                    true -> (decls_inner, rest_scan.tail);
+                                    false -> (decls_inner, rest_scan)
+                                }
+                            }
+                        end
+                    }
+                }
+            end
+        }
+    }
+}
+
 fn extract_one_declaration(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) proc[DeviceIO] {
     trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
     case is_use_decl_start(trimmed) of {
@@ -3016,11 +3407,17 @@ fn extract_one_declaration(slots: ListTokenSlot) -> (Declaration, ListTokenSlot)
                 true -> extract_module_declaration(trimmed);
                 false -> case is_effect_decl_start(trimmed) of {
                     true -> extract_effect_declaration(trimmed);
-                    false -> case is_fn_decl_start(trimmed) of {
-                        true -> extract_function(trimmed);
-                        false -> do
-                            (parser_ast@dummy_decl(), trimmed.tail)
-                        end
+                    false -> case is_impl_fn_decl_start(trimmed) of {
+                        true -> extract_impl_fn_function(trimmed);
+                        false -> case is_trait_marker_impl_start(trimmed) of {
+                            true -> extract_trait_marker_impl(trimmed);
+                            false -> case is_fn_decl_start(trimmed) of {
+                                true -> extract_function(trimmed);
+                                false -> do
+                                    (parser_ast@dummy_decl(), trimmed.tail)
+                                end
+                            }
+                        }
                     }
                 }
             }
@@ -3029,20 +3426,36 @@ fn extract_one_declaration(slots: ListTokenSlot) -> (Declaration, ListTokenSlot)
 }
 
 fn declarations_from_slots(slots: ListTokenSlot) -> ListDeclaration proc[DeviceIO] {
-    case slots.is_nil of {
+    trimmed_top: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed_top.is_nil of {
         true -> parser_ast@empty_list_decl();
-        false -> case slots.tail.is_nil of {
-            true -> parser_ast@empty_list_decl();
-            false -> do
-                (decl: Declaration, rest: ListTokenSlot) <- extract_one_declaration(slots);
-                case decl.tag >= 0 of {
-                    true -> do
-                        tail_decls: ListDeclaration <- declarations_from_slots(rest);
-                        ListDeclaration { is_nil: false, head: decl, tail: tail_decls }
-                    end;
-                    false -> declarations_from_slots(slots.tail)
+        false -> case is_required_section_start(trimmed_top) of {
+            true -> do
+                (req_decls: ListDeclaration, after_req: ListTokenSlot) <- extract_required_top_level_block(trimmed_top);
+                append_decl_lists(req_decls, declarations_from_slots(after_req))
+            end;
+            false -> case is_provided_section_start(trimmed_top) of {
+                true -> do
+                    (prov_decls: ListDeclaration, after_prov: ListTokenSlot) <- extract_provided_top_level_block(trimmed_top);
+                    append_decl_lists(prov_decls, declarations_from_slots(after_prov))
+                end;
+                false -> case slots.is_nil of {
+                    true -> parser_ast@empty_list_decl();
+                    false -> case slots.tail.is_nil of {
+                        true -> parser_ast@empty_list_decl();
+                        false -> do
+                            (decl: Declaration, rest: ListTokenSlot) <- extract_one_declaration(slots);
+                            case decl.tag >= 0 of {
+                                true -> do
+                                    tail_decls: ListDeclaration <- declarations_from_slots(rest);
+                                    parser_ast@cons_declaration(decl, tail_decls)
+                                end;
+                                false -> declarations_from_slots(slots.tail)
+                            }
+                        end
+                    }
                 }
-            end
+            }
         }
     }
 }

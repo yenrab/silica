@@ -40,7 +40,7 @@ fn add_all_declarations(decls: ListDeclaration, context: TypeContext) -> TypeCon
             end;
             1 -> do
                 new_env: ListSymbolEntry <- type_checker_core@add_effect_alias_symbol(context.env, decls.head.name, decls.head.declared_effects);
-                ctx: TypeContext <- TypeContext { env: new_env };
+                ctx: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
                 add_all_declarations(decls.tail, ctx)
             end;
             _: int64 -> add_all_declarations(decls.tail, context)
@@ -48,19 +48,19 @@ fn add_all_declarations(decls: ListDeclaration, context: TypeContext) -> TypeCon
     }
 }
 
-// Second pass: check all function bodies, stop on first error
-fn check_all_declarations(decls: ListDeclaration, context: TypeContext) -> TypeCheckResult proc[DeviceIO] {
+// Second pass: check all function bodies, stop on first error (`world` empty when no cross-module trait modules).
+fn check_all_declarations(decls: ListDeclaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case decls.is_nil of {
         true -> type_checker_core@type_check_ok();
         false -> case decls.head.tag of {
             0 -> do
-                result: TypeCheckResult <- type_checker_declarations_functions@check_body(decls.head, context);
+                result: TypeCheckResult <- type_checker_declarations_functions@check_body(decls.head, context, world);
                 case result.is_ok of {
-                    true -> check_all_declarations(decls.tail, context);
+                    true -> check_all_declarations(decls.tail, context, world);
                     false -> result
                 }
             end;
-            _: int64 -> check_all_declarations(decls.tail, context)
+            _: int64 -> check_all_declarations(decls.tail, context, world)
         }
     }
 }
@@ -68,7 +68,8 @@ fn check_all_declarations(decls: ListDeclaration, context: TypeContext) -> TypeC
 // Type-check program (single compilation unit, no cross-module world). Skips use/export/module for symbol table.
 fn type_check_program(program: Program, context: TypeContext) -> (TypeCheckResult, TypeContext) proc[DeviceIO] {
     ctx_with_decls: TypeContext <- add_all_declarations(program.declarations, context);
-    result: TypeCheckResult <- check_all_declarations(program.declarations, ctx_with_decls);
+    empty_world: ListNamedProgram <- parser_ast@empty_named_program_list();
+    result: TypeCheckResult <- check_all_declarations(program.declarations, ctx_with_decls, empty_world);
     (result, ctx_with_decls)
 }
 

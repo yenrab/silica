@@ -34,6 +34,7 @@ use emitter_core;
 use build_output;
 use diagnostics_core;
 use module_checker_core;
+use trait_checker_core;
 
 fn build_module_world(all: ListParsedFile, exclude_path: string) -> ListNamedProgram {
     case all.is_nil of {
@@ -467,12 +468,12 @@ fn debug_walk_decls(decls: ListDeclaration) -> int64 proc[DeviceIO] {
     }
 }
 
-// Type-check, effect-check, SIR, emit for one unit; module_world is other parsed units (spec §19).
+// Module-check, type-check, trait-check, effect-check, SIR, emit for one unit; module_world is other parsed units (spec §19).
 // config_files: full silica.config path list — module checker validates `use` before type checking.
 // all_parsed: every ParsedFile from this compile — module checker verifies cross-module exports (§19.2).
 fn compile_parsed_unit(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile) -> int64 proc[DeviceIO] {
     println("  Module checking...");
-    mc: int64 <- module_checker_core@module_checker_check_program(program, config_files, all_parsed);
+    mc: int64 <- module_checker_core@module_checker_check_program(program, config_files, all_parsed, filename);
     case mc == 0 of {
         false -> 1;
         true -> do
@@ -482,8 +483,13 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
             tc_out: ModuleTypecheckOutcome <- type_checker_modules@type_check_program_with_modules_outcome(program, mod_name, module_world, context);
             case tc_out.is_ok of {
                 true -> do
-                    println("  Effect checking...");
-                    effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(program);
+                    println("  Trait checking...");
+                    tr_code: int64 <- trait_checker_core@trait_checker_check_program(program);
+                    case tr_code != 0 of {
+                        true -> 1;
+                        false -> do
+                            println("  Effect checking...");
+                            effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(program);
                     case effect_result.is_ok of {
                         true -> do
                             _: int64 <- case debug_compile(filename) of {
@@ -524,6 +530,8 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
                             };
                             diagnostics_core@print_compiler_error("EffectError", effect_error_code, effect_result.error_location, effect_result.error_message, effect_spec_section);
                             1
+                        end
+                    }
                         end
                     }
                 end;

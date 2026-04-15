@@ -34,6 +34,11 @@ export cons_sir_string/2;
 export dummy_export_item/0;
 export nil_sir_exports/0;
 export cons_sir_export/2;
+export SIRRequiredMethodSig/0;
+export ListSIRRequiredMethodSig/0;
+export dummy_required_method_sig/0;
+export nil_required_method_sigs/0;
+export cons_required_method_sig/2;
 
 // SIRTerm: kind 0=const, 1=var, 2=let, 3=case, 4=call, 5=tail_call, 6=prim,
 //   tail_call: same slot layout as call (name=callee, inner/ right_expr=args, value=effects+|sir_rec:...)
@@ -86,10 +91,28 @@ struct ListSIRExportItem {
     tail: ListSIRExportItem
 }
 
+// silica-specification §3.4.8: required trait method signatures (Declaration tag 7); no body in SIR
+struct SIRRequiredMethodSig {
+    name: string,
+    param_names: string,
+    param_types: string,
+    return_type: string,
+    effects: string
+}
+
+struct ListSIRRequiredMethodSig {
+    is_nil: bool,
+    head: SIRRequiredMethodSig,
+    tail: ListSIRRequiredMethodSig
+}
+
 struct SIRModule {
     module_name: string,
     used_modules: ListSirString,
     exports: ListSIRExportItem,
+    export_trait_names: ListSirString,
+    marker_impl_types: ListSirString,
+    required_method_sigs: ListSIRRequiredMethodSig,
     functions: ListSIRFunction
 }
 
@@ -131,6 +154,19 @@ fn nil_sir_exports() -> ListSIRExportItem {
 
 fn cons_sir_export(item: SIRExportItem, rest: ListSIRExportItem) -> ListSIRExportItem {
     ListSIRExportItem { is_nil: false, head: item, tail: rest }
+}
+
+fn dummy_required_method_sig() -> SIRRequiredMethodSig {
+    SIRRequiredMethodSig { name: "", param_names: "", param_types: "", return_type: "", effects: "[]" }
+}
+
+fn nil_required_method_sigs() -> ListSIRRequiredMethodSig {
+    ph: ListSIRRequiredMethodSig <- ListSIRRequiredMethodSig { is_nil: true, head: dummy_required_method_sig(), tail: ph };
+    ph
+}
+
+fn cons_required_method_sig(item: SIRRequiredMethodSig, rest: ListSIRRequiredMethodSig) -> ListSIRRequiredMethodSig {
+    ListSIRRequiredMethodSig { is_nil: false, head: item, tail: rest }
 }
 
 // Debug: convert SIR term/module to readable text (for debugging emitter branch logic)
@@ -242,6 +278,57 @@ fn sir_exports_to_text(exps: ListSIRExportItem, acc: string) -> string {
     }
 }
 
+fn sir_trait_exports_to_text(names: ListSirString, acc: string) -> string {
+    case names.is_nil of {
+        true -> acc;
+        false -> do
+            rest: string <- sir_trait_exports_to_text(names.tail, acc);
+            line: string <- concat("  export_trait ", concat(names.head, "\n"));
+            case len(rest) > 0 of {
+                true -> concat(line, rest);
+                false -> line
+            }
+        end
+    }
+}
+
+fn sir_marker_impls_to_text(types: ListSirString, acc: string) -> string {
+    case types.is_nil of {
+        true -> acc;
+        false -> do
+            rest: string <- sir_marker_impls_to_text(types.tail, acc);
+            line: string <- concat("  marker_impl ", concat(types.head, "\n"));
+            case len(rest) > 0 of {
+                true -> concat(line, rest);
+                false -> line
+            }
+        end
+    }
+}
+
+fn sir_required_sigs_to_text(sigs: ListSIRRequiredMethodSig, acc: string) -> string {
+    case sigs.is_nil of {
+        true -> acc;
+        false -> do
+            s: SIRRequiredMethodSig <- sigs.head;
+            p1: string <- concat("  required_fn ", s.name);
+            p2: string <- concat(p1, " ");
+            p3: string <- concat(p2, s.param_names);
+            p4: string <- concat(p3, " ");
+            p5: string <- concat(p4, s.param_types);
+            p6: string <- concat(p5, " -> ");
+            p7: string <- concat(p6, s.return_type);
+            p8: string <- concat(p7, " ");
+            one2: string <- concat(p8, concat(s.effects, "\n"));
+            rest: string <- sir_required_sigs_to_text(sigs.tail, acc);
+            case len(rest) > 0 of {
+                true -> concat(one2, rest);
+                false -> one2
+            }
+        end
+    }
+}
+
 fn sir_module_to_text_acc(fns: ListSIRFunction, acc: string) -> string {
     case fns.is_nil of {
         true -> acc;
@@ -266,6 +353,25 @@ fn sir_module_to_text(sir_module: SIRModule) -> string {
         true -> "";
         false -> concat(concat("  export ", sir_exports_to_text(sir_module.exports, "")), "\n")
     };
+    trait_exports_line: string <- case sir_module.export_trait_names.is_nil of {
+        true -> "";
+        false -> sir_trait_exports_to_text(sir_module.export_trait_names, "")
+    };
+    marker_line: string <- case sir_module.marker_impl_types.is_nil of {
+        true -> "";
+        false -> sir_marker_impls_to_text(sir_module.marker_impl_types, "")
+    };
+    req_line: string <- case sir_module.required_method_sigs.is_nil of {
+        true -> "";
+        false -> sir_required_sigs_to_text(sir_module.required_method_sigs, "")
+    };
     funcs: string <- sir_module_to_text_acc(sir_module.functions, "");
-    concat(concat(concat(header, uses_line), exports_line), funcs)
+    do
+        part1: string <- concat(header, uses_line);
+        part2: string <- concat(part1, exports_line);
+        part3: string <- concat(part2, trait_exports_line);
+        part4: string <- concat(part3, marker_line);
+        part5: string <- concat(part4, req_line);
+        concat(part5, funcs)
+    end
 }
