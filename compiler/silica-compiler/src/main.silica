@@ -35,6 +35,8 @@ use build_output;
 use diagnostics_core;
 use module_checker_core;
 use trait_checker_core;
+use trait_specialization;
+use qualified_call_mangler;
 
 fn build_module_world(all: ListParsedFile, exclude_path: string) -> ListNamedProgram {
     case all.is_nil of {
@@ -480,7 +482,10 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
             println("  Type checking...");
             context: TypeContext <- type_checker_core@create_type_context();
             mod_name: string <- module_checker_core@module_from_path(filename);
-            tc_out: ModuleTypecheckOutcome <- type_checker_modules@type_check_program_with_modules_outcome(program, mod_name, module_world, context);
+            // Include self in world so that self-qualified calls (e.g. Shape@area inside traits/Shape.silica's
+            // provided body) resolve. validate_no_self_import runs first, so a spurious `use Self;` is still rejected.
+            world_with_self: ListNamedProgram <- parser_ast@cons_named_program(mod_name, program, module_world);
+            tc_out: ModuleTypecheckOutcome <- type_checker_modules@type_check_program_with_modules_outcome(program, mod_name, world_with_self, context);
             case tc_out.is_ok of {
                 true -> do
                     println("  Trait checking...");
@@ -501,7 +506,17 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
                                 false -> 0
                             };
                             println("  Generating SIR...");
-                            sir_module: SIRModule <- sir_generator_core@emit_program_for_unit(program, tc_out.context, mod_name);
+                            // Post-type-check pipeline (spec §3.4.8, §8.2.3):
+                            // 1) specialize provided trait methods (monomorphize on each concrete
+                            //    first-param impl type — must run AFTER type-check so the
+                            //    type-checker still sees the trait-typed formal and can dispatch
+                            //    integer literals via dispatch_actual_fits_impl_parameter).
+                            // 2) mangle qualified calls against the specialized world so callees
+                            //    with multiple overloads resolve to overload_mangle link names.
+                            specialized_program: Program <- trait_specialization@specialize_program(program);
+                            specialized_world: ListNamedProgram <- trait_specialization@specialize_named_program_list(world_with_self);
+                            mangled_program: Program <- qualified_call_mangler@mangle_calls_in_program(specialized_program, specialized_world);
+                            sir_module: SIRModule <- sir_generator_core@emit_program_for_unit(mangled_program, tc_out.context, mod_name);
                             _: int64 <- case debug_compile(filename) of {
                                 true -> do
                                     println("  [DEBUG SIR]:");
@@ -571,7 +586,11 @@ fn compile_file(filename: string) -> int64 proc[DeviceIO] {
         false -> 0
     };
     case parse_result.is_ok of {
-        true -> compile_parsed_unit(filename, parse_result.program, type_checker_modules@empty_named_program_list(), cons_string(filename, empty_list_string()), cons_parsed_file(filename, parse_result.program, empty_parsed_files()));
+        true -> do
+            mod_nm: string <- module_checker_core@module_from_path(filename);
+            world_one: ListNamedProgram <- parser_ast@cons_named_program(mod_nm, parse_result.program, type_checker_modules@empty_named_program_list());
+            compile_parsed_unit(filename, parse_result.program, world_one, cons_string(filename, empty_list_string()), cons_parsed_file(filename, parse_result.program, empty_parsed_files()))
+        end;
         false -> do
             error_code: string <- case parse_result.error_code == "" of {
                 true -> "E1001";

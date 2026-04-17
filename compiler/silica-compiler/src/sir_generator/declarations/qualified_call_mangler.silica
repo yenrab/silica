@@ -1,0 +1,179 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Post-type-check AST pass (spec §3.4.8, §8.2.3): rewrite qualified-call names so a
+// module@fn whose callee has multiple tag-0 overloads resolves to the mangled link name
+// computed by overload_mangle@sir_fn_link_name. After this pass the SIR generator can
+// emit call instructions verbatim from expr.name without any world/context threading.
+//
+// Walk:
+//   - For each tag-0 declaration, add its parameters to a fresh env so infer_expr_type
+//     can resolve param references during arg-type inference.
+//   - Recurse into every Expr node. For kind==4 (call) with a qualified name, look up
+//     the callee module in the world, infer the first argument's type, and call
+//     overload_mangle@mangle_fn_part_if_overloaded. If no overloading exists the name
+//     is returned unchanged, preserving behavior for non-trait code.
+//   - For kind==6 (let binding), extend the env with `name: value` (value holds the
+//     declared type text) before walking the body sub-expression.
+//
+// This pass runs in main.silica between type-check and SIR generation.
+
+use parser_ast;
+use type_checker_core;
+use type_checker_tuple_decompose_helpers;
+use type_checker_expressions;
+use overload_mangle;
+
+export mangle_calls_in_program/2;
+export mangle_calls_in_named_programs/1;
+
+// Explicit constructor helper: binding complex fields locally before the struct literal
+// sidesteps the bootstrap compiler's structural-vs-Named inference for List-typed fields
+// (the same workaround used in trait_specialization@clone_decl_with_first_param_type).
+fn mk_expr(kind_v: int64, value_v: string, name_v: string, loc: SourceLocation,
+           inner_v: Expr, right_v: Expr,
+           pb: ListTupleDecomposeBinding, se: ListEffectName) -> Expr {
+    Expr {
+        kind: kind_v,
+        value: value_v,
+        name: name_v,
+        location: loc,
+        inner: inner_v,
+        right_expr: right_v,
+        pattern_bindings: pb,
+        sequence_effects: se
+    }
+}
+
+fn add_params_to_env(ps: ListParam, env: ListSymbolEntry) -> ListSymbolEntry {
+    case ps.is_nil of {
+        true -> env;
+        false -> do
+            new_env: ListSymbolEntry <- type_checker_core@add_symbol(env, ps.head.name, ps.head.type_name, parser_ast@empty_effect_name_list(), "");
+            add_params_to_env(ps.tail, new_env)
+        end
+    }
+}
+
+// Returns the (possibly rewritten) name for a qualified call. If the expression is not a
+// call or the name is not module-qualified, returns e.name unchanged.
+fn mangle_qualified_call_name(e: Expr, world: ListNamedProgram, ctx: TypeContext) -> string {
+    case e.kind == 4 of {
+        false -> e.name;
+        true -> do
+            (mod_part: string, fn_part: string) <- type_checker_core@split_module_qualified_call_name(e.name);
+            case len(mod_part) == 0 of {
+                true -> e.name;
+                false -> do
+                    (pf: bool, prog: Program) <- parser_ast@find_named_program(mod_part, world);
+                    case pf of {
+                        false -> e.name;
+                        true -> do
+                            ac: int64 <- overload_mangle@count_call_args_user_call(e);
+                            recv_ty: string <- case ac > 0 of {
+                                true -> type_checker_tuple_decompose_helpers@infer_expr_type(e.inner, ctx);
+                                false -> ""
+                            };
+                            new_fn: string <- overload_mangle@mangle_fn_part_if_overloaded(fn_part, ac, recv_ty, prog.declarations, world);
+                            concat(mod_part, concat("@", new_fn))
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+// Walk an Expr tree. Rewrites call names in place-ish (returns a fresh node with the
+// updated name) and recurses into inner and right_expr. Extends ctx for let bindings.
+fn walk_expr(e: Expr, world: ListNamedProgram, ctx: TypeContext) -> Expr {
+    case e.kind < 0 of {
+        true -> e;
+        false -> do
+            new_inner: Expr <- walk_expr(e.inner, world, ctx);
+            new_right: Expr <- case e.kind == 6 of {
+                true -> do
+                    extended_env: ListSymbolEntry <- type_checker_core@add_symbol(ctx.env, e.name, e.value, parser_ast@empty_effect_name_list(), "");
+                    extended: TypeContext <- type_checker_core@type_context_with_env(ctx, extended_env);
+                    walk_expr(e.right_expr, world, extended)
+                end;
+                false -> walk_expr(e.right_expr, world, ctx)
+            };
+            // Build a node with rewritten children so infer_expr_type on e.inner sees the
+            // same argument (type doesn't depend on name); then compute the call-name rewrite.
+            pre_e: Expr <- mk_expr(e.kind, e.value, e.name, e.location, new_inner, new_right, e.pattern_bindings, e.sequence_effects);
+            new_name: string <- mangle_qualified_call_name(pre_e, world, ctx);
+            mk_expr(e.kind, e.value, new_name, e.location, new_inner, new_right, e.pattern_bindings, e.sequence_effects)
+        end
+    }
+}
+
+fn mangle_decl_body(d: Declaration, world: ListNamedProgram, base_ctx: TypeContext) -> Declaration {
+    case d.tag == 0 of {
+        false -> d;
+        true -> do
+            env_with_params: ListSymbolEntry <- add_params_to_env(d.parameters, base_ctx.env);
+            decl_ctx: TypeContext <- type_checker_core@type_context_with_env(base_ctx, env_with_params);
+            new_body: Expr <- walk_expr(d.body, world, decl_ctx);
+            params: ListParam <- d.parameters;
+            eff: ListEffectName <- d.declared_effects;
+            rtl: SourceLocation <- d.return_type_location;
+            loc: SourceLocation <- d.location;
+            Declaration {
+                tag: d.tag,
+                name: d.name,
+                parameters: params,
+                return_type_name: d.return_type_name,
+                return_type_location: rtl,
+                location: loc,
+                body: new_body,
+                declared_effects: eff
+            }
+        end
+    }
+}
+
+fn mangle_decls(ds: ListDeclaration, world: ListNamedProgram, base_ctx: TypeContext) -> ListDeclaration {
+    case ds.is_nil of {
+        true -> parser_ast@empty_list_decl();
+        false -> do
+            head_new: Declaration <- mangle_decl_body(ds.head, world, base_ctx);
+            tail_new: ListDeclaration <- mangle_decls(ds.tail, world, base_ctx);
+            parser_ast@cons_declaration(head_new, tail_new)
+        end
+    }
+}
+
+fn mangle_calls_in_program(program: Program, world: ListNamedProgram) -> Program {
+    base_ctx: TypeContext <- type_checker_core@create_type_context();
+    new_decls: ListDeclaration <- mangle_decls(program.declarations, world, base_ctx);
+    loc: SourceLocation <- program.location;
+    Program { declarations: new_decls, location: loc }
+}
+
+// Rewrite every program in the world using the full world as the name-resolution target.
+// Used when the compilation driver needs a self-consistent post-mangling world for a
+// subsequent pass; individual compile_parsed_unit calls use mangle_calls_in_program.
+fn mangle_calls_in_named_programs(world: ListNamedProgram) -> ListNamedProgram {
+    case world.is_nil of {
+        true -> world;
+        false -> do
+            new_prog: Program <- mangle_calls_in_program(world.head.program, world);
+            parser_ast@cons_named_program(world.head.module_name, new_prog, mangle_calls_in_named_programs(world.tail))
+        end
+    }
+}

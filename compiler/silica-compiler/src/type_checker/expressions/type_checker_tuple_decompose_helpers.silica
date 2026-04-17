@@ -379,24 +379,25 @@ fn infer_expr_type(expr: Expr, context: TypeContext) -> string {
         8 -> "string";
         12 -> infer_expr_type(expr.inner, context);
         20 -> case len(expr.value) > 0 of { true -> expr.value; false -> "" };
-        9 -> do
-            first_type: string <- infer_expr_type(expr.inner, context);
-            rest_type: string <- infer_expr_type(expr.right_expr, context);
-            first_wrapped: string <- case tuple_needs_parens(first_type) of {
-                true -> concat("(", concat(first_type, ")"));
-                false -> first_type
-            };
-            rest_wrapped: string <- case tuple_needs_parens(rest_type) of {
-                true -> concat("(", concat(rest_type, ")"));
-                false -> rest_type
-            };
-            concat("(", concat(concat(first_wrapped, ","), concat(rest_wrapped, ")")))
-        end;
+        9 -> concat("(", concat(infer_tuple_chain_elems(expr, context), ")"));
         13 -> infer_case_expr_kind13(expr, context);
         19 -> infer_if_expr_kind19(expr, context);
         21 -> infer_struct_literal_type(expr, context);
         22 -> infer_field_access_type(expr, context);
         _: int64 -> ""
+    }
+}
+
+// Walk a right-nested kind-9 tuple chain, flattening it into a comma-separated element list.
+// The parser builds `(a, b, c, d)` as kind 9 { inner: a, right_expr: kind 9 { inner: b, ... } }.
+fn infer_tuple_chain_elems(expr: Expr, context: TypeContext) -> string {
+    case expr.kind == 9 of {
+        true -> do
+            first_type: string <- infer_expr_type(expr.inner, context);
+            rest: string <- infer_tuple_chain_elems(expr.right_expr, context);
+            concat(first_type, concat(",", rest))
+        end;
+        false -> infer_expr_type(expr, context)
     }
 }
 

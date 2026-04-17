@@ -42,14 +42,27 @@ fn emit_call_body_effects(term: SIRTerm, dest: string, effect_value: string, out
     adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
     add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
     adrp_line: string <- concat(concat(adrp_part, add_part), "    BLR X9");
-    // No move when result already in dest: X0/W0 (int), D0 (float64), S0 (float32)
-    result_mov: string <- case dest == "X0" of {
+    // ARM64 AAPCS: integer returns land in W0/X0, floats in S0/D0/H0. Move into `dest`
+    // unless it is already the corresponding return register. Earlier code treated any
+    // W-/D-/S-/H-prefixed dest as "already in place", which corrupted every call whose
+    // result had to flow into a non-zero register (e.g. W9 for a binary-op left operand).
+    result_mov: string <- case dest == "X0" or dest == "W0" or dest == "D0" or dest == "S0" or dest == "H0" of {
         true -> "";
         false -> case len(dest) > 0 of {
-            true -> case substring(dest, 0, 1) == "W" or substring(dest, 0, 1) == "D" or substring(dest, 0, 1) == "S" or substring(dest, 0, 1) == "H" of {
-                true -> "";
-                false -> concat("\n", concat(concat(concat("    MOV ", dest), ", X0"), ""))
-            };
+            true -> do
+                prefix: string <- substring(dest, 0, 1);
+                src: string <- case prefix == "D" or prefix == "S" or prefix == "H" of {
+                    true -> concat(prefix, "0");
+                    // Integer destinations (W, X, or anything else default): move from W0 for
+                    // W-prefix destinations, X0 otherwise. This keeps the 32-bit zero-extending
+                    // semantics of int32 results and preserves 64-bit moves for X-destinations.
+                    false -> case prefix == "W" of {
+                        true -> "W0";
+                        false -> "X0"
+                    }
+                };
+                concat("\n", concat("    MOV ", concat(dest, concat(", ", src))))
+            end;
             false -> ""
         }
     };

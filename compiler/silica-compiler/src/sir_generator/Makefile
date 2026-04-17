@@ -3,7 +3,7 @@
 # Depends on lexer, parser, type_checker; build those first if needed.
 
 SILICA_COMPILER := ../../../silica-bootstrap-compiler/target/release/silica-boot
-SEARCH_PATHS := -I . -I .. -I ../lexer -I ../parser -I ../parser/declarations -I ../parser/expressions -I ../parser/patterns -I ../parser/types -I ../parser/effects -I ../type_checker -I ../type_checker/expressions -I declarations -I terms -I types -I patterns -I effects -I ../../stdlib
+SEARCH_PATHS := -I . -I .. -I ../lexer -I ../parser -I ../parser/declarations -I ../parser/expressions -I ../parser/patterns -I ../parser/types -I ../parser/effects -I ../type_checker -I ../type_checker/expressions -I ../type_checker/traits -I declarations -I terms -I types -I patterns -I effects -I ../../stdlib
 
 # Find LLVM tools (including Homebrew paths)
 LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "llvm-as"))

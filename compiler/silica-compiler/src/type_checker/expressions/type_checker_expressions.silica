@@ -34,6 +34,7 @@ use type_checker_record_types;
 use type_checker_traits;
 
 export check_expr/4;
+export dispatch_actual_fits_impl_parameter/3;
 
 fn is_primitive_numeric_type_name(t: string) -> bool {
     t == "int8" or t == "int16" or t == "int32" or t == "int64" or t == "uint8" or t == "uint16" or t == "uint32" or t == "uint64" or t == "float16" or t == "float32" or t == "float64"
@@ -1323,7 +1324,7 @@ fn list_param_length_call(ps: ListParam) -> int64 {
     }
 }
 
-// Only tag 0: required trait signatures (tag 7) share the same name/arity as impl fn and must not win for `module@fn` resolution.
+// First tag-0 match with same name/arity (legacy fallback when receiver type is unknown or no overload fits).
 fn find_function_decl_by_name_arity_call(decls: ListDeclaration, fn_name: string, arity: int64) -> (bool, Declaration) {
     case decls.is_nil of {
         true -> (false, parser_ast@dummy_decl());
@@ -1333,6 +1334,58 @@ fn find_function_decl_by_name_arity_call(decls: ListDeclaration, fn_name: string
                 false -> find_function_decl_by_name_arity_call(decls.tail, fn_name, arity)
             };
             false -> find_function_decl_by_name_arity_call(decls.tail, fn_name, arity)
+        }
+    }
+}
+
+fn qualified_call_first_arg_matches_decl(inferred: string, decl: Declaration, world: ListNamedProgram) -> bool {
+    case decl.parameters.is_nil of {
+        true -> false;
+        false -> do
+            expect: string <- type_checker_traits@trim_type_text(decl.parameters.head.type_name);
+            act: string <- type_checker_traits@trim_type_text(inferred);
+            case act == expect of {
+                true -> true;
+                false -> type_checker_traits@actual_type_satisfies_trait_expectation(act, expect, world)
+            }
+        end
+    }
+}
+
+fn find_tag0_decl_for_qualified_call(decls: ListDeclaration, fn_name: string, arity: int64, recv_ty: string, world: ListNamedProgram) -> (bool, Declaration) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case decls.head.tag == 0 of {
+            true -> case decls.head.name == fn_name and list_param_length_call(decls.head.parameters) == arity of {
+                true -> case len(recv_ty) == 0 of {
+                    true -> (true, decls.head);
+                    false -> case qualified_call_first_arg_matches_decl(recv_ty, decls.head, world) of {
+                        true -> (true, decls.head);
+                        false -> find_tag0_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
+                    }
+                };
+                false -> find_tag0_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
+            };
+            false -> find_tag0_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
+        }
+    }
+}
+
+fn find_tag7_decl_for_qualified_call(decls: ListDeclaration, fn_name: string, arity: int64, recv_ty: string, world: ListNamedProgram) -> (bool, Declaration) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case decls.head.tag == 7 of {
+            true -> case decls.head.name == fn_name and list_param_length_call(decls.head.parameters) == arity of {
+                true -> case len(recv_ty) == 0 of {
+                    true -> (true, decls.head);
+                    false -> case qualified_call_first_arg_matches_decl(recv_ty, decls.head, world) of {
+                        true -> (true, decls.head);
+                        false -> find_tag7_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
+                    }
+                };
+                false -> find_tag7_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
+            };
+            false -> find_tag7_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
         }
     }
 }
@@ -1355,8 +1408,272 @@ fn build_function_type_for_decl_call(decl: Declaration) -> string {
     }
 }
 
-// §19.3.2: for `module@fn(args)`, use the callee declaration in `world` so arity matches the arg chain (avoids env string / parse_function_param_count skew for trait exports).
-fn try_resolve_qualified_call_func_type(expr: Expr, world: ListNamedProgram) -> (bool, string) {
+fn inferred_types_concat_comma(bucket: ListParam) -> string {
+    case bucket.is_nil of {
+        true -> "";
+        false -> case bucket.tail.is_nil of {
+            true -> bucket.head.type_name;
+            false -> concat(concat(bucket.head.type_name, ","), inferred_types_concat_comma(bucket.tail))
+        }
+    }
+}
+
+fn call_site_actual_matches_formal(inferred: string, formal: string, world: ListNamedProgram) -> bool {
+    fin: string <- type_checker_traits@trim_type_text(inferred);
+    fdecl: string <- type_checker_traits@trim_type_text(formal);
+    case fin == fdecl of {
+        true -> true;
+        false -> case type_checker_tuple_decompose_helpers@types_equal(fin, fdecl) of {
+            true -> true;
+            false -> type_checker_traits@actual_type_satisfies_trait_expectation(fin, fdecl, world)
+        }
+    }
+}
+
+// Widen/narrow: integer literal infers as int64; impl may take int32 etc.
+fn replace_int64_with_int32_in_type_text_loop(s: string, i: int64, out: string) -> string {
+    case i >= len(s) of {
+        true -> out;
+        false -> case i + 5 <= len(s) and substring(s, i, i + 5) == "int64" of {
+            true -> replace_int64_with_int32_in_type_text_loop(s, i + 5, concat(out, "int32"));
+            false -> replace_int64_with_int32_in_type_text_loop(s, i + 1, concat(out, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn struct_literal_inferred_matches_impl_record(actual: string, impl_param: string) -> bool {
+    a: string <- type_checker_traits@trim_type_text(actual);
+    p: string <- type_checker_traits@trim_type_text(impl_param);
+    case len(a) > 0 of {
+        false -> false;
+        true -> case substring(a, 0, 1) == "{" of {
+            false -> false;
+            true -> do
+                relaxed: string <- replace_int64_with_int32_in_type_text_loop(a, 0, "");
+                type_checker_tuple_decompose_helpers@types_equal(relaxed, p)
+            end
+        }
+    }
+}
+
+fn dispatch_actual_fits_impl_parameter(actual: string, impl_param: string, world: ListNamedProgram) -> bool {
+    case call_site_actual_matches_formal(actual, impl_param, world) of {
+        true -> true;
+        false -> do
+            a: string <- type_checker_traits@trim_type_text(actual);
+            p: string <- type_checker_traits@trim_type_text(impl_param);
+            case a == "int64" of {
+                true -> p == "int8" or p == "int16" or p == "int32" or p == "uint8" or p == "uint16" or p == "uint32";
+                false -> struct_literal_inferred_matches_impl_record(actual, impl_param)
+            }
+        end
+    }
+}
+
+// Tag-0 decl whose first parameter is not the trait Self type (skip e.g. provided fn double_area(s: Shape)).
+fn impl_first_param_if_concrete_impl(trait_self: string, d: Declaration) -> string {
+    case d.tag == 0 of {
+        false -> "";
+        true -> case d.parameters.is_nil of {
+            true -> "";
+            false -> do
+                p0: string <- type_checker_traits@trim_type_text(d.parameters.head.type_name);
+                ts: string <- type_checker_traits@trim_type_text(trait_self);
+                case p0 == ts of {
+                    true -> "";
+                    false -> p0
+                }
+            end
+        }
+    }
+}
+
+fn gather_trait_dispatch_candidates_loop(decls: ListDeclaration, trait_self: string, inferred_actual: string, world: ListNamedProgram, cand0: string, cand_count: int64) -> (int64, string) {
+    case decls.is_nil of {
+        true -> (cand_count, cand0);
+        false -> do
+            conc: string <- impl_first_param_if_concrete_impl(trait_self, decls.head);
+            case len(conc) == 0 of {
+                true -> gather_trait_dispatch_candidates_loop(decls.tail, trait_self, inferred_actual, world, cand0, cand_count);
+                false -> case dispatch_actual_fits_impl_parameter(inferred_actual, conc, world) of {
+                    false -> gather_trait_dispatch_candidates_loop(decls.tail, trait_self, inferred_actual, world, cand0, cand_count);
+                    true -> case cand_count == 0 of {
+                        true -> gather_trait_dispatch_candidates_loop(decls.tail, trait_self, inferred_actual, world, conc, 1);
+                        false -> case cand0 == conc of {
+                            true -> gather_trait_dispatch_candidates_loop(decls.tail, trait_self, inferred_actual, world, cand0, cand_count);
+                            false -> (-1, "")
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn infer_trait_dispatch_concrete_from_impls_status(trait_prog: Program, trait_self: string, inferred_actual: string, world: ListNamedProgram) -> (int64, string) {
+    (cc: int64, ct: string) <- gather_trait_dispatch_candidates_loop(trait_prog.declarations, trait_self, inferred_actual, world, "", 0);
+    case cc < 0 of {
+        true -> (2, "");
+        false -> case cc == 0 of {
+            true -> (0, "");
+            false -> (1, ct)
+        }
+    }
+}
+
+fn resolve_site_bucket_type_for_param(inferred: string, formal_ty: string, callee_mod: Program, loc: SourceLocation, call_name: string, world: ListNamedProgram) -> (TypeCheckResult, string) {
+    case call_site_actual_matches_formal(inferred, formal_ty, world) of {
+        true -> (type_checker_core@type_check_ok(), inferred);
+        false -> do
+            ft: string <- type_checker_traits@trim_type_text(formal_ty);
+            (is_trait: bool, _: Program) <- type_checker_traits@find_program_declaring_trait(world, ft);
+            case is_trait of {
+                false -> (type_checker_core@type_check_err("E2003", loc, concat(concat(concat(concat(concat("argument type ", inferred), " does not match parameter type "), formal_ty), " for "), call_name), "sect6"), "");
+                true -> do
+                    (st: int64, conc: string) <- infer_trait_dispatch_concrete_from_impls_status(callee_mod, ft, inferred, world);
+                    case st == 1 of {
+                        true -> (type_checker_core@type_check_ok(), conc);
+                        false -> case st == 2 of {
+                            true -> (type_checker_core@type_check_err("E2003", loc, concat("ambiguous trait dispatch: multiple implementation parameter types match this argument for ", call_name), "sect6"), "");
+                            false -> (type_checker_core@type_check_err("E2003", loc, concat("no concrete trait implementation matches this argument for ", call_name), "sect6"), "")
+                        }
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn find_qualified_call_resolved_declaration(pprog: Program, fn_id: string, ac: int64, recv_ty: string, world: ListNamedProgram) -> (bool, Declaration) {
+    (df0: bool, d0: Declaration) <- find_tag0_decl_for_qualified_call(pprog.declarations, fn_id, ac, recv_ty, world);
+    case df0 of {
+        true -> (true, d0);
+        false -> do
+            (df7: bool, d7: Declaration) <- find_tag7_decl_for_qualified_call(pprog.declarations, fn_id, ac, recv_ty, world);
+            case df7 of {
+                true -> (true, d7);
+                false -> find_function_decl_by_name_arity_call(pprog.declarations, fn_id, ac)
+            }
+        end
+    }
+}
+
+// Infer each actual's type; require it matches the corresponding formal (including trait formals). Returns types in source left-to-right order.
+fn infer_trait_site_call_args_walk(expr: Expr, params_lr: ListParam, context: TypeContext, world: ListNamedProgram, call_expr: Expr, callee_mod: Program) -> (TypeCheckResult, ListParam) {
+    case expr.inner.kind == -1 of {
+        true -> case params_lr.is_nil of {
+            true -> (type_checker_core@type_check_ok(), parser_ast@nil_list_param());
+            false -> (type_checker_core@type_check_err("E2005", call_expr.location, concat(concat(call_expr.name, ": too few arguments for callee"), " (spec 6)"), "sect6"), parser_ast@nil_list_param())
+        };
+        false -> case params_lr.is_nil of {
+            true -> (type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6"), parser_ast@nil_list_param());
+            false -> do
+                inferred: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                case len(inferred) == 0 of {
+                    true -> (type_checker_core@type_check_err("E2005", expr.inner.location, "cannot infer concrete type for qualified call argument (needed to resolve trait-parameter body)", "sect6"), parser_ast@nil_list_param());
+                    false -> do
+                        (res_ty: TypeCheckResult, bucket_ty: string) <- resolve_site_bucket_type_for_param(inferred, params_lr.head.type_name, callee_mod, expr.inner.location, call_expr.name, world);
+                        case res_ty.is_ok of {
+                            false -> (res_ty, parser_ast@nil_list_param());
+                            true -> case params_lr.tail.is_nil of {
+                                true -> do
+                                    extra: TypeCheckResult <- case expr.right_expr.kind == -1 of {
+                                        true -> type_checker_core@type_check_ok();
+                                        false -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6")
+                                    };
+                                    case extra.is_ok of {
+                                        false -> (extra, parser_ast@nil_list_param());
+                                        true -> (type_checker_core@type_check_ok(), parser_ast@build_infer_type_bucket(bucket_ty, parser_ast@nil_list_param()))
+                                    }
+                                end;
+                                false -> case expr.right_expr.kind == 4 of {
+                                    true -> do
+                                        (rest_ok: TypeCheckResult, rest_inf: ListParam) <- infer_trait_site_call_args_walk(expr.right_expr, params_lr.tail, context, world, call_expr, callee_mod);
+                                        case rest_ok.is_ok of {
+                                            false -> (rest_ok, parser_ast@nil_list_param());
+                                            true -> (type_checker_core@type_check_ok(), parser_ast@build_infer_type_bucket(bucket_ty, rest_inf))
+                                        }
+                                    end;
+                                    false -> do
+                                        (one_ok: TypeCheckResult, one_tail: ListParam) <- infer_one_flat_second_arg(expr.right_expr, params_lr.tail, context, world, call_expr, callee_mod);
+                                        case one_ok.is_ok of {
+                                            false -> (one_ok, parser_ast@nil_list_param());
+                                            true -> (type_checker_core@type_check_ok(), parser_ast@build_infer_type_bucket(bucket_ty, one_tail))
+                                        }
+                                    end
+                                }
+                            }
+                        }
+                    end
+                }
+            end
+        }
+    }
+}
+
+fn infer_one_flat_second_arg(second_e: Expr, params_tail: ListParam, context: TypeContext, world: ListNamedProgram, call_expr: Expr, callee_mod: Program) -> (TypeCheckResult, ListParam) {
+    case params_tail.is_nil of {
+        true -> (type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6"), parser_ast@nil_list_param());
+        false -> case params_tail.tail.is_nil of {
+            false -> (type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6"), parser_ast@nil_list_param());
+            true -> do
+                inf2: string <- type_checker_tuple_decompose_helpers@infer_expr_type(second_e, context);
+                case len(inf2) == 0 of {
+                    true -> (type_checker_core@type_check_err("E2005", second_e.location, "cannot infer concrete type for qualified call argument (needed to resolve trait-parameter body)", "sect6"), parser_ast@nil_list_param());
+                    false -> do
+                        (res2: TypeCheckResult, bucket2: string) <- resolve_site_bucket_type_for_param(inf2, params_tail.head.type_name, callee_mod, second_e.location, call_expr.name, world);
+                        case res2.is_ok of {
+                            false -> (res2, parser_ast@nil_list_param());
+                            true -> (type_checker_core@type_check_ok(), parser_ast@build_infer_type_bucket(bucket2, parser_ast@nil_list_param()))
+                        }
+                    end
+                }
+            end
+        }
+    }
+}
+
+fn validate_callsite_return_record_type(rt: string, loc: SourceLocation) -> TypeCheckResult {
+    case type_checker_record_types@record_type_starts(rt) of {
+        false -> type_checker_core@type_check_ok();
+        true -> case type_checker_record_types@record_type_braces_balanced(rt) of {
+            true -> type_checker_core@type_check_ok();
+            false -> type_checker_core@type_check_err("E2003", loc, "malformed inline record type (unbalanced braces)", "sect3.4.2")
+        }
+    }
+}
+
+// Re-check callee body with formal parameters bound to inferred concrete types (trait dispatch / overloads inside the body).
+fn check_callsite_body_with_concrete_params(decl: Declaration, context: TypeContext, world: ListNamedProgram, conc_decl_order: ListParam) -> TypeCheckResult proc[DeviceIO] {
+    case list_param_length_call(decl.parameters) == list_param_length_call(conc_decl_order) of {
+        false -> type_checker_core@type_check_err("E2005", decl.location, "internal: call-site parameter type list length mismatch", "sect6");
+        true -> do
+            dp: ListParam <- parser_ast@param_list_normalize(decl.parameters);
+            cp: ListParam <- parser_ast@param_list_normalize(conc_decl_order);
+            ctx_params: TypeContext <- type_checker_core@add_params_concrete_loop1(ParamConcreteEnv { decl_params: dp, concrete_types: cp, base: context });
+            ret_rec: TypeCheckResult <- validate_callsite_return_record_type(decl.return_type_name, decl.return_type_location);
+            case ret_rec.is_ok of {
+                false -> ret_rec;
+                true -> case decl.return_type_name == "unit" of {
+                    true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
+                    false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
+                        true -> do
+                            mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(decl.return_type_name, decl.return_type_location);
+                            case mem_result.is_ok of {
+                                false -> mem_result;
+                                true -> check_expr(decl.body, decl.return_type_name, ctx_params, world)
+                            }
+                        end;
+                        false -> check_expr(decl.body, decl.return_type_name, ctx_params, world)
+                    }
+                }
+            }
+        end
+    }
+}
+
+// §19.3.2: for `module@fn(args)`, resolve callee in `world` (includes the current module). Overloads share name/arity; pick by inferred first-argument type, then required trait signature (tag 7), then first tag-0 match.
+fn try_resolve_qualified_call_func_type(expr: Expr, world: ListNamedProgram, context: TypeContext) -> (bool, string) {
     at: int64 <- first_at_in_expr_call_name(expr.name, 0);
     case at < 0 of {
         true -> (false, "");
@@ -1368,19 +1685,35 @@ fn try_resolve_qualified_call_func_type(expr: Expr, world: ListNamedProgram) -> 
             case pf of {
                 false -> (false, "");
                 true -> do
-                    (df: bool, ddecl: Declaration) <- find_function_decl_by_name_arity_call(pprog.declarations, fn_id, ac);
-                    case df of {
-                        true -> (true, build_function_type_for_decl_call(ddecl));
-                        false -> case ac == 0 of {
-                            true -> do
-                                (df1: bool, d1: Declaration) <- find_function_decl_by_name_arity_call(pprog.declarations, fn_id, 1);
-                                case df1 of {
-                                    true -> (true, build_function_type_for_decl_call(d1));
-                                    false -> (false, "")
-                                }
-                            end;
-                            false -> (false, "")
-                        }
+                    recv_ty: string <- case ac > 0 of {
+                        true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                        false -> ""
+                    };
+                    (df0: bool, d0: Declaration) <- find_tag0_decl_for_qualified_call(pprog.declarations, fn_id, ac, recv_ty, world);
+                    case df0 of {
+                        true -> (true, build_function_type_for_decl_call(d0));
+                        false -> do
+                            (df7: bool, d7: Declaration) <- find_tag7_decl_for_qualified_call(pprog.declarations, fn_id, ac, recv_ty, world);
+                            case df7 of {
+                                true -> (true, build_function_type_for_decl_call(d7));
+                                false -> do
+                                    (df: bool, ddecl: Declaration) <- find_function_decl_by_name_arity_call(pprog.declarations, fn_id, ac);
+                                    case df of {
+                                        true -> (true, build_function_type_for_decl_call(ddecl));
+                                        false -> case ac == 0 of {
+                                            true -> do
+                                                (df1: bool, d1: Declaration) <- find_function_decl_by_name_arity_call(pprog.declarations, fn_id, 1);
+                                                case df1 of {
+                                                    true -> (true, build_function_type_for_decl_call(d1));
+                                                    false -> (false, "")
+                                                }
+                                            end;
+                                            false -> (false, "")
+                                        }
+                                    }
+                                end
+                            }
+                        end
                     }
                 end
             }
@@ -1447,15 +1780,63 @@ fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_typ
     }
 }
 
+fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: string, context: TypeContext, params_inner: string, return_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    at: int64 <- first_at_in_expr_call_name(expr.name, 0);
+    case at < 0 of {
+        true -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world);
+        false -> do
+            mod_id: string <- substring(expr.name, 0, at);
+            fn_id: string <- substring(expr.name, at + 1, len(expr.name));
+            ac: int64 <- count_call_args_user_call(expr);
+            (pf: bool, pprog: Program) <- parser_ast@find_named_program(mod_id, world);
+            case pf of {
+                false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world);
+                true -> do
+                    recv_ty: string <- case ac > 0 of {
+                        true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                        false -> ""
+                    };
+                    (pfd: bool, callee_decl: Declaration) <- find_qualified_call_resolved_declaration(pprog, fn_id, ac, recv_ty, world);
+                    case pfd of {
+                        false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world);
+                        true -> case callee_decl.tag == 0 of {
+                            false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world);
+                            true -> do
+                                params_lr: ListParam <- parser_ast@list_param_reverse_with_acc(callee_decl.parameters, parser_ast@nil_list_param());
+                                (inf_ok: TypeCheckResult, inf_left: ListParam) <- infer_trait_site_call_args_walk(expr, params_lr, context, world, expr, pprog);
+                                case inf_ok.is_ok of {
+                                    false -> inf_ok;
+                                    true -> do
+                                        params_inner_inf: string <- inferred_types_concat_comma(inf_left);
+                                        chk_args: TypeCheckResult <- check_user_call_args_recursive(expr, params_inner_inf, expected_type, return_type, context, expr, world);
+                                        case chk_args.is_ok of {
+                                            false -> chk_args;
+                                            true -> do
+                                                conc_decl: ListParam <- parser_ast@list_param_reverse_with_acc(inf_left, parser_ast@nil_list_param());
+                                                body_ok: TypeCheckResult <- check_callsite_body_with_concrete_params(callee_decl, context, world, conc_decl);
+                                                case body_ok.is_ok of {
+                                                    false -> body_ok;
+                                                    true -> check_user_call_result_user_call(expr, expected_type, return_type, context, world)
+                                                }
+                                            end
+                                        }
+                                    end
+                                }
+                            end
+                        }
+                    }
+                end
+            }
+        end
+    }
+}
+
 fn check_user_defined_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    _: unit <- println(concat(concat(concat("DBG check_user_defined_call name=", expr.name), " expected_type="), expected_type));
-    (rw: bool, ft_world: string) <- try_resolve_qualified_call_func_type(expr, world);
-    _: unit <- println(concat(concat(concat("DBG  rw=", case rw of { true -> "true"; false -> "false" }), " ft_world="), ft_world));
+    (rw: bool, ft_world: string) <- try_resolve_qualified_call_func_type(expr, world, context);
     resolved_type: string <- case rw of {
         true -> ft_world;
         false -> lookup_function_type_for_call_local(context.env, expr.name)
     };
-    _: unit <- println(concat("DBG  resolved_type=", resolved_type));
     case len(resolved_type) == 0 of {
         true -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown or unsupported function: ", expr.name), "sect6");
         false -> case is_function_type_user_call(resolved_type) of {
@@ -1470,10 +1851,8 @@ fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: Ty
     params_inner: string <- get_params_inner_from_func_type(func_type);
     return_type: string <- parse_function_return_type(func_type);
     arg_count: int64 <- count_call_args_user_call(expr);
-    _: unit <- println(concat(concat(concat("DBG parsed func_type=", func_type), " params_inner="), params_inner));
-    _: unit <- println(concat(concat(concat("DBG parsed eq=", case expected_arg_count == arg_count of { true -> "match"; false -> "MISMATCH" }), " from_world="), case callee_type_from_world of { true -> "yes"; false -> "no" }));
     case callee_type_from_world of {
-        true -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world);
+        true -> check_user_defined_world_call_with_inference(expr, expected_type, context, params_inner, return_type, world);
         false -> case arg_count != expected_arg_count of {
         true -> case expected_arg_count == 1 of {
             true -> case arg_count == 2 of {

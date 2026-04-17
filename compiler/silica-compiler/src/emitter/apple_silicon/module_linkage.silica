@@ -16,7 +16,7 @@
 -}
 
 // Module linkage for AArch64 emission (silica-specification.md §19.3).
-// Cross-module calls use module@function in source; SIR stores the same (see user_call_callee_sir_name).
+// Cross-module calls use module@function in source; SIR may use overload suffixes (fn__paramType) on definitions/calls.
 // Trait method calls use the same qualified form (trait file = module; §3.4.8, §19.3.2).
 // Local calls use a bare function name; the caller module comes from outer_reg |_lm=.
 // SIR may use a legacy main.* prefix on function names; asm_symbol_for_definition maps that to {module}.{fn}.
@@ -29,7 +29,7 @@ export asm_linkage_symbol_for_call/2;
 export sir_name_from_export_fn_name/1;
 export module_defines_program_main/2;
 export format_used_modules_comment/1;
-export emit_export_global_directives/2;
+export emit_export_global_directives/3;
 export format_trait_metadata_comments/1;
 
 fn starts_with_main_dot(s: string) -> bool {
@@ -129,20 +129,61 @@ fn format_used_modules_comment(uses: ListSirString) -> string {
     }
 }
 
-fn emit_export_global_directives_loop(exps: ListSIRExportItem, module_name: string, acc: string) -> string {
-    case exps.is_nil of {
-        true -> acc;
+// When a provided trait method is monomorphized, one export surface name maps to several
+// SIR function labels (e.g. `double_area` → `double_area__int32`, `double_area___width_…`).
+// `.global` must name each concrete label, not the surface name, so the linker can resolve
+// the mangled call-site references overload_mangle produces.
+fn name_matches_export_surface(fn_name: string, surface: string) -> bool {
+    case fn_name == surface of {
+        true -> true;
         false -> do
-            sir_n: string <- sir_name_from_export_fn_name(exps.head.fn_name);
-            sym: string <- asm_symbol_for_definition(module_name, sir_n);
-            line: string <- concat(concat(".global ", sym), "\n");
-            emit_export_global_directives_loop(exps.tail, module_name, concat(acc, line))
+            prefix: string <- concat(surface, "__");
+            case len(fn_name) < len(prefix) of {
+                true -> false;
+                false -> substring(fn_name, 0, len(prefix)) == prefix
+            }
         end
     }
 }
 
-fn emit_export_global_directives(exports: ListSIRExportItem, module_name: string) -> string {
-    emit_export_global_directives_loop(exports, module_name, "")
+fn emit_globals_for_matching_functions(fns: ListSIRFunction, surface: string, module_name: string, acc: string) -> string {
+    case fns.is_nil of {
+        true -> acc;
+        false -> do
+            next_acc: string <- case name_matches_export_surface(fns.head.name, surface) of {
+                true -> do
+                    sym: string <- asm_symbol_for_definition(module_name, fns.head.name);
+                    concat(acc, concat(".global ", concat(sym, "\n")))
+                end;
+                false -> acc
+            };
+            emit_globals_for_matching_functions(fns.tail, surface, module_name, next_acc)
+        end
+    }
+}
+
+fn emit_export_global_directives_loop(exps: ListSIRExportItem, fns: ListSIRFunction, module_name: string, acc: string) -> string {
+    case exps.is_nil of {
+        true -> acc;
+        false -> do
+            surface: string <- sir_name_from_export_fn_name(exps.head.fn_name);
+            with_matches: string <- emit_globals_for_matching_functions(fns, surface, module_name, acc);
+            // Fallback: if no SIR function matches (e.g. non-function export), still emit
+            // a single .global for the surface name so legacy behavior is preserved.
+            next_acc: string <- case len(with_matches) == len(acc) of {
+                true -> do
+                    sym: string <- asm_symbol_for_definition(module_name, surface);
+                    concat(acc, concat(".global ", concat(sym, "\n")))
+                end;
+                false -> with_matches
+            };
+            emit_export_global_directives_loop(exps.tail, fns, module_name, next_acc)
+        end
+    }
+}
+
+fn emit_export_global_directives(exports: ListSIRExportItem, fns: ListSIRFunction, module_name: string) -> string {
+    emit_export_global_directives_loop(exports, fns, module_name, "")
 }
 
 // silica-specification §3.4.8: trait file surface (export trait, marker impl types, required signatures).

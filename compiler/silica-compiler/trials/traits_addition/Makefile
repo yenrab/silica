@@ -2,7 +2,7 @@
 # Uses checked-in silica.config (lists traits/*.silica + root entry *.silica).
 # Default `make` / `make all`: compile, assemble with $(ASSEMBLER), link with rust-lld or clang.
 # `make compile`: silica-compiler only (emit .sams).
-# `make integrate`: depends on `all`, then assembly vs .ascomp diffs, run binaries, .sout vs .scout diffs.
+# `make integrate`: compile, assemble, .sams vs .ascomp diffs, link, run binaries, .sout vs .scout diffs.
 
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 SILICA_COMPILER := $(THIS_DIR)../../src/silica-compiler
@@ -75,9 +75,26 @@ all: compile
 	fi; \
 	echo "✅ Linked entrypoints: $(ENTRYPOINTS)"
 
-integrate: all
+integrate: compile
 	@failed=0; \
 	cd "$(THIS_DIR)" && \
+	for base in $(ENTRYPOINTS); do \
+		sams="$$base.sams"; \
+		if [ ! -f "$$sams" ]; then \
+			echo "❌❌ $$base: missing $$sams"; \
+			failed=1; \
+			continue; \
+		fi; \
+		echo "Assembling $$sams..."; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
+	done; \
+	for sams in traits/*.sams; do \
+		[ -f "$$sams" ] || continue; \
+		base=$$(basename "$$sams" .sams); \
+		obj="traits/$$base.o"; \
+		echo "Assembling $$sams..."; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj" || { failed=1; break; }; \
+	done; \
 	for base in $(ENTRYPOINTS); do \
 		sams="$$base.sams"; \
 		if [ ! -f "$$sams" ]; then \
@@ -94,6 +111,19 @@ integrate: all
 			failed=1; \
 		else \
 			echo "✅✅ $$base assembly matches .ascomp"; \
+		fi; \
+	done; \
+	for base in $(ENTRYPOINTS); do \
+		[ -f "$$base.o" ] || continue; \
+		echo "Linking $$base..."; \
+		trait_objs=""; \
+		for trait_obj in traits/*.o; do \
+			[ -f "$$trait_obj" ] && trait_objs="$$trait_objs $$trait_obj"; \
+		done; \
+		if test -x "$(RUST_LLD)"; then \
+			$(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$trait_objs $(LDFLAGS_rust-lld) || failed=1; \
+		else \
+			$(ASSEMBLER) "$$base.o" $$trait_objs -o "$$base" $(LDFLAGS_clang) || failed=1; \
 		fi; \
 	done; \
 	for base in $(ENTRYPOINTS); do \
@@ -125,4 +155,8 @@ clean:
 
 help:
 	@echo "traits_addition: multi-file trait trials; traits/*.silica are trait definitions (no main)."
-	@echo "Targets: all (default: compile+assemble+link), compile (.sams only), integrate (checks+run), clean"
+	@echo "Entrypoints (silica.config): $(ENTRYPOINTS)"
+	@echo "  Sizeable/Scalable: single required + single impl (int64). Doubling: int64 transform."
+	@echo "  Shape: required + provided default; two impl fn area/1 (overload). combined_trait_main nests Sizeable + Doubling."
+	@echo "  PointSum: pair_sum/2 on int64 (tuple_pair_main). Labeled/ReportEcho: int64 witness + trait-on-trait echo."
+	@echo "Targets: all (default: compile+assemble+link), compile (.sams only), integrate (assemble, .ascomp diff, link, .scout), clean"

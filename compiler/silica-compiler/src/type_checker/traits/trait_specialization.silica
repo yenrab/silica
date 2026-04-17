@@ -1,0 +1,221 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Monomorphization pass for provided trait methods (spec §3.4.8, §8.2.3).
+// A provided method has a trait-typed first parameter (e.g. `fn double_area(s: Shape) -> int32`).
+// Because Silica has no runtime vtables, each provided method is specialized at AST time
+// into one copy per concrete impl type found in the same module. The specialized copies
+// then share the name but differ in first-param type, which triggers link-name mangling in
+// the SIR generator (overload_mangle@sir_fn_link_name).
+//
+// Example: trait Shape with `required fn area(s: Shape) -> int32` and
+//   impl fn area(int32)              → slug int32
+//   impl fn area({width,length})     → slug ___width___...___length___int32__
+// and provided fn double_area(s: Shape) -> int32 { Shape@area(s) * 2 }
+// expands to two tag-0 decls:
+//   double_area(s: int32)            → link-mangled to double_area__int32
+//   double_area(s: {width,length})   → link-mangled to double_area___width___...
+// In each, the call `Shape@area(s)` resolves (via sir_resolve_qualified_callee_composite)
+// to the matching mangled impl based on s's concrete type.
+
+use parser_ast;
+use type_checker_traits;
+
+export specialize_program/1;
+export specialize_named_program_list/1;
+
+struct TypeNameList {
+    is_nil: bool,
+    head: string,
+    tail: TypeNameList
+}
+
+fn string_list_contains(lst: TypeNameList, name: string) -> bool {
+    case lst.is_nil of {
+        true -> false;
+        false -> case lst.head == name of {
+            true -> true;
+            false -> string_list_contains(lst.tail, name)
+        }
+    }
+}
+
+fn empty_string_list() -> TypeNameList {
+    nil_placeholder: TypeNameList <- TypeNameList { is_nil: true, head: "", tail: nil_placeholder };
+    nil_placeholder
+}
+
+fn cons_str(s: string, tail: TypeNameList) -> TypeNameList {
+    TypeNameList { is_nil: false, head: s, tail: tail }
+}
+
+// Return true when `name` is an exported trait in this decl list (tag 5).
+fn trait_name_exported(decls: ListDeclaration, name: string) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 5 and decls.head.name == name of {
+            true -> true;
+            false -> trait_name_exported(decls.tail, name)
+        }
+    }
+}
+
+// First-param type text (trimmed). Callers must ensure parameters is non-empty.
+fn first_param_type(params: ListParam) -> string {
+    type_checker_traits@trim_type_text(params.head.type_name)
+}
+
+// True if decl is a provided method: tag 0, first param exists, first-param type is an exported trait name here.
+fn is_provided_method(d: Declaration, all_decls: ListDeclaration) -> bool {
+    case d.tag == 0 of {
+        false -> false;
+        true -> case d.parameters.is_nil of {
+            true -> false;
+            false -> trait_name_exported(all_decls, first_param_type(d.parameters))
+        }
+    }
+}
+
+// Collect tag-7 required-method names declared for trait `trait_name`.
+fn required_method_names(decls: ListDeclaration, trait_name: string, acc: TypeNameList) -> TypeNameList {
+    case decls.is_nil of {
+        true -> acc;
+        false -> do
+            rest_acc: TypeNameList <- case decls.head.tag == 7 of {
+                false -> acc;
+                true -> case decls.head.parameters.is_nil of {
+                    true -> acc;
+                    false -> case first_param_type(decls.head.parameters) == trait_name of {
+                        false -> acc;
+                        true -> case string_list_contains(acc, decls.head.name) of {
+                            true -> acc;
+                            false -> cons_str(decls.head.name, acc)
+                        }
+                    }
+                }
+            };
+            required_method_names(decls.tail, trait_name, rest_acc)
+        end
+    }
+}
+
+// Collect concrete first-param types from tag-0 decls whose name is a required method of trait
+// AND whose first-param type is NOT a trait name (i.e. actual impl, not the provided method itself).
+fn concrete_impl_types(decls: ListDeclaration, all_decls: ListDeclaration, required_names: TypeNameList, acc: TypeNameList) -> TypeNameList {
+    case decls.is_nil of {
+        true -> acc;
+        false -> do
+            rest_acc: TypeNameList <- case decls.head.tag == 0 of {
+                false -> acc;
+                true -> case decls.head.parameters.is_nil of {
+                    true -> acc;
+                    false -> case string_list_contains(required_names, decls.head.name) of {
+                        false -> acc;
+                        true -> do
+                            ty: string <- first_param_type(decls.head.parameters);
+                            case trait_name_exported(all_decls, ty) of {
+                                true -> acc;
+                                false -> case string_list_contains(acc, ty) of {
+                                    true -> acc;
+                                    false -> cons_str(ty, acc)
+                                }
+                            }
+                        end
+                    }
+                }
+            };
+            concrete_impl_types(decls.tail, all_decls, required_names, rest_acc)
+        end
+    }
+}
+
+// Clone a declaration with its first parameter's type replaced by `new_type`.
+fn param_with_new_type(p: Param, new_type: string) -> Param {
+    Param { name: p.name, type_name: new_type, location: p.location }
+}
+
+fn replace_first_param_type(params: ListParam, new_type: string) -> ListParam {
+    case params.is_nil of {
+        true -> params;
+        false -> parser_ast@cons_param(param_with_new_type(params.head, new_type), params.tail)
+    }
+}
+
+fn clone_decl_with_first_param_type(d: Declaration, new_type: string) -> Declaration {
+    b: Expr <- d.body;
+    new_params: ListParam <- replace_first_param_type(d.parameters, new_type);
+    eff: ListEffectName <- d.declared_effects;
+    rtl: SourceLocation <- d.return_type_location;
+    loc: SourceLocation <- d.location;
+    Declaration {
+        tag: d.tag,
+        name: d.name,
+        parameters: new_params,
+        return_type_name: d.return_type_name,
+        return_type_location: rtl,
+        location: loc,
+        body: b,
+        declared_effects: eff
+    }
+}
+
+// Given a provided method decl and the list of concrete impl types for its trait,
+// emit one specialized copy per concrete type. Prepends specialized copies onto `rest`.
+fn emit_specialized_copies(d: Declaration, concretes: TypeNameList, rest: ListDeclaration) -> ListDeclaration {
+    case concretes.is_nil of {
+        true -> rest;
+        false -> do
+            clone: Declaration <- clone_decl_with_first_param_type(d, concretes.head);
+            parser_ast@cons_declaration(clone, emit_specialized_copies(d, concretes.tail, rest))
+        end
+    }
+}
+
+// Walk decls; replace each provided method with specialized copies; keep everything else verbatim.
+fn specialize_decls(decls: ListDeclaration, all_decls: ListDeclaration) -> ListDeclaration {
+    case decls.is_nil of {
+        true -> parser_ast@empty_list_decl();
+        false -> do
+            rest: ListDeclaration <- specialize_decls(decls.tail, all_decls);
+            case is_provided_method(decls.head, all_decls) of {
+                false -> parser_ast@cons_declaration(decls.head, rest);
+                true -> do
+                    trait_nm: string <- first_param_type(decls.head.parameters);
+                    req_names: TypeNameList <- required_method_names(all_decls, trait_nm, empty_string_list());
+                    concretes: TypeNameList <- concrete_impl_types(all_decls, all_decls, req_names, empty_string_list());
+                    emit_specialized_copies(decls.head, concretes, rest)
+                end
+            }
+        end
+    }
+}
+
+fn specialize_program(program: Program) -> Program {
+    new_decls: ListDeclaration <- specialize_decls(program.declarations, program.declarations);
+    Program { declarations: new_decls, location: program.location }
+}
+
+fn specialize_named_program_list(world: ListNamedProgram) -> ListNamedProgram {
+    case world.is_nil of {
+        true -> world;
+        false -> do
+            p: Program <- specialize_program(world.head.program);
+            parser_ast@cons_named_program(world.head.module_name, p, specialize_named_program_list(world.tail))
+        end
+    }
+}
+

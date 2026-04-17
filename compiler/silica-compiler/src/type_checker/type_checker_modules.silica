@@ -64,6 +64,20 @@ fn list_param_length(ps: ListParam) -> int64 {
     }
 }
 
+// Same parameter type list (trait `impl fn` overloads differ only by concrete first-arg types).
+fn params_equal(a: ListParam, b: ListParam) -> bool {
+    case a.is_nil of {
+        true -> b.is_nil;
+        false -> case b.is_nil of {
+            true -> false;
+            false -> case a.head.type_name == b.head.type_name of {
+                true -> params_equal(a.tail, b.tail);
+                false -> false
+            }
+        }
+    }
+}
+
 fn is_decimal_digit_char(c: string) -> bool {
     c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9"
 }
@@ -104,47 +118,6 @@ fn parse_unsigned_decimal_loop(s: string, i: int64, acc: int64) -> (bool, int64)
 
 fn export_key(fn_name: string, arity_lex: string) -> string {
     concat(concat(fn_name, "/"), arity_lex)
-}
-
-fn dbg_param_dump(ps: ListParam) -> string {
-    case ps.is_nil of {
-        true -> "";
-        false -> concat(concat(concat(ps.head.name, ":"), ps.head.type_name), case ps.tail.is_nil of { true -> ""; false -> concat(",", dbg_param_dump(ps.tail)) })
-    }
-}
-
-fn debug_dump_world(world: ListNamedProgram) -> int64 proc[DeviceIO] {
-    case world.is_nil of {
-        true -> 0;
-        false -> do
-            _: unit <- println(concat("DBG  world entry mod=", world.head.module_name));
-            _: int64 <- debug_dump_decls(world.head.program.declarations);
-            debug_dump_world(world.tail)
-        end
-    }
-}
-
-fn debug_dump_decls(decls: ListDeclaration) -> int64 proc[DeviceIO] {
-    case decls.is_nil of {
-        true -> 0;
-        false -> do
-            tag_str: string <- case decls.head.tag == 0 of {
-                true -> "0";
-                false -> case decls.head.tag == 3 of {
-                    true -> "3";
-                    false -> case decls.head.tag == 5 of {
-                        true -> "5";
-                        false -> case decls.head.tag == 7 of {
-                            true -> "7";
-                            false -> "?"
-                        }
-                    }
-                }
-            };
-            _: unit <- println(concat(concat(concat(concat(concat("DBG decl tag=", tag_str), " name="), decls.head.name), " params="), dbg_param_dump(decls.head.parameters)));
-            debug_dump_decls(decls.tail)
-        end
-    }
 }
 
 fn find_function_decl_by_name_arity_with_tag(decls: ListDeclaration, fn_name: string, arity: int64, want_tag: int64) -> (bool, Declaration) {
@@ -338,7 +311,7 @@ fn validate_dup_fn_outer(outer: ListDeclaration, all_decls: ListDeclaration) -> 
         false -> case outer.head.tag == 0 of {
             true -> do
                 ar: int64 <- list_param_length(outer.head.parameters);
-                case count_matching_functions(all_decls, outer.head.name, ar) > 1 of {
+                case count_matching_functions(all_decls, outer.head.name, ar, outer.head.parameters) > 1 of {
                     true -> type_checker_core@type_check_err("E4015", outer.head.location, concat(concat("duplicate function definition ", outer.head.name), " with same arity"), "sect19.2");
                     false -> validate_dup_fn_outer(outer.tail, all_decls)
                 }
@@ -348,12 +321,12 @@ fn validate_dup_fn_outer(outer: ListDeclaration, all_decls: ListDeclaration) -> 
     }
 }
 
-fn count_matching_functions(decls: ListDeclaration, fn_name: string, arity: int64) -> int64 {
+fn count_matching_functions(decls: ListDeclaration, fn_name: string, arity: int64, params: ListParam) -> int64 {
     case decls.is_nil of {
         true -> 0;
-        false -> case decls.head.tag == 0 and decls.head.name == fn_name and list_param_length(decls.head.parameters) == arity of {
-            true -> 1 + count_matching_functions(decls.tail, fn_name, arity);
-            false -> count_matching_functions(decls.tail, fn_name, arity)
+        false -> case decls.head.tag == 0 and decls.head.name == fn_name and list_param_length(decls.head.parameters) == arity and params_equal(decls.head.parameters, params) of {
+            true -> 1 + count_matching_functions(decls.tail, fn_name, arity, params);
+            false -> count_matching_functions(decls.tail, fn_name, arity, params)
         }
     }
 }
@@ -385,6 +358,42 @@ fn lookup_symbol_found_here(env: ListSymbolEntry, name: string) -> (bool, string
         false -> case env.head.name == name of {
             true -> (true, env.head.type_name);
             false -> lookup_symbol_found_here(env.tail, name)
+        }
+    }
+}
+
+// "T1,T2 -> R" / "(T1,T2) -> R" style function types in the symbol table use " -> " (same idea as check_user_defined_call).
+fn find_arrow_in_symbol_type_str(s: string, i: int64) -> int64 {
+    case i + 4 > len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 4) == " -> " of {
+            true -> i;
+            false -> find_arrow_in_symbol_type_str(s, i + 1)
+        }
+    }
+}
+
+fn is_function_type_symbol(type_name: string) -> bool {
+    find_arrow_in_symbol_type_str(type_name, 0) >= 0
+}
+
+// §19.3.2: same bare name may name multiple functions if parameter types differ (overload). Shadow only when
+// the name already denotes this exact signature, or a non-function / effect alias blocks the name.
+fn local_function_shadow_scan(env: ListSymbolEntry, fn_name: string, new_fn_ty: string, loc: SourceLocation) -> TypeCheckResult {
+    case env.is_nil of {
+        true -> type_checker_core@type_check_ok();
+        false -> case env.head.name == fn_name of {
+            false -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, loc);
+            true -> case env.head.is_effect_alias of {
+                true -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
+                false -> case is_function_type_symbol(env.head.type_name) of {
+                    false -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
+                    true -> case env.head.type_name == new_fn_ty of {
+                        true -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
+                        false -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, loc)
+                    }
+                }
+            }
         }
     }
 }
@@ -424,14 +433,10 @@ fn add_exported_symbols_from_items(items: ListParam, whole: ListDeclaration, env
                 false -> (type_checker_core@type_check_err("E4014", items.head.location, "invalid export arity", "sect19.2"), env);
                 true -> do
                     (fd: bool, decl: Declaration) <- find_function_decl_by_name_arity(whole, items.head.name, ar);
-                    _: unit <- println(concat(concat(concat("DBG add_export name=", items.head.name), " ar="), items.head.type_name));
-                    _: int64 <- debug_dump_decls(whole);
                     case fd of {
                         false -> (type_checker_core@type_check_err("E4010", items.head.location, "internal: missing export target", "sect19.2"), env);
                         true -> do
                             ft: string <- build_function_type_for_module_export(decl);
-                            _: unit <- println(concat(concat(concat(concat("DBG  fd=true decl.name=", decl.name), " decl.tag="), case decl.tag == 0 of { true -> "0"; false -> case decl.tag == 7 of { true -> "7"; false -> "?" } }), ""));
-                            _: unit <- println(concat("DBG  ft=", ft));
                             (found: bool, _: string) <- lookup_symbol_found_here(env, decl.name);
                             case found of {
                                 true -> (type_checker_core@type_check_err("E4011", items.head.location, concat(concat("symbol already in scope: ", decl.name), " (spec 19.3.3 shadowing)"), "sect19.3.3"), env);
@@ -495,12 +500,9 @@ fn apply_use_add_symbols_loop(mod_names: ListParam, ctx: TypeContext, world: Lis
     }
 }
 
-fn local_function_shadows_existing(env: ListSymbolEntry, fn_name: string, loc: SourceLocation) -> TypeCheckResult {
-    (found: bool, _: string) <- lookup_symbol_found_here(env, fn_name);
-    case found of {
-        true -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
-        false -> type_checker_core@type_check_ok()
-    }
+fn local_function_shadows_existing(env: ListSymbolEntry, decl: Declaration) -> TypeCheckResult {
+    new_ty: string <- build_function_type_for_module_export(decl);
+    local_function_shadow_scan(env, decl.name, new_ty, decl.location)
 }
 
 fn add_all_declarations_with_world(decls: ListDeclaration, context: TypeContext, world: ListNamedProgram, current_module: string) -> (TypeCheckResult, TypeContext) {
@@ -517,7 +519,7 @@ fn add_all_declarations_with_world(decls: ListDeclaration, context: TypeContext,
             3 -> add_all_declarations_with_world(decls.tail, context, world, current_module);
             4 -> add_all_declarations_with_world(decls.tail, context, world, current_module);
             0 -> do
-                sh: TypeCheckResult <- local_function_shadows_existing(context.env, decls.head.name, decls.head.location);
+                sh: TypeCheckResult <- local_function_shadows_existing(context.env, decls.head);
                 case sh.is_ok of {
                     false -> (sh, context);
                     true -> do
@@ -554,10 +556,6 @@ fn check_all_declarations_functions_only(decls: ListDeclaration, context: TypeCo
 }
 
 fn type_check_program_with_modules(program: Program, current_module: string, world: ListNamedProgram, context: TypeContext) -> (TypeCheckResult, TypeContext) proc[DeviceIO] {
-    _: unit <- println(concat("DBG ===== type_check module=", current_module));
-    _: int64 <- debug_dump_decls(program.declarations);
-    _: unit <- println("DBG world dump:");
-    _: int64 <- debug_dump_world(world);
     surface: TypeCheckResult <- validate_module_program_surface(program, current_module);
     case surface.is_ok of {
         false -> (surface, context);

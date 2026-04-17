@@ -234,63 +234,74 @@ fn decls_have_use_for_module(decls: ListDeclaration, mod_name: string) -> bool {
     }
 }
 
-fn validate_expr_pair_for_qualified_uses(inner: Expr, right: Expr, all_decls: ListDeclaration) -> (int64, string, SourceLocation, string, string) {
-    (i_ok: int64, i_code: string, i_loc: SourceLocation, i_msg: string, i_spec: string) <- validate_expr_qualified_uses(inner, all_decls);
-    case i_ok == 0 of {
-        false -> (i_ok, i_code, i_loc, i_msg, i_spec);
-        true -> validate_expr_qualified_uses(right, all_decls)
+// `use M` brings other units into scope; M@f in M.silica is the current module (e.g. trait self-call) and does not need `use M`.
+fn qualified_module_is_current_file(qmod: string, current_path: string) -> bool {
+    case len(current_path) == 0 of {
+        true -> false;
+        false -> strings_equal_ascii_ignore_case(qmod, module_from_path(current_path))
     }
 }
 
-fn validate_kind4_call_module_use(expr: Expr, all_decls: ListDeclaration) -> (int64, string, SourceLocation, string, string) {
+fn validate_expr_pair_for_qualified_uses(inner: Expr, right: Expr, all_decls: ListDeclaration, current_path: string) -> (int64, string, SourceLocation, string, string) {
+    (i_ok: int64, i_code: string, i_loc: SourceLocation, i_msg: string, i_spec: string) <- validate_expr_qualified_uses(inner, all_decls, current_path);
+    case i_ok == 0 of {
+        false -> (i_ok, i_code, i_loc, i_msg, i_spec);
+        true -> validate_expr_qualified_uses(right, all_decls, current_path)
+    }
+}
+
+fn validate_kind4_call_module_use(expr: Expr, all_decls: ListDeclaration, current_path: string) -> (int64, string, SourceLocation, string, string) {
     case type_checker_core@call_name_is_module_qualified(expr.name) of {
-        false -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls);
+        false -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls, current_path);
         true -> do
             (qmod: string, _: string) <- type_checker_core@split_module_qualified_call_name(expr.name);
             case len(qmod) > 0 of {
-                false -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls);
+                false -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls, current_path);
                 true -> case decls_have_use_for_module(all_decls, qmod) of {
-                    true -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls);
-                    false -> do
-                        p1: string <- concat("module-qualified call ", expr.name);
-                        p2: string <- concat(p1, " requires `use ");
-                        msg: string <- concat(p2, concat(qmod, "` (spec 19.3)"));
-                        (1, "E1010", expr.location, msg, "sect19.3")
-                    end
+                    true -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls, current_path);
+                    false -> case qualified_module_is_current_file(qmod, current_path) of {
+                        true -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls, current_path);
+                        false -> do
+                            p1: string <- concat("module-qualified call ", expr.name);
+                            p2: string <- concat(p1, " requires `use ");
+                            msg: string <- concat(p2, concat(qmod, "` (spec 19.3)"));
+                            (1, "E1010", expr.location, msg, "sect19.3")
+                        end
+                    }
                 }
             }
         end
     }
 }
 
-fn validate_expr_qualified_uses(expr: Expr, all_decls: ListDeclaration) -> (int64, string, SourceLocation, string, string) {
+fn validate_expr_qualified_uses(expr: Expr, all_decls: ListDeclaration, current_path: string) -> (int64, string, SourceLocation, string, string) {
     case expr.kind < 0 of {
         true -> (0, "", parser_ast@zero_location(), "", "");
         false -> case expr.kind == 4 of {
-            true -> validate_kind4_call_module_use(expr, all_decls);
-            false -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls)
+            true -> validate_kind4_call_module_use(expr, all_decls, current_path);
+            false -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls, current_path)
         }
     }
 }
 
-fn validate_decls_qualified_calls(decls: ListDeclaration, all_decls: ListDeclaration) -> (int64, string, SourceLocation, string, string) {
+fn validate_decls_qualified_calls(decls: ListDeclaration, all_decls: ListDeclaration, current_path: string) -> (int64, string, SourceLocation, string, string) {
     case decls.is_nil of {
         true -> (0, "", parser_ast@zero_location(), "", "");
         false -> case decls.head.tag == 0 of {
             true -> do
-                (b_ok: int64, b_code: string, b_loc: SourceLocation, b_msg: string, b_spec: string) <- validate_expr_qualified_uses(decls.head.body, all_decls);
+                (b_ok: int64, b_code: string, b_loc: SourceLocation, b_msg: string, b_spec: string) <- validate_expr_qualified_uses(decls.head.body, all_decls, current_path);
                 case b_ok == 0 of {
                     false -> (b_ok, b_code, b_loc, b_msg, b_spec);
-                    true -> validate_decls_qualified_calls(decls.tail, all_decls)
+                    true -> validate_decls_qualified_calls(decls.tail, all_decls, current_path)
                 }
             end;
-            false -> validate_decls_qualified_calls(decls.tail, all_decls)
+            false -> validate_decls_qualified_calls(decls.tail, all_decls, current_path)
         }
     }
 }
 
-fn validate_module_qualified_calls_have_use(program: Program) -> (int64, string, SourceLocation, string, string) {
-    validate_decls_qualified_calls(program.declarations, program.declarations)
+fn validate_module_qualified_calls_have_use(program: Program, current_path: string) -> (int64, string, SourceLocation, string, string) {
+    validate_decls_qualified_calls(program.declarations, program.declarations, current_path)
 }
 
 fn is_decimal_digit_char_module(c: string) -> bool {
@@ -679,7 +690,7 @@ fn module_checker_check_program(program: Program, config_files: ListString, all_
                             1
                         end;
                         false -> do
-                            (qual_st: int64, qual_code: string, qual_loc: SourceLocation, qual_msg: string, qual_spec: string) <- validate_module_qualified_calls_have_use(program);
+                            (qual_st: int64, qual_code: string, qual_loc: SourceLocation, qual_msg: string, qual_spec: string) <- validate_module_qualified_calls_have_use(program, current_path);
                             case qual_st == 0 of {
                                 false -> do
                                     qec: string <- case qual_code == "" of {
