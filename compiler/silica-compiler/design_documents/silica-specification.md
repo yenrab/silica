@@ -7265,7 +7265,7 @@ alloc_ref(r, 42)    // Runtime error: capability violation
 
 ## 15. Actor Model Semantics
 
-**Intrinsic Functions**: Actors and all actor-related functions defined in this specification (`spawn()`, `call()`, `cast()`, `self()`, `recv()`, etc.) are intrinsic to the Silica compiler. They are implemented directly in the compiler and runtime, similar to how basic arithmetic operators (`+`, `-`, `*`, `/`) are implemented. These functions are not defined in user code or standard libraries but are built-in language primitives.
+**Intrinsic Functions**: Actors and all actor-related functions defined in this specification (`spawn()`, `spawn_linked()`, `call()`, `cast()`, `self()`, `recv()`, etc.) are intrinsic to the Silica compiler. They are implemented directly in the compiler and runtime, similar to how basic arithmetic operators (`+`, `-`, `*`, `/`) are implemented. These functions are not defined in user code or standard libraries but are built-in language primitives.
 
 ### 15.1 Actor Lifecycle
 
@@ -7274,7 +7274,13 @@ Actors are created with initial state and behavior function:
 
 ```
 spawn(initial_state, behavior_fn [, core_id]) -> actor_ref
+spawn_linked(initial_state, behavior_fn, agent_type: atom [, core_id]) -> actor_ref proc[concurrency]
+link(target: actor_ref) -> :ok  proc[concurrency]
+monitor(target: actor_ref) -> monitor_ref  proc[concurrency]
+demonitor(ref: monitor_ref) -> :ok  proc[concurrency]
 ```
+
+`spawn` creates a standalone actor with no supervisor. `spawn_linked` atomically creates the actor and establishes a bidirectional supervision link between the calling actor and the new child; see **§15.4.8.3** for full semantics. `spawn_linked` may only be called from within an actor behavior function. `link`, `monitor`, and `demonitor` operate on already-running actors; see **§15.4.8.5–§15.4.8.7**.
 
 When `initial_state` contains a region handle, the handle is moved from `spawn` to the actor. The actor receives exclusive ownership of the region.
 
@@ -7512,7 +7518,7 @@ fn server(msg: atom, state: int64) -> (:no_reply, int64) {
 - The supervisor can inspect the termination reason, log it, restart the actor, or take other action
 - This enables supervisor trees and fault tolerance (OTP-style supervision)
 
-**Supervisor Specification:** Details of supervisor registration and notification are specified in the supervisor subsystem (see §15.4, Supervision and Fault Tolerance — future expansion).
+**Supervisor Specification:** Full details of supervisor registration, failure notification delivery, the high-priority supervision ingress, restart protocols, and the required `Supervisor` trait are specified in **§15.4 Supervision and Fault Tolerance**.
 
 **Actor Migration Policy:**
 
@@ -8343,6 +8349,828 @@ cast(actor1, "quit")    // actor1 terminates
 cast(actor2, "ping")    // actor2 continues normally
 ```
 
+### 15.4 Supervision and Fault Tolerance
+
+> **Status**: This section expands the stubs at §15.1.3 and §16.2.7.
+> Sections marked **[DEFERRED]** are formally left open for a future revision.
+> Conflicts with other parts of the specification are called out in §15.4.16.
+
+---
+
+#### 15.4.1 Overview
+
+Silica provides BEAM-like actor crash containment in a compiled, native binary runtime:
+
+- A failure in one actor must not crash or corrupt other actors.
+- "Let it crash" semantics apply at the actor level.
+- The system continues execution after an actor failure, subject to the containment gate (§15.4.4).
+- No VM is involved: Silica compiles to native binaries.
+- The language is functionally pure and memory-safe by construction.
+- Primary target architecture: AArch64; x86-64 is also supported (FFI containment via MPK — §15.4.13.5).
+- Hardware memory safety relies on ARM Memory Tagging Extension (MTE) on AArch64; Memory Protection Keys (MPK) on x86-64.
+
+This section specifies:
+
+1. **Crash containment** (§15.4.3–§15.4.7): how native memory faults are converted into actor deaths rather than OS process deaths, and when the whole process must abort instead.
+2. **Supervision** (§15.4.8–§15.4.13): how supervisor actors are structured, how failure notifications are delivered, and how restart/shutdown sequences work.
+
+Relationship to other sections:
+
+| Section | Responsibility |
+|---------|---------------|
+| §15.1.2.2 | Per-actor stacks, growable on demand — the memory isolation substrate |
+| §15.1.3 | Supervisor notification stub — expanded here |
+| §16 | Standard `call()` / `cast()` message passing — used by orderly supervision paths |
+| §15.4 (this section) | Crash containment gate, signal handling, supervision protocol |
+
+---
+
+#### 15.4.2 Definitions
+
+**Actor**: As defined in §15.1 — a unit of concurrent execution with its own dedicated stack (§15.1.2.2), state, mailbox, and behavior function.
+
+**Mutator code**: User program code executing inside an actor's behavior function.
+
+**Trusted runtime**: The native binary runtime that manages actor lifecycle, scheduling, message routing, and global state. The trusted runtime is not part of the Silica language specification; corruption there is unrecoverable.
+
+**Critical runtime section**: Any runtime code that manipulates shared state whose corruption would make the runtime unable to continue:
+
+- Scheduler run queues
+- Global allocators
+- Actor table / actor registry metadata
+- Standard mailbox metadata
+- Supervision ingress state (§15.4.9)
+- Global allocator state
+
+Faults occurring in a critical section must terminate the entire OS process.
+
+**Containment gate**: The set of conditions (§15.4.4) that must all hold before the runtime attempts non-local recovery of a single-actor fault instead of aborting the process.
+
+**Supervision ingress**: A per-supervisor priority channel for failure notifications, distinct from the supervisor's standard message mailbox (§15.4.9).
+
+**Trap failure path**: An actor failure caused by a hardware-detected memory fault that is recovered via non-local control transfer (`siglongjmp`). The actor's mutator is torn down without running any further user code. The runtime — not the actor — constructs and delivers the exit notification (§15.4.10.1).
+
+---
+
+#### 15.4.3 Memory Safety Model
+
+##### 15.4.3.1 Language Guarantees
+
+- No raw pointers are exposed to user code.
+- All references are safe handles.
+- Bounds checks are enforced.
+- No undefined behavior is expressible in the language.
+
+##### 15.4.3.2 Hardware Guarantees (AArch64)
+
+On AArch64 targets, the runtime enables the Memory Tagging Extension (MTE):
+
+- All allocations are tagged.
+- All pointer loads carry a tag.
+- A tag mismatch triggers a **synchronous** hardware exception (SIGSEGV or SIGBUS on Linux).
+
+This converts memory misuse from silent corruption into deterministic, containable faults.
+
+##### 15.4.3.3 Consequence
+
+Because the language cannot express undefined behavior and MTE converts misuse to synchronous hardware exceptions, the set of possible faults is closed:
+
+- Most runtime failures are language-level conditions (pattern match failure, out-of-memory, etc.).
+- Remaining memory faults appear as synchronous OS signals.
+- The signal handler can determine, based on thread-local state, whether the fault occurred in mutator code or in trusted runtime code.
+
+---
+
+#### 15.4.4 Containment Gate
+
+This section specifies when the runtime may attempt **non-local recovery** (continue scheduling other actors in the same OS process after a fault) rather than aborting the process.
+
+**All four conditions must hold**:
+
+1. **Hardware-detected fault**: The fault was delivered as a synchronous OS signal (SIGSEGV or SIGBUS) from a hardware memory protection mechanism (MTE tag mismatch or equivalent), not a software-raised signal and not an asynchronous signal unrelated to memory tagging.
+
+2. **Fault in mutator code**: The fault occurred while the OS thread was executing actor mutator code. The TLS variable `in_mutator` must be `true` and `current_actor` must be non-null at the time of the fault.
+
+3. **Not in a critical runtime section**: The runtime was not executing inside a critical section (§15.4.2) when the fault occurred. If a critical section lock or flag was held at fault time, the fault is uncontainable.
+
+4. **Runtime invariants hold**: After the fault and before recovery, the runtime can verify that structures it needs to continue scheduling and message delivery (actor table, standard mailbox metadata, supervision ingress state, global allocator) were not corrupted by the fault.
+
+**If any condition fails**:
+→ Generate diagnostics (actor id, fault address, instruction pointer) and deliver unwind report via `FailureReporter` (§15.4.13.4)
+→ **Abort the entire OS process**
+
+This gate is the native-binary analogue of BEAM's "VM must be intact" rule: recovery is permitted only when the substrate needed to run other actors is known to be sound.
+
+**Scope**: This gate applies only to hardware-delivered signals on the §15.4.5 path. Language-level errors, explicit shutdown, and normal actor termination reach the runtime teardown path (§15.4.10.1) without passing through this gate.
+
+---
+
+#### 15.4.5 Signal Handling
+
+##### 15.4.5.1 Signal Setup
+
+The runtime installs signal handlers at startup:
+
+- `sigaction(SIGSEGV, ...)` and `sigaction(SIGBUS, ...)`
+- `sigaltstack` to provide an alternate stack for signal delivery to the **host runtime thread** (not the actor's growable execution stack; see §15.1.2.2)
+
+##### 15.4.5.2 Signal Handler Requirements
+
+The signal handler must be async-signal-safe:
+
+- **No allocation**: The handler must not call any allocator.
+- **No locks**: The handler must not acquire any lock that may be held by interrupted code.
+- **No complex runtime logic**: The handler reads pre-established TLS variables and performs a non-local jump or calls `abort()`.
+- **Minimal state writes**: Only writes to actor metadata fields that are designated async-signal-safe (fault reason).
+
+##### 15.4.5.3 Signal Handler Decision Algorithm
+
+On delivery of SIGSEGV or SIGBUS:
+
+```
+signal_handler(signo, siginfo, ucontext):
+    1. Identify the current OS thread.
+    2. Read TLS:
+         current_actor  → actor_ref or null
+         in_mutator     → bool
+    3. Check containment gate (§15.4.4):
+         if in_mutator == true
+         and current_actor != null
+         and not in_critical_section()
+         and runtime_invariants_hold():
+             record_fault_in_actor_metadata(current_actor, signo, siginfo)
+             siglongjmp(current_actor.recovery_point, FAULT_REASON_MEMORY)
+         else:
+             emit_crash_dump(current_actor, signo, siginfo, ucontext)
+             abort()
+```
+
+`in_critical_section()` and `runtime_invariants_hold()` must themselves be async-signal-safe. In practice, these are implemented as atomic flag reads set/cleared by the runtime around critical sections.
+
+##### 15.4.5.4 TLS Variables
+
+Each OS thread that executes actor mutator code maintains:
+
+| Variable | Type | Meaning |
+|----------|------|---------|
+| `current_actor` | `actor_ref` or null | The actor currently executing on this thread, or null if not in an actor |
+| `in_mutator` | `bool` | True only when the thread is executing user (mutator) code inside the behavior function |
+
+`in_mutator` is set to `true` immediately before calling the behavior function and cleared immediately after the call returns or before calling any trusted runtime function.
+
+---
+
+#### 15.4.6 Actor Execution and Recovery Mechanism
+
+##### 15.4.6.1 Recovery Setup
+
+Before executing each message handler invocation, the runtime establishes a recovery point:
+
+```
+// Runtime internal — not user code
+actor_dispatch_one_message(actor, state, message, behavior):
+    save_point: sigjmp_buf
+    status <- sigsetjmp(save_point, 1)   // save signal mask
+    if status == 0:
+        actor.recovery_point <- save_point
+        set_tls(in_mutator, true)
+        result <- behavior(message, state)
+        set_tls(in_mutator, false)
+        handle_normal_result(actor, result)
+    else:
+        // Arrived here via siglongjmp from signal handler
+        set_tls(in_mutator, false)
+        set_tls(current_actor, null)
+        handle_actor_crash(actor, status)
+```
+
+##### 15.4.6.2 Outcomes
+
+| Outcome | Description |
+|---------|-------------|
+| Normal return | `behavior` returns `(:reply, ...)` or `(:no_reply, ...)`. Runtime processes the result and loops. |
+| Trap path | `siglongjmp` fires. Actor is marked dead. Runtime resumes scheduling other actors. |
+
+An actor never resumes execution after a trap. Its stack is reclaimed and its mailbox is dropped.
+
+##### 15.4.6.3 Stack Lifecycle
+
+Each message handler invocation is a finite call on the actor's dedicated stack (§15.1.2.2). When `behavior` returns normally, the runtime resets the stack pointer for the next message. When the actor dies (trap or orderly), the runtime reclaims the entire stack.
+
+##### 15.4.6.4 Stack Unwinding for Diagnostics
+
+When any error causes an actor to terminate, the runtime **must** unwind the actor's call stack and produce a structured failure report before the stack is reclaimed. This report is delivered to the root `FailureReporter` actor via `handle_report` (§15.4.13.4). It is not included in the structured failure notification payload delivered to the supervisor ingress (§15.4.11); the two channels are independent.
+
+**Timing**
+
+| Failure path | When unwinding occurs |
+|---|---|
+| Trap path | Inside `handle_actor_crash`, after `siglongjmp` returns on the runtime's own stack but before the actor's dedicated stack is reclaimed. The actor stack is intact at this point. |
+| Language-level / normal shutdown | During the runtime's orderly teardown path, before the stack is reclaimed. |
+
+On both paths the unwind is performed entirely by the trusted runtime; no user code runs.
+
+**Frame Table**
+
+The Silica compiler emits a **Silica Frame Table (SFT)** alongside each compiled module. The SFT records, for each instruction range:
+
+- The enclosing function name (fully qualified: `module@function/arity`)
+- The source file path and line number
+- The frame size (bytes used on the actor stack at that point)
+- The return address slot offset within the frame
+
+The runtime uses the SFT — not DWARF — as the primary unwinding source. The SFT is always present in both debug and release builds. DWARF debug information, if present, may supplement the SFT with local variable values in debug mode.
+
+**Unwind Report Format**
+
+The report is a self-contained text block designed to be both human-readable and parseable by an LLM or automated tool. The format is:
+
+```
+=== Silica Actor Failure ===
+actor_id:     <integer id>
+agent_type:   <atom>
+behavior:     <module>@<function>/<arity>
+message_seq:  <monotonic message counter for this actor>
+reason:       <failure_reason atom> [— <supplemental detail>]
+fault_addr:   <hex address>  (trap path only; omitted on orderly path)
+
+stack_trace:  (most recent call first)
+  [0]  <module>@<function>/<arity>
+       at <source_file>:<line>
+  [1]  <module>@<function>/<arity>
+       at <source_file>:<line>
+  ...
+  [N]  <runtime dispatch frame — omitted from user-visible trace>
+
+supervisor:   <actor_id> (type: <agent_type>) | none
+
+region_dumps:
+  [0]  region:<id>  <n> bytes captured of <total> bytes  [MTE tags included]
+       0000:  01 02 03 04 05 06 07 08  09 0a 0b 0c 0d 0e 0f 10  |................|  [tags: 5 5 5 5 5 5 5 5]
+       0010:  ...
+  [1]  region:<id>  <n> bytes captured of <total> bytes  [MTE tags included]
+       ...
+=== End Silica Actor Failure ===
+```
+
+Rules:
+
+- Every labeled field appears on its own line with a fixed-width label followed by `:` and two spaces.
+- Each stack frame occupies two lines: the `[N]  module@fn/arity` line and an indented `at file:line` line.
+- The `[runtime dispatch frame]` sentinel marks the boundary between user frames and runtime internals; the runtime frames themselves are not shown.
+- `reason` is one of the variants of the inline sum type defined in §15.4.11.2: `:normal | :language_error | :memory_fault | (:explicit, atom) | :unknown`. A dash-separated detail string may follow for additional context (e.g. `memory_fault — MTE tag mismatch at 0x0000_7fff_dead_beef`).
+- `fault_addr` is present only on the trap path; it is omitted (not shown as zero) on the orderly path.
+- `region_dumps` appears only when `FailureReporter.region_dump_limit()` returns a value greater than zero (§15.4.13.4). One entry per region handle the actor held at time of death. Each entry shows up to `region_dump_limit()` bytes. On AArch64 with MTE, the tag for each 16-byte granule is appended as `[tags: N N N ...]` (one nibble per granule, decimal). On x86-64 the tag annotation is absent.
+- The delimiters `=== Silica Actor Failure ===` and `=== End Silica Actor Failure ===` are literal strings, enabling reliable extraction from log streams.
+
+**Example**
+
+```
+=== Silica Actor Failure ===
+actor_id:     42
+agent_type:   :counter_worker
+behavior:     counter_module@counter_handler/2
+message_seq:  17
+reason:       memory_fault — MTE tag mismatch at 0x0000_7fff_dead_beef
+fault_addr:   0x0000_7fff_dead_beef
+
+stack_trace:  (most recent call first)
+  [0]  counter_module@process_value/1
+       at src/counter_module.silica:87
+  [1]  counter_module@counter_handler/2
+       at src/counter_module.silica:42
+  [runtime dispatch frame — omitted]
+
+supervisor:   7 (type: :root_supervisor)
+=== End Silica Actor Failure ===
+```
+
+**Debug vs Production**
+
+| Mode | Frame detail | Local variables |
+|------|-------------|-----------------|
+| Debug | Full (all frames, file + line always) | Yes, if DWARF present |
+| Production | Full (SFT always present) | No |
+
+In both modes the report is always produced; there is no configuration to suppress it. A failure with no diagnostic output is a runtime defect.
+
+**Delivery**
+
+All unwind reports are delivered to the root `FailureReporter` actor (§15.4.13.4) by calling `handle_report` with the formatted report string. The `FailureReporter` implementation decides the final destination (stderr, file, remote sink, etc.). There is no special case for root actors vs. supervised actors — every report takes the same path.
+
+There is no separate "runtime log" destination. The report travels with the failure notification or goes to stderr; it is not emitted to any third channel.
+
+---
+
+#### 15.4.7 Memory Isolation
+
+##### 15.4.7.1 Per-Actor Stacks
+
+Actor stacks are isolated by construction (§15.1.2.2). One actor's mutator cannot address another actor's stack without going through the runtime's message-passing mechanism. MTE tags enforce this at the hardware level.
+
+Stacks grow on demand; there is no fixed limit that triggers a classical "stack overflow" fault. If host memory is exhausted, the result is an out-of-memory condition on the growth path — a resource failure handled separately from a tag-mismatch trap.
+
+##### 15.4.7.2 Guard Pages and MTE for Other Memory
+
+Guard pages and MTE tag mismatches are the primary mechanism for containing overruns in **bounded** memory (region-backed buffers, runtime metadata, fixed allocations). These complement flexible actor stacks and are the mechanism that makes §15.4.4 containment possible for those faults.
+
+##### 15.4.7.3 Message Passing and Ownership
+
+Messages passed between actors must be values that the runtime can safely copy or move into a recipient's mailbox:
+
+- **Copy semantics** (preferred): plain data values copied at send time; sender and receiver are fully independent.
+- **Immutable shared buffers**: allowed with explicit ownership rules defined in the region system (§12).
+- **Region handles**: moving a region handle via a message transfers ownership (§15.1.1.1). The sender loses access after the send.
+
+Values that cannot be safely transferred (e.g. certain unresolved region handles) must be represented as a summary or redacted form in messages. For failure payloads specifically, region handle contents are captured as binary dumps by the runtime before region reclamation and delivered via `FailureReporter.handle_report` (§15.4.13.6); region handles themselves are never placed in failure notification fields.
+
+---
+
+#### 15.4.8 Supervisor Actors
+
+##### 15.4.8.1 Supervisor as an Actor Implementing the Supervisor Trait
+
+A **supervisor** is a Silica actor whose module implements the `Supervisor` trait (§15.4.13). The trait is how the programmer defines the supervisor's unique behavior — the restart policy, child specifications, and failure handling logic. It also has state, a behavior function, and a standard mailbox for ordinary messages.
+
+What the runtime provides to any actor implementing `Supervisor`:
+
+1. The ability to call `spawn_linked()` to create children, whose `actor_ref`s are retained in supervisor state.
+2. Automatic delivery of exit notifications for linked children to the **supervision ingress** (§15.4.9).
+3. Draining of the supervision ingress before the standard mailbox each scheduling turn.
+
+A supervisor may itself be supervised (nested trees). Having one supervisor does not prevent an actor from supervising others.
+
+##### 15.4.8.2 Single Supervisor Per Child
+
+Each child actor has **at most one** supervisor — the actor that called `spawn_linked()` to create it. This simplifies failure delivery addressing and matches the single-parent supervision tree model (cf. OTP).
+
+An actor that has no supervisor is a **root actor**. When a root actor dies, the unwind report (§15.4.6.4) is written to stderr.
+
+##### 15.4.8.3 Spawning Linked Children (`spawn_linked`)
+
+```
+spawn_linked(initial_state, behavior_fn, agent_type: atom [, core_id]) -> actor_ref proc[concurrency]
+```
+
+`spawn_linked` is an intrinsic (like `spawn`) that atomically:
+
+1. Creates the child actor with the given initial state and behavior function.
+2. Establishes a **bidirectional link** between the calling actor (the supervisor) and the child in runtime metadata.
+3. Records `agent_type` in the child's runtime metadata — a static atom identifying the child's role, used in exit notifications (§15.4.11.1) so the supervisor can branch policy without inspecting opaque state.
+
+`spawn_linked` must be called from within an actor behavior function (where `self()` is defined). Calling it from outside an actor context is a compile-time error.
+
+The child's initial state does **not** need to contain the supervisor's `actor_ref`. The link is entirely runtime-managed.
+
+**Atomic spawn-and-link**: The link is established before the child's first message is processed, eliminating the race window that would exist if `spawn` and a separate `link` call were used.
+
+```silica
+fn supervisor_behavior(msg: supervisor_msg, state: supervisor_state) -> (:no_reply, supervisor_state) {
+    sequence proc[concurrency]
+        case msg of {
+            :start_children -> {
+                child: actor_ref <- spawn_linked({ counter: 0 }, child_behavior, :counter_worker);
+                new_state: supervisor_state <- add_child(state, child);
+                (:no_reply, new_state)
+            }
+            _: supervisor_msg -> (:no_reply, state)
+        };
+    produces pure (:no_reply, state) end
+}
+```
+
+##### 15.4.8.4 Exit Propagation
+
+Links are bidirectional. If the supervisor dies, the runtime delivers exit signals to all of its linked children. Children that do not themselves trap exits (i.e. are not supervisors) terminate on receipt of an exit signal. This enables cascading subtree shutdown when a supervisor stops.
+
+##### 15.4.8.5 Post-Spawn Linking (`link`)
+
+```
+link(target: actor_ref) -> :ok  proc[concurrency]
+```
+
+Establishes a bidirectional link between the calling actor and `target` after both are already running. The semantics are identical to the link established by `spawn_linked`: if either actor subsequently dies, the other receives an exit signal.
+
+**Rules**:
+
+- If `target` is already dead when `link` is called, the calling actor receives an exit notification immediately — it does not silently succeed.
+- `link` is idempotent: calling it multiple times between the same pair of actors has the same effect as calling it once.
+- `link` may only be called from within an actor behavior function.
+- A supervisor actor receiving an exit signal via a `link`-established link processes it through the supervision ingress (§15.4.9), identical to `spawn_linked`-established links.
+- A non-supervisor actor receiving an exit signal from a linked actor terminates with the linked actor's `failure_reason` as its own exit reason.
+
+##### 15.4.8.6 Monitors (`monitor`, `demonitor`)
+
+```
+monitor(target: actor_ref) -> monitor_ref  proc[concurrency]
+demonitor(ref: monitor_ref) -> :ok         proc[concurrency]
+```
+
+A monitor is a **unidirectional** observation: the monitoring actor is notified when the monitored actor dies, but the reverse is not true. The monitored actor is unaffected if the monitoring actor dies.
+
+`monitor_ref` is an opaque, non-transferable handle valid only in the actor that created it.
+
+**`monitor` rules**:
+
+- Returns a `monitor_ref` immediately.
+- If `target` is already dead when `monitor` is called, a `DOWN` message is delivered to the calling actor's standard mailbox immediately with `failure_reason: :noproc`.
+- When `target` subsequently dies, the runtime delivers a `DOWN` message to the monitoring actor's **standard mailbox** (not the supervision ingress).
+- Multiple monitors on the same target are independent: each produces its own `DOWN` message and has its own `monitor_ref`.
+
+**`DOWN` message format** (delivered to standard mailbox):
+
+```
+(:down, monitor_ref, actor_ref, failure_reason)
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `:down` | atom | Message discriminator. |
+| `monitor_ref` | `monitor_ref` | The reference returned by the `monitor` call that established this observation. |
+| `actor_ref` | `actor_ref` | The ref of the actor that died. |
+| `failure_reason` | `failure_reason` | The exit reason (§15.4.11.2). `:noproc` if the actor was already dead at monitor creation time. |
+
+**`demonitor` rules**:
+
+- Cancels the monitor identified by `ref`; no further `DOWN` messages are delivered for it.
+- Safe to call after the monitored actor has already died (idempotent for already-fired monitors).
+- Safe to call with a `monitor_ref` that was never created by the calling actor: raises `actor_not_found`.
+
+##### 15.4.8.7 Links vs. Monitors — When to Use Each
+
+| | Link (`spawn_linked` / `link`) | Monitor |
+|---|---|---|
+| Direction | Bidirectional | Unidirectional |
+| Effect on observer if target dies | Observer also exits (unless supervisor) | Observer receives `DOWN` message only |
+| Effect on target if observer dies | Target also exits (unless supervisor) | None |
+| Typical use | Supervisor–child relationships | Client observing a server; one-shot `call` with death detection |
+
+---
+
+#### 15.4.9 High-Priority Supervision Ingress
+
+##### 15.4.9.1 Motivation
+
+Failure notifications from supervised children must reach the supervisor **ahead of** any accumulated backlog of ordinary `cast` / `call` traffic. Placing failure notifications on the supervisor's standard FIFO mailbox (§16.2.2) risks unbounded delay behind routine messages.
+
+##### 15.4.9.2 Dedicated Ingress Channel
+
+Each supervisor actor maintains a **supervision ingress** — a separate, bounded-priority queue distinct from its standard mailbox. The runtime drains this queue **before** delivering messages from the standard mailbox on each scheduling turn.
+
+| Channel | Contents | Priority |
+|---------|----------|----------|
+| Standard mailbox | Ordinary `call()` / `cast()` messages | Normal FIFO |
+| Supervision ingress | Child failure notifications | Checked first each turn |
+
+The supervision ingress is a runtime-internal structure. It is not a second "mailbox" that user code can address directly as an `actor_ref`.
+
+**Note**: This extends the single-mailbox model described in §16.2.2. Supervisor actors have two receive channels; non-supervisor actors have only the standard mailbox (see §15.4.16.2).
+
+##### 15.4.9.3 How the Ingress is Populated
+
+The supervision ingress is populated exclusively by the **trusted runtime** — never by user-level `cast()` calls. When a linked child dies (for any reason — see §15.4.10), the runtime constructs an exit notification (§15.4.11) and enqueues it directly into the supervisor's ingress. No user code in the dying actor participates in this delivery.
+
+From the supervisor's behavior function, ingress messages appear as the first messages each scheduling turn. The behavior function pattern-matches on the exit notification type to distinguish them from ordinary messages.
+
+##### 15.4.9.4 Ordering Guarantee
+
+The runtime guarantees:
+
+- Failure notifications from a child are visible to the supervisor's behavior function before any message the child sent on its standard mailbox **after** the failure notification was enqueued.
+- Multiple children's failure notifications are delivered in ingress-arrival order (FIFO within the ingress).
+
+---
+
+#### 15.4.10 Exit Notification via Links
+
+When a linked child dies, the runtime delivers exactly **one** exit notification to the supervisor's supervision ingress. The delivery mechanism is identical regardless of how the child died — there is no separate "orderly path" and "trap path" at the notification level.
+
+##### 15.4.10.1 Unified Delivery
+
+On any child death (language-level error, hardware memory fault, explicit termination, or normal shutdown), `handle_actor_crash` or the equivalent orderly teardown path in the runtime:
+
+1. Unwinds the actor's stack (§15.4.6.4) and produces the unwind report before reclaiming the stack.
+2. Reads the child's runtime metadata: actor id, `agent_type`, failure reason, and the supervisor ref recorded at `spawn_linked` time.
+3. Constructs an exit notification (§15.4.11) from that metadata.
+4. Enqueues the notification directly into the supervisor's supervision ingress (§15.4.9).
+
+The dying actor's behavior function does **not** participate. No user code in the child sends anything.
+
+##### 15.4.10.2 Stack Growth is Not a Failure
+
+Actor stacks grow on demand without a fixed upper bound (§15.1.2.2). Stack growth — successful or in progress — is transparent to the supervision layer. The supervisor is **never** notified about stack growth events.
+
+If host memory is fully exhausted and a stack grow attempt cannot be satisfied, this is a system-level resource condition. The runtime treats it as a containment gate failure (§15.4.4 condition 4: runtime invariants cannot be guaranteed without memory) and aborts the OS process rather than delivering a per-actor exit notification.
+
+##### 15.4.10.3 Async-Signal-Safe Constraint
+
+On the trap path, `handle_actor_crash` runs after `siglongjmp` returns the runtime to the runtime's own stack — not inside the signal handler. At that point async-signal-safe constraints no longer apply, and the runtime may freely construct and enqueue the exit notification. The signal handler itself only records the fault reason and faulting address into pre-allocated async-signal-safe slots in the actor metadata.
+
+##### 15.4.10.4 Dead Supervisor
+
+If the supervisor is also dead when the notification is enqueued, the notification is silently dropped. The unwind report is written to stderr in this case.
+
+---
+
+#### 15.4.11 Failure Payload
+
+##### 15.4.11.1 Required Fields
+
+Every failure notification delivered to a supervisor's supervision ingress carries:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `child_ref` | `actor_ref` | The `actor_ref` of the child that failed. Stable for the child's lifetime; invalid after the child is dead (do not send messages to it). |
+| `failure_reason` | `failure_reason` (§15.4.11.2) | Discriminated union indicating the cause. |
+| `agent_type` | atom | A static discriminator identifying the child's behavior/role, set at spawn time and included in runtime metadata. Allows the supervisor to branch policy without decoding opaque state. |
+
+##### 15.4.11.2 Failure Reason Type
+
+The failure reason is an **inline sum type** — a built-in language construct, not defined in any module. It is written inline wherever it appears in a type signature:
+
+```
+:normal | :language_error | :memory_fault | (:explicit, atom) | :unknown
+```
+
+| Variant | Meaning |
+|---------|---------|
+| `:normal` | Actor shut down normally (shutdown message handled cleanly) |
+| `:language_error` | Language-level failure: pattern match exhaustion, type mismatch, or similar |
+| `:memory_fault` | Hardware-detected memory fault (MTE tag mismatch, guard page violation) |
+| `(:explicit, atom)` | Explicit termination with a caller-supplied reason atom |
+| `:unknown` | Runtime could not determine the reason |
+
+**Note**: `:oom` is intentionally absent. Actor stacks grow without bound (§15.1.2.2); stack growth is not a failure condition and does not produce a supervision notification. System-level host memory exhaustion that prevents stack growth fails the containment gate (§15.4.4) and aborts the process rather than delivering a per-actor exit notification.
+
+##### 15.4.11.4 Unwind Report Delivery
+
+The unwind report is generated by the runtime before the actor's stack is reclaimed (§15.4.6.4). It is delivered as a `String` to the root `FailureReporter` actor via `FailureReporter.handle_report` (§15.4.13.4). It is **not** included as a field in the failure notification payload sent to the supervisor's ingress; the two channels are independent.
+
+The supervisor ingress receives the structured notification fields (§15.4.11.1, §15.4.11.2) for restart-policy decisions. The `FailureReporter` receives the human-readable report for logging and debugging.
+
+For **root actors** (no supervisor), this field has no recipient — the runtime writes the report to **stderr** instead.
+
+---
+
+#### 15.4.12 Supervisor Restart and Coordinated Child Shutdown
+
+##### 15.4.12.1 Restart Protocol
+
+When a child exits and its `child_spec` restart value permits a restart (§15.4.13.2), the runtime:
+
+1. Extracts the `start: (initial_state, start_link_fn)` pair from the stored `child_spec`.
+2. Calls `spawn_linked(initial_state, start_link_fn, agent_type)` to create the replacement child.
+3. Updates the internal child table with the new `actor_ref`; the old ref is permanently dead.
+
+`call()` or `cast()` to a dead `actor_ref` raises `actor_not_found` (§16.1.4). The supervisor's behavior function is not involved in the restart; the runtime applies the strategy from `supervisor_flags` directly.
+
+##### 15.4.12.2 Coordinated Shutdown of Live Children
+
+When a supervisor is tearing down its subtree (for restart or shutdown):
+
+1. For each live child whose `actor_ref` is held in supervisor state, the supervisor sends a shutdown message via `cast()` (or `call()` if a confirmation reply is needed).
+2. Children handle the shutdown message, perform cleanup, and stop.
+3. If `cast()` or `call()` to a child raises `actor_not_found`, the child is already dead — treat this as a successful shutdown for that child.
+4. After all children are confirmed stopped (or already dead), the supervisor may respawn them or terminate itself.
+
+This protocol is entirely in user/supervisor code using standard `cast()` / `call()`. It does not interact with the §15.4.6 trap recovery path.
+
+##### 15.4.12.3 Restart Policies
+
+Restart policies are declared via `supervisor_flags.strategy` in the `Supervisor` trait `init` callback (§15.4.13). The runtime applies the strategy when processing a child exit notification. See §15.4.13.2 for the full strategy table and `allowed_restart_count` / `restarts_time_frame` escalation rules.
+
+---
+
+#### 15.4.13 Supervisor Trait
+
+The `Supervisor` trait is the **required** mechanism for defining a supervisor actor. A module implementing `Supervisor` defines which children to start, the restart strategy, and per-child restart behaviour. The runtime uses the values returned from `init` to spawn declared children and enforce restart policy.
+
+##### 15.4.13.1 Required Callback
+
+```silica
+trait Supervisor {
+    fn init(self) -> (supervisor_flags, [child_spec]);
+}
+```
+
+`init` is called once when the supervisor actor starts. It returns the supervisor's restart strategy and the list of children to start. The runtime spawns each child in the returned list via `spawn_linked` and stores the resulting `actor_ref` values internally.
+
+##### 15.4.13.2 Supporting Types
+
+```
+supervisor_flags ::= {
+    strategy:              restart_strategy,
+    allowed_restart_count: int,
+    restarts_time_frame:   int              -- seconds
+}
+```
+
+```
+restart_strategy ::= :one_for_one | :one_for_all | :rest_for_one
+```
+
+| Strategy | Behaviour |
+|----------|-----------|
+| `:one_for_one` | Restart only the failed child. |
+| `:one_for_all` | Restart all children when any one fails. |
+| `:rest_for_one` | Restart the failed child and all children started after it in declaration order. |
+
+If the number of restarts within `restarts_time_frame` seconds exceeds `allowed_restart_count`, the supervisor itself terminates, propagating the failure to its own supervisor (if any) via the link established at its spawn.
+
+```
+child_spec ::= {
+    id:           atom,
+    agent_type:   atom,
+    start:        (initial_state, start_link_fn),
+    restart:      :permanent | :temporary | :transient,
+    shutdown:     int   -- 0 = immediate kill; >0 = milliseconds to wait
+}
+```
+
+| `restart` value | Meaning |
+|-----------------|---------|
+| `:permanent` | Always restart, regardless of exit reason. |
+| `:temporary` | Never restart. |
+| `:transient` | Restart only if the child exited with a reason other than `:normal`. |
+
+`shutdown` controls how the runtime stops a live child before replacing it:
+- `0` — kill immediately without waiting.
+- `> 0` — send a shutdown signal, then wait up to that many milliseconds; kill if the child has not stopped by then.
+
+##### 15.4.13.3 Dynamic Children
+
+For children not declared in `child_spec` (i.e. spawned in response to runtime events), the supervisor may call `spawn_linked` directly (§15.4.8.3). Dynamic children are not subject to the restart policy; the supervisor's behavior function handles their exit notifications manually.
+
+##### 15.4.13.4 FailureReporter Trait
+
+`FailureReporter` is a **root trait** — it defines the system-wide delivery point for all unwind reports, analogous to OTP's Logger. There is one root `FailureReporter` actor per system, alongside the root supervisor actor.
+
+```silica
+trait FailureReporter {
+    fn region_dump_limit() -> int;
+    fn handle_report(report: String, region_dumps: [(atom, Bytes)]) -> :ok;
+}
+```
+
+- `region_dump_limit` — required; returns the maximum number of bytes to capture per region. `0` disables region dumps entirely. The runtime calls this once at startup and caches the result.
+- `handle_report` — required; called by the runtime for every actor death. `report` is the fully-formatted unwind report string (§15.4.6.4), including the hex dump section when region dumps are enabled. `region_dumps` is a list of `(region_id, raw_bytes)` pairs — one per region handle the actor held — delivering the same data as raw `Bytes` for programmatic processing. On AArch64 with MTE the raw bytes include the tag granule data appended after the memory data (see §15.4.13.6). On x86-64 the tag section is absent.
+
+**Rules**:
+
+- Every unwind report generated by the runtime is delivered to the root `FailureReporter` actor via `handle_report`. There is no distinction between supervised and unsupervised actors at the delivery level.
+- Region dumps are captured by the runtime before the dying actor's regions are reclaimed. The supervisor ingress receives only structured notification fields (§15.4.11); bulk region data is never placed on the supervisor ingress.
+- The root `FailureReporter` actor must be started before any other actor in the system. If no `FailureReporter` actor is running when a report is generated, the runtime falls back to writing the report to **stderr** with an empty region dump list.
+- `handle_report` must not block indefinitely. A slow or stuck `FailureReporter` delays report delivery but does not affect actor restart logic, which proceeds independently via the supervisor ingress.
+
+##### 15.4.13.5 FFI Fault Containment
+
+A fault that occurs inside a foreign (FFI) call is contained using platform hardware rather than the SFT-based unwind path, because foreign frames have no SFT entries and MTE tags are not maintained by foreign code.
+
+**x86-64 — Memory Protection Keys (MPK)**
+
+Available on Intel Skylake+ and AMD Zen 2+. The runtime uses a dedicated protection key for all Silica actor stacks and managed regions. The `PKRU` register (written with a single `wrpkru` instruction from userspace, ~20 cycles, no syscall) revokes access to that key before a foreign call and restores it on return.
+
+Protocol for each FFI call site:
+1. `wrpkru` — revoke read/write access to the Silica protection key.
+2. Call foreign function.
+3. If foreign code accesses any Silica-managed page → synchronous `SIGSEGV` with fault address, caught by the containment gate signal handler.
+4. Signal handler: generate unwind report (foreign frames omitted; the report notes the fault occurred in an FFI call), deliver via `FailureReporter.handle_report`, `siglongjmp` to recovery point.
+5. On clean return: `wrpkru` — restore access.
+
+CET Shadow Stack (Intel Tiger Lake+, AMD Zen 4+) is additionally enabled where available: return address corruption by foreign code is detected as a `#CP` fault before control is transferred.
+
+**AArch64 — Thread Isolation**
+
+AArch64 has no userspace memory-key primitive equivalent to MPK. FFI calls are dispatched to a dedicated **FFI worker thread** per actor. The calling actor blocks until the thread completes or faults.
+
+Protocol:
+1. Actor enqueues the FFI call and blocks on its mailbox.
+2. FFI worker thread calls the foreign function.
+3. If the thread faults → `SIGSEGV`/`SIGBUS` is delivered to the FFI thread; its signal handler generates the unwind report (foreign frames omitted) and notifies the blocked actor with a `(:ffi_fault, fault_addr)` result.
+4. Actor receives the fault result, treats it as a language-level error, and enters the standard exit path (§15.4.10.1).
+5. MTE catches any foreign access to Silica-tagged heap memory with wrong tags, producing a synchronous fault on the FFI thread.
+
+PAC-signed return addresses in Silica frames are never on the FFI thread's stack, so return address corruption by foreign code cannot propagate into Silica frames.
+
+**Unwind report for FFI faults**
+
+The `reason` field is `:memory_fault` (or `:language_error` if the fault was a language-level check triggered by the foreign call result). The `stack_trace` notes the FFI boundary:
+
+```
+  [0]  <ffi call — foreign frames omitted>
+       at src/my_module.silica:42
+  [1]  my_module@handle_msg/2
+       at src/my_module.silica:30
+  [runtime dispatch frame — omitted]
+```
+
+**Limits**
+
+- Only 16 MPK protection keys are available system-wide on x86-64; the runtime uses one for all Silica regions.
+- AArch64 thread isolation adds one thread per actor that makes FFI calls; the FFI thread is pooled where possible.
+- Faults in foreign code that corrupt the FFI thread's own stack beyond recovery abort the process after delivering the unwind report.
+
+##### 15.4.13.6 Region Dump Format
+
+When `FailureReporter.region_dump_limit()` returns a value greater than zero, the runtime captures all region handles held by the dying actor before their memory is reclaimed.
+
+**`Bytes` layout in `region_dumps`**
+
+Each `Bytes` value in the `region_dumps` list delivered to `handle_report` has the following layout:
+
+```
+[ memory data: N bytes ][ tag data: N/16 bytes (AArch64 MTE only) ]
+```
+
+- `N` is `min(region_dump_limit(), actual_region_size)` rounded down to the nearest 16-byte granule boundary.
+- Tag data is present only on AArch64 with MTE enabled. Each byte of tag data encodes one MTE tag nibble (0x0–0xF) for the corresponding 16-byte granule of memory data. Tag data is absent on x86-64; the `Bytes` value contains only the memory data.
+- The `atom` key in each `(atom, Bytes)` pair is a runtime-assigned region identifier of the form `:region_N` where N is a monotonically increasing integer assigned at region creation time.
+
+**Hex dump in the report string**
+
+The `region_dumps` section of the unwind report string (§15.4.6.4) renders each region as a classic hex dump with an ASCII column, with MTE tags appended per row on AArch64:
+
+```
+  [0]  region:3  64 bytes captured of 4096 bytes  [MTE tags included]
+       0000:  48 65 6c 6c 6f 20 57 6f  72 6c 64 0a 00 00 00 00  |Hello Wo rld.....|  [tags: 5 5 5 5 5 5 5 5]
+       0010:  ...
+```
+
+Each row covers 16 bytes. The tag annotation lists the MTE tag (decimal nibble) for each byte of the row's granule — all 16 bytes of a granule share one tag, so 16 bytes per row produces one tag value per row. On x86-64 the `[tags: ...]` annotation is omitted.
+
+---
+
+#### 15.4.14 What Crash Containment Does NOT Guarantee
+
+The following conditions are **not recoverable** via actor-level containment and will terminate the OS process:
+
+- Bugs in the trusted runtime itself.
+- Corruption of scheduler run queues or the actor registry.
+- Faults occurring inside critical runtime sections (§15.4.2).
+- Control-flow corruption (e.g. corrupted return addresses, PAC authentication failure).
+- Kernel-delivered fatal signals unrelated to memory tagging (SIGKILL, SIGABRT from external sources, etc.).
+- Hardware faults on the signal handling path itself.
+
+This is the same philosophy as BEAM: recovery is permitted only when the analogue of the VM/runtime is trustworthy; otherwise the whole system stops.
+
+---
+
+#### 15.4.15 Development and Production Modes
+
+##### 15.4.15.1 Development / Debug Mode
+
+In debug builds the runtime should:
+
+- **Abort** the entire process on any fault, regardless of the containment gate.
+- Produce a full unwind report (§15.4.6.4) before aborting, including local variable values if DWARF debug info is present.
+- Deliver the report via `FailureReporter.handle_report` (§15.4.13.4); fall back to stderr if no `FailureReporter` actor is running.
+
+Rationale: in development, crashing immediately and noisily reveals bugs faster than silently recovering.
+
+##### 15.4.15.2 Production Mode
+
+In release builds the runtime should:
+
+- Apply the containment gate (§15.4.4) and recover single-actor faults where invariants hold.
+- Produce a full unwind report (§15.4.6.4) for every actor death (whether contained or process-fatal), without local variable values.
+- Deliver the report via `FailureReporter.handle_report` (§15.4.13.4); fall back to stderr if no `FailureReporter` actor is running.
+- Abort the process when the gate fails, after delivering the unwind report.
+
+---
+
+#### 15.4.16 Conflicts with the Current Specification
+
+The following conflicts exist between this section and other parts of `silica-specification.md` and must be resolved before implementation.
+
+##### 15.4.16.1 `recv()` in §16.2.8 (pre-existing error)
+
+§16.2.8 contains an example calling `recv()` directly in user code, which contradicts §16.2.1. This is a pre-existing error unrelated to this section; it should be corrected separately.
+
+---
+
+#### 15.4.17 Open Questions and Deferred Decisions
+
+No open items. All previously deferred decisions have been resolved and their specifications incorporated into §15.4.
+
+---
+
+#### 15.4.18 Summary
+
+| Layer | Mechanism | Guarantee |
+|-------|-----------|-----------|
+| Language | No UB, no raw pointers | No silent corruption possible from user code |
+| Hardware (MTE) | Tag mismatch → synchronous SIGSEGV/SIGBUS | Memory misuse becomes deterministic signal |
+| Signal handler | Containment gate (§15.4.4) | Gate passes → single actor dies, process continues; gate fails → process aborts |
+| Recovery (`siglongjmp`) | Non-local jump to per-actor recovery point | Mutator torn down cleanly; runtime stack intact |
+| Actor isolation | Per-actor stacks (§15.1.2.2) | One actor's stack cannot corrupt another's; stack growth is transparent |
+| Links (`spawn_linked`) | Bidirectional runtime link at spawn time | Supervisor notified of every child death regardless of cause; cascading shutdown on supervisor exit |
+| Supervision ingress | Dedicated high-priority channel per supervisor | Exit notifications arrive before ordinary `call`/`cast` backlog |
+| Unified exit delivery | Runtime constructs and enqueues notification; no user code in dying actor | All failure causes covered uniformly; no double-notification race |
+| Stack unwind (§15.4.6.4) | SFT-driven unwind before stack reclaim | Human-readable + LLM-parseable report delivered to `FailureReporter` (§15.4.13.4) |
+| Policy | Supervisor behavior function via required `Supervisor` trait (§15.4.13) | Restart, shutdown, and escalation logic in user space |
+
+---
+
 ## 16. Message Passing
 
 ### 16.1 Call and cast semantics
@@ -8481,7 +9309,7 @@ recv() -> Msg proc[concurrency]  // Runtime internal function
 User behavior functions receive messages as parameters rather than calling `recv()` directly. **Outbound messaging** (`call`, `cast`, etc.) is **allowed** inside the behavior body when effects permit; only **reception** is reserved to the runtime loop (see §15.1.2).
 
 #### 16.2.2 Mailbox Semantics
-Each actor has a single mailbox that queues incoming messages:
+Most actors have exactly one FIFO mailbox that queues incoming messages. Supervisor actors (those implementing the `Supervisor` trait) additionally have a supervision ingress — a high-priority channel drained before the standard mailbox each scheduling turn. See §15.4.9.
 
 ```
 Mailbox State:
@@ -8672,13 +9500,13 @@ error: cannot call(self(), ...)
 
 **Programmer Perspective**: Migrations appear as transparent core movements. The behavior function continues processing messages normally; state transfers are handled by the runtime.
 
-### 16.2.7 Supervisor Actors (Future Definition)
+### 16.2.7 Supervisor Actors
 
-**Concept**: Supervisor actors monitor and manage child actors. They are implemented using **traits** (see §3.4.8, Trait Declarations).
+**Concept**: Supervisor actors monitor and manage child actors. A supervisor is an ordinary Silica actor (see §15.4.8.1) that implements the required `Supervisor` trait (§15.4.13) — the trait is the mechanism by which the programmer defines restart policy and child specifications.
 
-**Status**: Supervisor trait definitions and supervisor patterns are not yet fully specified. They will be defined in a future expansion of this specification (§15.4, Supervision and Fault Tolerance).
+**Full specification**: See **§15.4 Supervision and Fault Tolerance**, which covers supervisor registration (§15.4.8), the high-priority supervision ingress (§15.4.9), failure notification paths (§15.4.10), failure payload format (§15.4.11), restart and shutdown protocols (§15.4.12), and the `Supervisor` trait (§15.4.13).
 
-**Current Recommendation**: Applications should implement custom supervisor patterns using regular actors and traits until the formal supervisor subsystem is defined.
+**Note on mailbox model**: Supervisor actors have two receive channels — the standard mailbox (§16.2.2) and a supervision ingress (§15.4.9.2). The runtime drains the supervision ingress before the standard mailbox on each scheduling turn. Non-supervisor actors have only the standard mailbox.
 
 ### 16.2.8 Backpressure and Mailbox Management
 
