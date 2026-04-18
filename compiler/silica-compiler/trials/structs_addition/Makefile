@@ -27,18 +27,24 @@ ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
+TRIAL_DIR := $(notdir $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
+MSG_PREFIX := $(TRIAL_DIR)/
+
+
 .DEFAULT_GOAL := all
-.PHONY: all clean assembly objects executables integrate help
+.PHONY: all clean assembly objects executables integrate help silica.config
+
+silica.config:
+	@cd "$(MAKEFILE_DIR)" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
 
 all: executables
 
 # Populate silica.config from *.silica, then run compiler (cwd = this trial dir)
-assembly:
+assembly: silica.config
 	@echo "Compiling with silica-compiler..."
-	@cd "$(MAKEFILE_DIR)" && ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true
 	@cd "$(MAKEFILE_DIR)" && test -s silica.config || (echo "Error: no .silica files in $(MAKEFILE_DIR)"; exit 1)
 	@cd "$(MAKEFILE_DIR)" && "$(SILICA_COMPILER)"
-	@echo "✅ Assembly generated"
+	@echo "✅ $(MSG_PREFIX)Assembly generated"
 
 # Stage 2: Assemble .sams -> .o (no Rust code, clang assembler only)
 objects: assembly
@@ -55,39 +61,41 @@ executables: objects
 		[ -f "$$o" ] || continue; \
 		base=$${o%.o}; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) && echo "  ✅ Built $$base (rust-lld)"; \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base (rust-lld)"; \
 		else \
-			$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) && echo "  ✅ Built $$base (clang)"; \
+			$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base (clang)"; \
 		fi; \
 	done
 
 # integrate: compile .silica per silica.config, diff .sams vs .ascomp, run binaries, diff .sout vs .scout
-integrate:
-	@failed=0; \
-	cd "$(MAKEFILE_DIR)" && { \
-	ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true; \
+integrate: silica.config
+	@cd "$(MAKEFILE_DIR)" && { \
+	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \
 		echo "SKIP: no silica.config"; \
+		printf '%d %d\n' 0 0 > .integrate_counts; \
 		exit 0; \
 	fi; \
 	rm -f *.sams; \
 	echo "Compiling with silica-compiler..."; \
 	if ! "$(SILICA_COMPILER)"; then \
 		echo "FAIL: Compilation failed"; \
+		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
 	for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
 		if [ ! -f "$$base.ascomp" ]; then \
-			echo "❌❌ $$base has no .ascomp file"; \
-			failed=1; \
+			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file"; \
+			ko=$$((ko + 1)); failed=1; \
 		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
-			echo "❌❌ $$base .sams differs from .ascomp"; \
+			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
 			diff -Bw "$$sams" "$$base.ascomp" || true; \
-			failed=1; \
+			ko=$$((ko + 1)); failed=1; \
 		else \
-			echo "✅✅ $$base assembly matches .ascomp"; \
+			echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
+			ok=$$((ok + 1)); \
 		fi; \
 	done; \
 	for sams in *.sams; do \
@@ -113,18 +121,21 @@ integrate:
 			{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
 			if [ -f "$$base.scout" ]; then \
 				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
-					echo "❌❌ $$base .sout differs from .scout"; \
+					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
 					diff -Bw "$$base.sout" "$$base.scout" || true; \
-					failed=1; \
+					ko=$$((ko + 1)); failed=1; \
 				else \
-					echo "✅✅ $$base output matches .scout"; \
+					echo "✅✅ $(MSG_PREFIX)$$base output matches .scout"; \
+					ok=$$((ok + 1)); \
 				fi; \
 			else \
-				echo "❌❌ $$base has no .scout file"; \
-				failed=1; \
+				echo "❌❌ $(MSG_PREFIX)$$base has no .scout file"; \
+				ko=$$((ko + 1)); failed=1; \
 			fi; \
 		fi; \
 	done; \
+	[ "$$failed" -ne 0 ] && [ "$$ko" -eq 0 ] && ko=$$((ko + 1)); \
+	printf '%d %d\n' "$$ok" "$$ko" > .integrate_counts; \
 	exit $$failed; }
 
 clean:
@@ -132,8 +143,8 @@ clean:
 		[ -f "$$s" ] || continue; \
 		rm -f $${s%.sams}; \
 	done
-	@cd "$(MAKEFILE_DIR)" && rm -f *.sams *.o
-	@echo "✅ Clean complete"
+	@cd "$(MAKEFILE_DIR)" && rm -f *.sams *.o silica.config .integrate_counts
+	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
 	@echo "smakefile - Silica assembly build (no Rust code)"

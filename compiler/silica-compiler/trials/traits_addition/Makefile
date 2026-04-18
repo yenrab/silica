@@ -1,11 +1,16 @@
 # Trait trials: trait sources under traits/ have no main(). Only entry-point units are linked and run.
-# Uses checked-in silica.config (lists traits/*.silica + root entry *.silica).
+# Each traits/*.silica may carry an empty sidecar traits/<Stem>.no_golden_fail so any golden-based harness skips it.
+# silica.config lists traits/*.silica + root entry *.silica (refreshed via find before compile / integrate).
 # Default `make` / `make all`: compile, assemble with $(ASSEMBLER), link with rust-lld or clang.
 # `make compile`: silica-compiler only (emit .sams).
 # `make integrate`: compile, assemble, .sams vs .ascomp diffs, link, run binaries, .sout vs .scout diffs.
 
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 SILICA_COMPILER := $(THIS_DIR)../../src/silica-compiler
+
+TRIAL_DIR := $(notdir $(patsubst %/,%,$(THIS_DIR)))
+MSG_PREFIX := $(TRIAL_DIR)/
+
 
 RUST_SYSROOT := $(shell rustc --print sysroot 2>/dev/null)
 RUST_TARGET := $(shell rustc -vV 2>/dev/null | sed -n "s/^host: *//p")
@@ -19,14 +24,14 @@ ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
-# Entry points: root-level files in silica.config (not under traits/)
-ENTRYPOINTS := $(patsubst %.silica,%,$(filter-out traits/%,$(shell cat silica.config | grep -v '^$$')))
+.PHONY: all compile integrate clean help silica.config
 
-.PHONY: all compile integrate clean help
+silica.config:
+	@cd "$(THIS_DIR)" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
 
 .DEFAULT_GOAL := all
 
-compile:
+compile: silica.config
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sams traits/*.sams && \
 	echo "Compiling with silica-compiler..." && \
@@ -34,15 +39,16 @@ compile:
 		echo "FAIL: Compilation failed"; \
 		exit 1; \
 	fi && \
-	echo "✅ Assembly generated (.sams)"
+	echo "✅ $(MSG_PREFIX)Assembly generated (.sams)"
 
 all: compile
 	@failed=0; \
 	cd "$(THIS_DIR)" && \
-	for base in $(ENTRYPOINTS); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+		base=$${line%.silica}; \
 		sams="$$base.sams"; \
 		if [ ! -f "$$sams" ]; then \
-			echo "❌ $$base: missing $$sams"; \
+			echo "❌ $(MSG_PREFIX)$$base: missing $$sams"; \
 			failed=1; \
 			continue; \
 		fi; \
@@ -56,7 +62,8 @@ all: compile
 		echo "Assembling $$sams..."; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj" || { failed=1; break; }; \
 	done; \
-	for base in $(ENTRYPOINTS); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+		base=$${line%.silica}; \
 		[ -f "$$base.o" ] || continue; \
 		echo "Linking $$base..."; \
 		trait_objs=""; \
@@ -73,16 +80,17 @@ all: compile
 		echo "FAIL: Assemble/link failed"; \
 		exit 1; \
 	fi; \
-	echo "✅ Linked entrypoints: $(ENTRYPOINTS)"
+	echo "✅ $(MSG_PREFIX)Linked entrypoints (root *.silica from silica.config)"
 
-integrate: compile
-	@failed=0; \
-	cd "$(THIS_DIR)" && \
-	for base in $(ENTRYPOINTS); do \
+integrate: silica.config compile
+	@cd "$(THIS_DIR)" && \
+	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+		base=$${line%.silica}; \
 		sams="$$base.sams"; \
 		if [ ! -f "$$sams" ]; then \
-			echo "❌❌ $$base: missing $$sams"; \
-			failed=1; \
+			echo "❌❌ $(MSG_PREFIX)$$base: missing $$sams"; \
+			ko=$$((ko + 1)); failed=1; \
 			continue; \
 		fi; \
 		echo "Assembling $$sams..."; \
@@ -95,25 +103,28 @@ integrate: compile
 		echo "Assembling $$sams..."; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj" || { failed=1; break; }; \
 	done; \
-	for base in $(ENTRYPOINTS); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+		base=$${line%.silica}; \
 		sams="$$base.sams"; \
 		if [ ! -f "$$sams" ]; then \
-			echo "❌❌ $$base: missing $$sams"; \
-			failed=1; \
+			echo "❌❌ $(MSG_PREFIX)$$base: missing $$sams"; \
+			ko=$$((ko + 1)); failed=1; \
 			continue; \
 		fi; \
 		if [ ! -f "$$base.ascomp" ]; then \
-			echo "❌❌ $$base has no .ascomp file"; \
-			failed=1; \
+			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file"; \
+			ko=$$((ko + 1)); failed=1; \
 		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
-			echo "❌❌ $$base .sams differs from .ascomp"; \
+			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
 			diff -Bw "$$sams" "$$base.ascomp" || true; \
-			failed=1; \
+			ko=$$((ko + 1)); failed=1; \
 		else \
-			echo "✅✅ $$base assembly matches .ascomp"; \
+			echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
+			ok=$$((ok + 1)); \
 		fi; \
 	done; \
-	for base in $(ENTRYPOINTS); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+		base=$${line%.silica}; \
 		[ -f "$$base.o" ] || continue; \
 		echo "Linking $$base..."; \
 		trait_objs=""; \
@@ -126,36 +137,42 @@ integrate: compile
 			$(ASSEMBLER) "$$base.o" $$trait_objs -o "$$base" $(LDFLAGS_clang) || failed=1; \
 		fi; \
 	done; \
-	for base in $(ENTRYPOINTS); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+		base=$${line%.silica}; \
 		if [ -x "$$base" ]; then \
 			{ ./"$$base" 2>&1; echo $$?; } > "$$base.sout"; \
 			if [ -f "$$base.scout" ]; then \
 				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
-					echo "❌❌ $$base .sout differs from .scout"; \
+					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
 					diff -Bw "$$base.sout" "$$base.scout" || true; \
-					failed=1; \
+					ko=$$((ko + 1)); failed=1; \
 				else \
-					echo "✅✅ $$base output matches .scout"; \
+					echo "✅✅ $(MSG_PREFIX)$$base output matches .scout"; \
+					ok=$$((ok + 1)); \
 				fi; \
 			else \
-				echo "❌❌ $$base has no .scout file"; \
-				failed=1; \
+				echo "❌❌ $(MSG_PREFIX)$$base has no .scout file"; \
+				ko=$$((ko + 1)); failed=1; \
 			fi; \
 		fi; \
 	done; \
+	[ "$$failed" -ne 0 ] && [ "$$ko" -eq 0 ] && ko=$$((ko + 1)); \
+	printf '%d %d\n' "$$ok" "$$ko" > .integrate_counts; \
 	exit $$failed
 
 clean:
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sout traits/*.sams traits/*.o *.sams && \
-	for base in $(ENTRYPOINTS); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+		base=$${line%.silica}; \
 		rm -f "$$base" "$$base.o"; \
 	done && \
-	echo "✅ Clean complete"
+	rm -f silica.config .integrate_counts && \
+	echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
 	@echo "traits_addition: multi-file trait trials; traits/*.silica are trait definitions (no main)."
-	@echo "Entrypoints (silica.config): $(ENTRYPOINTS)"
+	@echo "Entrypoints: non-traits paths in silica.config (refreshed with find before compile)."
 	@echo "  Sizeable/Scalable: single required + single impl (int64). Doubling: int64 transform."
 	@echo "  Shape: required + provided default; two impl fn area/1 (overload). combined_trait_main nests Sizeable + Doubling."
 	@echo "  PointSum: pair_sum/2 on int64 (tuple_pair_main). Labeled/ReportEcho: int64 witness + trait-on-trait echo."

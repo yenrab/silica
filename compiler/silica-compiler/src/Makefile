@@ -5,6 +5,7 @@
 #   make                        # builds emitter for default target (apple_silicon)
 #   make TARGET=esp32-s3        # builds emitter for ESP32-S3
 #   make TARGET=apple_silicon   # builds emitter for Apple Silicon
+#   make integrate              # build compiler, then `make integrate` in each trials/*/ Makefile
 
 # Target chip directory under emitter/ (override from command line)
 TARGET ?= apple_silicon
@@ -59,7 +60,12 @@ EFFECT_CHECKER_LL := $(addsuffix .ll, $(EFFECT_CHECKER_MODULES))
 # Subdirectories with Makefiles (build order respects dependencies)
 SUBDIRS := lexer parser type_checker module_checker effect_checker sir_generator emitter
 
-.PHONY: all clean executables modules subdirs help $(SUBDIRS)
+# Trials: immediate subdirs of ../trials that contain Makefile or makefile (each defines its own integrate)
+TRIALS_ROOT := ../trials
+TRIAL_MAKEFILES := $(wildcard $(TRIALS_ROOT)/*/Makefile $(TRIALS_ROOT)/*/makefile)
+TRIAL_SUBDIRS := $(sort $(foreach mf,$(TRIAL_MAKEFILES),$(notdir $(patsubst %/,%,$(dir $(mf))))))
+
+.PHONY: all clean executables modules subdirs help integrate $(SUBDIRS)
 
 .DEFAULT_GOAL := all
 
@@ -122,6 +128,16 @@ $(EXECUTABLE): $(MAIN_OBJ) $(RUNTIME_LIB)
 	@-$(LINKER_CLANG) $(MAIN_OBJ) $(RUNTIME_LIB) -o $@
 	@echo "✅ Built $(EXECUTABLE)"
 
+# Run each trial area's own integrate target (does not use ../trials/Makefile inline trial runner)
+integrate: $(EXECUTABLE)
+	@echo "Running make integrate in each subdirectory of $(TRIALS_ROOT)..."
+	@failed=0; \
+	for dir in $(TRIAL_SUBDIRS); do \
+		echo "=== $(TRIALS_ROOT)/$$dir (make integrate) ==="; \
+		$(MAKE) -C "$(TRIALS_ROOT)/$$dir" integrate TARGET=$(TARGET) || failed=1; \
+	done; \
+	exit $$failed
+
 # Clean generated files (including subdirectories)
 clean:
 	@echo "Cleaning generated files..."
@@ -155,6 +171,7 @@ help:
 	@echo "  executables      - Compile main.silica to LLVM IR"
 	@echo "  modules          - Compile lexer and parser module files to LLVM IR"
 	@echo "  clean            - Remove all generated .ll files"
+	@echo "  integrate        - Build silica-compiler, then make integrate in each $(TRIALS_ROOT)/*/ Makefile"
 	@echo "  help             - Show this help"
 	@echo ""
 	@echo "Files:"

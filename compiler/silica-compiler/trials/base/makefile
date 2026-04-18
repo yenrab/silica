@@ -8,8 +8,9 @@
 
 SILICA_COMPILER := ../../src/silica-compiler
 
-# Sources: all .silica in this directory (silica.config is generated before compile)
-CONFIG_FILES := $(shell ls -1 *.silica 2>/dev/null)
+THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+# Sources: all .silica under this trial directory (same discovery as find in assembly/integrate)
+CONFIG_FILES := $(sort $(shell cd "$(THIS_DIR)" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||"))
 EXECUTABLES := $(CONFIG_FILES:%.silica=%)
 SAMS_FILES := $(addsuffix .sams, $(EXECUTABLES))
 OBJ_FILES := $(addsuffix .o, $(EXECUTABLES))
@@ -30,17 +31,23 @@ ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
+TRIAL_DIR := $(notdir $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST))))))
+MSG_PREFIX := $(TRIAL_DIR)/
+
+
 .DEFAULT_GOAL := all
-.PHONY: all clean assembly objects executables integrate help
+.PHONY: all clean assembly objects executables integrate help silica.config
+
+silica.config:
+	@cd "$(THIS_DIR)" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
 
 all: executables
 
-# Stage 1: write silica.config from ls *.silica, then silica-compiler -> .sams
-assembly: $(CONFIG_FILES)
-	@ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true
+# Stage 1: write silica.config via find (recursive), then silica-compiler -> .sams
+assembly: silica.config $(CONFIG_FILES)
 	@echo "Compiling with silica-compiler..."
-	@$(SILICA_COMPILER)
-	@echo "✅ Assembly generated"
+	@cd "$(THIS_DIR)" && $(SILICA_COMPILER)
+	@echo "✅ $(MSG_PREFIX)Assembly generated"
 
 # Stage 2: Assemble .sams -> .o (no Rust code, clang assembler only)
 objects: $(OBJ_FILES)
@@ -54,38 +61,40 @@ executables: assembly $(OBJ_FILES)
 	@echo "Linking..."
 	@for exe in $(EXECUTABLES); do \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$exe $$exe.o $(LDFLAGS_rust-lld) && echo "  ✅ Built $$exe (rust-lld)"; \
+			$(RUST_LLD) -flavor darwin -o $$exe $$exe.o $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$exe (rust-lld)"; \
 		else \
-			$(ASSEMBLER) $$exe.o -o $$exe $(LDFLAGS_clang) && echo "  ✅ Built $$exe (clang)"; \
+			$(ASSEMBLER) $$exe.o -o $$exe $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$exe (clang)"; \
 		fi; \
 	done
 
 # integrate: compile .silica per silica.config, diff .sams vs .ascomp, run binaries, diff .sout vs .scout
-integrate:
-	@failed=0; \
-	ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true; \
+integrate: silica.config
+	@rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \
 		echo "SKIP: no silica.config"; \
+		printf '%d %d\n' 0 0 > .integrate_counts; \
 		exit 0; \
 	fi; \
 	rm -f *.sams; \
 	echo "Compiling with silica-compiler..."; \
 	if ! $(abspath $(SILICA_COMPILER)); then \
 		echo "FAIL: Compilation failed"; \
+		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
 	for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
 		if [ ! -f "$$base.ascomp" ]; then \
-			echo "❌❌ $$base has no .ascomp file"; \
-			failed=1; \
+			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file"; \
+			ko=$$((ko + 1)); failed=1; \
 		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
-			echo "❌❌ $$base .sams differs from .ascomp"; \
+			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
 			diff -Bw "$$sams" "$$base.ascomp" || true; \
-			failed=1; \
+			ko=$$((ko + 1)); failed=1; \
 		else \
-			echo "✅✅ $$base assembly matches .ascomp"; \
+			echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
+			ok=$$((ok + 1)); \
 		fi; \
 	done; \
 	for sams in *.sams; do \
@@ -111,23 +120,26 @@ integrate:
 			{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
 			if [ -f "$$base.scout" ]; then \
 				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
-					echo "❌❌ $$base .sout differs from .scout"; \
+					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
 					diff -Bw "$$base.sout" "$$base.scout" || true; \
-					failed=1; \
+					ko=$$((ko + 1)); failed=1; \
 				else \
-					echo "✅✅ $$base output matches .scout"; \
+					echo "✅✅ $(MSG_PREFIX)$$base output matches .scout"; \
+					ok=$$((ok + 1)); \
 				fi; \
 			else \
-				echo "❌❌ $$base has no .scout file"; \
-				failed=1; \
+				echo "❌❌ $(MSG_PREFIX)$$base has no .scout file"; \
+				ko=$$((ko + 1)); failed=1; \
 			fi; \
 		fi; \
 	done; \
+	[ "$$failed" -ne 0 ] && [ "$$ko" -eq 0 ] && ko=$$((ko + 1)); \
+	printf '%d %d\n' "$$ok" "$$ko" > .integrate_counts; \
 	exit $$failed
 
 clean:
-	rm -f *.sams *.o $(EXECUTABLES)
-	@echo "✅ Clean complete"
+	@cd "$(THIS_DIR)" && rm -f *.sams *.o $(EXECUTABLES) silica.config .integrate_counts
+	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
 	@echo "smakefile - Silica assembly build (no Rust code)"
@@ -143,5 +155,5 @@ help:
 	@echo "  clean       - Remove .sams, .o, executables"
 	@echo "  help        - Show this help"
 	@echo ""
-	@echo "Config: silica.config (generated from ls *.silica before compile)"
+	@echo "Config: silica.config (generated from find *.silica before compile)"
 	@echo "Linker: $(LINKER)"

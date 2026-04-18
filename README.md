@@ -212,9 +212,9 @@ make integrate
 
 Other useful targets:
 
-- `make clean` — remove generated executables, `.sams`, `.o`, `.sout` (keeps golden `.ascomp` and `.scout`).
+- `make clean` — remove generated executables, `.sams`, `.o`, `.sout`, each trial’s `silica.config`, and each trial’s `.integrate_counts` (keeps golden `.ascomp` and `.scout`).
 - `make help` — list targets and trial subdirectories.
-- `[rebuild-silica-configs.sh](compiler/silica-compiler/trials/rebuild-silica-configs.sh)` — refresh each subdir’s `silica.config` from `*.silica` without compiling.
+- `make -C compiler/silica-compiler/trials/<trial_dir> silica.config` — rebuild that trial’s `silica.config` from all `*.silica` under the directory (no compile).
 
 The trial harness assumes the same **Apple Silicon / macOS** toolchain as the self-hosted compiler build (assembly and linking use the host SDK and arm64). For details per trial, see READMEs under specific trial directories where present.
 

@@ -159,7 +159,9 @@ fn validate_export_trait_declarations(decls: ListDeclaration, current_path: stri
                     true -> (1, "E4018", dup_loc, "only one export trait declaration per module is allowed (spec 19.2.2)", "sect19.2.2");
                     false -> do
                         stem: string <- module_from_path(current_path);
-                        case strings_equal_ascii_ignore_case(tn, stem) of {
+                        // Filename stem and `export trait` identifier must match exactly (including case);
+                        // see spec §3.4.8 — differs from module-qualified `use` checks which stay ASCII case-insensitive.
+                        case tn == stem of {
                             true -> (0, "", parser_ast@zero_location(), "", "");
                             false -> do
                                 m1: string <- concat(concat("export trait name must match module (filename) ", stem), ", found ");
@@ -234,6 +236,33 @@ fn decls_have_use_for_module(decls: ListDeclaration, mod_name: string) -> bool {
     }
 }
 
+// First `use` parameter whose name equals `qmod` under ASCII case-insensitive comparison ("" if none).
+fn first_use_param_in_list_matching_module_ignore_case(params: ListParam, qmod: string) -> string {
+    case params.is_nil of {
+        true -> "";
+        false -> case strings_equal_ascii_ignore_case(params.head.name, qmod) of {
+            true -> params.head.name;
+            false -> first_use_param_in_list_matching_module_ignore_case(params.tail, qmod)
+        }
+    }
+}
+
+fn first_use_param_matching_module_ignore_case(decls: ListDeclaration, qmod: string) -> string {
+    case decls.is_nil of {
+        true -> "";
+        false -> case decls.head.tag == 2 of {
+            true -> do
+                r: string <- first_use_param_in_list_matching_module_ignore_case(decls.head.parameters, qmod);
+                case len(r) > 0 of {
+                    true -> r;
+                    false -> first_use_param_matching_module_ignore_case(decls.tail, qmod)
+                }
+            end;
+            false -> first_use_param_matching_module_ignore_case(decls.tail, qmod)
+        }
+    }
+}
+
 // `use M` brings other units into scope; M@f in M.silica is the current module (e.g. trait self-call) and does not need `use M`.
 fn qualified_module_is_current_file(qmod: string, current_path: string) -> bool {
     case len(current_path) == 0 of {
@@ -262,10 +291,32 @@ fn validate_kind4_call_module_use(expr: Expr, all_decls: ListDeclaration, curren
                     false -> case qualified_module_is_current_file(qmod, current_path) of {
                         true -> validate_expr_pair_for_qualified_uses(expr.inner, expr.right_expr, all_decls, current_path);
                         false -> do
-                            p1: string <- concat("module-qualified call ", expr.name);
-                            p2: string <- concat(p1, " requires `use ");
-                            msg: string <- concat(p2, concat(qmod, "` (spec 19.3)"));
-                            (1, "E1010", expr.location, msg, "sect19.3")
+                            matched_use: string <- first_use_param_matching_module_ignore_case(all_decls, qmod);
+                            case len(matched_use) > 0 of {
+                                true -> case matched_use == qmod of {
+                                    true -> do
+                                        p1: string <- concat("module-qualified call ", expr.name);
+                                        p2: string <- concat(p1, " requires `use ");
+                                        msg: string <- concat(p2, concat(qmod, "` (spec 19.3)"));
+                                        (1, "E1010", expr.location, msg, "sect19.3")
+                                    end;
+                                    false -> do
+                                        m_a: string <- concat("module-qualified call ", expr.name);
+                                        m_b: string <- concat(m_a, ": prefix `");
+                                        m_c: string <- concat(m_b, qmod);
+                                        m_d: string <- concat(m_c, "` does not match `use ");
+                                        m_e: string <- concat(m_d, matched_use);
+                                        msg_case: string <- concat(m_e, ";` — spell the qualified module name like the `use` import (spec 19.3)");
+                                        (1, "E1010", expr.location, msg_case, "sect19.3")
+                                    end
+                                };
+                                false -> do
+                                    p1b: string <- concat("module-qualified call ", expr.name);
+                                    p2b: string <- concat(p1b, " requires `use ");
+                                    msg_b: string <- concat(p2b, concat(qmod, "` (spec 19.3)"));
+                                    (1, "E1010", expr.location, msg_b, "sect19.3")
+                                end
+                            }
                         end
                     }
                 }

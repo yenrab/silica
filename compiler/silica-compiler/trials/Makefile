@@ -1,158 +1,65 @@
-# Makefile for Silica trials - integrate target compiles all .silica files,
-# diffs .sams vs .ascomp, runs executables, and compares output to .scout files.
+# Makefile for Silica trials — `integrate` runs each subdirectory's own Makefile
+# (messages and pass/fail rules come from those Makefiles, not from here).
 #
-# Each subdir regenerates silica.config from: ls -1 *.silica | grep '\.silica$'
-# To refresh configs without compiling: ./rebuild-silica-configs.sh
-#
-# integrate: compile all .silica in subdirs, diff .sams vs .ascomp, run each binary, diff .sout vs .scout
-# clean: remove executables, .sams, .o (keeps .scout and .ascomp)
+# integrate / clean: `make -C <trial> integrate|clean` for each immediate child with Makefile or makefile
+# To refresh only silica.config in a trial: `make -C <trial> silica.config`
 
-SILICA_COMPILER := ../src/silica-compiler
-
-# Dynamically discover all immediate subdirectories (will pick up new trials as they are added)
-SUBDIRS := $(sort $(dir $(wildcard */)))
-
-# Rust toolchain linker (rust-lld) - optional override
-RUST_SYSROOT := $(shell rustc --print sysroot 2>/dev/null)
-RUST_TARGET := $(shell rustc -vV 2>/dev/null | sed -n "s/^host: *//p")
-RUST_LLD := $(RUST_SYSROOT)/lib/rustlib/$(RUST_TARGET)/bin/rust-lld
-LINKER := $(shell test -x "$(RUST_LLD)" && echo "$(RUST_LLD)" || echo "clang")
-ASSEMBLER := clang
-
-MACOS_SDK := $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
-MACOS_MIN_VERSION ?= 26.0
-ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
-LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
-LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
+# Immediate trial subdirs that contain Makefile or makefile (GNU make finds makefile in -C dir)
+TRIAL_MAKEFILES := $(wildcard */Makefile */makefile)
+TRIAL_SUBDIRS := $(sort $(foreach mf,$(TRIAL_MAKEFILES),$(notdir $(patsubst %/,%,$(dir $(mf))))))
 
 .PHONY: integrate clean help
 
 .DEFAULT_GOAL := integrate
 
-# integrate: compile all .silica in subdirs, diff .sams vs .ascomp, run each binary, diff .sout vs .scout
+# integrate: delegate; each trial writes .integrate_counts ("<ok> <fail>" one line) for the parent to sum
 integrate:
-	@failed=0; \
-	for dir in $(SUBDIRS); do \
-		dir=$${dir%/}; \
+	@ok=0; ko=0; failed=0; \
+	for dir in $(TRIAL_SUBDIRS); do \
 		echo "=== $$dir ==="; \
-		if [ "$$dir" = "error_enforcement_addition" ]; then \
-			$(MAKE) -C $$dir || failed=1; \
-			continue; \
-		fi; \
 		if [ "$$dir" = "modules_addition" ] && [ -f "modules_addition/INTEGRATE_PENDING" ]; then \
 			echo "SKIP: modules_addition (INTEGRATE_PENDING — see modules_addition/INTEGRATE_PENDING)"; \
 			continue; \
 		fi; \
-		if [ "$$dir" = "modules_addition" ]; then \
-			$(MAKE) -C $$dir integrate || failed=1; \
+		if [ "$$dir" = "cpu_discovery_and_spawn_pinning" ] && [ -f "cpu_discovery_and_spawn_pinning/INTEGRATE_PENDING" ]; then \
+			echo "SKIP: cpu_discovery_and_spawn_pinning (INTEGRATE_PENDING — see cpu_discovery_and_spawn_pinning/README.md)"; \
 			continue; \
 		fi; \
-		if [ "$$dir" = "cpu_discovery" ] && [ -f "cpu_discovery/INTEGRATE_PENDING" ]; then \
-			echo "SKIP: cpu_discovery (INTEGRATE_PENDING — see cpu_discovery/README.md)"; \
-			continue; \
+		if $(MAKE) -C $$dir integrate; then st=0; else st=1; failed=1; fi; \
+		cf="$$dir/.integrate_counts"; \
+		if [ -f "$$cf" ]; then \
+			read n1 n2 < "$$cf" || true; \
+			ok=$$((ok + $${n1:-0})); ko=$$((ko + $${n2:-0})); \
+		elif [ "$$st" -ne 0 ]; then \
+			ko=$$((ko + 1)); \
 		fi; \
-		cd $$dir && \
-		ls -1 *.silica 2>/dev/null | grep '\.silica$$' > silica.config || true; \
-		if [ ! -s silica.config ]; then \
-			echo "SKIP: $$dir has no silica.config"; \
-			cd ..; \
-			continue; \
-		fi; \
-		rm -f *.sams; \
-		echo "Compiling with silica-compiler..."; \
-		if ! $(abspath $(SILICA_COMPILER)); then \
-			echo "FAIL: Compilation failed in $$dir"; \
-			failed=1; \
-			cd ..; \
-			continue; \
-		fi; \
-		for sams in *.sams; do \
-			[ -f "$$sams" ] || continue; \
-			base=$${sams%.sams}; \
-			if [ ! -f "$$base.ascomp" ]; then \
-				echo "❌❌ $$dir/$$base has no .ascomp file"; \
-				failed=1; \
-			elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
-				echo "❌❌ $$dir/$$base .sams differs from .ascomp"; \
-				diff -Bw "$$sams" "$$base.ascomp" || true; \
-				failed=1; \
-			else \
-				echo "✅✅ $$dir/$$base assembly matches .ascomp"; \
-			fi; \
-		done; \
-		for sams in *.sams; do \
-			[ -f "$$sams" ] || continue; \
-			base=$${sams%.sams}; \
-			echo "Assembling $$sams..."; \
-			$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o || { failed=1; break; }; \
-		done; \
-		for o in *.o; do \
-			[ -f "$$o" ] || continue; \
-			base=$${o%.o}; \
-			echo "Linking $$base..."; \
-			if test -x "$(RUST_LLD)"; then \
-				$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) || failed=1; \
-			else \
-				$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) || failed=1; \
-			fi; \
-		done; \
-		for exe in *.sams; do \
-			[ -f "$$exe" ] || continue; \
-			base=$${exe%.sams}; \
-			if [ -x "$$base" ]; then \
-				{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
-				if [ -f "$$base.scout" ]; then \
-					if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
-						echo "❌❌ $$dir/$$base .sout differs from .scout"; \
-						diff -Bw "$$base.sout" "$$base.scout" || true; \
-						failed=1; \
-					else \
-						echo "✅✅ $$dir/$$base output matches .scout"; \
-					fi; \
-				else \
-					echo "❌❌ $$dir/$$base has no .scout file"; \
-					failed=1; \
-				fi; \
-			fi; \
-		done; \
-		cd ..; \
 	done; \
-	exit $$failed
+	echo "success: ✅✅ $$ok"; \
+	echo "fail: ❌❌ $$ko"; \
+	test "$$ko" -eq 0 && test "$${failed:-0}" -eq 0
 
-# clean: remove executables, .sams, .o, .sout (not .scout, .ascomp)
+# clean: delegate so each trial removes what its Makefile defines (same dirs as integrate)
 clean:
-	@for dir in $(SUBDIRS); do \
-		dir=$${dir%/}; \
+	@failed=0; \
+	for dir in $(TRIAL_SUBDIRS); do \
 		echo "Cleaning $$dir..."; \
-		if [ "$$dir" = "error_enforcement_addition" ]; then \
-			$(MAKE) -C $$dir clean; \
-			continue; \
-		fi; \
-		if [ "$$dir" = "modules_addition" ]; then \
-			$(MAKE) -C $$dir clean; \
-			continue; \
-		fi; \
-		cd $$dir && \
-		rm -f *.sout && \
-		for f in *.sams; do \
-			[ -f "$$f" ] || continue; \
-			base=$${f%.sams}; \
-			rm -f "$$base" "$$base.o" "$$f"; \
-		done && \
-		cd ..; \
-	done
-	@echo "Clean complete"
+		$(MAKE) -C $$dir clean || failed=1; \
+	done; \
+	if [ "$${failed:-0}" -eq 0 ]; then echo "Clean complete"; else echo "❌ clean: one or more trial directories failed"; fi; \
+	test "$${failed:-0}" -eq 0
 
 help:
 	@echo "Silica trials Makefile"
 	@echo "====================="
 	@echo ""
 	@echo "Targets:"
-	@echo "  integrate  - Regenerate silica.config (ls *.silica), compile, diff .sams vs .ascomp,"
-	@echo "               run each binary, diff .sout vs .scout (report failures)"
-	@echo "  clean      - Remove executables, .sams, .o, .sout (keeps .scout, .ascomp)"
+	@echo "  integrate  - For each trial subdir with a Makefile: make -C <dir> integrate"
+	@echo "               (compiler output and pass/fail rules are defined in that subdir)"
+	@echo "               Ends with totals: success: ✅✅ <n>  fail: ❌❌ <m>"
+	@echo "               (<n>/<m> sum each trial's .integrate_counts: ok fail)"
+	@echo "  clean      - For each trial subdir: make -C <dir> clean (rules live in that subdir)"
 	@echo "  help       - Show this help"
 	@echo ""
-	@echo "Also: ./rebuild-silica-configs.sh — write silica.config in each subdir without compiling."
+	@echo "Per-trial silica.config: run \`make -C <trial_dir> silica.config\` (see that Makefile)."
 	@echo ""
-	@echo "Subdirs: $(SUBDIRS)"
+	@echo "Trial dirs (integrate + clean): $(TRIAL_SUBDIRS)"

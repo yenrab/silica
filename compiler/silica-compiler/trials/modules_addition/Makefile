@@ -1,9 +1,13 @@
 # Module trials: library sources under lib/ have no main(). Only entry-point units are linked and run.
-# Uses checked-in silica.config (lists lib/*.silica + root entry *.silica).
+# silica.config lists lib/*.silica + root entry *.silica (refreshed via find before compile / integrate).
 # Default `make` compiles only; `make integrate` runs assembly diffs, link, run, and output diffs.
 
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 SILICA_COMPILER := $(THIS_DIR)../../src/silica-compiler
+
+TRIAL_DIR := $(notdir $(patsubst %/,%,$(THIS_DIR)))
+MSG_PREFIX := $(TRIAL_DIR)/
+
 
 RUST_SYSROOT := $(shell rustc --print sysroot 2>/dev/null)
 RUST_TARGET := $(shell rustc -vV 2>/dev/null | sed -n "s/^host: *//p")
@@ -17,15 +21,14 @@ ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
-# Basenames that define main() - extracted from silica.config (library .sams under lib/ are compile-only).
-# Dynamically extract entry points from silica.config: files without path separators (i.e., in current dir)
-ENTRYPOINTS := $(patsubst %.silica,%,$(filter-out lib/%,$(shell cat silica.config | grep -v '^$$')))
+.PHONY: all integrate clean help silica.config
 
-.PHONY: all integrate clean help
+silica.config:
+	@cd "$(THIS_DIR)" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
 
 .DEFAULT_GOAL := all
 
-all:
+all: silica.config
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sams lib/*.sams && \
 	echo "Compiling with silica-compiler..." && \
@@ -33,30 +36,33 @@ all:
 		echo "FAIL: Compilation failed"; \
 		exit 1; \
 	fi && \
-	echo "✅ Assembly generated"
+	echo "✅ $(MSG_PREFIX)Assembly generated"
 
-integrate: all
-	@failed=0; \
-	cd "$(THIS_DIR)" && \
-	for base in $(ENTRYPOINTS); do \
+integrate: silica.config all
+	@cd "$(THIS_DIR)" && \
+	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
+		base=$${line%.silica}; \
 		sams="$$base.sams"; \
 		if [ ! -f "$$sams" ]; then \
-			echo "❌❌ $$base: missing $$sams"; \
-			failed=1; \
+			echo "❌❌ $(MSG_PREFIX)$$base: missing $$sams"; \
+			ko=$$((ko + 1)); failed=1; \
 			continue; \
 		fi; \
 		if [ ! -f "$$base.ascomp" ]; then \
-			echo "❌❌ $$base has no .ascomp file"; \
-			failed=1; \
+			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file"; \
+			ko=$$((ko + 1)); failed=1; \
 		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
-			echo "❌❌ $$base .sams differs from .ascomp"; \
+			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
 			diff -Bw "$$sams" "$$base.ascomp" || true; \
-			failed=1; \
+			ko=$$((ko + 1)); failed=1; \
 		else \
-			echo "✅✅ $$base assembly matches .ascomp"; \
+			echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp"; \
+			ok=$$((ok + 1)); \
 		fi; \
 	done; \
-	for base in $(ENTRYPOINTS); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
+		base=$${line%.silica}; \
 		sams="$$base.sams"; \
 		[ -f "$$sams" ] || continue; \
 		echo "Assembling $$sams..."; \
@@ -69,7 +75,8 @@ integrate: all
 		echo "Assembling $$sams..."; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj" || { failed=1; break; }; \
 	done; \
-	for base in $(ENTRYPOINTS); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
+		base=$${line%.silica}; \
 		[ -f "$$base.o" ] || continue; \
 		echo "Linking $$base..."; \
 		lib_objs=""; \
@@ -82,32 +89,38 @@ integrate: all
 			$(ASSEMBLER) "$$base.o" $$lib_objs -o "$$base" $(LDFLAGS_clang) || failed=1; \
 		fi; \
 	done; \
-	for base in $(ENTRYPOINTS); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
+		base=$${line%.silica}; \
 		if [ -x "$$base" ]; then \
 			{ ./"$$base" 2>&1; echo $$?; } > "$$base.sout"; \
 			if [ -f "$$base.scout" ]; then \
 				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
-					echo "❌❌ $$base .sout differs from .scout"; \
+					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
 					diff -Bw "$$base.sout" "$$base.scout" || true; \
-					failed=1; \
+					ko=$$((ko + 1)); failed=1; \
 				else \
-					echo "✅✅ $$base output matches .scout"; \
+					echo "✅✅ $(MSG_PREFIX)$$base output matches .scout"; \
+					ok=$$((ok + 1)); \
 				fi; \
 			else \
-				echo "❌❌ $$base has no .scout file"; \
-				failed=1; \
+				echo "❌❌ $(MSG_PREFIX)$$base has no .scout file"; \
+				ko=$$((ko + 1)); failed=1; \
 			fi; \
 		fi; \
 	done; \
+	[ "$$failed" -ne 0 ] && [ "$$ko" -eq 0 ] && ko=$$((ko + 1)); \
+	printf '%d %d\n' "$$ok" "$$ko" > .integrate_counts; \
 	exit $$failed
 
 clean:
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sout lib/*.sams lib/*.o *.sams && \
-	for base in $(ENTRYPOINTS); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
+		base=$${line%.silica}; \
 		rm -f "$$base" "$$base.o"; \
 	done && \
-	echo "✅ Clean complete"
+	rm -f silica.config .integrate_counts && \
+	echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
 	@echo "modules_addition: multi-file module trials; lib/*.silica are libraries (no main)."
