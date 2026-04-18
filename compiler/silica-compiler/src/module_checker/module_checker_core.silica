@@ -420,6 +420,17 @@ fn qual_callee_name_for_export_check(raw: string) -> string {
     }
 }
 
+// `spawn` / `spawn_linked` are language intrinsics (spec §15.4.8.3); they never appear on a module's
+// `export f/n` surface. Cross-module qualified calls still require `use` (validate_module_qualified_calls_have_use).
+// Supervisors Phase A: runtime `spawn_linked` bring-up must not get a false E1011 on e.g. `Child@spawn_linked(...)`.
+fn is_actor_spawn_intrinsic_for_export_surface(fn_name: string) -> bool {
+    case fn_name of {
+        "spawn" -> true;
+        "spawn_linked" -> true;
+        _: string -> false
+    }
+}
+
 fn find_program_by_module_name(parsed: ListParsedFile, mod_name: string) -> (bool, Program) {
     case parsed.is_nil of {
         true -> (false, Program { declarations: parser_ast@empty_list_decl(), location: parser_ast@zero_location() });
@@ -603,29 +614,32 @@ fn validate_kind4_call_export_surface(expr: Expr, all_decls: ListDeclaration, al
         true -> do
             (qmod: string, qfn_raw: string) <- type_checker_core@split_module_qualified_call_name(expr.name);
             qfn: string <- qual_callee_name_for_export_check(qfn_raw);
-            case len(qmod) > 0 of {
-                false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
-                true -> case decls_have_use_for_module(all_decls, qmod) of {
+            case is_actor_spawn_intrinsic_for_export_surface(qfn) of {
+                true -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
+                false -> case len(qmod) > 0 of {
                     false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
-                    true -> do
-                        (pf: bool, tprog: Program) <- find_program_by_module_name(all_parsed, qmod);
-                        case pf of {
-                            false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
-                            true -> do
-                                ac: int64 <- count_user_call_args_expr(expr);
-                                case module_exports_fn_arity(tprog.declarations, qfn, ac) of {
-                                    true -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
-                                    false -> case module_declares_fn_or_required_trait_method(tprog.declarations, qfn, ac) of {
-                                        true -> do
-                                            msg: string <- concat(concat(concat(concat("cross-module call ", expr.name), " is not listed in export surface of module "), qmod), " (spec 19.2)");
-                                            (1, "E1011", expr.location, msg, "sect19.2")
-                                        end;
-                                        false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed)
+                    true -> case decls_have_use_for_module(all_decls, qmod) of {
+                        false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
+                        true -> do
+                            (pf: bool, tprog: Program) <- find_program_by_module_name(all_parsed, qmod);
+                            case pf of {
+                                false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
+                                true -> do
+                                    ac: int64 <- count_user_call_args_expr(expr);
+                                    case module_exports_fn_arity(tprog.declarations, qfn, ac) of {
+                                        true -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
+                                        false -> case module_declares_fn_or_required_trait_method(tprog.declarations, qfn, ac) of {
+                                            true -> do
+                                                msg: string <- concat(concat(concat(concat("cross-module call ", expr.name), " is not listed in export surface of module "), qmod), " (spec 19.2)");
+                                                (1, "E1011", expr.location, msg, "sect19.2")
+                                            end;
+                                            false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed)
+                                        }
                                     }
-                                }
-                            end
-                        }
-                    end
+                                end
+                            }
+                        end
+                    }
                 }
             }
         end

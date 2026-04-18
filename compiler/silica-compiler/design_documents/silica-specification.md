@@ -8949,11 +8949,11 @@ The `Supervisor` trait is the **required** mechanism for defining a supervisor a
 
 ```silica
 trait Supervisor {
-    fn init(self) -> (supervisor_flags, [child_spec]);
+    fn init(self: ActorState) -> (supervisor_flags, [child_spec]);
 }
 ```
 
-`init` is called once when the supervisor actor starts. It returns the supervisor's restart strategy and the list of children to start. The runtime spawns each child in the returned list via `spawn_linked` and stores the resulting `actor_ref` values internally.
+`init` is called once when the supervisor actor starts. It takes a single parameter — the supervisor's initial state — of type `ActorState` (see §3.4.13). It returns the supervisor's restart strategy and the list of children to start. The runtime spawns each child in the returned list via `spawn_linked` and stores the resulting `actor_ref` values internally.
 
 ##### 15.4.13.2 Supporting Types
 

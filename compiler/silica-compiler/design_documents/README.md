@@ -39,6 +39,12 @@ Actor memory architecture: **growable per-actor stacks**, lazy page migration, i
 
 ---
 
+## [supervisors_implementation_development_plan.md](./supervisors_implementation_development_plan.md)
+
+**Supervision roadmap** aligned with [silica-specification.md](./silica-specification.md) §15.4: `Supervisor` trait, `spawn_linked`, supervision ingress, exit payloads, restart strategies, `FailureReporter`, and `link` / `monitor` interactions—phased after the core actor runtime.
+
+---
+
 ## [actor_spawn_core_affinity_os_semantics.md](./actor_spawn_core_affinity_os_semantics.md)
 
 **OS semantics** for **`spawn`** with a **single core id** (`uint64`): how macOS, Linux, FreeBSD, Solaris/illumos, and Windows interpret affinity vs. hints, carrier threads vs. actors, and pointers to topology and emitter plans.

@@ -9,7 +9,7 @@
        http://www.apache.org/licenses/LICENSE-2.0
 
    Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
+   distributed under the License on an "AS IS" BASIS,
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
@@ -17,11 +17,117 @@
 
 // Trait checking phase: after type checking, before effect checking.
 // Validates trait declarations, impls, and required/provided method consistency (spec).
+//
+// Supervisors Phase A (supervisors_implementation_development_plan.md): runtime will record
+// supervisor refs and `agent_type` at `spawn_linked` time; later phases call `Supervisor::init`
+// (silica-specification §15.4.13). Enforce the canonical required-method shape for
+// `export trait Supervisor` so the stdlib contract stays aligned with that entry point.
+// Required `init` must surface in the AST as exactly one tag-7 method with one parameter of
+// type `ActorState` (parameter name unrestricted: `self` in source currently breaks required-fn
+// parsing, so use e.g. `st: ActorState` until the parser accepts `self` in trait signatures).
 
 use parser_ast;
+use diagnostics_core;
+use type_checker_traits;
 
 export trait_checker_check_program/1;
 
-fn trait_checker_check_program(program: Program) -> int64 {
-    0
+fn program_exports_trait_named(decls: ListDeclaration, trait_id: string) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 5 of {
+            true -> case decls.head.name == trait_id of {
+                true -> true;
+                false -> program_exports_trait_named(decls.tail, trait_id)
+            };
+            false -> program_exports_trait_named(decls.tail, trait_id)
+        }
+    }
+}
+
+fn count_tag7_declarations(decls: ListDeclaration, acc: int64) -> int64 {
+    case decls.is_nil of {
+        true -> acc;
+        false -> case decls.head.tag == 7 of {
+            true -> count_tag7_declarations(decls.tail, acc + 1);
+            false -> count_tag7_declarations(decls.tail, acc)
+        }
+    }
+}
+
+fn find_first_tag7_declaration(decls: ListDeclaration) -> (bool, Declaration) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case decls.head.tag == 7 of {
+            true -> (true, decls.head);
+            false -> find_first_tag7_declaration(decls.tail)
+        }
+    }
+}
+
+fn check_supervisor_trait_required_shape(program: Program) -> int64 proc[DeviceIO] {
+    decls: ListDeclaration <- program.declarations;
+    case program_exports_trait_named(decls, "Supervisor") of {
+        false -> 0;
+        true -> do
+            n_req: int64 <- count_tag7_declarations(decls, 0);
+            case n_req == 1 of {
+                false -> do
+                    _: int8 <- diagnostics_core@print_compiler_error("TraitError", "E2090", program.location, "export trait Supervisor must declare exactly one required method init (supervisors plan Phase A; spec §15.4.13)", "sect15.4.13");
+                    1
+                end;
+                true -> do
+                    (found: bool, req: Declaration) <- find_first_tag7_declaration(decls);
+                    case found of {
+                        false -> do
+                            _: int8 <- diagnostics_core@print_compiler_error("TraitError", "E2090", program.location, "Supervisor trait required block must declare init (spec §15.4.13)", "sect15.4.13");
+                            1
+                        end;
+                        true -> case req.name == "init" of {
+                            false -> do
+                                _: int8 <- diagnostics_core@print_compiler_error("TraitError", "E2090", program.location, "Supervisor trait required block must declare init (spec §15.4.13)", "sect15.4.13");
+                                1
+                            end;
+                            true -> do
+                                params: ListParam <- req.parameters;
+                                case params.is_nil of {
+                                    true -> do
+                                        _: int8 <- diagnostics_core@print_compiler_error("TraitError", "E2090", req.location, "Supervisor init must take exactly one parameter of type ActorState (spec §15.4.13)", "sect15.4.13");
+                                        1
+                                    end;
+                                    false -> case params.tail.is_nil of {
+                                        false -> do
+                                            _: int8 <- diagnostics_core@print_compiler_error("TraitError", "E2090", req.location, "Supervisor init must take exactly one parameter of type ActorState (spec §15.4.13)", "sect15.4.13");
+                                            1
+                                        end;
+                                        true -> do
+                                            p0: Param <- params.head;
+                                            t0: string <- type_checker_traits@trim_type_text(p0.type_name);
+                                            case t0 == "ActorState" of {
+                                                false -> do
+                                                    _: int8 <- diagnostics_core@print_compiler_error("TraitError", "E2090", p0.location, "Supervisor init first parameter must have type ActorState (spec §15.4.13)", "sect15.4.13");
+                                                    1
+                                                end;
+                                                true -> case len(type_checker_traits@trim_type_text(req.return_type_name)) > 0 of {
+                                                    false -> do
+                                                        _: int8 <- diagnostics_core@print_compiler_error("TraitError", "E2090", req.return_type_location, "Supervisor init must declare a non-empty return type (flags and child_spec tuple; spec §15.4.13)", "sect15.4.13");
+                                                        1
+                                                    end;
+                                                    true -> 0
+                                                }
+                                            }
+                                        end
+                                    }
+                                }
+                            end
+                        }
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn trait_checker_check_program(program: Program) -> int64 proc[DeviceIO] {
+    check_supervisor_trait_required_shape(program)
 }

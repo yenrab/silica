@@ -15,7 +15,7 @@
    limitations under the License.
 -}
 
-// Actor / concurrency builtins (silica-specification §4.5 actor_ref, §15 spawn, §16 call/cast/send, self).
+// Actor / concurrency builtins (silica-specification ?4.5 actor_ref, ?15 spawn, ?16 call/cast/send, self).
 // String-only helpers and spawn signature validation; call sites use type_checker_expressions@check_expr.
 
 use parser_ast;
@@ -25,7 +25,7 @@ export count_chain_args/1;
 export trim_leading_actor/1;
 export behavior_return_is_call_only/1;
 export behavior_return_is_cast_only/1;
-export validate_spawn_behavior_function_type/2;
+export validate_spawn_behavior_function_type/3;
 export parse_behavior_state_param_type/1;
 export parse_behavior_reply_type/1;
 export parse_behavior_msg_param_type/1;
@@ -64,7 +64,7 @@ fn trim_leading_actor(s: string) -> string {
     trim_leading_actor_from(s, 0)
 }
 
-// §15.1.1 / §15.1.2: behavior returns (:reply, Reply, State) or (:no_reply, State).
+// ?15.1.1 / ?15.1.2: behavior returns (:reply, Reply, State) or (:no_reply, State).
 // Tuple type strings preserve atom lexemes (e.g. :reply, :no_reply). Legacy checks also accept (atom, R, S) / (atom, S).
 // Distinguish by arity: 3-element reply tuple = :reply; 2-element = :no_reply.
 fn behavior_return_is_call_only(return_type: string) -> bool {
@@ -196,7 +196,7 @@ fn parse_function_return_actor(func_type: string) -> string {
     }
 }
 
-// Second parameter type is the actor state (initial_state must match it). §15.1.1.
+// Second parameter type is the actor state (initial_state must match it). ?15.1.1.
 fn parse_behavior_state_param_type(func_type: string) -> string {
     inner: string <- get_params_inner_actor(func_type);
     (_msg: string, after_msg: string) <- get_first_param_actor(inner);
@@ -207,33 +207,33 @@ fn parse_behavior_state_param_type(func_type: string) -> string {
     }
 }
 
-// §16: Extract the message parameter type (first param) from a behavior function type.
+// ?16: Extract the message parameter type (first param) from a behavior function type.
 fn parse_behavior_msg_param_type(func_type: string) -> string {
     inner: string <- get_params_inner_actor(func_type);
     (msg_t: string, _rest: string) <- get_first_param_actor(inner);
     msg_t
 }
 
-fn validate_spawn_behavior_function_type(func_type: string, location: SourceLocation) -> TypeCheckResult {
+fn validate_spawn_behavior_function_type(builtin_label: string, func_type: string, location: SourceLocation) -> TypeCheckResult {
     arrow_pos: int64 <- find_arrow_pos_actor(func_type, 0);
     case arrow_pos < 0 of {
-        true -> type_checker_core@type_check_err("E2005", location, "spawn: behavior must be a function type (Msg, State) -> (:reply, ...) or (:no_reply, ...)", "sect15");
+        true -> type_checker_core@type_check_err("E2005", location, concat(concat(builtin_label, ": behavior must be a function type (Msg, State) -> (:reply, ...) or (:no_reply, ...)"), " ?15.1.1"), "sect15");
         false -> do
             inner: string <- get_params_inner_actor(func_type);
             (_msg_t: string, after_msg: string) <- get_first_param_actor(inner);
             case len(trim_leading_actor(after_msg)) == 0 of {
-                true -> type_checker_core@type_check_err("E2005", location, "spawn: behavior must take exactly two parameters (message, state)", "sect15");
+                true -> type_checker_core@type_check_err("E2005", location, concat(concat(builtin_label, ": behavior must take exactly two parameters (message, state)"), " ?15.1.1"), "sect15");
                 false -> do
                     (_state_t: string, tail: string) <- get_first_param_actor(after_msg);
                     case len(trim_leading_actor(tail)) > 0 of {
-                        true -> type_checker_core@type_check_err("E2005", location, "spawn: behavior must take exactly two parameters (message, state)", "sect15");
+                        true -> type_checker_core@type_check_err("E2005", location, concat(concat(builtin_label, ": behavior must take exactly two parameters (message, state)"), " ?15.1.1"), "sect15");
                         false -> do
                             ret: string <- parse_function_return_actor(func_type);
                             case behavior_return_is_call_only(ret) of {
                                 true -> type_checker_core@type_check_ok();
                                 false -> case behavior_return_is_cast_only(ret) of {
                                     true -> type_checker_core@type_check_ok();
-                                    false -> type_checker_core@type_check_err("E2005", location, "spawn: behavior return type must be (:reply, Reply, State) or (:no_reply, State) per §15.1.2", "sect15")
+                                    false -> type_checker_core@type_check_err("E2005", location, concat(builtin_label, ": behavior return type must be (:reply, Reply, State) or (:no_reply, State) per ?15.1.2"), "sect15")
                                 }
                             }
                         end
@@ -258,7 +258,7 @@ fn spawn_placement_expr(call_expr: Expr) -> Expr {
     call_expr.right_expr.right_expr.inner
 }
 
-// §16.3.2: Check if a call's message argument has the postfix `impl ActorMessage {}` marker.
+// ?16.3.2: Check if a call's message argument has the postfix `impl ActorMessage {}` marker.
 // The parser stores "AM" in the value field of the kind-4 pair node holding the message argument.
 fn call_has_impl_am_marker(call_expr: Expr) -> bool {
     case call_expr.right_expr.kind == 4 of {
@@ -281,7 +281,7 @@ fn lookup_actor_behavior_type(call_expr: Expr, context: TypeContext) -> string {
     }
 }
 
-// §16.1.1: Extract Reply type from behavior's (:reply, Reply, State) return.
+// ?16.1.1: Extract Reply type from behavior's (:reply, Reply, State) return.
 fn parse_behavior_reply_type(func_type: string) -> string {
     ret: string <- parse_function_return_actor(func_type);
     t: string <- trim_leading_actor(ret);
@@ -313,7 +313,7 @@ fn parse_behavior_reply_type(func_type: string) -> string {
     }
 }
 
-// §15.1.2: Behavior functions must not call themselves — the runtime owns the message loop.
+// ?15.1.2: Behavior functions must not call themselves; the runtime owns the message loop.
 fn body_has_self_call(e: Expr, name: string) -> bool {
     case e.kind < 0 of {
         true -> false;
@@ -332,7 +332,7 @@ fn check_behavior_no_self_recursion(decl: Declaration) -> TypeCheckResult {
     case is_behavior of {
         false -> type_checker_core@type_check_ok();
         true -> case body_has_self_call(decl.body, decl.name) of {
-            true -> type_checker_core@type_check_err("E2005", decl.location, concat(concat("behavior function '", decl.name), "' must not be recursive (§15.1.2); the actor runtime owns the message loop"), "sect15");
+            true -> type_checker_core@type_check_err("E2005", decl.location, concat(concat("behavior function '", decl.name), "' must not be recursive (?15.1.2); the actor runtime owns the message loop"), "sect15");
             false -> type_checker_core@type_check_ok()
         }
     }

@@ -71,6 +71,30 @@ fn sir_subexpr_for_actor(context: TypeContext, e: Expr, t: string, in_body: bool
     }
 }
 
+// Same chain encoding as type_checker_expressions@call_third_arg_expr / call_fourth_arg_expr (not exported there).
+fn spawn_call_third_arg_expr(expr: Expr) -> Expr {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> case expr.right_expr.right_expr.kind == 4 and expr.right_expr.right_expr.name == "" of {
+            true -> expr.right_expr.right_expr.inner;
+            false -> expr.right_expr.right_expr;
+        };
+        false -> expr.right_expr;
+    }
+}
+
+fn spawn_call_fourth_arg_expr(expr: Expr) -> Expr {
+    case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
+        true -> case expr.right_expr.right_expr.kind == 4 and expr.right_expr.right_expr.name == "" of {
+            true -> case expr.right_expr.right_expr.right_expr.kind == 4 and expr.right_expr.right_expr.right_expr.name == "" of {
+                true -> expr.right_expr.right_expr.right_expr.inner;
+                false -> expr.right_expr.right_expr.right_expr;
+            };
+            false -> expr.right_expr.right_expr;
+        };
+        false -> expr.right_expr;
+    }
+}
+
 fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
     case expr.name == "spawn" of {
         true -> do
@@ -107,7 +131,43 @@ fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: str
                 end
             }
         end;
-        false -> case expr.name == "send" of {
+        false -> case expr.name == "spawn_linked" of {
+            true -> do
+                ac_sl: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+                case ac_sl == 3 or ac_sl == 4 of {
+                    false -> sir_ast@dummy_sir_term();
+                    true -> do
+                        init_sl: Expr <- type_checker_expressions_actors@spawn_init_expr(expr);
+                        beh_sl: Expr <- type_checker_expressions_actors@spawn_behavior_expr(expr);
+                        agent_sl: Expr <- spawn_call_third_arg_expr(expr);
+                        case beh_sl.kind == 1 of {
+                            false -> sir_ast@dummy_sir_term();
+                            true -> do
+                                (beh_sl_found: bool, beh_sl_type: string) <- type_checker_core@lookup_symbol_found(context.env, beh_sl.name);
+                                case beh_sl_found of {
+                                    false -> sir_ast@dummy_sir_term();
+                                    true -> do
+                                        state_sl_t: string <- type_checker_expressions_actors@parse_behavior_state_param_type(beh_sl_type);
+                                        init_sl_sir: SIRTerm <- sir_subexpr_for_actor(context, init_sl, state_sl_t, in_body, bound_name, bound_type);
+                                        beh_sl_label: string <- user_calls@qual_name(beh_sl.name);
+                                        beh_sl_sir: SIRTerm <- SIRTerm { kind: 0, type_name: "fn_ptr", value: beh_sl_label, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+                                        agent_sl_sir: SIRTerm <- sir_subexpr_for_actor(context, agent_sl, "atom", in_body, bound_name, bound_type);
+                                        case ac_sl == 4 of {
+                                            true -> do
+                                                pl_sl_e: Expr <- spawn_call_fourth_arg_expr(expr);
+                                                pl_sl_sir: SIRTerm <- sir_subexpr_for_actor(context, pl_sl_e, "uint64", in_body, bound_name, bound_type);
+                                                actor_calls@build_spawn_linked_prim(init_sl_sir, beh_sl_sir, agent_sl_sir, pl_sl_sir, true)
+                                            end;
+                                            false -> actor_calls@build_spawn_linked_prim(init_sl_sir, beh_sl_sir, agent_sl_sir, sir_ast@dummy_sir_term(), false)
+                                        }
+                                    end
+                                }
+                            end
+                        }
+                    end
+                }
+            end;
+            false -> case expr.name == "send" of {
             true -> do
                 a0: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
                 msg_e: Expr <- actor_calls@actor_call_second_arg(expr);
@@ -137,6 +197,7 @@ fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: str
                     }
                 }
             }
+        }
         }
     }
 }

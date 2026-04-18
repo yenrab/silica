@@ -85,7 +85,7 @@ fn module_uses_actor_prims(sir_module: SIRModule) -> bool {
 }
 
 fn is_actor_prim(name: string) -> bool {
-    name == "spawn" or name == "send" or name == "actor_call" or name == "actor_cast" or name == "self"
+    name == "spawn" or name == "spawn_linked" or name == "send" or name == "actor_call" or name == "actor_cast" or name == "self"
         or name == "pin_actor_to_core" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
         or name == "pin_actor_realtime" or name == "remove_actor" or name == "pin_actor_to_numa_node"
         or name == "unpin_actor" or name == "set_actor_priority"
@@ -205,6 +205,36 @@ fn mov_dest_from_x0_for_type(dest: string, result_type: string) -> string {
 }
 
 // 3-arg: term_emitter saves initial state to X11 before building the behavior/placement tuple (which reuses X9).
+// spawn_linked: §15.4.8.3 / supervisors_implementation_development_plan Phase A.
+// ABI _silica_rt_actor_spawn_linked(X0 init, X1 beh, X2 agent_atom, X3 core_id): core_id 0 = default placement.
+// 3-arg SIR: right = tuple_make(beh, agent); 4-arg: flat [beh, agent, core] at X10 (nested tuple_make layout).
+fn emit_spawn_linked(dest: string, term: SIRTerm) -> string {
+    four_args: bool <- term.right_expr.kind == 6 and term.right_expr.name == "tuple_make"
+        and term.right_expr.inner.kind == 6 and term.right_expr.inner.name == "tuple_make";
+    case four_args of {
+        true -> concat(concat("    MOV X0, X11\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n    LDR X3, [X10, #16]\n", asm_bl("_silica_rt_actor_spawn_linked")), mov_dest_from_x0_for_type(dest, term.type_name));
+        false -> case term.right_expr.kind == 6 and term.right_expr.name == "tuple_make" of {
+            true -> concat(concat("    MOV X0, X11\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n    MOV X3, XZR\n", asm_bl("_silica_rt_actor_spawn_linked")), mov_dest_from_x0_for_type(dest, term.type_name));
+            false -> do
+                nb_sl: int64 <- spawn_init_stack_bytes(term.inner);
+                copy_init_sl: bool <- spawn_init_needs_heap_copy(term.inner) and nb_sl > 0;
+                case copy_init_sl of {
+                    true -> do
+                        promote_sl: string <- heap_promote_stack_aggregate_x0(nb_sl);
+                        pop_stack_sl: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nb_sl), "\n"));
+                        pre_sl: string <- concat("    MOV X12, X10\n    MOV X0, X9\n", promote_sl);
+                        mid_sl: string <- concat(pre_sl, "    MOV X9, X0\n    MOV X10, X12\n    MOV X0, X9\n    MOV X1, X10\n    MOV X2, XZR\n    MOV X3, XZR\n");
+                        after_sl: string <- concat(mid_sl, asm_bl("_silica_rt_actor_spawn_linked"));
+                        with_dest_sl: string <- concat(after_sl, mov_dest_from_x0_for_type(dest, term.type_name));
+                        concat(with_dest_sl, pop_stack_sl)
+                    end;
+                    false -> concat(concat("    MOV X0, X9\n    MOV X1, X10\n    MOV X2, XZR\n    MOV X3, XZR\n", asm_bl("_silica_rt_actor_spawn_linked")), mov_dest_from_x0_for_type(dest, term.type_name))
+                }
+            end
+        }
+    }
+}
+
 fn emit_spawn(dest: string, term: SIRTerm) -> string {
     three: bool <- term.right_expr.kind == 6 and term.right_expr.name == "tuple_make";
     case three of {
@@ -286,6 +316,7 @@ fn emit_runtime_ternary(dest: string, term: SIRTerm) -> string {
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     case term.name of {
         "spawn" -> emit_spawn(dest, term);
+        "spawn_linked" -> emit_spawn_linked(dest, term);
         "send" -> emit_send(dest, term);
         "actor_call" -> emit_actor_call(dest, term);
         "actor_cast" -> emit_actor_cast(dest, term);

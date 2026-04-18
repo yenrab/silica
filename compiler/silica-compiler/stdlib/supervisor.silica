@@ -1,20 +1,41 @@
-/// Supervisor trait for actor supervision and failure handling
+/// Supervisor trait — silica-specification.md §15.4.13 (Supervisor Trait).
 ///
-/// A supervisor is responsible for monitoring other actors and handling their
-/// termination. Supervisors spawn and manage child actors according to the
-/// specification returned by the init function.
+/// Required callback (§15.4.13.1): `init` takes the supervisor actor's state (`ActorState`)
+/// and returns restart flags plus the static child list; the runtime spawns each entry
+/// via `spawn_linked` and applies `supervisor_flags` (§15.4.13.2).
+///
+/// Supporting shapes (§15.4.13.2 BNF), inlined in the signature below:
+/// - `supervisor_flags`: `strategy`, `allowed_restart_count`, `restarts_time_frame` (seconds).
+/// - `restart_strategy`: `:one_for_one` | `:one_for_all` | `:rest_for_one`.
+/// - `child_spec`: `id`, `agent_type`, `start` (same pair as `spawn_linked`'s initial state
+///   and behavior function, §15.4.8.3), `restart`, `shutdown` (0 = immediate; >0 ms timeout).
+///
+/// Each child's behavior must use a single reply convention throughout (§15.1); the
+/// `start` function type below uses the cast-only `(:no_reply, …)` form; call-only children
+/// use the analogous `(:reply, Reply, State)` return type with monomorphic `Msg` / `Reply` / `State`.
 
-trait supervisor {
-  /// Start and link the supervisor actor
-  ///
-  /// Starts a new supervisor actor and links it to the calling process.
-  /// Returns the supervisor's actor reference.
-  fn start_link() -> atom
+export trait Supervisor;
+export init/1;
 
-  /// Initialize the supervisor and spawn child actors
-  ///
-  /// Called when the supervisor starts. This function spawns the supervised
-  /// child actors and returns the supervisor specification that defines how
-  /// those children should be managed.
-  fn init() -> atom
+required {
+    fn init(self: ActorState) -> (
+        {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        },
+        List[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (
+                    ActorState,
+                    fn(msg: ActorMessage, state: ActorState) -> (:no_reply, ActorState)
+                ),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            normal
+        ]
+    );
 }
