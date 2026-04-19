@@ -1672,31 +1672,34 @@ fn extract_sequence_body(slots: ListTokenSlot, stop_kind: int64) -> (Expr, ListT
     }
 }
 
+// Like `extract_function_body_tail`, skip newline/indent before `;` or `produces` so the last proc
+// statement does not require `;` when `produces` begins on the next line.
 fn extract_sequence_body_tail(first_expr: Expr, after_first: ListTokenSlot, stop_kind: int64) -> (Expr, ListTokenSlot) proc[DeviceIO] {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
-    case after_first.is_nil of {
-        true -> (first_expr, after_first);
-        false -> case after_first.head.token.kind == stop_kind or after_first.head.token.lexeme == "produces" of {
+    after_trim: ListTokenSlot <- skip_leading_whitespace_slots(after_first);
+    case after_trim.is_nil of {
+        true -> (first_expr, after_trim);
+        false -> case after_trim.head.token.kind == stop_kind or after_trim.head.token.lexeme == "produces" of {
             true -> case first_expr.kind < 0 of {
-                true -> (first_expr, after_first);
+                true -> (first_expr, after_trim);
                 false -> do
                     dummy: Expr <- parser_ast@dummy_expr();
                     body: Expr <- wrap_let_or_return(first_expr, dummy);
-                    (body, after_first)
+                    (body, after_trim)
                 end
             };
-            false -> case after_first.head.token.lexeme == ";" of {
+            false -> case after_trim.head.token.lexeme == ";" of {
                 true -> do
-                    rest: ListTokenSlot <- skip_semicolons_after_whitespace(after_first);
+                    rest: ListTokenSlot <- skip_semicolons_after_whitespace(after_trim);
                     case rest.is_nil of {
                         true -> do
-                            semi_slot: TokenSlot <- after_first.head;
+                            semi_slot: TokenSlot <- after_trim.head;
                             marked: Expr <- trailing_semicolon_marker(semi_slot.token.location, first_expr);
                             (marked, rest)
                         end;
                         false -> case rest.head.token.kind == stop_kind or rest.head.token.lexeme == "produces" of {
                             true -> do
-                                semi_slot: TokenSlot <- after_first.head;
+                                semi_slot: TokenSlot <- after_trim.head;
                                 marked: Expr <- trailing_semicolon_marker(semi_slot.token.location, first_expr);
                                 (marked, rest)
                             end;
@@ -1712,10 +1715,10 @@ fn extract_sequence_body_tail(first_expr: Expr, after_first: ListTokenSlot, stop
                     }
                 end;
                 false -> case first_expr.kind < 0 of {
-                    true -> (first_expr, after_first);
+                    true -> (first_expr, after_trim);
                     false -> do
                         diag_loc: SourceLocation <- first_expr.location;
-                        (rest_body: Expr, rest_after: ListTokenSlot) <- extract_sequence_body(after_first, stop_kind);
+                        (rest_body: Expr, rest_after: ListTokenSlot) <- extract_sequence_body(after_trim, stop_kind);
                         body: Expr <- missing_statement_terminator_wrapper(diag_loc, first_expr, rest_body);
                         (body, rest_after)
                     end

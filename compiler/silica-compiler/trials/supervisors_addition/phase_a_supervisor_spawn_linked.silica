@@ -1,0 +1,36 @@
+// Phase A supervisor trial: §15.4.8.3 `spawn_linked` from a behavior + local Supervisor trait module
+// (`traits/SupervisorPhaseA.silica`, copy of stdlib `supervisor.silica` with matching module name).
+// supervisors_implementation_development_plan.md Phase A — parent/child both runnable (ingress/restart are later phases).
+//
+// Runtime note: `_silica_rt_actor_spawn_linked` bring-up may not yet match `spawn`; until it does,
+// this program may not print `40` / exit 0 when run. The trial still validates compile, link, and
+// the `spawn_linked` + `SupervisorPhaseA` module surface. Add a `.scout` golden once behavior matches `spawn`.
+
+use SupervisorPhaseA;
+
+fn child_worker(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state)
+}
+
+fn parent_supervisor(msg: int64, state: int64) -> (:reply, int64, int64) {
+    sequence proc[concurrency, device_io]
+        child: actor_ref <- spawn_linked(0, child_worker, :phase_a_worker);
+        sum: int64 <- call(child, msg impl ActorMessage {});
+        print_string("sum: ");  // effects [device_io]
+        _: atom <- print_int64(sum);
+        println("")
+    produces
+        pure (:reply, sum, state) 
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sup: actor_ref <- spawn(0, parent_supervisor);
+        out: int64 <- call(sup, 40 impl ActorMessage {});
+        print_int64(out);
+        println("")
+    produces
+        pure out
+    end
+}
