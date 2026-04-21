@@ -102,7 +102,7 @@ integrate: silica.config compile
 		echo "Assembling $$sams..."; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj" || { failed=1; break; }; \
 	done; \
-	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$'); do \
 		base=$${line%.silica}; \
 		sams="$$base.sams"; \
 		if [ -f "$$base.ascomp" ]; then \
