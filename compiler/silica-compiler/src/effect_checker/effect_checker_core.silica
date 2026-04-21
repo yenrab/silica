@@ -19,6 +19,13 @@
    Provides EffectCheckResult, EffectEntry environment, and helper functions
    for effect comparison, validation, and built-in effect recognition.
    Implements spec §9.1 (Effect Types), §9.1.2 (Effect Aliases).
+
+   Supervisors — design_documents/supervisors_implementation_development_plan.md Phase B
+   (supervision ingress + scheduler ordering; spec §15.4.9, §16.2.7): the runtime may drain a
+   dedicated ingress queue before the standard mailbox, but there is no separate compile-time
+   effect for “ingress”. User code still uses spawn_linked and §15.4.8.5–§15.4.8.7 link, monitor,
+   demonitor together with call, cast, send, self; all are classified as proc[concurrency] here
+   (see is_builtin_fn / builtin_fn_effects).
 -}
 
 use parser_ast;
@@ -240,6 +247,9 @@ fn expand_builtin_alias(name: string) -> (bool, ListEffectName) {
 }
 
 // --- Built-in function effect knowledge ---
+// Supervisors Phase B (supervisors_implementation_development_plan.md, §15.4.9, §16.2.7): link, monitor,
+// demonitor are §15.4.8.5–§15.4.8.7 actor intrinsics; same concurrency classification as spawn,
+// spawn_linked, cast, call, send, self (ingress vs standard mailbox ordering is runtime-only).
 
 fn is_builtin_fn(name: string) -> bool {
     case name of {
@@ -258,6 +268,9 @@ fn is_builtin_fn(name: string) -> bool {
         "file_exists" -> true;
         "spawn" -> true;
         "spawn_linked" -> true;
+        "link" -> true;
+        "monitor" -> true;
+        "demonitor" -> true;
         "call" -> true;
         "cast" -> true;
         "send" -> true;
@@ -280,7 +293,8 @@ fn is_builtin_fn(name: string) -> bool {
 
 {- Returns the effects required by known built-in functions.
    I/O built-ins require device_io per spec §9.1.1.
-   Actor primitives, pinning, removal, priority, and §22.10 CPU Affinity Functions
+   Actor primitives (including §15.4.8.5–§15.4.8.7 link, monitor, demonitor for supervisors Phase B),
+   pinning, removal, priority, and §22.10 CPU Affinity Functions
    (get_cpu_topology, get_efficiency_cores, get_performance_cores, get_core_capabilities, etc.)
    require concurrency per spec §22.4, §16.1, §15.2, and §22.10 (not pure). -}
 fn builtin_fn_effects(name: string) -> (bool, ListEffectName) {
@@ -309,6 +323,9 @@ fn builtin_fn_effects(name: string) -> (bool, ListEffectName) {
         "file_exists" -> (true, dev_io_list);
         "spawn" -> (true, conc_list);
         "spawn_linked" -> (true, conc_list);
+        "link" -> (true, conc_list);
+        "monitor" -> (true, conc_list);
+        "demonitor" -> (true, conc_list);
         "call" -> (true, conc_list);
         "cast" -> (true, conc_list);
         "send" -> (true, conc_list);

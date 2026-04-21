@@ -16,6 +16,8 @@
 -}
 
 // Actor / concurrency prim emission (silica-specification §4.5, §15–16; sir_generator actor_calls.silica).
+// Supervisors Phase B (supervisors_implementation_development_plan.md §15.4.9, §16.2.7): link, monitor,
+// demonitor lower here; ingress vs standard mailbox ordering is runtime-only (no extra SIR shape).
 // Lowers SIR kind-6 prims to BL of compiler-bundled runtime (_silica_rt_*), appended by emitter_core
 // from prims_actors_runtime_asm.silica (AArch64 assembly strings, compiler-owned).
 // Operands: binary prims expect inner -> X9, right_expr -> X10 (same as arithmetic).
@@ -86,6 +88,7 @@ fn module_uses_actor_prims(sir_module: SIRModule) -> bool {
 
 fn is_actor_prim(name: string) -> bool {
     name == "spawn" or name == "spawn_linked" or name == "send" or name == "actor_call" or name == "actor_cast" or name == "self"
+        or name == "link" or name == "monitor" or name == "demonitor"
         or name == "pin_actor_to_core" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
         or name == "pin_actor_realtime" or name == "remove_actor" or name == "pin_actor_to_numa_node"
         or name == "unpin_actor" or name == "set_actor_priority"
@@ -100,7 +103,8 @@ fn actor_prim_is_nullary(name: string) -> bool {
 }
 
 fn actor_prim_is_unary(name: string) -> bool {
-    name == "get_core_capabilities" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
+    name == "link" or name == "monitor" or name == "demonitor"
+        or name == "get_core_capabilities" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
         or name == "unpin_actor" or name == "remove_actor" or name == "get_actor_memory_usage"
 }
 
@@ -277,6 +281,9 @@ fn emit_self(dest: string, term: SIRTerm) -> string {
 
 fn runtime_label(name: string) -> string {
     case name of {
+        "link" -> "_silica_rt_actor_link";
+        "monitor" -> "_silica_rt_actor_monitor";
+        "demonitor" -> "_silica_rt_actor_demonitor";
         "get_cpu_topology" -> "_silica_rt_get_cpu_topology";
         "get_efficiency_cores" -> "_silica_rt_get_efficiency_cores";
         "get_performance_cores" -> "_silica_rt_get_performance_cores";
@@ -321,6 +328,9 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
         "actor_call" -> emit_actor_call(dest, term);
         "actor_cast" -> emit_actor_cast(dest, term);
         "self" -> emit_self(dest, term);
+        "link" -> emit_runtime_unary(dest, term);
+        "monitor" -> emit_runtime_unary(dest, term);
+        "demonitor" -> emit_runtime_unary(dest, term);
         "get_cpu_topology" -> emit_runtime_nullary(dest, term);
         "get_efficiency_cores" -> emit_runtime_nullary(dest, term);
         "get_performance_cores" -> emit_runtime_nullary(dest, term);

@@ -16,7 +16,9 @@
 -}
 
 // Actor / concurrency builtins → SIR prim terms (silica-specification §4.5, §15–16; sir_design_spec §7.9).
-// spawn, spawn_linked (supervisors Phase A §15.4.8.3), send per §7.9; actor_call, actor_cast, self and placement/runtime helpers use the same prim(kind 6) shape as region builtins.
+// spawn, spawn_linked (supervisors Phase A §15.4.8.3); link, monitor, demonitor (supervisors Phase B
+// supervisors_implementation_development_plan.md — §15.4.8.5–§15.4.8.7, ingress ordering §15.4.9 / §16.2.7);
+// send per §7.9; actor_call, actor_cast, self and placement/runtime helpers use the same prim(kind 6) shape as region builtins.
 //
 // Phase F (cpu_topology_implementation_plan): get_cpu_topology and get_core_capabilities return named record types.
 // They lower to a single kind-6 prim each: name = Silica builtin, type_name = structured return (cpu_topology / core_info),
@@ -28,6 +30,7 @@
 use parser_ast;
 use sir_ast;
 use types;
+use type_checker_core;
 
 export is_actor_sir_builtin/1;
 export actor_call_second_arg/1;
@@ -42,6 +45,9 @@ export build_actor_runtime_prim_3/4;
 export actor_runtime_sir_return_type/1;
 export build_get_cpu_topology_prim/0;
 export build_get_core_capabilities_prim/1;
+export build_link_prim/1;
+export build_monitor_prim/1;
+export build_demonitor_prim/1;
 
 // Parser: second argument is inner of right_expr when right is a kind-4 pair with empty name.
 fn actor_call_second_arg(expr: Expr) -> Expr {
@@ -52,14 +58,16 @@ fn actor_call_second_arg(expr: Expr) -> Expr {
 }
 
 fn is_actor_sir_builtin(name: string) -> bool {
-    name == "spawn" or name == "spawn_linked" or name == "send" or name == "cast" or name == "call" or name == "self"
-        or name == "pin_actor_to_core" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
-        or name == "pin_actor_realtime" or name == "remove_actor" or name == "pin_actor_to_numa_node"
-        or name == "unpin_actor" or name == "set_actor_priority"
-        or name == "get_cpu_topology" or name == "get_efficiency_cores" or name == "get_performance_cores"
-        or name == "get_core_capabilities"
-        or name == "get_actor_memory_usage"
-        or name == "migrate_actor" or name == "move"
+    base: string <- type_checker_core@user_call_base_function_name(name);
+    base == "spawn" or base == "spawn_linked" or base == "send" or base == "cast" or base == "call" or base == "self"
+        or base == "link" or base == "monitor" or base == "demonitor"
+        or base == "pin_actor_to_core" or base == "pin_actor_to_efficiency_core" or base == "pin_actor_to_performance_core"
+        or base == "pin_actor_realtime" or base == "remove_actor" or base == "pin_actor_to_numa_node"
+        or base == "unpin_actor" or base == "set_actor_priority"
+        or base == "get_cpu_topology" or base == "get_efficiency_cores" or base == "get_performance_cores"
+        or base == "get_core_capabilities"
+        or base == "get_actor_memory_usage"
+        or base == "migrate_actor" or base == "move"
 }
 
 // SIR text type field for runtime helper return (mirrors type_checker_expressions@actor_runtime_builtin_return_type).
@@ -95,6 +103,22 @@ fn build_spawn_prim(init: SIRTerm, beh: SIRTerm, place: SIRTerm, three_args: boo
 
 // spawn_linked: §15.4.8.3 — same [concurrency] prim shape; name distinguishes runtime (supervisors_implementation_development_plan Phase A).
 // 3-arg: right = tuple_make(behavior_fn_ptr, agent_type_term); 4-arg: tuple_make(tuple_make(behavior, agent_type), core_id).
+// link(target) -> :ok; monitor(target) -> monitor_ref; demonitor(ref) -> :ok (spec §15.4.8.5–§15.4.8.7).
+fn build_link_prim(target: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "link", inner: target, right_expr: d }
+}
+
+fn build_monitor_prim(target: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "monitor_ref", value: "[concurrency]", name: "monitor", inner: target, right_expr: d }
+}
+
+fn build_demonitor_prim(mon_ref: SIRTerm) -> SIRTerm {
+    d: SIRTerm <- sir_ast@dummy_sir_term();
+    SIRTerm { kind: 6, type_name: "atom", value: "[concurrency]", name: "demonitor", inner: mon_ref, right_expr: d }
+}
+
 fn build_spawn_linked_prim(init: SIRTerm, beh: SIRTerm, agent: SIRTerm, place: SIRTerm, four_args: bool) -> SIRTerm {
     beh_agent: SIRTerm <- SIRTerm { kind: 6, type_name: "unit", value: "", name: "tuple_make", inner: beh, right_expr: agent };
     right_slot: SIRTerm <- case four_args of {
