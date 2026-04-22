@@ -29,6 +29,63 @@ export collect_export_trait_names/1;
 export collect_marker_impl_types/1;
 export collect_required_trait_method_sigs/1;
 export collect_supervisor_impl_types/1;
+export collect_failure_reporter_impl_types/1;
+export collect_supervisor_phase_e/1;
+
+// Phase E: `fn init(_: ActorState) -> (supervisor_flags, List[child_spec,…])` — SIR of return type, keyed by
+// each `impl T for Supervisor` (same `init` is duplicated per marker when multiple markers; rare).
+fn is_supervisor_init_for_phase_e(decl: Declaration) -> bool {
+    case decl.tag == 0 of {
+        false -> false;
+        true -> case decl.name == "init" of {
+            false -> false;
+            true -> case decl.parameters.is_nil of {
+                true -> false;
+                false -> case decl.parameters.tail.is_nil of {
+                    false -> false;
+                    true -> type_checker_traits@trim_type_text(decl.parameters.head.type_name) == "ActorState"
+                }
+            }
+        }
+    }
+}
+
+fn find_supervisor_init_decl_loop(decls: ListDeclaration) -> (bool, Declaration) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case is_supervisor_init_for_phase_e(decls.head) of {
+            true -> (true, decls.head);
+            false -> find_supervisor_init_decl_loop(decls.tail)
+        }
+    }
+}
+
+fn build_supervisor_phase_e_rows_for_types(sup_types: ListSirString, ret_sir: string) -> ListSIRSupervisorPhaseE {
+    case sup_types.is_nil of {
+        true -> sir_ast@nil_supervisor_phase_e();
+        false -> do
+            row: SIRSupervisorPhaseE <- SIRSupervisorPhaseE { actor_type: sup_types.head, init_return_sir: ret_sir };
+            sir_ast@cons_supervisor_phase_e(row, build_supervisor_phase_e_rows_for_types(sup_types.tail, ret_sir))
+        end
+    }
+}
+
+fn collect_supervisor_phase_e(decls: ListDeclaration) -> ListSIRSupervisorPhaseE {
+    sup_types: ListSirString <- collect_supervisor_impl_types(decls);
+    case sup_types.is_nil of {
+        true -> sir_ast@nil_supervisor_phase_e();
+        false -> do
+            (found: bool, init_d: Declaration) <- find_supervisor_init_decl_loop(decls);
+            case found of {
+                false -> sir_ast@nil_supervisor_phase_e();
+                true -> do
+                    ret_sir: string <- types@type_name_to_sir(init_d.return_type_name);
+                    build_supervisor_phase_e_rows_for_types(sup_types, ret_sir)
+                end
+            }
+        end
+    }
+}
 
 fn collect_export_trait_names_loop(decls: ListDeclaration) -> ListSirString {
     case decls.is_nil of {
@@ -99,6 +156,43 @@ fn collect_supervisor_impl_types_loop(decls: ListDeclaration) -> ListSirString {
 
 fn collect_supervisor_impl_types(decls: ListDeclaration) -> ListSirString {
     collect_supervisor_impl_types_loop(decls)
+}
+
+// §15.4.13.4 / supervisors plan Phase F: `impl ActorType for FailureReporter;` (Declaration tag 6) — concrete actor type for root FailureReporter bootstrap (unwind / handle_report).
+fn for_failure_reporter_impl_suffix() -> string {
+    " for FailureReporter"
+}
+
+fn type_name_before_for_failure_reporter_impl(s: string) -> string {
+    t: string <- type_checker_traits@trim_type_text(s);
+    suf: string <- for_failure_reporter_impl_suffix();
+    case string_ends_with_suffix(t, suf) of {
+        false -> "";
+        true -> do
+            lf: int64 <- len(suf);
+            type_checker_traits@trim_type_text(substring(t, 0, len(t) - lf))
+        end
+    }
+}
+
+fn collect_failure_reporter_impl_types_loop(decls: ListDeclaration) -> ListSirString {
+    case decls.is_nil of {
+        true -> sir_ast@nil_sir_strings();
+        false -> case decls.head.tag == 6 of {
+            true -> do
+                actor_ty: string <- type_name_before_for_failure_reporter_impl(decls.head.return_type_name);
+                case len(actor_ty) > 0 of {
+                    true -> sir_ast@cons_sir_string(actor_ty, collect_failure_reporter_impl_types_loop(decls.tail));
+                    false -> collect_failure_reporter_impl_types_loop(decls.tail)
+                }
+            end;
+            false -> collect_failure_reporter_impl_types_loop(decls.tail)
+        }
+    }
+}
+
+fn collect_failure_reporter_impl_types(decls: ListDeclaration) -> ListSirString {
+    collect_failure_reporter_impl_types_loop(decls)
 }
 
 fn required_sig_from_decl(decl: Declaration) -> SIRRequiredMethodSig {

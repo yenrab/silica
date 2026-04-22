@@ -25,6 +25,8 @@ export ListSirString/0;
 export SIRExportItem/0;
 export ListSIRExportItem/0;
 export SIRModule/0;
+export SIRSupervisorPhaseE/0;
+export ListSIRSupervisorPhaseE/0;
 export dummy_sir_term/0;
 export dummy_sir_function/0;
 export cons_sir_functions/2;
@@ -39,6 +41,24 @@ export ListSIRRequiredMethodSig/0;
 export dummy_required_method_sig/0;
 export nil_required_method_sigs/0;
 export cons_required_method_sig/2;
+export dummy_supervisor_phase_e/0;
+export nil_supervisor_phase_e/0;
+export cons_supervisor_phase_e/2;
+export sir_supervisor_phase_e_rows_to_text/2;
+
+// Supervisors plan Phase E (supervisors_implementation_development_plan.md §15.4.12–15.4.13.2):
+// concrete `impl T for Supervisor` + SIR of `init`'s return type (static child_spec / supervisor_flags used by
+// runtime internal child table and automatic restart; pairs with `impl_supervisor T` in module text).
+struct SIRSupervisorPhaseE {
+    actor_type: string,
+    init_return_sir: string
+}
+
+struct ListSIRSupervisorPhaseE {
+    is_nil: bool,
+    head: SIRSupervisorPhaseE,
+    tail: ListSIRSupervisorPhaseE
+}
 
 // SIRTerm: kind 0=const, 1=var, 2=let, 3=case, 4=call, 5=tail_call, 6=prim,
 //   tail_call: same slot layout as call (name=callee, inner/ right_expr=args, value=effects+|sir_rec:...)
@@ -114,6 +134,10 @@ struct SIRModule {
     marker_impl_types: ListSirString,
     // supervisor_implementation_development_plan.md Phases C–D: types named in `impl T for Supervisor;` (tag 6) for runtime supervisor metadata (§15.4.10–§15.4.13).
     supervisor_impl_types: ListSirString,
+    // Phase E: per–actor-type SIR of `init` return (flags + static List[child_spec, …]) for internal child table / restart; empty when no `init` in unit.
+    supervisor_phase_e: ListSIRSupervisorPhaseE,
+    // supervisors plan Phase F (§15.4.13.4): actor types in `impl T for FailureReporter;` (tag 6) for root FailureReporter bootstrap / unwind delivery metadata.
+    failure_reporter_impl_types: ListSirString,
     required_method_sigs: ListSIRRequiredMethodSig,
     functions: ListSIRFunction
 }
@@ -169,6 +193,19 @@ fn nil_required_method_sigs() -> ListSIRRequiredMethodSig {
 
 fn cons_required_method_sig(item: SIRRequiredMethodSig, rest: ListSIRRequiredMethodSig) -> ListSIRRequiredMethodSig {
     ListSIRRequiredMethodSig { is_nil: false, head: item, tail: rest }
+}
+
+fn dummy_supervisor_phase_e() -> SIRSupervisorPhaseE {
+    SIRSupervisorPhaseE { actor_type: "", init_return_sir: "" }
+}
+
+fn nil_supervisor_phase_e() -> ListSIRSupervisorPhaseE {
+    ph: ListSIRSupervisorPhaseE <- ListSIRSupervisorPhaseE { is_nil: true, head: dummy_supervisor_phase_e(), tail: ph };
+    ph
+}
+
+fn cons_supervisor_phase_e(item: SIRSupervisorPhaseE, rest: ListSIRSupervisorPhaseE) -> ListSIRSupervisorPhaseE {
+    ListSIRSupervisorPhaseE { is_nil: false, head: item, tail: rest }
 }
 
 // Debug: convert SIR term/module to readable text (for debugging emitter branch logic)
@@ -322,6 +359,38 @@ fn sir_supervisor_impls_to_text(types: ListSirString, acc: string) -> string {
     }
 }
 
+// Phase E: `init` return SIR for automatic restart / internal child table (one row per `impl T for Supervisor` marker).
+fn sir_supervisor_phase_e_rows_to_text(rows: ListSIRSupervisorPhaseE, acc: string) -> string {
+    case rows.is_nil of {
+        true -> acc;
+        false -> do
+            r: SIRSupervisorPhaseE <- rows.head;
+            p1: string <- concat("  supervisor_phase_e ", r.actor_type);
+            p2: string <- concat(p1, " init_returns ");
+            p3: string <- concat(p2, concat(r.init_return_sir, "\n"));
+            rest: string <- sir_supervisor_phase_e_rows_to_text(rows.tail, acc);
+            case len(rest) > 0 of {
+                true -> concat(p3, rest);
+                false -> p3
+            }
+        end
+    }
+}
+
+fn sir_failure_reporter_impls_to_text(types: ListSirString, acc: string) -> string {
+    case types.is_nil of {
+        true -> acc;
+        false -> do
+            rest: string <- sir_failure_reporter_impls_to_text(types.tail, acc);
+            line: string <- concat("  impl_failure_reporter ", concat(types.head, "\n"));
+            case len(rest) > 0 of {
+                true -> concat(line, rest);
+                false -> line
+            }
+        end
+    }
+}
+
 fn sir_required_sigs_to_text(sigs: ListSIRRequiredMethodSig, acc: string) -> string {
     case sigs.is_nil of {
         true -> acc;
@@ -381,6 +450,14 @@ fn sir_module_to_text(sir_module: SIRModule) -> string {
         true -> "";
         false -> sir_supervisor_impls_to_text(sir_module.supervisor_impl_types, "")
     };
+    phe_line: string <- case sir_module.supervisor_phase_e.is_nil of {
+        true -> "";
+        false -> sir_supervisor_phase_e_rows_to_text(sir_module.supervisor_phase_e, "")
+    };
+    fr_line: string <- case sir_module.failure_reporter_impl_types.is_nil of {
+        true -> "";
+        false -> sir_failure_reporter_impls_to_text(sir_module.failure_reporter_impl_types, "")
+    };
     req_line: string <- case sir_module.required_method_sigs.is_nil of {
         true -> "";
         false -> sir_required_sigs_to_text(sir_module.required_method_sigs, "")
@@ -392,7 +469,9 @@ fn sir_module_to_text(sir_module: SIRModule) -> string {
         part3: string <- concat(part2, trait_exports_line);
         part4: string <- concat(part3, marker_line);
         part4b: string <- concat(part4, sup_line);
-        part5: string <- concat(part4b, req_line);
+        part4b2: string <- concat(part4b, phe_line);
+        part4c: string <- concat(part4b2, fr_line);
+        part5: string <- concat(part4c, req_line);
         concat(part5, funcs)
     end
 }

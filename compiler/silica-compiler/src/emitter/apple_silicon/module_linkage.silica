@@ -190,6 +190,10 @@ fn emit_export_global_directives(exports: ListSIRExportItem, fns: ListSIRFunctio
 // Emitted as assembler comments so object text matches SIR module metadata (sir_module_to_text); no runtime effect.
 // Supervisors Phase D (supervisors_implementation_development_plan.md §15.4.13): `impl_supervisor T` lines mark
 // concrete actor types implementing Supervisor for runtime metadata (ingress / init table); see sir_generator traits.
+// Supervisors Phase E (same plan §15.4.12–§15.4.13.2): `supervisor_phase_e T init_returns …` lines carry the SIR of
+// `init`'s return type (static supervisor_flags + child_spec list) for the runtime internal child table and automatic restart.
+// Supervisors Phase F (same plan §15.4.13.4): `impl_failure_reporter T` lines mark the concrete actor type for
+// root FailureReporter bootstrap and unwind/handle_report delivery; pairs with `sir_module_to_text` / SIR `impl_failure_reporter`.
 fn format_export_trait_names_comments_loop(names: ListSirString, acc: string) -> string {
     case names.is_nil of {
         true -> acc;
@@ -208,6 +212,30 @@ fn format_supervisor_impl_types_comments_loop(types: ListSirString, acc: string)
     case types.is_nil of {
         true -> acc;
         false -> format_supervisor_impl_types_comments_loop(types.tail, concat(acc, concat("    ; impl_supervisor ", concat(types.head, "\n"))))
+    }
+}
+
+fn format_failure_reporter_impl_types_comments_loop(types: ListSirString, acc: string) -> string {
+    case types.is_nil of {
+        true -> acc;
+        false -> format_failure_reporter_impl_types_comments_loop(types.tail, concat(acc, concat("    ; impl_failure_reporter ", concat(types.head, "\n"))))
+    }
+}
+
+// Align with sir_ast@sir_supervisor_phase_e_rows_to_text: one row per `impl T for Supervisor` marker.
+fn format_one_supervisor_phase_e_comment(row: SIRSupervisorPhaseE) -> string {
+    p1: string <- concat("    ; supervisor_phase_e ", row.actor_type);
+    p2: string <- concat(p1, " init_returns ");
+    concat(p2, concat(row.init_return_sir, "\n"))
+}
+
+fn format_supervisor_phase_e_comments_loop(rows: ListSIRSupervisorPhaseE, acc: string) -> string {
+    case rows.is_nil of {
+        true -> acc;
+        false -> do
+            line: string <- format_one_supervisor_phase_e_comment(rows.head);
+            format_supervisor_phase_e_comments_loop(rows.tail, concat(acc, line))
+        end
     }
 }
 
@@ -246,9 +274,17 @@ fn format_trait_metadata_comments(sir_module: SIRModule) -> string {
         true -> "";
         false -> concat("    ; supervisors Phase D: runtime supervisor metadata follows (impl_supervisor actor types; §15.4.13)\n", format_supervisor_impl_types_comments_loop(sir_module.supervisor_impl_types, ""))
     };
+    phe: string <- case sir_module.supervisor_phase_e.is_nil of {
+        true -> "";
+        false -> concat("    ; supervisors Phase E: declarative children / automatic restart (supervisor_phase_e init SIR; §15.4.12–§15.4.13.2)\n", format_supervisor_phase_e_comments_loop(sir_module.supervisor_phase_e, ""))
+    };
+    f: string <- case sir_module.failure_reporter_impl_types.is_nil of {
+        true -> "";
+        false -> concat("    ; supervisors Phase F: root FailureReporter metadata (impl_failure_reporter actor type; §15.4.13.4)\n", format_failure_reporter_impl_types_comments_loop(sir_module.failure_reporter_impl_types, ""))
+    };
     r: string <- case sir_module.required_method_sigs.is_nil of {
         true -> "";
         false -> format_required_trait_sigs_comments_loop(sir_module.required_method_sigs, "")
     };
-    concat(concat(concat(t, m), s), r)
+    concat(concat(concat(concat(concat(t, m), s), phe), f), r)
 }

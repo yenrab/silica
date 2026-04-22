@@ -1,0 +1,196 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Supervisors Phase E (design_documents/supervisors_implementation_development_plan.md, §15.4.12–15.4.13.2):
+// `impl … for Supervisor { fn init … }` must declare a return type that names the static child table
+// and escalation fields the runtime uses for automatic restart (shared with module_checker export-trait
+// validation — same string predicates).
+
+use parser_ast;
+use type_checker_core;
+use type_checker_traits;
+
+export supervisor_init_return_tuple_has_flags_and_children/1;
+export supervisor_init_return_has_phase_e_declarative_fields/1;
+export program_has_impl_for_supervisor/1;
+export check_init_if_supervisor_impl_phase_e/2;
+
+fn supervisor_string_contains_from(h: string, needle: string, i: int64, nh: int64) -> bool {
+    case i + nh > len(h) of {
+        true -> false;
+        false -> case substring(h, i, i + nh) == needle of {
+            true -> true;
+            false -> supervisor_string_contains_from(h, needle, i + 1, nh)
+        }
+    }
+}
+
+fn supervisor_string_contains(h: string, needle: string) -> bool {
+    nh: int64 <- len(needle);
+    case nh == 0 of {
+        true -> true;
+        false -> supervisor_string_contains_from(h, needle, 0, nh)
+    }
+}
+
+// §15.4.13.1: tuple (flags, static children). Same top-level comma scan as module_checker / trait_checker.
+fn supervisor_trait_top_level_comma_in_type(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case depth == 0 and substring(s, i, i + 1) == "," of {
+            true -> i;
+            false -> do
+                c: string <- substring(s, i, i + 1);
+                d2: int64 <- case c == "(" of {
+                    true -> depth + 1;
+                    false -> case c == ")" of {
+                        true -> depth - 1;
+                        false -> case c == "{" of {
+                            true -> depth + 1;
+                            false -> case c == "}" of {
+                                true -> depth - 1;
+                                false -> case c == "[" of {
+                                    true -> depth + 1;
+                                    false -> case c == "]" of {
+                                        true -> depth - 1;
+                                        false -> depth
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+                supervisor_trait_top_level_comma_in_type(s, i + 1, d2)
+            end
+        }
+    }
+}
+
+fn supervisor_init_return_tuple_has_flags_and_children(ret: string) -> bool {
+    t: string <- type_checker_traits@trim_type_text(ret);
+    case len(t) < 2 of {
+        true -> false;
+        false -> case substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
+            false -> false;
+            true -> do
+                inner: string <- type_checker_traits@trim_type_text(substring(t, 1, len(t) - 1));
+                comma_at_top: int64 <- supervisor_trait_top_level_comma_in_type(inner, 0, 0);
+                comma_at_top >= 0
+            end
+        }
+    }
+}
+
+// §15.4.13.2 fields for Phase E static child table and escalation (substring match on parsed return type text).
+fn supervisor_init_return_has_phase_e_declarative_fields(ret: string) -> bool {
+    t: string <- type_checker_traits@trim_type_text(ret);
+    case supervisor_string_contains(t, "strategy:") of {
+        false -> false;
+        true -> case supervisor_string_contains(t, "allowed_restart_count:") of {
+            false -> false;
+            true -> case supervisor_string_contains(t, "restarts_time_frame:") of {
+                false -> false;
+                true -> case supervisor_string_contains(t, "List[") of {
+                    false -> false;
+                    true -> case supervisor_string_contains(t, ", normal") of {
+                        false -> false;
+                        true -> case supervisor_string_contains(t, "id:") of {
+                            false -> false;
+                            true -> case supervisor_string_contains(t, "agent_type:") of {
+                                false -> false;
+                                true -> case supervisor_string_contains(t, "start:") of {
+                                    false -> false;
+                                    true -> case supervisor_string_contains(t, "restart:") of {
+                                        false -> false;
+                                        true -> supervisor_string_contains(t, "shutdown:")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn for_supervisor_impl_suffix() -> string {
+    " for Supervisor"
+}
+
+fn string_ends_with_suffix(s: string, suf: string) -> bool {
+    ls: int64 <- len(s);
+    lf: int64 <- len(suf);
+    case ls < lf of { true -> false; false -> substring(s, ls - lf, ls) == suf }
+}
+
+// Tag-6 marker: `impl ConcreteActorType for Supervisor;` (sir_generator/declarations/traits.silica).
+fn program_has_impl_for_supervisor_loop(decls: ListDeclaration) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 6 of {
+            true -> do
+                t: string <- type_checker_traits@trim_type_text(decls.head.return_type_name);
+                case string_ends_with_suffix(t, for_supervisor_impl_suffix()) of {
+                    true -> true;
+                    false -> program_has_impl_for_supervisor_loop(decls.tail)
+                }
+            end;
+            false -> program_has_impl_for_supervisor_loop(decls.tail)
+        }
+    }
+}
+
+fn program_has_impl_for_supervisor(decls: ListDeclaration) -> bool {
+    program_has_impl_for_supervisor_loop(decls)
+}
+
+// When a module defines `impl T for Supervisor` and `fn init(st: ActorState) -> ...`, the return type must
+// name Phase E declarative `supervisor_flags` + `List[child_spec, normal]` fields (runtime static table
+// and automatic restart per §15.4.13.1–2).
+fn check_supervisor_init_return_type_phase_e_shape(decl: Declaration) -> TypeCheckResult {
+    retn: string <- type_checker_traits@trim_type_text(decl.return_type_name);
+    case len(retn) > 0 of {
+        false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init must declare return type (supervisor_flags, List[child_spec, normal]); spec §15.4.13.1–§15.4.13.2 (supervisors plan Phase E)", "sect15.4.13.1");
+        true -> case supervisor_init_return_tuple_has_flags_and_children(decl.return_type_name) of {
+            false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init must return a tuple (supervisor_flags, static child list) per spec §15.4.13.1 (supervisors plan Phase E)", "sect15.4.13.1");
+            true -> case supervisor_init_return_has_phase_e_declarative_fields(decl.return_type_name) of {
+                false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init return type must include supervisor_flags (strategy, allowed_restart_count, restarts_time_frame) and child_spec fields (id, agent_type, start, restart, shutdown) in List[..., normal] for automatic restart (supervisors plan Phase E; spec §15.4.13.2)", "sect15.4.13.2");
+                true -> type_checker_core@type_check_ok()
+            }
+        }
+    }
+}
+
+fn check_init_if_supervisor_impl_phase_e(decl: Declaration, all_decls: ListDeclaration) -> TypeCheckResult {
+    case program_has_impl_for_supervisor(all_decls) of {
+        false -> type_checker_core@type_check_ok();
+        true -> case decl.name == "init" of {
+            false -> type_checker_core@type_check_ok();
+            true -> case decl.parameters.is_nil of {
+                true -> type_checker_core@type_check_ok();
+                false -> case decl.parameters.tail.is_nil of {
+                    false -> type_checker_core@type_check_ok();
+                    true -> case type_checker_traits@trim_type_text(decl.parameters.head.type_name) == "ActorState" of {
+                        false -> type_checker_core@type_check_ok();
+                        true -> check_supervisor_init_return_type_phase_e_shape(decl)
+                    }
+                }
+            }
+        }
+    }
+}

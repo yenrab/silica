@@ -18,9 +18,16 @@
 // Module checking phase: after parsing, before type checking (spec §19.2–19.3, §3.4.8 trait files).
 // Validates `use` against silica.config, module-qualified calls vs `use`, cross-module export surfaces,
 // and trait-module rules (`export trait` vs filename, exports vs required/provided/impl methods).
+// Supervisors Phase F (supervisors_implementation_development_plan.md): `export trait FailureReporter`
+// required-method shape vs spec §15.4.13.4 (region_dump_limit, handle_report).
+// Supervisors Phase E (same plan, §15.4.12–§15.4.13.2): `export trait Supervisor` must declare
+// `init` returning the static supervisor_flags + List[child_spec, normal] surface the runtime uses
+// for the internal child table and automatic restart (declarative children).
 
 use parser_ast;
 use type_checker_core;
+use type_checker_traits;
+use type_checker_supervisor;
 use diagnostics_core;
 
 struct ListString {
@@ -145,6 +152,251 @@ fn fold_export_trait_meta(decls: ListDeclaration, count: int64, first_name: stri
             };
             false -> fold_export_trait_meta(decls.tail, count, first_name, first_loc, second_loc)
         }
+    }
+}
+
+// True when this unit exports `export trait Name` (declaration tag 5).
+fn program_exports_trait_named(decls: ListDeclaration, trait_id: string) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 5 of {
+            true -> case decls.head.name == trait_id of {
+                true -> true;
+                false -> program_exports_trait_named(decls.tail, trait_id)
+            };
+            false -> program_exports_trait_named(decls.tail, trait_id)
+        }
+    }
+}
+
+fn count_tag7_declarations(decls: ListDeclaration, acc: int64) -> int64 {
+    case decls.is_nil of {
+        true -> acc;
+        false -> case decls.head.tag == 7 of {
+            true -> count_tag7_declarations(decls.tail, acc + 1);
+            false -> count_tag7_declarations(decls.tail, acc)
+        }
+    }
+}
+
+fn find_tag7_by_name(decls: ListDeclaration, method_name: string) -> (bool, Declaration) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case decls.head.tag == 7 of {
+            true -> case decls.head.name == method_name of {
+                true -> (true, decls.head);
+                false -> find_tag7_by_name(decls.tail, method_name)
+            };
+            false -> find_tag7_by_name(decls.tail, method_name)
+        }
+    }
+}
+
+fn failure_reporter_region_dump_return_ok(ret: string) -> bool {
+    r: string <- type_checker_traits@trim_type_text(ret);
+    case r == "int" of {
+        true -> true;
+        false -> r == "int64"
+    }
+}
+
+fn failure_reporter_handle_report_dumps_type_ok(ty: string) -> bool {
+    t: string <- type_checker_traits@trim_type_text(ty);
+    case strings_equal_ascii_ignore_case(t, "[(atom, bytes)]") of {
+        true -> true;
+        false -> strings_equal_ascii_ignore_case(t, "List[(atom, bytes), normal]")
+    }
+}
+
+// §15.4.13.4 FailureReporter: exactly two required methods with canonical shapes.
+fn validate_failure_reporter_trait_required_shape(program: Program) -> int64 proc[DeviceIO] {
+    decls: ListDeclaration <- program.declarations;
+    case program_exports_trait_named(decls, "FailureReporter") of {
+        false -> 0;
+        true -> do
+            n_req: int64 <- count_tag7_declarations(decls, 0);
+            case n_req == 2 of {
+                false -> do
+                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2090", program.location, "export trait FailureReporter must declare exactly two required methods: region_dump_limit and handle_report (supervisors plan Phase F; spec §15.4.13.4)", "sect15.4.13.4");
+                    1
+                end;
+                true -> do
+                    (f_rdl: bool, rdl: Declaration) <- find_tag7_by_name(decls, "region_dump_limit");
+                    (f_hr: bool, hr: Declaration) <- find_tag7_by_name(decls, "handle_report");
+                    case f_rdl of {
+                        false -> do
+                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2090", program.location, "FailureReporter trait must declare required method region_dump_limit() -> int (spec §15.4.13.4)", "sect15.4.13.4");
+                            1
+                        end;
+                        true -> case f_hr of {
+                            false -> do
+                                _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2090", program.location, "FailureReporter trait must declare required method handle_report(report: String, region_dumps: [(atom, Bytes)]) -> :ok (spec §15.4.13.4)", "sect15.4.13.4");
+                                1
+                            end;
+                            true -> case list_param_length_decl(rdl.parameters) == 0 of {
+                                false -> do
+                                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2090", rdl.location, "FailureReporter region_dump_limit must take no parameters (spec §15.4.13.4)", "sect15.4.13.4");
+                                    1
+                                end;
+                                true -> case len(type_checker_traits@trim_type_text(rdl.return_type_name)) > 0 of {
+                                    false -> do
+                                        _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2090", rdl.return_type_location, "FailureReporter region_dump_limit must declare return type int (spec §15.4.13.4)", "sect15.4.13.4");
+                                        1
+                                    end;
+                                    true -> case failure_reporter_region_dump_return_ok(rdl.return_type_name) of {
+                                        false -> do
+                                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2090", rdl.return_type_location, "FailureReporter region_dump_limit must return int or int64 (spec §15.4.13.4)", "sect15.4.13.4");
+                                            1
+                                        end;
+                                        true -> case list_param_length_decl(hr.parameters) == 2 of {
+                                            false -> do
+                                                _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2090", hr.location, "FailureReporter handle_report must take exactly two parameters (spec §15.4.13.4)", "sect15.4.13.4");
+                                                1
+                                            end;
+                                            true -> do
+                                                p0: Param <- hr.parameters.head;
+                                                p1: Param <- hr.parameters.tail.head;
+                                                t0: string <- type_checker_traits@trim_type_text(p0.type_name);
+                                                case strings_equal_ascii_ignore_case(t0, "string") of {
+                                                    false -> do
+                                                        _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2090", p0.location, "FailureReporter handle_report first parameter must have type String (spec §15.4.13.4)", "sect15.4.13.4");
+                                                        1
+                                                    end;
+                                                    true -> case failure_reporter_handle_report_dumps_type_ok(p1.type_name) of {
+                                                        false -> do
+                                                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2090", p1.location, "FailureReporter handle_report second parameter must have type [(atom, Bytes)] (spec §15.4.13.4)", "sect15.4.13.4");
+                                                            1
+                                                        end;
+                                                        true -> case len(type_checker_traits@trim_type_text(hr.return_type_name)) > 0 of {
+                                                            false -> do
+                                                                _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2090", hr.return_type_location, "FailureReporter handle_report must declare return type :ok (spec §15.4.13.4)", "sect15.4.13.4");
+                                                                1
+                                                            end;
+                                                            true -> case type_checker_traits@trim_type_text(hr.return_type_name) == ":ok" of {
+                                                                false -> do
+                                                                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2090", hr.return_type_location, "FailureReporter handle_report must return :ok (spec §15.4.13.4)", "sect15.4.13.4");
+                                                                    1
+                                                                end;
+                                                                true -> 0
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            end
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn find_first_tag7_declaration_module(decls: ListDeclaration) -> (bool, Declaration) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case decls.head.tag == 7 of {
+            true -> (true, decls.head);
+            false -> find_first_tag7_declaration_module(decls.tail)
+        }
+    }
+}
+
+fn module_string_contains_from(h: string, needle: string, i: int64, nh: int64) -> bool {
+    case i + nh > len(h) of {
+        true -> false;
+        false -> case substring(h, i, i + nh) == needle of {
+            true -> true;
+            false -> module_string_contains_from(h, needle, i + 1, nh)
+        }
+    }
+}
+
+fn module_string_contains(h: string, needle: string) -> bool {
+    nh: int64 <- len(needle);
+    case nh == 0 of {
+        true -> true;
+        false -> module_string_contains_from(h, needle, 0, nh)
+    }
+}
+
+// Module phase: `export trait Supervisor` only (stdlib contract). ModuleError E2092 — distinct from
+// TraitError E2090 in trait_checker and ModuleError E2090 (FailureReporter).
+fn validate_supervisor_trait_phase_e_shape(program: Program) -> int64 proc[DeviceIO] {
+    decls: ListDeclaration <- program.declarations;
+    case program_exports_trait_named(decls, "Supervisor") of {
+        false -> 0;
+        true -> do
+            n_req: int64 <- count_tag7_declarations(decls, 0);
+            case n_req == 1 of {
+                false -> do
+                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2092", program.location, "export trait Supervisor must declare exactly one required method init (supervisors plan Phase E; spec §15.4.13.1)", "sect15.4.13.1");
+                    1
+                end;
+                true -> do
+                    (found: bool, req: Declaration) <- find_first_tag7_declaration_module(decls);
+                    case found of {
+                        false -> do
+                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2092", program.location, "Supervisor trait required block must declare init (spec §15.4.13.1)", "sect15.4.13.1");
+                            1
+                        end;
+                        true -> case req.name == "init" of {
+                            false -> do
+                                _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2092", program.location, "Supervisor trait required block must declare init (spec §15.4.13.1)", "sect15.4.13.1");
+                                1
+                            end;
+                            true -> do
+                                params: ListParam <- req.parameters;
+                                case params.is_nil of {
+                                    true -> do
+                                        _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2092", req.location, "Supervisor init must take exactly one parameter of type ActorState (spec §15.4.13.1)", "sect15.4.13.1");
+                                        1
+                                    end;
+                                    false -> case params.tail.is_nil of {
+                                        false -> do
+                                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2092", req.location, "Supervisor init must take exactly one parameter of type ActorState (spec §15.4.13.1)", "sect15.4.13.1");
+                                            1
+                                        end;
+                                        true -> do
+                                            p0: Param <- params.head;
+                                            t0: string <- type_checker_traits@trim_type_text(p0.type_name);
+                                            case t0 == "ActorState" of {
+                                                false -> do
+                                                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2092", p0.location, "Supervisor init first parameter must have type ActorState (spec §15.4.13.1)", "sect15.4.13.1");
+                                                    1
+                                                end;
+                                                true -> case len(type_checker_traits@trim_type_text(req.return_type_name)) > 0 of {
+                                                    false -> do
+                                                        _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2092", req.return_type_location, "Supervisor init must declare return type (supervisor_flags, List[child_spec, normal]); spec §15.4.13.1–§15.4.13.2", "sect15.4.13.1");
+                                                        1
+                                                    end;
+                                                    true -> case type_checker_supervisor@supervisor_init_return_tuple_has_flags_and_children(req.return_type_name) of {
+                                                        false -> do
+                                                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2092", req.return_type_location, "Supervisor init must return a tuple (supervisor_flags, static child list) per spec §15.4.13.1", "sect15.4.13.1");
+                                                            1
+                                                        end;
+                                                        true -> case type_checker_supervisor@supervisor_init_return_has_phase_e_declarative_fields(req.return_type_name) of {
+                                                            false -> do
+                                                                _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E2092", req.return_type_location, "Supervisor init return type must include supervisor_flags (strategy, allowed_restart_count, restarts_time_frame) and child_spec fields (id, agent_type, start, restart, shutdown) in List[..., normal] for automatic restart (supervisors plan Phase E; spec §15.4.13.2)", "sect15.4.13.2");
+                                                                1
+                                                            end;
+                                                            true -> 0
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        end
+                                    }
+                                }
+                            end
+                        }
+                    }
+                end
+            }
+        end
     }
 }
 
@@ -761,63 +1013,75 @@ fn module_checker_check_program(program: Program, config_files: ListString, all_
                     1
                 end;
                 true -> do
-                    es: int64 <- entry_shape_status(program);
-                    case es == 1 of {
-                        true -> do
-                            loc: SourceLocation <- first_function_declaration_location(program.declarations);
-                            msg: string <- "module must define main/0, export at least one function, or export a trait (spec 19.1, 3.4.8)";
-                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E4016", loc, msg, "sect19.1");
-                            1
-                        end;
+                    fr_st: int64 <- validate_failure_reporter_trait_required_shape(program);
+                    case fr_st == 1 of {
+                        true -> 1;
                         false -> do
-                            (qual_st: int64, qual_code: string, qual_loc: SourceLocation, qual_msg: string, qual_spec: string) <- validate_module_qualified_calls_have_use(program, current_path);
-                            case qual_st == 0 of {
+                            sup_st: int64 <- validate_supervisor_trait_phase_e_shape(program);
+                            case sup_st == 1 of {
+                                true -> 1;
                                 false -> do
-                                    qec: string <- case qual_code == "" of {
-                                        true -> "E1010";
-                                        false -> qual_code
-                                    };
-                                    qss: string <- case qual_spec == "" of {
-                                        true -> "sect19.3";
-                                        false -> qual_spec
-                                    };
-                                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", qec, qual_loc, qual_msg, qss);
-                                    1
-                                end;
-                                true -> do
-                                    (exm_st: int64, exm_code: string, exm_loc: SourceLocation, exm_msg: string, exm_spec: string) <- validate_exports_match_functions_program(program.declarations);
-                                    case exm_st == 0 of {
-                                        false -> do
-                                            exmc: string <- case exm_code == "" of {
-                                                true -> "E4010";
-                                                false -> exm_code
-                                            };
-                                            exms: string <- case exm_spec == "" of {
-                                                true -> case exmc == "E4014" of {
-                                                    true -> "sect19.2";
-                                                    false -> "sect19.2.1"
-                                                };
-                                                false -> exm_spec
-                                            };
-                                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", exmc, exm_loc, exm_msg, exms);
+                                    es: int64 <- entry_shape_status(program);
+                                    case es == 1 of {
+                                        true -> do
+                                            loc: SourceLocation <- first_function_declaration_location(program.declarations);
+                                            msg: string <- "module must define main/0, export at least one function, or export a trait (spec 19.1, 3.4.8)";
+                                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", "E4016", loc, msg, "sect19.1");
                                             1
                                         end;
-                                        true -> do
-                                            (exp_st: int64, exp_code: string, exp_loc: SourceLocation, exp_msg: string, exp_spec: string) <- validate_cross_module_export_surface(program, all_parsed);
-                                            case exp_st == 0 of {
+                                        false -> do
+                                            (qual_st: int64, qual_code: string, qual_loc: SourceLocation, qual_msg: string, qual_spec: string) <- validate_module_qualified_calls_have_use(program, current_path);
+                                            case qual_st == 0 of {
                                                 false -> do
-                                                    eec: string <- case exp_code == "" of {
-                                                        true -> "E1011";
-                                                        false -> exp_code
+                                                    qec: string <- case qual_code == "" of {
+                                                        true -> "E1010";
+                                                        false -> qual_code
                                                     };
-                                                    ess: string <- case exp_spec == "" of {
-                                                        true -> "sect19.2";
-                                                        false -> exp_spec
+                                                    qss: string <- case qual_spec == "" of {
+                                                        true -> "sect19.3";
+                                                        false -> qual_spec
                                                     };
-                                                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", eec, exp_loc, exp_msg, ess);
+                                                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", qec, qual_loc, qual_msg, qss);
                                                     1
                                                 end;
-                                                true -> 0
+                                                true -> do
+                                                    (exm_st: int64, exm_code: string, exm_loc: SourceLocation, exm_msg: string, exm_spec: string) <- validate_exports_match_functions_program(program.declarations);
+                                                    case exm_st == 0 of {
+                                                        false -> do
+                                                            exmc: string <- case exm_code == "" of {
+                                                                true -> "E4010";
+                                                                false -> exm_code
+                                                            };
+                                                            exms: string <- case exm_spec == "" of {
+                                                                true -> case exmc == "E4014" of {
+                                                                    true -> "sect19.2";
+                                                                    false -> "sect19.2.1"
+                                                                };
+                                                                false -> exm_spec
+                                                            };
+                                                            _: int8 <- diagnostics_core@print_compiler_error("ModuleError", exmc, exm_loc, exm_msg, exms);
+                                                            1
+                                                        end;
+                                                        true -> do
+                                                            (exp_st: int64, exp_code: string, exp_loc: SourceLocation, exp_msg: string, exp_spec: string) <- validate_cross_module_export_surface(program, all_parsed);
+                                                            case exp_st == 0 of {
+                                                                false -> do
+                                                                    eec: string <- case exp_code == "" of {
+                                                                        true -> "E1011";
+                                                                        false -> exp_code
+                                                                    };
+                                                                    ess: string <- case exp_spec == "" of {
+                                                                        true -> "sect19.2";
+                                                                        false -> exp_spec
+                                                                    };
+                                                                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", eec, exp_loc, exp_msg, ess);
+                                                                    1
+                                                                end;
+                                                                true -> 0
+                                                            }
+                                                        end
+                                                    }
+                                                end
                                             }
                                         end
                                     }

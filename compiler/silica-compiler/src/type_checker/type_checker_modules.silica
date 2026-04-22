@@ -21,6 +21,8 @@
 use parser_ast;
 use type_checker_core;
 use type_checker_declarations_functions;
+use type_checker_failure_reporter;
+use type_checker_supervisor;
 
 export empty_named_program_list/0;
 export cons_named_program/3;
@@ -414,7 +416,7 @@ fn validate_module_program_surface(program: Program, current_module: string) -> 
                             (dup_e: TypeCheckResult, _: ListModuleExportMark) <- accum_exports_local_duplicates(program.declarations, empty_export_marks(), program.location);
                             case dup_e.is_ok of {
                                 false -> dup_e;
-                                true -> type_checker_core@type_check_ok()
+                                true -> type_checker_failure_reporter@check_failure_reporter_export_trait(program)
                             }
                         end
                     }
@@ -539,18 +541,24 @@ fn add_all_declarations_with_world(decls: ListDeclaration, context: TypeContext,
     }
 }
 
-fn check_all_declarations_functions_only(decls: ListDeclaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_all_declarations_functions_only(decls: ListDeclaration, all_program_decls: ListDeclaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case decls.is_nil of {
         true -> type_checker_core@type_check_ok();
         false -> case decls.head.tag of {
             0 -> do
-                result: TypeCheckResult <- type_checker_declarations_functions@check_body(decls.head, context, world);
-                case result.is_ok of {
-                    true -> check_all_declarations_functions_only(decls.tail, context, world);
-                    false -> result
+                phe: TypeCheckResult <- type_checker_supervisor@check_init_if_supervisor_impl_phase_e(decls.head, all_program_decls);
+                case phe.is_ok of {
+                    false -> phe;
+                    true -> do
+                        result: TypeCheckResult <- type_checker_declarations_functions@check_body(decls.head, context, world);
+                        case result.is_ok of {
+                            true -> check_all_declarations_functions_only(decls.tail, all_program_decls, context, world);
+                            false -> result
+                        }
+                    end
                 }
             end;
-            _: int64 -> check_all_declarations_functions_only(decls.tail, context, world)
+            _: int64 -> check_all_declarations_functions_only(decls.tail, all_program_decls, context, world)
         }
     }
 }
@@ -564,7 +572,7 @@ fn type_check_program_with_modules(program: Program, current_module: string, wor
             case pass1.is_ok of {
                 false -> (pass1, ctx1);
                 true -> do
-                    body: TypeCheckResult <- check_all_declarations_functions_only(program.declarations, ctx1, world);
+                    body: TypeCheckResult <- check_all_declarations_functions_only(program.declarations, program.declarations, ctx1, world);
                     (body, ctx1)
                 end
             }

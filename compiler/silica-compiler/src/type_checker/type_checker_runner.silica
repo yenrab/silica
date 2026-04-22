@@ -22,7 +22,9 @@
 use parser_ast;
 use type_checker_core;
 use type_checker_declarations_functions;
+use type_checker_failure_reporter;
 use type_checker_modules;
+use type_checker_supervisor;
 
 export type_check_program/2;
 export type_check_program_with_module_world/4;
@@ -49,28 +51,41 @@ fn add_all_declarations(decls: ListDeclaration, context: TypeContext) -> TypeCon
 }
 
 // Second pass: check all function bodies, stop on first error (`world` empty when no cross-module trait modules).
-fn check_all_declarations(decls: ListDeclaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+// `all_program_decls` is the full declaration list (needed for Supervisors Phase E: `impl … for Supervisor` + `init`).
+fn check_all_declarations(decls: ListDeclaration, all_program_decls: ListDeclaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case decls.is_nil of {
         true -> type_checker_core@type_check_ok();
         false -> case decls.head.tag of {
             0 -> do
-                result: TypeCheckResult <- type_checker_declarations_functions@check_body(decls.head, context, world);
-                case result.is_ok of {
-                    true -> check_all_declarations(decls.tail, context, world);
-                    false -> result
+                phe: TypeCheckResult <- type_checker_supervisor@check_init_if_supervisor_impl_phase_e(decls.head, all_program_decls);
+                case phe.is_ok of {
+                    false -> phe;
+                    true -> do
+                        result: TypeCheckResult <- type_checker_declarations_functions@check_body(decls.head, context, world);
+                        case result.is_ok of {
+                            true -> check_all_declarations(decls.tail, all_program_decls, context, world);
+                            false -> result
+                        }
+                    end
                 }
             end;
-            _: int64 -> check_all_declarations(decls.tail, context, world)
+            _: int64 -> check_all_declarations(decls.tail, all_program_decls, context, world)
         }
     }
 }
 
 // Type-check program (single compilation unit, no cross-module world). Skips use/export/module for symbol table.
 fn type_check_program(program: Program, context: TypeContext) -> (TypeCheckResult, TypeContext) proc[DeviceIO] {
-    ctx_with_decls: TypeContext <- add_all_declarations(program.declarations, context);
-    empty_world: ListNamedProgram <- parser_ast@empty_named_program_list();
-    result: TypeCheckResult <- check_all_declarations(program.declarations, ctx_with_decls, empty_world);
-    (result, ctx_with_decls)
+    fr: TypeCheckResult <- type_checker_failure_reporter@check_failure_reporter_export_trait(program);
+    case fr.is_ok of {
+        false -> (fr, context);
+        true -> do
+            ctx_with_decls: TypeContext <- add_all_declarations(program.declarations, context);
+            empty_world: ListNamedProgram <- parser_ast@empty_named_program_list();
+            result: TypeCheckResult <- check_all_declarations(program.declarations, program.declarations, ctx_with_decls, empty_world);
+            (result, ctx_with_decls)
+        end
+    }
 }
 
 // Multi-module: `current_module` is filename stem (e.g. main); `world` lists other modules' ASTs. Validates §19 use/export/module.

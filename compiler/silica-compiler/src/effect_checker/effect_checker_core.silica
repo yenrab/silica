@@ -28,6 +28,17 @@
    Phase D (§15.4.8.3, §15.4.13): behavior-only spawn_linked / link are enforced in the type
    checker (E2091), not here; when they appear in an effect-checked body they still require
    proc[concurrency] like other actor intrinsics.
+   Phase E (§15.4.12.1, §15.4.12.3, §15.4.13.1–§15.4.13.2, §15.4.13.3): static child_spec table,
+   automatic restart, restart caps / escalation, and dynamic children (spawn_linked only, no
+   auto-restart row) are applied by the runtime; there is no additional compile-time effect.
+   Module-level Supervisor init return shape (flags + List[child_spec, normal]) is validated
+   in module_checker (E2092), not here; dynamic child spawn in behavior still uses the same
+   proc[concurrency] classification as Phase D.
+   Phase F (§15.4.11.4, §15.4.13.4–§15.4.13.6): unwind reports go to the root FailureReporter via
+   runtime-invoked handle_report; that path is independent of supervisor ingress and does not
+   introduce a separate compile-time effect—implementations of region_dump_limit / handle_report
+   are ordinary functions: declare proc[device_io], proc[concurrency], etc. only for what the
+   body actually uses (stderr fallback when no reporter is runtime-only).
    User-facing actor intrinsics (including spawn_linked, link, monitor, demonitor, call, cast,
    send, self, recv) are classified as proc[concurrency] here (is_builtin_fn / builtin_fn_effects).
    Note: user code cannot call recv today (§15.1.2; type checker), but recv is listed for parity
@@ -254,7 +265,9 @@ fn expand_builtin_alias(name: string) -> (bool, ListEffectName) {
 
 // --- Built-in function effect knowledge ---
 // Supervisors (supervisors_implementation_development_plan.md): Phase B ingress ordering;
-// Phase C exit/failure payloads (runtime); Phase D behavior-only spawn_linked/link (type check).
+// Phase C exit/failure payloads (runtime); Phase D behavior-only spawn_linked/link (type check);
+// Phase E automatic restart / child_spec + escalation (runtime only—no extra builtin);
+// Phase F FailureReporter.handle_report / unwind (runtime delivery, §15.4.13.4)—no extra builtin here.
 // All of: spawn, spawn_linked, link, monitor, demonitor, call, cast, send, self, recv — same
 // concurrency classification (no separate compile-time effect for ingress or failure payload delivery).
 

@@ -22,10 +22,14 @@
    Implements spec §9.2.4 (Effect Subeffecting), §9.3.1 (Effect Propagation),
    §9.4.1 (Effect Checking).
 
-   Supervisors (supervisors_implementation_development_plan.md): Phases B/C/D — no extra
-   compile-time effect for supervision ingress (B), exit/failure payload delivery (C), or
-   Supervisor trait surface (D). E3001 hints still reference Section 15.4.8.3-15.4.8.7;
-   behavior-only spawn_linked/link (Phase D) is E2091 in the type checker.
+   Supervisors (supervisors_implementation_development_plan.md): Phases B/C/D/E/F — no extra
+   compile-time effect for supervision ingress (B), exit/failure payload delivery (C),
+   Supervisor trait surface (D), static child_spec / automatic restart / escalation (E; runtime
+   per §15.4.12–§15.4.13.2; dynamic children §15.4.13.3 use same spawn_linked effect as D), or
+   FailureReporter unwind delivery (F; §15.4.11.4, §15.4.13.4).
+   E3001 hints still reference Section 15.4.8.3-15.4.8.7;
+   behavior-only spawn_linked/link (Phase D) is E2091 in the type checker; Phase E return-shape
+   checks are E2092 in module_checker.
 -}
 
 use parser_ast;
@@ -162,7 +166,7 @@ fn e3001_message(fn_name: string, eff: EffectName) -> string {
         false -> case norm.name == "mem" of {
             true -> concat(base, concat(". Add proc[mem(", concat(norm.parameter, ")] for region operations (alloc_region, alloc_ref, read_ref, write_ref, alloc_rec, build)")));
             false -> case norm.name == "concurrency" of {
-                true -> concat(base, ". Add proc[concurrency] for actor operations (spawn, spawn_linked, link, monitor, demonitor, call, cast, send, self, recv, pin_actor_to_*, unpin_actor, remove_actor, set_actor_priority, get_cpu_topology, get_efficiency_cores, get_performance_cores, get_core_capabilities, etc.) per spec Section 15.4.8.3-15.4.8.7, Section 22.4, Section 16.1, and Section 22.10 (CPU Affinity; supervisors Phases B/C/D: ingress, exit payloads, and behavior-only spawn/link do not add a separate effect)");
+                true -> concat(base, ". Add proc[concurrency] for actor operations (spawn, spawn_linked, link, monitor, demonitor, call, cast, send, self, recv, pin_actor_to_*, unpin_actor, remove_actor, set_actor_priority, get_cpu_topology, get_efficiency_cores, get_performance_cores, get_core_capabilities, etc.) per spec Section 15.4.8.3-15.4.8.7, Section 22.4, Section 16.1, and Section 22.10 (CPU Affinity; supervisors Phases B/C/D/E/F: ingress, exit payloads, behavior-only spawn/link, Phase E runtime restart/child_spec/escalation, and runtime→FailureReporter unwind do not add a separate effect)");
                 false -> base
             }
         }
@@ -179,7 +183,7 @@ fn e3001_outside_sequence_message(fn_name: string, eff: EffectName) -> string {
         false -> case norm.name == "mem" of {
             true -> concat(base, concat(". Add proc[mem(", concat(norm.parameter, ")] to a sequence-produces pure-end block for region operations (alloc_region, alloc_ref, read_ref, write_ref, alloc_rec, build)")));
             false -> case norm.name == "concurrency" of {
-                true -> concat(base, ". Add proc[concurrency] to a sequence-produces pure-end block for actor operations (spawn, spawn_linked, link, monitor, demonitor, call, cast, send, self, recv, pin_actor_to_*, unpin_actor, remove_actor, set_actor_priority, etc.; spec Section 15.4.8.3-15.4.8.7, Section 22.4, Section 16.1) and Section 22.10 CPU Affinity (supervisors Phases B/C/D: no separate effect for ingress or exit-notification plumbing)");
+                true -> concat(base, ". Add proc[concurrency] to a sequence-produces pure-end block for actor operations (spawn, spawn_linked, link, monitor, demonitor, call, cast, send, self, recv, pin_actor_to_*, unpin_actor, remove_actor, set_actor_priority, etc.; spec Section 15.4.8.3-15.4.8.7, Section 22.4, Section 16.1) and Section 22.10 CPU Affinity (supervisors Phases B/C/D/E/F: no separate effect for ingress, exit-notification plumbing, Phase E automatic restart, or FailureReporter unwind delivery)");
                 false -> concat(base, ". Add the appropriate effect to a sequence-produces pure-end block")
             }
         }
