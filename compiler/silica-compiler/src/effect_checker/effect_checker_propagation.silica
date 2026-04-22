@@ -18,17 +18,19 @@
 {- Effect propagation.
    Traverses Expr trees to collect effects from function calls,
    computes effect set unions, and expands effect aliases.
-   Implements spec §9.3.1 (Effect Propagation, Effect Set Union Algorithm).
+   Implements spec Section 9.3.1 (Effect Propagation, Effect Set Union Algorithm).
 
-   Supervisors Phase B (design_documents/supervisors_implementation_development_plan.md, §15.4.9,
-   §16.2.7): ingress scheduling is invisible to effect propagation — spawn_linked, link, monitor,
-   demonitor, and messaging builtins still resolve via effect_checker_core@builtin_fn_effects to
-   concurrency only.
+   Supervisors (design_documents/supervisors_implementation_development_plan.md):
+   Phases B/C: ingress vs mailbox ordering and Phase C exit/failure payload delivery are
+   runtime concerns; effect propagation only sees proc[concurrency] for actor builtins
+   (spawn_linked, link, monitor, demonitor, call, cast, send, self, recv via builtin_fn_effects).
+   Phase D: behavior-only rules for spawn_linked and link are type-checked (E2091), not
+   allocated separate effects here.
    Memory region ops (alloc_region, alloc_ref, alloc_buf, read_ref, write_ref,
    read_buf, write_buf, buf_load, buf_store, alloc_rec, build, alloc_region_on_numa_node)
-   require mem(Space) per spec §4.4, §22.1-22.3; alloc_ref/alloc_buf/alloc_rec into atomic space also require atomic (§17.1.2).
-   List[T,S] literals and list primitives require mem(S) per list_implementation_design.md §9.3, §9.8.
-   Struct literals (parser kind 21) and field access (kind 22) follow silica:StructLiterals / §3.3.7:
+   require mem(Space) per spec Section 4.4, Sections 22.1-22.3; alloc_ref/alloc_buf/alloc_rec into atomic space also require atomic (Section 17.1.2).
+   List[T,S] literals and list primitives require mem(S) per list_implementation_design.md Section 9.3, Section 9.8.
+   Struct literals (parser kind 21) and field access (kind 22) follow silica:StructLiterals / Section 3.3.7:
    effects are the union of subexpressions (field initializers; base expr for .field).
 -}
 
@@ -53,7 +55,7 @@ export expand_single_effect/2;
    Expr kinds: 0=integer literal, 1=identifier, 2=parenthesized, 3=binary_op, 4=call, 5=atom literal, 6=let binding, 21=struct literal, 22=field access, -1=dummy.
    For calls (kind 4): resolve callee effects (region ops use binding_type for Space), union with arg subtree.
    For let bindings (kind 6): pass expr.value (binding type) when recursing into RHS for region op effect extraction.
-   Pure expressions contribute no effects (spec §9.3.1). -}
+   Pure expressions contribute no effects (spec Section 9.3.1). -}
 fn collect_expr_effects(expr: Expr, ctx: EffectContext) -> ListEffectName {
     collect_expr_effects_with_binding(expr, ctx, "")
 }
@@ -193,7 +195,7 @@ fn collect_expr_effects_with_binding(expr: Expr, ctx: EffectContext, binding_typ
     }
 }
 
-// --- Struct literals (kind 21), §3.3.7 / silica:StructLiterals ---
+// --- Struct literals (kind 21), ?3.3.7 / silica:StructLiterals ---
 
 {- Right-nested chain of kind-21 nodes: inner = field initializer, right_expr = next field or dummy.
    Union of effects from every field expression. -}

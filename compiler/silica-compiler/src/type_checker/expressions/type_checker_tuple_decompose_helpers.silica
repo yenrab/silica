@@ -322,32 +322,41 @@ fn infer_call_expr_type(expr: Expr, context: TypeContext) -> string {
     call_base: string <- type_checker_core@user_call_base_function_name(expr.name);
     case call_base == "spawn" or call_base == "spawn_linked" of {
         true -> "actor_ref";
-        false -> case call_base == "self" of {
-            true -> "actor_ref";
-            false -> case call_base == "cast" of {
-                true -> "boolean";
-                false -> case call_base == "send" of {
+        false -> case call_base == "link" of {
+            true -> "atom";
+            false -> case call_base == "monitor" of {
+                true -> "monitor_ref";
+                false -> case call_base == "demonitor" of {
                     true -> "atom";
-                    false -> case call_base == "core_id" of {
-                        true -> infer_core_id_placement(expr, context);
-                        false -> case call_base == "core_set" of {
-                            true -> infer_core_set_placement(expr, context);
-                            false -> do
-                                rt: string <- infer_actor_runtime_return(call_base);
-                                case len(rt) > 0 of {
-                                    true -> rt;
-                                    false -> do
-                                        typ: string <- lookup_function_type_for_call_infer(context.env, expr.name);
-                                        case len(typ) > 0 of {
-                                            true -> parse_function_return_from_scheme(typ);
-                                            false -> case type_checker_lists@is_list_primitive_name(expr.name) of {
-                                                true -> type_checker_lists@infer_list_primitive_return(expr);
-                                                false -> ""
+                    false -> case call_base == "self" of {
+                        true -> "actor_ref";
+                        false -> case call_base == "cast" of {
+                            true -> "boolean";
+                            false -> case call_base == "send" of {
+                                true -> "atom";
+                                false -> case call_base == "core_id" of {
+                                    true -> infer_core_id_placement(expr, context);
+                                    false -> case call_base == "core_set" of {
+                                        true -> infer_core_set_placement(expr, context);
+                                        false -> do
+                                            rt: string <- infer_actor_runtime_return(call_base);
+                                            case len(rt) > 0 of {
+                                                true -> rt;
+                                                false -> do
+                                                    typ: string <- lookup_function_type_for_call_infer(context.env, expr.name);
+                                                    case len(typ) > 0 of {
+                                                        true -> parse_function_return_from_scheme(typ);
+                                                        false -> case type_checker_lists@is_list_primitive_name(expr.name) of {
+                                                            true -> type_checker_lists@infer_list_primitive_return(expr);
+                                                            false -> ""
+                                                        }
+                                                    }
+                                                end
                                             }
-                                        }
-                                    end
+                                        end
+                                    }
                                 }
-                            end
+                            }
                         }
                     }
                 }
@@ -908,7 +917,7 @@ fn case_pattern_matches_scrutinee(pi: CasePatternInfo, scrutinee_type: string) -
         true -> case pi.pattern_kind of {
             0 -> types_equal(scrutinee_type, "boolean");
             1 -> types_equal(scrutinee_type, "string");
-            2 -> types_equal(scrutinee_type, pi.bind_type);
+            2 -> types_equal(scrutinee_type, pi.bind_type) or (types_equal(scrutinee_type, "failure_reason") and types_equal(pi.bind_type, "atom"));
             3 -> case len(pi.bind_type) == 0 of {
                 true -> pi.bind_name == "_";
                 false -> case types_equal(scrutinee_type, pi.bind_type) of {
@@ -925,7 +934,7 @@ fn case_pattern_matches_scrutinee(pi: CasePatternInfo, scrutinee_type: string) -
             4 -> is_primitive_numeric_type_name(scrutinee_type);
             5 -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
             6 -> case_list_cons_matches(pi, scrutinee_type);
-            7 -> types_equal(scrutinee_type, "atom");
+            7 -> types_equal(scrutinee_type, "atom") or types_equal(scrutinee_type, "failure_reason");
             8 -> case_record_pat_matches_full(pi.bind_type, scrutinee_type);
             _: int64 -> false
         }
@@ -1067,7 +1076,10 @@ fn case_extend_context_for_pattern(context: TypeContext, scrutinee_type: string,
         true -> case pi.pattern_kind of {
             2 -> case types_equal(scrutinee_type, pi.bind_type) of {
                 true -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, pi.bind_name, pi.bind_type, parser_ast@empty_effect_name_list(), ""));
-                false -> context
+                false -> case types_equal(scrutinee_type, "failure_reason") and types_equal(pi.bind_type, "atom") of {
+                    true -> type_checker_core@type_context_with_env(context, type_checker_core@add_symbol(context.env, pi.bind_name, "atom", parser_ast@empty_effect_name_list(), ""));
+                    false -> context
+                }
             };
             6 -> case case_list_cons_matches(pi, scrutinee_type) of {
                 false -> context;

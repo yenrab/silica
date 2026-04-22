@@ -19,10 +19,11 @@
 // Emitted into every module that uses actor prims (emitter_core). Links against libSystem
 // (_pthread_*, _calloc, _free, etc.) and macOS TLV for thread-local current actor.
 // cpu_topology / cache / NUMA helpers (_silica_rt_apple_*, sysctl hw.*): macOS Apple Silicon only (see cpu_topology_implementation_plan Phase G).
-// ABI: spawn(X0,X1,W2)->X0  send(X0,X1)  cast(X0,X1)->W0  call(X0,X1)->X0  self()->X0
+// ABI: spawn(X0,X1,W2)->X0  send(X0,X1)  cast(X0,X1)->W0  call(X0,X1)->X0  self()->X0  recv()->X0
 // spawn_linked Phase A (supervisors_implementation_development_plan): spawn_linked(X0,X1,X2,X3)->X0
 // X0=init X1=beh X2=agent_type (int64) X3=core_id (0 default). Child block 256 B; #192 supervisor ref, #200 agent, #208 core.
 // Phase B (same plan §15.4.8.5–§15.4.8.7, §15.4.9): link(X0), monitor(X0), demonitor(X0) — stubs below until ingress + link graph match spec.
+// Phase C (same plan §15.4.10–§15.4.11, §16.2.7): recv() must observe supervision ingress before standard mailbox; stub returns 0 until dequeue is implemented.
 
 export emit_actor_runtime_helpers/0;
 
@@ -1898,6 +1899,16 @@ LBBra_fallback:
 	ldp	x20, x19, [sp], #32
 	ret
 	.loh AdrpLdr	Lloh_ra0, Lloh_ra1
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_recv           ; supervisors Phase C — §15.4.10 / §16.2.7
+	.p2align	2
+_silica_rt_actor_recv:                  ; @silica_rt_actor_recv
+	.cfi_startproc
+; TLS current actor: dequeue next message (supervision ingress first, then standard mailbox per Phase B ordering).
+; Return X0 = opaque message pointer (ActorMessage / exit payload) or 0. Stub until ingress + payload layout land in runtime.
+	mov	x0, #0
+	ret
 	.cfi_endproc
                                         ; -- End function
 	.globl	_silica_rt_actor_link           ; supervisors Phase B — §15.4.8.5

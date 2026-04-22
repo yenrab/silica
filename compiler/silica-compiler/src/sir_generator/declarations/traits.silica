@@ -23,10 +23,12 @@ use sir_ast;
 use types;
 use effect_serializer;
 use functions;
+use type_checker_traits;
 
 export collect_export_trait_names/1;
 export collect_marker_impl_types/1;
 export collect_required_trait_method_sigs/1;
+export collect_supervisor_impl_types/1;
 
 fn collect_export_trait_names_loop(decls: ListDeclaration) -> ListSirString {
     case decls.is_nil of {
@@ -54,6 +56,49 @@ fn collect_marker_impl_types_loop(decls: ListDeclaration) -> ListSirString {
 
 fn collect_marker_impl_types(decls: ListDeclaration) -> ListSirString {
     collect_marker_impl_types_loop(decls)
+}
+
+// §15.4.13 / supervisors plan Phase D: `impl ActorType for Supervisor;` (Declaration tag 6) — extract concrete actor type T for runtime supervisor flag (exit ingress / init table).
+fn for_supervisor_impl_suffix() -> string {
+    " for Supervisor"
+}
+
+fn string_ends_with_suffix(s: string, suf: string) -> bool {
+    ls: int64 <- len(s);
+    lf: int64 <- len(suf);
+    case ls < lf of { true -> false; false -> substring(s, ls - lf, ls) == suf }
+}
+
+fn type_name_before_for_supervisor_impl(s: string) -> string {
+    t: string <- type_checker_traits@trim_type_text(s);
+    suf: string <- for_supervisor_impl_suffix();
+    case string_ends_with_suffix(t, suf) of {
+        false -> "";
+        true -> do
+            lf: int64 <- len(suf);
+            type_checker_traits@trim_type_text(substring(t, 0, len(t) - lf))
+        end
+    }
+}
+
+fn collect_supervisor_impl_types_loop(decls: ListDeclaration) -> ListSirString {
+    case decls.is_nil of {
+        true -> sir_ast@nil_sir_strings();
+        false -> case decls.head.tag == 6 of {
+            true -> do
+                actor_ty: string <- type_name_before_for_supervisor_impl(decls.head.return_type_name);
+                case len(actor_ty) > 0 of {
+                    true -> sir_ast@cons_sir_string(actor_ty, collect_supervisor_impl_types_loop(decls.tail));
+                    false -> collect_supervisor_impl_types_loop(decls.tail)
+                }
+            end;
+            false -> collect_supervisor_impl_types_loop(decls.tail)
+        }
+    }
+}
+
+fn collect_supervisor_impl_types(decls: ListDeclaration) -> ListSirString {
+    collect_supervisor_impl_types_loop(decls)
 }
 
 fn required_sig_from_decl(decl: Declaration) -> SIRRequiredMethodSig {

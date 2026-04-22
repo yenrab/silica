@@ -20,12 +20,18 @@
    for effect comparison, validation, and built-in effect recognition.
    Implements spec §9.1 (Effect Types), §9.1.2 (Effect Aliases).
 
-   Supervisors — design_documents/supervisors_implementation_development_plan.md Phase B
-   (supervision ingress + scheduler ordering; spec §15.4.9, §16.2.7): the runtime may drain a
-   dedicated ingress queue before the standard mailbox, but there is no separate compile-time
-   effect for “ingress”. User code still uses spawn_linked and §15.4.8.5–§15.4.8.7 link, monitor,
-   demonitor together with call, cast, send, self; all are classified as proc[concurrency] here
-   (see is_builtin_fn / builtin_fn_effects).
+   Supervisors — design_documents/supervisors_implementation_development_plan.md:
+   Phase B (§15.4.9, §16.2.7): ingress vs standard mailbox ordering is runtime-only — no extra
+   compile-time effect for “ingress”.
+   Phase C (§15.4.10–§15.4.11): exit notifications and failure_reason payloads are constructed
+   in the runtime; no separate user-visible effect for delivering to supervisor ingress.
+   Phase D (§15.4.8.3, §15.4.13): behavior-only spawn_linked / link are enforced in the type
+   checker (E2091), not here; when they appear in an effect-checked body they still require
+   proc[concurrency] like other actor intrinsics.
+   User-facing actor intrinsics (including spawn_linked, link, monitor, demonitor, call, cast,
+   send, self, recv) are classified as proc[concurrency] here (is_builtin_fn / builtin_fn_effects).
+   Note: user code cannot call recv today (§15.1.2; type checker), but recv is listed for parity
+   with the actor-runtime surface and module_checker intrinsics.
 -}
 
 use parser_ast;
@@ -247,9 +253,10 @@ fn expand_builtin_alias(name: string) -> (bool, ListEffectName) {
 }
 
 // --- Built-in function effect knowledge ---
-// Supervisors Phase B (supervisors_implementation_development_plan.md, §15.4.9, §16.2.7): link, monitor,
-// demonitor are §15.4.8.5–§15.4.8.7 actor intrinsics; same concurrency classification as spawn,
-// spawn_linked, cast, call, send, self (ingress vs standard mailbox ordering is runtime-only).
+// Supervisors (supervisors_implementation_development_plan.md): Phase B ingress ordering;
+// Phase C exit/failure payloads (runtime); Phase D behavior-only spawn_linked/link (type check).
+// All of: spawn, spawn_linked, link, monitor, demonitor, call, cast, send, self, recv — same
+// concurrency classification (no separate compile-time effect for ingress or failure payload delivery).
 
 fn is_builtin_fn(name: string) -> bool {
     case name of {
@@ -275,6 +282,7 @@ fn is_builtin_fn(name: string) -> bool {
         "cast" -> true;
         "send" -> true;
         "self" -> true;
+        "recv" -> true;
         "pin_actor_to_core" -> true;
         "pin_actor_to_efficiency_core" -> true;
         "pin_actor_to_performance_core" -> true;
@@ -293,7 +301,7 @@ fn is_builtin_fn(name: string) -> bool {
 
 {- Returns the effects required by known built-in functions.
    I/O built-ins require device_io per spec §9.1.1.
-   Actor primitives (including §15.4.8.5–§15.4.8.7 link, monitor, demonitor for supervisors Phase B),
+   Actor primitives (including §15.4.8.5–§15.4.8.7 link, monitor, demonitor; recv for runtime/surface parity),
    pinning, removal, priority, and §22.10 CPU Affinity Functions
    (get_cpu_topology, get_efficiency_cores, get_performance_cores, get_core_capabilities, etc.)
    require concurrency per spec §22.4, §16.1, §15.2, and §22.10 (not pure). -}
@@ -330,6 +338,7 @@ fn builtin_fn_effects(name: string) -> (bool, ListEffectName) {
         "cast" -> (true, conc_list);
         "send" -> (true, conc_list);
         "self" -> (true, conc_list);
+        "recv" -> (true, conc_list);
         "pin_actor_to_core" -> (true, conc_list);
         "pin_actor_to_efficiency_core" -> (true, conc_list);
         "pin_actor_to_performance_core" -> (true, conc_list);

@@ -123,15 +123,20 @@ fn check_body(decl: Declaration, context: TypeContext, world: ListNamedProgram) 
 
 fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     context_with_params: TypeContext <- add_params_to_context(decl, context);
+    extended_env: ListSymbolEntry <- case type_checker_expressions_actors@is_actor_behavior_declaration(decl) of {
+        true -> type_checker_core@add_symbol(context_with_params.env, type_checker_expressions_actors@tc_in_behavior_marker_name(), "boolean", parser_ast@empty_effect_name_list(), "");
+        false -> context_with_params.env
+    };
+    body_ctx: TypeContext <- type_checker_core@type_context_with_env(context_with_params, extended_env);
     ret_rec: TypeCheckResult <- validate_record_type_string(decl.return_type_name, decl.return_type_location);
     case ret_rec.is_ok of {
         false -> ret_rec;
         true -> case decl.return_type_name == "unit" of {
         true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
         false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
-            true -> check_body_memory_region_return(decl, context_with_params, world);
+            true -> check_body_memory_region_return(decl, body_ctx, world);
             false -> do
-                body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, context_with_params, world);
+                body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, body_ctx, world);
                 case body_result.is_ok of {
                     false -> body_result;
                     true -> do

@@ -65,6 +65,54 @@ fn find_first_tag7_declaration(decls: ListDeclaration) -> (bool, Declaration) {
     }
 }
 
+// Phase D: init must return `(supervisor_flags, static_children)` — a tuple with at least two components (spec §15.4.13.1).
+fn supervisor_init_return_tuple_has_flags_and_children(ret: string) -> bool {
+    t: string <- type_checker_traits@trim_type_text(ret);
+    case len(t) < 2 of {
+        true -> false;
+        false -> case substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
+            false -> false;
+            true -> do
+                inner: string <- type_checker_traits@trim_type_text(substring(t, 1, len(t) - 1));
+                comma_at_top: int64 <- trait_top_level_comma_in_type(inner, 0, 0);
+                comma_at_top >= 0
+            end
+        }
+    }
+}
+
+fn trait_top_level_comma_in_type(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case depth == 0 and substring(s, i, i + 1) == "," of {
+            true -> i;
+            false -> do
+                c: string <- substring(s, i, i + 1);
+                d2: int64 <- case c == "(" of {
+                    true -> depth + 1;
+                    false -> case c == ")" of {
+                        true -> depth - 1;
+                        false -> case c == "{" of {
+                            true -> depth + 1;
+                            false -> case c == "}" of {
+                                true -> depth - 1;
+                                false -> case c == "[" of {
+                                    true -> depth + 1;
+                                    false -> case c == "]" of {
+                                        true -> depth - 1;
+                                        false -> depth
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+                trait_top_level_comma_in_type(s, i + 1, d2)
+            end
+        }
+    }
+}
+
 fn check_supervisor_trait_required_shape(program: Program) -> int64 proc[DeviceIO] {
     decls: ListDeclaration <- program.declarations;
     case program_exports_trait_named(decls, "Supervisor") of {
@@ -113,7 +161,13 @@ fn check_supervisor_trait_required_shape(program: Program) -> int64 proc[DeviceI
                                                         _: int8 <- diagnostics_core@print_compiler_error("TraitError", "E2090", req.return_type_location, "Supervisor init must declare a non-empty return type (flags and child_spec tuple; spec §15.4.13)", "sect15.4.13");
                                                         1
                                                     end;
-                                                    true -> 0
+                                                    true -> case supervisor_init_return_tuple_has_flags_and_children(req.return_type_name) of {
+                                                        false -> do
+                                                            _: int8 <- diagnostics_core@print_compiler_error("TraitError", "E2090", req.return_type_location, "Supervisor init must return a tuple (supervisor_flags, List[child_spec, …]) per spec §15.4.13 and supervisors plan Phase D", "sect15.4.13");
+                                                            1
+                                                        end;
+                                                        true -> 0
+                                                    }
                                                 }
                                             }
                                         end
