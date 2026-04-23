@@ -541,16 +541,21 @@ fn emit_module_debug(sir_module: SIRModule, debug: bool) -> string proc[DeviceIO
 
 // Spec 19: assembly linkage — `use` list, .global for exports, .global main when defined.
 // Spec §3.4.8: trait module metadata as comments (export_trait / marker_impl / required_fn) via module_linkage.
+// Supervisors Phase G: optional marker when lowering link/monitor/demonitor (supervisors_implementation_development_plan.md §4 Phase G; silica-spec §15.4.8.4–8.7).
 fn emit_module_asm_prelude(sir_module: SIRModule) -> string {
     text: string <- ".text\n";
     use_line: string <- module_linkage@format_used_modules_comment(sir_module.used_modules);
     exp: string <- module_linkage@emit_export_global_directives(sir_module.exports, sir_module.functions, sir_module.module_name);
     trait_meta: string <- module_linkage@format_trait_metadata_comments(sir_module);
+    phase_g_marker: string <- case prims_actors@module_uses_link_monitor_prims(sir_module) of {
+        true -> "    ; supervisors Phase G: link / monitor / demonitor (silica-specification §15.4.8.4–§15.4.8.7) — BL _silica_rt_actor_link|_silica_rt_actor_monitor|_silica_rt_actor_demonitor; link child exit to supervision ingress; DOWN to standard mailbox only; cascading link exit §15.4.8.4\n";
+        false -> ""
+    };
     main_g: string <- case module_linkage@module_defines_program_main(sir_module) of {
         true -> ".global main\n";
         false -> ""
     };
-    concat(concat(concat(concat(text, use_line), exp), trait_meta), main_g)
+    concat(concat(concat(concat(concat(text, use_line), exp), trait_meta), phase_g_marker), main_g)
 }
 
 fn emit_functions(fns: ListSIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool, module_name: string) -> string proc[DeviceIO] {

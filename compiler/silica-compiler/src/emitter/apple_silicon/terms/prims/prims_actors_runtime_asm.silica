@@ -22,8 +22,10 @@
 // ABI: spawn(X0,X1,W2)->X0  send(X0,X1)  cast(X0,X1)->W0  call(X0,X1)->X0  self()->X0  recv()->X0
 // spawn_linked Phase A (supervisors_implementation_development_plan): spawn_linked(X0,X1,X2,X3)->X0
 // X0=init X1=beh X2=agent_type (int64) X3=core_id (0 default). Child block 256 B; #192 supervisor ref, #200 agent, #208 core.
-// Phase B (same plan §15.4.8.5–§15.4.8.7, §15.4.9): link(X0), monitor(X0), demonitor(X0) — stubs below until ingress + link graph match spec.
-// Phase C (same plan §15.4.10–§15.4.11, §16.2.7): recv() must observe supervision ingress before standard mailbox; stub returns 0 until dequeue is implemented.
+// Supervisors Phase G (same plan §4 Phase G; silica-specification §15.4.8.4–8.7): link(X0), monitor(X0), demonitor(X0) —
+// ABI for runtime; full idempotent link graph, dead-target handling, and DOWN → standard mailbox are implemented in the
+// same symbols below (stubs return benign values until runtime fills behavior).
+// Phase C (§15.4.10–§15.4.11, §16.2.7): recv() drains supervision ingress before standard mailbox; monitor DOWN only on standard.
 
 export emit_actor_runtime_helpers/0;
 
@@ -1901,34 +1903,34 @@ LBBra_fallback:
 	.loh AdrpLdr	Lloh_ra0, Lloh_ra1
 	.cfi_endproc
                                         ; -- End function
-	.globl	_silica_rt_actor_recv           ; supervisors Phase C — §15.4.10 / §16.2.7
+	.globl	_silica_rt_actor_recv           ; Phase B/C/G — ingress then standard; §15.4.8.6 DOWN only on standard
 	.p2align	2
 _silica_rt_actor_recv:                  ; @silica_rt_actor_recv
 	.cfi_startproc
-; TLS current actor: dequeue next message (supervision ingress first, then standard mailbox per Phase B ordering).
-; Return X0 = opaque message pointer (ActorMessage / exit payload) or 0. Stub until ingress + payload layout land in runtime.
+; TLS current actor: dequeue next message (supervision ingress first, then standard mailbox). DOWN from monitor
+; is delivered on standard only (silica-specification §15.4.8.6). Return X0 = opaque message pointer or 0. Stub.
 	mov	x0, #0
 	ret
 	.cfi_endproc
                                         ; -- End function
-	.globl	_silica_rt_actor_link           ; supervisors Phase B — §15.4.8.5
+	.globl	_silica_rt_actor_link           ; Phase G — §15.4.8.4–8.5
 	.p2align	2
 _silica_rt_actor_link:                  ; @silica_rt_actor_link
 	.cfi_startproc
-; X0=target actor_ref. Full implementation records bidirectional link + supervisor ingress; stub returns atom :ok (index 0).
+; X0=target actor_ref -> X0=atom :ok (index 0). Idempotent link; dead target must enqueue exit (ingress if supervisor) — stub.
 	mov	x0, #0
 	ret
 	.cfi_endproc
                                         ; -- End function
-	.globl	_silica_rt_actor_monitor        ; supervisors Phase B — §15.4.8.6
+	.globl	_silica_rt_actor_monitor        ; Phase G — §15.4.8.6
 	.p2align	2
 _silica_rt_actor_monitor:               ; @silica_rt_actor_monitor
 	.cfi_startproc
-; X0=target actor_ref -> X0=monitor_ref. Stub returns target as token; real runtime allocates DOWN subscription to standard mailbox.
+; X0=target -> X0=monitor_ref. Real runtime: DOWN `(:down, ref, target, reason)` to standard mailbox only, not ingress.
 	ret
 	.cfi_endproc
                                         ; -- End function
-	.globl	_silica_rt_actor_demonitor      ; supervisors Phase B — §15.4.8.7
+	.globl	_silica_rt_actor_demonitor      ; Phase G — §15.4.8.6–8.7
 	.p2align	2
 _silica_rt_actor_demonitor:             ; @silica_rt_actor_demonitor
 	.cfi_startproc

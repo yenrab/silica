@@ -485,7 +485,7 @@ fn is_actor_runtime_helper_name(name: string) -> bool {
 }
 
 // §4.5 actor_ref, §15 spawn, §16 call/cast/send, self; recv forbidden §15.1.2.
-// §15.4.8.5–§15.4.8.7: link, monitor, demonitor (supervisors plan Phase B/G surface; type rules here).
+// §15.4.8.5–§15.4.8.7: link, monitor, demonitor (Phase G: behavior-only for link/monitor/demonitor; E2091).
 fn is_actor_concurrency_builtin(name: string) -> bool {
     name == "spawn" or name == "spawn_linked" or name == "link" or name == "monitor" or name == "demonitor" or name == "send" or name == "cast" or name == "call" or name == "self" or name == "recv" or is_actor_runtime_helper_name(name)
 }
@@ -940,36 +940,48 @@ fn check_actor_link_call(expr: Expr, expected_type: string, context: TypeContext
 }
 
 // §15.4.8.6: monitor(target: actor_ref) -> monitor_ref proc[concurrency].
+// Supervisors plan Phase G: `DOWN` to standard mailbox only — call site must be the monitoring actor
+// (same static rule as `link` §15.4.8.5: behavior function where `self()` is defined).
 fn check_actor_monitor_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
-    case ac == 1 of {
-        false -> type_checker_core@type_check_err("E2005", expr.location, "monitor expects 1 argument: (target: actor_ref) §15.4.8.6", "sect15");
+    case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
+        false -> type_checker_core@type_check_err("E2091", expr.location, "monitor may only be called from within an actor behavior function (§15.4.8.6; DOWN to standard mailbox; supervisors plan Phase G)", "sect15.4.8.6");
         true -> do
-            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
-            case r0.is_ok of {
-                false -> r0;
-                true -> case expected_type == "monitor_ref" or expected_type == "discard" of {
-                    true -> type_checker_core@type_check_ok();
-                    false -> type_checker_core@type_check_err("E2003", expr.location, concat("monitor returns monitor_ref, expected ", expected_type), "sect15")
-                }
+            ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+            case ac == 1 of {
+                false -> type_checker_core@type_check_err("E2005", expr.location, "monitor expects 1 argument: (target: actor_ref) §15.4.8.6", "sect15");
+                true -> do
+                    r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
+                    case r0.is_ok of {
+                        false -> r0;
+                        true -> case expected_type == "monitor_ref" or expected_type == "discard" of {
+                            true -> type_checker_core@type_check_ok();
+                            false -> type_checker_core@type_check_err("E2003", expr.location, concat("monitor returns monitor_ref, expected ", expected_type), "sect15")
+                        }
+                    }
+                end
             }
         end
     }
 }
 
-// §15.4.8.6: demonitor(ref: monitor_ref) -> :ok proc[concurrency].
+// §15.4.8.6: demonitor(ref: monitor_ref) -> :ok proc[concurrency]. Phase G: same behavior-only surface as `monitor`.
 fn check_actor_demonitor_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
-    case ac == 1 of {
-        false -> type_checker_core@type_check_err("E2005", expr.location, "demonitor expects 1 argument: (ref: monitor_ref) §15.4.8.6", "sect15");
+    case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
+        false -> type_checker_core@type_check_err("E2091", expr.location, "demonitor may only be called from within an actor behavior function (§15.4.8.6; supervisors plan Phase G)", "sect15.4.8.6");
         true -> do
-            r0: TypeCheckResult <- check_expr(expr.inner, "monitor_ref", context, world);
-            case r0.is_ok of {
-                false -> r0;
-                true -> case expected_type == "atom" or expected_type == "discard" of {
-                    true -> type_checker_core@type_check_ok();
-                    false -> type_checker_core@type_check_err("E2003", expr.location, concat("demonitor returns atom (:ok), expected ", expected_type), "sect15")
-                }
+            ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+            case ac == 1 of {
+                false -> type_checker_core@type_check_err("E2005", expr.location, "demonitor expects 1 argument: (ref: monitor_ref) §15.4.8.6", "sect15");
+                true -> do
+                    r0: TypeCheckResult <- check_expr(expr.inner, "monitor_ref", context, world);
+                    case r0.is_ok of {
+                        false -> r0;
+                        true -> case expected_type == "atom" or expected_type == "discard" of {
+                            true -> type_checker_core@type_check_ok();
+                            false -> type_checker_core@type_check_err("E2003", expr.location, concat("demonitor returns atom (:ok), expected ", expected_type), "sect15")
+                        }
+                    }
+                end
             }
         end
     }

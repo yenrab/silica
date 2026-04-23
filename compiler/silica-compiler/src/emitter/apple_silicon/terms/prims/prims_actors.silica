@@ -16,10 +16,12 @@
 -}
 
 // Actor / concurrency prim emission (silica-specification §4.5, §15–16; sir_generator actor_calls.silica).
-// Supervisors Phase B (supervisors_implementation_development_plan.md §15.4.9, §16.2.7): link, monitor,
-// demonitor lower here; ingress vs standard mailbox ordering is runtime-only (no extra SIR shape).
-// Supervisors Phase C (same plan §15.4.10–§15.4.11, §16.2.7): recv lowers to _silica_rt_actor_recv for the
-// message payload path (exit notifications to ingress vs standard mailbox); runtime stub until ingress dequeue is complete.
+// Supervisors Phase B (supervisors_implementation_development_plan.md §15.4.9, §16.2.7): ingress vs standard
+// mailbox drain ordering for recv; runtime implements dequeue.
+// Supervisors Phase G (same plan §15.4.8.4–§15.4.8.7): link, monitor, demonitor lower here — silica-specification
+// §15.4.8.5 (link, idempotent; dead target → immediate exit path), §15.4.8.6 (DOWN only to standard mailbox);
+// SIR `value` tags [concurrency] vs [concurrency, mailbox] from sir_generator match send/cast.
+// Supervisors Phase C (§15.4.10–§15.4.11, §16.2.7): recv → _silica_rt_actor_recv (ingress before standard; stub in runtime chunk).
 // Supervisors Phase D (same plan §15.4.13): impl_supervisor metadata is emitted in module_linkage (not here).
 // Lowers SIR kind-6 prims to BL of compiler-bundled runtime (_silica_rt_*), appended by emitter_core
 // from prims_actors_runtime_asm.silica (AArch64 assembly strings, compiler-owned).
@@ -39,6 +41,7 @@ export actor_prim_is_unary/1;
 export actor_prim_is_ternary/1;
 export emit_prim_op/2;
 export module_uses_actor_prims/1;
+export module_uses_link_monitor_prims/1;
 export gpr_x_view/1;
 
 fn term_has_actor_prim(term: SIRTerm) -> bool {
@@ -87,6 +90,55 @@ fn actor_in_functions(fns: ListSIRFunction) -> bool {
 
 fn module_uses_actor_prims(sir_module: SIRModule) -> bool {
     actor_in_functions(sir_module.functions)
+}
+
+fn term_has_link_monitor_demonitor(term: SIRTerm) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> case term.kind of {
+            6 -> term.name == "link" or term.name == "monitor" or term.name == "demonitor";
+            2 -> case term_has_link_monitor_demonitor(term.inner) of {
+                true -> true;
+                false -> term_has_link_monitor_demonitor(term.right_expr)
+            };
+            3 -> case term_has_link_monitor_demonitor(term.inner) of {
+                true -> true;
+                false -> term_has_link_monitor_demonitor(term.right_expr)
+            };
+            4 -> case term_has_link_monitor_demonitor(term.inner) of {
+                true -> true;
+                false -> term_has_link_monitor_demonitor(term.right_expr)
+            };
+            5 -> case term_has_link_monitor_demonitor(term.inner) of {
+                true -> true;
+                false -> term_has_link_monitor_demonitor(term.right_expr)
+            };
+            7 -> case term_has_link_monitor_demonitor(term.inner) of {
+                true -> true;
+                false -> term_has_link_monitor_demonitor(term.right_expr)
+            };
+            8 -> case term_has_link_monitor_demonitor(term.inner) of {
+                true -> true;
+                false -> term_has_link_monitor_demonitor(term.right_expr)
+            };
+            _: int64 -> false
+        }
+    }
+}
+
+fn link_monitor_demonitor_in_functions(fns: ListSIRFunction) -> bool {
+    case fns.is_nil of {
+        true -> false;
+        false -> case term_has_link_monitor_demonitor(fns.head.body) of {
+            true -> true;
+            false -> link_monitor_demonitor_in_functions(fns.tail)
+        }
+    }
+}
+
+// True when the module uses link, monitor, or demonitor (supervisors plan Phase G matrix / silica-spec §15.4.8.4–8.7).
+fn module_uses_link_monitor_prims(sir_module: SIRModule) -> bool {
+    link_monitor_demonitor_in_functions(sir_module.functions)
 }
 
 fn is_actor_prim(name: string) -> bool {
