@@ -246,6 +246,17 @@ fn is_memory_ref(s: string) -> bool {
 }
 
 fn emit_var_with_sp_check(term: SIRTerm, dest: string, outer_reg: string) -> string {
+    // Phase E (task e1h): a function-typed var is always a function address; spurious `|name=SP`
+    // propagation from an enclosing aggregate make would otherwise emit `MOV X9, SP` instead of the
+    // function's page-relative symbol. Short-circuit with ADRP/ADD when we have a valid bare symbol.
+    bare_fn: string <- bare_name_from_term(term.name);
+    case type_name_is_function(term.type_name) and bare_name_is_valid_symbol(bare_fn) of {
+        true -> emit_fn_symbol_adrp_add(dest, bare_fn);
+        false -> emit_var_with_sp_check_core(term, dest, outer_reg)
+    }
+}
+
+fn emit_var_with_sp_check_core(term: SIRTerm, dest: string, outer_reg: string) -> string {
     // Resolve |name= once: prefer last binding (prepend tail rebind appends |%v=X2 after stale |%v=X0).
     sp_last: string <- find_last_sp_binding(outer_reg, term.name);
     sp_first: string <- find_sp_binding(outer_reg, term.name);
@@ -262,10 +273,129 @@ fn emit_var_with_sp_check(term: SIRTerm, dest: string, outer_reg: string) -> str
     }
 }
 
+// Detect a valid AArch64 symbol character (alpha, digit, underscore).
+// (Silica string comparison is equality-only, so we enumerate rather than use `>=`/`<=`.)
+fn is_ident_start_char(c: string) -> bool {
+    case c of {
+        "_" -> true;
+        "a" -> true; "b" -> true; "c" -> true; "d" -> true; "e" -> true;
+        "f" -> true; "g" -> true; "h" -> true; "i" -> true; "j" -> true;
+        "k" -> true; "l" -> true; "m" -> true; "n" -> true; "o" -> true;
+        "p" -> true; "q" -> true; "r" -> true; "s" -> true; "t" -> true;
+        "u" -> true; "v" -> true; "w" -> true; "x" -> true; "y" -> true; "z" -> true;
+        "A" -> true; "B" -> true; "C" -> true; "D" -> true; "E" -> true;
+        "F" -> true; "G" -> true; "H" -> true; "I" -> true; "J" -> true;
+        "K" -> true; "L" -> true; "M" -> true; "N" -> true; "O" -> true;
+        "P" -> true; "Q" -> true; "R" -> true; "S" -> true; "T" -> true;
+        "U" -> true; "V" -> true; "W" -> true; "X" -> true; "Y" -> true; "Z" -> true;
+        _: string -> false
+    }
+}
+
+fn is_ident_digit_char(c: string) -> bool {
+    case c of {
+        "0" -> true; "1" -> true; "2" -> true; "3" -> true; "4" -> true;
+        "5" -> true; "6" -> true; "7" -> true; "8" -> true; "9" -> true;
+        _: string -> false
+    }
+}
+
+fn is_ident_char(c: string) -> bool {
+    case is_ident_start_char(c) of {
+        true -> true;
+        false -> is_ident_digit_char(c)
+    }
+}
+
+fn bare_name_valid_loop(s: string, i: int64, n: int64) -> bool {
+    case i >= n of {
+        true -> true;
+        false -> case is_ident_char(substring(s, i, i + 1)) of {
+            true -> bare_name_valid_loop(s, i + 1, n);
+            false -> false
+        }
+    }
+}
+
+fn bare_name_is_valid_symbol(s: string) -> bool {
+    n: int64 <- len(s);
+    case n == 0 of {
+        true -> false;
+        false -> case is_ident_start_char(substring(s, 0, 1)) of {
+            true -> bare_name_valid_loop(s, 1, n);
+            false -> false
+        }
+    }
+}
+
+// A var term whose declared type is a function type is always a function reference (Phase E task e1h).
+// The emitter's stack-binding map can spuriously carry `|name=SP` for such a name when the same
+// identifier also names a free function (SIR propagates the tuple base SP as the binding for the
+// enclosing aggregate make). We must still emit ADRP/ADD so the stored value is the function's
+// code address, not the current stack pointer.
+// SIR types appear in two equivalent forms:
+//   "fn(p1: T1, ...) -> R" (with the `fn` keyword, e.g. in source text)
+//   "(T1, T2, ...) -> R"   (stripped form emitted by sir_generator types@type_name_to_sir)
+// Both denote a function value. We detect either.
+fn find_top_arrow_from(s: string, i: int64, depth: int64) -> int64 {
+    case i + 1 >= len(s) of {
+        true -> -1;
+        false -> case depth == 0 and substring(s, i, i + 2) == "->" of {
+            true -> i;
+            false -> do
+                c: string <- substring(s, i, i + 1);
+                d2: int64 <- case c == "(" or c == "[" or c == "{" of {
+                    true -> depth + 1;
+                    false -> case c == ")" or c == "]" or c == "}" of {
+                        true -> depth - 1;
+                        false -> depth
+                    }
+                };
+                find_top_arrow_from(s, i + 1, d2)
+            end
+        }
+    }
+}
+
+fn type_name_is_function(type_name: string) -> bool {
+    n: int64 <- len(type_name);
+    case n >= 3 and substring(type_name, 0, 3) == "fn(" of {
+        true -> true;
+        false -> case n >= 3 and substring(type_name, 0, 3) == "fn " of {
+            true -> true;
+            false -> case n >= 2 and substring(type_name, 0, 1) == "(" of {
+                true -> find_top_arrow_from(type_name, 1, 1) >= 0;
+                false -> false
+            }
+        }
+    }
+}
+
+fn bare_name_from_term(term_name: string) -> string {
+    case len(term_name) > 0 and substring(term_name, 0, 1) == "%" of {
+        true -> substring(term_name, 1, len(term_name));
+        false -> term_name
+    }
+}
+
+fn emit_fn_symbol_adrp_add(dest: string, bare: string) -> string {
+    adrp: string <- concat(concat(concat(concat("    ADRP ", dest), ", "), concat(bare, "@PAGE")), "\n");
+    add: string <- concat(concat(concat(concat("    ADD ", dest), ", "), concat(dest, ", ")), concat(bare, "@PAGEOFF"));
+    concat(adrp, add)
+}
+
 // Emit MOV dest, name for var term.
 // The variable (e.g. %x) is already in a register; we copy to dest.
+// Unbound fallback (Phase E, task e2b): if no binding was found and the stripped name is a valid
+// AArch64 symbol (e.g. a free function like `worker`), emit ADRP/ADD so function-valued identifiers
+// in record/tuple literals (child_spec.start) materialize as the symbol address. Without this the
+// emitter fell through to `MOV X9, %worker` (invalid token).
 fn emit_var(term: SIRTerm, dest: string) -> string {
-    concat(concat(concat("    MOV ", dest), ", "), term.name)
+    bare: string <- bare_name_from_term(term.name);
+    case bare_name_is_valid_symbol(bare) of {
+        true -> emit_fn_symbol_adrp_add(dest, bare);
+        false -> concat(concat(concat("    MOV ", dest), ", "), term.name)
+    }
 }
 
 // buf_store / write_ref recover emits MOV X2, X1; the following read_buf/read_ref then emits
@@ -281,7 +411,29 @@ fn strip_mov_x2_x1_then_x1_x2(s: string) -> string {
 
 // Emit MOV dest, reg (or FMOV for float64/float32) when var is a let-bound variable (value already in reg).
 // When dest == reg, emit nothing (no-op elimination).
+// Phase E (task e2b): if `reg` is actually a %-prefixed SIR name (e.g. `%worker`) rather than an AArch64
+// register, treat it as a function-symbol reference and emit ADRP/ADD so child_spec.start captures the
+// function address. Without this the emitter produced `MOV X9, %worker` which the assembler rejects.
 fn emit_var_reg(term: SIRTerm, dest: string, reg: string) -> string {
+    // Phase E (task e1h): if this var is function-typed, emit ADRP/ADD to its symbol rather than
+    // `MOV dest, reg` (the reg may spuriously be SP or a register scratch bound during aggregate make).
+    bare_fn: string <- bare_name_from_term(term.name);
+    case type_name_is_function(term.type_name) and bare_name_is_valid_symbol(bare_fn) of {
+        true -> emit_fn_symbol_adrp_add(dest, bare_fn);
+        false -> case len(reg) > 0 and substring(reg, 0, 1) == "%" of {
+            true -> do
+                bare: string <- substring(reg, 1, len(reg));
+                case bare_name_is_valid_symbol(bare) of {
+                    true -> emit_fn_symbol_adrp_add(dest, bare);
+                    false -> emit_var_reg_core(term, dest, reg)
+                }
+            end;
+            false -> emit_var_reg_core(term, dest, reg)
+        }
+    }
+}
+
+fn emit_var_reg_core(term: SIRTerm, dest: string, reg: string) -> string {
     case dest == reg of {
         true -> "";
         false -> do

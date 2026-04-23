@@ -1,0 +1,47 @@
+// Phase B (supervisors_implementation_development_plan §4): the supervision ingress queue is drained
+// before the standard mailbox on every dequeue. Both queues are two-list functional queues
+// `(front, rear)`: enqueue prepends to `rear`; dequeue pops `front`; when `front` is empty on a
+// dequeue, `rear` is reversed in place to become the new `front` and `rear` is cleared.
+//
+// Flow: flooder casts 1..10 into sup's standard mailbox, then supervision_ingress_enqueue(999) into
+// sup's ingress, then synchronously call(sup, 42) to force main to wait until sup has drained both
+// queues. Expected output order: 999 (ingress first), 1..10 (FIFO from the two-list queue), 42
+// (the sync call), then main prints "done".
+
+fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
+    sequence proc[device_io]
+        print_int64(msg); println("")
+    produces
+        pure (:reply, 0, state)
+    end
+}
+
+fn flooder_beh(msg: int64, state: actor_ref) -> (:reply, int64, actor_ref) {
+    sequence proc[concurrency]
+        _: boolean <- cast(state, 1 impl ActorMessage {});
+        _: boolean <- cast(state, 2 impl ActorMessage {});
+        _: boolean <- cast(state, 3 impl ActorMessage {});
+        _: boolean <- cast(state, 4 impl ActorMessage {});
+        _: boolean <- cast(state, 5 impl ActorMessage {});
+        _: boolean <- cast(state, 6 impl ActorMessage {});
+        _: boolean <- cast(state, 7 impl ActorMessage {});
+        _: boolean <- cast(state, 8 impl ActorMessage {});
+        _: boolean <- cast(state, 9 impl ActorMessage {});
+        _: boolean <- cast(state, 10 impl ActorMessage {});
+        _: atom <- supervision_ingress_enqueue(state, 999);
+        _: int64 <- call(state, 42 impl ActorMessage {})
+    produces
+        pure (:reply, 0, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sup: actor_ref <- spawn(0, sup_beh);
+        flooder: actor_ref <- spawn(sup, flooder_beh);
+        _: int64 <- call(flooder, 1 impl ActorMessage {});
+        print_string("done"); println("")
+    produces
+        pure 0
+    end
+}

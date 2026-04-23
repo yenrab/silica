@@ -27,6 +27,203 @@ use type_checker_traits;
 
 export check_expr/4;
 
+// §3.4 / §15.4.13.2: function-value types. The compiler builds call-site fn types as `(T1,T2) -> R`
+// (see `build_function_type_for_decl_call`), while declared `fn(msg: T1, state: T2) -> R` annotations
+// carry the `fn` keyword and parameter names. These must be unified in identifier type-checking so
+// passing a plain `fn name` as a record-field or behavior-argument value type-checks.
+
+fn trim_spaces_idf(s: string) -> string {
+    trim_spaces_idf_from(s, 0)
+}
+
+fn trim_spaces_idf_from(s: string, i: int64) -> string {
+    case i >= len(s) of {
+        true -> "";
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> trim_spaces_idf_from(s, i + 1);
+            false -> rtrim_spaces_idf(substring(s, i, len(s)))
+        }
+    }
+}
+
+fn rtrim_spaces_idf(s: string) -> string {
+    rtrim_spaces_idf_from(s, len(s))
+}
+
+fn rtrim_spaces_idf_from(s: string, i: int64) -> string {
+    case i <= 0 of {
+        true -> "";
+        false -> case substring(s, i - 1, i) == " " of {
+            true -> rtrim_spaces_idf_from(s, i - 1);
+            false -> substring(s, 0, i)
+        }
+    }
+}
+
+fn strip_fn_keyword_prefix_idf(s: string) -> string {
+    t: string <- trim_spaces_idf(s);
+    case len(t) >= 3 and substring(t, 0, 3) == "fn(" of {
+        true -> substring(t, 2, len(t));
+        false -> t
+    }
+}
+
+// Find top-level "->" starting from i (paren/brace/bracket aware).
+fn find_arrow_idf(s: string, i: int64, paren: int64, brace: int64, bracket: int64) -> int64 {
+    case i + 1 >= len(s) of {
+        true -> -1;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" of {
+                true -> find_arrow_idf(s, i + 1, paren + 1, brace, bracket);
+                false -> case c == ")" of {
+                    true -> find_arrow_idf(s, i + 1, paren - 1, brace, bracket);
+                    false -> case c == "{" of {
+                        true -> find_arrow_idf(s, i + 1, paren, brace + 1, bracket);
+                        false -> case c == "}" of {
+                            true -> find_arrow_idf(s, i + 1, paren, brace - 1, bracket);
+                            false -> case c == "[" of {
+                                true -> find_arrow_idf(s, i + 1, paren, brace, bracket + 1);
+                                false -> case c == "]" of {
+                                    true -> find_arrow_idf(s, i + 1, paren, brace, bracket - 1);
+                                    false -> case paren == 0 and brace == 0 and bracket == 0 and substring(s, i, i + 2) == "->" of {
+                                        true -> i;
+                                        false -> find_arrow_idf(s, i + 1, paren, brace, bracket)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+// Find first top-level comma (paren/brace/bracket aware).
+fn find_comma_idf(s: string, i: int64, paren: int64, brace: int64, bracket: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" of {
+                true -> find_comma_idf(s, i + 1, paren + 1, brace, bracket);
+                false -> case c == ")" of {
+                    true -> find_comma_idf(s, i + 1, paren - 1, brace, bracket);
+                    false -> case c == "{" of {
+                        true -> find_comma_idf(s, i + 1, paren, brace + 1, bracket);
+                        false -> case c == "}" of {
+                            true -> find_comma_idf(s, i + 1, paren, brace - 1, bracket);
+                            false -> case c == "[" of {
+                                true -> find_comma_idf(s, i + 1, paren, brace, bracket + 1);
+                                false -> case c == "]" of {
+                                    true -> find_comma_idf(s, i + 1, paren, brace, bracket - 1);
+                                    false -> case c == "," and paren == 0 and brace == 0 and bracket == 0 of {
+                                        true -> i;
+                                        false -> find_comma_idf(s, i + 1, paren, brace, bracket)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+// Find first top-level ":" (paren/brace/bracket aware).
+fn find_colon_idf(s: string, i: int64, paren: int64, brace: int64, bracket: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" of {
+                true -> find_colon_idf(s, i + 1, paren + 1, brace, bracket);
+                false -> case c == ")" of {
+                    true -> find_colon_idf(s, i + 1, paren - 1, brace, bracket);
+                    false -> case c == "{" of {
+                        true -> find_colon_idf(s, i + 1, paren, brace + 1, bracket);
+                        false -> case c == "}" of {
+                            true -> find_colon_idf(s, i + 1, paren, brace - 1, bracket);
+                            false -> case c == "[" of {
+                                true -> find_colon_idf(s, i + 1, paren, brace, bracket + 1);
+                                false -> case c == "]" of {
+                                    true -> find_colon_idf(s, i + 1, paren, brace, bracket - 1);
+                                    false -> case c == ":" and paren == 0 and brace == 0 and bracket == 0 of {
+                                        true -> i;
+                                        false -> find_colon_idf(s, i + 1, paren, brace, bracket)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+// `name: T` → `T`; else returns input trimmed.
+fn strip_param_name_idf(seg: string) -> string {
+    t: string <- trim_spaces_idf(seg);
+    colon: int64 <- find_colon_idf(t, 0, 0, 0, 0);
+    case colon < 0 of {
+        true -> t;
+        false -> trim_spaces_idf(substring(t, colon + 1, len(t)))
+    }
+}
+
+// Normalize `fn(a: T1, b: T2) -> R` or `(T1,T2) -> R` → canonical `(T1,T2)->R` with spaces stripped.
+fn normalize_fn_type_idf(s: string) -> string {
+    stripped: string <- strip_fn_keyword_prefix_idf(s);
+    t: string <- trim_spaces_idf(stripped);
+    arrow: int64 <- find_arrow_idf(t, 0, 0, 0, 0);
+    case arrow < 0 of {
+        true -> t;
+        false -> do
+            params_part: string <- trim_spaces_idf(substring(t, 0, arrow));
+            ret_part: string <- trim_spaces_idf(substring(t, arrow + 2, len(t)));
+            params_inner: string <- case len(params_part) >= 2 and substring(params_part, 0, 1) == "(" and substring(params_part, len(params_part) - 1, len(params_part)) == ")" of {
+                true -> trim_spaces_idf(substring(params_part, 1, len(params_part) - 1));
+                false -> params_part
+            };
+            normalized_params: string <- normalize_param_list_idf(params_inner);
+            concat(concat(concat("(", normalized_params), ")->"), ret_part)
+        end
+    }
+}
+
+fn normalize_param_list_idf(inner: string) -> string {
+    case len(inner) == 0 of {
+        true -> "";
+        false -> do
+            comma: int64 <- find_comma_idf(inner, 0, 0, 0, 0);
+            case comma < 0 of {
+                true -> strip_param_name_idf(inner);
+                false -> do
+                    head: string <- strip_param_name_idf(substring(inner, 0, comma));
+                    rest: string <- normalize_param_list_idf(trim_spaces_idf(substring(inner, comma + 1, len(inner))));
+                    concat(concat(head, ","), rest)
+                end
+            }
+        end
+    }
+}
+
+fn function_types_compatible(resolved: string, expected: string) -> bool {
+    a: string <- normalize_fn_type_idf(resolved);
+    b: string <- normalize_fn_type_idf(expected);
+    type_checker_tuple_decompose_helpers@types_equal(a, b)
+}
+
+// Quick check: is this type text a fn-value type (either `(T,…) -> R` or `fn(a: T,…) -> R`)?
+fn looks_like_fn_type_idf(s: string) -> bool {
+    t: string <- trim_spaces_idf(s);
+    arrow: int64 <- find_arrow_idf(t, 0, 0, 0, 0);
+    arrow >= 0
+}
+
 // Check Expr kind 1 (identifier). Lookup in context.env, verify matches expected_type.
 // Note: "true"/"false" identifiers are routed to boolean checker by type_checker_expressions dispatcher
 fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
@@ -63,9 +260,12 @@ fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: Li
                             };
                             false -> case type_checker_lists@list_types_compatible(resolved_type, expected_type) of {
                                 true -> type_checker_core@type_check_ok();
-                                false -> case type_checker_traits@actual_type_satisfies_trait_expectation(resolved_type, expected_type, world) of {
+                                false -> case looks_like_fn_type_idf(resolved_type) and looks_like_fn_type_idf(expected_type) and function_types_compatible(resolved_type, expected_type) of {
                                     true -> type_checker_core@type_check_ok();
-                                    false -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6")
+                                    false -> case type_checker_traits@actual_type_satisfies_trait_expectation(resolved_type, expected_type, world) of {
+                                        true -> type_checker_core@type_check_ok();
+                                        false -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6")
+                                    }
                                 }
                             }
                         }

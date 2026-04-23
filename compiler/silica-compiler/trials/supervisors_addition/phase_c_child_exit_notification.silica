@@ -1,0 +1,57 @@
+// Phase C (supervisors_implementation_development_plan.md §4 Phase C; silica-specification §15.4.10–§15.4.11):
+// when a linked child dies, the runtime constructs a structured exit notification and enqueues it on the
+// supervisor's supervision ingress. Payload fields (§15.4.11.1): `child_ref`, `failure_reason` discriminator
+// (§15.4.11.2; Phase C exercises the `:normal` case — tag 0), and `agent_type` atom copied from the child's
+// runtime metadata at `spawn_linked` time.
+//
+// Flow:
+//   1. main spawns `sup` (root).
+//   2. main calls `sup` with msg = 0. Inside the behavior, sup uses `spawn_linked` to create a child with
+//      `agent_type = :phase_c_child`, then `remove_actor(child)` sets the child's `alive` flag to 0.
+//   3. The child thread wakes from `cond_wait` with empty queues, exits via `actor_thread_main`'s teardown,
+//      which calls `_silica_rt_actor_deliver_exit`. That helper allocates the 32 B failure payload
+//      (`child_ref`, reason_tag=0, reason_atom=0, `agent_type`) and enqueues a cast-shaped 152 B node on
+//      sup's ingress (§15.4.9 / §16.2.7 — bounded at 1024, `_abort` on overflow).
+//   4. `supervision_wait_and_drain_one` blocks until the notification arrives, dequeues it, returns the
+//      payload pointer. The trial reads `agent_type` / `reason_tag`, prints them, then releases the payload
+//      so nothing leaks across the exit.
+//
+// Expected stdout:
+//   :phase_c_child
+//   0
+//   done
+//   0
+//
+// Dead-supervisor path (§15.4.10.4) is not exercised here — `sup` remains live throughout — but
+// `_silica_rt_actor_deliver_exit` falls back to the existing root-actor stderr note (same 43 B string used
+// by Phase A) when the supervisor is null or already `alive = 0`.
+
+fn child_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state)
+}
+
+fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
+    sequence proc[concurrency, device_io]
+        child: actor_ref <- spawn_linked(0, child_beh, :phase_c_child);
+        _: atom <- remove_actor(child);
+        payload: int64 <- supervision_wait_and_drain_one();
+        at: atom <- failure_agent_type(payload);
+        _: atom <- print_atom(at);
+        println("");
+        tag: int64 <- failure_reason_tag(payload);
+        print_int64(tag); println("");
+        _: atom <- failure_release(payload)
+    produces
+        pure (:reply, 0, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sup: actor_ref <- spawn(0, sup_beh);
+        _: int64 <- call(sup, 1 impl ActorMessage {});
+        print_string("done"); println("")
+    produces
+        pure 0
+    end
+}

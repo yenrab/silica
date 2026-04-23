@@ -16,19 +16,74 @@
 -}
 
 // Capability: check atom literal expression (Expr kind 5)
-// Verifies atom literal type matches expected return type
+// Verifies atom literal type matches expected return type.
+// Accepts `atom` (any), `discard`, a single atom-literal type (`:name`), or an
+// atom-literal union (`:a|:b|:c` — parser tokenizes with spaces; compare after
+// stripping spaces). Atom unions are spec §3.3.6 / §15.4.13.2 (supervisor_flags
+// strategy, child_spec restart).
 
 use parser_ast;
 use type_checker_core;
 
 export check_expr/4;
 
-// Check Expr kind 5 (atom literal). Expected type is function return type (e.g. "atom").
-// Atom literals have type atom; must match expected.
+fn strip_spaces_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> strip_spaces_from(s, i + 1, acc);
+            false -> strip_spaces_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn strip_spaces_atom(s: string) -> string {
+    strip_spaces_from(s, 0, "")
+}
+
+// Scan alternatives separated by `|` at top level (no nested delimiters in atom-only unions).
+fn atom_union_contains_from(union_text: string, needle: string, start: int64) -> bool {
+    bar: int64 <- find_pipe_from(union_text, start);
+    case bar < 0 of {
+        true -> substring(union_text, start, len(union_text)) == needle;
+        false -> case substring(union_text, start, bar) == needle of {
+            true -> true;
+            false -> atom_union_contains_from(union_text, needle, bar + 1)
+        }
+    }
+}
+
+fn find_pipe_from(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "|" of {
+            true -> i;
+            false -> find_pipe_from(s, i + 1)
+        }
+    }
+}
+
+// atom-literal-typed or atom-union-typed check (returns bool).
+fn atom_literal_matches_type(expr_value: string, expected_type: string) -> bool {
+    exp_ns: string <- strip_spaces_atom(expected_type);
+    case len(exp_ns) == 0 of {
+        true -> false;
+        false -> case substring(exp_ns, 0, 1) == ":" of {
+            false -> false;
+            true -> atom_union_contains_from(exp_ns, expr_value, 0)
+        }
+    }
+}
+
+// Check Expr kind 5 (atom literal). `expr.value` holds the atom lexeme (e.g. ":ok").
+// Expected type: `atom` (any), `discard` (ignored), a single atom-literal type
+// (`:name`), or an atom-literal union (`:a|:b|…` possibly with spaces).
 fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
-    case expected_type of {
-        "atom" -> type_checker_core@type_check_ok();
-        "discard" -> type_checker_core@type_check_ok();
-        _: string -> type_checker_core@type_check_err("E2001", expr.location, concat("atom literal requires atom return type, got ", case expected_type of { "" -> "[EMPTY]"; _: string -> expected_type }), "sect6")
+    case expected_type == "atom" or expected_type == "discard" of {
+        true -> type_checker_core@type_check_ok();
+        false -> case atom_literal_matches_type(expr.value, expected_type) of {
+            true -> type_checker_core@type_check_ok();
+            false -> type_checker_core@type_check_err("E2001", expr.location, concat("atom literal requires atom return type, got ", case expected_type of { "" -> "[EMPTY]"; _: string -> expected_type }), "sect6")
+        }
     }
 }

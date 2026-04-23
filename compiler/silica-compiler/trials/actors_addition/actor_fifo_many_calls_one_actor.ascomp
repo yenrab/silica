@@ -182,10 +182,11 @@ L_pi_do_write:
 _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 	.cfi_startproc
 ; %bb.0:
-	stp	x22, x21, [sp, #-48]!           ; 16-byte Folded Spill
-	stp	x20, x19, [sp, #16]             ; 16-byte Folded Spill
-	stp	x29, x30, [sp, #32]             ; 16-byte Folded Spill
-	add	x29, sp, #32
+	stp	x24, x23, [sp, #-64]!           ; 16-byte Folded Spill
+	stp	x22, x21, [sp, #16]             ; 16-byte Folded Spill
+	stp	x20, x19, [sp, #32]             ; 16-byte Folded Spill
+	stp	x29, x30, [sp, #48]             ; 16-byte Folded Spill
+	add	x29, sp, #48
 	.cfi_def_cfa w29, 16
 	.cfi_offset w30, -8
 	.cfi_offset w29, -16
@@ -193,16 +194,27 @@ _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 	.cfi_offset w20, -32
 	.cfi_offset w21, -40
 	.cfi_offset w22, -48
+	.cfi_offset w23, -56
+	.cfi_offset w24, -64
+	mov	x23, x2
 	mov	x20, x1
 	mov	x21, x0
 	mov	w22, #1                         ; =0x1
 	mov	w0, #1                          ; =0x1
-	mov	w1, #192                        ; =0xc0 (extended for region metadata)
+	mov	w1, #256
 	bl	_calloc
 	mov	x19, x0
 	cbz	x0, LBB0_4
 ; %bb.1:
 	stp	x21, x20, [x19]
+	str	xzr, [x19, #192]
+	str	xzr, [x19, #200]
+	str	x23, [x19, #208]
+	str	xzr, [x19, #216]
+	str	xzr, [x19, #224]
+	str	xzr, [x19, #232]
+	str	xzr, [x19, #240]
+	str	wzr, [x19, #248]
 	add	x0, x19, #16
 	mov	x1, #0                          ; =0x0
 	bl	_pthread_mutex_init
@@ -231,9 +243,10 @@ LBB0_3:
 	bl	_silica_rt_actor_init_region
 LBB0_4:
 	mov	x0, x19
-	ldp	x29, x30, [sp, #32]             ; 16-byte Folded Reload
-	ldp	x20, x19, [sp, #16]             ; 16-byte Folded Reload
-	ldp	x22, x21, [sp], #48             ; 16-byte Folded Reload
+	ldp	x29, x30, [sp, #48]             ; 16-byte Folded Reload
+	ldp	x20, x19, [sp, #32]             ; 16-byte Folded Reload
+	ldp	x22, x21, [sp, #16]             ; 16-byte Folded Reload
+	ldp	x24, x23, [sp], #64             ; 16-byte Folded Reload
 	ret
 	.loh AdrpAdd	Lloh0, Lloh1
 	.cfi_endproc
@@ -277,6 +290,25 @@ Lslp_tls1:
 	str	x0, [x19, #192]
 	str	x23, [x19, #200]
 	str	x24, [x19, #208]
+	str	xzr, [x19, #216]
+	str	xzr, [x19, #224]
+	str	xzr, [x19, #232]
+	str	xzr, [x19, #240]
+	str	wzr, [x19, #248]
+	cbz	x0, Lslp_skip_list
+	sub	sp, sp, #16
+	str	x0, [sp, #8]
+	ldr	x1, [sp, #8]
+	add	x0, x1, #16
+	bl	_pthread_mutex_lock
+	ldr	x1, [sp, #8]
+	ldr	x8, [x1, #216]
+	str	x8, [x19, #224]
+	str	x19, [x1, #216]
+	add	x0, x1, #16
+	bl	_pthread_mutex_unlock
+	add	sp, sp, #16
+Lslp_skip_list:
 	add	x0, x19, #16
 	mov	x1, #0
 	bl	_pthread_mutex_init
@@ -337,42 +369,32 @@ Lloh3:
 	blr	x8
 	str	x19, [x0]
 	mov	w22, #1                         ; =0x1
-	b	LBB1_2
-LBB1_1:                                 ;   in Loop: Header=BB1_2 Depth=1
-	add	x0, x19, #16
-	bl	_pthread_mutex_unlock
-LBB1_2:                                 ; =>This Loop Header: Depth=1
-                                        ;     Child Loop BB1_3 Depth 2
+LBB1_loop:
 	add	x0, x19, #16
 	bl	_pthread_mutex_lock
-LBB1_3:                                 ;   Parent Loop BB1_2 Depth=1
-                                        ; =>  This Inner Loop Header: Depth=2
-	ldr	x20, [x19, #128]
-	cmp	x20, #0
-	cset	w8, ne
-	cbnz	x20, LBB1_6
-; %bb.4:                                ;   in Loop: Header=BB1_3 Depth=2
+LBB1_wait:
+	add	x0, x19, #232
+	bl	_silica_rt_q_dequeue_locked
+	mov	x20, x0
+	cbz	x20, LBB1_try_std
+	ldr	w9, [x19, #248]
+	sub	w9, w9, #1
+	str	w9, [x19, #248]
+	mov	w21, #1
+	b	LBB1_process
+LBB1_try_std:
+	add	x0, x19, #128
+	bl	_silica_rt_q_dequeue_locked
+	mov	x20, x0
+	mov	w21, #0
+	cbnz	x20, LBB1_process
 	ldr	w9, [x19, #152]
-	cbz	w9, LBB1_6
-; %bb.5:                                ;   in Loop: Header=BB1_3 Depth=2
+	cbz	w9, LBB1_exit
 	add	x0, x19, #80
 	add	x1, x19, #16
 	bl	_pthread_cond_wait
-	b	LBB1_3
-LBB1_6:                                 ;   in Loop: Header=BB1_2 Depth=1
-	tbnz	w8, #0, LBB1_8
-; %bb.7:                                ;   in Loop: Header=BB1_2 Depth=1
-	ldr	w9, [x19, #152]
-	cbz	w9, LBB1_14
-LBB1_8:                                 ;   in Loop: Header=BB1_2 Depth=1
-	cbz	w8, LBB1_1
-; %bb.9:                                ;   in Loop: Header=BB1_2 Depth=1
-	ldr	x8, [x20]
-	str	x8, [x19, #128]
-	cbnz	x8, LBB1_11
-; %bb.10:                               ;   in Loop: Header=BB1_2 Depth=1
-	str	xzr, [x19, #136]
-LBB1_11:                                ;   in Loop: Header=BB1_2 Depth=1
+	b	LBB1_wait
+LBB1_process:
 	add	x0, x19, #16
 	bl	_pthread_mutex_unlock
 	sub	sp, sp, #32
@@ -385,8 +407,7 @@ LBB1_11:                                ;   in Loop: Header=BB1_2 Depth=1
 	add	sp, sp, #32
 	str	x9, [x19]
 	ldr	w8, [x20, #16]
-	cbz	w8, LBB1_13
-; %bb.12:                               ;   in Loop: Header=BB1_2 Depth=1
+	cbz	w8, LBB1_free
 	add	x0, x20, #72
 	bl	_pthread_mutex_lock
 	str	x21, [x20, #144]
@@ -395,14 +416,25 @@ LBB1_11:                                ;   in Loop: Header=BB1_2 Depth=1
 	bl	_pthread_cond_signal
 	add	x0, x20, #72
 	bl	_pthread_mutex_unlock
-	b	LBB1_2
-LBB1_13:                                ;   in Loop: Header=BB1_2 Depth=1
+	b	LBB1_loop
+LBB1_free:
 	mov	x0, x20
 	bl	_free
-	b	LBB1_2
-LBB1_14:
+	b	LBB1_loop
+LBB1_exit:
 	add	x0, x19, #16
 	bl	_pthread_mutex_unlock
+	mov	x0, x19
+	bl	_silica_rt_actor_deliver_exit
+	cbz	x0, LBB1_exit_skip_note
+	mov	w0, #2
+Lloh_rn0:
+	adrp	x1, L_silica_root_actor_exit@PAGE
+Lloh_rn1:
+	add	x1, x1, L_silica_root_actor_exit@PAGEOFF
+	mov	w2, #43
+	bl	_write
+LBB1_exit_skip_note:
 	mov	x0, x19
 	bl	_silica_rt_actor_dealloc_region
 	add	x0, x19, #16
@@ -416,7 +448,44 @@ LBB1_14:
 	ldp	x20, x19, [sp, #16]             ; 16-byte Folded Reload
 	ldp	x22, x21, [sp], #48             ; 16-byte Folded Reload
 	ret
+	.loh AdrpAdd	Lloh_rn0, Lloh_rn1
 	.loh AdrpLdr	Lloh2, Lloh3
+	.cfi_endproc
+                                        ; -- End function
+	.p2align	2                               ; functional queue dequeue; caller holds queue's lock
+_silica_rt_q_dequeue_locked:            ; X0 = &queue (pair: front, rear). Returns X0 = node or null.
+	.cfi_startproc
+	ldr	x1, [x0]
+	cbnz	x1, Lqd_pop
+	ldr	x1, [x0, #8]
+	cbz	x1, Lqd_empty
+	mov	x2, xzr
+Lqd_rev:
+	ldr	x3, [x1]
+	str	x2, [x1]
+	mov	x2, x1
+	mov	x1, x3
+	cbnz	x1, Lqd_rev
+	str	x2, [x0]
+	str	xzr, [x0, #8]
+	mov	x1, x2
+Lqd_pop:
+	ldr	x3, [x1]
+	str	x3, [x0]
+	mov	x0, x1
+	ret
+Lqd_empty:
+	mov	x0, #0
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.p2align	2                               ; functional queue enqueue; caller holds queue's lock
+_silica_rt_q_enqueue_locked:            ; X0 = &queue (pair), X1 = node. Prepends to rear.
+	.cfi_startproc
+	ldr	x2, [x0, #8]
+	str	x2, [x1]
+	str	x1, [x0, #8]
+	ret
 	.cfi_endproc
                                         ; -- End function
 	.globl	_silica_rt_actor_send           ; -- Begin function silica_rt_actor_send
@@ -451,22 +520,16 @@ _silica_rt_actor_send:                  ; @silica_rt_actor_send
 	str	wzr, [x0, #16]
 	add	x0, x19, #16
 	bl	_pthread_mutex_lock
-	mov	x8, x19
-	ldr	x9, [x8, #136]!
-	cbz	x9, LBB2_6
-; %bb.4:
-	str	x20, [x9]
+	add	x0, x19, #128
+	mov	x1, x20
+	bl	_silica_rt_q_enqueue_locked
 	b	LBB2_7
 LBB2_5:
 	ldp	x29, x30, [sp, #32]             ; 16-byte Folded Reload
 	ldp	x20, x19, [sp, #16]             ; 16-byte Folded Reload
 	ldp	x22, x21, [sp], #48             ; 16-byte Folded Reload
 	ret
-LBB2_6:
-	str	x20, [x19, #136]
-	add	x8, x19, #128
 LBB2_7:
-	str	x20, [x8]
 	add	x0, x19, #80
 	bl	_pthread_cond_signal
 	add	x0, x19, #16
@@ -510,17 +573,9 @@ _silica_rt_actor_cast:                  ; @silica_rt_actor_cast
 	str	wzr, [x0, #16]
 	add	x0, x19, #16
 	bl	_pthread_mutex_lock
-	mov	x8, x19
-	ldr	x9, [x8, #136]!
-	cbz	x9, LBB3_5
-; %bb.4:
-	str	x20, [x9]
-	b	LBB3_6
-LBB3_5:
-	str	x20, [x19, #136]
-	add	x8, x19, #128
-LBB3_6:
-	str	x20, [x8]
+	add	x0, x19, #128
+	mov	x1, x20
+	bl	_silica_rt_q_enqueue_locked
 	add	x0, x19, #80
 	bl	_pthread_cond_signal
 	add	x0, x19, #16
@@ -574,17 +629,9 @@ _silica_rt_actor_call:                  ; @silica_rt_actor_call
 	bl	_pthread_cond_init
 	add	x0, x20, #16
 	bl	_pthread_mutex_lock
-	mov	x8, x20
-	ldr	x9, [x8, #136]!
-	cbz	x9, LBB4_5
-; %bb.4:
-	str	x19, [x9]
-	b	LBB4_6
-LBB4_5:
-	str	x19, [x20, #136]
-	add	x8, x20, #128
-LBB4_6:
-	str	x19, [x8]
+	add	x0, x20, #128
+	mov	x1, x19
+	bl	_silica_rt_q_enqueue_locked
 	add	x0, x20, #80
 	bl	_pthread_cond_signal
 	add	x0, x20, #16
@@ -1691,7 +1738,7 @@ _tl_current_actor:
 	.p2align	2
 _silica_rt_actor_init_region:           ; init growable stack region for actor
 	.cfi_startproc
-; X0=actor_ptr. Reserves 1GB VA, maps first 8MB, stores metadata at [160..192].
+; X0=actor_ptr. Reserves 1GB VA, maps first 8MB, stores region metadata at [160..184]. Supervision fields [192..224] unused here.
 ; Also installs SIGSEGV handler on first call.
 	stp	x22, x21, [sp, #-48]!
 	stp	x20, x19, [sp, #16]
@@ -1770,6 +1817,11 @@ LBBdr_skip:
 	ret
 	.cfi_endproc
                                         ; -- End function
+	.section	__TEXT,__cstring,cstring_literals
+	.p2align	2
+L_silica_root_actor_exit:
+	.asciz	"[silica] root actor exited (no supervisor)\n"
+	.section	__TEXT,__text,regular,pure_instructions
 	.globl	_silica_rt_migrate_actor        ; -- Begin function silica_rt_migrate_actor
 	.p2align	2
 _silica_rt_migrate_actor:               ; @silica_rt_migrate_actor
@@ -1985,6 +2037,317 @@ LBBra_fallback:
 	ldp	x20, x19, [sp], #32
 	ret
 	.loh AdrpLdr	Lloh_ra0, Lloh_ra1
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_supervision_ingress_enqueue ; Phase B — synthetic exit / trial hook; bounded queue
+	.p2align	2
+_silica_rt_actor_supervision_ingress_enqueue:
+	.cfi_startproc
+; X0=target actor_ref, X1=int64 payload → X0=:ok (0). Cast-shaped 152 B node; payload in heap 8 B (matches cast +8 indirection).
+	stp	x22, x21, [sp, #-48]!
+	stp	x20, x19, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	add	x29, sp, #32
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	.cfi_offset w21, -40
+	.cfi_offset w22, -48
+	mov	x19, x0
+	mov	x21, x1
+	cbz	x19, Lsie_fail_nolock
+	add	x0, x19, #16
+	bl	_pthread_mutex_lock
+	ldr	w9, [x19, #248]
+	cmp	w9, #1024
+	b.hs	Lsie_abort
+	mov	w0, #1
+	mov	w1, #152
+	bl	_calloc
+	cbz	x0, Lsie_unlock_fail
+	mov	x20, x0
+	str	x21, [x20, #8]
+	str	wzr, [x20, #16]
+	add	x0, x19, #232
+	mov	x1, x20
+	bl	_silica_rt_q_enqueue_locked
+	ldr	w9, [x19, #248]
+	add	w9, w9, #1
+	str	w9, [x19, #248]
+	add	x0, x19, #80
+	bl	_pthread_cond_signal
+	add	x0, x19, #16
+	bl	_pthread_mutex_unlock
+	mov	x0, #0
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+Lsie_unlock_fail:
+	add	x0, x19, #16
+	bl	_pthread_mutex_unlock
+Lsie_fail_nolock:
+	mov	x0, #0
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+Lsie_abort:
+	bl	_abort
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_recv           ; Phase B/C/G — ingress then standard; §15.4.8.6 DOWN only on standard
+	.p2align	2
+_silica_rt_actor_recv:                  ; @silica_rt_actor_recv
+	.cfi_startproc
+; TLS current actor: dequeue next message (supervision ingress first, then standard mailbox). Return X0 = message node or 0.
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+Lloh_recv0:
+	adrp	x0, _tl_current_actor@TLVPPAGE
+Lloh_recv1:
+	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
+	ldr	x8, [x0]
+	blr	x8
+	ldr	x19, [x0]
+	cbz	x19, Lrecv_done_null
+	add	x0, x19, #16
+	bl	_pthread_mutex_lock
+	add	x0, x19, #232
+	bl	_silica_rt_q_dequeue_locked
+	mov	x20, x0
+	cbz	x20, Lrecv_try_std
+	ldr	w9, [x19, #248]
+	sub	w9, w9, #1
+	str	w9, [x19, #248]
+	b	Lrecv_unlock_node
+Lrecv_try_std:
+	add	x0, x19, #128
+	bl	_silica_rt_q_dequeue_locked
+	mov	x20, x0
+Lrecv_unlock_node:
+	add	x0, x19, #16
+	bl	_pthread_mutex_unlock
+	mov	x0, x20
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+Lrecv_done_null:
+	mov	x0, #0
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.loh AdrpLdr	Lloh_recv0, Lloh_recv1
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_link           ; Phase G — §15.4.8.4–8.5
+	.p2align	2
+_silica_rt_actor_link:                  ; @silica_rt_actor_link
+	.cfi_startproc
+; X0=target actor_ref -> X0=atom :ok (index 0). Idempotent link; dead target must enqueue exit (ingress if supervisor) — stub.
+	mov	x0, #0
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_monitor        ; Phase G — §15.4.8.6
+	.p2align	2
+_silica_rt_actor_monitor:               ; @silica_rt_actor_monitor
+	.cfi_startproc
+; X0=target -> X0=monitor_ref. Real runtime: DOWN `(:down, ref, target, reason)` to standard mailbox only, not ingress.
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_demonitor      ; Phase G — §15.4.8.6–8.7
+	.p2align	2
+_silica_rt_actor_demonitor:             ; @silica_rt_actor_demonitor
+	.cfi_startproc
+; X0=monitor_ref -> X0=atom :ok
+	mov	x0, #0
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.section	__TEXT,__text,regular,pure_instructions
+	.globl	_silica_rt_actor_deliver_exit   ; Phase C — §15.4.10 unified delivery
+	.p2align	2
+_silica_rt_actor_deliver_exit:          ; X0=child self; X0 out: 0 delivered, 1 drop (no sup / dead / OOM)
+	.cfi_startproc
+	stp	x22, x21, [sp, #-48]!
+	stp	x20, x19, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	add	x29, sp, #32
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	.cfi_offset w21, -40
+	.cfi_offset w22, -48
+	mov	x19, x0
+	ldr	x20, [x19, #192]
+	cbz	x20, Lde_nosup
+	mov	w0, #1
+	mov	w1, #32
+	bl	_calloc
+	cbz	x0, Lde_nosup
+	mov	x21, x0
+	str	x19, [x21]
+	str	xzr, [x21, #8]
+	str	xzr, [x21, #16]
+	ldr	x8, [x19, #200]
+	str	x8, [x21, #24]
+	add	x0, x20, #16
+	bl	_pthread_mutex_lock
+	ldr	w9, [x20, #152]
+	cbz	w9, Lde_dead
+	ldr	w9, [x20, #248]
+	cmp	w9, #1024
+	b.hs	Lde_abort
+	mov	w0, #1
+	mov	w1, #152
+	bl	_calloc
+	cbz	x0, Lde_dead
+	mov	x22, x0
+	str	x21, [x22, #8]
+	str	wzr, [x22, #16]
+	add	x0, x20, #232
+	mov	x1, x22
+	bl	_silica_rt_q_enqueue_locked
+	ldr	w9, [x20, #248]
+	add	w9, w9, #1
+	str	w9, [x20, #248]
+	add	x0, x20, #80
+	bl	_pthread_cond_signal
+	add	x0, x20, #16
+	bl	_pthread_mutex_unlock
+	mov	x0, #0
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+Lde_dead:
+	mov	x0, x21
+	bl	_free
+	add	x0, x20, #16
+	bl	_pthread_mutex_unlock
+	mov	x0, #1
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+Lde_nosup:
+	mov	x0, #1
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+Lde_abort:
+	bl	_abort
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_supervision_wait_and_drain_one ; Phase C trial accessor — behavior-only
+	.p2align	2
+_silica_rt_actor_supervision_wait_and_drain_one:
+	.cfi_startproc
+; No args; returns X0 = failure payload pointer dequeued from self's supervision ingress, blocks until one is available.
+	stp	x22, x21, [sp, #-48]!
+	stp	x20, x19, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	add	x29, sp, #32
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	.cfi_offset w21, -40
+	.cfi_offset w22, -48
+Lloh_swd0:
+	adrp	x0, _tl_current_actor@TLVPPAGE
+Lloh_swd1:
+	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
+	ldr	x8, [x0]
+	blr	x8
+	ldr	x19, [x0]
+	cbz	x19, Lswd_null
+	add	x0, x19, #16
+	bl	_pthread_mutex_lock
+Lswd_try:
+	add	x0, x19, #232
+	bl	_silica_rt_q_dequeue_locked
+	cbz	x0, Lswd_wait
+	mov	x20, x0
+	ldr	w9, [x19, #248]
+	sub	w9, w9, #1
+	str	w9, [x19, #248]
+	ldr	x21, [x20, #8]
+	mov	x0, x20
+	bl	_free
+	add	x0, x19, #16
+	bl	_pthread_mutex_unlock
+	mov	x0, x21
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+Lswd_wait:
+	add	x0, x19, #80
+	add	x1, x19, #16
+	bl	_pthread_cond_wait
+	b	Lswd_try
+Lswd_null:
+	mov	x0, #0
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+	.loh AdrpLdr	Lloh_swd0, Lloh_swd1
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_failure_reason_tag
+	.p2align	2
+_silica_rt_actor_failure_reason_tag:    ; X0=payload ptr -> X0=int64 reason_tag (0 :normal)
+	.cfi_startproc
+	cbz	x0, Lfrt_zero
+	ldr	x0, [x0, #8]
+	ret
+Lfrt_zero:
+	mov	x0, #0
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_failure_agent_type
+	.p2align	2
+_silica_rt_actor_failure_agent_type:    ; X0=payload ptr -> X0=atom agent_type
+	.cfi_startproc
+	cbz	x0, Lfat_zero
+	ldr	x0, [x0, #24]
+	ret
+Lfat_zero:
+	mov	x0, #0
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_failure_release
+	.p2align	2
+_silica_rt_actor_failure_release:       ; X0=payload ptr; frees payload; returns X0=atom :ok (index 0)
+	.cfi_startproc
+	cbz	x0, Lfrr_zero
+	stp	x29, x30, [sp, #-16]!
+	add	x29, sp, #0
+	bl	_free
+	mov	x0, #0
+	ldp	x29, x30, [sp], #16
+	ret
+Lfrr_zero:
+	mov	x0, #0
+	ret
 	.cfi_endproc
                                         ; -- End function
 

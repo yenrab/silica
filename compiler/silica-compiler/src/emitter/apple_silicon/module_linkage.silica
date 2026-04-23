@@ -31,6 +31,7 @@ export module_defines_program_main/2;
 export format_used_modules_comment/1;
 export emit_export_global_directives/3;
 export format_trait_metadata_comments/1;
+export emit_supervisor_start_trampolines/1;
 
 fn starts_with_main_dot(s: string) -> bool {
     len(s) >= 5 and substring(s, 0, 5) == "main."
@@ -260,6 +261,40 @@ fn format_required_trait_sigs_comments_loop(sigs: ListSIRRequiredMethodSig, acc:
             line: string <- format_one_required_sig_comment(sigs.head);
             format_required_trait_sigs_comments_loop(sigs.tail, concat(acc, line))
         end
+    }
+}
+
+// Supervisors Phase E (supervisors_implementation_development_plan §15.4.12–§15.4.13.2, tasks e2a/e2b):
+// For every `impl T for Supervisor` marker in the module, emit a per-supervisor trampoline symbol
+//     _silica_supervisor_start_<T>
+// whose minimal body calls the module's `init` (flat-namespace in bootstrap: one supervisor
+// impl per module) and returns. Later phases (e3a–e3c) extend this body to walk the returned
+// (supervisor_flags, List[child_spec, normal]) tuple, spawn_linked each child, record child
+// table entries on the ACB, and anchor the runtime automatic-restart path.
+// The trampoline is invoked once at first schedule of the supervisor actor by
+// _silica_rt_supervisor_start (to be wired in a subsequent phase). Emitting the symbol now
+// keeps the link graph complete and lets integration tests observe its presence.
+fn format_one_supervisor_trampoline(actor_type: string) -> string {
+    sym: string <- concat("_silica_supervisor_start_", actor_type);
+    header: string <- concat(concat(concat(".globl ", sym), "\n.p2align 2\n"), concat(sym, ":\n"));
+    body: string <- "    STP X29, X30, [SP, #-16]!\n    MOV X0, #0\n    BL init\n    LDP X29, X30, [SP], #16\n    RET\n";
+    concat(header, body)
+}
+
+fn emit_supervisor_start_trampolines_loop(types: ListSirString, acc: string) -> string {
+    case types.is_nil of {
+        true -> acc;
+        false -> do
+            stanza: string <- format_one_supervisor_trampoline(types.head);
+            emit_supervisor_start_trampolines_loop(types.tail, concat(acc, stanza))
+        end
+    }
+}
+
+fn emit_supervisor_start_trampolines(sir_module: SIRModule) -> string {
+    case sir_module.supervisor_impl_types.is_nil of {
+        true -> "";
+        false -> concat("    ; supervisors Phase E (e2b): per-impl start trampolines (stub: BL init; no child walk yet)\n", emit_supervisor_start_trampolines_loop(sir_module.supervisor_impl_types, ""))
     }
 }
 
