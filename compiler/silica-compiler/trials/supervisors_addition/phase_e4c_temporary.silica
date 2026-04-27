@@ -1,0 +1,139 @@
+// Phase E e4c (supervisors_implementation_development_plan.md §0): `:temporary` never-restart under
+// `:one_for_one`. A `:temporary` child must NOT auto-restart on either `:normal` or abnormal exit;
+// the row is tombstoned in both cases (`maybe_restart_policy_dispatch` falls through to
+// `Lmr_tombstone_done` because `:temporary` matches neither `:permanent` nor `:transient`).
+//
+// Two scenarios threaded through one declarative `:temporary` child plus two follow-ups via
+// `start_child`. The test uses `start_child` after each death to prove the row was tombstoned —
+// `start_child` reuses a tombstone slot before appending (e3f), so a successful sequence of
+// (init → start_child → start_child) implies the policy never restarted in place.
+//
+//   1. Normal exit  → `remove_actor(c1)` lets c1 finish with reason_tag=0; supervisor sees the
+//      exit and `:temporary` policy decides NOT to restart, leaving the c1 row tombstoned.
+//      `start_child(spec1)` reuses that slot, yielding a fresh c2.
+//   2. Abnormal exit → `kill_abnormal(c2)` flips ACB#336 to 1 and tears c2 down; supervisor sees
+//      the exit with reason_tag != 0, `:temporary` STILL decides NOT to restart (unlike
+//      `:transient` which would restart on abnormal). `start_child(spec2)` reuses the tombstone
+//      again, yielding c3, and a final `call(c3, 700)` returns msg+0 == 700.
+//
+// Per e4a, `call(sup, …)` needs a non-zero message because `_silica_rt_actor_call` returns
+// immediately on null payloads (cbz x1).
+
+use Supervisor;
+
+impl E4cSup for Supervisor;
+
+fn worker(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state)
+}
+
+fn init(initial_supervisor_state: ActorState) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: atom,
+            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        },
+        normal
+    ]
+) {
+    sequence proc[mem(normal)]
+        child: {
+            id: atom,
+            agent_type: atom,
+            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        } <- {
+            id: :e4c_worker,
+            agent_type: :worker,
+            start: (0, worker),
+            restart: :temporary,
+            shutdown: 0
+        };
+        children: List[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            normal
+        ] <- [child]
+    produces
+        pure (
+            { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 },
+            children
+        )
+    end
+}
+
+fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
+    sequence proc[concurrency, device_io]
+        ch1: actor_ref <- child_table_first_ref();
+        a: int64 <- call(ch1, 100 impl ActorMessage {});
+        print_int64(a); println("");
+        _: atom <- remove_actor(ch1);
+        p1: int64 <- supervision_wait_and_drain_one();
+        t1: int64 <- failure_reason_tag(p1);
+        print_int64(t1); println("");
+        _: atom <- failure_release(p1);
+        spec1: {
+            id: atom,
+            agent_type: atom,
+            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        } <- {
+            id: :e4c_worker,
+            agent_type: :worker,
+            start: (0, worker),
+            restart: :temporary,
+            shutdown: 0
+        };
+        ch2: actor_ref <- start_child(spec1);
+        b: int64 <- call(ch2, 200 impl ActorMessage {});
+        print_int64(b); println("");
+        _: atom <- kill_abnormal(ch2);
+        p2: int64 <- supervision_wait_and_drain_one();
+        t2: int64 <- failure_reason_tag(p2);
+        print_int64(t2); println("");
+        _: atom <- failure_release(p2);
+        spec2: {
+            id: atom,
+            agent_type: atom,
+            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        } <- {
+            id: :e4c_worker,
+            agent_type: :worker,
+            start: (0, worker),
+            restart: :temporary,
+            shutdown: 0
+        };
+        ch3: actor_ref <- start_child(spec2);
+        c: int64 <- call(ch3, 700 impl ActorMessage {});
+        print_int64(c); println("")
+    produces
+        pure (:reply, 0, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sup: actor_ref <- spawn(0, sup_beh);
+        _: int64 <- call(sup, 1 impl ActorMessage {});
+        print_string("done"); println("")
+    produces
+        pure 0
+    end
+}

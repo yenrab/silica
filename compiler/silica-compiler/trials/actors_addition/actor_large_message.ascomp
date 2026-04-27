@@ -62,8 +62,10 @@ main:     STP X29, X30, [SP, #-16]!
     ADD X1, X1, L_str_0@PAGEOFF
     MOV X2, #0
 
+    STP X19, X20, [SP, #-16]!
     MOV X16, #4
     SVC #0x80
+    LDP X19, X20, [SP], #16
     MOV X0, #0
 
 
@@ -73,8 +75,10 @@ main:     STP X29, X30, [SP, #-16]!
     ADD X1, X1, L_newline@PAGEOFF
     MOV X2, #1
 
+    STP X19, X20, [SP, #-16]!
     MOV X16, #4
     SVC #0x80
+    LDP X19, X20, [SP], #16
     MOV X0, #0
 
     MOV X0, #1
@@ -119,8 +123,10 @@ L_pi_do_write:
     SUB X2, X10, X8
     MOV X0, #1
     MOV X1, X8
+    STP X19, X20, [SP, #-16]!
     MOV X16, #4
     SVC #0x80
+    LDP X19, X20, [SP], #16
     ADD SP, SP, #32
     RET
 	.section	__TEXT,__text,regular,pure_instructions
@@ -374,28 +380,41 @@ LBB1_try_std:
 	cbnz	x20, LBB1_process
 	ldr	w9, [x19, #152]
 	cbz	w9, LBB1_exit
+; Phase E e4e: pthread_cond_timedwait_relative_np with 1 ms slice for missed-signal recovery.
+	sub	sp, sp, #16
+	str	xzr, [sp]
+	movz	w8, #0x4240
+	movk	w8, #0xF, lsl #16
+	str	x8, [sp, #8]
 	add	x0, x19, #80
 	add	x1, x19, #16
-	bl	_pthread_cond_wait
+	mov	x2, sp
+	bl	_pthread_cond_timedwait_relative_np
+	add	sp, sp, #16
 	b	LBB1_wait
 LBB1_process:
 	add	x0, x19, #16
 	bl	_pthread_mutex_unlock
-	sub	sp, sp, #32
+	sub	sp, sp, #48
+	str	x20, [sp, #24]
+	ldr	w8, [x20, #16]
+	str	w8, [sp, #32]
 	ldr	x0, [x20, #8]
 	ldp	x1, x8, [x19]
 	mov	x2, sp
 	blr	x8
 	ldr	x21, [x0, #8]
 	ldr	x9, [x0, #16]
-	add	sp, sp, #32
+	ldr	x20, [sp, #24]
+	ldr	w8, [sp, #32]
+	add	sp, sp, #48
 	str	x9, [x19]
-	ldr	w8, [x20, #16]
 	cbz	w8, LBB1_free
 	add	x0, x20, #72
 	bl	_pthread_mutex_lock
 	str	x21, [x20, #144]
-	str	w22, [x20, #136]
+	mov	w8, #1
+	str	w8, [x20, #136]
 	add	x0, x20, #24
 	bl	_pthread_cond_signal
 	add	x0, x20, #72
@@ -636,9 +655,20 @@ _silica_rt_actor_call:                  ; @silica_rt_actor_call
 	ldr	w8, [x19, #136]
 	cbnz	w8, LBB4_8
 LBB4_7:                                 ; =>This Inner Loop Header: Depth=1
+; Phase E e4e: use pthread_cond_timedwait_relative_np with 1 ms slice so a missed/late signal
+; (we have observed pthread_cond_signal under load failing to wake the caller in the
+; supervisor cascade restart path) can never strand the call. We re-check reply_set on every
+; wake and only fall through once it is set.
+	sub	sp, sp, #16
+	str	xzr, [sp]
+	movz	w8, #0x4240                     ; 1 ms = 1_000_000 ns = 0x000F4240
+	movk	w8, #0xF, lsl #16
+	str	x8, [sp, #8]
 	add	x0, x19, #24
 	add	x1, x19, #72
-	bl	_pthread_cond_wait
+	mov	x2, sp
+	bl	_pthread_cond_timedwait_relative_np
+	add	sp, sp, #16
 	ldr	w8, [x19, #136]
 	cbz	w8, LBB4_7
 LBB4_8:
@@ -2814,9 +2844,17 @@ Lswd_free_wrap:
 	ldp	x22, x21, [sp], #48
 	ret
 Lswd_wait:
+; Phase E e4e: pthread_cond_timedwait_relative_np with 1 ms slice — see _silica_rt_actor_call comment.
+	sub	sp, sp, #16
+	str	xzr, [sp]
+	movz	w8, #0x4240
+	movk	w8, #0xF, lsl #16
+	str	x8, [sp, #8]
 	add	x0, x19, #80
 	add	x1, x19, #16
-	bl	_pthread_cond_wait
+	mov	x2, sp
+	bl	_pthread_cond_timedwait_relative_np
+	add	sp, sp, #16
 	b	Lswd_try
 Lswd_null:
 	mov	x0, #0
