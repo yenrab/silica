@@ -171,6 +171,7 @@ main:     STP X29, X30, [SP, #-16]!
     ADD X8, X8, acc@PAGEOFF
     MOV X10, X8
 
+    MOV X3, XZR
     MOV X0, X9
     MOV X1, X10
     MOV W2, WZR
@@ -264,12 +265,13 @@ _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 	.cfi_offset w22, -48
 	.cfi_offset w23, -56
 	.cfi_offset w24, -64
+	mov	x24, x3
 	mov	x23, x2
 	mov	x20, x1
 	mov	x21, x0
 	mov	w22, #1                         ; =0x1
 	mov	w0, #1                          ; =0x1
-	mov	w1, #256
+	mov	w1, #344
 	bl	_calloc
 	mov	x19, x0
 	cbz	x0, LBB0_4
@@ -283,6 +285,16 @@ _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 	str	xzr, [x19, #232]
 	str	xzr, [x19, #240]
 	str	wzr, [x19, #248]
+	str	xzr, [x19, #256]
+	str	xzr, [x19, #264]
+	str	xzr, [x19, #272]
+	str	x24, [x19, #280]
+	str	xzr, [x19, #288]
+	str	xzr, [x19, #296]
+	str	xzr, [x19, #304]
+	str	xzr, [x19, #312]
+	str	xzr, [x19, #320]
+	str	xzr, [x19, #328]
 	add	x0, x19, #16
 	mov	x1, #0                          ; =0x0
 	bl	_pthread_mutex_init
@@ -309,6 +321,12 @@ LBB0_3:
 	bl	_pthread_detach
 	mov	x0, x19
 	bl	_silica_rt_actor_init_region
+; Phase E: supervisor trampoline (ACB#280) runs on the new thread; wait until #288 is set so
+; callers see a materialized child table before receiving the actor_ref.
+	cbz	x24, LBB0_4
+LBB0_tramp_spin:
+	ldr	x8, [x19, #288]
+	cbz	x8, LBB0_tramp_spin
 LBB0_4:
 	mov	x0, x19
 	ldp	x29, x30, [sp, #48]             ; 16-byte Folded Reload
@@ -343,7 +361,7 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 	mov	x21, x0
 	mov	w22, #1
 	mov	w0, #1
-	mov	w1, #256
+	mov	w1, #344
 	bl	_calloc
 	mov	x19, x0
 	cbz	x0, LBBsl_4
@@ -363,6 +381,16 @@ Lslp_tls1:
 	str	xzr, [x19, #232]
 	str	xzr, [x19, #240]
 	str	wzr, [x19, #248]
+	str	xzr, [x19, #256]
+	str	xzr, [x19, #264]
+	str	xzr, [x19, #272]
+	str	xzr, [x19, #280]
+	str	xzr, [x19, #288]
+	str	xzr, [x19, #296]
+	str	xzr, [x19, #304]
+	str	xzr, [x19, #312]
+	str	xzr, [x19, #320]
+	str	xzr, [x19, #328]
 	cbz	x0, Lslp_skip_list
 	sub	sp, sp, #16
 	str	x0, [sp, #8]
@@ -436,6 +464,16 @@ Lloh3:
 	ldr	x8, [x0]
 	blr	x8
 	str	x19, [x0]
+; Phase E e3b: first-schedule supervisor trampoline hook
+	ldr	x8, [x19, #280]
+	cbz	x8, LBB1_skip_tramp
+	ldr	x9, [x19, #288]
+	cbnz	x9, LBB1_skip_tramp
+	mov	x0, x19
+	blr	x8
+	mov	x8, #1
+	str	x8, [x19, #288]
+LBB1_skip_tramp:
 	mov	w22, #1                         ; =0x1
 LBB1_loop:
 	add	x0, x19, #16
@@ -486,6 +524,15 @@ LBB1_process:
 	bl	_pthread_mutex_unlock
 	b	LBB1_loop
 LBB1_free:
+; Phase E e3c+e4b: if this was an ingress message (w21==1), attempt automatic restart before freeing. X2 = reason_tag from payload+8 (e4b).
+	cbz	w21, LBB1_free_skip_restart
+	ldr	x8, [x20, #8]
+	cbz	x8, LBB1_free_skip_restart
+	ldr	x0, [x8]
+	mov	x1, x19
+	ldr	x2, [x8, #8]
+	bl	_silica_rt_supervisor_maybe_restart
+LBB1_free_skip_restart:
 	mov	x0, x20
 	bl	_free
 	b	LBB1_loop
@@ -503,6 +550,8 @@ Lloh_rn1:
 	mov	w2, #43
 	bl	_write
 LBB1_exit_skip_note:
+	mov	x0, x19
+	bl	_silica_rt_child_table_free
 	mov	x0, x19
 	bl	_silica_rt_actor_dealloc_region
 	add	x0, x19, #16
@@ -1205,6 +1254,38 @@ _silica_rt_remove_actor:                ; @silica_rt_remove_actor
 	mov	x19, x0
 	add	x0, x19, #16
 	bl	_pthread_mutex_lock
+	str	wzr, [x19, #152]
+	add	x0, x19, #80
+	bl	_pthread_cond_signal
+	add	x0, x19, #16
+	bl	_pthread_mutex_unlock
+	mov	x0, #0
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.cfi_endproc
+                                        ; -- End function
+; Phase E e4b: _silica_rt_actor_kill_abnormal — set pending exit reason_tag to 1 (abnormal) and stop the actor.
+; X0=actor_ref. Returns X0=0 (atom :ok). Used by trials to inject abnormal exits so :transient restart policy
+; (restart iff reason_tag != 0) can be exercised. Mutex protects the alive/reason_tag transition vs
+; deliver_exit reading [ACB+#336] from the actor's own thread.
+	.globl	_silica_rt_actor_kill_abnormal
+	.p2align	2
+_silica_rt_actor_kill_abnormal:
+	.cfi_startproc
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	mov	x19, x0
+	add	x0, x19, #16
+	bl	_pthread_mutex_lock
+	mov	x8, #1
+	str	x8, [x19, #336]
 	str	wzr, [x19, #152]
 	add	x0, x19, #80
 	bl	_pthread_cond_signal
@@ -2243,6 +2324,486 @@ _silica_rt_actor_demonitor:             ; @silica_rt_actor_demonitor
 	.cfi_endproc
                                         ; -- End function
 	.section	__TEXT,__text,regular,pure_instructions
+; --- Phase E e3a: heap child table (out-of-line) ---
+; _silica_rt_child_table_free: X0=ACB* — free row buffer, clear ptr/len/cap anchors.
+; _silica_rt_child_table_ensure_min_cap: X0=ACB*, X1=min rows capacity — X0=0 ok, 1=OOM. Grows with _realloc.
+	.globl	_silica_rt_child_table_free
+	.p2align	2
+_silica_rt_child_table_free:
+	.cfi_startproc
+	stp	x19, x30, [sp, #-16]!
+	.cfi_def_cfa wsp, 16
+	.cfi_offset w19, -16
+	.cfi_offset w30, -8
+	mov	x19, x0
+	ldr	x0, [x19, #256]
+	cbz	x0, Lct_free_done
+	bl	_free
+	str	xzr, [x19, #256]
+	str	xzr, [x19, #264]
+	str	xzr, [x19, #272]
+Lct_free_done:
+	ldp	x19, x30, [sp], #16
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_child_table_ensure_min_cap
+	.p2align	2
+_silica_rt_child_table_ensure_min_cap:
+	.cfi_startproc
+; X0=ACB* X1=min_cap_rows. Returns X0=0 success, 1 OOM.
+	stp	x24, x23, [sp, #-64]!
+	stp	x22, x21, [sp, #16]
+	stp	x20, x19, [sp, #32]
+	stp	x29, x30, [sp, #48]
+	add	x29, sp, #48
+	.cfi_offset w19, -32
+	.cfi_offset w20, -24
+	.cfi_offset w21, -40
+	.cfi_offset w22, -32
+	.cfi_offset w23, -56
+	.cfi_offset w24, -48
+	mov	x19, x0
+	mov	x20, x1
+	cmp	x20, #0
+	ble	Lct_ens_ok
+	ldr	x8, [x19, #272]
+	cmp	x8, x20
+	b.hs	Lct_ens_ok
+	ldr	x21, [x19, #256]
+	cbnz	x8, Lct_ens_nzcap
+; cap==0: n = max(need,4)
+	mov	x9, x20
+	mov	x10, #4
+	cmp	x9, x10
+	csel	x9, x9, x10, lo
+	b	Lct_ens_bytes
+Lct_ens_nzcap:
+; n = max(2*cap, need)
+	lsl	x10, x8, #1
+	cmp	x10, x20
+	csel	x9, x10, x20, hi
+Lct_ens_bytes:
+	mov	x12, #80
+	madd	x2, x9, x12, xzr
+	cbz	x21, Lct_ens_calloc
+	mov	x0, x21
+	mov	x1, x2
+	bl	_realloc
+	cbz	x0, Lct_ens_fail
+	b	Lct_ens_store
+Lct_ens_calloc:
+	mov	w0, #1
+	mov	x1, x2
+	bl	_calloc
+	cbz	x0, Lct_ens_fail
+Lct_ens_store:
+	str	x0, [x19, #256]
+	str	x9, [x19, #272]
+Lct_ens_ok:
+	mov	x0, #0
+	ldp	x29, x30, [sp, #48]
+	ldp	x20, x19, [sp, #32]
+	ldp	x22, x21, [sp, #16]
+	ldp	x24, x23, [sp], #64
+	ret
+Lct_ens_fail:
+	mov	x0, #1
+	ldp	x29, x30, [sp, #48]
+	ldp	x20, x19, [sp, #32]
+	ldp	x22, x21, [sp, #16]
+	ldp	x24, x23, [sp], #64
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_materialize_init_children
+	.p2align	2
+_silica_rt_supervisor_materialize_init_children:
+	.cfi_startproc
+	stp	x28, x27, [sp, #-96]!
+	stp	x26, x25, [sp, #16]
+	stp	x24, x23, [sp, #32]
+	stp	x22, x21, [sp, #48]
+	stp	x20, x19, [sp, #64]
+	stp	x29, x30, [sp, #80]
+	add	x29, sp, #80
+	.cfi_def_cfa w29, 16
+	.cfi_offset w19, -32
+	.cfi_offset w20, -24
+	.cfi_offset w21, -40
+	.cfi_offset w22, -32
+	.cfi_offset w23, -56
+	.cfi_offset w24, -48
+	.cfi_offset w25, -72
+	.cfi_offset w26, -64
+	.cfi_offset w27, -88
+	.cfi_offset w28, -80
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x8, [x20]
+	str	x8, [x19, #296]
+	ldr	x8, [x20, #8]
+	str	x8, [x19, #304]
+	ldr	x8, [x20, #16]
+	str	x8, [x19, #312]
+	ldr	x21, [x20, #24]
+Lmat_loop:
+	cbz	x21, Lmat_done
+	ldr	x22, [x21, #16]
+	ldr	x23, [x21, #24]
+	ldr	x24, [x21, #8]
+	ldr	x25, [x21]
+	ldr	x26, [x21, #32]
+	ldr	x27, [x21, #40]
+	mov	x0, x22
+	mov	x1, x23
+	mov	x2, x24
+	mov	x3, xzr
+	bl	_silica_rt_actor_spawn_linked
+	mov	x28, x0
+	mov	x0, x19
+	mov	x1, #1
+	add	x1, x1, x19
+	ldr	x1, [x19, #264]
+	add	x1, x1, #1
+	bl	_silica_rt_child_table_ensure_min_cap
+	cbnz	x0, Lmat_done
+	ldr	x8, [x19, #256]
+	ldr	x9, [x19, #264]
+	mov	x10, #80
+	madd	x8, x9, x10, x8
+	str	x28, [x8]
+	str	x25, [x8, #8]
+	str	x24, [x8, #16]
+	str	x22, [x8, #24]
+	str	x23, [x8, #32]
+	str	x26, [x8, #40]
+	str	x27, [x8, #48]
+	str	xzr, [x8, #56]
+	str	xzr, [x8, #64]
+	str	xzr, [x8, #72]
+	add	x9, x9, #1
+	str	x9, [x19, #264]
+	ldr	x21, [x21, #64]
+	b	Lmat_loop
+Lmat_done:
+	ldp	x29, x30, [sp, #80]
+	ldp	x20, x19, [sp, #64]
+	ldp	x22, x21, [sp, #48]
+	ldp	x24, x23, [sp, #32]
+	ldp	x26, x25, [sp, #16]
+	ldp	x28, x27, [sp], #96
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_start_child
+	.p2align	2
+_silica_rt_supervisor_start_child:
+	.cfi_startproc
+	stp	x26, x25, [sp, #-80]!
+	stp	x24, x23, [sp, #16]
+	stp	x22, x21, [sp, #32]
+	stp	x20, x19, [sp, #48]
+	stp	x29, x30, [sp, #64]
+	add	x29, sp, #64
+	.cfi_def_cfa w29, 16
+	.cfi_offset w19, -32
+	.cfi_offset w20, -24
+	.cfi_offset w21, -40
+	.cfi_offset w22, -32
+	.cfi_offset w23, -56
+	.cfi_offset w24, -48
+	.cfi_offset w25, -72
+	.cfi_offset w26, -64
+	mov	x20, x0
+	ldr	x21, [x20]
+	ldr	x22, [x20, #8]
+	ldr	x23, [x20, #16]
+	ldr	x24, [x20, #24]
+	ldr	x25, [x20, #32]
+	ldr	x26, [x20, #40]
+Lsc_tls0:
+	adrp	x0, _tl_current_actor@TLVPPAGE
+Lsc_tls1:
+	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
+	ldr	x8, [x0]
+	blr	x8
+	ldr	x19, [x0]
+	mov	x0, x23
+	mov	x1, x24
+	mov	x2, x22
+	mov	x3, xzr
+	bl	_silica_rt_actor_spawn_linked
+	mov	x20, x0
+	ldr	x8, [x19, #256]
+	ldr	x9, [x19, #264]
+	mov	x10, #0
+Lsc_reuse_loop:
+	cmp	x10, x9
+	b.hs	Lsc_append_new
+	mov	x11, #80
+	madd	x11, x10, x11, x8
+	ldr	x12, [x11]
+	cbz	x12, Lsc_write_reused
+	add	x10, x10, #1
+	b	Lsc_reuse_loop
+Lsc_append_new:
+	mov	x0, x19
+	ldr	x1, [x19, #264]
+	add	x1, x1, #1
+	bl	_silica_rt_child_table_ensure_min_cap
+	cbnz	x0, Lsc_done
+	ldr	x8, [x19, #256]
+	ldr	x9, [x19, #264]
+	mov	x10, #80
+	madd	x8, x9, x10, x8
+	mov	x12, #1
+	b	Lsc_write_row
+Lsc_write_reused:
+	mov	x8, x11
+	mov	x12, xzr
+Lsc_write_row:
+	str	x20, [x8]
+	str	x21, [x8, #8]
+	str	x22, [x8, #16]
+	str	x23, [x8, #24]
+	str	x24, [x8, #32]
+	str	x25, [x8, #40]
+	str	x26, [x8, #48]
+	str	xzr, [x8, #56]
+	str	xzr, [x8, #64]
+	str	xzr, [x8, #72]
+	cbz	x12, Lsc_done
+	add	x9, x9, #1
+	str	x9, [x19, #264]
+Lsc_done:
+	mov	x0, x20
+	ldp	x29, x30, [sp, #64]
+	ldp	x20, x19, [sp, #48]
+	ldp	x22, x21, [sp, #32]
+	ldp	x24, x23, [sp, #16]
+	ldp	x26, x25, [sp], #80
+	ret
+	.loh AdrpLdr	Lsc_tls0, Lsc_tls1
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_maybe_restart
+	.p2align	2
+_silica_rt_supervisor_maybe_restart:
+	.cfi_startproc
+	stp	x28, x27, [sp, #-96]!
+	stp	x26, x25, [sp, #16]
+	stp	x24, x23, [sp, #32]
+	stp	x22, x21, [sp, #48]
+	stp	x20, x19, [sp, #64]
+	stp	x29, x30, [sp, #80]
+	add	x29, sp, #80
+	.cfi_def_cfa w29, 16
+	.cfi_offset w19, -32
+	.cfi_offset w20, -24
+	.cfi_offset w21, -40
+	.cfi_offset w22, -32
+	.cfi_offset w23, -56
+	.cfi_offset w24, -48
+	.cfi_offset w25, -72
+	.cfi_offset w26, -64
+	.cfi_offset w27, -88
+	.cfi_offset w28, -80
+	mov	x19, x0
+	mov	x20, x1
+	mov	x28, x2
+	ldr	x21, [x20, #256]
+	cbz	x21, Lmr_done
+	ldr	x22, [x20, #264]
+	cbz	x22, Lmr_done
+	mov	x23, #0
+Lmr_scan:
+	cmp	x23, x22
+	b.hs	Lmr_done
+	mov	x8, #80
+	madd	x24, x23, x8, x21
+	ldr	x8, [x24]
+	cmp	x8, x19
+	b.ne	Lmr_next
+	ldr	x0, [x24, #40]
+	b	Lmr_tombstone_done
+Lmr_can_restart:
+	ldr	x8, [x20, #304]
+	ldr	x9, [x20, #312]
+	orr	x10, x8, x9
+	cbz	x10, Lmr_freq_ok
+	mov	x0, xzr
+	bl	_time
+	mov	x25, x0
+	ldr	x8, [x20, #328]
+	cbz	x8, Lmr_freq_first
+	ldr	x9, [x20, #312]
+	sub	x10, x25, x8
+	cmp	x10, x9
+	b.hi	Lmr_freq_reset
+	ldr	x8, [x20, #320]
+	add	x8, x8, #1
+	ldr	x9, [x20, #304]
+	cmp	x8, x9
+	b.hi	Lmr_freq_escalate
+	str	x8, [x20, #320]
+	b	Lmr_freq_ok
+Lmr_freq_first:
+Lmr_freq_reset:
+	str	x25, [x20, #328]
+	mov	x8, #1
+	str	x8, [x20, #320]
+	ldr	x9, [x20, #304]
+	cmp	x8, x9
+	b.hi	Lmr_freq_escalate
+	b	Lmr_freq_ok
+Lmr_freq_escalate:
+	add	x0, x20, #16
+	bl	_pthread_mutex_lock
+	str	wzr, [x20, #152]
+	add	x0, x20, #80
+	bl	_pthread_cond_signal
+	add	x0, x20, #16
+	bl	_pthread_mutex_unlock
+	b	Lmr_done
+Lmr_freq_ok:
+	ldr	x0, [x20, #296]
+	b	Lmr_ofo
+Lmr_ofo:
+	ldr	x0, [x24, #24]
+	ldr	x1, [x24, #32]
+	ldr	x2, [x24, #16]
+	mov	x3, xzr
+	bl	_silica_rt_actor_spawn_linked
+	str	x0, [x24]
+	b	Lmr_done
+Lmr_ofa_kill:
+	mov	x25, #0
+Lmr_ofa_kill_loop:
+	cmp	x25, x22
+	b.hs	Lmr_ofa_spawn
+	cmp	x25, x23
+	b.eq	Lmr_ofa_kill_next
+	mov	x8, #80
+	madd	x26, x25, x8, x21
+	ldr	x27, [x26]
+	cbz	x27, Lmr_ofa_kill_next
+	add	x0, x27, #16
+	bl	_pthread_mutex_lock
+	str	wzr, [x27, #152]
+	add	x0, x27, #80
+	bl	_pthread_cond_signal
+	add	x0, x27, #16
+	bl	_pthread_mutex_unlock
+Lmr_ofa_kill_next:
+	add	x25, x25, #1
+	b	Lmr_ofa_kill_loop
+Lmr_ofa_spawn:
+	mov	x25, #0
+Lmr_ofa_spawn_loop:
+	cmp	x25, x22
+	b.hs	Lmr_done
+	mov	x8, #80
+	madd	x26, x25, x8, x21
+	ldr	x8, [x26]
+	cbz	x8, Lmr_ofa_spawn_next
+	ldr	x0, [x26, #24]
+	ldr	x1, [x26, #32]
+	ldr	x2, [x26, #16]
+	mov	x3, xzr
+	bl	_silica_rt_actor_spawn_linked
+	str	x0, [x26]
+Lmr_ofa_spawn_next:
+	add	x25, x25, #1
+	b	Lmr_ofa_spawn_loop
+Lmr_rfo_kill:
+	add	x25, x23, #1
+Lmr_rfo_kill_loop:
+	cmp	x25, x22
+	b.hs	Lmr_rfo_spawn
+	mov	x8, #80
+	madd	x26, x25, x8, x21
+	ldr	x27, [x26]
+	cbz	x27, Lmr_rfo_kill_next
+	add	x0, x27, #16
+	bl	_pthread_mutex_lock
+	str	wzr, [x27, #152]
+	add	x0, x27, #80
+	bl	_pthread_cond_signal
+	add	x0, x27, #16
+	bl	_pthread_mutex_unlock
+Lmr_rfo_kill_next:
+	add	x25, x25, #1
+	b	Lmr_rfo_kill_loop
+Lmr_rfo_spawn:
+	mov	x25, x23
+Lmr_rfo_spawn_loop:
+	cmp	x25, x22
+	b.hs	Lmr_done
+	mov	x8, #80
+	madd	x26, x25, x8, x21
+	ldr	x8, [x26]
+	cbz	x8, Lmr_rfo_spawn_next
+	ldr	x0, [x26, #24]
+	ldr	x1, [x26, #32]
+	ldr	x2, [x26, #16]
+	mov	x3, xzr
+	bl	_silica_rt_actor_spawn_linked
+	str	x0, [x26]
+Lmr_rfo_spawn_next:
+	add	x25, x25, #1
+	b	Lmr_rfo_spawn_loop
+Lmr_next:
+	add	x23, x23, #1
+	b	Lmr_scan
+Lmr_tombstone_done:
+	str	xzr, [x24]
+	b	Lmr_done
+Lmr_done:
+	ldp	x29, x30, [sp, #80]
+	ldp	x20, x19, [sp, #64]
+	ldp	x22, x21, [sp, #48]
+	ldp	x24, x23, [sp, #32]
+	ldp	x26, x25, [sp, #16]
+	ldp	x28, x27, [sp], #96
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_child_table_first_ref
+	.p2align	2
+_silica_rt_child_table_first_ref:
+	.cfi_startproc
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+Lctfr_tls0:
+	adrp	x0, _tl_current_actor@TLVPPAGE
+Lctfr_tls1:
+	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
+	ldr	x8, [x0]
+	blr	x8
+	ldr	x19, [x0]
+	ldr	x20, [x19, #256]
+	cbz	x20, Lctfr_empty
+	ldr	x9, [x19, #264]
+	cbz	x9, Lctfr_empty
+	mov	x10, #0
+Lctfr_scan:
+	cmp	x10, x9
+	b.hs	Lctfr_empty
+	mov	x11, #80
+	madd	x12, x10, x11, x20
+	ldr	x0, [x12]
+	cbnz	x0, Lctfr_done
+	add	x10, x10, #1
+	b	Lctfr_scan
+Lctfr_empty:
+	mov	x0, #0
+Lctfr_done:
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.loh AdrpLdr	Lctfr_tls0, Lctfr_tls1
+	.cfi_endproc
+	.section	__TEXT,__text,regular,pure_instructions
 	.globl	_silica_rt_actor_deliver_exit   ; Phase C — §15.4.10 unified delivery
 	.p2align	2
 _silica_rt_actor_deliver_exit:          ; X0=child self; X0 out: 0 delivered, 1 drop (no sup / dead / OOM)
@@ -2267,7 +2828,8 @@ _silica_rt_actor_deliver_exit:          ; X0=child self; X0 out: 0 delivered, 1 
 	cbz	x0, Lde_nosup
 	mov	x21, x0
 	str	x19, [x21]
-	str	xzr, [x21, #8]
+	ldr	x9, [x19, #336]
+	str	x9, [x21, #8]
 	str	xzr, [x21, #16]
 	ldr	x8, [x19, #200]
 	str	x8, [x21, #24]
@@ -2355,10 +2917,19 @@ Lswd_try:
 	sub	w9, w9, #1
 	str	w9, [x19, #248]
 	ldr	x21, [x20, #8]
-	mov	x0, x20
-	bl	_free
 	add	x0, x19, #16
 	bl	_pthread_mutex_unlock
+; Phase E: mirror LBB1_free (mutex must not be held — maybe_restart may spawn / take table locks). X2 = reason_tag (e4b).
+	cbz	x21, Lswd_free_wrap
+	ldr	x8, [x21]
+	cbz	x8, Lswd_free_wrap
+	mov	x0, x8
+	mov	x1, x19
+	ldr	x2, [x21, #8]
+	bl	_silica_rt_supervisor_maybe_restart
+Lswd_free_wrap:
+	mov	x0, x20
+	bl	_free
 	mov	x0, x21
 	ldp	x29, x30, [sp, #32]
 	ldp	x20, x19, [sp, #16]

@@ -1,0 +1,102 @@
+// Phase E e4a (supervisors_implementation_development_plan.md §0): `:permanent` restart under
+// `:one_for_one` for a declarative supervised child. `main` keeps only the supervisor `actor_ref`;
+// the child is reached via `child_table_first_ref` + `call` inside `sup_beh`.
+//
+// The worker stays a minimal `(:reply, …)` behavior (same shape as phase_a `child_worker`) so the
+// runtime reply buffer convention matches `call`. After `remove_actor` + ingress drain + automatic
+// restart, a third `call` yields msg+0 == 300, demonstrating a fresh child state. Supervisor prints
+// each reply on stdout (external probe; `main` never holds the child ref).
+//
+// `call(sup, …)` needs a non-zero message: `_silica_rt_actor_call` returns immediately when the
+// message operand is null (cbz x1 in silica_rt_actor_call).
+
+use Supervisor;
+
+impl E4aSup for Supervisor;
+
+fn worker(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state)
+}
+
+fn init(initial_supervisor_state: ActorState) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: atom,
+            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        },
+        normal
+    ]
+) {
+    sequence proc[mem(normal)]
+        child: {
+            id: atom,
+            agent_type: atom,
+            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        } <- {
+            id: :e4a_worker,
+            agent_type: :worker,
+            start: (0, worker),
+            restart: :permanent,
+            shutdown: 0
+        };
+        children: List[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            normal
+        ] <- [child]
+    produces
+        // Inline flags record so tuple_make uses record_make + value-flat copy (materialize +0/+8/+16/+24).
+        // A separate `flags` binding becomes a var in tuple_make and would store a stack pointer in the heap tuple.
+        pure (
+            { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 },
+            children
+        )
+    end
+}
+
+fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
+    sequence proc[concurrency, device_io]
+        ch: actor_ref <- child_table_first_ref();
+        a: int64 <- call(ch, 100 impl ActorMessage {});
+        print_int64(a); println("");
+        b: int64 <- call(ch, 200 impl ActorMessage {});
+        print_int64(b); println("");
+        _: atom <- remove_actor(ch);
+        payload: int64 <- supervision_wait_and_drain_one();
+        at: atom <- failure_agent_type(payload);
+        _: atom <- print_atom(at); println("");
+        tag: int64 <- failure_reason_tag(payload);
+        print_int64(tag); println("");
+        _: atom <- failure_release(payload);
+        ch2: actor_ref <- child_table_first_ref();
+        c: int64 <- call(ch2, 300 impl ActorMessage {});
+        print_int64(c); println("")
+    produces
+        pure (:reply, 0, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sup: actor_ref <- spawn(0, sup_beh);
+        _: int64 <- call(sup, 1 impl ActorMessage {});
+        print_string("done"); println("")
+    produces
+        pure 0
+    end
+}

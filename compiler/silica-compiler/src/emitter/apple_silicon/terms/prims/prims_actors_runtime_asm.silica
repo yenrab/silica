@@ -20,7 +20,7 @@
 // (_pthread_*, _calloc, _free, etc.) and macOS TLV for thread-local current actor.
 // cpu_topology / cache / NUMA helpers (_silica_rt_apple_*, sysctl hw.*): macOS Apple Silicon only (see cpu_topology_implementation_plan Phase G).
 // ABI: spawn(X0,X1,X2)->X0  send(X0,X1)  cast(X0,X1)->W0  call(X0,X1)->X0  self()->X0  recv()->X0
-// X2=optional core_id (0 default) per §15.1.1. Unified actor control block 256 B for spawn and spawn_linked.
+// X2=optional core_id (0 default) per §15.1.1. Unified actor control block 344 B for spawn and spawn_linked (e3e: +32 B restart frequency fields; e4b: +8 B pending exit reason_tag).
 // spawn_linked Phase A (supervisors_implementation_development_plan): spawn_linked(X0,X1,X2,X3)->X0
 // X0=init X1=beh X2=agent_type (int64) X3=core_id (0 default).
 // Offsets: #192 supervisor actor_ref (0 root), #200 agent_type atom, #208 core_id, #216 first supervised child,
@@ -30,6 +30,12 @@
 // `front`; when `front` is empty on a dequeue, `rear` is reversed in place to become the new `front` and `rear` is
 // cleared. Standard mailbox pair at (#128 front, #136 rear). Supervision ingress pair at (#232 front, #240 rear),
 // with u32 depth at #248 (bounded; overflow calls _abort in trusted runtime).
+// Phase E e3a: heap child table anchors (supervisors plan §0 / silica-spec §15.4.13.3) at #256 ptr, #264 len, #272 cap; rows out of line (prims_actors_child_table_asm.silica).
+// Phase E e3b: #280 = trampoline fn ptr (_silica_supervisor_start_<T>, 0 if non-supervisor), #288 = trampoline-ran flag (0/1).
+// Phase E e3d: #296 = strategy atom ptr (0 if non-supervisor; set by materialize from init tuple+0).
+// Phase E e3e: #304 = allowed_restart_count (i64), #312 = restarts_time_frame (i64, seconds),
+//              #320 = restart_count (current window), #328 = window_start_time (seconds, from time()).
+// Phase E e4b: #336 = pending_exit_reason_tag (i64; 0=:normal default, !=0=abnormal). `_silica_rt_actor_kill_abnormal` writes 1; `_silica_rt_actor_deliver_exit` reads → payload[+8].
 // Scheduler: actor_thread_main dequeues ingress before standard mailbox each message; recv() matches.
 // Phase B trial hook: _silica_rt_actor_supervision_ingress_enqueue(X0 actor, X1 int64 payload) → X0 atom :ok.
 // Supervisors Phase G (same plan §4 Phase G; silica-specification §15.4.8.4–8.7): link(X0), monitor(X0), demonitor(X0) —
@@ -41,7 +47,10 @@
 // or 1 needs stderr`. Behavior-only trial accessors (`supervision_wait_and_drain_one`, `failure_reason_tag`,
 // `failure_agent_type`, `failure_release`) surface the payload for integration tests.
 
-export emit_actor_runtime_helpers/0;
+use prims_actors_child_table_asm;
+use atom_table;
+
+export emit_actor_runtime_helpers/1;
 
 fn actor_rt_asm_chunk_0() -> string {
     "	.section	__TEXT,__text,regular,pure_instructions
@@ -64,12 +73,13 @@ _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 	.cfi_offset w22, -48
 	.cfi_offset w23, -56
 	.cfi_offset w24, -64
+	mov	x24, x3
 	mov	x23, x2
 	mov	x20, x1
 	mov	x21, x0
 	mov	w22, #1                         ; =0x1
 	mov	w0, #1                          ; =0x1
-	mov	w1, #256
+	mov	w1, #344
 	bl	_calloc
 	mov	x19, x0
 	cbz	x0, LBB0_4
@@ -83,6 +93,16 @@ _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 	str	xzr, [x19, #232]
 	str	xzr, [x19, #240]
 	str	wzr, [x19, #248]
+	str	xzr, [x19, #256]
+	str	xzr, [x19, #264]
+	str	xzr, [x19, #272]
+	str	x24, [x19, #280]
+	str	xzr, [x19, #288]
+	str	xzr, [x19, #296]
+	str	xzr, [x19, #304]
+	str	xzr, [x19, #312]
+	str	xzr, [x19, #320]
+	str	xzr, [x19, #328]
 	add	x0, x19, #16
 	mov	x1, #0                          ; =0x0
 	bl	_pthread_mutex_init
@@ -109,6 +129,12 @@ LBB0_3:
 	bl	_pthread_detach
 	mov	x0, x19
 	bl	_silica_rt_actor_init_region
+; Phase E: supervisor trampoline (ACB#280) runs on the new thread; wait until #288 is set so
+; callers see a materialized child table before receiving the actor_ref.
+	cbz	x24, LBB0_4
+LBB0_tramp_spin:
+	ldr	x8, [x19, #288]
+	cbz	x8, LBB0_tramp_spin
 LBB0_4:
 	mov	x0, x19
 	ldp	x29, x30, [sp, #48]             ; 16-byte Folded Reload
@@ -143,7 +169,7 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 	mov	x21, x0
 	mov	w22, #1
 	mov	w0, #1
-	mov	w1, #256
+	mov	w1, #344
 	bl	_calloc
 	mov	x19, x0
 	cbz	x0, LBBsl_4
@@ -163,6 +189,16 @@ Lslp_tls1:
 	str	xzr, [x19, #232]
 	str	xzr, [x19, #240]
 	str	wzr, [x19, #248]
+	str	xzr, [x19, #256]
+	str	xzr, [x19, #264]
+	str	xzr, [x19, #272]
+	str	xzr, [x19, #280]
+	str	xzr, [x19, #288]
+	str	xzr, [x19, #296]
+	str	xzr, [x19, #304]
+	str	xzr, [x19, #312]
+	str	xzr, [x19, #320]
+	str	xzr, [x19, #328]
 	cbz	x0, Lslp_skip_list
 	sub	sp, sp, #16
 	str	x0, [sp, #8]
@@ -240,6 +276,16 @@ Lloh3:
 	ldr	x8, [x0]
 	blr	x8
 	str	x19, [x0]
+; Phase E e3b: first-schedule supervisor trampoline hook
+	ldr	x8, [x19, #280]
+	cbz	x8, LBB1_skip_tramp
+	ldr	x9, [x19, #288]
+	cbnz	x9, LBB1_skip_tramp
+	mov	x0, x19
+	blr	x8
+	mov	x8, #1
+	str	x8, [x19, #288]
+LBB1_skip_tramp:
 	mov	w22, #1                         ; =0x1
 LBB1_loop:
 	add	x0, x19, #16
@@ -294,6 +340,15 @@ fn actor_rt_asm_chunk_2() -> string {
 	bl	_pthread_mutex_unlock
 	b	LBB1_loop
 LBB1_free:
+; Phase E e3c+e4b: if this was an ingress message (w21==1), attempt automatic restart before freeing. X2 = reason_tag from payload+8 (e4b).
+	cbz	w21, LBB1_free_skip_restart
+	ldr	x8, [x20, #8]
+	cbz	x8, LBB1_free_skip_restart
+	ldr	x0, [x8]
+	mov	x1, x19
+	ldr	x2, [x8, #8]
+	bl	_silica_rt_supervisor_maybe_restart
+LBB1_free_skip_restart:
 	mov	x0, x20
 	bl	_free
 	b	LBB1_loop
@@ -311,6 +366,8 @@ Lloh_rn1:
 	mov	w2, #43
 	bl	_write
 LBB1_exit_skip_note:
+	mov	x0, x19
+	bl	_silica_rt_child_table_free
 	mov	x0, x19
 	bl	_silica_rt_actor_dealloc_region
 	add	x0, x19, #16
@@ -1043,6 +1100,38 @@ _silica_rt_remove_actor:                ; @silica_rt_remove_actor
 	mov	x19, x0
 	add	x0, x19, #16
 	bl	_pthread_mutex_lock
+	str	wzr, [x19, #152]
+	add	x0, x19, #80
+	bl	_pthread_cond_signal
+	add	x0, x19, #16
+	bl	_pthread_mutex_unlock
+	mov	x0, #0
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.cfi_endproc
+                                        ; -- End function
+; Phase E e4b: _silica_rt_actor_kill_abnormal — set pending exit reason_tag to 1 (abnormal) and stop the actor.
+; X0=actor_ref. Returns X0=0 (atom :ok). Used by trials to inject abnormal exits so :transient restart policy
+; (restart iff reason_tag != 0) can be exercised. Mutex protects the alive/reason_tag transition vs
+; deliver_exit reading [ACB+#336] from the actor's own thread.
+	.globl	_silica_rt_actor_kill_abnormal
+	.p2align	2
+_silica_rt_actor_kill_abnormal:
+	.cfi_startproc
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	mov	x19, x0
+	add	x0, x19, #16
+	bl	_pthread_mutex_lock
+	mov	x8, #1
+	str	x8, [x19, #336]
 	str	wzr, [x19, #152]
 	add	x0, x19, #80
 	bl	_pthread_cond_signal
@@ -2139,7 +2228,8 @@ _silica_rt_actor_deliver_exit:          ; X0=child self; X0 out: 0 delivered, 1 
 	cbz	x0, Lde_nosup
 	mov	x21, x0
 	str	x19, [x21]
-	str	xzr, [x21, #8]
+	ldr	x9, [x19, #336]
+	str	x9, [x21, #8]
 	str	xzr, [x21, #16]
 	ldr	x8, [x19, #200]
 	str	x8, [x21, #24]
@@ -2227,10 +2317,19 @@ Lswd_try:
 	sub	w9, w9, #1
 	str	w9, [x19, #248]
 	ldr	x21, [x20, #8]
-	mov	x0, x20
-	bl	_free
 	add	x0, x19, #16
 	bl	_pthread_mutex_unlock
+; Phase E: mirror LBB1_free (mutex must not be held — maybe_restart may spawn / take table locks). X2 = reason_tag (e4b).
+	cbz	x21, Lswd_free_wrap
+	ldr	x8, [x21]
+	cbz	x8, Lswd_free_wrap
+	mov	x0, x8
+	mov	x1, x19
+	ldr	x2, [x21, #8]
+	bl	_silica_rt_supervisor_maybe_restart
+Lswd_free_wrap:
+	mov	x0, x20
+	bl	_free
 	mov	x0, x21
 	ldp	x29, x30, [sp, #32]
 	ldp	x20, x19, [sp, #16]
@@ -2295,6 +2394,6 @@ Lfrr_zero:
 "
 }
 
-fn emit_actor_runtime_helpers() -> string {
-    concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(actor_rt_asm_chunk_0(), actor_rt_asm_chunk_1()), actor_rt_asm_chunk_2()), actor_rt_asm_chunk_3()), actor_rt_asm_chunk_4()), actor_rt_asm_chunk_5()), actor_rt_topology_phase_g_chunk()), actor_rt_asm_chunk_6()), actor_rt_asm_chunk_7()), actor_rt_asm_chunk_8()), actor_rt_asm_chunk_9()), actor_rt_asm_chunk_10()), actor_rt_asm_chunk_11()), actor_rt_asm_chunk_12()), actor_rt_asm_chunk_13()), actor_rt_asm_phase_c_chunk())
+fn emit_actor_runtime_helpers(table: AtomTable) -> string {
+    concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(actor_rt_asm_chunk_0(), actor_rt_asm_chunk_1()), actor_rt_asm_chunk_2()), actor_rt_asm_chunk_3()), actor_rt_asm_chunk_4()), actor_rt_asm_chunk_5()), actor_rt_topology_phase_g_chunk()), actor_rt_asm_chunk_6()), actor_rt_asm_chunk_7()), actor_rt_asm_chunk_8()), actor_rt_asm_chunk_9()), actor_rt_asm_chunk_10()), actor_rt_asm_chunk_11()), actor_rt_asm_chunk_12()), actor_rt_asm_chunk_13()), prims_actors_child_table_asm@emit_child_table_runtime_asm(table)), actor_rt_asm_phase_c_chunk())
 }

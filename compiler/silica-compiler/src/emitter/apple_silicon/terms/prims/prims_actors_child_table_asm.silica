@@ -1,0 +1,610 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Phase E e3a — heap child table (supervisors_implementation_development_plan.md §0; silica-specification §15.4.13.3).
+// ACB anchors: #256 ptr, #264 len (i64 row count in use), #272 cap (i64, capacity in rows out-of-line only).
+// Row size 80 B (aligned 8, matches compiler child_spec 72 B + child_ref 8, plus 8 B escalation / window fields).
+// Offsets in each row: +0 child_ref, +8 id atom, +16 agent_type, +24 start.0, +32 start.1, +40 restart atom,
+// +48 shutdown i64, +56 restarts_in_window, +64 window_start_t, +72 reserved (0; e3e).
+// Phase E e3f tombstone: child_ref==0 means the row is inactive and may be reused by start_child; len remains a
+// high-water mark so :rest_for_one ordering stays stable for active rows.
+
+use atom_table;
+
+export emit_child_table_runtime_asm/1;
+
+// Atoms are int64 indices (§4.1.7); strcmp on row/ACB atom fields was never valid.
+// e4b: row.restart dispatch over (perm, trans). x0 = restart atom, x28 = reason_tag (0=:normal, !=0=abnormal).
+//   :permanent → always restart.
+//   :transient → restart iff reason_tag != 0; on :normal exit, fall through to tombstone.
+//   anything else (e.g. :temporary, missing atom) → tombstone (no restart).
+fn maybe_restart_policy_dispatch(perm_idx: int64, trans_idx: int64) -> string {
+    do
+        perm_cmp: string <- case perm_idx < 0 of {
+            true -> "";
+            false -> concat(concat("	cmp	x0, #", atom_table@int64_to_decimal_string(perm_idx)), "\n	b.eq	Lmr_can_restart\n")
+        };
+        trans_cmp: string <- case trans_idx < 0 of {
+            true -> "";
+            false -> concat(concat("	cmp	x0, #", atom_table@int64_to_decimal_string(trans_idx)), "\n	b.eq	Lmr_check_transient\n")
+        };
+        fall: string <- "	b	Lmr_tombstone_done\n";
+        trans_block: string <- case trans_idx < 0 of {
+            true -> "";
+            false -> "Lmr_check_transient:\n	cbz	x28, Lmr_tombstone_done\n"
+        };
+        label_can: string <- "Lmr_can_restart:\n";
+        concat(concat(concat(concat(perm_cmp, trans_cmp), fall), trans_block), label_can)
+    end
+}
+
+fn maybe_restart_strat_eq_branch(idx: int64, dest: string) -> string {
+    case idx < 0 of {
+        true -> "";
+        false -> concat(concat(concat("	cmp	x0, #", atom_table@int64_to_decimal_string(idx)), "\n	b.eq	"), concat(dest, "\n"))
+    }
+}
+
+fn child_table_rt_asm_chunk_0() -> string {
+    "	.section	__TEXT,__text,regular,pure_instructions
+; --- Phase E e3a: heap child table (out-of-line) ---
+; _silica_rt_child_table_free: X0=ACB* — free row buffer, clear ptr/len/cap anchors.
+; _silica_rt_child_table_ensure_min_cap: X0=ACB*, X1=min rows capacity — X0=0 ok, 1=OOM. Grows with _realloc.
+	.globl	_silica_rt_child_table_free
+	.p2align	2
+_silica_rt_child_table_free:
+	.cfi_startproc
+	stp	x19, x30, [sp, #-16]!
+	.cfi_def_cfa wsp, 16
+	.cfi_offset w19, -16
+	.cfi_offset w30, -8
+	mov	x19, x0
+	ldr	x0, [x19, #256]
+	cbz	x0, Lct_free_done
+	bl	_free
+	str	xzr, [x19, #256]
+	str	xzr, [x19, #264]
+	str	xzr, [x19, #272]
+Lct_free_done:
+	ldp	x19, x30, [sp], #16
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_child_table_ensure_min_cap
+	.p2align	2
+_silica_rt_child_table_ensure_min_cap:
+	.cfi_startproc
+; X0=ACB* X1=min_cap_rows. Returns X0=0 success, 1 OOM.
+	stp	x24, x23, [sp, #-64]!
+	stp	x22, x21, [sp, #16]
+	stp	x20, x19, [sp, #32]
+	stp	x29, x30, [sp, #48]
+	add	x29, sp, #48
+	.cfi_offset w19, -32
+	.cfi_offset w20, -24
+	.cfi_offset w21, -40
+	.cfi_offset w22, -32
+	.cfi_offset w23, -56
+	.cfi_offset w24, -48
+	mov	x19, x0
+	mov	x20, x1
+	cmp	x20, #0
+	ble	Lct_ens_ok
+	ldr	x8, [x19, #272]
+	cmp	x8, x20
+	b.hs	Lct_ens_ok
+	ldr	x21, [x19, #256]
+	cbnz	x8, Lct_ens_nzcap
+; cap==0: n = max(need,4)
+	mov	x9, x20
+	mov	x10, #4
+	cmp	x9, x10
+	csel	x9, x9, x10, lo
+	b	Lct_ens_bytes
+Lct_ens_nzcap:
+; n = max(2*cap, need)
+	lsl	x10, x8, #1
+	cmp	x10, x20
+	csel	x9, x10, x20, hi
+Lct_ens_bytes:
+	mov	x12, #80
+	madd	x2, x9, x12, xzr
+	cbz	x21, Lct_ens_calloc
+	mov	x0, x21
+	mov	x1, x2
+	bl	_realloc
+	cbz	x0, Lct_ens_fail
+	b	Lct_ens_store
+Lct_ens_calloc:
+	mov	w0, #1
+	mov	x1, x2
+	bl	_calloc
+	cbz	x0, Lct_ens_fail
+Lct_ens_store:
+	str	x0, [x19, #256]
+	str	x9, [x19, #272]
+Lct_ens_ok:
+	mov	x0, #0
+	ldp	x29, x30, [sp, #48]
+	ldp	x20, x19, [sp, #32]
+	ldp	x22, x21, [sp, #16]
+	ldp	x24, x23, [sp], #64
+	ret
+Lct_ens_fail:
+	mov	x0, #1
+	ldp	x29, x30, [sp, #48]
+	ldp	x20, x19, [sp, #32]
+	ldp	x22, x21, [sp, #16]
+	ldp	x24, x23, [sp], #64
+	ret
+	.cfi_endproc
+"
+}
+
+// Phase E e3b: _silica_rt_supervisor_materialize_init_children
+// X0=ACB*, X1=tuple_ptr (init return: flags record at +0..+23, children list head at +24).
+// Walks the cons-list of child_spec records (compiler list_cons: payload + tail; child_spec payload 64 B, tail at +64, node malloc 72 B).
+// Payload layout matches emitter value-flat record: id@0, agent@8, start@(16,24), restart@32, shutdown@40 (no gap before restart; differs from padded 72 B start_child ABI).
+// For each child_spec: spawn_linked(start.0, start.1, agent_type, 0), append 80 B row to heap child table.
+// Stores strategy atom (tuple+0) at ACB#296, allowed_restart_count (tuple+8) at ACB#304,
+// restarts_time_frame (tuple+16) at ACB#312 for restart strategy dispatch (e3d) and frequency cap (e3e).
+fn child_table_rt_asm_chunk_1() -> string {
+    "	.globl	_silica_rt_supervisor_materialize_init_children
+	.p2align	2
+_silica_rt_supervisor_materialize_init_children:
+	.cfi_startproc
+	stp	x28, x27, [sp, #-96]!
+	stp	x26, x25, [sp, #16]
+	stp	x24, x23, [sp, #32]
+	stp	x22, x21, [sp, #48]
+	stp	x20, x19, [sp, #64]
+	stp	x29, x30, [sp, #80]
+	add	x29, sp, #80
+	.cfi_def_cfa w29, 16
+	.cfi_offset w19, -32
+	.cfi_offset w20, -24
+	.cfi_offset w21, -40
+	.cfi_offset w22, -32
+	.cfi_offset w23, -56
+	.cfi_offset w24, -48
+	.cfi_offset w25, -72
+	.cfi_offset w26, -64
+	.cfi_offset w27, -88
+	.cfi_offset w28, -80
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x8, [x20]
+	str	x8, [x19, #296]
+	ldr	x8, [x20, #8]
+	str	x8, [x19, #304]
+	ldr	x8, [x20, #16]
+	str	x8, [x19, #312]
+	ldr	x21, [x20, #24]
+Lmat_loop:
+	cbz	x21, Lmat_done
+	ldr	x22, [x21, #16]
+	ldr	x23, [x21, #24]
+	ldr	x24, [x21, #8]
+	ldr	x25, [x21]
+	ldr	x26, [x21, #32]
+	ldr	x27, [x21, #40]
+	mov	x0, x22
+	mov	x1, x23
+	mov	x2, x24
+	mov	x3, xzr
+	bl	_silica_rt_actor_spawn_linked
+	mov	x28, x0
+	mov	x0, x19
+	mov	x1, #1
+	add	x1, x1, x19
+	ldr	x1, [x19, #264]
+	add	x1, x1, #1
+	bl	_silica_rt_child_table_ensure_min_cap
+	cbnz	x0, Lmat_done
+	ldr	x8, [x19, #256]
+	ldr	x9, [x19, #264]
+	mov	x10, #80
+	madd	x8, x9, x10, x8
+	str	x28, [x8]
+	str	x25, [x8, #8]
+	str	x24, [x8, #16]
+	str	x22, [x8, #24]
+	str	x23, [x8, #32]
+	str	x26, [x8, #40]
+	str	x27, [x8, #48]
+	str	xzr, [x8, #56]
+	str	xzr, [x8, #64]
+	str	xzr, [x8, #72]
+	add	x9, x9, #1
+	str	x9, [x19, #264]
+	ldr	x21, [x21, #64]
+	b	Lmat_loop
+Lmat_done:
+	ldp	x29, x30, [sp, #80]
+	ldp	x20, x19, [sp, #64]
+	ldp	x22, x21, [sp, #48]
+	ldp	x24, x23, [sp, #32]
+	ldp	x26, x25, [sp, #16]
+	ldp	x28, x27, [sp], #96
+	ret
+	.cfi_endproc
+"
+}
+
+// Phase E e3b2: _silica_rt_supervisor_start_child
+// X0 = child_spec record pointer (value-flat 48 B: id@+0, agent_type@+8, start.0@+16, start.1@+24, restart@+32, shutdown@+40).
+// Layout matches `_silica_rt_supervisor_materialize_init_children` (cons payload) so the compiler can build a single
+// stack record and pass it to either path. (Earlier comment claimed +40/+48 — that 72 B layout never matched the
+// emitter's value-flat record_make output; e4b corrects this to the canonical +32/+40 used elsewhere.)
+// Reads current-actor TLS for supervisor ACB. spawn_linked(start.0, start.1, agent_type, 0).
+// Reuses the first e3f tombstone row (child_ref==0) or appends an 80 B row to supervisor's heap child table.
+// Returns actor_ref (new child) in X0.
+fn child_table_rt_asm_chunk_2() -> string {
+    "	.globl	_silica_rt_supervisor_start_child
+	.p2align	2
+_silica_rt_supervisor_start_child:
+	.cfi_startproc
+	stp	x26, x25, [sp, #-80]!
+	stp	x24, x23, [sp, #16]
+	stp	x22, x21, [sp, #32]
+	stp	x20, x19, [sp, #48]
+	stp	x29, x30, [sp, #64]
+	add	x29, sp, #64
+	.cfi_def_cfa w29, 16
+	.cfi_offset w19, -32
+	.cfi_offset w20, -24
+	.cfi_offset w21, -40
+	.cfi_offset w22, -32
+	.cfi_offset w23, -56
+	.cfi_offset w24, -48
+	.cfi_offset w25, -72
+	.cfi_offset w26, -64
+	mov	x20, x0
+	ldr	x21, [x20]
+	ldr	x22, [x20, #8]
+	ldr	x23, [x20, #16]
+	ldr	x24, [x20, #24]
+	ldr	x25, [x20, #32]
+	ldr	x26, [x20, #40]
+Lsc_tls0:
+	adrp	x0, _tl_current_actor@TLVPPAGE
+Lsc_tls1:
+	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
+	ldr	x8, [x0]
+	blr	x8
+	ldr	x19, [x0]
+	mov	x0, x23
+	mov	x1, x24
+	mov	x2, x22
+	mov	x3, xzr
+	bl	_silica_rt_actor_spawn_linked
+	mov	x20, x0
+	ldr	x8, [x19, #256]
+	ldr	x9, [x19, #264]
+	mov	x10, #0
+Lsc_reuse_loop:
+	cmp	x10, x9
+	b.hs	Lsc_append_new
+	mov	x11, #80
+	madd	x11, x10, x11, x8
+	ldr	x12, [x11]
+	cbz	x12, Lsc_write_reused
+	add	x10, x10, #1
+	b	Lsc_reuse_loop
+Lsc_append_new:
+	mov	x0, x19
+	ldr	x1, [x19, #264]
+	add	x1, x1, #1
+	bl	_silica_rt_child_table_ensure_min_cap
+	cbnz	x0, Lsc_done
+	ldr	x8, [x19, #256]
+	ldr	x9, [x19, #264]
+	mov	x10, #80
+	madd	x8, x9, x10, x8
+	mov	x12, #1
+	b	Lsc_write_row
+Lsc_write_reused:
+	mov	x8, x11
+	mov	x12, xzr
+Lsc_write_row:
+	str	x20, [x8]
+	str	x21, [x8, #8]
+	str	x22, [x8, #16]
+	str	x23, [x8, #24]
+	str	x24, [x8, #32]
+	str	x25, [x8, #40]
+	str	x26, [x8, #48]
+	str	xzr, [x8, #56]
+	str	xzr, [x8, #64]
+	str	xzr, [x8, #72]
+	cbz	x12, Lsc_done
+	add	x9, x9, #1
+	str	x9, [x19, #264]
+Lsc_done:
+	mov	x0, x20
+	ldp	x29, x30, [sp, #64]
+	ldp	x20, x19, [sp, #48]
+	ldp	x22, x21, [sp, #32]
+	ldp	x24, x23, [sp, #16]
+	ldp	x26, x25, [sp], #80
+	ret
+	.loh AdrpLdr	Lsc_tls0, Lsc_tls1
+	.cfi_endproc
+"
+}
+
+// Phase E e3d+e3e+e4b: _silica_rt_supervisor_maybe_restart
+// X0 = dead child_ref, X1 = supervisor ACB, X2 = reason_tag (0=:normal default; !=0 abnormal — e4b).
+// Scans heap child table for matching child_ref. child_ref==0 is an e3f tombstone. If found, dispatches by
+// row.restart policy (e4b): :permanent always restarts; :transient restarts iff reason_tag != 0; anything else
+// tombstones. On restart, checks restart-frequency cap (ACB#304 max_restarts, #312 time_frame, #320 count,
+// #328 window_start; if both max_restarts and time_frame are 0, cap is unlimited). On cap breach, terminates
+// the supervisor (alive=0 → Phase C link propagation). Otherwise dispatches by strategy (ACB#296):
+//   :one_for_one  — respawn only the dead child
+//   :one_for_all  — kill all other children, then respawn all
+//   :rest_for_one — kill children after dead child, then respawn dead + rest
+// Kill = lock mutex, alive=0, signal cond, unlock mutex on each sibling ACB.
+// perm_idx / trans_idx / ofa_idx / rfo_idx: module atom table indices for :permanent, :transient, :one_for_all, :rest_for_one.
+fn child_table_rt_asm_chunk_3(perm_idx: int64, trans_idx: int64, ofa_idx: int64, rfo_idx: int64) -> string {
+    do
+        mr_head: string <- "	.globl	_silica_rt_supervisor_maybe_restart
+	.p2align	2
+_silica_rt_supervisor_maybe_restart:
+	.cfi_startproc
+	stp	x28, x27, [sp, #-96]!
+	stp	x26, x25, [sp, #16]
+	stp	x24, x23, [sp, #32]
+	stp	x22, x21, [sp, #48]
+	stp	x20, x19, [sp, #64]
+	stp	x29, x30, [sp, #80]
+	add	x29, sp, #80
+	.cfi_def_cfa w29, 16
+	.cfi_offset w19, -32
+	.cfi_offset w20, -24
+	.cfi_offset w21, -40
+	.cfi_offset w22, -32
+	.cfi_offset w23, -56
+	.cfi_offset w24, -48
+	.cfi_offset w25, -72
+	.cfi_offset w26, -64
+	.cfi_offset w27, -88
+	.cfi_offset w28, -80
+	mov	x19, x0
+	mov	x20, x1
+	mov	x28, x2
+	ldr	x21, [x20, #256]
+	cbz	x21, Lmr_done
+	ldr	x22, [x20, #264]
+	cbz	x22, Lmr_done
+	mov	x23, #0
+Lmr_scan:
+	cmp	x23, x22
+	b.hs	Lmr_done
+	mov	x8, #80
+	madd	x24, x23, x8, x21
+	ldr	x8, [x24]
+	cmp	x8, x19
+	b.ne	Lmr_next
+	ldr	x0, [x24, #40]
+";
+        mr_policy: string <- maybe_restart_policy_dispatch(perm_idx, trans_idx);
+        mr_freq: string <- "	ldr	x8, [x20, #304]
+	ldr	x9, [x20, #312]
+	orr	x10, x8, x9
+	cbz	x10, Lmr_freq_ok
+	mov	x0, xzr
+	bl	_time
+	mov	x25, x0
+	ldr	x8, [x20, #328]
+	cbz	x8, Lmr_freq_first
+	ldr	x9, [x20, #312]
+	sub	x10, x25, x8
+	cmp	x10, x9
+	b.hi	Lmr_freq_reset
+	ldr	x8, [x20, #320]
+	add	x8, x8, #1
+	ldr	x9, [x20, #304]
+	cmp	x8, x9
+	b.hi	Lmr_freq_escalate
+	str	x8, [x20, #320]
+	b	Lmr_freq_ok
+Lmr_freq_first:
+Lmr_freq_reset:
+	str	x25, [x20, #328]
+	mov	x8, #1
+	str	x8, [x20, #320]
+	ldr	x9, [x20, #304]
+	cmp	x8, x9
+	b.hi	Lmr_freq_escalate
+	b	Lmr_freq_ok
+Lmr_freq_escalate:
+	add	x0, x20, #16
+	bl	_pthread_mutex_lock
+	str	wzr, [x20, #152]
+	add	x0, x20, #80
+	bl	_pthread_cond_signal
+	add	x0, x20, #16
+	bl	_pthread_mutex_unlock
+	b	Lmr_done
+Lmr_freq_ok:
+	ldr	x0, [x20, #296]
+";
+        mr_ofa: string <- maybe_restart_strat_eq_branch(ofa_idx, "Lmr_ofa_kill");
+        mr_rfo: string <- maybe_restart_strat_eq_branch(rfo_idx, "Lmr_rfo_kill");
+        mr_b_ofo: string <- "	b	Lmr_ofo
+";
+        mr_tail: string <- "Lmr_ofo:
+	ldr	x0, [x24, #24]
+	ldr	x1, [x24, #32]
+	ldr	x2, [x24, #16]
+	mov	x3, xzr
+	bl	_silica_rt_actor_spawn_linked
+	str	x0, [x24]
+	b	Lmr_done
+Lmr_ofa_kill:
+	mov	x25, #0
+Lmr_ofa_kill_loop:
+	cmp	x25, x22
+	b.hs	Lmr_ofa_spawn
+	cmp	x25, x23
+	b.eq	Lmr_ofa_kill_next
+	mov	x8, #80
+	madd	x26, x25, x8, x21
+	ldr	x27, [x26]
+	cbz	x27, Lmr_ofa_kill_next
+	add	x0, x27, #16
+	bl	_pthread_mutex_lock
+	str	wzr, [x27, #152]
+	add	x0, x27, #80
+	bl	_pthread_cond_signal
+	add	x0, x27, #16
+	bl	_pthread_mutex_unlock
+Lmr_ofa_kill_next:
+	add	x25, x25, #1
+	b	Lmr_ofa_kill_loop
+Lmr_ofa_spawn:
+	mov	x25, #0
+Lmr_ofa_spawn_loop:
+	cmp	x25, x22
+	b.hs	Lmr_done
+	mov	x8, #80
+	madd	x26, x25, x8, x21
+	ldr	x8, [x26]
+	cbz	x8, Lmr_ofa_spawn_next
+	ldr	x0, [x26, #24]
+	ldr	x1, [x26, #32]
+	ldr	x2, [x26, #16]
+	mov	x3, xzr
+	bl	_silica_rt_actor_spawn_linked
+	str	x0, [x26]
+Lmr_ofa_spawn_next:
+	add	x25, x25, #1
+	b	Lmr_ofa_spawn_loop
+Lmr_rfo_kill:
+	add	x25, x23, #1
+Lmr_rfo_kill_loop:
+	cmp	x25, x22
+	b.hs	Lmr_rfo_spawn
+	mov	x8, #80
+	madd	x26, x25, x8, x21
+	ldr	x27, [x26]
+	cbz	x27, Lmr_rfo_kill_next
+	add	x0, x27, #16
+	bl	_pthread_mutex_lock
+	str	wzr, [x27, #152]
+	add	x0, x27, #80
+	bl	_pthread_cond_signal
+	add	x0, x27, #16
+	bl	_pthread_mutex_unlock
+Lmr_rfo_kill_next:
+	add	x25, x25, #1
+	b	Lmr_rfo_kill_loop
+Lmr_rfo_spawn:
+	mov	x25, x23
+Lmr_rfo_spawn_loop:
+	cmp	x25, x22
+	b.hs	Lmr_done
+	mov	x8, #80
+	madd	x26, x25, x8, x21
+	ldr	x8, [x26]
+	cbz	x8, Lmr_rfo_spawn_next
+	ldr	x0, [x26, #24]
+	ldr	x1, [x26, #32]
+	ldr	x2, [x26, #16]
+	mov	x3, xzr
+	bl	_silica_rt_actor_spawn_linked
+	str	x0, [x26]
+Lmr_rfo_spawn_next:
+	add	x25, x25, #1
+	b	Lmr_rfo_spawn_loop
+Lmr_next:
+	add	x23, x23, #1
+	b	Lmr_scan
+Lmr_tombstone_done:
+	str	xzr, [x24]
+	b	Lmr_done
+Lmr_done:
+	ldp	x29, x30, [sp, #80]
+	ldp	x20, x19, [sp, #64]
+	ldp	x22, x21, [sp, #48]
+	ldp	x24, x23, [sp, #32]
+	ldp	x26, x25, [sp, #16]
+	ldp	x28, x27, [sp], #96
+	ret
+	.cfi_endproc
+";
+        concat(concat(concat(concat(concat(mr_head, mr_policy), mr_freq), mr_ofa), mr_rfo), concat(mr_b_ofo, mr_tail))
+    end
+}
+
+// Phase E e4a/e4b trial accessor: _silica_rt_child_table_first_ref
+// Returns the actor_ref (child ACB pointer) of the first LIVE row in the current actor's heap child table.
+// No arguments. Reads TLS for current actor, loads table pointer from ACB#256. e4b: skips tombstoned rows
+// (child_ref==0) so callers see the next live child after a :transient/:temporary no-restart leaves a hole.
+// Returns 0 if table is empty, null, or contains only tombstones.
+fn child_table_rt_asm_chunk_4() -> string {
+    "	.globl	_silica_rt_child_table_first_ref
+	.p2align	2
+_silica_rt_child_table_first_ref:
+	.cfi_startproc
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+Lctfr_tls0:
+	adrp	x0, _tl_current_actor@TLVPPAGE
+Lctfr_tls1:
+	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
+	ldr	x8, [x0]
+	blr	x8
+	ldr	x19, [x0]
+	ldr	x20, [x19, #256]
+	cbz	x20, Lctfr_empty
+	ldr	x9, [x19, #264]
+	cbz	x9, Lctfr_empty
+	mov	x10, #0
+Lctfr_scan:
+	cmp	x10, x9
+	b.hs	Lctfr_empty
+	mov	x11, #80
+	madd	x12, x10, x11, x20
+	ldr	x0, [x12]
+	cbnz	x0, Lctfr_done
+	add	x10, x10, #1
+	b	Lctfr_scan
+Lctfr_empty:
+	mov	x0, #0
+Lctfr_done:
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.loh AdrpLdr	Lctfr_tls0, Lctfr_tls1
+	.cfi_endproc
+"
+}
+
+fn emit_child_table_runtime_asm(table: AtomTable) -> string {
+    do
+        // Match const_atoms.silica / rodata: first-added order, not bst_lookup_string alone.
+        p: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":permanent");
+        t: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":transient");
+        o: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":one_for_all");
+        r: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":rest_for_one");
+        concat(concat(concat(concat(child_table_rt_asm_chunk_0(), child_table_rt_asm_chunk_1()), child_table_rt_asm_chunk_2()), child_table_rt_asm_chunk_3(p, t, o, r)), child_table_rt_asm_chunk_4())
+    end
+}

@@ -8694,9 +8694,10 @@ A **supervisor** is a Silica actor whose module implements the `Supervisor` trai
 
 What the runtime provides to any actor implementing `Supervisor`:
 
-1. The ability to call `spawn_linked()` to create children, whose `actor_ref`s are retained in supervisor state.
-2. Automatic delivery of exit notifications for linked children to the **supervision ingress** (§15.4.9).
-3. Draining of the supervision ingress before the standard mailbox each scheduling turn.
+1. A **heap-allocated, growable internal child table** (§15.4.13.3) for every supervisor actor, referenced from its actor control block. The table holds the information needed to apply **declarative** and **dynamically registered** `child_spec` restarts, escalation counters, and the current `actor_ref` for each row.
+2. The ability to call **`start_child(spec)`** (§15.4.13.3) to add **dynamic** supervised children, and to call `spawn_linked()` to create **linked** children; children whose restart policy is enforced by the runtime (§15.4.12.1) must appear as rows in the child table. Bare `spawn_linked` without a table row is supported for ad-hoc links but does not receive **automatic** restarts (§15.4.13.3).
+3. Automatic delivery of exit notifications for linked children to the **supervision ingress** (§15.4.9).
+4. Draining of the supervision ingress before the standard mailbox each scheduling turn.
 
 A supervisor may itself be supervised (nested trees). Having one supervisor does not prevent an actor from supervising others.
 
@@ -8916,11 +8917,11 @@ For **root actors** (no supervisor), this field has no recipient — the runtime
 
 ##### 15.4.12.1 Restart Protocol
 
-When a child exits and its `child_spec` restart value permits a restart (§15.4.13.2), the runtime:
+When a child exits and the **row** in the internal child table (§15.4.13.3) for that `child_ref` has a `restart` value that permits a restart (§15.4.13.2), the runtime:
 
-1. Extracts the `start: (initial_state, start_link_fn)` pair from the stored `child_spec`.
+1. Extracts the `start: (initial_state, start_link_fn)` pair from the **stored** `child_spec` fields for that row (whether the row was created from `init` or from `start_child` — §15.4.13.3).
 2. Calls `spawn_linked(initial_state, start_link_fn, agent_type)` to create the replacement child.
-3. Updates the internal child table with the new `actor_ref`; the old ref is permanently dead.
+3. Updates that row in the **heap child table** with the new `actor_ref`; the old ref is permanently dead.
 
 `call()` or `cast()` to a dead `actor_ref` raises `actor_not_found` (§16.1.4). The supervisor's behavior function is not involved in the restart; the runtime applies the strategy from `supervisor_flags` directly.
 
@@ -8953,7 +8954,7 @@ trait Supervisor {
 }
 ```
 
-`init` is called once when the supervisor actor starts. It takes a single parameter — the supervisor's initial state — of type `ActorState` (see §3.4.13). It returns the supervisor's restart strategy and the list of children to start. The runtime spawns each child in the returned list via `spawn_linked` and stores the resulting `actor_ref` values internally.
+`init` is called once when the supervisor actor starts. It takes a single parameter — the supervisor's initial state — of type `ActorState` (see §3.4.13). It returns the supervisor's restart strategy and the list of children to start. The runtime spawns each child in the returned list via `spawn_linked` and appends a **row** to the **heap-allocated internal child table** (§15.4.13.3) for each, recording the `child_ref` and the `child_spec` data needed for restarts. Additional table rows may be created later by **`start_child(spec)`** (§15.4.13.3).
 
 ##### 15.4.13.2 Supporting Types
 
@@ -8997,9 +8998,25 @@ child_spec ::= {
 - `0` — kill immediately without waiting.
 - `> 0` — send a shutdown signal, then wait up to that many milliseconds; kill if the child has not stopped by then.
 
-##### 15.4.13.3 Dynamic Children
+##### 15.4.13.3 Internal child table: heap layout, declarative and dynamic children
 
-For children not declared in `child_spec` (i.e. spawned in response to runtime events), the supervisor may call `spawn_linked` directly (§15.4.8.3). Dynamic children are not subject to the restart policy; the supervisor's behavior function handles their exit notifications manually.
+**Representation.** For each supervisor actor, the runtime maintains an **internal child table** that is **heap-allocated** and **growable** (explicit pointer, length, and capacity, or equivalent). The table is not required to live inside a fixed-size inline control block; the actor control block stores at least a **pointer** to the table and metadata needed to find it. Implementation may reallocate the buffer when the number of **supervised** children grows. This matches the usual Erlang/OTP model where the supervisor process holds a variable-size structure for its child specs, while still allowing a compact fixed header for schedulers and fast paths.
+
+**Row contents.** Each row must contain at least: the current `actor_ref`; the **`child_spec` fields** required to apply the restart protocol (§15.4.12.1) — in particular `start`, `restart`, `agent_type`, and `id` where needed for **`:rest_for_one` ordering**; **per-child** (or per-supervisor, per spec) data for `shutdown` and for restart-intensity / escalation (`allowed_restart_count` / `restarts_time_frame` are taken from `supervisor_flags` returned by `init` and apply to **all** rows unless the language adds a more granular rule later).
+
+**Declarative children.** For each `child_spec` in the list returned from **`init`**, the runtime (typically via the **supervisor start trampoline**; see implementation plan) spawns the child, **appends** a row, and records the resulting ref. The order of spawns and rows **must** match the order of the `init` list so that **`:rest_for_one`** (§15.4.13.2) is well-defined.
+
+**Dynamic supervised children (OTP-style).** For children **not** in `init`'s list but that should still receive the **same** automatic restart, strategy, and escalation behaviour, the supervisor's behavior uses **`start_child(spec: child_spec) -> actor_ref`**. The runtime must:
+
+1. **Append** a new row to the same internal child table, using the same `supervisor_flags` in effect for this supervisor (from `init`).
+2. Perform **`spawn_linked(start.0, start.1, spec.agent_type)`** (or an internal equivalent that establishes the same link and metadata) so the new child is indistinguishable from a declarative child with respect to links and §15.4.9–§15.4.11.
+3. Store the new `child_ref` in the new row.
+
+`start_child` is the Silica analogue of **`supervisor:start_child/2`** in Erlang/OTP: one operation records policy and spawns. The exact **surface** (trait `provided` method, intrinsic, or stdlib binding) is fixed by the compiler and `stdlib`/`Supervisor` module; **normative** semantics are as above.
+
+**Ad-hoc `spawn_linked` without a table row.** A supervisor may still call **`spawn_linked`** directly (§15.4.8.3) without going through `start_child` or `init`. That child is **linked**; exit notifications are still delivered to the **supervision ingress** (§15.4.9–§15.4.10). The **runtime** does **not** apply the automatic restart protocol in §15.4.12.1 to that child, because there is **no** `child_spec` row. The supervisor's behavior is responsible for any policy. Use **`start_child(spec)`** when the child should participate in the **same** restart machinery as declarative children.
+
+**`:one_for_all` and `:rest_for_one`.** For strategies that require iterating or ordering children, the runtime **walks the internal child table** (in a defined order: declaration order, including `init` rows first in `init` order, then dynamic rows in append order from `start_child`, unless an implementation document specifies a different stable ordering; **`:rest_for_one`** may require that `id` or spawn order is recorded so “started after” is defined). See the development plan for staged implementation of full strategy semantics.
 
 ##### 15.4.13.4 FailureReporter Trait
 

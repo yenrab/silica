@@ -23,6 +23,7 @@
 // SIR `value` tags [concurrency] vs [concurrency, mailbox] from sir_generator match send/cast.
 // Supervisors Phase C (§15.4.10–§15.4.11, §16.2.7): recv → _silica_rt_actor_recv (ingress before standard; stub in runtime chunk).
 // Supervisors Phase D (same plan §15.4.13): impl_supervisor metadata is emitted in module_linkage (not here).
+// Phase E e3b: SIR `value` may be \"[concurrency]|e3b:<StateT>\" (sir_generator) → store _silica_supervisor_start_<T> to child ACB #280.
 // Lowers SIR kind-6 prims to BL of compiler-bundled runtime (_silica_rt_*), appended by emitter_core
 // from prims_actors_runtime_asm.silica (AArch64 assembly strings, compiler-owned).
 // Operands: binary prims expect inner -> X9, right_expr -> X10 (same as arithmetic).
@@ -145,8 +146,10 @@ fn is_actor_prim(name: string) -> bool {
     name == "spawn" or name == "spawn_linked" or name == "send" or name == "actor_call" or name == "actor_cast" or name == "self"
         or name == "recv"
         or name == "link" or name == "monitor" or name == "demonitor" or name == "supervision_ingress_enqueue"
-        or name == "supervision_wait_and_drain_one" or name == "failure_reason_tag"
-        or name == "failure_agent_type" or name == "failure_release"
+        or name == "supervision_wait_and_drain_one" or name == "child_table_first_ref"
+        or name == "kill_abnormal"
+        or name == "failure_reason_tag"
+        or name == "failure_agent_type" or name == "failure_release" or name == "start_child"
         or name == "pin_actor_to_core" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
         or name == "pin_actor_realtime" or name == "remove_actor" or name == "pin_actor_to_numa_node"
         or name == "unpin_actor" or name == "set_actor_priority"
@@ -158,7 +161,7 @@ fn is_actor_prim(name: string) -> bool {
 
 fn actor_prim_is_nullary(name: string) -> bool {
     name == "self" or name == "recv" or name == "get_cpu_topology" or name == "get_efficiency_cores" or name == "get_performance_cores"
-        or name == "supervision_wait_and_drain_one"
+        or name == "supervision_wait_and_drain_one" or name == "child_table_first_ref"
 }
 
 fn actor_prim_is_unary(name: string) -> bool {
@@ -166,6 +169,7 @@ fn actor_prim_is_unary(name: string) -> bool {
         or name == "get_core_capabilities" or name == "pin_actor_to_efficiency_core" or name == "pin_actor_to_performance_core"
         or name == "unpin_actor" or name == "remove_actor" or name == "get_actor_memory_usage"
         or name == "failure_reason_tag" or name == "failure_agent_type" or name == "failure_release"
+        or name == "start_child" or name == "kill_abnormal"
 }
 
 fn actor_prim_is_ternary(name: string) -> bool {
@@ -252,6 +256,28 @@ fn prim_return_uses_w32_from_x0(result_type: string) -> bool {
         or result_type == "bool"
 }
 
+// Phase E e3b: extract \"<TypeName>\" from SIR value \"[concurrency]|e3b:<TypeName>\".
+// \"[concurrency]\" is 13 chars, so \"|e3b:\" starts at index 13 and the type name at 18.
+fn e3b_extract_type_name(value: string) -> string {
+    case len(value) > 18 and substring(value, 13, 18) == "|e3b:" of {
+        true -> substring(value, 18, len(value));
+        false -> ""
+    }
+}
+
+// Phase E e3b: load supervisor trampoline address into X3 before spawn call.
+// For non-supervisor spawns emits MOV X3, XZR so ACB#280 stays 0.
+fn e3b_trampoline_x3_prefix(value: string) -> string {
+    tn: string <- e3b_extract_type_name(value);
+    case len(tn) == 0 of {
+        true -> "    MOV X3, XZR\n";
+        false -> do
+            sym: string <- concat("_silica_supervisor_start_", tn);
+            concat(concat(concat(concat("    ADRP X3, ", sym), "@PAGE\n    ADD X3, X3, "), sym), "@PAGEOFF\n")
+        end
+    }
+}
+
 fn mov_dest_from_x0_for_type(dest: string, result_type: string) -> string {
     case dest == "X0" of {
         true -> "";
@@ -300,9 +326,10 @@ fn emit_spawn_linked(dest: string, term: SIRTerm) -> string {
 }
 
 fn emit_spawn(dest: string, term: SIRTerm) -> string {
+    e3b_pfx: string <- e3b_trampoline_x3_prefix(term.value);
     three: bool <- term.right_expr.kind == 6 and term.right_expr.name == "tuple_make";
     case three of {
-        true -> concat(concat("    MOV X0, X11\n    LDR X1, [X10]\n    LDR X12, [X10, #8]\n    MOV W2, W12\n", asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, term.type_name));
+        true -> concat(concat(concat(concat(e3b_pfx, "    MOV X0, X11\n    LDR X1, [X10]\n    LDR X12, [X10, #8]\n    MOV W2, W12\n"), asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, term.type_name)), "");
         false -> do
             nb: int64 <- spawn_init_stack_bytes(term.inner);
             copy_init: bool <- spawn_init_needs_heap_copy(term.inner) and nb > 0;
@@ -311,12 +338,12 @@ fn emit_spawn(dest: string, term: SIRTerm) -> string {
                     promote: string <- heap_promote_stack_aggregate_x0(nb);
                     pop_stack: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nb), "\n"));
                     pre: string <- concat("    MOV X12, X10\n    MOV X0, X9\n", promote);
-                    mid: string <- concat(pre, "    MOV X9, X0\n    MOV X10, X12\n    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n");
+                    mid: string <- concat(pre, concat("    MOV X9, X0\n    MOV X10, X12\n", concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n")));
                     after_spawn: string <- concat(mid, asm_bl("_silica_rt_actor_spawn"));
                     with_dest: string <- concat(after_spawn, mov_dest_from_x0_for_type(dest, term.type_name));
                     concat(with_dest, pop_stack)
                 end;
-                false -> concat(concat("    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n", asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, term.type_name))
+                false -> concat(concat(concat(concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV W2, WZR\n"), asm_bl("_silica_rt_actor_spawn")), mov_dest_from_x0_for_type(dest, term.type_name)), "")
             }
         end
     }
@@ -348,6 +375,7 @@ fn runtime_label(name: string) -> string {
         "recv" -> "_silica_rt_actor_recv";
         "supervision_ingress_enqueue" -> "_silica_rt_actor_supervision_ingress_enqueue";
         "supervision_wait_and_drain_one" -> "_silica_rt_actor_supervision_wait_and_drain_one";
+        "child_table_first_ref" -> "_silica_rt_child_table_first_ref";
         "failure_reason_tag" -> "_silica_rt_actor_failure_reason_tag";
         "failure_agent_type" -> "_silica_rt_actor_failure_agent_type";
         "failure_release" -> "_silica_rt_actor_failure_release";
@@ -369,6 +397,8 @@ fn runtime_label(name: string) -> string {
         "get_actor_memory_usage" -> "_silica_rt_get_actor_memory_usage";
         "migrate_actor" -> "_silica_rt_migrate_actor";
         "move" -> "_silica_rt_move_actor";
+        "start_child" -> "_silica_rt_supervisor_start_child";
+        "kill_abnormal" -> "_silica_rt_actor_kill_abnormal";
         _: string -> "_silica_rt_actor_unknown"
     }
 }
@@ -404,6 +434,7 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
         "demonitor" -> emit_runtime_unary(dest, term);
         "supervision_ingress_enqueue" -> emit_runtime_binary(dest, term);
         "supervision_wait_and_drain_one" -> emit_runtime_nullary(dest, term);
+        "child_table_first_ref" -> emit_runtime_nullary(dest, term);
         "failure_reason_tag" -> emit_runtime_unary(dest, term);
         "failure_agent_type" -> emit_runtime_unary(dest, term);
         "failure_release" -> emit_runtime_unary(dest, term);
@@ -422,6 +453,8 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
         "get_actor_memory_usage" -> emit_runtime_unary(dest, term);
         "migrate_actor" -> emit_runtime_binary(dest, term);
         "move" -> emit_runtime_ternary(dest, term);
+        "start_child" -> emit_runtime_unary(dest, term);
+        "kill_abnormal" -> emit_runtime_unary(dest, term);
         _: string -> concat(concat("    ; unsupported actor prim: ", term.name), "\n")
     }
 }

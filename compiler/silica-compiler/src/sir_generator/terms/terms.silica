@@ -95,6 +95,21 @@ fn spawn_call_fourth_arg_expr(expr: Expr) -> Expr {
     }
 }
 
+// Phase E e3b: tag spawn[linked] SIR prims with value \"[concurrency]|e3b:<StateT>\" so the AArch64 emitter
+// can store _silica_supervisor_start_<T> into the child actor ACB (#280) when the behavior's state is a supervisor impl.
+// e4a fix: also tag when state_t doesn't match but the module has exactly one supervisor impl,
+// using the first supervisor type name from the CSV. This handles `spawn(0, sup_beh)` in supervisor modules.
+fn spawn_value_tag_e3b_if_supervisor_state(base: SIRTerm, state_t: string, context: TypeContext) -> SIRTerm {
+    csv: string <- type_checker_core@lookup_supervisor_csv(context);
+    case type_checker_core@type_name_in_supervisor_csv(state_t, csv) of {
+        true -> SIRTerm { kind: base.kind, type_name: base.type_name, value: concat("[concurrency]", concat("|e3b:", state_t)), name: base.name, inner: base.inner, right_expr: base.right_expr };
+        false -> case len(csv) > 0 of {
+            true -> SIRTerm { kind: base.kind, type_name: base.type_name, value: concat("[concurrency]", concat("|e3b:", csv)), name: base.name, inner: base.inner, right_expr: base.right_expr };
+            false -> base
+        }
+    }
+}
+
 fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
     ab: string <- type_checker_core@user_call_base_function_name(expr.name);
     case ab == "spawn" of {
@@ -121,9 +136,9 @@ fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: str
                                         true -> do
                                             pl_e: Expr <- type_checker_expressions_actors@spawn_placement_expr(expr);
                                             pl_sir: SIRTerm <- sir_subexpr_for_actor(context, pl_e, "uint64", in_body, bound_name, bound_type);
-                                            actor_calls@build_spawn_prim(init_sir, beh_sir, pl_sir, true)
+                                            spawn_value_tag_e3b_if_supervisor_state(actor_calls@build_spawn_prim(init_sir, beh_sir, pl_sir, true), state_t, context)
                                         end;
-                                        false -> actor_calls@build_spawn_prim(init_sir, beh_sir, sir_ast@dummy_sir_term(), false)
+                                        false -> spawn_value_tag_e3b_if_supervisor_state(actor_calls@build_spawn_prim(init_sir, beh_sir, sir_ast@dummy_sir_term(), false), state_t, context)
                                     }
                                 end
                             }
@@ -157,9 +172,9 @@ fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: str
                                             true -> do
                                                 pl_sl_e: Expr <- spawn_call_fourth_arg_expr(expr);
                                                 pl_sl_sir: SIRTerm <- sir_subexpr_for_actor(context, pl_sl_e, "uint64", in_body, bound_name, bound_type);
-                                                actor_calls@build_spawn_linked_prim(init_sl_sir, beh_sl_sir, agent_sl_sir, pl_sl_sir, true)
+                                                spawn_value_tag_e3b_if_supervisor_state(actor_calls@build_spawn_linked_prim(init_sl_sir, beh_sl_sir, agent_sl_sir, pl_sl_sir, true), state_sl_t, context)
                                             end;
-                                            false -> actor_calls@build_spawn_linked_prim(init_sl_sir, beh_sl_sir, agent_sl_sir, sir_ast@dummy_sir_term(), false)
+                                            false -> spawn_value_tag_e3b_if_supervisor_state(actor_calls@build_spawn_linked_prim(init_sl_sir, beh_sl_sir, agent_sl_sir, sir_ast@dummy_sir_term(), false), state_sl_t, context)
                                         }
                                     end
                                 }
@@ -233,6 +248,19 @@ fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: str
                                                 true -> actor_calls@build_supervision_wait_and_drain_one_prim();
                                                 false -> sir_ast@dummy_sir_term()
                                             };
+                                            false -> case ab == "child_table_first_ref" of {
+                                                true -> case type_checker_expressions_actors@count_chain_args(expr) == 0 of {
+                                                    true -> actor_calls@build_child_table_first_ref_prim();
+                                                    false -> sir_ast@dummy_sir_term()
+                                                };
+                                            false -> case ab == "kill_abnormal" of {
+                                                true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
+                                                    true -> do
+                                                        ka_t: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "actor_ref", in_body, bound_name, bound_type);
+                                                        actor_calls@build_kill_abnormal_prim(ka_t)
+                                                    end;
+                                                    false -> sir_ast@dummy_sir_term()
+                                                };
                                             false -> case ab == "failure_reason_tag" of {
                                                 true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
                                                     true -> do
@@ -257,11 +285,22 @@ fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: str
                                                             end;
                                                             false -> sir_ast@dummy_sir_term()
                                                         };
-                                                        false -> lower_actor_runtime_helper_expr(context, expr, in_body, bound_name, bound_type)
+                                                        false -> case ab == "start_child" of {
+                                                            true -> case type_checker_expressions_actors@count_chain_args(expr) == 1 of {
+                                                                true -> do
+                                                                    sc_p: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "discard", in_body, bound_name, bound_type);
+                                                                    actor_calls@build_start_child_prim(sc_p)
+                                                                end;
+                                                                false -> sir_ast@dummy_sir_term()
+                                                            };
+                                                            false -> lower_actor_runtime_helper_expr(context, expr, in_body, bound_name, bound_type)
+                                                        }
                                                     }
                                                 }
                                             }
+                                            }
                                         }
+                                    }
                                     }
                                 }
                             }
@@ -510,12 +549,17 @@ fn tuple_find_comma(s: string, i: int64) -> int64 {
     tuple_find_comma_at_depth(s, i, 0)
 }
 
+// Top-level comma for tuple type splitting: count (), {}, [] so commas inside `{ a: T, b: U }` or `List[..., normal]` do not split `(flags, list)`.
 fn tuple_find_comma_at_depth(s: string, i: int64, depth: int64) -> int64 {
     case i >= len(s) of {
         true -> len(s);
         false -> case substring(s, i, i + 1) of {
             "(" -> tuple_find_comma_at_depth(s, i + 1, depth + 1);
             ")" -> tuple_find_comma_at_depth(s, i + 1, depth - 1);
+            "{" -> tuple_find_comma_at_depth(s, i + 1, depth + 1);
+            "}" -> tuple_find_comma_at_depth(s, i + 1, depth - 1);
+            "[" -> tuple_find_comma_at_depth(s, i + 1, depth + 1);
+            "]" -> tuple_find_comma_at_depth(s, i + 1, depth - 1);
             "," -> case depth == 0 of {
                 true -> i;
                 false -> tuple_find_comma_at_depth(s, i + 1, depth)

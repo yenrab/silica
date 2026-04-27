@@ -111,13 +111,25 @@ fn emit_program(program: Program, context: TypeContext) -> SIRModule proc[mem(no
     emit_program_for_unit(program, context, "")
 }
 
+fn sir_string_list_to_csv(list: ListSirString) -> string {
+    case list.is_nil of {
+        true -> "";
+        false -> case list.tail.is_nil of {
+            true -> list.head;
+            false -> concat(concat(list.head, ","), sir_string_list_to_csv(list.tail))
+        }
+    }
+}
+
 fn emit_program_for_unit(program: Program, context: TypeContext, compilation_unit: string) -> SIRModule proc[mem(normal)] {
-    fns: ListSIRFunction <- emit_declarations(program.declarations, context, program.declarations);
+    sup_impls: ListSirString <- traits@collect_supervisor_impl_types(program.declarations);
+    sup_csv: string <- sir_string_list_to_csv(sup_impls);
+    ctx_emit: TypeContext <- type_checker_core@type_context_with_supervisor_types(context, sup_csv);
+    fns: ListSIRFunction <- emit_declarations(program.declarations, ctx_emit, program.declarations);
     uses: ListSirString <- collect_used_modules(program.declarations);
     exps: ListSIRExportItem <- collect_exports(program.declarations);
     trait_names: ListSirString <- traits@collect_export_trait_names(program.declarations);
     marker_impls: ListSirString <- traits@collect_marker_impl_types(program.declarations);
-    sup_impls: ListSirString <- traits@collect_supervisor_impl_types(program.declarations);
     sup_phase_e: ListSIRSupervisorPhaseE <- traits@collect_supervisor_phase_e(program.declarations);
     fr_impls: ListSirString <- traits@collect_failure_reporter_impl_types(program.declarations);
     req_sigs: ListSIRRequiredMethodSig <- traits@collect_required_trait_method_sigs(program.declarations);

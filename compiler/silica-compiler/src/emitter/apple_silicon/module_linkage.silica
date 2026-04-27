@@ -274,10 +274,16 @@ fn format_required_trait_sigs_comments_loop(sigs: ListSIRRequiredMethodSig, acc:
 // The trampoline is invoked once at first schedule of the supervisor actor by
 // _silica_rt_supervisor_start (to be wired in a subsequent phase). Emitting the symbol now
 // keeps the link graph complete and lets integration tests observe its presence.
+// Phase E e3b: trampoline invoked once at first schedule (actor_thread_main hook).
+// X0 in = ACB pointer. Load initial state from [ACB], call init, pass (ACB, tuple_ptr) to materialize.
 fn format_one_supervisor_trampoline(actor_type: string) -> string {
     sym: string <- concat("_silica_supervisor_start_", actor_type);
     header: string <- concat(concat(concat(".globl ", sym), "\n.p2align 2\n"), concat(sym, ":\n"));
-    body: string <- "    STP X29, X30, [SP, #-16]!\n    MOV X0, #0\n    BL init\n    LDP X29, X30, [SP], #16\n    RET\n";
+    body: string <- concat(concat(concat(concat(
+        "    STP X20, X19, [SP, #-32]!\n    STP X29, X30, [SP, #16]\n    ADD X29, SP, #16\n",
+        "    MOV X19, X0\n    LDR X0, [X19]\n    BL init\n"),
+        "    MOV X1, X0\n    MOV X0, X19\n    BL _silica_rt_supervisor_materialize_init_children\n"),
+        "    LDP X29, X30, [SP, #16]\n    LDP X20, X19, [SP], #32\n    RET\n"), "");
     concat(header, body)
 }
 
@@ -294,7 +300,7 @@ fn emit_supervisor_start_trampolines_loop(types: ListSirString, acc: string) -> 
 fn emit_supervisor_start_trampolines(sir_module: SIRModule) -> string {
     case sir_module.supervisor_impl_types.is_nil of {
         true -> "";
-        false -> concat("    ; supervisors Phase E (e2b): per-impl start trampolines (stub: BL init; no child walk yet)\n", emit_supervisor_start_trampolines_loop(sir_module.supervisor_impl_types, ""))
+        false -> concat("    ; supervisors Phase E (e3b): per-impl start trampolines (calls init + materialize children)\n", emit_supervisor_start_trampolines_loop(sir_module.supervisor_impl_types, ""))
     }
 }
 

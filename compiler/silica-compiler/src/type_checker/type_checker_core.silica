@@ -43,6 +43,9 @@ export type_check_ok/0;
 export type_check_err/5;
 export empty_symbol_table/0;
 export type_context_with_env/2;
+export type_context_with_supervisor_types/2;
+export lookup_supervisor_csv/1;
+export type_name_in_supervisor_csv/2;
 
 // Symbol table: name -> type_name, declared_effects
 struct SymbolEntry {
@@ -144,6 +147,36 @@ fn create_type_context() -> TypeContext {
 // Replace env (let bindings, params, pattern bindings).
 fn type_context_with_env(ctx: TypeContext, new_env: ListSymbolEntry) -> TypeContext {
     TypeContext { env: new_env }
+}
+
+// Phase E e3b: store supervisor CSV as a magic symbol in the env so struct shape stays unchanged.
+fn type_context_with_supervisor_types(ctx: TypeContext, csv: string) -> TypeContext {
+    new_env: ListSymbolEntry <- add_symbol(ctx.env, "__silica_e3b_sup_csv", csv, parser_ast@empty_effect_name_list(), "");
+    TypeContext { env: new_env }
+}
+
+fn lookup_supervisor_csv(ctx: TypeContext) -> string {
+    lookup_symbol(ctx.env, "__silica_e3b_sup_csv")
+}
+
+fn csv_contains_loop(csv: string, t: string, i: int64, seg_start: int64) -> bool {
+    case i >= len(csv) of {
+        true -> substring(csv, seg_start, i) == t;
+        false -> case substring(csv, i, i + 1) == "," of {
+            true -> case substring(csv, seg_start, i) == t of {
+                true -> true;
+                false -> csv_contains_loop(csv, t, i + 1, i + 1)
+            };
+            false -> csv_contains_loop(csv, t, i + 1, seg_start)
+        }
+    }
+}
+
+fn type_name_in_supervisor_csv(t: string, csv: string) -> bool {
+    case len(csv) == 0 of {
+        true -> false;
+        false -> csv_contains_loop(csv, t, 0, 0)
+    }
 }
 
 fn add_symbol(env: ListSymbolEntry, name: string, type_name: string, declared_effects: ListEffectName, source_module: string) -> ListSymbolEntry {
