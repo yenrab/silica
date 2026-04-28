@@ -10,7 +10,8 @@
 # root actor registered at first top-level spawn() dies (`alive == 0`). If stdin already holds the line `exit`
 # when `wait_for_exit` polls (integrate here-doc), that line can be consumed before async/unsynchronized work
 # finishes—empty `.sout`, or SIGBUS under teardown. Trials listed in integrate_exit_after_done_basenames.txt use
-# `run_integration_exit_after_marker.py` (PTY + send `exit` only after a full `done` line appears on output).
+# `run_integration_exit_after_marker.py` (PTY + send `exit` only after a marker line — default `done`,
+# or an optional second column in that list — appears on output).
 
 set -u
 base="${1:?usage: run_integration_binary.sh <basename>}"
@@ -27,14 +28,20 @@ marker_helper="${here}/run_integration_exit_after_marker.py"
 done_list="${here}/integrate_exit_after_done_basenames.txt"
 
 use_done_marker=0
+exit_marker="done"
 if test -f "$done_list" && command -v python3 >/dev/null 2>&1 && test -f "$marker_helper"; then
-  if grep -v '^#' "$done_list" 2>/dev/null | grep -F -x -q -- "$base"; then
+  entry="$(awk -v b="$base" '!/^[[:space:]]*#/ && NF>=1 && $1==b {print; exit}' "$done_list" 2>/dev/null)" || true
+  if test -n "${entry:-}"; then
     use_done_marker=1
+    second="$(printf '%s\n' "$entry" | awk '{print $2}')"
+    if test -n "${second:-}"; then
+      exit_marker="$second"
+    fi
   fi
 fi
 
 if [ "$use_done_marker" -eq 1 ]; then
-  python3 "$marker_helper" "$here" "$base" "$out" done
+  python3 "$marker_helper" "$here" "$base" "$out" "$exit_marker"
 else
   set +e
   {
