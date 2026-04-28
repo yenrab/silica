@@ -4,8 +4,8 @@
 // dequeue, `rear` is reversed in place to become the new `front` and `rear` is cleared.
 //
 // Flow: flooder supervision_ingress_enqueue(999) first, then casts 1..10 into sup's standard mailbox,
-// then call(sup, 42) inside the flooder behavior; main uses cast→flooder (not blocking call→flooder)
-// so stdin wait_for_exit can run while actors proceed.
+// then call(sup, 42) inside the flooder behavior; main uses call(flooder, 1) so sup_beh completes before
+// wait_for_exit (integrate pipes `exit` on stdin with no delay — async cast(flooder) would race that).
 // (Enqueuing 999 after the casts allowed the supervisor to dequeue 1 from the standard mailbox before
 // 999 was visible, which made the first printed line flaky under scheduling.)
 // Expected output order: 999 (ingress first), 1..10 (FIFO), 42 (flooder sync call(sup)),
@@ -44,7 +44,7 @@ fn main() -> int64 {
     sequence proc[concurrency, device_io]
         sup: actor_ref <- spawn(0, sup_beh);
         flooder: actor_ref <- spawn(sup, flooder_beh);
-        _: boolean <- cast(flooder, 1 impl ActorMessage {});
+        _: int64 <- call(flooder, 1 impl ActorMessage {});
         _: int64 <- wait_for_exit()
     produces
         pure 0

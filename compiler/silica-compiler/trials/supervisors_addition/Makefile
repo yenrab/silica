@@ -3,6 +3,9 @@
 #
 # silica-compiler reads silica.config (all *.silica under this directory).
 # Assembler: clang -c; linker: rust-lld if available, else clang.
+#
+# integrate uses bash (arithmetic, run_integration_binary.sh). /bin/sh is not required to support this recipe.
+SHELL := /bin/bash
 
 THIS_DIR        := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 SILICA_COMPILER := $(abspath $(THIS_DIR)../../src/silica-compiler)
@@ -81,6 +84,11 @@ all: compile
 	fi; \
 	echo "✅ $(MSG_PREFIX)Linked entrypoints (root *.silica + traits/*.o)"
 
+# integrate: For each linked entrypoint with a .scout golden, capture stdout + stderr + trailing exit code into
+# <base>.sout via run_integration_binary.sh: one braced "{ …; echo $?; } >"<base>.sout" 2>&1" (never ">out" for
+# the binary then ">>out" for $ — that can reorder or drop output).
+# Compare: default diff -Bw <base>.sout <base>.scout. If <base>.scout.multiset exists, use compare_scout_multiset.sh
+# (or compare_scout_multiset_oneof.sh when <base>.scout.alt exists — multiset matches any listed golden).
 integrate: silica.config compile
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
@@ -134,12 +142,24 @@ integrate: silica.config compile
 		base=$${line%.silica}; \
 		if [ -x "$$base" ]; then \
 			if [ -f "$$base.scout" ]; then \
-				if grep -q wait_for_exit "$$base.silica" 2>/dev/null; then \
-					bash "$(THIS_DIR)run_integration_binary.sh" "$$base"; \
-				else \
-					{ ./"$$base" 2>&1; echo $$?; } > "$$base.sout"; \
-				fi; \
-				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
+				"$(SHELL)" "$(THIS_DIR)run_integration_binary.sh" "$$base"; \
+				if [ -f "$$base.scout.multiset" ]; then \
+					if [ -f "$$base.scout.alt" ]; then \
+						if ! "$(SHELL)" "$(THIS_DIR)compare_scout_multiset_oneof.sh" "$$base.sout" "$$base.scout" "$$base.scout.alt"; then \
+							echo "❌❌ $(MSG_PREFIX)$$base .sout multiset-compare differs from all of .scout .scout.alt"; \
+							ko=$$((ko + 1)); failed=1; \
+						else \
+							echo "✅✅ $(MSG_PREFIX)$$base output multiset-matches a golden (.scout or .scout.alt)"; \
+							ok=$$((ok + 1)); \
+						fi; \
+					elif ! "$(SHELL)" "$(THIS_DIR)compare_scout_multiset.sh" "$$base.sout" "$$base.scout"; then \
+						echo "❌❌ $(MSG_PREFIX)$$base .sout multiset-compare differs from .scout"; \
+						ko=$$((ko + 1)); failed=1; \
+					else \
+						echo "✅✅ $(MSG_PREFIX)$$base output multiset-matches .scout"; \
+						ok=$$((ko + 1)); \
+					fi; \
+				elif ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
 					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
 					diff -Bw "$$base.sout" "$$base.scout" || true; \
 					ko=$$((ko + 1)); failed=1; \
@@ -161,6 +181,7 @@ integrate: silica.config compile
 stress-j2:
 	@cd "$(THIS_DIR)" && bash ./stress_j2_supervision_harness.sh
 
+# clean removes build artifacts only. Preserves golden/compare inputs: *.scout, *.scout.multiset, *.scout.alt, *.ascomp.
 clean:
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sout traits/*.sams traits/*.o *.sams && \
@@ -173,4 +194,4 @@ clean:
 
 help:
 	@echo "supervisors_addition: Phase A supervisor trial + local trait copy under traits/"
-	@echo "Targets: all (compile+link), compile (.sams), integrate (optional .ascomp/.scout), stress-j2 (Phase J2 harness), clean"
+	@echo "Targets: all (compile+link), compile (.sams), integrate (optional .ascomp/.scout; capture → diff or multiset / .scout.multiset + optional .scout.alt one-of), stress-j2 (Phase J2 harness), clean (keeps .scout / .scout.multiset / .ascomp)"
