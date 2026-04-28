@@ -250,12 +250,8 @@ _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 	str	xzr, [x19, #312]
 	str	xzr, [x19, #320]
 	str	xzr, [x19, #328]
-	add	x0, x19, #16
-	mov	x1, #0                          ; =0x0
-	bl	_pthread_mutex_init
-	add	x0, x19, #80
-	mov	x1, #0                          ; =0x0
-	bl	_pthread_cond_init
+; Phase E e4f: ACB+16 is now an os_unfair_lock (4 B) and ACB+80 is a 4 B futex seq word.
+; Both are zero from calloc above (OS_UNFAIR_LOCK_INIT == 0); no init call needed.
 	str	w22, [x19, #152]
 Lloh0:
 	adrp	x2, _actor_thread_main@PAGE
@@ -351,21 +347,17 @@ Lslp_tls1:
 	str	x0, [sp, #8]
 	ldr	x1, [sp, #8]
 	add	x0, x1, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	ldr	x1, [sp, #8]
 	ldr	x8, [x1, #216]
 	str	x8, [x19, #224]
 	str	x19, [x1, #216]
 	add	x0, x1, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	add	sp, sp, #16
 Lslp_skip_list:
-	add	x0, x19, #16
-	mov	x1, #0
-	bl	_pthread_mutex_init
-	add	x0, x19, #80
-	mov	x1, #0
-	bl	_pthread_cond_init
+; Phase E e4f: ACB+16 (os_unfair_lock) and ACB+80 (futex seq word) are pre-zeroed by calloc.
+; OS_UNFAIR_LOCK_INIT == 0, seq baseline 0; no init call required.
 	str	w22, [x19, #152]
 Lslp_tm0:
 	adrp	x2, _actor_thread_main@PAGE
@@ -385,6 +377,13 @@ LBBsl_3:
 	bl	_pthread_detach
 	mov	x0, x19
 	bl	_silica_rt_actor_init_region
+; Phase E e4f: spin until the new actor's thread has finished its TLS init / trampoline
+; (signalled by ACB[+288] == 1 in actor_thread_main). Keeps spawn ordering strictly
+; sequential — the supervisor never overlaps two children's startup, eliminating the
+; libsystem mfm_alloc / TLS-instantiate race observed with 3+ concurrent spawns.
+LBBsl_started_spin:
+	ldr	x8, [x19, #288]
+	cbz	x8, LBBsl_started_spin
 LBBsl_4:
 	mov	x0, x19
 	ldp	x29, x30, [sp, #48]
@@ -426,13 +425,17 @@ Lloh3:
 	cbnz	x9, LBB1_skip_tramp
 	mov	x0, x19
 	blr	x8
+LBB1_skip_tramp:
+; Phase E e4f: mark actor as started (post TLS init + post any first-schedule trampoline) so
+; spawn / spawn_linked callers can serialize on +288 == 1 for both supervisors and workers.
+; This delivers the user-requested ordering: each child starts one at a time, waiting until
+; the previous child's actor_thread_main has materialised before the next spawn proceeds.
 	mov	x8, #1
 	str	x8, [x19, #288]
-LBB1_skip_tramp:
 	mov	w22, #1                         ; =0x1
 LBB1_loop:
 	add	x0, x19, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 LBB1_wait:
 	add	x0, x19, #232
 	bl	_silica_rt_q_dequeue_locked
@@ -451,21 +454,16 @@ LBB1_try_std:
 	cbnz	x20, LBB1_process
 	ldr	w9, [x19, #152]
 	cbz	w9, LBB1_exit
-; Phase E e4e: pthread_cond_timedwait_relative_np with 1 ms slice for missed-signal recovery.
-	sub	sp, sp, #16
-	str	xzr, [sp]
-	movz	w8, #0x4240
-	movk	w8, #0xF, lsl #16
-	str	x8, [sp, #8]
+; Phase E e4f: blocking _silica_rt_cv_wait (os_unfair_lock + ___ulock_wait UL_COMPARE_AND_WAIT_SHARED).
+; Earlier pthread_cond_timedwait_relative_np drove libpthread kwq malloc churn racing TLS instantiation
+; (mfm_alloc SIGBUS). Wake paths hold ACB+16, signal ACB+80, then unlock before _silica_rt_cv_wait.
 	add	x0, x19, #80
 	add	x1, x19, #16
-	mov	x2, sp
-	bl	_pthread_cond_timedwait_relative_np
-	add	sp, sp, #16
+	bl	_silica_rt_cv_wait
 	b	LBB1_wait
 LBB1_process:
 	add	x0, x19, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	sub	sp, sp, #48
 	str	x20, [sp, #24]
 	ldr	w8, [x20, #16]
@@ -482,14 +480,14 @@ LBB1_process:
 	str	x9, [x19]
 	cbz	w8, LBB1_free
 	add	x0, x20, #72
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	str	x21, [x20, #144]
 	mov	w8, #1
 	str	w8, [x20, #136]
 	add	x0, x20, #24
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x20, #72
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	b	LBB1_loop
 LBB1_free:
 ; Phase E e3c+e4b: if this was an ingress message (w21==1), attempt automatic restart before freeing. X2 = reason_tag from payload+8 (e4b).
@@ -506,7 +504,7 @@ LBB1_free_skip_restart:
 	b	LBB1_loop
 LBB1_exit:
 	add	x0, x19, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	mov	x0, x19
 	bl	_silica_rt_actor_deliver_exit
 	cbz	x0, LBB1_exit_skip_note
@@ -518,16 +516,29 @@ Lloh_rn1:
 	mov	w2, #43
 	bl	_write
 LBB1_exit_skip_note:
+; Phase E e4f: capture row_ptr from ACB[+208] (set by spawn_linked from X3) into a
+; callee-saved register so we can flag the supervisor AFTER our own teardown completes.
+; Top-level supervisors spawned via spawn() have ACB[+208] == 0 (their X3 is the
+; trampoline fn pointer routed to ACB[+280]), so x20 == 0 and the post-free flag write
+; is skipped — there is no parent row to notify.
+	ldr	x20, [x19, #208]
 	mov	x0, x19
 	bl	_silica_rt_child_table_free
 	mov	x0, x19
 	bl	_silica_rt_actor_dealloc_region
-	add	x0, x19, #16
-	bl	_pthread_mutex_destroy
-	add	x0, x19, #80
-	bl	_pthread_cond_destroy
+; Phase E e4f: ACB+16 (os_unfair_lock) and ACB+80 (futex seq word) have no out-of-line state,
+; so freeing the embedding ACB buffer reclaims everything. No destroy call needed.
 	mov	x0, x19
 	bl	_free
+; Phase E e4f: AFTER full teardown (mutex/cond destroyed, ACB freed) signal the
+; supervisor's row.exit_done = 1. The supervisor's cascade kill loop spins on this
+; flag for sequential stop ordering — every libsystem cleanup has now retired before
+; the next sibling is asked to die, eliminating the malloc / TLS-instantiate races
+; observed when 3+ worker teardowns overlapped.
+	cbz	x20, LBB1_exit_no_row
+	mov	x9, #1
+	str	x9, [x20, #56]
+LBB1_exit_no_row:
 	mov	x0, #0                          ; =0x0
 	ldp	x29, x30, [sp, #32]             ; 16-byte Folded Reload
 	ldp	x20, x19, [sp, #16]             ; 16-byte Folded Reload
@@ -604,7 +615,7 @@ _silica_rt_actor_send:                  ; @silica_rt_actor_send
 	str	x21, [x0, #8]
 	str	wzr, [x0, #16]
 	add	x0, x19, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	add	x0, x19, #128
 	mov	x1, x20
 	bl	_silica_rt_q_enqueue_locked
@@ -616,12 +627,12 @@ LBB2_5:
 	ret
 LBB2_7:
 	add	x0, x19, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x19, #16
 	ldp	x29, x30, [sp, #32]             ; 16-byte Folded Reload
 	ldp	x20, x19, [sp, #16]             ; 16-byte Folded Reload
 	ldp	x22, x21, [sp], #48             ; 16-byte Folded Reload
-	b	_pthread_mutex_unlock
+	b	_os_unfair_lock_unlock
 	.cfi_endproc
                                         ; -- End function
 	.globl	_silica_rt_actor_cast           ; -- Begin function silica_rt_actor_cast
@@ -657,14 +668,14 @@ _silica_rt_actor_cast:                  ; @silica_rt_actor_cast
 	str	x22, [x0, #8]
 	str	wzr, [x0, #16]
 	add	x0, x19, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	add	x0, x19, #128
 	mov	x1, x20
 	bl	_silica_rt_q_enqueue_locked
 	add	x0, x19, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x19, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	mov	w21, #1                         ; =0x1
 LBB3_7:
 	mov	x0, x21
@@ -706,50 +717,40 @@ _silica_rt_actor_call:                  ; @silica_rt_actor_call
 	mov	x19, x0
 	str	x21, [x0, #8]
 	str	w22, [x0, #16]
-	add	x0, x0, #72
-	mov	x1, #0                          ; =0x0
-	bl	_pthread_mutex_init
-	add	x0, x19, #24
-	mov	x1, #0                          ; =0x0
-	bl	_pthread_cond_init
+; Phase E e4f: wrapper+72 is an os_unfair_lock (4 B) and wrapper+24 is a 4 B futex seq word.
+; Both are pre-zeroed by calloc; no init call required.
 	add	x0, x20, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	add	x0, x20, #128
 	mov	x1, x19
 	bl	_silica_rt_q_enqueue_locked
 	add	x0, x20, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x20, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	add	x0, x19, #72
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	ldr	w8, [x19, #136]
 	cbnz	w8, LBB4_8
 LBB4_7:                                 ; =>This Inner Loop Header: Depth=1
-; Phase E e4e: use pthread_cond_timedwait_relative_np with 1 ms slice so a missed/late signal
-; (we have observed pthread_cond_signal under load failing to wake the caller in the
-; supervisor cascade restart path) can never strand the call. We re-check reply_set on every
-; wake and only fall through once it is set.
-	sub	sp, sp, #16
-	str	xzr, [sp]
-	movz	w8, #0x4240                     ; 1 ms = 1_000_000 ns = 0x000F4240
-	movk	w8, #0xF, lsl #16
-	str	x8, [sp, #8]
+; Phase E e4f: blocking pthread_cond_wait. Earlier 1 ms timedwait_relative_np was a missed-signal
+; band-aid that, under macOS arm64 with 3+ concurrent supervised actors, drove a libpthread
+; internal kwq malloc storm racing with new-actor TLS instantiation (mfm_alloc
+; KERN_PROTECTION_FAILURE SIGBUS in _calloc / _tlv_get_addr). All wake paths for the call
+; wrapper (worker reply, supervisor cascade kill+restart, etc.) hold wrapper#72 and signal
+; wrapper#24 before unlock, so a properly-locked plain wait is sufficient. We still check
+; reply_set on each wake to absorb spurious wakeups.
 	add	x0, x19, #24
 	add	x1, x19, #72
-	mov	x2, sp
-	bl	_pthread_cond_timedwait_relative_np
-	add	sp, sp, #16
+	bl	_silica_rt_cv_wait
 	ldr	w8, [x19, #136]
 	cbz	w8, LBB4_7
 LBB4_8:
 	ldr	x20, [x19, #144]
 	add	x0, x19, #72
-	bl	_pthread_mutex_unlock
-	add	x0, x19, #72
-	bl	_pthread_mutex_destroy
-	add	x0, x19, #24
-	bl	_pthread_cond_destroy
+	bl	_os_unfair_lock_unlock
+; Phase E e4f: wrapper+72 (os_unfair_lock) and wrapper+24 (futex seq word) have no
+; out-of-line state, so freeing the wrapper buffer reclaims everything. No destroy call needed.
 	mov	x0, x19
 	bl	_free
 	mov	x0, x20
@@ -1232,12 +1233,12 @@ _silica_rt_remove_actor:                ; @silica_rt_remove_actor
 	.cfi_offset w20, -32
 	mov	x19, x0
 	add	x0, x19, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	str	wzr, [x19, #152]
 	add	x0, x19, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x19, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	mov	x0, #0
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
@@ -1262,14 +1263,14 @@ _silica_rt_actor_kill_abnormal:
 	.cfi_offset w20, -32
 	mov	x19, x0
 	add	x0, x19, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	mov	x8, #1
 	str	x8, [x19, #336]
 	str	wzr, [x19, #152]
 	add	x0, x19, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x19, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	mov	x0, #0
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
@@ -2094,7 +2095,7 @@ LBBfh_done:
 LBBfh_overflow:
 	str	wzr, [x20, #152]
 	add	x0, x20, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	ldp	x29, x30, [sp, #32]
 	ldp	x20, x19, [sp, #16]
 	ldp	x22, x21, [sp], #48
@@ -2187,7 +2188,7 @@ _silica_rt_actor_supervision_ingress_enqueue:
 	mov	x21, x1
 	cbz	x19, Lsie_fail_nolock
 	add	x0, x19, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	ldr	w9, [x19, #248]
 	cmp	w9, #1024
 	b.hs	Lsie_abort
@@ -2205,9 +2206,9 @@ _silica_rt_actor_supervision_ingress_enqueue:
 	add	w9, w9, #1
 	str	w9, [x19, #248]
 	add	x0, x19, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x19, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	mov	x0, #0
 	ldp	x29, x30, [sp, #32]
 	ldp	x20, x19, [sp, #16]
@@ -2215,7 +2216,7 @@ _silica_rt_actor_supervision_ingress_enqueue:
 	ret
 Lsie_unlock_fail:
 	add	x0, x19, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 Lsie_fail_nolock:
 	mov	x0, #0
 	ldp	x29, x30, [sp, #32]
@@ -2248,7 +2249,7 @@ Lloh_recv1:
 	ldr	x19, [x0]
 	cbz	x19, Lrecv_done_null
 	add	x0, x19, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	add	x0, x19, #232
 	bl	_silica_rt_q_dequeue_locked
 	mov	x20, x0
@@ -2263,7 +2264,7 @@ Lrecv_try_std:
 	mov	x20, x0
 Lrecv_unlock_node:
 	add	x0, x19, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	mov	x0, x20
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
@@ -2302,6 +2303,70 @@ _silica_rt_actor_demonitor:             ; @silica_rt_actor_demonitor
 	ret
 	.cfi_endproc
                                         ; -- End function
+	.section	__TEXT,__text,regular,pure_instructions
+	.globl	_silica_rt_cv_signal
+	.p2align	2
+_silica_rt_cv_signal:                   ; X0 = cv_addr (4-byte futex word). Caller must hold the lock paired with this CV.
+	.cfi_startproc
+	stp	x29, x30, [sp, #-32]!
+	stp	x19, x20, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	mov	x19, x0
+; bump seq (32-bit; wraparound after 4G signals is fine — only mismatch w/ waiter snapshot matters)
+	ldr	w8, [x19]
+	add	w8, w8, #1
+	str	w8, [x19]
+; ___ulock_wake(UL_COMPARE_AND_WAIT_SHARED=3, cv_addr, 0).
+; bsd/sys/ulock.h: userland heap futex words use UL_COMPARE_AND_WAIT_SHARED (3).
+	mov	w0, #3
+	mov	x1, x19
+	mov	x2, #0
+	bl	___ulock_wake
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #32
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_cv_wait
+	.p2align	2
+_silica_rt_cv_wait:                     ; X0 = cv_addr, X1 = lock_addr. Caller must hold lock; lock held on return.
+	.cfi_startproc
+	stp	x29, x30, [sp, #-48]!
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	.cfi_offset w21, -40
+	.cfi_offset w22, -48
+	mov	x19, x0                         ; cv_addr (callee-saved)
+	mov	x20, x1                         ; lock_addr (callee-saved)
+; snapshot seq (under lock)
+	ldr	w22, [x19]
+; release lock
+	mov	x0, x20
+	bl	_os_unfair_lock_unlock
+; ___ulock_wait(UL_COMPARE_AND_WAIT_SHARED=3, cv_addr, snapshot, 0 = no timeout).
+	mov	w0, #3
+	mov	x1, x19
+	mov	x2, x22
+	mov	w3, #0
+	bl	___ulock_wait
+; re-acquire lock
+	mov	x0, x20
+	bl	_os_unfair_lock_lock
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #48
+	ret
+	.cfi_endproc
 	.section	__TEXT,__text,regular,pure_instructions
 ; --- Phase E e3a: heap child table (out-of-line) ---
 ; _silica_rt_child_table_free: X0=ACB* — free row buffer, clear ptr/len/cap anchors.
@@ -2432,15 +2497,12 @@ Lmat_loop:
 	ldr	x25, [x21]
 	ldr	x26, [x21, #32]
 	ldr	x27, [x21, #40]
-	mov	x0, x22
-	mov	x1, x23
-	mov	x2, x24
-	mov	x3, xzr
-	bl	_silica_rt_actor_spawn_linked
-	mov	x28, x0
+; Phase E e4f: reserve the row BEFORE spawn_linked so we can stamp ACB[+208]=row_ptr.
+; Children must come up one at a time (sequential start) and worker exits must signal
+; row[+56]=1 — both rely on ACB[+208] being a stable row pointer. ensure_min_cap may
+; realloc the table buffer, so compute row_ptr after it. (This loop is single-threaded —
+; only the supervisor's first-schedule trampoline runs it — so no concurrent reallocs.)
 	mov	x0, x19
-	mov	x1, #1
-	add	x1, x1, x19
 	ldr	x1, [x19, #264]
 	add	x1, x1, #1
 	bl	_silica_rt_child_table_ensure_min_cap
@@ -2448,17 +2510,23 @@ Lmat_loop:
 	ldr	x8, [x19, #256]
 	ldr	x9, [x19, #264]
 	mov	x10, #80
-	madd	x8, x9, x10, x8
-	str	x28, [x8]
-	str	x25, [x8, #8]
-	str	x24, [x8, #16]
-	str	x22, [x8, #24]
-	str	x23, [x8, #32]
-	str	x26, [x8, #40]
-	str	x27, [x8, #48]
-	str	xzr, [x8, #56]
-	str	xzr, [x8, #64]
-	str	xzr, [x8, #72]
+	madd	x28, x9, x10, x8
+	mov	x0, x22
+	mov	x1, x23
+	mov	x2, x24
+	mov	x3, x28
+	bl	_silica_rt_actor_spawn_linked
+	str	x0, [x28]
+	str	x25, [x28, #8]
+	str	x24, [x28, #16]
+	str	x22, [x28, #24]
+	str	x23, [x28, #32]
+	str	x26, [x28, #40]
+	str	x27, [x28, #48]
+	str	xzr, [x28, #56]
+	str	xzr, [x28, #64]
+	str	xzr, [x28, #72]
+	ldr	x9, [x19, #264]
 	add	x9, x9, #1
 	str	x9, [x19, #264]
 	ldr	x21, [x21, #64]
@@ -2476,12 +2544,15 @@ Lmat_done:
 	.p2align	2
 _silica_rt_supervisor_start_child:
 	.cfi_startproc
-	stp	x26, x25, [sp, #-80]!
-	stp	x24, x23, [sp, #16]
-	stp	x22, x21, [sp, #32]
-	stp	x20, x19, [sp, #48]
-	stp	x29, x30, [sp, #64]
-	add	x29, sp, #64
+; Phase E e4f: extend the prologue to also save x27 (row_ptr) and x28 (appended flag) so we can
+; locate / allocate the table row first, then call spawn_linked with X3 = row_ptr (callee-saved).
+	stp	x28, x27, [sp, #-96]!
+	stp	x26, x25, [sp, #16]
+	stp	x24, x23, [sp, #32]
+	stp	x22, x21, [sp, #48]
+	stp	x20, x19, [sp, #64]
+	stp	x29, x30, [sp, #80]
+	add	x29, sp, #80
 	.cfi_def_cfa w29, 16
 	.cfi_offset w19, -32
 	.cfi_offset w20, -24
@@ -2491,6 +2562,8 @@ _silica_rt_supervisor_start_child:
 	.cfi_offset w24, -48
 	.cfi_offset w25, -72
 	.cfi_offset w26, -64
+	.cfi_offset w27, -88
+	.cfi_offset w28, -80
 	mov	x20, x0
 	ldr	x21, [x20]
 	ldr	x22, [x20, #8]
@@ -2505,12 +2578,11 @@ Lsc_tls1:
 	ldr	x8, [x0]
 	blr	x8
 	ldr	x19, [x0]
-	mov	x0, x23
-	mov	x1, x24
-	mov	x2, x22
-	mov	x3, xzr
-	bl	_silica_rt_actor_spawn_linked
-	mov	x20, x0
+; Phase E e4f: find the tombstone row (or reserve a fresh one) BEFORE spawn_linked so the
+; new actor's ACB[+208] = row_ptr lets it later flag row[+56]=1 on its own teardown for
+; sequential cascade-stop ordering. ensure_min_cap may realloc the table buffer, so the
+; row_ptr is recomputed in each branch. start_child runs on the supervisor's thread, so
+; no concurrent realloc can race here.
 	ldr	x8, [x19, #256]
 	ldr	x9, [x19, #264]
 	mov	x10, #0
@@ -2518,9 +2590,9 @@ Lsc_reuse_loop:
 	cmp	x10, x9
 	b.hs	Lsc_append_new
 	mov	x11, #80
-	madd	x11, x10, x11, x8
-	ldr	x12, [x11]
-	cbz	x12, Lsc_write_reused
+	madd	x27, x10, x11, x8
+	ldr	x12, [x27]
+	cbz	x12, Lsc_use_reuse_row
 	add	x10, x10, #1
 	b	Lsc_reuse_loop
 Lsc_append_new:
@@ -2532,33 +2604,40 @@ Lsc_append_new:
 	ldr	x8, [x19, #256]
 	ldr	x9, [x19, #264]
 	mov	x10, #80
-	madd	x8, x9, x10, x8
-	mov	x12, #1
-	b	Lsc_write_row
-Lsc_write_reused:
-	mov	x8, x11
-	mov	x12, xzr
-Lsc_write_row:
-	str	x20, [x8]
-	str	x21, [x8, #8]
-	str	x22, [x8, #16]
-	str	x23, [x8, #24]
-	str	x24, [x8, #32]
-	str	x25, [x8, #40]
-	str	x26, [x8, #48]
-	str	xzr, [x8, #56]
-	str	xzr, [x8, #64]
-	str	xzr, [x8, #72]
-	cbz	x12, Lsc_done
+	madd	x27, x9, x10, x8
+	mov	x28, #1
+	b	Lsc_post_row
+Lsc_use_reuse_row:
+	mov	x28, xzr
+Lsc_post_row:
+	mov	x0, x23
+	mov	x1, x24
+	mov	x2, x22
+	mov	x3, x27
+	bl	_silica_rt_actor_spawn_linked
+	mov	x20, x0
+	str	x20, [x27]
+	str	x21, [x27, #8]
+	str	x22, [x27, #16]
+	str	x23, [x27, #24]
+	str	x24, [x27, #32]
+	str	x25, [x27, #40]
+	str	x26, [x27, #48]
+	str	xzr, [x27, #56]
+	str	xzr, [x27, #64]
+	str	xzr, [x27, #72]
+	cbz	x28, Lsc_done
+	ldr	x9, [x19, #264]
 	add	x9, x9, #1
 	str	x9, [x19, #264]
 Lsc_done:
 	mov	x0, x20
-	ldp	x29, x30, [sp, #64]
-	ldp	x20, x19, [sp, #48]
-	ldp	x22, x21, [sp, #32]
-	ldp	x24, x23, [sp, #16]
-	ldp	x26, x25, [sp], #80
+	ldp	x29, x30, [sp, #80]
+	ldp	x20, x19, [sp, #64]
+	ldp	x22, x21, [sp, #48]
+	ldp	x24, x23, [sp, #32]
+	ldp	x26, x25, [sp, #16]
+	ldp	x28, x27, [sp], #96
 	ret
 	.loh AdrpLdr	Lsc_tls0, Lsc_tls1
 	.cfi_endproc
@@ -2634,23 +2713,26 @@ Lmr_freq_reset:
 	b	Lmr_freq_ok
 Lmr_freq_escalate:
 	add	x0, x20, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	str	wzr, [x20, #152]
 	add	x0, x20, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x20, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	b	Lmr_done
 Lmr_freq_ok:
 	ldr	x0, [x20, #296]
 	b	Lmr_ofo
 Lmr_ofo:
+; Phase E e4f: pass row_ptr (x24) as X3 so the new child's actor_thread_main can flag
+; this row's exit_done on its own teardown; clear stale exit_done from prior incarnation.
 	ldr	x0, [x24, #24]
 	ldr	x1, [x24, #32]
 	ldr	x2, [x24, #16]
-	mov	x3, xzr
+	mov	x3, x24
 	bl	_silica_rt_actor_spawn_linked
 	str	x0, [x24]
+	str	xzr, [x24, #56]
 	b	Lmr_done
 Lmr_ofa_kill:
 	mov	x25, #0
@@ -2664,18 +2746,30 @@ Lmr_ofa_kill_loop:
 	ldr	x27, [x26]
 	cbz	x27, Lmr_ofa_kill_next
 	add	x0, x27, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	str	wzr, [x27, #152]
 	add	x0, x27, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x27, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
+; Phase E e4f: per-user-spec sequential stop — block here until this child's actor_thread_main
+; has fully unwound (ACB freed) and stamped row[+56]=1. Only then proceed to the next sibling,
+; so two children's teardowns never overlap (no concurrent libsystem_malloc cleanup races).
+; Reset the flag once observed so a future cascade restart targeting this row can re-arm.
+Lmr_ofa_kill_wait:
+	ldr	x8, [x26, #56]
+	cbz	x8, Lmr_ofa_kill_wait
+	str	xzr, [x26, #56]
 Lmr_ofa_kill_next:
 	add	x25, x25, #1
 	b	Lmr_ofa_kill_loop
 Lmr_ofa_spawn:
 	mov	x25, #0
 Lmr_ofa_spawn_loop:
+; Phase E e4f: per-user-spec sequential start — spawn_linked itself spins on the new
+; child's ACB[+288] before returning, so iteration k cannot proceed until child k's
+; thread has finished its TLS init / first-schedule. Children come up in list order,
+; one at a time, after every cascaded stop has retired.
 	cmp	x25, x22
 	b.hs	Lmr_done
 	mov	x8, #80
@@ -2685,9 +2779,10 @@ Lmr_ofa_spawn_loop:
 	ldr	x0, [x26, #24]
 	ldr	x1, [x26, #32]
 	ldr	x2, [x26, #16]
-	mov	x3, xzr
+	mov	x3, x26
 	bl	_silica_rt_actor_spawn_linked
 	str	x0, [x26]
+	str	xzr, [x26, #56]
 Lmr_ofa_spawn_next:
 	add	x25, x25, #1
 	b	Lmr_ofa_spawn_loop
@@ -2701,30 +2796,42 @@ Lmr_rfo_kill_loop:
 	ldr	x27, [x26]
 	cbz	x27, Lmr_rfo_kill_next
 	add	x0, x27, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	str	wzr, [x27, #152]
 	add	x0, x27, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x27, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
+; Phase E e4f: per-user-spec sequential stop — wait for this child's actor_thread_main
+; to retire (row[+56]=1 set after its full ACB free) before signalling the next row.
+; No two cascaded teardowns ever overlap.
+Lmr_rfo_kill_wait:
+	ldr	x8, [x26, #56]
+	cbz	x8, Lmr_rfo_kill_wait
+	str	xzr, [x26, #56]
+; Tombstone the row only after the child has fully exited so Lmr_rfo_spawn does not run
+; with a stale child_ref in the slot.
+	str	xzr, [x26]
 Lmr_rfo_kill_next:
 	add	x25, x25, #1
 	b	Lmr_rfo_kill_loop
 Lmr_rfo_spawn:
 	mov	x25, x23
 Lmr_rfo_spawn_loop:
+; Phase E e4f: per-user-spec sequential start — children come up in list order, one
+; at a time. spawn_linked blocks on each new child's ACB[+288] (set in actor_thread_main
+; right after TLS init / trampoline) so iteration k+1 can never run alongside iteration k.
 	cmp	x25, x22
 	b.hs	Lmr_done
 	mov	x8, #80
 	madd	x26, x25, x8, x21
-	ldr	x8, [x26]
-	cbz	x8, Lmr_rfo_spawn_next
 	ldr	x0, [x26, #24]
 	ldr	x1, [x26, #32]
 	ldr	x2, [x26, #16]
-	mov	x3, xzr
+	mov	x3, x26
 	bl	_silica_rt_actor_spawn_linked
 	str	x0, [x26]
+	str	xzr, [x26, #56]
 Lmr_rfo_spawn_next:
 	add	x25, x25, #1
 	b	Lmr_rfo_spawn_loop
@@ -2782,6 +2889,44 @@ Lctfr_done:
 	ret
 	.loh AdrpLdr	Lctfr_tls0, Lctfr_tls1
 	.cfi_endproc
+	.globl	_silica_rt_child_table_row_ref
+	.p2align	2
+_silica_rt_child_table_row_ref:
+	.cfi_startproc
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	mov	x19, x0
+Lctrr_tls0:
+	adrp	x0, _tl_current_actor@TLVPPAGE
+Lctrr_tls1:
+	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
+	ldr	x8, [x0]
+	blr	x8
+	ldr	x20, [x0]
+	ldr	x8, [x20, #256]
+	cbz	x8, Lctrr_empty
+	ldr	x9, [x20, #264]
+	cbz	x9, Lctrr_empty
+	cmp	x19, #0
+	b.lt	Lctrr_empty
+	cmp	x19, x9
+	b.hs	Lctrr_empty
+	mov	x10, #80
+	madd	x11, x19, x10, x8
+	ldr	x0, [x11]
+	b	Lctrr_done
+Lctrr_empty:
+	mov	x0, #0
+Lctrr_done:
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.loh AdrpLdr	Lctrr_tls0, Lctrr_tls1
+	.cfi_endproc
 	.section	__TEXT,__text,regular,pure_instructions
 	.globl	_silica_rt_actor_deliver_exit   ; Phase C — §15.4.10 unified delivery
 	.p2align	2
@@ -2813,7 +2958,7 @@ _silica_rt_actor_deliver_exit:          ; X0=child self; X0 out: 0 delivered, 1 
 	ldr	x8, [x19, #200]
 	str	x8, [x21, #24]
 	add	x0, x20, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	ldr	w9, [x20, #152]
 	cbz	w9, Lde_dead
 	ldr	w9, [x20, #248]
@@ -2833,9 +2978,9 @@ _silica_rt_actor_deliver_exit:          ; X0=child self; X0 out: 0 delivered, 1 
 	add	w9, w9, #1
 	str	w9, [x20, #248]
 	add	x0, x20, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x20, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	mov	x0, #0
 	ldp	x29, x30, [sp, #32]
 	ldp	x20, x19, [sp, #16]
@@ -2845,7 +2990,7 @@ Lde_dead:
 	mov	x0, x21
 	bl	_free
 	add	x0, x20, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	mov	x0, #1
 	ldp	x29, x30, [sp, #32]
 	ldp	x20, x19, [sp, #16]
@@ -2886,7 +3031,7 @@ Lloh_swd1:
 	ldr	x19, [x0]
 	cbz	x19, Lswd_null
 	add	x0, x19, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 Lswd_try:
 	add	x0, x19, #232
 	bl	_silica_rt_q_dequeue_locked
@@ -2897,7 +3042,7 @@ Lswd_try:
 	str	w9, [x19, #248]
 	ldr	x21, [x20, #8]
 	add	x0, x19, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 ; Phase E: mirror LBB1_free (mutex must not be held — maybe_restart may spawn / take table locks). X2 = reason_tag (e4b).
 	cbz	x21, Lswd_free_wrap
 	ldr	x8, [x21]
@@ -2915,17 +3060,14 @@ Lswd_free_wrap:
 	ldp	x22, x21, [sp], #48
 	ret
 Lswd_wait:
-; Phase E e4e: pthread_cond_timedwait_relative_np with 1 ms slice — see _silica_rt_actor_call comment.
-	sub	sp, sp, #16
-	str	xzr, [sp]
-	movz	w8, #0x4240
-	movk	w8, #0xF, lsl #16
-	str	x8, [sp, #8]
+; Phase E e4f: blocking pthread_cond_wait. Same rationale as in _silica_rt_actor_call /
+; actor_thread_main wait paths — the 1 ms timedwait was a missed-signal band-aid that drove
+; libpthread internal kwq malloc churn racing with new-actor TLS instantiation (mfm_alloc
+; SIGBUS). All paths that enqueue a failure (LBB1_free's _silica_rt_actor_deliver_exit, etc.)
+; signal sup#80 cond while holding sup#16 mutex, so plain cond_wait is correctly delivered.
 	add	x0, x19, #80
 	add	x1, x19, #16
-	mov	x2, sp
-	bl	_pthread_cond_timedwait_relative_np
-	add	sp, sp, #16
+	bl	_silica_rt_cv_wait
 	b	Lswd_try
 Lswd_null:
 	mov	x0, #0

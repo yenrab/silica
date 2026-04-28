@@ -201,15 +201,12 @@ Lmat_loop:
 	ldr	x25, [x21]
 	ldr	x26, [x21, #32]
 	ldr	x27, [x21, #40]
-	mov	x0, x22
-	mov	x1, x23
-	mov	x2, x24
-	mov	x3, xzr
-	bl	_silica_rt_actor_spawn_linked
-	mov	x28, x0
+; Phase E e4f: reserve the row BEFORE spawn_linked so we can stamp ACB[+208]=row_ptr.
+; Children must come up one at a time (sequential start) and worker exits must signal
+; row[+56]=1 — both rely on ACB[+208] being a stable row pointer. ensure_min_cap may
+; realloc the table buffer, so compute row_ptr after it. (This loop is single-threaded —
+; only the supervisor's first-schedule trampoline runs it — so no concurrent reallocs.)
 	mov	x0, x19
-	mov	x1, #1
-	add	x1, x1, x19
 	ldr	x1, [x19, #264]
 	add	x1, x1, #1
 	bl	_silica_rt_child_table_ensure_min_cap
@@ -217,17 +214,23 @@ Lmat_loop:
 	ldr	x8, [x19, #256]
 	ldr	x9, [x19, #264]
 	mov	x10, #80
-	madd	x8, x9, x10, x8
-	str	x28, [x8]
-	str	x25, [x8, #8]
-	str	x24, [x8, #16]
-	str	x22, [x8, #24]
-	str	x23, [x8, #32]
-	str	x26, [x8, #40]
-	str	x27, [x8, #48]
-	str	xzr, [x8, #56]
-	str	xzr, [x8, #64]
-	str	xzr, [x8, #72]
+	madd	x28, x9, x10, x8
+	mov	x0, x22
+	mov	x1, x23
+	mov	x2, x24
+	mov	x3, x28
+	bl	_silica_rt_actor_spawn_linked
+	str	x0, [x28]
+	str	x25, [x28, #8]
+	str	x24, [x28, #16]
+	str	x22, [x28, #24]
+	str	x23, [x28, #32]
+	str	x26, [x28, #40]
+	str	x27, [x28, #48]
+	str	xzr, [x28, #56]
+	str	xzr, [x28, #64]
+	str	xzr, [x28, #72]
+	ldr	x9, [x19, #264]
 	add	x9, x9, #1
 	str	x9, [x19, #264]
 	ldr	x21, [x21, #64]
@@ -257,12 +260,15 @@ fn child_table_rt_asm_chunk_2() -> string {
 	.p2align	2
 _silica_rt_supervisor_start_child:
 	.cfi_startproc
-	stp	x26, x25, [sp, #-80]!
-	stp	x24, x23, [sp, #16]
-	stp	x22, x21, [sp, #32]
-	stp	x20, x19, [sp, #48]
-	stp	x29, x30, [sp, #64]
-	add	x29, sp, #64
+; Phase E e4f: extend the prologue to also save x27 (row_ptr) and x28 (appended flag) so we can
+; locate / allocate the table row first, then call spawn_linked with X3 = row_ptr (callee-saved).
+	stp	x28, x27, [sp, #-96]!
+	stp	x26, x25, [sp, #16]
+	stp	x24, x23, [sp, #32]
+	stp	x22, x21, [sp, #48]
+	stp	x20, x19, [sp, #64]
+	stp	x29, x30, [sp, #80]
+	add	x29, sp, #80
 	.cfi_def_cfa w29, 16
 	.cfi_offset w19, -32
 	.cfi_offset w20, -24
@@ -272,6 +278,8 @@ _silica_rt_supervisor_start_child:
 	.cfi_offset w24, -48
 	.cfi_offset w25, -72
 	.cfi_offset w26, -64
+	.cfi_offset w27, -88
+	.cfi_offset w28, -80
 	mov	x20, x0
 	ldr	x21, [x20]
 	ldr	x22, [x20, #8]
@@ -286,12 +294,11 @@ Lsc_tls1:
 	ldr	x8, [x0]
 	blr	x8
 	ldr	x19, [x0]
-	mov	x0, x23
-	mov	x1, x24
-	mov	x2, x22
-	mov	x3, xzr
-	bl	_silica_rt_actor_spawn_linked
-	mov	x20, x0
+; Phase E e4f: find the tombstone row (or reserve a fresh one) BEFORE spawn_linked so the
+; new actor's ACB[+208] = row_ptr lets it later flag row[+56]=1 on its own teardown for
+; sequential cascade-stop ordering. ensure_min_cap may realloc the table buffer, so the
+; row_ptr is recomputed in each branch. start_child runs on the supervisor's thread, so
+; no concurrent realloc can race here.
 	ldr	x8, [x19, #256]
 	ldr	x9, [x19, #264]
 	mov	x10, #0
@@ -299,9 +306,9 @@ Lsc_reuse_loop:
 	cmp	x10, x9
 	b.hs	Lsc_append_new
 	mov	x11, #80
-	madd	x11, x10, x11, x8
-	ldr	x12, [x11]
-	cbz	x12, Lsc_write_reused
+	madd	x27, x10, x11, x8
+	ldr	x12, [x27]
+	cbz	x12, Lsc_use_reuse_row
 	add	x10, x10, #1
 	b	Lsc_reuse_loop
 Lsc_append_new:
@@ -313,33 +320,40 @@ Lsc_append_new:
 	ldr	x8, [x19, #256]
 	ldr	x9, [x19, #264]
 	mov	x10, #80
-	madd	x8, x9, x10, x8
-	mov	x12, #1
-	b	Lsc_write_row
-Lsc_write_reused:
-	mov	x8, x11
-	mov	x12, xzr
-Lsc_write_row:
-	str	x20, [x8]
-	str	x21, [x8, #8]
-	str	x22, [x8, #16]
-	str	x23, [x8, #24]
-	str	x24, [x8, #32]
-	str	x25, [x8, #40]
-	str	x26, [x8, #48]
-	str	xzr, [x8, #56]
-	str	xzr, [x8, #64]
-	str	xzr, [x8, #72]
-	cbz	x12, Lsc_done
+	madd	x27, x9, x10, x8
+	mov	x28, #1
+	b	Lsc_post_row
+Lsc_use_reuse_row:
+	mov	x28, xzr
+Lsc_post_row:
+	mov	x0, x23
+	mov	x1, x24
+	mov	x2, x22
+	mov	x3, x27
+	bl	_silica_rt_actor_spawn_linked
+	mov	x20, x0
+	str	x20, [x27]
+	str	x21, [x27, #8]
+	str	x22, [x27, #16]
+	str	x23, [x27, #24]
+	str	x24, [x27, #32]
+	str	x25, [x27, #40]
+	str	x26, [x27, #48]
+	str	xzr, [x27, #56]
+	str	xzr, [x27, #64]
+	str	xzr, [x27, #72]
+	cbz	x28, Lsc_done
+	ldr	x9, [x19, #264]
 	add	x9, x9, #1
 	str	x9, [x19, #264]
 Lsc_done:
 	mov	x0, x20
-	ldp	x29, x30, [sp, #64]
-	ldp	x20, x19, [sp, #48]
-	ldp	x22, x21, [sp, #32]
-	ldp	x24, x23, [sp, #16]
-	ldp	x26, x25, [sp], #80
+	ldp	x29, x30, [sp, #80]
+	ldp	x20, x19, [sp, #64]
+	ldp	x22, x21, [sp, #48]
+	ldp	x24, x23, [sp, #32]
+	ldp	x26, x25, [sp, #16]
+	ldp	x28, x27, [sp], #96
 	ret
 	.loh AdrpLdr	Lsc_tls0, Lsc_tls1
 	.cfi_endproc
@@ -432,12 +446,12 @@ Lmr_freq_reset:
 	b	Lmr_freq_ok
 Lmr_freq_escalate:
 	add	x0, x20, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	str	wzr, [x20, #152]
 	add	x0, x20, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x20, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
 	b	Lmr_done
 Lmr_freq_ok:
 	ldr	x0, [x20, #296]
@@ -447,12 +461,15 @@ Lmr_freq_ok:
         mr_b_ofo: string <- "	b	Lmr_ofo
 ";
         mr_tail: string <- "Lmr_ofo:
+; Phase E e4f: pass row_ptr (x24) as X3 so the new child's actor_thread_main can flag
+; this row's exit_done on its own teardown; clear stale exit_done from prior incarnation.
 	ldr	x0, [x24, #24]
 	ldr	x1, [x24, #32]
 	ldr	x2, [x24, #16]
-	mov	x3, xzr
+	mov	x3, x24
 	bl	_silica_rt_actor_spawn_linked
 	str	x0, [x24]
+	str	xzr, [x24, #56]
 	b	Lmr_done
 Lmr_ofa_kill:
 	mov	x25, #0
@@ -466,18 +483,30 @@ Lmr_ofa_kill_loop:
 	ldr	x27, [x26]
 	cbz	x27, Lmr_ofa_kill_next
 	add	x0, x27, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	str	wzr, [x27, #152]
 	add	x0, x27, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x27, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
+; Phase E e4f: per-user-spec sequential stop — block here until this child's actor_thread_main
+; has fully unwound (ACB freed) and stamped row[+56]=1. Only then proceed to the next sibling,
+; so two children's teardowns never overlap (no concurrent libsystem_malloc cleanup races).
+; Reset the flag once observed so a future cascade restart targeting this row can re-arm.
+Lmr_ofa_kill_wait:
+	ldr	x8, [x26, #56]
+	cbz	x8, Lmr_ofa_kill_wait
+	str	xzr, [x26, #56]
 Lmr_ofa_kill_next:
 	add	x25, x25, #1
 	b	Lmr_ofa_kill_loop
 Lmr_ofa_spawn:
 	mov	x25, #0
 Lmr_ofa_spawn_loop:
+; Phase E e4f: per-user-spec sequential start — spawn_linked itself spins on the new
+; child's ACB[+288] before returning, so iteration k cannot proceed until child k's
+; thread has finished its TLS init / first-schedule. Children come up in list order,
+; one at a time, after every cascaded stop has retired.
 	cmp	x25, x22
 	b.hs	Lmr_done
 	mov	x8, #80
@@ -487,9 +516,10 @@ Lmr_ofa_spawn_loop:
 	ldr	x0, [x26, #24]
 	ldr	x1, [x26, #32]
 	ldr	x2, [x26, #16]
-	mov	x3, xzr
+	mov	x3, x26
 	bl	_silica_rt_actor_spawn_linked
 	str	x0, [x26]
+	str	xzr, [x26, #56]
 Lmr_ofa_spawn_next:
 	add	x25, x25, #1
 	b	Lmr_ofa_spawn_loop
@@ -503,30 +533,42 @@ Lmr_rfo_kill_loop:
 	ldr	x27, [x26]
 	cbz	x27, Lmr_rfo_kill_next
 	add	x0, x27, #16
-	bl	_pthread_mutex_lock
+	bl	_os_unfair_lock_lock
 	str	wzr, [x27, #152]
 	add	x0, x27, #80
-	bl	_pthread_cond_signal
+	bl	_silica_rt_cv_signal
 	add	x0, x27, #16
-	bl	_pthread_mutex_unlock
+	bl	_os_unfair_lock_unlock
+; Phase E e4f: per-user-spec sequential stop — wait for this child's actor_thread_main
+; to retire (row[+56]=1 set after its full ACB free) before signalling the next row.
+; No two cascaded teardowns ever overlap.
+Lmr_rfo_kill_wait:
+	ldr	x8, [x26, #56]
+	cbz	x8, Lmr_rfo_kill_wait
+	str	xzr, [x26, #56]
+; Tombstone the row only after the child has fully exited so Lmr_rfo_spawn does not run
+; with a stale child_ref in the slot.
+	str	xzr, [x26]
 Lmr_rfo_kill_next:
 	add	x25, x25, #1
 	b	Lmr_rfo_kill_loop
 Lmr_rfo_spawn:
 	mov	x25, x23
 Lmr_rfo_spawn_loop:
+; Phase E e4f: per-user-spec sequential start — children come up in list order, one
+; at a time. spawn_linked blocks on each new child's ACB[+288] (set in actor_thread_main
+; right after TLS init / trampoline) so iteration k+1 can never run alongside iteration k.
 	cmp	x25, x22
 	b.hs	Lmr_done
 	mov	x8, #80
 	madd	x26, x25, x8, x21
-	ldr	x8, [x26]
-	cbz	x8, Lmr_rfo_spawn_next
 	ldr	x0, [x26, #24]
 	ldr	x1, [x26, #32]
 	ldr	x2, [x26, #16]
-	mov	x3, xzr
+	mov	x3, x26
 	bl	_silica_rt_actor_spawn_linked
 	str	x0, [x26]
+	str	xzr, [x26, #56]
 Lmr_rfo_spawn_next:
 	add	x25, x25, #1
 	b	Lmr_rfo_spawn_loop
@@ -598,6 +640,51 @@ Lctfr_done:
 "
 }
 
+// Phase E e4f: _silica_rt_child_table_row_ref — 0-based row index into the supervisor's heap child table
+// (materialize / start_child order). X0 = index (i64; negative or >= len ⇒ 0). Returns child_ref at that row
+// (may be 0 for tombstones). Does not skip rows (trials compare stable row indices to first_ref).
+fn child_table_rt_asm_chunk_5() -> string {
+    "	.globl	_silica_rt_child_table_row_ref
+	.p2align	2
+_silica_rt_child_table_row_ref:
+	.cfi_startproc
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	mov	x19, x0
+Lctrr_tls0:
+	adrp	x0, _tl_current_actor@TLVPPAGE
+Lctrr_tls1:
+	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
+	ldr	x8, [x0]
+	blr	x8
+	ldr	x20, [x0]
+	ldr	x8, [x20, #256]
+	cbz	x8, Lctrr_empty
+	ldr	x9, [x20, #264]
+	cbz	x9, Lctrr_empty
+	cmp	x19, #0
+	b.lt	Lctrr_empty
+	cmp	x19, x9
+	b.hs	Lctrr_empty
+	mov	x10, #80
+	madd	x11, x19, x10, x8
+	ldr	x0, [x11]
+	b	Lctrr_done
+Lctrr_empty:
+	mov	x0, #0
+Lctrr_done:
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.loh AdrpLdr	Lctrr_tls0, Lctrr_tls1
+	.cfi_endproc
+"
+}
+
 fn emit_child_table_runtime_asm(table: AtomTable) -> string {
     do
         // Match const_atoms.silica / rodata: first-added order, not bst_lookup_string alone.
@@ -605,6 +692,6 @@ fn emit_child_table_runtime_asm(table: AtomTable) -> string {
         t: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":transient");
         o: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":one_for_all");
         r: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":rest_for_one");
-        concat(concat(concat(concat(child_table_rt_asm_chunk_0(), child_table_rt_asm_chunk_1()), child_table_rt_asm_chunk_2()), child_table_rt_asm_chunk_3(p, t, o, r)), child_table_rt_asm_chunk_4())
+        concat(concat(concat(concat(concat(child_table_rt_asm_chunk_0(), child_table_rt_asm_chunk_1()), child_table_rt_asm_chunk_2()), child_table_rt_asm_chunk_3(p, t, o, r)), child_table_rt_asm_chunk_4()), child_table_rt_asm_chunk_5())
     end
 }
