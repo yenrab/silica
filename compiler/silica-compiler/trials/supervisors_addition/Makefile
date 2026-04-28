@@ -23,7 +23,7 @@ ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
-.PHONY: all compile clean integrate help silica.config
+.PHONY: all compile clean integrate stress-j2 help silica.config
 
 silica.config:
 	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
@@ -134,7 +134,11 @@ integrate: silica.config compile
 		base=$${line%.silica}; \
 		if [ -x "$$base" ]; then \
 			if [ -f "$$base.scout" ]; then \
-				{ ./"$$base" 2>&1; echo $$?; } > "$$base.sout"; \
+				if grep -q wait_for_exit "$$base.silica" 2>/dev/null; then \
+					bash "$(THIS_DIR)run_integration_binary.sh" "$$base"; \
+				else \
+					{ ./"$$base" 2>&1; echo $$?; } > "$$base.sout"; \
+				fi; \
 				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
 					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
 					diff -Bw "$$base.sout" "$$base.scout" || true; \
@@ -153,6 +157,10 @@ integrate: silica.config compile
 	printf '%d %d\n' "$$ok" "$$ko" > .integrate_counts; \
 	exit $$failed
 
+# Phase J2: full integrate gate + e4e/e4f stress loop (see design_documents/supervisors_j2_runtime_hardening.md)
+stress-j2:
+	@cd "$(THIS_DIR)" && bash ./stress_j2_supervision_harness.sh
+
 clean:
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sout traits/*.sams traits/*.o *.sams && \
@@ -165,4 +173,4 @@ clean:
 
 help:
 	@echo "supervisors_addition: Phase A supervisor trial + local trait copy under traits/"
-	@echo "Targets: all (compile+link), compile (.sams), integrate (optional .ascomp/.scout), clean"
+	@echo "Targets: all (compile+link), compile (.sams), integrate (optional .ascomp/.scout), stress-j2 (Phase J2 harness), clean"

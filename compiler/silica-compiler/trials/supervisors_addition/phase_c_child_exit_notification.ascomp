@@ -49,15 +49,11 @@ sup_beh:     STP X29, X30, [SP, #-16]!
     BL _silica_rt_actor_spawn_linked
 
     MOV X22, X0
-    MOV X9, X22
-    MOV X0, X9
-    BL _silica_rt_remove_actor
+
     BL _silica_rt_actor_supervision_wait_and_drain_one
     MOV X23, X0
-    MOV X9, X23
-    MOV X0, X9
-    BL _silica_rt_actor_failure_agent_type
 
+    MOV X0, X1
     ; effects [device_io]
     CMP X0, #0
     B.ne L_next_at_112_0
@@ -118,9 +114,7 @@ L_pa_at_112_after:
     LDP X19, X20, [SP], #16
     MOV X0, #0
 
-    MOV X9, X23
-    MOV X0, X9
-    BL _silica_rt_actor_failure_reason_tag
+
     MOV X24, X0
     MOV X0, X24
     ; effects [device_io]
@@ -151,9 +145,7 @@ L_pa_at_112_after:
     LDP X19, X20, [SP], #16
     MOV X0, #0
 
-    MOV X9, X23
-    MOV X0, X9
-    BL _silica_rt_actor_failure_release
+
     MOV X9, #0
     STR X9, [X20, #0]
     MOV X9, #0
@@ -458,6 +450,15 @@ LBBsl_started_spin:
 	ldr	x8, [x19, #288]
 	cbz	x8, LBBsl_started_spin
 LBBsl_4:
+	cbz	x24, LBBsl_rm_skip
+LBBsl_mr_a:
+	adrp	x8, _silica_rt_wait_root_acb@PAGE
+LBBsl_mr_b:
+	add	x8, x8, _silica_rt_wait_root_acb@PAGEOFF
+	ldr	x9, [x8]
+	cbnz	x9, LBBsl_rm_skip
+	str	x19, [x8]
+LBBsl_rm_skip:
 	mov	x0, x19
 	ldp	x29, x30, [sp, #48]
 	ldp	x20, x19, [sp, #32]
@@ -466,6 +467,7 @@ LBBsl_4:
 	ret
 	.loh AdrpLdr	Lslp_tls0, Lslp_tls1
 	.loh AdrpAdd	Lslp_tm0, Lslp_tm1
+	.loh AdrpAdd	LBBsl_mr_a, LBBsl_mr_b
 	.cfi_endproc
                                         ; -- End function
 	.p2align	2                               ; -- Begin function actor_thread_main
@@ -580,7 +582,10 @@ LBB1_exit:
 	bl	_os_unfair_lock_unlock
 	mov	x0, x19
 	bl	_silica_rt_actor_deliver_exit
-	cbz	x0, LBB1_exit_skip_note
+	mov	x20, x0
+	mov	x0, x19
+	bl	_silica_rt_actor_deliver_unwind_report
+	cbz	x20, LBB1_exit_skip_legacy_root
 	mov	w0, #2
 Lloh_rn0:
 	adrp	x1, L_silica_root_actor_exit@PAGE
@@ -588,7 +593,7 @@ Lloh_rn1:
 	add	x1, x1, L_silica_root_actor_exit@PAGEOFF
 	mov	w2, #43
 	bl	_write
-LBB1_exit_skip_note:
+LBB1_exit_skip_legacy_root:
 ; Phase E e4f: capture row_ptr from ACB[+208] (set by spawn_linked from X3) into a
 ; callee-saved register so we can flag the supervisor AFTER our own teardown completes.
 ; Top-level supervisors spawned via spawn() have ACB[+208] == 0 (their X3 is the
@@ -3000,6 +3005,141 @@ Lctrr_done:
 	ret
 	.loh AdrpLdr	Lctrr_tls0, Lctrr_tls1
 	.cfi_endproc
+	.section	__DATA,__bss
+	.p2align	3
+.globl	_silica_rt_wait_root_acb
+.comm	_silica_rt_wait_root_acb,8,3
+	.section	__TEXT,__text,regular,pure_instructions
+	.globl	_silica_rt_wait_for_exit
+	.p2align	2
+_silica_rt_wait_for_exit:               ; Phase I - block until stdin exit line or root supervisor ACB alive clear
+	.cfi_startproc
+	stp	x29, x30, [sp, #-80]!
+	mov	x29, sp
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	sub	sp, sp, #304
+	mov	x19, xzr
+	mov	x20, xzr
+Lwi_loop:
+Lwi_root_a:
+	adrp	x8, _silica_rt_wait_root_acb@PAGE
+Lwi_root_b:
+	add	x8, x8, _silica_rt_wait_root_acb@PAGEOFF
+	ldr	x22, [x8]
+	cbz	x22, Lwi_after_root
+	ldr	w9, [x22, #152]
+	cbz	w9, Lwi_ret_ok
+Lwi_after_root:
+	cmp	x19, #1
+	b.eq	Lwi_sleep_only
+
+	mov	w9, #0
+	str	w9, [sp]
+	mov	w9, #1
+	strh	w9, [sp, #4]
+	strh	wzr, [sp, #6]
+	add	x0, sp, #0
+	mov	w1, #1
+	mov	w2, #250
+	bl	_poll
+	cmp	w0, #-1
+	b.eq	Lwi_poll_sleep
+	cmp	w0, #0
+	b.eq	Lwi_loop
+	ldrsh	w9, [sp, #6]
+	cbz	w9, Lwi_loop
+
+	cmp	x20, #255
+	b.hs	Lwi_overflow_discard
+	add	x21, sp, #16
+	add	x21, x21, x20
+	mov	x0, xzr
+	mov	x2, #1
+	mov	x1, x21
+	bl	_read
+	cmp	x0, #0
+	b.eq	Lwi_stdin_eof
+	cmp	x0, #1
+	b.ne	Lwi_poll_sleep
+	ldrb	w9, [x21]
+	cmp	w9, #10
+	b.eq	Lwi_line_done
+	strb	w9, [x21]
+	add	x20, x20, #1
+	b	Lwi_loop
+Lwi_line_done:
+Lwi_trim_cr:
+	cmp	x20, #0
+	b.le	Lwi_cmp_exit
+	sub	x21, x20, #1
+	add	x22, sp, #16
+	ldrb	w9, [x22, x21]
+	cmp	w9, #13
+	b.ne	Lwi_cmp_exit
+	mov	x20, x21
+	b	Lwi_trim_cr
+Lwi_cmp_exit:
+	cmp	x20, #4
+	b.ne	Lwi_line_reset
+	add	x21, sp, #16
+	ldrb	w9, [x21]
+	cmp	w9, #101
+	b.ne	Lwi_line_reset
+	ldrb	w9, [x21, #1]
+	cmp	w9, #120
+	b.ne	Lwi_line_reset
+	ldrb	w9, [x21, #2]
+	cmp	w9, #105
+	b.ne	Lwi_line_reset
+	ldrb	w9, [x21, #3]
+	cmp	w9, #116
+	b.ne	Lwi_line_reset
+	b	Lwi_ret_ok
+Lwi_line_reset:
+	mov	x20, xzr
+	b	Lwi_loop
+Lwi_stdin_eof:
+	mov	x19, #1
+	mov	x20, xzr
+	b	Lwi_loop
+Lwi_overflow_discard:
+	mov	x0, xzr
+	add	x1, sp, #8
+	mov	x2, #1
+	bl	_read
+	cmp	x0, #0
+	b.eq	Lwi_stdin_eof
+	cmp	x0, #1
+	b.ne	Lwi_poll_sleep
+	ldrb	w9, [sp, #8]
+	cmp	w9, #10
+	b.eq	Lwi_overflow_reset
+	b	Lwi_overflow_discard
+Lwi_overflow_reset:
+	mov	x20, xzr
+	b	Lwi_loop
+Lwi_poll_sleep:
+	mov	x0, xzr
+	mov	w1, wzr
+	mov	w2, #100
+	bl	_poll
+	b	Lwi_loop
+Lwi_sleep_only:
+	mov	x0, xzr
+	mov	w1, wzr
+	mov	w2, #100
+	bl	_poll
+	b	Lwi_loop
+Lwi_ret_ok:
+	mov	x0, #0
+	add	sp, sp, #304
+	ldp	x21, x22, [x29, #32]
+	ldp	x19, x20, [x29, #16]
+	ldp	x29, x30, [sp], #80
+	ret
+	.loh AdrpAdd	Lwi_root_a, Lwi_root_b
+	.cfi_endproc
 	.section	__TEXT,__text,regular,pure_instructions
 	.globl	_silica_rt_actor_deliver_exit   ; Phase C — §15.4.10 unified delivery
 	.p2align	2
@@ -3193,6 +3333,134 @@ Lfrr_zero:
                                         ; -- End function
 
 .subsections_via_symbols
+	.section	__DATA,__bss
+	.p2align	3
+.globl	_silica_rt_root_failure_reporter
+.comm	_silica_rt_root_failure_reporter,8,3
+	.section	__TEXT,__cstring,cstring_literals
+	.p2align	2
+Ldup_oom_msg:
+	.asciz	"[silica] unwind report: malloc failed\n"
+	.p2align	2
+L_phase_f_unwind_fmt:
+	.asciz	"=== Silica Actor Failure ===\nactor_id: %p\nagent_type_atom: %lld\nreason_tag: %lld\nsupervisor_acb: %p\n=== End Silica Actor Failure ===\n"
+	.section	__TEXT,__text,regular,pure_instructions
+	.globl	_silica_rt_failure_reporter_register
+	.p2align	2
+_silica_rt_failure_reporter_register:
+	.cfi_startproc
+	stp	x29, x30, [sp, #-16]!
+	mov	x29, sp
+	Lfr_ra_a:
+	adrp	x8, _silica_rt_root_failure_reporter@PAGE
+Lfr_ra_b:
+	add	x8, x8, _silica_rt_root_failure_reporter@PAGEOFF
+	ldr	x9, [x8]
+	cbnz	x9, Lfr_reg_done
+	str	x0, [x8]
+Lfr_reg_done:
+	mov	x0, #0
+	ldp	x29, x30, [sp], #16
+	ret
+	.loh AdrpAdd	Lfr_ra_a, Lfr_ra_b
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_deliver_unwind_report
+	.p2align	2
+_silica_rt_actor_deliver_unwind_report:
+	.cfi_startproc
+	stp	x26, x25, [sp, #-112]!
+	stp	x24, x23, [sp, #16]
+	stp	x22, x21, [sp, #32]
+	stp	x20, x19, [sp, #48]
+	stp	x29, x30, [sp, #64]
+	add	x29, sp, #64
+	.cfi_def_cfa w29, 48
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	mov	x21, x0
+	movz	x0, #0x800
+	bl	_malloc
+	cbz	x0, Ldup_malloc_fail
+	mov	x19, x0
+	ldr	x23, [x21, #200]
+	ldr	x24, [x21, #336]
+	ldr	x25, [x21, #192]
+	mov	x0, x19
+	movz	x1, #0x800
+	Ldup_fmt_a:
+	adrp	x2, L_phase_f_unwind_fmt@PAGE
+Ldup_fmt_b:
+	add	x2, x2, L_phase_f_unwind_fmt@PAGEOFF
+	mov	x3, x21
+	mov	x4, x23
+	mov	x5, x24
+	mov	x6, x25
+	bl	_snprintf
+	mov	w26, w0
+	cmp	w26, #0
+	csel	w26, wzr, w26, lt
+	Ldup_glob_a:
+	adrp	x8, _silica_rt_root_failure_reporter@PAGE
+Ldup_glob_b:
+	add	x8, x8, _silica_rt_root_failure_reporter@PAGEOFF
+	ldr	x22, [x8]
+	cbz	x22, Ldup_stderr_path
+	cmp	x21, x22
+	b.ne	Ldup_fr_try
+	str	xzr, [x8]
+	b	Ldup_stderr_path
+Ldup_fr_try:
+	ldr	w9, [x22, #152]
+	cbz	w9, Ldup_stderr_path
+	mov	x0, x22
+	mov	x1, x19
+	bl	_silica_rt_actor_cast
+; F6: cast enqueue failure (OOM for 152 B node, null target, etc.) — same stderr fallback as F5 unregistered root.
+	cbz	w0, Ldup_stderr_path
+	b	Ldup_leave_nofree
+Ldup_stderr_path:
+	cmp	w26, #1
+	b.lt	Ldup_std_free_only
+	mov	w0, #2
+	mov	x1, x19
+	sxtw	x2, w26
+	bl	_write
+Ldup_std_free_only:
+	mov	x0, x19
+	bl	_free
+	b	Ldup_ep_ret
+Ldup_leave_nofree:
+	mov	x0, #0
+	ldp	x29, x30, [sp, #64]
+	ldp	x20, x19, [sp, #48]
+	ldp	x22, x21, [sp, #32]
+	ldp	x24, x23, [sp, #16]
+	ldp	x26, x25, [sp], #112
+	ret
+Ldup_malloc_fail:
+; F5: always surface *something* on stderr when unwind text cannot be allocated (independent of ingress).
+	mov	w0, #2
+	Ldup_oom_a:
+	adrp	x1, Ldup_oom_msg@PAGE
+Ldup_oom_b:
+	add	x1, x1, Ldup_oom_msg@PAGEOFF
+	mov	w2, #38
+	bl	_write
+	b	Ldup_ep_ret
+Ldup_ep_ret:
+	mov	x0, #0
+	ldp	x29, x30, [sp, #64]
+	ldp	x20, x19, [sp, #48]
+	ldp	x22, x21, [sp, #32]
+	ldp	x24, x23, [sp, #16]
+	ldp	x26, x25, [sp], #112
+	ret
+	.loh AdrpAdd	Ldup_fmt_a, Ldup_fmt_b
+	.loh AdrpAdd	Ldup_glob_a, Ldup_glob_b
+	.loh AdrpAdd	Ldup_oom_a, Ldup_oom_b
+	.cfi_endproc
+                                        ; -- End function
 
 .section __TEXT,__rodata
 .align	8

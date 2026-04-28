@@ -1,0 +1,87 @@
+// Phase F8 (supervisors_implementation_development_plan.md §4): **dual-channel acceptance** in one run.
+// (**a**) Supervisor **ingress**: structured probes only (`failure_agent_type`, `failure_reason_tag`, …) — unchanged pattern from Phase C/E.
+// (**b**) Root **`FailureReporter`**: **`handle_report`** receives the **typed `String`** transport matching runtime §15.4.6.4 / **`L_phase_f_unwind_fmt`**
+// (verified here by ASCII prefix **`=== Silica Actor Failure ===`** via `substring` + **`==`**).
+//
+// Ordering vs **stdout**: same model as **`phase_f_failure_reporter_cast_alignment`** — observe **ingress lines before** **`F8_`** probes in typical runs (ingress drain on supervisor thread, then **`handle_report`** on FR thread); **`make integrate`** uses **`phase_f8_acceptance.scout`** baseline.
+//
+use FailureReporter;
+
+impl F8Fr for FailureReporter;
+
+fn region_dump_limit() -> int64 {
+    sequence proc[device_io]
+        _: atom <- println("")
+    produces
+        pure 0
+    end
+}
+
+fn handle_report(dumps: List[(atom, bytes), normal], rep: string) -> :ok {
+    sequence proc[device_io]
+        lb: int64 <- string_length_bytes(rep);
+        case lb >= 28 of {
+            false -> _: atom <- print_string("F8_header_len_fail")
+            ;
+            true -> do
+                head: string <- substring(rep, 0, 28);
+                case head == "=== Silica Actor Failure ===" of {
+                    true -> _: atom <- print_string("F8_handle_report_banner_ok")
+                    ;
+                    false -> _: atom <- print_string("F8_header_mismatch")
+                };
+                _: atom <- println("")
+            end
+        };
+        _: atom <- println("")
+    produces
+        pure :ok
+    end
+}
+
+fn child_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state)
+}
+
+fn f8_fr_beh(transport_report: string, state: int64) -> (:reply, int64, int64) {
+    sequence proc[mem(normal)]
+        no_dumps: List[(atom, bytes), normal] <- empty[(atom, bytes), normal]();
+        _: atom <- handle_report(no_dumps, transport_report)
+    produces
+        pure (:reply, 0, state)
+    end
+}
+
+fn f8_sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
+    sequence proc[concurrency, device_io]
+        _: atom <- print_string("F8_ingress_begin");
+        _: atom <- println("");
+        child: actor_ref <- spawn_linked(0, child_beh, :f8_child);
+        _: atom <- remove_actor(child);
+        payload: int64 <- supervision_wait_and_drain_one();
+        at: atom <- failure_agent_type(payload);
+        _: atom <- print_atom(at);
+        println("");
+        tag: int64 <- failure_reason_tag(payload);
+        print_int64(tag); println("");
+        _: atom <- failure_release(payload);
+        _: atom <- print_string("F8_ingress_end");
+        _: atom <- println("");
+        _: atom <- print_string("done");
+        _: atom <- println("")
+    produces
+        pure (:reply, 0, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        fr: actor_ref <- spawn(0, f8_fr_beh);
+        _: atom <- register_failure_reporter(fr);
+        sup: actor_ref <- spawn(0, f8_sup_beh);
+        _: boolean <- cast(sup, 1 impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

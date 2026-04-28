@@ -1,24 +1,19 @@
-// Phase E e4b (supervisors_implementation_development_plan.md §0): `:transient` no-restart-on-`:normal`
-// + restart-on-abnormal under `:one_for_one`.
+// Phase E e4b-cap-breach: same control flow as phase_e4b_transient.silica, but init declares
+// `allowed_restart_count: 0` with a non-zero `restarts_time_frame`. On the first abnormal
+// exit that would restart a `:transient` child, `_silica_rt_supervisor_maybe_restart` takes
+// `Lmr_freq_escalate` (restart_count 1 > allowed 0), clears the supervisor ACB #152, and
+// skips respawn. The root registered for `_silica_rt_wait_root_acb` is therefore dead while
+// `main` still runs; `wait_for_exit/0` observes `alive == 0` and returns without requiring the
+// stdin e-x-i-t line (policy-intentional cap breach for integration tests).
 //
-// Two scenarios in one trial, threaded through a single static `:transient` child plus a dynamic
-// follow-up via `start_child`:
-//
-//   1. Normal exit  → `remove_actor(c1)` lets c1 finish with reason_tag=0; supervisor sees the exit and
-//      `:transient` policy decides NOT to restart, leaving the c1 row tombstoned. After the drain,
-//      `child_table_first_ref()` skips the tombstone and returns 0 (no live children).
-//
-//   2. Abnormal exit → `start_child(spec)` reuses the tombstone slot to spawn a fresh `:transient` worker.
-//      `kill_abnormal(c2)` flips ACB#336 to 1 and tears c2 down; supervisor sees the exit with
-//      reason_tag != 0, `:transient` DOES restart c2 in place, and the third `call` against
-//      `child_table_first_ref()` returns msg+0 == 1300 — proving the restart yielded a fresh state slot.
-//
-// Per e4a, `call(sup, …)` needs a non-zero message because `_silica_rt_actor_call` returns immediately
-// on null payloads (cbz x1).
+// After escalate, do not `call` via `child_table_first_ref`: restart was skipped, so the row may
+// still hold a non-zero stale `child_ref` while the worker is gone — `first_ref` only skips
+// tombstones (`child_ref==0`), so a third `call` blocks forever (same idea as e4d avoiding
+// post-escalation delivery).
 
 use Supervisor;
 
-impl E4bSup for Supervisor;
+impl E4bCapBreach for Supervisor;
 
 fn worker(msg: int64, state: int64) -> (:reply, int64, int64) {
     (:reply, msg + state, state)
@@ -67,7 +62,7 @@ fn init(initial_supervisor_state: ActorState) -> (
         ] <- [child]
     produces
         pure (
-            { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 },
+            { strategy: :one_for_one, allowed_restart_count: 0, restarts_time_frame: 5 },
             children
         )
     end
@@ -108,9 +103,6 @@ fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
         _: atom <- kill_abnormal(ch2);
         print_string("about_to_drain_one"); println("");
         p2: int64 <- supervision_wait_and_drain_one();
-        // Keep a second int64 binding for the payload: the emitter reloads the callee-saved copy
-        // before failure_release; calling failure_reason_tag(p2) alone leaves X0=t2 and loses p2.
-        // Also run these before device_io so X0 is not clobbered when callee-saved spill slots are full.
         exit_payload: int64 <- p2;
         t2: int64 <- failure_reason_tag(exit_payload);
         reason: atom <- failure_release(exit_payload);
@@ -118,14 +110,8 @@ fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
         print_int64(t2); println("");
         print_string("about_to_print_reason"); println("");
         print_atom(reason); println("");
-        print_string("about_to_call_child_table_first_ref"); println("");
-        ch3: actor_ref <- child_table_first_ref();
-        // Same spill issue as p2: device_io between first_ref and call clobbers X0 — call must follow
-        // immediately, or ch3 is lost before actor_call.
-        c: int64 <- call(ch3, 1300 impl ActorMessage {});
-        print_string("about_to_call_child_table_first_ref"); println("");
-        print_string("about_to_print_result"); println("");
-        print_int64(c); println("")
+        print_string("about_to_skip_child_call_after_cap_breach"); println("");
+        print_string("about_to_cap_breach_tail"); println("")
     produces
         pure (:reply, 0, state)
     end

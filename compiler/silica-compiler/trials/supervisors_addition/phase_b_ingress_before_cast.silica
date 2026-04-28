@@ -4,11 +4,12 @@
 // dequeue, `rear` is reversed in place to become the new `front` and `rear` is cleared.
 //
 // Flow: flooder supervision_ingress_enqueue(999) first, then casts 1..10 into sup's standard mailbox,
-// then synchronously call(sup, 42) to force main to wait until sup has drained both queues.
+// then call(sup, 42) inside the flooder behavior; main uses cast→flooder (not blocking call→flooder)
+// so stdin wait_for_exit can run while actors proceed.
 // (Enqueuing 999 after the casts allowed the supervisor to dequeue 1 from the standard mailbox before
 // 999 was visible, which made the first printed line flaky under scheduling.)
-// Expected output order: 999 (ingress first), 1..10 (FIFO from the two-list queue), 42
-// (the sync call), then main prints "done".
+// Expected output order: 999 (ingress first), 1..10 (FIFO), 42 (flooder sync call(sup)),
+// then flooder prints "done".
 
 fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
     sequence proc[device_io]
@@ -19,7 +20,7 @@ fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
 }
 
 fn flooder_beh(msg: int64, state: actor_ref) -> (:reply, int64, actor_ref) {
-    sequence proc[concurrency]
+    sequence proc[concurrency, device_io]
         _: atom <- supervision_ingress_enqueue(state, 999);
         _: boolean <- cast(state, 1 impl ActorMessage {});
         _: boolean <- cast(state, 2 impl ActorMessage {});
@@ -31,7 +32,9 @@ fn flooder_beh(msg: int64, state: actor_ref) -> (:reply, int64, actor_ref) {
         _: boolean <- cast(state, 8 impl ActorMessage {});
         _: boolean <- cast(state, 9 impl ActorMessage {});
         _: boolean <- cast(state, 10 impl ActorMessage {});
-        _: int64 <- call(state, 42 impl ActorMessage {})
+        _: int64 <- call(state, 42 impl ActorMessage {});
+        _: atom <- print_string("done");
+        _: atom <- println("")
     produces
         pure (:reply, 0, state)
     end
@@ -41,8 +44,8 @@ fn main() -> int64 {
     sequence proc[concurrency, device_io]
         sup: actor_ref <- spawn(0, sup_beh);
         flooder: actor_ref <- spawn(sup, flooder_beh);
-        _: int64 <- call(flooder, 1 impl ActorMessage {});
-        print_string("done"); println("")
+        _: boolean <- cast(flooder, 1 impl ActorMessage {});
+        _: int64 <- wait_for_exit()
     produces
         pure 0
     end

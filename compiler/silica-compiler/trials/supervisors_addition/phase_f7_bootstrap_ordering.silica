@@ -1,0 +1,72 @@
+// Phase F7 (supervisors_implementation_development_plan.md §4): **bootstrap ordering** for root `FailureReporter`.
+// Normative wording: `design_documents/supervisors_f7_bootstrap_ordering.md`.
+//
+// **`F7_bootstrap_ok`** prints after **`register_failure_reporter`** and before spawning the supervisor — the ordering
+// evidence for **F7**. **`handle_report`** does not write to **stdout** here: concurrent FR vs supervisor **`device_io`**
+// would nondeterministically interleave integrate goldens; typed **`handle_report`** is evidenced in
+// **`phase_f_failure_reporter_cast_alignment`** (F6).
+//
+use FailureReporter;
+
+impl F7Fr for FailureReporter;
+
+fn region_dump_limit() -> int64 {
+    sequence proc[device_io]
+        _: atom <- println("")
+    produces
+        pure 0
+    end
+}
+
+fn handle_report(dumps: List[(atom, bytes), normal], rep: string) -> :ok {
+    sequence proc[mem(normal)]
+        _: List[(atom, bytes), normal] <- empty[(atom, bytes), normal]()
+    produces
+        pure :ok
+    end
+}
+
+fn f7_child_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state)
+}
+
+fn f7_fr_beh(transport_report: string, state: int64) -> (:reply, int64, int64) {
+    sequence proc[mem(normal)]
+        no_dumps: List[(atom, bytes), normal] <- empty[(atom, bytes), normal]();
+        _: atom <- handle_report(no_dumps, transport_report)
+    produces
+        pure (:reply, 0, state)
+    end
+}
+
+fn f7_sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
+    sequence proc[concurrency, device_io]
+        child: actor_ref <- spawn_linked(0, f7_child_beh, :f7_child);
+        _: atom <- remove_actor(child);
+        payload: int64 <- supervision_wait_and_drain_one();
+        at: atom <- failure_agent_type(payload);
+        _: atom <- print_atom(at);
+        println("");
+        tag: int64 <- failure_reason_tag(payload);
+        print_int64(tag); println("");
+        _: atom <- failure_release(payload);
+        _: atom <- print_string("done");
+        _: atom <- println("")
+    produces
+        pure (:reply, 0, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        fr: actor_ref <- spawn(0, f7_fr_beh);
+        _: atom <- register_failure_reporter(fr);
+        _: atom <- print_string("F7_bootstrap_ok");
+        _: atom <- println("");
+        sup: actor_ref <- spawn(0, f7_sup_beh);
+        _: boolean <- cast(sup, 1 impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}
