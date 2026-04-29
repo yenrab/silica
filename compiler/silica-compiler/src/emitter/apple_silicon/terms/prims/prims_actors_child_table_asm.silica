@@ -15,13 +15,12 @@
    limitations under the License.
 -}
 
-// Phase E e3a — heap child table (supervisors_implementation_development_plan.md §0; silica-specification §15.4.13.3).
-// ACB anchors: #256 ptr, #264 len (i64 row count in use), #272 cap (i64, capacity in rows out-of-line only).
-// Row size 80 B (aligned 8, matches compiler child_spec 72 B + child_ref 8, plus 8 B escalation / window fields).
-// Offsets in each row: +0 child_ref, +8 id atom, +16 agent_type, +24 start.0, +32 start.1, +40 restart atom,
-// +48 shutdown i64, +56 restarts_in_window, +64 window_start_t, +72 reserved (0; e3e).
-// Phase E e3f tombstone: child_ref==0 means the row is inactive and may be reused by start_child; len remains a
-// high-water mark so :rest_for_one ordering stays stable for active rows.
+// Phase E e3a — linked-list child table (Option B): no contiguous buffer / realloc.
+// ACB anchors: #256 head (first node ptr), #264 len (i64 row count / list length), #272 reserved (0).
+// Node size 88 B: payload 80 B (same row layout as e3a) then next ptr @ +80 (0 = end).
+// Offsets in row payload: +0 child_ref, +8 id atom, +16 agent_type, +24 start.0, +32 start.1, +40 restart atom,
+// +48 shutdown i64, +56 exit_done / sync, +64 window_start_t, +72 reserved (0; e3e).
+// Phase E e3f tombstone: child_ref==0 means inactive; len stays high-water for :rest_for_one ordering.
 
 use atom_table;
 
@@ -61,9 +60,9 @@ fn maybe_restart_strat_eq_branch(idx: int64, dest: string) -> string {
 
 fn child_table_rt_asm_chunk_0() -> string {
     "	.section	__TEXT,__text,regular,pure_instructions
-; --- Phase E e3a: heap child table (out-of-line) ---
-; _silica_rt_child_table_free: X0=ACB* — free row buffer, clear ptr/len/cap anchors.
-; _silica_rt_child_table_ensure_min_cap: X0=ACB*, X1=min rows capacity — X0=0 ok, 1=OOM. Grows with _realloc.
+; --- Phase E e3a Option B: linked-list child table ---
+; _silica_rt_child_table_free: X0=ACB* — walk nodes (+80 next), free each, clear anchors.
+; _silica_rt_child_table_ensure_min_cap: X0=ACB*, X1=min node count — X0=0 ok, 1 OOM. Appends 88 B nodes (80 B row + next) until count >= X1.
 	.globl	_silica_rt_child_table_free
 	.p2align	2
 _silica_rt_child_table_free:
@@ -73,13 +72,18 @@ _silica_rt_child_table_free:
 	.cfi_offset w19, -16
 	.cfi_offset w30, -8
 	mov	x19, x0
-	ldr	x0, [x19, #256]
-	cbz	x0, Lct_free_done
+	ldr	x8, [x19, #256]
+Lct_free_loop:
+	cbz	x8, Lct_free_clear
+	ldr	x9, [x8, #80]
+	mov	x0, x8
+	mov	x8, x9
 	bl	_free
+	b	Lct_free_loop
+Lct_free_clear:
 	str	xzr, [x19, #256]
 	str	xzr, [x19, #264]
 	str	xzr, [x19, #272]
-Lct_free_done:
 	ldp	x19, x30, [sp], #16
 	ret
 	.cfi_endproc
@@ -87,68 +91,73 @@ Lct_free_done:
 	.p2align	2
 _silica_rt_child_table_ensure_min_cap:
 	.cfi_startproc
-; X0=ACB* X1=min_cap_rows. Returns X0=0 success, 1 OOM.
-	stp	x24, x23, [sp, #-64]!
-	stp	x22, x21, [sp, #16]
-	stp	x20, x19, [sp, #32]
-	stp	x29, x30, [sp, #48]
-	add	x29, sp, #48
+; X0=ACB* X1=min_nodes. Returns X0=0 success, 1 OOM.
+	stp	x26, x25, [sp, #-80]!
+	stp	x24, x23, [sp, #16]
+	stp	x22, x21, [sp, #32]
+	stp	x20, x19, [sp, #48]
+	stp	x29, x30, [sp, #64]
+	add	x29, sp, #64
+	.cfi_def_cfa w29, 16
 	.cfi_offset w19, -32
 	.cfi_offset w20, -24
 	.cfi_offset w21, -40
 	.cfi_offset w22, -32
 	.cfi_offset w23, -56
 	.cfi_offset w24, -48
+	.cfi_offset w25, -72
+	.cfi_offset w26, -64
 	mov	x19, x0
 	mov	x20, x1
 	cmp	x20, #0
 	ble	Lct_ens_ok
-	ldr	x8, [x19, #272]
-	cmp	x8, x20
-	b.hs	Lct_ens_ok
+Lct_ens_retry:
 	ldr	x21, [x19, #256]
-	cbnz	x8, Lct_ens_nzcap
-; cap==0: n = max(need,4)
-	mov	x9, x20
-	mov	x10, #4
-	cmp	x9, x10
-	csel	x9, x9, x10, lo
-	b	Lct_ens_bytes
-Lct_ens_nzcap:
-; n = max(2*cap, need)
-	lsl	x10, x8, #1
-	cmp	x10, x20
-	csel	x9, x10, x20, hi
-Lct_ens_bytes:
-	mov	x12, #80
-	madd	x2, x9, x12, xzr
-	cbz	x21, Lct_ens_calloc
-	mov	x0, x21
-	mov	x1, x2
-	bl	_realloc
-	cbz	x0, Lct_ens_fail
-	b	Lct_ens_store
-Lct_ens_calloc:
+	mov	x22, #0
+	mov	x23, x21
+Lct_count_loop:
+	cbz	x23, Lct_count_done
+	add	x22, x22, #1
+	ldr	x23, [x23, #80]
+	b	Lct_count_loop
+Lct_count_done:
+	cmp	x22, x20
+	b.hs	Lct_ens_ok
 	mov	w0, #1
-	mov	x1, x2
+	mov	w1, #88
 	bl	_calloc
 	cbz	x0, Lct_ens_fail
-Lct_ens_store:
-	str	x0, [x19, #256]
-	str	x9, [x19, #272]
+	mov	x24, x0
+	str	xzr, [x24, #80]
+	ldr	x21, [x19, #256]
+	cbnz	x21, Lct_link_at_tail
+	str	x24, [x19, #256]
+	b	Lct_ens_retry
+Lct_link_at_tail:
+	mov	x25, x21
+Lct_find_tail:
+	ldr	x26, [x25, #80]
+	cbz	x26, Lct_found_tail
+	mov	x25, x26
+	b	Lct_find_tail
+Lct_found_tail:
+	str	x24, [x25, #80]
+	b	Lct_ens_retry
 Lct_ens_ok:
 	mov	x0, #0
-	ldp	x29, x30, [sp, #48]
-	ldp	x20, x19, [sp, #32]
-	ldp	x22, x21, [sp, #16]
-	ldp	x24, x23, [sp], #64
+	ldp	x29, x30, [sp, #64]
+	ldp	x20, x19, [sp, #48]
+	ldp	x22, x21, [sp, #32]
+	ldp	x24, x23, [sp, #16]
+	ldp	x26, x25, [sp], #80
 	ret
 Lct_ens_fail:
 	mov	x0, #1
-	ldp	x29, x30, [sp, #48]
-	ldp	x20, x19, [sp, #32]
-	ldp	x22, x21, [sp, #16]
-	ldp	x24, x23, [sp], #64
+	ldp	x29, x30, [sp, #64]
+	ldp	x20, x19, [sp, #48]
+	ldp	x22, x21, [sp, #32]
+	ldp	x24, x23, [sp, #16]
+	ldp	x26, x25, [sp], #80
 	ret
 	.cfi_endproc
 "
@@ -158,7 +167,7 @@ Lct_ens_fail:
 // X0=ACB*, X1=tuple_ptr (init return: flags record at +0..+23, children list head at +24).
 // Walks the cons-list of child_spec records (compiler list_cons: payload + tail; child_spec payload 64 B, tail at +64, node malloc 72 B).
 // Payload layout matches emitter value-flat record: id@0, agent@8, start@(16,24), restart@32, shutdown@40 (no gap before restart; differs from padded 72 B start_child ABI).
-// For each child_spec: spawn_linked(start.0, start.1, agent_type, 0), append 80 B row to heap child table.
+// For each child_spec: spawn_linked(start.0, start.1, agent_type, row_ptr), append a linked row node (88 B; 80 B payload).
 // Stores strategy atom (tuple+0) at ACB#296, allowed_restart_count (tuple+8) at ACB#304,
 // restarts_time_frame (tuple+16) at ACB#312 for restart strategy dispatch (e3d) and frequency cap (e3e).
 fn child_table_rt_asm_chunk_1() -> string {
@@ -201,20 +210,21 @@ Lmat_loop:
 	ldr	x25, [x21]
 	ldr	x26, [x21, #32]
 	ldr	x27, [x21, #40]
-; Phase E e4f: reserve the row BEFORE spawn_linked so we can stamp ACB[+208]=row_ptr.
-; Children must come up one at a time (sequential start) and worker exits must signal
-; row[+56]=1 — both rely on ACB[+208] being a stable row pointer. ensure_min_cap may
-; realloc the table buffer, so compute row_ptr after it. (This loop is single-threaded —
-; only the supervisor's first-schedule trampoline runs it — so no concurrent reallocs.)
+; Phase E e4f + Option B: ensure one more list node, then walk `len` links from head for stable row ptr (no realloc).
 	mov	x0, x19
 	ldr	x1, [x19, #264]
 	add	x1, x1, #1
 	bl	_silica_rt_child_table_ensure_min_cap
 	cbnz	x0, Lmat_done
-	ldr	x8, [x19, #256]
+	ldr	x28, [x19, #256]
 	ldr	x9, [x19, #264]
-	mov	x10, #80
-	madd	x28, x9, x10, x8
+	mov	x10, x9
+Lmat_walk_row:
+	cbz	x10, Lmat_walk_row_done
+	ldr	x28, [x28, #80]
+	sub	x10, x10, #1
+	b	Lmat_walk_row
+Lmat_walk_row_done:
 	mov	x0, x22
 	mov	x1, x23
 	mov	x2, x24
@@ -252,8 +262,8 @@ Lmat_done:
 // Layout matches `_silica_rt_supervisor_materialize_init_children` (cons payload) so the compiler can build a single
 // stack record and pass it to either path. (Earlier comment claimed +40/+48 — that 72 B layout never matched the
 // emitter's value-flat record_make output; e4b corrects this to the canonical +32/+40 used elsewhere.)
-// Reads current-actor TLS for supervisor ACB. spawn_linked(start.0, start.1, agent_type, 0).
-// Reuses the first e3f tombstone row (child_ref==0) or appends an 80 B row to supervisor's heap child table.
+// Reads current-actor TLS for supervisor ACB. spawn_linked(start.0, start.1, agent_type, row_ptr).
+// Reuses the first e3f tombstone row (child_ref==0) or appends a linked row node (88 B) to the child table.
 // Returns actor_ref (new child) in X0.
 fn child_table_rt_asm_chunk_2() -> string {
     "	.globl	_silica_rt_supervisor_start_child
@@ -294,19 +304,21 @@ Lsc_tls1:
 	ldr	x8, [x0]
 	blr	x8
 	ldr	x19, [x0]
-; Phase E e4f: find the tombstone row (or reserve a fresh one) BEFORE spawn_linked so the
-; new actor's ACB[+208] = row_ptr lets it later flag row[+56]=1 on its own teardown for
-; sequential cascade-stop ordering. ensure_min_cap may realloc the table buffer, so the
-; row_ptr is recomputed in each branch. start_child runs on the supervisor's thread, so
-; no concurrent realloc can race here.
+; Phase E e4f + Option B: tombstone scan / append on singly-linked row nodes (+80).
 	ldr	x8, [x19, #256]
 	ldr	x9, [x19, #264]
 	mov	x10, #0
 Lsc_reuse_loop:
 	cmp	x10, x9
 	b.hs	Lsc_append_new
-	mov	x11, #80
-	madd	x27, x10, x11, x8
+	mov	x27, x8
+	mov	x11, x10
+Lsc_walk_reuse:
+	cbz	x11, Lsc_reuse_at_row
+	ldr	x27, [x27, #80]
+	sub	x11, x11, #1
+	b	Lsc_walk_reuse
+Lsc_reuse_at_row:
 	ldr	x12, [x27]
 	cbz	x12, Lsc_use_reuse_row
 	add	x10, x10, #1
@@ -319,8 +331,14 @@ Lsc_append_new:
 	cbnz	x0, Lsc_done
 	ldr	x8, [x19, #256]
 	ldr	x9, [x19, #264]
-	mov	x10, #80
-	madd	x27, x9, x10, x8
+	mov	x27, x8
+	mov	x11, x9
+Lsc_walk_append:
+	cbz	x11, Lsc_append_at_row
+	ldr	x27, [x27, #80]
+	sub	x11, x11, #1
+	b	Lsc_walk_append
+Lsc_append_at_row:
 	mov	x28, #1
 	b	Lsc_post_row
 Lsc_use_reuse_row:
@@ -362,7 +380,7 @@ Lsc_done:
 
 // Phase E e3d+e3e+e4b: _silica_rt_supervisor_maybe_restart
 // X0 = dead child_ref, X1 = supervisor ACB, X2 = reason_tag (0=:normal default; !=0 abnormal — e4b).
-// Scans heap child table for matching child_ref. child_ref==0 is an e3f tombstone. If found, dispatches by
+// Scans linked child row list for matching child_ref. child_ref==0 is an e3f tombstone. If found, dispatches by
 // row.restart policy (e4b): :permanent always restarts; :transient restarts iff reason_tag != 0; anything else
 // tombstones. On restart, checks restart-frequency cap (ACB#304 max_restarts, #312 time_frame, #320 count,
 // #328 window_start; if both max_restarts and time_frame are 0, cap is unlimited). On cap breach, terminates
@@ -407,8 +425,14 @@ _silica_rt_supervisor_maybe_restart:
 Lmr_scan:
 	cmp	x23, x22
 	b.hs	Lmr_done
-	mov	x8, #80
-	madd	x24, x23, x8, x21
+	mov	x24, x21
+	mov	x10, x23
+Lmr_walk_scan:
+	cbz	x10, Lmr_scan_at_row
+	ldr	x24, [x24, #80]
+	sub	x10, x10, #1
+	b	Lmr_walk_scan
+Lmr_scan_at_row:
 	ldr	x8, [x24]
 	cmp	x8, x19
 	b.ne	Lmr_next
@@ -478,8 +502,14 @@ Lmr_ofa_kill_loop:
 	b.hs	Lmr_ofa_spawn
 	cmp	x25, x23
 	b.eq	Lmr_ofa_kill_next
-	mov	x8, #80
-	madd	x26, x25, x8, x21
+	mov	x26, x21
+	mov	x10, x25
+Lmr_ofa_kill_walk_idx:
+	cbz	x10, Lmr_ofa_kill_at_idx
+	ldr	x26, [x26, #80]
+	sub	x10, x10, #1
+	b	Lmr_ofa_kill_walk_idx
+Lmr_ofa_kill_at_idx:
 	ldr	x27, [x26]
 	cbz	x27, Lmr_ofa_kill_next
 	add	x0, x27, #16
@@ -509,8 +539,14 @@ Lmr_ofa_spawn_loop:
 ; one at a time, after every cascaded stop has retired.
 	cmp	x25, x22
 	b.hs	Lmr_done
-	mov	x8, #80
-	madd	x26, x25, x8, x21
+	mov	x26, x21
+	mov	x10, x25
+Lmr_ofa_spawn_walk_idx:
+	cbz	x10, Lmr_ofa_spawn_at_idx
+	ldr	x26, [x26, #80]
+	sub	x10, x10, #1
+	b	Lmr_ofa_spawn_walk_idx
+Lmr_ofa_spawn_at_idx:
 	ldr	x8, [x26]
 	cbz	x8, Lmr_ofa_spawn_next
 	ldr	x0, [x26, #24]
@@ -528,8 +564,14 @@ Lmr_rfo_kill:
 Lmr_rfo_kill_loop:
 	cmp	x25, x22
 	b.hs	Lmr_rfo_spawn
-	mov	x8, #80
-	madd	x26, x25, x8, x21
+	mov	x26, x21
+	mov	x10, x25
+Lmr_rfo_kill_walk_idx:
+	cbz	x10, Lmr_rfo_kill_at_idx
+	ldr	x26, [x26, #80]
+	sub	x10, x10, #1
+	b	Lmr_rfo_kill_walk_idx
+Lmr_rfo_kill_at_idx:
 	ldr	x27, [x26]
 	cbz	x27, Lmr_rfo_kill_next
 	add	x0, x27, #16
@@ -560,8 +602,14 @@ Lmr_rfo_spawn_loop:
 ; right after TLS init / trampoline) so iteration k+1 can never run alongside iteration k.
 	cmp	x25, x22
 	b.hs	Lmr_done
-	mov	x8, #80
-	madd	x26, x25, x8, x21
+	mov	x26, x21
+	mov	x10, x25
+Lmr_rfo_spawn_walk_idx:
+	cbz	x10, Lmr_rfo_spawn_at_idx
+	ldr	x26, [x26, #80]
+	sub	x10, x10, #1
+	b	Lmr_rfo_spawn_walk_idx
+Lmr_rfo_spawn_at_idx:
 	ldr	x0, [x26, #24]
 	ldr	x1, [x26, #32]
 	ldr	x2, [x26, #16]
@@ -593,7 +641,7 @@ Lmr_done:
 }
 
 // Phase E e4a/e4b trial accessor: _silica_rt_child_table_first_ref
-// Returns the actor_ref (child ACB pointer) of the first LIVE row in the current actor's heap child table.
+// Returns the actor_ref (child ACB pointer) of the first LIVE row in the current actor's linked child table.
 // No arguments. Reads TLS for current actor, loads table pointer from ACB#256. e4b: skips tombstoned rows
 // (child_ref==0) so callers see the next live child after a :transient/:temporary no-restart leaves a hole.
 // Returns 0 if table is empty, null, or contains only tombstones.
@@ -617,17 +665,12 @@ Lctfr_tls1:
 	ldr	x19, [x0]
 	ldr	x20, [x19, #256]
 	cbz	x20, Lctfr_empty
-	ldr	x9, [x19, #264]
-	cbz	x9, Lctfr_empty
-	mov	x10, #0
+	mov	x12, x20
 Lctfr_scan:
-	cmp	x10, x9
-	b.hs	Lctfr_empty
-	mov	x11, #80
-	madd	x12, x10, x11, x20
 	ldr	x0, [x12]
 	cbnz	x0, Lctfr_done
-	add	x10, x10, #1
+	ldr	x12, [x12, #80]
+	cbz	x12, Lctfr_empty
 	b	Lctfr_scan
 Lctfr_empty:
 	mov	x0, #0
@@ -640,7 +683,7 @@ Lctfr_done:
 "
 }
 
-// Phase E e4f: _silica_rt_child_table_row_ref — 0-based row index into the supervisor's heap child table
+// Phase E e4f: _silica_rt_child_table_row_ref — 0-based row index (list walk order).
 // (materialize / start_child order). X0 = index (i64; negative or >= len ⇒ 0). Returns child_ref at that row
 // (may be 0 for tombstones). Does not skip rows (trials compare stable row indices to first_ref).
 fn child_table_rt_asm_chunk_5() -> string {
@@ -670,8 +713,15 @@ Lctrr_tls1:
 	b.lt	Lctrr_empty
 	cmp	x19, x9
 	b.hs	Lctrr_empty
-	mov	x10, #80
-	madd	x11, x19, x10, x8
+	mov	x11, x8
+	mov	x12, x19
+Lctrr_walk:
+	cbz	x12, Lctrr_at
+	ldr	x11, [x11, #80]
+	cbz	x11, Lctrr_empty
+	sub	x12, x12, #1
+	b	Lctrr_walk
+Lctrr_at:
 	ldr	x0, [x11]
 	b	Lctrr_done
 Lctrr_empty:

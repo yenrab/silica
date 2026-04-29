@@ -3,7 +3,7 @@
 # Phase F banner lines) may differ but the multiset of logical lines should match.
 #
 # Usage: compare_scout_multiset.sh <path/to/.sout> <path/to/.scout>
-# Exit 0 if equal after normalization; 1 otherwise (prints sorted diff on stderr).
+# Exit 0 if equal after normalization; 1 otherwise (prints unified diff on stderr, same style as diff -u).
 #
 # Normalization:
 #   - CR stripped from PTY / CRLF captures before trimming
@@ -59,6 +59,6 @@ if cmp -s "$tmp_a" "$tmp_b"; then
   exit 0
 fi
 
-echo "compare_scout_multiset.sh: multiset or content mismatch (sorted view follows)" >&2
-diff -u "$tmp_b" "$tmp_a" >&2 || true
+# Report like `diff -u`: golden first (---), actual second (+++); paths are labels only (content is normalized sorted).
+diff -u -L "$scout" -L "$sout" "$tmp_b" "$tmp_a" >&2 || true
 exit 1

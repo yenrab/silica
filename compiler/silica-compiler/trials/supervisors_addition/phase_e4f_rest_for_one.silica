@@ -6,21 +6,20 @@
 // the proper supported APIs — not by mirroring these trial-only behaviors.
 //
 // Phase E e4f (supervisors_implementation_development_plan.md §0): `:rest_for_one` cascade restart.
-// Three supervised children in stable table order: one declarative from `init`, then two via `start_child`
-// in `sup_beh` (same pattern as e4e — avoids multi-`child_spec` list literal codegen issues). Row indices are
-// 0, 1, 2. When row **1** dies abnormally, runtime kills row **2** then respawns rows **1** and **2**; row **0**
-// stays alive with the same initial state.
+// Five supervised children in stable table order: one declarative from `init`, then four via `start_child`
+// in `sup_beh` (avoids multi-`child_spec` list literal codegen issues). Row indices 0..4.
+// Row **1** (second child) dies abnormally → runtime kills rows **2, 3, 4** (three after it), then respawns
+// rows **1–4**; row **0** stays alive with the same initial state.
 //
-// `spec3` is bound only after the first `start_child(spec2)` so the two stack `child_spec` records cannot alias
+// Each later `child_spec` is bound only after the previous `start_child` so stack records cannot alias
 // (see e4b register/stack note).
 //
-// Each worker has initial state slots 10, 20, 30 so `call(_, 1)` yields 11, 21, 31 before the failure. After two
-// ingress drains (abnormal tag 1 then 0 on the cascade-killed child), row 0 still gives 11; respawned rows 1
-// and 2 again give 21 and 31 (`child_table_row_ref` / table order §15.4.13.3). Row 0 uses `child_table_first_ref`
-// (same as e4e) so the behavior does not keep an extra actor_ref live across drains — that pressure caused the
-// emitter to pass a bogus handle to `failure_release` (integrate: lock corruption / bus error).
+// Workers use initial state 10, 20, 30, 40, 50 so `call(_, 1)` yields 11, 21, 31, 41, 51 before the kill.
+// Row 0: `child_table_first_ref()`. Rows 1–4: `child_table_row_ref(n)` for each probe and for
+// `kill_abnormal(child_table_row_ref(1))` — **no** long-lived `actor_ref` lets (e4d-style); the emitter can
+// leave later bindings in caller-saved registers that nested `call`/`start_child` clobbers.
 //
-// Output sequence: `11, 21, 31, about_to_kill, after_kill, done` (same `main`/`done` pattern as e4e).
+// Output sequence: `11, 21, 31, 41, 51, about_to_kill, after_kill, done`.
 //
 // Flake hunting (lldb): `br set -n _silica_rt_cv_wait`, run, `thread until` / single-step across `bl ___ulock_wait`.
 // Do not insert a literal `nop` after that `bl` in the emitted asm — on arm64e it consistently SIGBUS here (PAC?).
@@ -98,7 +97,7 @@ fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
             restart: :permanent,
             shutdown: 0
         };
-        r1: actor_ref <- start_child(spec2);
+        _: actor_ref <- start_child(spec2);
         spec3: {
             id: atom,
             agent_type: atom,
@@ -112,12 +111,42 @@ fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
             restart: :permanent,
             shutdown: 0
         };
-        r2: actor_ref <- start_child(spec3);
+        _: actor_ref <- start_child(spec3);
+        spec4: {
+            id: atom,
+            agent_type: atom,
+            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        } <- {
+            id: :e4f_w4,
+            agent_type: :worker,
+            start: (40, worker),
+            restart: :permanent,
+            shutdown: 0
+        };
+        _: actor_ref <- start_child(spec4);
+        spec5: {
+            id: atom,
+            agent_type: atom,
+            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        } <- {
+            id: :e4f_w5,
+            agent_type: :worker,
+            start: (50, worker),
+            restart: :permanent,
+            shutdown: 0
+        };
+        _: actor_ref <- start_child(spec5);
         print_int64(call(child_table_first_ref(), 1 impl ActorMessage {})); println("");
-        print_int64(call(r1, 1 impl ActorMessage {})); println("");
-        print_int64(call(r2, 1 impl ActorMessage {})); println("");
+        print_int64(call(child_table_row_ref(1), 1 impl ActorMessage {})); println("");
+        print_int64(call(child_table_row_ref(2), 1 impl ActorMessage {})); println("");
+        print_int64(call(child_table_row_ref(3), 1 impl ActorMessage {})); println("");
+        print_int64(call(child_table_row_ref(4), 1 impl ActorMessage {})); println("");
         print_string("about_to_kill"); println("");
-        _: atom <- kill_abnormal(r1);
+        _: atom <- kill_abnormal(child_table_row_ref(1));
         print_string("after_kill"); println("");
         _: atom <- print_string("done");
         _: atom <- println("")

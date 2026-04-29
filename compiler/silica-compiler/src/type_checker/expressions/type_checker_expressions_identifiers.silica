@@ -26,6 +26,8 @@ use type_checker_tuple_decompose_helpers;
 use type_checker_traits;
 
 export check_expr/4;
+export normalize_fn_type_idf/1;
+export find_arrow_idf/5;
 
 // §3.4 / §15.4.13.2: function-value types. The compiler builds call-site fn types as `(T1,T2) -> R`
 // (see `build_function_type_for_decl_call`), while declared `fn(msg: T1, state: T2) -> R` annotations
@@ -60,11 +62,29 @@ fn rtrim_spaces_idf_from(s: string, i: int64) -> string {
     }
 }
 
+// Skip ASCII spaces only (matches trim_spaces_idf).
+fn skip_spaces_idx_idf(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> i;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> skip_spaces_idx_idf(s, i + 1);
+            false -> i
+        }
+    }
+}
+
+// Parser reconstructs function types with spaces between tokens (`fn (` not `fn(`); strip `fn` … `(` so arity lives only inside the parens.
 fn strip_fn_keyword_prefix_idf(s: string) -> string {
     t: string <- trim_spaces_idf(s);
-    case len(t) >= 3 and substring(t, 0, 3) == "fn(" of {
-        true -> substring(t, 2, len(t));
-        false -> t
+    case len(t) >= 2 and substring(t, 0, 2) == "fn" of {
+        false -> t;
+        true -> do
+            after_kw: int64 <- skip_spaces_idx_idf(t, 2);
+            case after_kw < len(t) and substring(t, after_kw, after_kw + 1) == "(" of {
+                true -> substring(t, after_kw, len(t));
+                false -> t
+            }
+        end
     }
 }
 
@@ -174,7 +194,7 @@ fn strip_param_name_idf(seg: string) -> string {
     }
 }
 
-// Normalize `fn(a: T1, b: T2) -> R` or `(T1,T2) -> R` → canonical `(T1,T2)->R` with spaces stripped.
+// Normalize `fn(a: T1, b: T2) -> R` / `fn (…) -> R` or `(T1,T2) -> R` → `(T1,T2) -> R` (names stripped). Outer declarations still count one formal per `Param`; inner arity is only for calls on function values.
 fn normalize_fn_type_idf(s: string) -> string {
     stripped: string <- strip_fn_keyword_prefix_idf(s);
     t: string <- trim_spaces_idf(stripped);
@@ -189,7 +209,7 @@ fn normalize_fn_type_idf(s: string) -> string {
                 false -> params_part
             };
             normalized_params: string <- normalize_param_list_idf(params_inner);
-            concat(concat(concat("(", normalized_params), ")->"), ret_part)
+            concat(concat(concat("(", normalized_params), ") -> "), ret_part)
         end
     }
 }
@@ -214,14 +234,10 @@ fn normalize_param_list_idf(inner: string) -> string {
 fn function_types_compatible(resolved: string, expected: string) -> bool {
     a: string <- normalize_fn_type_idf(resolved);
     b: string <- normalize_fn_type_idf(expected);
-    type_checker_tuple_decompose_helpers@types_equal(a, b)
-}
-
-// Quick check: is this type text a fn-value type (either `(T,…) -> R` or `fn(a: T,…) -> R`)?
-fn looks_like_fn_type_idf(s: string) -> bool {
-    t: string <- trim_spaces_idf(s);
-    arrow: int64 <- find_arrow_idf(t, 0, 0, 0, 0);
-    arrow >= 0
+    case a == b of {
+        true -> true;
+        false -> type_checker_tuple_decompose_helpers@types_equal(a, b)
+    }
 }
 
 // Check Expr kind 1 (identifier). Lookup in context.env, verify matches expected_type.
@@ -251,16 +267,16 @@ fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: Li
                     "boolean" -> case expected_type of { "boolean" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6") };
                     "unit" -> type_checker_core@type_check_err("E2006", expr.location, "unit is not a valid type for variables or parameters", "sect4");
                     "atom" -> case expected_type of { "atom" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6") };
-                    _: string -> case resolved_type == expected_type of {
+                    _: string -> case function_types_compatible(resolved_type, expected_type) of {
                         true -> type_checker_core@type_check_ok();
-                        false -> case type_checker_record_types@record_type_starts(resolved_type) and type_checker_record_types@record_type_starts(expected_type) of {
-                            true -> case type_checker_tuple_decompose_helpers@types_equal(resolved_type, expected_type) of {
-                                true -> type_checker_core@type_check_ok();
-                                false -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6")
-                            };
-                            false -> case type_checker_lists@list_types_compatible(resolved_type, expected_type) of {
-                                true -> type_checker_core@type_check_ok();
-                                false -> case looks_like_fn_type_idf(resolved_type) and looks_like_fn_type_idf(expected_type) and function_types_compatible(resolved_type, expected_type) of {
+                        false -> case resolved_type == expected_type of {
+                            true -> type_checker_core@type_check_ok();
+                            false -> case type_checker_record_types@record_type_starts(resolved_type) and type_checker_record_types@record_type_starts(expected_type) of {
+                                true -> case type_checker_tuple_decompose_helpers@types_equal(resolved_type, expected_type) of {
+                                    true -> type_checker_core@type_check_ok();
+                                    false -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6")
+                                };
+                                false -> case type_checker_lists@list_types_compatible(resolved_type, expected_type) of {
                                     true -> type_checker_core@type_check_ok();
                                     false -> case type_checker_traits@actual_type_satisfies_trait_expectation(resolved_type, expected_type, world) of {
                                         true -> type_checker_core@type_check_ok();

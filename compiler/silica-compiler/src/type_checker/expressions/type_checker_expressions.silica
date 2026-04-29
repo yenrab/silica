@@ -1597,18 +1597,35 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext, world: Li
 }
 
 // User-defined function call: lookup in symbol table, parse function type "(T1,T2) -> R", check args and result
-fn find_arrow_pos_user_call(s: string, i: int64) -> int64 {
-    case i + 4 > len(s) of {
-        true -> -1;
-        false -> case substring(s, i, i + 4) == " -> " of {
-            true -> i;
-            false -> find_arrow_pos_user_call(s, i + 1)
+// Top-level `->` only: parameter types may contain nested `fn(...) -> ...`; naive substring match on ` -> ` splits there first.
+fn outer_arrow_token_pos_call(func_type: string) -> int64 {
+    type_checker_expressions_identifiers@find_arrow_idf(func_type, 0, 0, 0, 0)
+}
+
+fn trim_trailing_spaces_user_call_from(s: string, i: int64) -> string {
+    case i <= 0 of {
+        true -> "";
+        false -> case substring(s, i - 1, i) == " " of {
+            true -> trim_trailing_spaces_user_call_from(s, i - 1);
+            false -> substring(s, 0, i)
         }
     }
 }
 
+fn trim_trailing_spaces_user_call(s: string) -> string {
+    trim_trailing_spaces_user_call_from(s, len(s))
+}
+
+fn params_part_before_outer_arrow_call(func_type: string) -> string {
+    arrow_at: int64 <- outer_arrow_token_pos_call(func_type);
+    case arrow_at < 0 of {
+        true -> "";
+        false -> trim_trailing_spaces_user_call(trim_leading_user_call(substring(func_type, 0, arrow_at)))
+    }
+}
+
 fn is_function_type_user_call(type_str: string) -> bool {
-    find_arrow_pos_user_call(type_str, 0) >= 0
+    outer_arrow_token_pos_call(type_str) >= 0
 }
 
 // Find first comma at depth 0 (top level). Respects parentheses, brackets, and braces in type strings
@@ -1650,11 +1667,11 @@ fn trim_leading_user_call_from(s: string, i: int64) -> string {
 }
 
 fn parse_function_param_count(func_type: string) -> int64 {
-    arrow_pos: int64 <- find_arrow_pos_user_call(func_type, 0);
+    arrow_pos: int64 <- outer_arrow_token_pos_call(func_type);
     case arrow_pos < 0 of {
         true -> 0;
         false -> do
-            params_part: string <- substring(func_type, 0, arrow_pos);
+            params_part: string <- params_part_before_outer_arrow_call(func_type);
             case len(params_part) < 1 of {
                 true -> 0;
                 false -> case substring(params_part, 0, 1) == "(" and substring(params_part, len(params_part) - 1, len(params_part)) == ")" of {
@@ -1693,19 +1710,19 @@ fn parse_param_count_inner(inner: string) -> int64 {
 }
 
 fn parse_function_return_type(func_type: string) -> string {
-    arrow_pos: int64 <- find_arrow_pos_user_call(func_type, 0);
+    arrow_pos: int64 <- outer_arrow_token_pos_call(func_type);
     case arrow_pos < 0 of {
         true -> "";
-        false -> trim_leading_user_call(substring(func_type, arrow_pos + 4, len(func_type)))
+        false -> trim_leading_user_call(substring(func_type, arrow_pos + 2, len(func_type)))
     }
 }
 
 fn get_params_inner_from_func_type(func_type: string) -> string {
-    arrow_pos: int64 <- find_arrow_pos_user_call(func_type, 0);
+    arrow_pos: int64 <- outer_arrow_token_pos_call(func_type);
     case arrow_pos < 0 of {
         true -> "";
         false -> do
-            params_part: string <- substring(func_type, 0, arrow_pos);
+            params_part: string <- params_part_before_outer_arrow_call(func_type);
             case len(params_part) < 1 of {
                 true -> "";
                 false -> case substring(params_part, 0, 1) == "(" and substring(params_part, len(params_part) - 1, len(params_part)) == ")" of {
@@ -2283,9 +2300,10 @@ fn check_user_defined_call(expr: Expr, expected_type: string, context: TypeConte
 }
 
 fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: TypeContext, func_type: string, world: ListNamedProgram, callee_type_from_world: bool) -> TypeCheckResult proc[DeviceIO] {
-    expected_arg_count: int64 <- parse_function_param_count(func_type);
-    params_inner: string <- get_params_inner_from_func_type(func_type);
-    return_type: string <- parse_function_return_type(func_type);
+    func_type_canon: string <- type_checker_expressions_identifiers@normalize_fn_type_idf(func_type);
+    expected_arg_count: int64 <- parse_function_param_count(func_type_canon);
+    params_inner: string <- get_params_inner_from_func_type(func_type_canon);
+    return_type: string <- parse_function_return_type(func_type_canon);
     arg_count: int64 <- count_call_args_user_call(expr);
     case callee_type_from_world of {
         true -> check_user_defined_world_call_with_inference(expr, expected_type, context, params_inner, return_type, world);
