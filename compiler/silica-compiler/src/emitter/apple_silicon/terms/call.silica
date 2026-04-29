@@ -27,21 +27,59 @@ use sir_ast;
 use emitter_effects;
 use control;
 use module_linkage;
+use var;
 
 export emit_call_body/3;
-export emit_call_body_effects/4;
+export emit_call_body_effects/5;
 export emit_call_body_with_callee/3;
-export emit_tail_call_body/3;
+export emit_tail_call_body/4;
+export sir_call_targets_bound_callee/2;
+export emit_indirect_callee_address_to_x17/2;
 
-fn emit_call_body_effects(term: SIRTerm, dest: string, effect_value: string, outer_reg: string) -> string {
+fn sir_call_targets_bound_callee(outer_reg: string, sir_callee: string) -> bool {
+    (qmod: string, qfn: string) <- module_linkage@split_qualified_callee(sir_callee);
+    case len(qmod) > 0 of {
+        true -> false;
+        false -> do
+            b: string <- var@find_sp_binding_bare_or_percent_param(outer_reg, sir_callee);
+            case len(b) == 0 of {
+                true -> false;
+                false -> var@binding_is_physical_int_reg(b) or var@is_memory_ref(b)
+            }
+        end
+    }
+}
+
+fn emit_indirect_callee_address_to_x17(outer_reg: string, sir_callee: string) -> string {
+    case sir_call_targets_bound_callee(outer_reg, sir_callee) of {
+        false -> "";
+        true -> do
+            b: string <- var@find_sp_binding_bare_or_percent_param(outer_reg, sir_callee);
+            case var@is_memory_ref(b) of {
+                true -> concat(concat(concat("    LDR X17, ", b), "\n"), "");
+                false -> case b == "X17" of {
+                    true -> "";
+                    false -> concat(concat(concat("    MOV X17, ", b), "\n"), "")
+                }
+            }
+        end
+    }
+}
+
+fn emit_call_body_effects(term: SIRTerm, dest: string, effect_value: string, outer_reg: string, indirect_via_x9: bool) -> string {
     call_effects: string <- effect_value;
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     post_barrier: string <- emitter_effects@barrier_after_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
-    callee: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.name);
-    adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
-    add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
-    adrp_line: string <- concat(concat(adrp_part, add_part), "    BLR X9");
+    adrp_line: string <- case indirect_via_x9 of {
+        true -> "    BLR X17";
+        false -> do
+            callee: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.name);
+            adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
+            add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
+            concat(concat(adrp_part, add_part), "    BLR X9")
+        end
+    };
     // ARM64 AAPCS: integer returns land in W0/X0, floats in S0/D0/H0. Move into `dest`
     // unless it is already the corresponding return register. Earlier code treated any
     // W-/D-/S-/H-prefixed dest as "already in place", which corrupted every call whose
@@ -82,19 +120,24 @@ fn emit_call_body_effects(term: SIRTerm, dest: string, effect_value: string, out
 }
 
 fn emit_call_body(term: SIRTerm, dest: string, outer_reg: string) -> string {
-    emit_call_body_effects(term, dest, term.value, outer_reg)
+    emit_call_body_effects(term, dest, term.value, outer_reg, false)
 }
 
 // Tail call (SIRTerm kind 5): args already in registers — release frame, then BR (no BLR / no return to this frame).
 // recursion_implementation.md Phase 5: native tail transfer; fn_effects controls DMB+LDP like epilogue (atomic release).
-fn emit_tail_call_body(term: SIRTerm, fn_effects: string, outer_reg: string) -> string {
+fn emit_tail_call_body(term: SIRTerm, fn_effects: string, outer_reg: string, indirect_via_x9: bool) -> string {
     call_effects: string <- term.value;
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
-    callee: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.name);
-    adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
-    add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
-    br_line: string <- concat(concat(adrp_part, add_part), "    BR X9");
+    br_line: string <- case indirect_via_x9 of {
+        true -> "    BR X17";
+        false -> do
+            callee: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.name);
+            adrp_part: string <- concat(concat(concat("    ADRP X9, ", callee), "@PAGE"), "\n");
+            add_part: string <- concat(concat(concat("    ADD X9, X9, ", callee), "@PAGEOFF"), "\n");
+            concat(concat(adrp_part, add_part), "    BR X9")
+        end
+    };
     frame_rel: string <- control@function_tail_frame_release(fn_effects);
     with_comment: string <- case len(eff_comment) > 0 of {
         true -> concat(eff_comment, "\n");

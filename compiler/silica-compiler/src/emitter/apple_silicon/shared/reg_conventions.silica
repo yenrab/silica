@@ -49,11 +49,36 @@ fn is_float16_type(type_name: string) -> bool {
     type_name == "float16"
 }
 
-// Tuple type: (T1, T2, ...) - starts with "("
+// Top-level `->` in parenthesized types: distinguishes `(T1,...,Tn) -> R` (function) from `(T1, T2)` (tuple).
+// Mirrors sir_generator / var emitter arrow scanning so tuple vs function classification stays aligned.
+fn find_top_arrow_from_regcv(s: string, i: int64, depth: int64) -> int64 {
+    case i + 1 >= len(s) of {
+        true -> -1;
+        false -> case depth == 0 and substring(s, i, i + 2) == "->" of {
+            true -> i;
+            false -> do
+                c: string <- substring(s, i, i + 1);
+                d2: int64 <- case c == "(" or c == "[" or c == "{" of {
+                    true -> depth + 1;
+                    false -> case c == ")" or c == "]" or c == "}" of {
+                        true -> depth - 1;
+                        false -> depth
+                    }
+                };
+                find_top_arrow_from_regcv(s, i + 1, d2)
+            end
+        }
+    }
+}
+
+// Tuple type: (T1, T2, ...). Parenthesized function types `(params) -> R` also start with "(" — exclude them.
 fn is_tuple_type(type_name: string) -> bool {
     case len(type_name) < 2 of {
         true -> false;
-        false -> substring(type_name, 0, 1) == "("
+        false -> case substring(type_name, 0, 1) == "(" of {
+            false -> false;
+            true -> find_top_arrow_from_regcv(type_name, 1, 1) < 0
+        }
     }
 }
 

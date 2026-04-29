@@ -2430,6 +2430,40 @@ fn enrich_env_for_actor_spawn(env: ListSymbolEntry, var_name: string, bind_type:
     }
 }
 
+// Lambda (kind 991): formals in pattern_bindings; value = synthesized `(T1,...) -> R`; right_expr kind 992 holds return type text.
+// Body is checked in a context extended with formals on top of the current env so outer bindings remain visible (closure capture).
+fn lambda_formal_bindings_valid(bindings: ListTupleDecomposeBinding, location: SourceLocation) -> TypeCheckResult {
+    case bindings.is_nil of {
+        true -> type_checker_core@type_check_ok();
+        false -> case len(bindings.head.type_str) == 0 of {
+            true -> type_checker_core@type_check_err("E2006", location, "lambda parameter must have an explicit type", "sect4");
+            false -> lambda_formal_bindings_valid(bindings.tail, location)
+        }
+    }
+}
+
+fn check_lambda_expression(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    formal_ok: TypeCheckResult <- lambda_formal_bindings_valid(expr.pattern_bindings, expr.location);
+    case formal_ok.is_ok of {
+        false -> formal_ok;
+        true -> do
+            ret_ty: string <- expr.right_expr.value;
+            inner_ctx: TypeContext <- type_checker_tuple_decompose_helpers@add_bindings_to_context(context, expr.pattern_bindings);
+            case expected_type == "discard" of {
+                true -> check_expr(expr.inner, ret_ty, inner_ctx, world);
+                false -> do
+                    synth: string <- expr.value;
+                    compat: bool <- type_checker_expressions_identifiers@function_types_compatible(synth, expected_type);
+                    case compat of {
+                        false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat("lambda type ", synth), concat(" is incompatible with context ", expected_type)), "sect6");
+                        true -> check_expr(expr.inner, ret_ty, inner_ctx, world)
+                    }
+                end
+            }
+        end
+    }
+}
+
 fn check_let_after_validation(expr: Expr, expected_type: string, context: TypeContext, bind_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case bind_type == "unit" of {
         true -> case expr.name == "_" of {
@@ -3157,7 +3191,7 @@ fn check_field_access_expr(expr: Expr, expected_type: string, context: TypeConte
     }
 }
 
-// Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding, 7=boolean literal, 8=string literal, 12=unary minus (forbidden); 20=list literal; 21=struct literal; 22=field access
+// Dispatch on Expr kind: 0=literal, 1=identifier, 2=parenthesized (recurse), 3=binary op, 4=call, 5=atom literal, 6=let binding, 7=boolean literal, 8=string literal, 12=unary minus (forbidden); 20=list literal; 21=struct literal; 22=field access; 991=lambda
 fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case expr.kind of {
         0 -> type_checker_expressions_literals@check_expr(expr, expected_type, context, world);
@@ -3187,6 +3221,7 @@ fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: Li
         20 -> check_list_literal(expr, expected_type, context, world);
         21 -> check_struct_literal_expr(expr, expected_type, context, world);
         22 -> check_field_access_expr(expr, expected_type, context, world);
+        991 -> check_lambda_expression(expr, expected_type, context, world);
         996 -> type_checker_core@type_check_err("E1040", expr.location, "expected ';' after this statement before the next statement", "sect3");
         997 -> type_checker_core@type_check_err("E1041", expr.location, "the last expression in this block must not be followed by ';'", "sect3");
         _: int64 -> type_checker_core@type_check_ok()

@@ -24,10 +24,12 @@ use string_parse;
 
 export emit_var/2;
 export emit_var_reg/3;
+export emit_var_reg_outer/4;
 export strip_mov_x2_x1_then_x1_x2/1;
 export emit_var_sp_load/2;
 export emit_var_with_sp_check/3;
 export find_sp_binding/2;
+export find_sp_binding_bare_or_percent_param/2;
 export base_reg_of/1;
 export is_memory_ref/1;
 export sp_offset_for_index/1;
@@ -42,6 +44,8 @@ export extract_sp_bindings/1;
 export is_reg_bound/2;
 export next_free_int_reg/1;
 export find_last_sp_binding/2;
+export binding_is_physical_int_reg/1;
+export type_name_is_function/1;
 
 export find_pipe_from/2;
 
@@ -128,6 +132,24 @@ fn find_sp_binding_extract(outer_reg: string, val_start: int64) -> string {
     }
 }
 
+// emitter_core stores formal params as "|%name=REG". User-call SIR uses bare callee names ("op").
+fn find_sp_binding_percent_param(outer_reg: string, bare_param_name: string) -> string {
+    key: string <- concat("|%", concat(bare_param_name, "="));
+    pos: int64 <- find_str_at(outer_reg, key, 0);
+    case pos < 0 of {
+        true -> "";
+        false -> find_sp_binding_extract(outer_reg, pos + len(key))
+    }
+}
+
+fn find_sp_binding_bare_or_percent_param(outer_reg: string, name: string) -> string {
+    b0: string <- find_sp_binding(outer_reg, name);
+    case len(b0) > 0 of {
+        true -> b0;
+        false -> find_sp_binding_percent_param(outer_reg, name)
+    }
+}
+
 // Search only within haystack (single region). Used by find_sp_binding.
 fn find_sp_binding_in(outer_reg: string, var_name: string) -> string {
     key: string <- concat("|", concat(var_name, "="));
@@ -198,6 +220,34 @@ fn reg_offset_for_index(base_reg: string, idx_str: string) -> string {
     concat(concat(concat("[", base_reg), ", #"), concat(atom_table@int64_to_decimal_string(offset), "]"))
 }
 
+// Keep in sync with module_linkage@asm_symbol_for_definition / asm_linkage_symbol_for_call (that module imports var — duplicate here).
+fn linkage_module_from_outer(outer_reg: string) -> string {
+    lm: string <- find_sp_binding(outer_reg, "_lm");
+    case len(lm) > 0 of {
+        true -> lm;
+        false -> "main"
+    }
+}
+
+fn linkage_qual_fn_top_level(name: string) -> string {
+    case name of {
+        "m" -> "main";
+        _: string -> name
+    }
+}
+
+fn linkage_asm_symbol_for_named_fn_ref(outer_reg: string, bare_sir_name: string) -> string {
+    mod: string <- linkage_module_from_outer(outer_reg);
+    qual: string <- linkage_qual_fn_top_level(bare_sir_name);
+    case qual == "main" or qual == "main.main" or qual == "main.m" of {
+        true -> "main";
+        false -> case len(qual) >= 5 and substring(qual, 0, 5) == "main." of {
+            true -> concat(mod, concat(".", substring(qual, 5, len(qual))));
+            false -> qual
+        }
+    }
+}
+
 fn enclosing_sp_binding(bound_name: string, base_bound_reg: string) -> string {
     case len(base_bound_reg) > 0 and substring(base_bound_reg, 0, 1) == "[" of {
         true -> concat("|", concat(bound_name, concat("=", base_bound_reg)));
@@ -234,45 +284,6 @@ fn build_outer_with_sp(bound_name: string, base_bound_reg: string, current_outer
     concat(base, concat(sp_part, concat(enc, concat(nb, rb))))
 }
 
-fn emit_var_with_base_reg(term: SIRTerm, dest: string, base: string) -> string {
-    case len(base) > 0 of {
-        true -> emit_var_reg(term, dest, base);
-        false -> emit_var(term, dest)
-    }
-}
-
-fn is_memory_ref(s: string) -> bool {
-    find_str_at(s, "[", 0) >= 0
-}
-
-fn emit_var_with_sp_check(term: SIRTerm, dest: string, outer_reg: string) -> string {
-    // Phase E (task e1h): a function-typed var is always a function address; spurious `|name=SP`
-    // propagation from an enclosing aggregate make would otherwise emit `MOV X9, SP` instead of the
-    // function's page-relative symbol. Short-circuit with ADRP/ADD when we have a valid bare symbol.
-    bare_fn: string <- bare_name_from_term(term.name);
-    case type_name_is_function(term.type_name) and bare_name_is_valid_symbol(bare_fn) of {
-        true -> emit_fn_symbol_adrp_add(dest, bare_fn);
-        false -> emit_var_with_sp_check_core(term, dest, outer_reg)
-    }
-}
-
-fn emit_var_with_sp_check_core(term: SIRTerm, dest: string, outer_reg: string) -> string {
-    // Resolve |name= once: prefer last binding (prepend tail rebind appends |%v=X2 after stale |%v=X0).
-    sp_last: string <- find_last_sp_binding(outer_reg, term.name);
-    sp_first: string <- find_sp_binding(outer_reg, term.name);
-    sp_fin: string <- case len(sp_last) > 0 of {
-        true -> sp_last;
-        false -> sp_first
-    };
-    case len(sp_fin) > 0 of {
-        true -> case is_memory_ref(sp_fin) of {
-            true -> emit_var_sp_load(dest, sp_fin);
-            false -> emit_var_reg(term, dest, sp_fin)
-        };
-        false -> emit_var_with_base_reg(term, dest, base_reg_of(outer_reg))
-    }
-}
-
 // Detect a valid AArch64 symbol character (alpha, digit, underscore).
 // (Silica string comparison is equality-only, so we enumerate rather than use `>=`/`<=`.)
 fn is_ident_start_char(c: string) -> bool {
@@ -307,6 +318,42 @@ fn is_ident_char(c: string) -> bool {
     }
 }
 
+fn suffix_chars_all_digits(s: string, i: int64) -> bool {
+    case i >= len(s) of {
+        true -> true;
+        false -> case is_ident_digit_char(substring(s, i, i + 1)) of {
+            true -> suffix_chars_all_digits(s, i + 1);
+            false -> false
+        }
+    }
+}
+
+// W*/X* GPR names used in |name= bindings (function pointers live in the integer ABI).
+fn binding_is_physical_int_reg(binding: string) -> bool {
+    case len(binding) < 2 of {
+        true -> false;
+        false -> do
+            p: string <- substring(binding, 0, 1);
+            case p == "X" or p == "W" of {
+                false -> false;
+                true -> do
+                    suf: string <- substring(binding, 1, len(binding));
+                    case len(suf) == 0 of {
+                        true -> false;
+                        false -> case suffix_chars_all_digits(suf, 0) of {
+                            false -> false;
+                            true -> do
+                                n: int64 <- string_parse@string_to_int64(suf);
+                                n >= 0 and n <= 30
+                            end
+                        }
+                    }
+                end
+            }
+        end
+    }
+}
+
 fn bare_name_valid_loop(s: string, i: int64, n: int64) -> bool {
     case i >= n of {
         true -> true;
@@ -325,6 +372,85 @@ fn bare_name_is_valid_symbol(s: string) -> bool {
             true -> bare_name_valid_loop(s, 1, n);
             false -> false
         }
+    }
+}
+
+// Lambda lifting (constraint_extract) uses synthetic names "<enclosing_fn>.__lam<n>" (see sir_generator
+// sir_name_contains_lifted_lambda_sub). Dots are not bare-identifier chars; without this we emit invalid
+// `MOV dest, %take.__lam0` instead of ADRP/ADD. Names starting with `main.` still map via linkage_asm_symbol_for_named_fn_ref.
+fn lifted_lambda_sub_at(m: string, i: int64) -> bool {
+    case i + 6 > len(m) of {
+        true -> false;
+        false -> case substring(m, i, i + 6) == ".__lam" of {
+            true -> true;
+            false -> lifted_lambda_sub_at(m, i + 1)
+        }
+    }
+}
+
+fn sir_name_contains_lifted_lambda_sub(m: string) -> bool {
+    lifted_lambda_sub_at(m, 0)
+}
+
+fn lifted_hof_wrapper_sub_at(m: string, i: int64) -> bool {
+    case i + 5 > len(m) of {
+        true -> false;
+        false -> case substring(m, i, i + 5) == ".__lw" of {
+            true -> true;
+            false -> lifted_hof_wrapper_sub_at(m, i + 1)
+        }
+    }
+}
+
+fn sir_name_contains_lifted_hof_wrapper_sub(m: string) -> bool {
+    lifted_hof_wrapper_sub_at(m, 0)
+}
+
+fn bare_qualifies_as_fn_pointer_asm_symbol(bare: string) -> bool {
+    case bare_name_is_valid_symbol(bare) of {
+        true -> true;
+        false -> case len(bare) >= 5 and substring(bare, 0, 5) == "main." of {
+            true -> true;
+            false -> sir_name_contains_lifted_lambda_sub(bare) or sir_name_contains_lifted_hof_wrapper_sub(bare)
+        }
+    }
+}
+
+fn is_memory_ref(s: string) -> bool {
+    find_str_at(s, "[", 0) >= 0
+}
+
+fn emit_var_with_base_reg(term: SIRTerm, dest: string, base: string, outer_reg: string) -> string {
+    case len(base) > 0 of {
+        true -> emit_var_reg_outer(term, dest, base, outer_reg);
+        false -> emit_var_outer(term, dest, outer_reg)
+    }
+}
+
+fn emit_var_with_sp_check(term: SIRTerm, dest: string, outer_reg: string) -> string {
+    emit_var_with_sp_check_core(term, dest, outer_reg)
+}
+
+fn emit_var_with_sp_check_core(term: SIRTerm, dest: string, outer_reg: string) -> string {
+    // Resolve |name= once: prefer last binding (prepend tail rebind appends |%v=X2 after stale |%v=X0).
+    sp_last: string <- find_last_sp_binding(outer_reg, term.name);
+    sp_first: string <- find_sp_binding(outer_reg, term.name);
+    sp_fin: string <- case len(sp_last) > 0 of {
+        true -> sp_last;
+        false -> sp_first
+    };
+    case len(sp_fin) > 0 of {
+        true -> case is_memory_ref(sp_fin) of {
+            true -> emit_var_sp_load(dest, sp_fin);
+            false -> emit_var_reg_outer(term, dest, sp_fin, outer_reg)
+        };
+        false -> do
+            bare_fn: string <- bare_name_from_term(term.name);
+            case type_name_is_function(term.type_name) and bare_qualifies_as_fn_pointer_asm_symbol(bare_fn) of {
+                true -> emit_fn_symbol_adrp_add(dest, linkage_asm_symbol_for_named_fn_ref(outer_reg, bare_fn));
+                false -> emit_var_with_base_reg(term, dest, base_reg_of(outer_reg), outer_reg)
+            }
+        end
     }
 }
 
@@ -390,12 +516,16 @@ fn emit_fn_symbol_adrp_add(dest: string, bare: string) -> string {
 // AArch64 symbol (e.g. a free function like `worker`), emit ADRP/ADD so function-valued identifiers
 // in record/tuple literals (child_spec.start) materialize as the symbol address. Without this the
 // emitter fell through to `MOV X9, %worker` (invalid token).
-fn emit_var(term: SIRTerm, dest: string) -> string {
+fn emit_var_outer(term: SIRTerm, dest: string, outer_reg: string) -> string {
     bare: string <- bare_name_from_term(term.name);
-    case bare_name_is_valid_symbol(bare) of {
-        true -> emit_fn_symbol_adrp_add(dest, bare);
+    case bare_qualifies_as_fn_pointer_asm_symbol(bare) of {
+        true -> emit_fn_symbol_adrp_add(dest, linkage_asm_symbol_for_named_fn_ref(outer_reg, bare));
         false -> concat(concat(concat("    MOV ", dest), ", "), term.name)
     }
+}
+
+fn emit_var(term: SIRTerm, dest: string) -> string {
+    emit_var_outer(term, dest, "")
 }
 
 // buf_store / write_ref recover emits MOV X2, X1; the following read_buf/read_ref then emits
@@ -414,23 +544,28 @@ fn strip_mov_x2_x1_then_x1_x2(s: string) -> string {
 // Phase E (task e2b): if `reg` is actually a %-prefixed SIR name (e.g. `%worker`) rather than an AArch64
 // register, treat it as a function-symbol reference and emit ADRP/ADD so child_spec.start captures the
 // function address. Without this the emitter produced `MOV X9, %worker` which the assembler rejects.
-fn emit_var_reg(term: SIRTerm, dest: string, reg: string) -> string {
-    // Phase E (task e1h): if this var is function-typed, emit ADRP/ADD to its symbol rather than
-    // `MOV dest, reg` (the reg may spuriously be SP or a register scratch bound during aggregate make).
+fn emit_var_reg_outer(term: SIRTerm, dest: string, reg: string, outer_reg: string) -> string {
     bare_fn: string <- bare_name_from_term(term.name);
-    case type_name_is_function(term.type_name) and bare_name_is_valid_symbol(bare_fn) of {
-        true -> emit_fn_symbol_adrp_add(dest, bare_fn);
+    case type_name_is_function(term.type_name) and bare_qualifies_as_fn_pointer_asm_symbol(bare_fn) of {
+        true -> case binding_is_physical_int_reg(reg) of {
+            true -> emit_var_reg_core(term, dest, reg);
+            false -> emit_fn_symbol_adrp_add(dest, linkage_asm_symbol_for_named_fn_ref(outer_reg, bare_fn));
+        };
         false -> case len(reg) > 0 and substring(reg, 0, 1) == "%" of {
             true -> do
                 bare: string <- substring(reg, 1, len(reg));
-                case bare_name_is_valid_symbol(bare) of {
-                    true -> emit_fn_symbol_adrp_add(dest, bare);
+                case bare_qualifies_as_fn_pointer_asm_symbol(bare) of {
+                    true -> emit_fn_symbol_adrp_add(dest, linkage_asm_symbol_for_named_fn_ref(outer_reg, bare));
                     false -> emit_var_reg_core(term, dest, reg)
                 }
             end;
             false -> emit_var_reg_core(term, dest, reg)
         }
     }
+}
+
+fn emit_var_reg(term: SIRTerm, dest: string, reg: string) -> string {
+    emit_var_reg_outer(term, dest, reg, "")
 }
 
 fn emit_var_reg_core(term: SIRTerm, dest: string, reg: string) -> string {

@@ -1078,9 +1078,14 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         true -> blr_effect_value_override;
         false -> term.value
     };
+    indirect_via_x9: bool <- call@sir_call_targets_bound_callee(outer_reg, term.name);
+    callee_prep: string <- case indirect_via_x9 of {
+        true -> call@emit_indirect_callee_address_to_x17(outer_reg, term.name);
+        false -> ""
+    };
     call_asm: string <- case use_tail of {
-        true -> call@emit_tail_call_body(term, fn_effects_for_tail, outer_reg);
-        false -> call@emit_call_body_effects(term, dest, call_eff_for_blr, outer_reg)
+        true -> call@emit_tail_call_body(term, fn_effects_for_tail, outer_reg, indirect_via_x9);
+        false -> call@emit_call_body_effects(term, dest, call_eff_for_blr, outer_reg, indirect_via_x9)
     };
     // Two GPR args (X0, X1): if arg1 is evaluated first it may clobber X0 while arg2 is a nested
     // call that still needs the caller's first argument in X0 (e.g. ack(m-1, ack(m, n-1))). Then:
@@ -1230,7 +1235,7 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         true -> concat(line_before_call_asm, "\n");
         false -> ""
     };
-    concat(fuel, concat(sret_setup, concat(concat(concat(args_asm, before_call), call_asm), dealloc_asm_call)))
+    concat(fuel, concat(sret_setup, concat(callee_prep, concat(concat(concat(args_asm, before_call), call_asm), dealloc_asm_call))))
 }
 
 // Root function body only: SIR kind 5 tail user call with enclosing function effects for frame release + barriers.
@@ -1288,7 +1293,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 case term.name == bound_norm of {
                     true -> case len(bound_reg) > 0 and substring(bound_reg, 0, 1) == "[" of {
                         true -> var@emit_var_sp_load(dest, bound_reg);
-                        false -> var@emit_var_reg(term, dest, bound_reg)
+                        false -> var@emit_var_reg_outer(term, dest, bound_reg, outer_reg)
                     };
                     false -> var@emit_var_with_sp_check(term, dest, outer_reg)
                 }

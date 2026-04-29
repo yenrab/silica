@@ -38,6 +38,8 @@ export validate_max_params/1;
 export validate_max_tuple_decompose_bindings/1;
 export validate_required_statement_terminators/1;
 export validate_no_illegal_trailing_semicolon/1;
+export lift_lambda_expressions/1;
+export wrap_lifted_lambda_hof_calls/1;
 
 // Role codes (must match capabilities)
 fn role_fn_keyword() -> int64 { 1 }
@@ -1099,7 +1101,7 @@ fn is_struct_field_name_token(kinds: TokenKinds, tok: Token) -> bool {
 
 // `{ field: expr, ... }` is a struct literal when the first `ident:` is not a binding (`ident: type <- ...`).
 // Also `{}` (empty). Fails closed when `{` is not followed by `ident:` so `{ sequence ... }` and `{ foo( ... }` are not literals.
-fn is_struct_literal_lbrace_fallback(slots: ListTokenSlot, kinds: TokenKinds) -> bool {
+fn is_struct_literal_lbrace_fallback(slots: ListTokenSlot, kinds: TokenKinds) -> bool proc[DeviceIO] {
     case slots.is_nil of {
         true -> false;
         false -> case slots.head.token.kind == kinds.left_brace or slots.head.token.lexeme == "{" of {
@@ -1260,8 +1262,29 @@ fn is_list_type_binding_start(slots: ListTokenSlot) -> bool {
     }
 }
 
+// `ident : fn(T,) -> R <-` (function type in annotation position): fn-token type without lambda-shaped params,
+// and `<-` follows the full type. Not `ident : fn(x: T) -> R {` (lambda expression / struct field).
+fn binding_start_fn_type(slots: ListTokenSlot) -> bool proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    ac_kw: ListTokenSlot <- slots_after_binding_colon(slots);
+    case parser_tuples@slots_start_fn_type(ac_kw) of {
+        false -> false;
+        true -> case lambda_introduces_body_after_sig(ac_kw) of {
+            true -> false;
+            false -> do
+                (_: string, rest_after_fn_ty: ListTokenSlot) <- parser_tuples@extract_fn_type_from_slots(ac_kw);
+                trimmed: ListTokenSlot <- skip_leading_whitespace_slots(rest_after_fn_ty);
+                case trimmed.is_nil of {
+                    true -> false;
+                    false -> trimmed.head.token.kind == kinds.left_arrow
+                }
+            end
+        }
+    }
+}
+
 // Check if slots start with binding pattern: ident : type <- or ident : ( tuple type
-fn is_binding_start(slots: ListTokenSlot) -> bool {
+fn is_binding_start(slots: ListTokenSlot) -> bool proc[DeviceIO] {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     case slots.is_nil of {
         true -> false;
@@ -1290,9 +1313,12 @@ fn is_binding_start(slots: ListTokenSlot) -> bool {
                                                     }
                                                 }
                                             };
-                                            false -> case parser_tuples@is_memory_region_type_binding_start(slots) of {
+                                            false -> case binding_start_fn_type(slots) of {
                                                 true -> true;
-                                                false -> parser_tuples@is_tuple_type_binding_start(slots)
+                                                false -> case parser_tuples@is_memory_region_type_binding_start(slots) of {
+                                                    true -> true;
+                                                    false -> parser_tuples@is_tuple_type_binding_start(slots)
+                                                }
                                             }
                                         }
                                     }
@@ -1521,6 +1547,21 @@ fn extract_binding_memory_region_for_sequence(slots: ListTokenSlot, stop_kind: i
     end
 }
 
+// After `ident : fn(...) <- rhs` where rhs is a lambda `{ ... }`, extract_body leaves the stream at the
+// lambda's closing `}`. Consume it before parsing the enclosing binding's continuation (`;` + body).
+// Otherwise `}` is parsed as the next expression (bogus let _ <- `}`).
+fn consume_optional_leading_right_brace(slots: ListTokenSlot) -> ListTokenSlot {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> trimmed;
+        false -> case trimmed.head.token.kind == kinds.right_brace of {
+            true -> trimmed.tail;
+            false -> trimmed
+        }
+    }
+}
+
 fn extract_binding_simple(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
     do
         kinds: TokenKinds <- lexer_token_kind@token_kinds();
@@ -1531,32 +1572,46 @@ fn extract_binding_simple(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[De
                 dummy_err: Expr <- parser_ast@dummy_expr();
                 (dummy_err, constraint_core@empty_list_slot())
             end;
-            false -> do
-                type_slot: TokenSlot <- ac.head;
-                after_type: ListTokenSlot <- ac.tail;
-                rhs_slots: ListTokenSlot <- case after_type.is_nil of {
-                    true -> constraint_core@empty_list_slot();
-                    false -> case after_type.head.token.kind == kinds.left_arrow of {
-                        true -> after_type.tail;
-                        false -> constraint_core@empty_list_slot()
-                    }
-                };
-                bind_name: string <- ident_slot.token.lexeme;
-                bind_type: string <- case is_type_keyword(lexer_token_kind@token_kinds(), type_slot.token.kind) of {
-                    true -> do
-                        from_k: string <- kind_to_type_name(type_slot.token.kind);
-                        case len(from_k) > 0 of { true -> from_k; false -> type_slot.token.lexeme }
-                    end;
-                    false -> type_slot.token.lexeme
-                };
-                bind_loc: SourceLocation <- ident_slot.token.location;
-                (rhs_expr: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
-                after_semicolons: ListTokenSlot <- skip_semicolons_after_whitespace(rest_after_rhs);
-                (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(after_semicolons);
-                dummy: Expr <- parser_ast@dummy_expr();
-                let_expr: Expr <- Expr { kind: 6, value: bind_type, name: bind_name, location: bind_loc, inner: rhs_expr, right_expr: body, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
-                (let_expr, rest_after_body)
-            end
+            false -> case parser_tuples@slots_start_fn_type(ac) of {
+                true -> do
+                    (fn_ty_str: string, rest_after_fn_ty: ListTokenSlot) <- parser_tuples@extract_fn_type_from_slots(ac);
+                    bind_name: string <- ident_slot.token.lexeme;
+                    bind_type: string <- fn_ty_str;
+                    bind_loc: SourceLocation <- ident_slot.token.location;
+                    rhs_slots: ListTokenSlot <- rhs_slots_after_memory_region_type(rest_after_fn_ty);
+                    (rhs_expr: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
+                    after_rhs_brace: ListTokenSlot <- consume_optional_leading_right_brace(rest_after_rhs);
+                    after_semicolons: ListTokenSlot <- skip_semicolons_after_whitespace(after_rhs_brace);
+                    (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(after_semicolons);
+                    let_expr: Expr <- Expr { kind: 6, value: bind_type, name: bind_name, location: bind_loc, inner: rhs_expr, right_expr: body, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+                    (let_expr, rest_after_body)
+                end;
+                false -> do
+                    type_slot: TokenSlot <- ac.head;
+                    after_type: ListTokenSlot <- ac.tail;
+                    rhs_slots: ListTokenSlot <- case after_type.is_nil of {
+                        true -> constraint_core@empty_list_slot();
+                        false -> case after_type.head.token.kind == kinds.left_arrow of {
+                            true -> after_type.tail;
+                            false -> constraint_core@empty_list_slot()
+                        }
+                    };
+                    bind_name: string <- ident_slot.token.lexeme;
+                    bind_type: string <- case is_type_keyword(lexer_token_kind@token_kinds(), type_slot.token.kind) of {
+                        true -> do
+                            from_k: string <- kind_to_type_name(type_slot.token.kind);
+                            case len(from_k) > 0 of { true -> from_k; false -> type_slot.token.lexeme }
+                        end;
+                        false -> type_slot.token.lexeme
+                    };
+                    bind_loc: SourceLocation <- ident_slot.token.location;
+                    (rhs_expr: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
+                    after_semicolons: ListTokenSlot <- skip_semicolons_after_whitespace(rest_after_rhs);
+                    (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(after_semicolons);
+                    let_expr2: Expr <- Expr { kind: 6, value: bind_type, name: bind_name, location: bind_loc, inner: rhs_expr, right_expr: body, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+                    (let_expr2, rest_after_body)
+                end
+            }
         }
     end
 }
@@ -1571,29 +1626,42 @@ fn extract_binding_simple_for_sequence(slots: ListTokenSlot, stop_kind: int64) -
                 dummy_err: Expr <- parser_ast@dummy_expr();
                 (dummy_err, constraint_core@empty_list_slot())
             end;
-            false -> do
-                type_slot: TokenSlot <- ac.head;
-                after_type: ListTokenSlot <- ac.tail;
-                rhs_slots: ListTokenSlot <- case after_type.is_nil of {
-                    true -> constraint_core@empty_list_slot();
-                    false -> case after_type.head.token.kind == kinds.left_arrow of {
-                        true -> after_type.tail;
-                        false -> constraint_core@empty_list_slot()
-                    }
-                };
-                bind_name: string <- ident_slot.token.lexeme;
-                bind_type: string <- case is_type_keyword(lexer_token_kind@token_kinds(), type_slot.token.kind) of {
-                    true -> do
-                        from_k2: string <- kind_to_type_name(type_slot.token.kind);
-                        case len(from_k2) > 0 of { true -> from_k2; false -> type_slot.token.lexeme }
-                    end;
-                    false -> type_slot.token.lexeme
-                };
-                bind_loc: SourceLocation <- ident_slot.token.location;
-                (rhs_expr: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
-                (let_expr: Expr, rest_after_body: ListTokenSlot) <- sequence_body_after_binding_rhs(rest_after_rhs, stop_kind, bind_type, bind_name, bind_loc, rhs_expr);
-                (let_expr, rest_after_body)
-            end
+            false -> case parser_tuples@slots_start_fn_type(ac) of {
+                true -> do
+                    (fn_ty_str2: string, rest_after_fn_ty2: ListTokenSlot) <- parser_tuples@extract_fn_type_from_slots(ac);
+                    bind_name: string <- ident_slot.token.lexeme;
+                    bind_type: string <- fn_ty_str2;
+                    bind_loc: SourceLocation <- ident_slot.token.location;
+                    rhs_slots: ListTokenSlot <- rhs_slots_after_memory_region_type(rest_after_fn_ty2);
+                    (rhs_expr: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
+                    after_rhs_brace_seq: ListTokenSlot <- consume_optional_leading_right_brace(rest_after_rhs);
+                    (let_expr: Expr, rest_after_body: ListTokenSlot) <- sequence_body_after_binding_rhs(after_rhs_brace_seq, stop_kind, bind_type, bind_name, bind_loc, rhs_expr);
+                    (let_expr, rest_after_body)
+                end;
+                false -> do
+                    type_slot: TokenSlot <- ac.head;
+                    after_type: ListTokenSlot <- ac.tail;
+                    rhs_slots: ListTokenSlot <- case after_type.is_nil of {
+                        true -> constraint_core@empty_list_slot();
+                        false -> case after_type.head.token.kind == kinds.left_arrow of {
+                            true -> after_type.tail;
+                            false -> constraint_core@empty_list_slot()
+                        }
+                    };
+                    bind_name: string <- ident_slot.token.lexeme;
+                    bind_type: string <- case is_type_keyword(lexer_token_kind@token_kinds(), type_slot.token.kind) of {
+                        true -> do
+                            from_k2: string <- kind_to_type_name(type_slot.token.kind);
+                            case len(from_k2) > 0 of { true -> from_k2; false -> type_slot.token.lexeme }
+                        end;
+                        false -> type_slot.token.lexeme
+                    };
+                    bind_loc: SourceLocation <- ident_slot.token.location;
+                    (rhs_expr: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
+                    (let_expr2: Expr, rest_after_body: ListTokenSlot) <- sequence_body_after_binding_rhs(rest_after_rhs, stop_kind, bind_type, bind_name, bind_loc, rhs_expr);
+                    (let_expr2, rest_after_body)
+                end
+            }
         }
     end
 }
@@ -2991,6 +3059,95 @@ fn expr_fn_type_opaque_from_slots(slots: ListTokenSlot) -> (Expr, ListTokenSlot)
     (fn_ty_expr, rest_after_fn)
 }
 
+// `fn(int64) -> T` uses opaque fn-type parsing; `fn(x: T) -> U {`, `fn() -> U {`, `fn((a:T,...)) -> U {` introduce lambdas.
+fn lambda_introduces_body_after_sig(slots: ListTokenSlot) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case parser_tuples@slots_start_fn_type(slots) of {
+        false -> false;
+        true -> do
+            after_kw: ListTokenSlot <- skip_leading_whitespace_slots(slots.tail);
+            case after_kw.is_nil of {
+                true -> false;
+                false -> case after_kw.head.token.kind == kinds.left_paren of {
+                    false -> false;
+                    true -> case after_kw.tail.is_nil of {
+                        true -> false;
+                        false -> case after_kw.tail.head.token.kind == kinds.right_paren of {
+                            true -> true;
+                            false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, after_kw.tail.head.token.kind) of {
+                                true -> true;
+                                false -> case after_kw.tail.head.token.kind == kinds.left_paren of {
+                                    true -> true;
+                                    false -> false
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn param_types_str_lambda(params: ListParam) -> string {
+    case params.is_nil of {
+        true -> "";
+        false -> case params.tail.is_nil of {
+            true -> params.head.type_name;
+            false -> concat(concat(param_types_str_lambda(params.tail), ","), params.head.type_name)
+        }
+    }
+}
+
+fn build_lambda_fn_type_value(params: ListParam, ret: string) -> string {
+    case params.is_nil of {
+        true -> concat("() -> ", ret);
+        false -> concat(concat(concat("(", param_types_str_lambda(params)), ") -> "), ret)
+    }
+}
+
+fn params_to_lambda_bindings(params: ListParam) -> ListTupleDecomposeBinding {
+    case params.is_nil of {
+        true -> parser_ast@nil_tuple_decompose_bindings();
+        false -> do
+            p: Param <- params.head;
+            b: TupleDecomposeBinding <- parser_ast@make_tuple_decompose_binding(p.name, "", p.type_name);
+            parser_ast@cons_tuple_decompose_binding(b, params_to_lambda_bindings(params.tail))
+        end
+    }
+}
+
+fn extract_lambda_expression(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
+    kw_slot: TokenSlot <- slots.head;
+    after_kw: ListTokenSlot <- slots.tail;
+    (params: ListParam, ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- collect_params_and_find_type_and_body(after_kw);
+    (body_expr: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(body_slots);
+    bindings: ListTupleDecomposeBinding <- params_to_lambda_bindings(params);
+    fn_ty_val: string <- build_lambda_fn_type_value(params, ret_type);
+    dumx: Expr <- parser_ast@dummy_expr();
+    ret_holder: Expr <- Expr {
+        kind: 992,
+        value: ret_type,
+        name: "__lambda_ret__",
+        location: ret_type_loc,
+        inner: dumx,
+        right_expr: dumx,
+        pattern_bindings: parser_ast@nil_tuple_decompose_bindings(),
+        sequence_effects: parser_ast@empty_effect_name_list()
+    };
+    lam: Expr <- Expr {
+        kind: 991,
+        value: fn_ty_val,
+        name: "__lambda__",
+        location: kw_slot.token.location,
+        inner: body_expr,
+        right_expr: ret_holder,
+        pattern_bindings: bindings,
+        sequence_effects: effects
+    };
+    (lam, rest_after_body)
+}
+
 fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     first: TokenSlot <- slots.head;
@@ -2998,7 +3155,10 @@ fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO]
     // which would route to extract_case_expression and misparse `(msg:...) ->` as statements (E1040).
     // Also reject `identifier`+lexeme`fn`+`(` as a call — use opaque function-type expr (kind 992).
     case parser_tuples@slots_start_fn_type(slots) of {
-        true -> expr_fn_type_opaque_from_slots(slots);
+        true -> case lambda_introduces_body_after_sig(slots) of {
+            true -> extract_lambda_expression(slots);
+            false -> expr_fn_type_opaque_from_slots(slots)
+        };
         false -> case constraint_core@slot_role(first) == capability_case@role_case_keyword() or first.token.kind == kinds.case_keyword of {
             true -> extract_case_expression(slots);
             false -> do
@@ -3610,6 +3770,780 @@ fn program_location_from_decls(decls: ListDeclaration) -> SourceLocation {
 fn slots_to_program(slots: ListTokenSlot) -> Program proc[DeviceIO] {
     decls: ListDeclaration <- declarations_from_slots(slots);
     Program { declarations: decls, location: program_location_from_decls(decls) }
+}
+
+fn append_declaration_lists(a: ListDeclaration, b: ListDeclaration) -> ListDeclaration {
+    case a.is_nil of {
+        true -> b;
+        false -> parser_ast@cons_declaration(a.head, append_declaration_lists(a.tail, b))
+    }
+}
+
+// --- Lambda lifting: outer-visible bindings (let + outer lambda formals) for capture params ---
+
+fn append_tb_front(a: ListTupleDecomposeBinding, b: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
+    case a.is_nil of {
+        true -> b;
+        false -> parser_ast@cons_tuple_decompose_binding(parser_ast@make_tuple_decompose_binding(a.head.name, a.head.path, a.head.type_str), append_tb_front(a.tail, b))
+    }
+}
+
+fn merge_tb_union(a: ListTupleDecomposeBinding, b: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
+    case a.is_nil of {
+        true -> b;
+        false -> parser_ast@cons_tuple_decompose_binding(parser_ast@make_tuple_decompose_binding(a.head.name, a.head.path, a.head.type_str), merge_tb_union(a.tail, b))
+    }
+}
+
+fn tuple_bindings_contains_name(bindings: ListTupleDecomposeBinding, nm: string) -> bool {
+    case bindings.is_nil of {
+        true -> false;
+        false -> case bindings.head.name == nm of {
+            true -> true;
+            false -> tuple_bindings_contains_name(bindings.tail, nm)
+        }
+    }
+}
+
+fn lookup_outer_binding_type(outer_visible: ListTupleDecomposeBinding, nm: string) -> string {
+    case outer_visible.is_nil of {
+        true -> "";
+        false -> case outer_visible.head.name == nm of {
+            true -> outer_visible.head.type_str;
+            false -> lookup_outer_binding_type(outer_visible.tail, nm)
+        }
+    }
+}
+
+fn reverse_tb_loop(tb: ListTupleDecomposeBinding, acc: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
+    case tb.is_nil of {
+        true -> acc;
+        false -> reverse_tb_loop(tb.tail, parser_ast@cons_tuple_decompose_binding(parser_ast@make_tuple_decompose_binding(tb.head.name, tb.head.path, tb.head.type_str), acc))
+    }
+}
+
+fn dedupe_tb_unique_first(tb: ListTupleDecomposeBinding, acc: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
+    case tb.is_nil of {
+        true -> reverse_tb_loop(acc, parser_ast@nil_tuple_decompose_bindings());
+        false -> case tuple_bindings_contains_name(acc, tb.head.name) of {
+            true -> dedupe_tb_unique_first(tb.tail, acc);
+            false -> dedupe_tb_unique_first(tb.tail, parser_ast@cons_tuple_decompose_binding(parser_ast@make_tuple_decompose_binding(tb.head.name, tb.head.path, tb.head.type_str), acc))
+        }
+    }
+}
+
+fn capture_tb_to_params(tb: ListTupleDecomposeBinding) -> ListParam {
+    case tb.is_nil of {
+        true -> parser_ast@nil_list_param();
+        false -> parser_ast@cons_param(parser_ast@rebuild_param(tb.head.name, tb.head.type_str, parser_ast@zero_location()), capture_tb_to_params(tb.tail))
+    }
+}
+
+fn is_discard_let_name(nm: string) -> bool {
+    nm == "_"
+}
+
+// Free variables that must be captured from enclosing scope for a lambda body (lexical closures).
+fn collect_free_for_lambda(expr: Expr, lambda_formals: ListTupleDecomposeBinding, inner_lets: ListTupleDecomposeBinding, outer_visible: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
+    case expr.kind == -1 of {
+        true -> parser_ast@nil_tuple_decompose_bindings();
+        false -> case expr.kind == 991 of {
+            true -> collect_free_for_lambda(expr.inner, expr.pattern_bindings, parser_ast@nil_tuple_decompose_bindings(), outer_visible);
+            false -> case expr.kind == 6 of {
+                true -> do
+                    left_tb: ListTupleDecomposeBinding <- collect_free_for_lambda(expr.inner, lambda_formals, inner_lets, outer_visible);
+                    ext_inner: ListTupleDecomposeBinding <- case is_discard_let_name(expr.name) of {
+                        true -> inner_lets;
+                        false -> parser_ast@cons_tuple_decompose_binding(parser_ast@make_tuple_decompose_binding(expr.name, "", expr.value), inner_lets)
+                    };
+                    right_tb: ListTupleDecomposeBinding <- collect_free_for_lambda(expr.right_expr, lambda_formals, ext_inner, outer_visible);
+                    merge_tb_union(left_tb, right_tb)
+                end;
+                false -> case expr.kind == 10 of {
+                    true -> do
+                        inner_tb_td: ListTupleDecomposeBinding <- collect_free_for_lambda(expr.inner, lambda_formals, inner_lets, outer_visible);
+                        merged_td: ListTupleDecomposeBinding <- append_tb_front(parser_ast@rebuild_tuple_decompose_binding_list(expr.pattern_bindings), inner_lets);
+                        right_tb_td: ListTupleDecomposeBinding <- collect_free_for_lambda(expr.right_expr, lambda_formals, merged_td, outer_visible);
+                        merge_tb_union(inner_tb_td, right_tb_td)
+                    end;
+                    false -> case expr.kind == 1 of {
+                        true -> do
+                            nm: string <- expr.name;
+                            case tuple_bindings_contains_name(lambda_formals, nm) of {
+                                true -> parser_ast@nil_tuple_decompose_bindings();
+                                false -> case tuple_bindings_contains_name(inner_lets, nm) of {
+                                    true -> parser_ast@nil_tuple_decompose_bindings();
+                                    false -> do
+                                        cap_ty: string <- lookup_outer_binding_type(outer_visible, nm);
+                                        case len(cap_ty) > 0 of {
+                                            true -> parser_ast@cons_tuple_decompose_binding(parser_ast@make_tuple_decompose_binding(nm, "", cap_ty), parser_ast@nil_tuple_decompose_bindings());
+                                            false -> parser_ast@nil_tuple_decompose_bindings()
+                                        }
+                                    end
+                                }
+                            }
+                        end;
+                        false -> do
+                            lv: ListTupleDecomposeBinding <- collect_free_for_lambda(expr.inner, lambda_formals, inner_lets, outer_visible);
+                            rv: ListTupleDecomposeBinding <- collect_free_for_lambda(expr.right_expr, lambda_formals, inner_lets, outer_visible);
+                            merge_tb_union(lv, rv)
+                        end
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn lift_lambda_expr(expr: Expr, fn_name: string, seq: int64, outer_visible: ListTupleDecomposeBinding) -> (Expr, ListDeclaration, int64) {
+    case expr.kind == -1 of {
+        true -> (expr, parser_ast@empty_list_decl(), seq);
+        false -> case expr.kind == 991 of {
+            true -> do
+                rebuilt_lam_tb: ListTupleDecomposeBinding <- parser_ast@rebuild_tuple_decompose_binding_list(expr.pattern_bindings);
+                inner_lift_env: ListTupleDecomposeBinding <- append_tb_front(rebuilt_lam_tb, outer_visible);
+                (body2: Expr, l_inner: ListDeclaration, seq1: int64) <- lift_lambda_expr(expr.inner, fn_name, seq, inner_lift_env);
+                syn: string <- concat(fn_name, concat(".__lam", atom_table@int64_to_decimal_string(seq1)));
+                ret_ty: string <- expr.right_expr.value;
+                raw_caps: ListTupleDecomposeBinding <- collect_free_for_lambda(expr.inner, rebuilt_lam_tb, parser_ast@nil_tuple_decompose_bindings(), outer_visible);
+                caps_tb: ListTupleDecomposeBinding <- dedupe_tb_unique_first(raw_caps, parser_ast@nil_tuple_decompose_bindings());
+                capt_lp: ListParam <- capture_tb_to_params(caps_tb);
+                decl: Declaration <- parser_ast@declaration_from_lambda_lift(syn, expr.pattern_bindings, capt_lp, ret_ty, expr.right_expr.location, expr.location, body2, expr.sequence_effects);
+                dummy_i: Expr <- parser_ast@dummy_expr();
+                ident: Expr <- Expr { kind: 1, value: "", name: syn, location: expr.location, inner: dummy_i, right_expr: dummy_i, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+                batch: ListDeclaration <- parser_ast@cons_declaration(decl, parser_ast@empty_list_decl());
+                (ident, append_declaration_lists(l_inner, batch), seq1 + 1)
+            end;
+            false -> case expr.kind == 6 of {
+                true -> do
+                    (i2: Expr, li: ListDeclaration, s1: int64) <- lift_lambda_expr(expr.inner, fn_name, seq, outer_visible);
+                    ext: ListTupleDecomposeBinding <- case is_discard_let_name(expr.name) of {
+                        true -> outer_visible;
+                        false -> parser_ast@cons_tuple_decompose_binding(parser_ast@make_tuple_decompose_binding(expr.name, "", expr.value), outer_visible)
+                    };
+                    (r2: Expr, lr: ListDeclaration, s2: int64) <- lift_lambda_expr(expr.right_expr, fn_name, s1, ext);
+                    merged_let: ListDeclaration <- append_declaration_lists(li, lr);
+                    out_let: Expr <- Expr { kind: expr.kind, value: expr.value, name: expr.name, location: expr.location, inner: i2, right_expr: r2, pattern_bindings: parser_ast@rebuild_tuple_decompose_binding_list(expr.pattern_bindings), sequence_effects: parser_ast@rebuild_effect_name_list(expr.sequence_effects) };
+                    (out_let, merged_let, s2)
+                end;
+                false -> case expr.kind == 10 of {
+                    true -> do
+                        (i_td: Expr, li_td: ListDeclaration, s1_td: int64) <- lift_lambda_expr(expr.inner, fn_name, seq, outer_visible);
+                        ext_td: ListTupleDecomposeBinding <- append_tb_front(parser_ast@rebuild_tuple_decompose_binding_list(expr.pattern_bindings), outer_visible);
+                        (r_td: Expr, lr_td: ListDeclaration, s2_td: int64) <- lift_lambda_expr(expr.right_expr, fn_name, s1_td, ext_td);
+                        merged_td: ListDeclaration <- append_declaration_lists(li_td, lr_td);
+                        out_td: Expr <- Expr { kind: expr.kind, value: expr.value, name: expr.name, location: expr.location, inner: i_td, right_expr: r_td, pattern_bindings: parser_ast@rebuild_tuple_decompose_binding_list(expr.pattern_bindings), sequence_effects: parser_ast@rebuild_effect_name_list(expr.sequence_effects) };
+                        (out_td, merged_td, s2_td)
+                    end;
+                    false -> do
+                        (i2: Expr, li: ListDeclaration, s1: int64) <- lift_lambda_expr(expr.inner, fn_name, seq, outer_visible);
+                        (r2: Expr, lr: ListDeclaration, s2: int64) <- lift_lambda_expr(expr.right_expr, fn_name, s1, outer_visible);
+                        merged: ListDeclaration <- append_declaration_lists(li, lr);
+                        out: Expr <- Expr { kind: expr.kind, value: expr.value, name: expr.name, location: expr.location, inner: i2, right_expr: r2, pattern_bindings: parser_ast@rebuild_tuple_decompose_binding_list(expr.pattern_bindings), sequence_effects: parser_ast@rebuild_effect_name_list(expr.sequence_effects) };
+                        (out, merged, s2)
+                    end
+                }
+            }
+        }
+    }
+}
+
+fn list_param_to_outer_bindings(params: ListParam) -> ListTupleDecomposeBinding {
+    case params.is_nil of {
+        true -> parser_ast@nil_tuple_decompose_bindings();
+        false -> parser_ast@cons_tuple_decompose_binding(
+            parser_ast@make_tuple_decompose_binding(params.head.name, "", params.head.type_name),
+            list_param_to_outer_bindings(params.tail)
+        )
+    }
+}
+
+fn lift_decl_list(decls: ListDeclaration, seq: int64, lifted_suffix: ListDeclaration) -> (ListDeclaration, int64, ListDeclaration) {
+    case decls.is_nil of {
+        true -> (parser_ast@empty_list_decl(), seq, lifted_suffix);
+        false -> case decls.head.tag == 0 of {
+            true -> do
+                d: Declaration <- decls.head;
+                param_outer: ListTupleDecomposeBinding <- list_param_to_outer_bindings(d.parameters);
+                (body2: Expr, batch: ListDeclaration, seq2: int64) <- lift_lambda_expr(d.body, d.name, seq, param_outer);
+                lifted2: ListDeclaration <- append_declaration_lists(lifted_suffix, batch);
+                new_d: Declaration <- parser_ast@declaration_with_body(d, body2);
+                (rest_new: ListDeclaration, seq3: int64, lifted3: ListDeclaration) <- lift_decl_list(decls.tail, seq2, lifted2);
+                (parser_ast@cons_declaration(new_d, rest_new), seq3, lifted3)
+            end;
+            false -> do
+                d2: Declaration <- decls.head;
+                (rest_new2: ListDeclaration, seq4: int64, lifted4: ListDeclaration) <- lift_decl_list(decls.tail, seq, lifted_suffix);
+                (parser_ast@cons_declaration(d2, rest_new2), seq4, lifted4)
+            end
+        }
+    }
+}
+
+// --- HOF arity shim: lifted lambdas append captures as extra parameters (sir_generator functions.silica),
+// Argument lists hold specs (ident or int lexeme only); Expr nodes are built last to avoid E2000 on Expr-in-struct lists.
+
+struct HofArgSpec {
+    is_ident: bool,
+    text: string
+}
+
+struct HofArgSpecList {
+    is_nil: bool,
+    head: HofArgSpec,
+    tail: HofArgSpecList
+}
+
+fn hof_nil_arg_specs() -> HofArgSpecList {
+    ph: HofArgSpecList <- HofArgSpecList { is_nil: true, head: HofArgSpec { is_ident: true, text: "" }, tail: ph };
+    ph
+}
+
+fn hof_cons_arg_spec(s: HofArgSpec, rest: HofArgSpecList) -> HofArgSpecList {
+    HofArgSpecList { is_nil: false, head: s, tail: rest }
+}
+
+fn hof_spec_to_expr(s: HofArgSpec, loc: SourceLocation) -> Expr {
+    case s.is_ident of {
+        true -> expr_ident_here(s.text, loc);
+        false -> expr_int_here(s.text, loc)
+    }
+}
+
+fn hof_suffix_call_chain_specs(es: HofArgSpecList, loc: SourceLocation) -> Expr {
+    dummy_tail: Expr <- parser_ast@dummy_expr();
+    case es.tail.is_nil of {
+        true -> parser_ast@dummy_expr();
+        false -> case es.tail.tail.is_nil of {
+            true -> Expr {
+                kind: 4,
+                value: "",
+                name: "",
+                location: loc,
+                inner: hof_spec_to_expr(es.head, loc),
+                right_expr: Expr {
+                    kind: 4,
+                    value: "",
+                    name: "",
+                    location: loc,
+                    inner: hof_spec_to_expr(es.tail.head, loc),
+                    right_expr: dummy_tail,
+                    pattern_bindings: parser_ast@nil_tuple_decompose_bindings(),
+                    sequence_effects: parser_ast@empty_effect_name_list()
+                },
+                pattern_bindings: parser_ast@nil_tuple_decompose_bindings(),
+                sequence_effects: parser_ast@empty_effect_name_list()
+            };
+            false -> do
+                suf: Expr <- hof_suffix_call_chain_specs(es.tail, loc);
+                Expr {
+                    kind: 4,
+                    value: "",
+                    name: "",
+                    location: loc,
+                    inner: hof_spec_to_expr(es.head, loc),
+                    right_expr: suf,
+                    pattern_bindings: parser_ast@nil_tuple_decompose_bindings(),
+                    sequence_effects: parser_ast@empty_effect_name_list()
+                }
+            end
+        }
+    }
+}
+
+fn hof_call_expr_from_arg_specs(callee: string, args: HofArgSpecList, loc: SourceLocation) -> Expr {
+    case args.is_nil of {
+        true -> parser_ast@dummy_expr();
+        false -> case args.tail.is_nil of {
+            true -> Expr {
+                kind: 4,
+                value: "",
+                name: callee,
+                location: loc,
+                inner: hof_spec_to_expr(args.head, loc),
+                right_expr: parser_ast@dummy_expr(),
+                pattern_bindings: parser_ast@nil_tuple_decompose_bindings(),
+                sequence_effects: parser_ast@empty_effect_name_list()
+            };
+            false -> case args.tail.tail.is_nil of {
+                true -> Expr {
+                    kind: 4,
+                    value: "",
+                    name: callee,
+                    location: loc,
+                    inner: hof_spec_to_expr(args.head, loc),
+                    right_expr: hof_spec_to_expr(args.tail.head, loc),
+                    pattern_bindings: parser_ast@nil_tuple_decompose_bindings(),
+                    sequence_effects: parser_ast@empty_effect_name_list()
+                };
+                false -> Expr {
+                    kind: 4,
+                    value: "",
+                    name: callee,
+                    location: loc,
+                    inner: hof_spec_to_expr(args.head, loc),
+                    right_expr: hof_suffix_call_chain_specs(args.tail, loc),
+                    pattern_bindings: parser_ast@nil_tuple_decompose_bindings(),
+                    sequence_effects: parser_ast@empty_effect_name_list()
+                }
+            }
+        }
+    }
+}
+
+// but call sites typed with surface arity (e.g. op(a,b)) do not pass them. When every capture resolves to an
+// int64 literal visible in the let-environment, synthesize an arity-only wrapper main.__lwN that forwards to
+// main.__lamN with those literals (closure in register forwarding does not survive nested calls like op(num,num)).
+
+fn lifted_name_sub_at(m: string, i: int64) -> bool {
+    case i + 6 > len(m) of {
+        true -> false;
+        false -> case substring(m, i, i + 6) == ".__lam" of {
+            true -> true;
+            false -> lifted_name_sub_at(m, i + 1)
+        }
+    }
+}
+
+fn name_has_lifted_lambda_sub(m: string) -> bool {
+    lifted_name_sub_at(m, 0)
+}
+
+fn find_tag0_decl_by_name(decls: ListDeclaration, nm: string) -> Declaration {
+    case decls.is_nil of {
+        true -> parser_ast@dummy_decl();
+        false -> case decls.head.tag == 0 and decls.head.name == nm of {
+            true -> decls.head;
+            false -> find_tag0_decl_by_name(decls.tail, nm)
+        }
+    }
+}
+
+fn list_param_len_w(ps: ListParam) -> int64 {
+    case ps.is_nil of {
+        true -> 0;
+        false -> 1 + list_param_len_w(ps.tail)
+    }
+}
+
+fn list_param_take_n_w(ps: ListParam, n: int64) -> ListParam {
+    case n <= 0 of {
+        true -> parser_ast@nil_list_param();
+        false -> case ps.is_nil of {
+            true -> parser_ast@nil_list_param();
+            false -> parser_ast@cons_param(ps.head, list_param_take_n_w(ps.tail, n - 1))
+        }
+    }
+}
+
+fn list_param_drop_n_w(ps: ListParam, n: int64) -> ListParam {
+    case n <= 0 of {
+        true -> ps;
+        false -> case ps.is_nil of {
+            true -> parser_ast@nil_list_param();
+            false -> list_param_drop_n_w(ps.tail, n - 1)
+        }
+    }
+}
+
+fn nth_param_type_of_list(ps: ListParam, idx: int64) -> string {
+    case idx <= 0 of {
+        true -> ps.head.type_name;
+        false -> nth_param_type_of_list(ps.tail, idx - 1)
+    }
+}
+
+// collect_params_loop builds ListParam with cons_param (head = last source param). User call args are
+// left-to-right, so user arg i maps to parameter at index (len - 1 - i).
+fn nth_param_type_for_user_call_arg(ps: ListParam, user_arg_idx: int64) -> string {
+    n: int64 <- list_param_len_w(ps);
+    nth_param_type_of_list(ps, n - 1 - user_arg_idx)
+}
+
+fn fn_type_count_formals(ty: string) -> int64 {
+    t: string <- ty;
+    case len(t) < 2 of {
+        true -> -1;
+        false -> case substring(t, 0, 2) == "fn" of {
+            false -> -1;
+            true -> do
+                open: int64 <- find_first_paren_fn_ty(t, 0);
+                case open < 0 of {
+                    true -> -1;
+                    false -> do
+                        nch: int64 <- len(t);
+                        after0: int64 <- open + 1;
+                        after: int64 <- skip_spaces_in_fn_type_str(t, after0, nch);
+                        case after < nch and substring(t, after, after + 1) == ")" of {
+                            true -> 0;
+                            false -> count_fn_inner_commas_loop(t, after, nch, 1, 0)
+                        }
+                    end
+                }
+            end
+        }
+    }
+}
+
+fn find_first_paren_fn_ty(s: string, i: int64) -> int64 {
+    case i + 1 > len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "(" of {
+            true -> i;
+            false -> find_first_paren_fn_ty(s, i + 1)
+        }
+    }
+}
+
+// Token-extracted fn types may contain spaces inside `(` `)` (e.g. `fn( ) -> T`); align with empty-formals detection.
+fn skip_spaces_in_fn_type_str(s: string, i: int64, n: int64) -> int64 {
+    case i >= n of {
+        true -> i;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> skip_spaces_in_fn_type_str(s, i + 1, n);
+            false -> i
+        }
+    }
+}
+
+fn count_fn_inner_commas_loop(s: string, i: int64, n: int64, depth: int64, commas: int64) -> int64 {
+    case i >= n of {
+        true -> -1;
+        false -> do
+            ch: string <- substring(s, i, i + 1);
+            d2: int64 <- case ch == "(" of {
+                true -> depth + 1;
+                false -> case ch == ")" of {
+                    true -> depth - 1;
+                    false -> depth
+                }
+            };
+            case d2 == 0 of {
+                true -> commas + 1;
+                false -> do
+                    c2: int64 <- case depth == 1 and ch == "," of {
+                        true -> commas + 1;
+                        false -> commas
+                    };
+                    count_fn_inner_commas_loop(s, i + 1, n, d2, c2)
+                end
+            }
+        end
+    }
+}
+
+fn let_env_cons_int_lit(nm: string, int_lex: string, tail: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
+    parser_ast@cons_tuple_decompose_binding(parser_ast@make_tuple_decompose_binding(nm, int_lex, "__silica_intlit__"), tail)
+}
+
+fn let_env_lookup_int_lit(env: ListTupleDecomposeBinding, nm: string) -> (bool, string) {
+    case env.is_nil of {
+        true -> (false, "");
+        false -> case env.head.name == nm of {
+            true -> case env.head.type_str == "__silica_intlit__" of {
+                true -> (true, env.head.path);
+                false -> (false, "")
+            };
+            false -> let_env_lookup_int_lit(env.tail, nm)
+        }
+    }
+}
+
+fn fold_seq_lets_int_literals(e: Expr, acc: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
+    case e.kind == 6 of {
+        true -> do
+            acc2: ListTupleDecomposeBinding <- case e.inner.kind == 0 of {
+                true -> let_env_cons_int_lit(e.name, e.inner.value, acc);
+                false -> acc
+            };
+            fold_seq_lets_int_literals(e.right_expr, acc2)
+        end;
+        false -> acc
+    }
+}
+
+fn expr_ident_here(nm: string, loc: SourceLocation) -> Expr {
+    d: Expr <- parser_ast@dummy_expr();
+    Expr { kind: 1, value: "", name: nm, location: loc, inner: d, right_expr: d, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() }
+}
+
+fn expr_int_here(lex: string, loc: SourceLocation) -> Expr {
+    d: Expr <- parser_ast@dummy_expr();
+    Expr { kind: 0, value: lex, name: "", location: loc, inner: d, right_expr: d, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() }
+}
+
+fn user_call_arg_count_w(expr: Expr) -> int64 {
+    case expr.inner.kind == -1 of {
+        true -> 0;
+        false -> case expr.right_expr.kind == -1 of {
+            true -> 1;
+            false -> case expr.right_expr.kind == 4 of {
+                true -> 1 + user_call_arg_count_w(expr.right_expr);
+                false -> 2
+            }
+        }
+    }
+}
+
+fn user_call_replace_arg_at(expr: Expr, want: int64, cur: int64, new_arg: Expr) -> Expr {
+    case expr.inner.kind == -1 of {
+        true -> expr;
+        false -> case want == cur of {
+            true -> Expr {
+                kind: expr.kind,
+                value: expr.value,
+                name: expr.name,
+                location: expr.location,
+                inner: new_arg,
+                right_expr: expr.right_expr,
+                pattern_bindings: parser_ast@rebuild_tuple_decompose_binding_list(expr.pattern_bindings),
+                sequence_effects: parser_ast@rebuild_effect_name_list(expr.sequence_effects)
+            };
+            false -> case expr.right_expr.kind == 4 of {
+                true -> Expr {
+                    kind: expr.kind,
+                    value: expr.value,
+                    name: expr.name,
+                    location: expr.location,
+                    inner: expr.inner,
+                    right_expr: user_call_replace_arg_at(expr.right_expr, want, cur + 1, new_arg),
+                    pattern_bindings: parser_ast@rebuild_tuple_decompose_binding_list(expr.pattern_bindings),
+                    sequence_effects: parser_ast@rebuild_effect_name_list(expr.sequence_effects)
+                };
+                false -> case want == cur + 1 of {
+                    true -> Expr {
+                        kind: expr.kind,
+                        value: expr.value,
+                        name: expr.name,
+                        location: expr.location,
+                        inner: expr.inner,
+                        right_expr: new_arg,
+                        pattern_bindings: parser_ast@rebuild_tuple_decompose_binding_list(expr.pattern_bindings),
+                        sequence_effects: parser_ast@rebuild_effect_name_list(expr.sequence_effects)
+                    };
+                    false -> expr
+                }
+            }
+        }
+    }
+}
+
+fn user_call_arg_expr_at(expr: Expr, want: int64, cur: int64) -> Expr {
+    case expr.inner.kind == -1 of {
+        true -> parser_ast@dummy_expr();
+        false -> case want == cur of {
+            true -> expr.inner;
+            false -> case expr.right_expr.kind == -1 of {
+                true -> parser_ast@dummy_expr();
+                false -> case expr.right_expr.kind == 4 of {
+                    true -> user_call_arg_expr_at(expr.right_expr, want, cur + 1);
+                    false -> case want == cur + 1 of {
+                        true -> expr.right_expr;
+                        false -> parser_ast@dummy_expr()
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn build_lifted_call_arg_specs(lifted_ps: ListParam, exp_ct: int64, idx: int64, env: ListTupleDecomposeBinding, loc: SourceLocation) -> (bool, HofArgSpecList) {
+    case lifted_ps.is_nil of {
+        true -> (true, hof_nil_arg_specs());
+        false -> do
+            (rest_ok: bool, rest_le: HofArgSpecList) <- build_lifted_call_arg_specs(lifted_ps.tail, exp_ct, idx + 1, env, loc);
+            case rest_ok of {
+                false -> (false, hof_nil_arg_specs());
+                true -> case idx < exp_ct of {
+                    true -> (true, hof_cons_arg_spec(HofArgSpec { is_ident: true, text: lifted_ps.head.name }, rest_le));
+                    false -> do
+                        (okv: bool, vx: string) <- let_env_lookup_int_lit(env, lifted_ps.head.name);
+                        case okv of {
+                            false -> (false, hof_nil_arg_specs());
+                            true -> (true, hof_cons_arg_spec(HofArgSpec { is_ident: false, text: vx }, rest_le))
+                        }
+                    end
+                }
+            }
+        end
+    }
+}
+
+fn hof_wrap_one_arg_if_needed(expr: Expr, callee_decl: Declaration, arg_idx: int64, arg_e: Expr, enclosing_fn: string, all_decls: ListDeclaration, let_env: ListTupleDecomposeBinding, seq: int64) -> (Expr, int64, ListDeclaration) {
+    case arg_e.kind == 1 of {
+        false -> (expr, seq, parser_ast@empty_list_decl());
+        true -> case name_has_lifted_lambda_sub(arg_e.name) of {
+            false -> (expr, seq, parser_ast@empty_list_decl());
+            true -> do
+                lifted: Declaration <- find_tag0_decl_by_name(all_decls, arg_e.name);
+                case lifted.tag != 0 of {
+                    true -> (expr, seq, parser_ast@empty_list_decl());
+                    false -> do
+                        exp_ty: string <- nth_param_type_for_user_call_arg(callee_decl.parameters, arg_idx);
+                        exp_ct: int64 <- fn_type_count_formals(exp_ty);
+                        full_ct: int64 <- list_param_len_w(lifted.parameters);
+                        case exp_ct < 0 of {
+                            true -> (expr, seq, parser_ast@empty_list_decl());
+                            false -> case full_ct > exp_ct of {
+                                false -> (expr, seq, parser_ast@empty_list_decl());
+                                true -> do
+                                    loc: SourceLocation <- expr.location;
+                                    (args_ok: bool, ale: HofArgSpecList) <- build_lifted_call_arg_specs(lifted.parameters, exp_ct, 0, let_env, loc);
+                                    case args_ok of {
+                                        false -> (expr, seq, parser_ast@empty_list_decl());
+                                        true -> do
+                                            body_call: Expr <- hof_call_expr_from_arg_specs(lifted.name, ale, loc);
+                                            wrap_nm: string <- concat(enclosing_fn, concat(".__lw", atom_table@int64_to_decimal_string(seq)));
+                                            wrap_ps: ListParam <- list_param_take_n_w(lifted.parameters, exp_ct);
+                                            wrap_decl: Declaration <- Declaration {
+                                                tag: 0,
+                                                name: wrap_nm,
+                                                parameters: wrap_ps,
+                                                return_type_name: lifted.return_type_name,
+                                                return_type_location: lifted.return_type_location,
+                                                location: loc,
+                                                body: body_call,
+                                                declared_effects: parser_ast@empty_effect_name_list()
+                                            };
+                                            use_ident: Expr <- expr_ident_here(wrap_nm, loc);
+                                            rew: Expr <- user_call_replace_arg_at(expr, arg_idx, 0, use_ident);
+                                            (rew, seq + 1, parser_ast@cons_declaration(wrap_decl, parser_ast@empty_list_decl()))
+                                        end
+                                    }
+                                end
+                            }
+                        }
+                    end
+                }
+            end
+        }
+    }
+}
+
+fn hof_wrap_scan_all_args(expr: Expr, callee_decl: Declaration, arg_idx: int64, n_args: int64, enclosing_fn: string, all_decls: ListDeclaration, let_env: ListTupleDecomposeBinding, seq: int64) -> (Expr, int64, ListDeclaration) {
+    case arg_idx >= n_args of {
+        true -> (expr, seq, parser_ast@empty_list_decl());
+        false -> do
+            arg_e: Expr <- user_call_arg_expr_at(expr, arg_idx, 0);
+            (e2: Expr, s2: int64, w2: ListDeclaration) <- hof_wrap_one_arg_if_needed(expr, callee_decl, arg_idx, arg_e, enclosing_fn, all_decls, let_env, seq);
+            (erest: Expr, srest: int64, wrest: ListDeclaration) <- hof_wrap_scan_all_args(e2, callee_decl, arg_idx + 1, n_args, enclosing_fn, all_decls, let_env, s2);
+            (erest, srest, append_declaration_lists(w2, wrest))
+        end
+    }
+}
+
+fn try_hof_wrap_after_user_call(expr: Expr, enclosing_fn: string, all_decls: ListDeclaration, let_env: ListTupleDecomposeBinding, seq: int64) -> (Expr, int64, ListDeclaration) {
+    callee: string <- expr.name;
+    d: Declaration <- find_tag0_decl_by_name(all_decls, callee);
+    case d.tag != 0 of {
+        true -> (expr, seq, parser_ast@empty_list_decl());
+        false -> do
+            n_args: int64 <- user_call_arg_count_w(expr);
+            hof_wrap_scan_all_args(expr, d, 0, n_args, enclosing_fn, all_decls, let_env, seq)
+        end
+    }
+}
+
+fn rebuild_expr_shallow(expr: Expr, inner: Expr, right_expr: Expr) -> Expr {
+    Expr {
+        kind: expr.kind,
+        value: expr.value,
+        name: expr.name,
+        location: expr.location,
+        inner: inner,
+        right_expr: right_expr,
+        pattern_bindings: parser_ast@rebuild_tuple_decompose_binding_list(expr.pattern_bindings),
+        sequence_effects: parser_ast@rebuild_effect_name_list(expr.sequence_effects)
+    }
+}
+
+fn wrap_walk_expr(expr: Expr, enclosing_fn: string, all_decls: ListDeclaration, seq: int64, let_env: ListTupleDecomposeBinding) -> (Expr, int64, ListDeclaration) {
+    case expr.kind == 1 of {
+        true -> (expr, seq, parser_ast@empty_list_decl());
+        false -> case expr.kind == 0 of {
+            true -> (expr, seq, parser_ast@empty_list_decl());
+            false -> case expr.kind == 2 of {
+                true -> do
+                    (i2: Expr, s1: int64, w1: ListDeclaration) <- wrap_walk_expr(expr.inner, enclosing_fn, all_decls, seq, let_env);
+                    (rebuild_expr_shallow(expr, i2, expr.right_expr), s1, w1)
+                end;
+                false -> case expr.kind == 6 of {
+                    true -> do
+                        (i2: Expr, s0: int64, w0: ListDeclaration) <- wrap_walk_expr(expr.inner, enclosing_fn, all_decls, seq, let_env);
+                        env2: ListTupleDecomposeBinding <- case i2.kind == 0 of {
+                            true -> let_env_cons_int_lit(expr.name, i2.value, let_env);
+                            false -> let_env
+                        };
+                        (r2: Expr, s1: int64, w1: ListDeclaration) <- wrap_walk_expr(expr.right_expr, enclosing_fn, all_decls, s0, env2);
+                        (rebuild_expr_shallow(expr, i2, r2), s1, append_declaration_lists(w0, w1))
+                    end;
+                    false -> case expr.kind == 11 of {
+                        true -> do
+                            (inner2: Expr, s0: int64, w0: ListDeclaration) <- wrap_walk_expr(expr.inner, enclosing_fn, all_decls, seq, let_env);
+                            env2: ListTupleDecomposeBinding <- fold_seq_lets_int_literals(inner2, let_env);
+                            (res2: Expr, s1: int64, w1: ListDeclaration) <- wrap_walk_expr(expr.right_expr, enclosing_fn, all_decls, s0, env2);
+                            (rebuild_expr_shallow(expr, inner2, res2), s1, append_declaration_lists(w0, w1))
+                        end;
+                        false -> case expr.kind == 4 of {
+                            true -> do
+                                (i2: Expr, s0: int64, w0: ListDeclaration) <- wrap_walk_expr(expr.inner, enclosing_fn, all_decls, seq, let_env);
+                                (r2: Expr, s1: int64, w1: ListDeclaration) <- wrap_walk_expr(expr.right_expr, enclosing_fn, all_decls, s0, let_env);
+                                e_mid: Expr <- rebuild_expr_shallow(expr, i2, r2);
+                                (e3: Expr, s2: int64, w2: ListDeclaration) <- try_hof_wrap_after_user_call(e_mid, enclosing_fn, all_decls, let_env, s1);
+                                (e3, s2, append_declaration_lists(w0, append_declaration_lists(w1, w2)))
+                            end;
+                            false -> case expr.kind == 3 of {
+                                true -> do
+                                    (l2: Expr, s0: int64, w0: ListDeclaration) <- wrap_walk_expr(expr.inner, enclosing_fn, all_decls, seq, let_env);
+                                    (r2: Expr, s1: int64, w1: ListDeclaration) <- wrap_walk_expr(expr.right_expr, enclosing_fn, all_decls, s0, let_env);
+                                    (rebuild_expr_shallow(expr, l2, r2), s1, append_declaration_lists(w0, w1))
+                                end;
+                                false -> case expr.kind == 12 of {
+                                    true -> do
+                                        (i2: Expr, s0: int64, w0: ListDeclaration) <- wrap_walk_expr(expr.inner, enclosing_fn, all_decls, seq, let_env);
+                                        (rebuild_expr_shallow(expr, i2, expr.right_expr), s0, w0)
+                                    end;
+                                    false -> (expr, seq, parser_ast@empty_list_decl())
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn wrap_decl_bodies_for_hof(decls: ListDeclaration, all_static: ListDeclaration, seq: int64, acc_wrappers: ListDeclaration) -> (ListDeclaration, ListDeclaration) {
+    case decls.is_nil of {
+        true -> (parser_ast@empty_list_decl(), acc_wrappers);
+        false -> case decls.head.tag == 0 of {
+            true -> do
+                d: Declaration <- decls.head;
+                (body2: Expr, seq2: int64, w1: ListDeclaration) <- wrap_walk_expr(d.body, d.name, all_static, seq, parser_ast@nil_tuple_decompose_bindings());
+                d2: Declaration <- parser_ast@declaration_with_body(d, body2);
+                (rest_d: ListDeclaration, wacc: ListDeclaration) <- wrap_decl_bodies_for_hof(decls.tail, all_static, seq2, acc_wrappers);
+                wmerged: ListDeclaration <- append_declaration_lists(w1, wacc);
+                (parser_ast@cons_declaration(d2, rest_d), wmerged)
+            end;
+            false -> do
+                (rest_d2: ListDeclaration, wacc2: ListDeclaration) <- wrap_decl_bodies_for_hof(decls.tail, all_static, seq, acc_wrappers);
+                (parser_ast@cons_declaration(decls.head, rest_d2), wacc2)
+            end
+        }
+    }
+}
+
+fn wrap_lifted_lambda_hof_calls(program: Program) -> Program {
+    (decls2: ListDeclaration, wrappers: ListDeclaration) <- wrap_decl_bodies_for_hof(program.declarations, program.declarations, 0, parser_ast@empty_list_decl());
+    merged: ListDeclaration <- append_declaration_lists(decls2, wrappers);
+    Program { declarations: merged, location: program.location }
+}
+
+fn lift_lambda_expressions(program: Program) -> Program {
+    (new_decls: ListDeclaration, _: int64, lifted: ListDeclaration) <- lift_decl_list(program.declarations, 0, parser_ast@empty_list_decl());
+    merged: ListDeclaration <- append_declaration_lists(new_decls, lifted);
+    Program { declarations: merged, location: program.location }
 }
 
 fn expr_has_single_tuple_error(expr: Expr) -> (bool, SourceLocation) {

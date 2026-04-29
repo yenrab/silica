@@ -240,6 +240,109 @@ fn function_types_compatible(resolved: string, expected: string) -> bool {
     }
 }
 
+// Synthetic lifted lambda symbols (parser): "main.__lam0", etc.
+fn is_lifted_lambda_symbol_name(m: string) -> bool {
+    lifted_lam_sub_at(m, 0)
+}
+
+fn lifted_lam_sub_at(m: string, i: int64) -> bool {
+    case i + 6 > len(m) of {
+        true -> false;
+        false -> case substring(m, i, i + 6) == ".__lam" of {
+            true -> true;
+            false -> lifted_lam_sub_at(m, i + 1)
+        }
+    }
+}
+
+fn normalized_fn_params_ret(norm: string) -> (string, string) {
+    arrow: int64 <- find_arrow_idf(norm, 0, 0, 0, 0);
+    case arrow < 0 of {
+        true -> ("", "");
+        false -> do
+            raw_params: string <- trim_spaces_idf(substring(norm, 0, arrow));
+            ret: string <- trim_spaces_idf(substring(norm, arrow + 2, len(norm)));
+            inner: string <- case len(raw_params) >= 2 and substring(raw_params, 0, 1) == "(" and substring(raw_params, len(raw_params) - 1, len(raw_params)) == ")" of {
+                true -> trim_spaces_idf(substring(raw_params, 1, len(raw_params) - 1));
+                false -> raw_params
+            };
+            (inner, ret)
+        end
+    }
+}
+
+fn count_top_level_param_types(inner: string) -> int64 {
+    case len(inner) == 0 of {
+        true -> 0;
+        false -> do
+            comma: int64 <- find_comma_idf(inner, 0, 0, 0, 0);
+            case comma < 0 of {
+                true -> 1;
+                false -> 1 + count_top_level_param_types(trim_spaces_idf(substring(inner, comma + 1, len(inner))))
+            }
+        end
+    }
+}
+
+fn first_param_type_comma_rest(inner: string) -> (string, string) {
+    case len(inner) == 0 of {
+        true -> ("", "");
+        false -> do
+            comma: int64 <- find_comma_idf(inner, 0, 0, 0, 0);
+            case comma < 0 of {
+                true -> (trim_spaces_idf(inner), "");
+                false -> do
+                    f: string <- trim_spaces_idf(substring(inner, 0, comma));
+                    r: string <- trim_spaces_idf(substring(inner, comma + 1, len(inner)));
+                    (f, r)
+                end
+            }
+        end
+    }
+}
+
+fn param_types_prefix_match(li_res: string, li_exp: string, remaining: int64) -> bool {
+    case remaining == 0 of {
+        true -> true;
+        false -> do
+            (ar, r_res) <- first_param_type_comma_rest(li_res);
+            (be, r_exp) <- first_param_type_comma_rest(li_exp);
+            case type_checker_tuple_decompose_helpers@types_equal(ar, be) of {
+                false -> false;
+                true -> param_types_prefix_match(r_res, r_exp, remaining - 1)
+            }
+        end
+    }
+}
+
+// Lifted lambdas appear as symbols with arity formals+captures; source annotations use callee arity only.
+// Compare return types and require the resolved (implementation) param list to start with the expected param types.
+fn function_types_compatible_lifted_implementation(resolved: string, expected: string) -> bool {
+    a: string <- normalize_fn_type_idf(resolved);
+    b: string <- normalize_fn_type_idf(expected);
+    case find_arrow_idf(a, 0, 0, 0, 0) < 0 of {
+        true -> false;
+        false -> case find_arrow_idf(b, 0, 0, 0, 0) < 0 of {
+            true -> false;
+            false -> do
+                (li_a, ret_a) <- normalized_fn_params_ret(a);
+                (li_b, ret_b) <- normalized_fn_params_ret(b);
+                case type_checker_tuple_decompose_helpers@types_equal(ret_a, ret_b) of {
+                    false -> false;
+                    true -> do
+                        nb: int64 <- count_top_level_param_types(li_b);
+                        na: int64 <- count_top_level_param_types(li_a);
+                        case na >= nb of {
+                            false -> false;
+                            true -> param_types_prefix_match(li_a, li_b, nb)
+                        }
+                    end
+                }
+            end
+        }
+    }
+}
+
 // Check Expr kind 1 (identifier). Lookup in context.env, verify matches expected_type.
 // Note: "true"/"false" identifiers are routed to boolean checker by type_checker_expressions dispatcher
 fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
@@ -269,18 +372,21 @@ fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: Li
                     "atom" -> case expected_type of { "atom" -> type_checker_core@type_check_ok(); _: string -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6") };
                     _: string -> case function_types_compatible(resolved_type, expected_type) of {
                         true -> type_checker_core@type_check_ok();
-                        false -> case resolved_type == expected_type of {
+                        false -> case is_lifted_lambda_symbol_name(expr.name) and function_types_compatible_lifted_implementation(resolved_type, expected_type) of {
                             true -> type_checker_core@type_check_ok();
-                            false -> case type_checker_record_types@record_type_starts(resolved_type) and type_checker_record_types@record_type_starts(expected_type) of {
-                                true -> case type_checker_tuple_decompose_helpers@types_equal(resolved_type, expected_type) of {
-                                    true -> type_checker_core@type_check_ok();
-                                    false -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6")
-                                };
-                                false -> case type_checker_lists@list_types_compatible(resolved_type, expected_type) of {
-                                    true -> type_checker_core@type_check_ok();
-                                    false -> case type_checker_traits@actual_type_satisfies_trait_expectation(resolved_type, expected_type, world) of {
+                            false -> case resolved_type == expected_type of {
+                                true -> type_checker_core@type_check_ok();
+                                false -> case type_checker_record_types@record_type_starts(resolved_type) and type_checker_record_types@record_type_starts(expected_type) of {
+                                    true -> case type_checker_tuple_decompose_helpers@types_equal(resolved_type, expected_type) of {
                                         true -> type_checker_core@type_check_ok();
                                         false -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6")
+                                    };
+                                    false -> case type_checker_lists@list_types_compatible(resolved_type, expected_type) of {
+                                        true -> type_checker_core@type_check_ok();
+                                        false -> case type_checker_traits@actual_type_satisfies_trait_expectation(resolved_type, expected_type, world) of {
+                                            true -> type_checker_core@type_check_ok();
+                                            false -> type_checker_core@type_check_err("E2003", expr.location, concat("type mismatch: ", expr.name), "sect6")
+                                        }
                                     }
                                 }
                             }

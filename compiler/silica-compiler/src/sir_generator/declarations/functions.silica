@@ -91,6 +91,33 @@ fn param_types_from_list(params: ListParam) -> string {
     param_types_from_list_loop(reversed, "")
 }
 
+// Lambda lifting (constraint_extract) builds Declaration.parameters via append_param_list(formals, captures).
+// That list is already in source order (lambda formals then captured locals), unlike parser-built tag-0 params
+// stored with cons reversed. Reversing here would flip "formal|capture" to "capture|formal", mis-mapping % names
+// to AArch64 registers (first segment -> X0) vs actual call ABI (first formal must be X0).
+
+fn sir_name_contains_lifted_lambda_sub(m: string) -> bool {
+    sir_lifted_sub_at(m, 0)
+}
+
+fn sir_lifted_sub_at(m: string, i: int64) -> bool {
+    case i + 6 > len(m) of {
+        true -> false;
+        false -> case substring(m, i, i + 6) == ".__lam" of {
+            true -> true;
+            false -> sir_lifted_sub_at(m, i + 1)
+        }
+    }
+}
+
+fn param_names_from_list_lexical(params: ListParam) -> string {
+    param_names_from_list_loop(params, "")
+}
+
+fn param_types_from_list_lexical(params: ListParam) -> string {
+    param_types_from_list_loop(params, "")
+}
+
 // Build SIRFunction for a Declaration (tag 0)
 // Uses decl.body when present (kind >= 0); otherwise placeholder for empty body
 // Adds parameters to context so body can reference param names
@@ -108,8 +135,15 @@ fn emit_function(decl: Declaration, context: TypeContext, all_decls: ListDeclara
                 true -> terms@expr_to_sir_function_body(context_with_params, decl.body, decl.return_type_name);
                 false -> placeholder_body(decl.return_type_name)
             };
-            param_names_str: string <- param_names_from_list(decl.parameters);
-            param_types: string <- param_types_from_list(decl.parameters);
+            lifted_lam: bool <- sir_name_contains_lifted_lambda_sub(decl.name);
+            param_names_str: string <- case lifted_lam of {
+                true -> param_names_from_list_lexical(decl.parameters);
+                false -> param_names_from_list(decl.parameters)
+            };
+            param_types: string <- case lifted_lam of {
+                true -> param_types_from_list_lexical(decl.parameters);
+                false -> param_types_from_list(decl.parameters)
+            };
             SIRFunction { name: fn_name, return_type: ret_type, effects: eff_str, body: body, param_names: param_names_str, param_types: param_types }
         end;
         _: int64 -> sir_ast@dummy_sir_function()

@@ -46,6 +46,15 @@ export cons_param/2;
 export list_param_reverse_with_acc/2;
 export build_infer_type_bucket/2;
 export param_list_normalize/1;
+export rebuild_param/3;
+export rebuild_effect_name/3;
+export rebuild_tuple_decompose_binding_list/1;
+export rebuild_effect_name_list/1;
+export rebuild_param_list_from_lambda_bindings/1;
+export declaration_from_lambda_lift/8;
+export append_param_list/2;
+export declaration_with_body/2;
+export rebuild_param_list/1;
 export dummy_effect_name/0;
 export empty_effect_name_list/0;
 export cons_effect_name/2;
@@ -94,6 +103,7 @@ struct ListEffectName {
 }
 
 // Expr: kind 0 = integer literal, 1 = identifier, 2 = parenthesized, 3 = binary op, 4 = call, 5 = atom literal, 6 = let binding, 7 = boolean literal, 8 = string literal, 9 = tuple literal, 10 = tuple decomposition, 11 = sequence block, 12 = illegal unary minus (-expr); inner = operand, -1 = dummy (defined first for Declaration)
+// kind 991 = anonymous function / lambda expression: inner = body (`extract_function_body` shape); value = `(T1,T2) -> R` function type string (same shape as build_function_type); pattern_bindings = TupleDecomposeBinding chain mirroring ListParam (name + type_str per formal); right_expr = kind 992 dummy carrying only return type text in `value` for lifting; sequence_effects = optional proc effects from signature.
 // kind 992 = function type written in expression/generic-arg/tuple position (opaque): value = reconstructed type source text from parser_tuples@extract_fn_type_from_slots (e.g. `fn (...) -> (...)`) so `(int64, fn(msg: ...) -> (...))` is not parsed as value-tuple stmts under `(msg:)`.
 // kind 996 = parse error marker (missing `;` between statements): inner = recovered AST; location = diagnostic site (e.g. closing `end` of sequence); value holds error code "E1040".
 // kind 997 = parse error marker (illegal `;` after the last expression in a block / sequence region): inner = tail statement AST; location = first `;` token; value "E1041".
@@ -224,6 +234,43 @@ fn param_list_normalize(p: ListParam) -> ListParam {
     }
 }
 
+// Nominal rebuild helpers for AST copies produced outside this module (bootstrap assigns structural record types there).
+fn rebuild_param(name: string, type_name: string, location: SourceLocation) -> Param {
+    Param { name: name, type_name: type_name, location: location }
+}
+
+fn rebuild_param_list(src: ListParam) -> ListParam {
+    case src.is_nil of {
+        true -> nil_list_param();
+        false -> cons_param(rebuild_param(src.head.name, src.head.type_name, src.head.location), rebuild_param_list(src.tail))
+    }
+}
+
+fn rebuild_effect_name(name: string, parameter: string, location: SourceLocation) -> EffectName {
+    EffectName { name: name, parameter: parameter, location: location }
+}
+
+fn rebuild_tuple_decompose_binding_list(src: ListTupleDecomposeBinding) -> ListTupleDecomposeBinding {
+    case src.is_nil of {
+        true -> nil_tuple_decompose_bindings();
+        false -> cons_tuple_decompose_binding(make_tuple_decompose_binding(src.head.name, src.head.path, src.head.type_str), rebuild_tuple_decompose_binding_list(src.tail))
+    }
+}
+
+fn rebuild_param_list_from_lambda_bindings(bindings: ListTupleDecomposeBinding) -> ListParam {
+    case bindings.is_nil of {
+        true -> nil_list_param();
+        false -> cons_param(rebuild_param(bindings.head.name, bindings.head.type_str, zero_location()), rebuild_param_list_from_lambda_bindings(bindings.tail))
+    }
+}
+
+fn append_param_list(a: ListParam, b: ListParam) -> ListParam {
+    case a.is_nil of {
+        true -> b;
+        false -> cons_param(a.head, append_param_list(a.tail, b))
+    }
+}
+
 fn dummy_decl() -> Declaration {
     Declaration { tag: -1, name: "", parameters: nil_list_param(), return_type_name: "", return_type_location: zero_location(), location: zero_location(), body: dummy_expr(), declared_effects: empty_effect_name_list() }
 }
@@ -248,6 +295,24 @@ fn empty_effect_name_list() -> ListEffectName {
 
 fn cons_effect_name(eff: EffectName, list: ListEffectName) -> ListEffectName {
     ListEffectName { is_nil: false, head: eff, tail: list }
+}
+
+fn rebuild_effect_name_list(src: ListEffectName) -> ListEffectName {
+    case src.is_nil of {
+        true -> empty_effect_name_list();
+        false -> cons_effect_name(rebuild_effect_name(src.head.name, src.head.parameter, src.head.location), rebuild_effect_name_list(src.tail))
+    }
+}
+
+fn declaration_from_lambda_lift(name: string, pattern_bindings: ListTupleDecomposeBinding, capture_params: ListParam, ret_ty: string, ret_loc: SourceLocation, loc: SourceLocation, body: Expr, seq_eff: ListEffectName) -> Declaration {
+    formals_lp: ListParam <- rebuild_param_list_from_lambda_bindings(rebuild_tuple_decompose_binding_list(pattern_bindings));
+    params_lp: ListParam <- append_param_list(formals_lp, capture_params);
+    effs: ListEffectName <- rebuild_effect_name_list(seq_eff);
+    Declaration { tag: 0, name: name, parameters: params_lp, return_type_name: ret_ty, return_type_location: ret_loc, location: loc, body: body, declared_effects: effs }
+}
+
+fn declaration_with_body(decl: Declaration, body: Expr) -> Declaration {
+    Declaration { tag: decl.tag, name: decl.name, parameters: rebuild_param_list(decl.parameters), return_type_name: decl.return_type_name, return_type_location: decl.return_type_location, location: decl.location, body: body, declared_effects: rebuild_effect_name_list(decl.declared_effects) }
 }
 
 fn empty_named_program_list() -> ListNamedProgram {
