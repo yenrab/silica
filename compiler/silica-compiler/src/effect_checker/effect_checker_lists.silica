@@ -197,8 +197,42 @@ fn find_list_bracket_from(s: string, i: int64) -> int64 {
     }
 }
 
+{- Index of the `]` that closes the `[` at open_idx (depth-balanced); -1 if missing or unbalanced. -}
+fn find_matching_square_bracket_end_loop(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "[" of {
+                true -> find_matching_square_bracket_end_loop(s, i + 1, depth + 1);
+                false -> case c == "]" of {
+                    true -> case depth == 1 of {
+                        true -> i;
+                        false -> find_matching_square_bracket_end_loop(s, i + 1, depth - 1)
+                    };
+                    false -> find_matching_square_bracket_end_loop(s, i + 1, depth)
+                }
+            }
+        end
+    }
+}
+
+fn find_matching_square_bracket_end(s: string, open_idx: int64) -> int64 {
+    case open_idx < 0 of {
+        true -> -1;
+        false -> case open_idx >= len(s) of {
+            true -> -1;
+            false -> case substring(s, open_idx, open_idx + 1) == "[" of {
+                true -> find_matching_square_bracket_end_loop(s, open_idx + 1, 1);
+                false -> -1
+            }
+        }
+    }
+}
+
 {- Parse List[T, S] from a type or pattern string; returns S when two parameters after List[.
-   Accepts leading text (e.g. case pattern "[]: List[int64, normal]"). design §3.5, §9.8. -}
+   Accepts leading text (e.g. case pattern "[]: List[int64, normal]").
+   Accepts List[...] embedded in larger types (e.g. tuple "( atom, List[int64, mem(normal)] )"). design §3.5, §9.8. -}
 fn extract_space_from_list_type_str(type_str: string) -> (bool, string) {
     norm: string <- eff_normalize_list_type_bracket(eff_strip_spaces_list(type_str));
     start: int64 <- find_list_bracket_start(norm);
@@ -212,31 +246,28 @@ fn extract_space_from_list_type_str(type_str: string) -> (bool, string) {
                     false -> (false, "");
                     true -> do
                         base: int64 <- lbr + 1;
-                        inner_end: int64 <- len(norm) - 1;
-                        case inner_end < base of {
+                        inner_close: int64 <- find_matching_square_bracket_end(norm, lbr);
+                        case inner_close < base of {
                             true -> (false, "");
-                            false -> case substring(norm, inner_end, inner_end + 1) == "]" of {
-                                false -> (false, "");
-                                true -> do
-                                    inner: string <- substring(norm, base, inner_end);
-                                    comma_idx: int64 <- index_of_first_comma(inner);
-                                    case comma_idx < 0 of {
-                                        true -> (false, "");
-                                        false -> do
-                                            rest: string <- substring(inner, comma_idx + 1, len(inner));
-                                            space: string <- eff_strip_spaces_list(trim_leading_ws(rest));
-                                            bare: string <- unwrap_mem_param(space);
-                                            case effect_checker_core@is_valid_mem_parameter(bare) of {
-                                                true -> (true, bare);
-                                                false -> case effect_checker_core@is_valid_mem_parameter(space) of {
-                                                    true -> (true, space);
-                                                    false -> (false, "")
-                                                }
+                            false -> do
+                                inner: string <- substring(norm, base, inner_close);
+                                comma_idx: int64 <- index_of_first_comma(inner);
+                                case comma_idx < 0 of {
+                                    true -> (false, "");
+                                    false -> do
+                                        rest: string <- substring(inner, comma_idx + 1, len(inner));
+                                        space: string <- eff_strip_spaces_list(trim_leading_ws(rest));
+                                        bare: string <- unwrap_mem_param(space);
+                                        case effect_checker_core@is_valid_mem_parameter(bare) of {
+                                            true -> (true, bare);
+                                            false -> case effect_checker_core@is_valid_mem_parameter(space) of {
+                                                true -> (true, space);
+                                                false -> (false, "")
                                             }
-                                        end
-                                    }
-                                end
-                            }
+                                        }
+                                    end
+                                }
+                            end
                         }
                     end
                 }

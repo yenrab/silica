@@ -38,6 +38,7 @@
    read_buf, write_buf, buf_load, buf_store, alloc_rec, build, alloc_region_on_numa_node)
    require mem(Space) per spec Section 4.4, Sections 22.1-22.3; alloc_ref/alloc_buf/alloc_rec into atomic space also require atomic (Section 17.1.2).
    List[T,S] literals and list primitives require mem(S) per list_implementation_design.md Section 9.3, Section 9.8.
+   Tuple literals (parser kind 9) are right-nested like struct literals; effects are the union of element expressions (see constraint_extract extract_tuple_elements_tail).
    Struct literals (parser kind 21) and field access (kind 22) follow silica:StructLiterals / Section 3.3.7:
    effects are the union of subexpressions (field initializers; base expr for .field).
 -}
@@ -60,7 +61,7 @@ export expand_single_effect/2;
 // --- Effect collection from expressions ---
 
 {- Traverse an Expr tree and collect the union of all effects from function calls.
-   Expr kinds: 0=integer literal, 1=identifier, 2=parenthesized, 3=binary_op, 4=call, 5=atom literal, 6=let binding, 21=struct literal, 22=field access, -1=dummy.
+   Expr kinds: 0=integer literal, 1=identifier, 2=parenthesized, 3=binary_op, 4=call, 5=atom literal, 6=let binding, 9=tuple literal (right-nested inner/right_expr; also then/else payload under kind 19), 21=struct literal, 22=field access, -1=dummy.
    For calls (kind 4): resolve callee effects (region ops use binding_type for Space), union with arg subtree.
    For let bindings (kind 6): pass expr.value (binding type) when recursing into RHS for region op effect extraction.
    Pure expressions contribute no effects (spec Section 9.3.1). -}
@@ -120,11 +121,14 @@ fn collect_expr_effects_outside_sequence_blocks_with_binding(expr: Expr, ctx: Ef
                                         branch_effects: ListEffectName <- collect_case_branch_list_effects_outside(expr.right_expr, ctx);
                                         union_effect_lists(scrut_effects, branch_effects)
                                     end;
-                                    false -> case expr.kind == 21 of {
-                                        true -> collect_struct_literal_chain_effects_outside(expr, ctx, binding_type);
-                                        false -> case expr.kind == 22 of {
-                                            true -> collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type);
-                                            false -> parser_ast@empty_effect_name_list();
+                                    false -> case expr.kind == 9 of {
+                                        true -> collect_tuple_literal_chain_effects_outside(expr, ctx, binding_type);
+                                        false -> case expr.kind == 21 of {
+                                            true -> collect_struct_literal_chain_effects_outside(expr, ctx, binding_type);
+                                            false -> case expr.kind == 22 of {
+                                                true -> collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type);
+                                                false -> parser_ast@empty_effect_name_list();
+                                            }
                                         }
                                     }
                                 }
@@ -186,11 +190,14 @@ fn collect_expr_effects_with_binding(expr: Expr, ctx: EffectContext, binding_typ
                                         branch_effects: ListEffectName <- collect_case_branch_list_effects(expr.right_expr, ctx);
                                         union_effect_lists(scrut_effects, branch_effects)
                                     end;
-                                    false -> case expr.kind == 21 of {
-                                        true -> collect_struct_literal_chain_effects(expr, ctx, binding_type);
-                                        false -> case expr.kind == 22 of {
-                                            true -> collect_expr_effects_with_binding(expr.inner, ctx, binding_type);
-                                            false -> parser_ast@empty_effect_name_list();
+                                    false -> case expr.kind == 9 of {
+                                        true -> collect_tuple_literal_chain_effects(expr, ctx, binding_type);
+                                        false -> case expr.kind == 21 of {
+                                            true -> collect_struct_literal_chain_effects(expr, ctx, binding_type);
+                                            false -> case expr.kind == 22 of {
+                                                true -> collect_expr_effects_with_binding(expr.inner, ctx, binding_type);
+                                                false -> parser_ast@empty_effect_name_list();
+                                            }
                                         }
                                     }
                                 }
@@ -199,6 +206,38 @@ fn collect_expr_effects_with_binding(expr: Expr, ctx: EffectContext, binding_typ
                     }
                 }
             }
+        }
+    }
+}
+
+// --- Tuple literals (kind 9), right-nested inner/right_expr ---
+
+{- Right-nested chain of kind-9 nodes: inner = first element, right_expr = next element or tail Expr.
+   Same spine shape as struct literals (kind 21); used for `(\.,\.[,])` and for then/else pair under kind 19 (union of branches). -}
+fn collect_tuple_literal_chain_effects(expr: Expr, ctx: EffectContext, binding_type: string) -> ListEffectName {
+    case expr.kind == -1 of {
+        true -> parser_ast@empty_effect_name_list();
+        false -> case expr.kind == 9 of {
+            true -> do
+                head_eff: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, binding_type);
+                tail_eff: ListEffectName <- collect_tuple_literal_chain_effects(expr.right_expr, ctx, binding_type);
+                union_effect_lists(head_eff, tail_eff)
+            end;
+            false -> collect_expr_effects_with_binding(expr, ctx, binding_type)
+        }
+    }
+}
+
+fn collect_tuple_literal_chain_effects_outside(expr: Expr, ctx: EffectContext, binding_type: string) -> ListEffectName {
+    case expr.kind == -1 of {
+        true -> parser_ast@empty_effect_name_list();
+        false -> case expr.kind == 9 of {
+            true -> do
+                head_eff: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, binding_type);
+                tail_eff: ListEffectName <- collect_tuple_literal_chain_effects_outside(expr.right_expr, ctx, binding_type);
+                union_effect_lists(head_eff, tail_eff)
+            end;
+            false -> collect_expr_effects_outside_sequence_blocks_with_binding(expr, ctx, binding_type)
         }
     }
 }

@@ -110,7 +110,7 @@ fn supervisor_init_return_has_phase_e_declarative_fields(ret: string) -> bool {
                 false -> false;
                 true -> case supervisor_string_contains(t, "List [") or supervisor_string_contains(t, "List[") of {
                     false -> false;
-                    true -> case supervisor_string_contains(t, ", normal") of {
+                    true -> case supervisor_string_contains(t, ", normal") or supervisor_string_contains(t, ", mem") of {
                         false -> false;
                         true -> case supervisor_string_contains(t, "id :") of {
                             false -> false;
@@ -164,16 +164,16 @@ fn program_has_impl_for_supervisor(decls: ListDeclaration) -> bool {
 }
 
 // When a module defines `impl T for Supervisor` and `fn init(st: ActorState) -> ...`, the return type must
-// name Phase E declarative `supervisor_flags` + `List[child_spec, normal]` fields (runtime static table
-// and automatic restart per §15.4.13.1–2).
+// name Phase E declarative `supervisor_flags` + `List[child_spec, mem(ρ)|…]` (or legacy `, normal`) fields
+// (runtime static table and automatic restart per §15.4.13.1–2).
 fn check_supervisor_init_return_type_phase_e_shape(decl: Declaration) -> TypeCheckResult {
     retn: string <- type_checker_traits@trim_type_text(decl.return_type_name);
     case len(retn) > 0 of {
-        false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init must declare return type (supervisor_flags, List[child_spec, normal]); spec §15.4.13.1–§15.4.13.2 (supervisors plan Phase E)", "sect15.4.13.1");
+        false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init must declare return type (supervisor_flags, List[child_spec, mem(ρ) | …]); spec §15.4.13.1–§15.4.13.2 (supervisors plan Phase E)", "sect15.4.13.1");
         true -> case supervisor_init_return_tuple_has_flags_and_children(decl.return_type_name) of {
             false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init must return a tuple (supervisor_flags, static child list) per spec §15.4.13.1 (supervisors plan Phase E)", "sect15.4.13.1");
             true -> case supervisor_init_return_has_phase_e_declarative_fields(decl.return_type_name) of {
-                false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init return type must include supervisor_flags (strategy, allowed_restart_count, restarts_time_frame) and child_spec fields (id, agent_type, start, restart, shutdown) in List[..., normal] for automatic restart (supervisors plan Phase E; spec §15.4.13.2)", "sect15.4.13.2");
+                false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init return type must include supervisor_flags (strategy, allowed_restart_count, restarts_time_frame) and child_spec fields (id, agent_type, start, restart, shutdown) in List[..., mem(ρ) | …] or List[..., normal] for automatic restart (supervisors plan Phase E; spec §15.4.13.2)", "sect15.4.13.2");
                 true -> type_checker_core@type_check_ok()
             }
         }

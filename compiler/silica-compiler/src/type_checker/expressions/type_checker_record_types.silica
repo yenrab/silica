@@ -189,47 +189,6 @@ fn find_field_type_in_record(record_str: string, field: string) -> string {
     }
 }
 
-fn count_top_level_commas_from(content: string, i: int64, brace_depth: int64, bracket_depth: int64, paren_depth: int64) -> int64 {
-    case i >= len(content) of {
-        true -> 0;
-        false -> do
-            c: string <- substring(content, i, i + 1);
-            case c == "{" of {
-                true -> count_top_level_commas_from(content, i + 1, brace_depth + 1, bracket_depth, paren_depth);
-                false -> case c == "}" of {
-                    true -> count_top_level_commas_from(content, i + 1, brace_depth - 1, bracket_depth, paren_depth);
-                    false -> case c == "[" of {
-                        true -> count_top_level_commas_from(content, i + 1, brace_depth, bracket_depth + 1, paren_depth);
-                        false -> case c == "]" of {
-                            true -> count_top_level_commas_from(content, i + 1, brace_depth, bracket_depth - 1, paren_depth);
-                            false -> case c == "(" of {
-                                true -> count_top_level_commas_from(content, i + 1, brace_depth, bracket_depth, paren_depth + 1);
-                                false -> case c == ")" of {
-                                    true -> count_top_level_commas_from(content, i + 1, brace_depth, bracket_depth, paren_depth - 1);
-                                    false -> case c == "," and brace_depth == 0 and bracket_depth == 0 and paren_depth == 0 of {
-                                        true -> 1 + count_top_level_commas_from(content, i + 1, brace_depth, bracket_depth, paren_depth);
-                                        false -> count_top_level_commas_from(content, i + 1, brace_depth, bracket_depth, paren_depth)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        end
-    }
-}
-
-fn count_record_fields(record_str: string) -> int64 {
-    t: string <- strip_spaces_rt(record_str);
-    content: string <- extract_braced_body(t);
-    inner: string <- strip_spaces_rt(content);
-    case len(inner) == 0 of {
-        true -> 0;
-        false -> count_top_level_commas_from(inner, 0, 0, 0, 0) + 1
-    }
-}
-
 // Inline record type `{ f: T, ... }` (§3.4.2, §4.2): braces must balance for semantic analysis.
 fn record_type_braces_balanced(s: string) -> bool {
     t: string <- strip_spaces_rt(s);
@@ -279,6 +238,39 @@ fn record_case_field_step(remaining_inner: string) -> (string, string) {
         }
     };
     (first, rest)
+}
+
+// Count `field: type` segments at brace depth 0 (same splits as record_case_field_step).
+// Trailing comma after the last field does not add a field — unlike naive "commas + 1".
+fn count_record_field_segments(remaining: string, acc: int64) -> int64 {
+    rem_t: string <- strip_spaces_rt(remaining);
+    case len(rem_t) == 0 of {
+        true -> acc;
+        false -> do
+            (seg: string, rest: string) <- record_case_field_step(rem_t);
+            seg_t: string <- strip_spaces_rt(seg);
+            case len(seg_t) == 0 of {
+                true -> acc;
+                false -> do
+                    rest_t: string <- strip_spaces_rt(rest);
+                    case len(rest_t) == 0 of {
+                        true -> acc + 1;
+                        false -> count_record_field_segments(rest, acc + 1)
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn count_record_fields(record_str: string) -> int64 {
+    t: string <- strip_spaces_rt(record_str);
+    content: string <- extract_braced_body(t);
+    inner: string <- strip_spaces_rt(content);
+    case len(inner) == 0 of {
+        true -> 0;
+        false -> count_record_field_segments(inner, 0)
+    }
 }
 
 fn record_field_segment_name_sub(seg: string) -> (string, string) {

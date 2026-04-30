@@ -3246,17 +3246,26 @@ fn check_if_expression(expr: Expr, expected_type: string, context: TypeContext, 
 }
 
 // Tuple decomposition (kind 10): (pattern) <- rhs; body
-// Uses structured pattern_bindings from AST. All elements must be typed; pattern types must match RHS.
+// Structured pattern_bindings from AST. Bare identifiers get types from the RHS tuple; explicit `ident : type` must agree with RHS.
 fn check_tuple_decompose(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    rhs_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+    rhs_type: string <- case expr.inner.kind == 11 of {
+        true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner.right_expr, context_after_sequence_body(expr.inner.inner, context));
+        false -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context)
+    };
     case len(rhs_type) < 2 or substring(rhs_type, 0, 1) != "(" of {
         true -> type_checker_core@type_check_err("E2005", expr.location, concat("tuple decomposition RHS must have tuple type, got ", case len(rhs_type) == 0 of { true -> "[unknown]"; false -> rhs_type }), "sect4");
         false -> do
             bindings: ListTupleDecomposeBinding <- expr.pattern_bindings;
-            valid_result: TypeCheckResult <- type_checker_tuple_decompose_helpers@pattern_bindings_valid(bindings, expr.location);
+            rhs_trimmed: string <- type_checker_tuple_decompose_helpers@tuple_trim(rhs_type);
+            tuple_for_fill: string <- case len(expr.value) > 0 of {
+                true -> type_checker_tuple_decompose_helpers@tuple_trim(expr.value);
+                false -> rhs_trimmed
+            };
+            filled: ListTupleDecomposeBinding <- type_checker_tuple_decompose_helpers@fill_empty_binding_types_from_rhs(bindings, tuple_for_fill);
+            valid_result: TypeCheckResult <- type_checker_tuple_decompose_helpers@pattern_bindings_valid(filled, expr.location);
             case valid_result.is_ok of {
                 false -> valid_result;
-                true -> check_tuple_decompose_after_valid(expr, expected_type, context, rhs_type, bindings, world)
+                true -> check_tuple_decompose_after_valid(expr, expected_type, context, rhs_type, filled, world)
             }
         end
     }

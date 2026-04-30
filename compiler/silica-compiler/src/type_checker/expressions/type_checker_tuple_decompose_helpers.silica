@@ -31,6 +31,8 @@ export infer_struct_literal_type/2;
 export types_equal/2;
 export add_bindings_to_context/2;
 export pattern_bindings_valid/2;
+export fill_empty_binding_types_from_rhs/2;
+export tuple_trim/1;
 export pattern_types_match_rhs/2;
 export build_pattern_type_from_bindings/1;
 export CasePatternInfo/0;
@@ -519,6 +521,141 @@ fn digit_char(d: int64) -> string {
         0 -> "0"; 1 -> "1"; 2 -> "2"; 3 -> "3"; 4 -> "4";
         5 -> "5"; 6 -> "6"; 7 -> "7"; 8 -> "8"; 9 -> "9";
         _: int64 -> "0"
+    }
+}
+
+// --- RHS tuple projection (same comma/paren split as sir_generator tuple_decompose) ---
+// Infer pattern binding types when the parser left type_str empty (bare `ident` in `(a, b) <- rhs`).
+
+// Tuple element splitting: commas inside `(...)`, `[...]`, and `{...}` must not split elements
+// (e.g. second element `List[int64, mem(normal)]`).
+fn td_find_top_level_comma_at(s: string, i: int64, pdepth: int64, sqdepth: int64, brdepth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> case substring(s, i, i + 1) of {
+            "(" -> td_find_top_level_comma_at(s, i + 1, pdepth + 1, sqdepth, brdepth);
+            ")" -> td_find_top_level_comma_at(s, i + 1, case pdepth > 0 of { true -> pdepth - 1; false -> 0 }, sqdepth, brdepth);
+            "[" -> td_find_top_level_comma_at(s, i + 1, pdepth, sqdepth + 1, brdepth);
+            "]" -> td_find_top_level_comma_at(s, i + 1, pdepth, case sqdepth > 0 of { true -> sqdepth - 1; false -> 0 }, brdepth);
+            "{" -> td_find_top_level_comma_at(s, i + 1, pdepth, sqdepth, brdepth + 1);
+            "}" -> td_find_top_level_comma_at(s, i + 1, pdepth, sqdepth, case brdepth > 0 of { true -> brdepth - 1; false -> 0 });
+            "," -> case pdepth == 0 and sqdepth == 0 and brdepth == 0 of {
+                true -> i;
+                false -> td_find_top_level_comma_at(s, i + 1, pdepth, sqdepth, brdepth)
+            };
+            _: string -> td_find_top_level_comma_at(s, i + 1, pdepth, sqdepth, brdepth)
+        }
+    }
+}
+
+fn td_tuple_element_at_index_inner(inner: string, target_idx: int64) -> string {
+    case target_idx == 0 of {
+        true -> do
+            idx: int64 <- td_find_top_level_comma_at(inner, 0, 0, 0, 0);
+            first: string <- tuple_trim(substring(inner, 0, idx));
+            case len(first) >= 2 and substring(first, 0, 1) == "(" of {
+                true -> concat("(", concat(first, ")"));
+                false -> first
+            }
+        end;
+        false -> do
+            idx: int64 <- td_find_top_level_comma_at(inner, 0, 0, 0, 0);
+            rest: string <- case idx < len(inner) of {
+                true -> tuple_trim(substring(inner, idx + 1, len(inner)));
+                false -> ""
+            };
+            td_tuple_element_at_index_inner(rest, target_idx - 1)
+        end
+    }
+}
+
+fn td_tuple_element_at_index(tuple_type: string, idx: int64) -> string {
+    case len(tuple_type) < 2 of {
+        true -> "";
+        false -> case substring(tuple_type, 0, 1) == "(" of {
+            true -> td_tuple_element_at_index_inner(substring(tuple_type, 1, len(tuple_type) - 1), idx);
+            false -> ""
+        }
+    }
+}
+
+fn td_path_find_comma(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "," of {
+            true -> i;
+            false -> td_path_find_comma(s, i + 1)
+        }
+    }
+}
+
+fn td_path_str_first_index(path_str: string) -> int64 {
+    comma_pos: int64 <- td_path_find_comma(path_str, 0);
+    first_part: string <- case comma_pos >= 0 of {
+        true -> substring(path_str, 0, comma_pos);
+        false -> path_str
+    };
+    td_str_to_int64(first_part)
+}
+
+fn td_path_str_rest(path_str: string) -> string {
+    comma_pos: int64 <- td_path_find_comma(path_str, 0);
+    case comma_pos >= 0 and comma_pos + 1 < len(path_str) of {
+        true -> substring(path_str, comma_pos + 1, len(path_str));
+        false -> ""
+    }
+}
+
+fn td_str_to_int64(s: string) -> int64 {
+    td_str_to_int64_acc(s, 0, 0)
+}
+
+fn td_str_to_int64_acc(s: string, i: int64, acc: int64) -> int64 {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) of {
+            "0" -> td_str_to_int64_acc(s, i + 1, acc * 10 + 0);
+            "1" -> td_str_to_int64_acc(s, i + 1, acc * 10 + 1);
+            "2" -> td_str_to_int64_acc(s, i + 1, acc * 10 + 2);
+            "3" -> td_str_to_int64_acc(s, i + 1, acc * 10 + 3);
+            "4" -> td_str_to_int64_acc(s, i + 1, acc * 10 + 4);
+            "5" -> td_str_to_int64_acc(s, i + 1, acc * 10 + 5);
+            "6" -> td_str_to_int64_acc(s, i + 1, acc * 10 + 6);
+            "7" -> td_str_to_int64_acc(s, i + 1, acc * 10 + 7);
+            "8" -> td_str_to_int64_acc(s, i + 1, acc * 10 + 8);
+            "9" -> td_str_to_int64_acc(s, i + 1, acc * 10 + 9);
+            _: string -> acc
+        }
+    }
+}
+
+fn tuple_rhs_type_at_path(tuple_type: string, path: string) -> string {
+    case len(path) == 0 of {
+        true -> tuple_type;
+        false -> do
+            first_idx: int64 <- td_path_str_first_index(path);
+            rest_path: string <- td_path_str_rest(path);
+            elem: string <- td_tuple_element_at_index(tuple_type, first_idx);
+            case len(rest_path) == 0 of {
+                true -> elem;
+                false -> tuple_rhs_type_at_path(elem, rest_path)
+            }
+        end
+    }
+}
+
+fn fill_empty_binding_types_from_rhs(bindings: ListTupleDecomposeBinding, rhs_tuple_type: string) -> ListTupleDecomposeBinding {
+    case bindings.is_nil of {
+        true -> bindings;
+        false -> do
+            b: TupleDecomposeBinding <- bindings.head;
+            new_ty: string <- case len(b.type_str) > 0 of {
+                true -> b.type_str;
+                false -> tuple_rhs_type_at_path(rhs_tuple_type, b.path)
+            };
+            new_b: TupleDecomposeBinding <- parser_ast@make_tuple_decompose_binding(b.name, b.path, new_ty);
+            parser_ast@cons_tuple_decompose_binding(new_b, fill_empty_binding_types_from_rhs(bindings.tail, rhs_tuple_type))
+        end
     }
 }
 

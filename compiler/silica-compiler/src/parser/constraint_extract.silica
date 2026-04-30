@@ -1074,8 +1074,8 @@ fn token_is_list_type_name(tok: Token, kinds: TokenKinds) -> bool {
 }
 
 // `[` usually has role_list_lit_lbracket after constraint propagation; if that role is missing, still treat as a
-// list literal when the next token clearly starts list elements ([] or an operand), so RHS `[7,8,9]: List[...]`
-// does not fall through to extract_expr_with_precedence (which breaks sequence bodies → dummy main / MOV #0).
+// list literal when the next token clearly starts list elements ([] or an operand or `{` struct), so RHS and
+// tuple elements like `(0, [ { a: 1 } ])` do not fall through to extract_expr_with_precedence (E1040).
 fn is_list_literal_lbracket_fallback(slots: ListTokenSlot, kinds: TokenKinds) -> bool {
     case slots.is_nil of {
         true -> false;
@@ -1084,7 +1084,7 @@ fn is_list_literal_lbracket_fallback(slots: ListTokenSlot, kinds: TokenKinds) ->
                 true -> false;
                 false -> do
                     n: TokenSlot <- slots.tail.head;
-                    n.token.kind == kinds.right_bracket or n.token.kind == kinds.integer_literal or n.token.kind == kinds.float_literal or lexer_token_kind@is_identifier_lexeme_token(kinds, n.token.kind) or n.token.kind == kinds.string_literal or n.token.kind == kinds.true_literal or n.token.kind == kinds.false_literal or n.token.kind == kinds.left_bracket
+                    n.token.kind == kinds.right_bracket or n.token.lexeme == "]" or n.token.kind == kinds.integer_literal or n.token.kind == kinds.float_literal or lexer_token_kind@is_identifier_lexeme_token(kinds, n.token.kind) or n.token.kind == kinds.string_literal or n.token.kind == kinds.true_literal or n.token.kind == kinds.false_literal or n.token.kind == kinds.left_bracket or n.token.kind == kinds.left_brace or n.token.lexeme == "{"
                 end
             };
             false -> false
@@ -1421,11 +1421,14 @@ fn extract_binding(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO]
         true -> extract_binding_memory_region(slots);
         false -> case parser_tuples@is_tuple_type_binding_start(slots) of {
             true -> extract_binding_tuple(slots);
-            false -> case is_list_type_binding_start(slots) of {
-                true -> extract_binding_list(slots);
-                false -> case parser_tuples@is_struct_type_binding_start(slots) of {
-                    true -> extract_binding_struct(slots);
-                    false -> extract_binding_simple(slots)
+            false -> case parser_tuples@binding_starts_paren_tuple_type_after_colon(slots) of {
+                true -> extract_binding_tuple(slots);
+                false -> case is_list_type_binding_start(slots) of {
+                    true -> extract_binding_list(slots);
+                    false -> case parser_tuples@is_struct_type_binding_start(slots) of {
+                        true -> extract_binding_struct(slots);
+                        false -> extract_binding_simple(slots)
+                    }
                 }
             }
         }
@@ -1441,7 +1444,9 @@ fn extract_binding_for_sequence(slots: ListTokenSlot, stop_kind: int64) -> (Expr
         end;
         false -> case parser_tuples@is_memory_region_type_binding_start(slots) of {
             true -> extract_binding_memory_region_for_sequence(slots, stop_kind);
-            false -> case parser_tuples@is_tuple_type_binding_start(slots) of {
+        false -> case parser_tuples@is_tuple_type_binding_start(slots) of {
+            true -> extract_binding_tuple_for_sequence(slots, stop_kind);
+            false -> case parser_tuples@binding_starts_paren_tuple_type_after_colon(slots) of {
                 true -> extract_binding_tuple_for_sequence(slots, stop_kind);
                 false -> case is_list_type_binding_start(slots) of {
                     true -> extract_binding_list_for_sequence(slots, stop_kind);
@@ -1451,6 +1456,7 @@ fn extract_binding_for_sequence(slots: ListTokenSlot, stop_kind: int64) -> (Expr
                     }
                 }
             }
+        }
         }
     }
 }
@@ -1813,21 +1819,24 @@ fn extract_sequence_body(slots: ListTokenSlot, stop_kind: int64) -> (Expr, ListT
             end;
             false -> case is_binding_start(slots_tr) of {
                 true -> extract_binding_for_sequence(slots_tr, stop_kind);
-                false -> case slots_tr.head.token.kind == kinds.left_paren of {
-                    true -> do
-                        (td_expr: Expr, td_rest: ListTokenSlot) <- extract_tuple_decompose_for_sequence(slots_tr, stop_kind);
-                        case td_expr.kind == 10 of {
-                            true -> (td_expr, td_rest);
-                            false -> do
-                                (first_expr: Expr, after_first: ListTokenSlot) <- extract_body(slots_tr);
-                                extract_sequence_body_tail(first_expr, after_first, stop_kind)
-                            end
-                        }
-                    end;
-                    false -> do
-                        (first_expr: Expr, after_first: ListTokenSlot) <- extract_body(slots_tr);
-                        extract_sequence_body_tail(first_expr, after_first, stop_kind)
-                    end
+                false -> case parser_tuples@binding_starts_paren_tuple_type_after_colon(slots_tr) of {
+                    true -> extract_binding_for_sequence(slots_tr, stop_kind);
+                    false -> case slots_tr.head.token.kind == kinds.left_paren of {
+                        true -> do
+                            (td_expr: Expr, td_rest: ListTokenSlot) <- extract_tuple_decompose_for_sequence(slots_tr, stop_kind);
+                            case td_expr.kind == 10 of {
+                                true -> (td_expr, td_rest);
+                                false -> do
+                                    (first_expr: Expr, after_first: ListTokenSlot) <- extract_body(slots_tr);
+                                    extract_sequence_body_tail(first_expr, after_first, stop_kind)
+                                end
+                            }
+                        end;
+                        false -> do
+                            (first_expr: Expr, after_first: ListTokenSlot) <- extract_body(slots_tr);
+                            extract_sequence_body_tail(first_expr, after_first, stop_kind)
+                        end
+                    }
                 }
             }
         }
@@ -1890,30 +1899,108 @@ fn extract_sequence_body_tail(first_expr: Expr, after_first: ListTokenSlot, stop
     }
 }
 
+// kind 10: value is "" or whole-pattern tuple type string when `(p): (T1, T2) <- rhs` (see check_tuple_decompose).
+fn tuple_decompose_build_expr(lparen_slot: TokenSlot, rhs_expr: Expr, body: Expr, td_result: TupleDecomposeResult, ann_type_str: string) -> Expr {
+    Expr { kind: 10, value: ann_type_str, name: "", location: lparen_slot.token.location, inner: rhs_expr, right_expr: body, pattern_bindings: parser_tuples@get_bindings_for_ast(td_result), sequence_effects: parser_ast@empty_effect_name_list() }
+}
+
+fn extract_tuple_decompose_sequence_after_rhs(lparen_slot: TokenSlot, td_result: TupleDecomposeResult, rhs_expr: Expr, rest_after_rhs: ListTokenSlot, stop_kind: int64, ann_type_str: string) -> (Expr, ListTokenSlot) proc[DeviceIO] {
+    after_rhs_w: ListTokenSlot <- skip_leading_whitespace_slots(rest_after_rhs);
+    case after_rhs_w.is_nil of {
+        true -> do
+            after_semicolons: ListTokenSlot <- skip_semicolons_after_whitespace(rest_after_rhs);
+            (body: Expr, rest_after_body: ListTokenSlot) <- extract_sequence_body(after_semicolons, stop_kind);
+            td_expr: Expr <- tuple_decompose_build_expr(lparen_slot, rhs_expr, body, td_result, ann_type_str);
+            (td_expr, rest_after_body)
+        end;
+        false -> case after_rhs_w.head.token.lexeme == ";" of {
+            true -> do
+                after_semis: ListTokenSlot <- skip_semicolons_after_whitespace(after_rhs_w);
+                bound: ListTokenSlot <- skip_leading_whitespace_slots(after_semis);
+                case bound.is_nil of {
+                    true -> do
+                        td_partial: Expr <- tuple_decompose_build_expr(lparen_slot, rhs_expr, parser_ast@dummy_expr(), td_result, ann_type_str);
+                        err_wrap: Expr <- trailing_semicolon_marker(after_rhs_w.head.token.location, td_partial);
+                        td_expr: Expr <- tuple_decompose_build_expr(lparen_slot, rhs_expr, err_wrap, td_result, ann_type_str);
+                        (td_expr, bound)
+                    end;
+                    false -> case bound.head.token.kind == stop_kind or bound.head.token.lexeme == "produces" of {
+                        true -> do
+                            td_partial2: Expr <- tuple_decompose_build_expr(lparen_slot, rhs_expr, parser_ast@dummy_expr(), td_result, ann_type_str);
+                            err_wrap2: Expr <- trailing_semicolon_marker(after_rhs_w.head.token.location, td_partial2);
+                            td_expr2: Expr <- tuple_decompose_build_expr(lparen_slot, rhs_expr, err_wrap2, td_result, ann_type_str);
+                            (td_expr2, bound)
+                        end;
+                        false -> do
+                            (body2: Expr, rest_after_body2: ListTokenSlot) <- extract_sequence_body(after_semis, stop_kind);
+                            td_expr3: Expr <- tuple_decompose_build_expr(lparen_slot, rhs_expr, body2, td_result, ann_type_str);
+                            (td_expr3, rest_after_body2)
+                        end
+                    }
+                }
+            end;
+            false -> do
+                after_semicolons2: ListTokenSlot <- skip_semicolons_after_whitespace(rest_after_rhs);
+                (body3: Expr, rest_after_body3: ListTokenSlot) <- extract_sequence_body(after_semicolons2, stop_kind);
+                td_expr4: Expr <- tuple_decompose_build_expr(lparen_slot, rhs_expr, body3, td_result, ann_type_str);
+                (td_expr4, rest_after_body3)
+            end
+        }
+    }
+}
+
 fn extract_tuple_decompose(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
     do
         lparen_slot: TokenSlot <- slots.head;
         td_result: TupleDecomposeResult <- parser_tuples@extract_tuple_decompose_pattern_from_slots(slots);
         rest_after_rparen: ListTokenSlot <- td_result.rest_slots;
         kinds: TokenKinds <- lexer_token_kind@token_kinds();
-        case rest_after_rparen.is_nil of {
+        rest_w: ListTokenSlot <- skip_leading_whitespace_slots(rest_after_rparen);
+        case rest_w.is_nil of {
             true -> do
                 dummy: Expr <- parser_ast@dummy_expr();
                 (dummy, slots)
             end;
-            false -> case rest_after_rparen.head.token.kind == kinds.left_arrow of {
+            false -> case rest_w.head.token.kind == kinds.left_arrow of {
                 true -> do
-                    rhs_slots: ListTokenSlot <- rest_after_rparen.tail;
+                    rhs_slots: ListTokenSlot <- rest_w.tail;
                     (rhs_expr: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
                     after_semicolons: ListTokenSlot <- skip_semicolons_after_whitespace(rest_after_rhs);
                     (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(after_semicolons);
-                    td_expr: Expr <- Expr { kind: 10, value: "", name: "", location: lparen_slot.token.location, inner: rhs_expr, right_expr: body, pattern_bindings: parser_tuples@get_bindings_for_ast(td_result), sequence_effects: parser_ast@empty_effect_name_list() };
+                    td_expr: Expr <- tuple_decompose_build_expr(lparen_slot, rhs_expr, body, td_result, "");
                     (td_expr, rest_after_body)
                 end;
-                false -> do
-                    dummy: Expr <- parser_ast@dummy_expr();
-                    (dummy, slots)
-                end
+                false -> case rest_w.head.token.kind == kinds.colon of {
+                    true -> do
+                        after_colon: ListTokenSlot <- skip_leading_whitespace_slots(rest_w.tail);
+                        tr: TupleTypeResult <- parser_tuples@extract_tuple_type_from_slots(after_colon);
+                        rest_after_ann: ListTokenSlot <- skip_leading_whitespace_slots(tr.rest_slots);
+                        case rest_after_ann.is_nil of {
+                            true -> do
+                                dummy2: Expr <- parser_ast@dummy_expr();
+                                (dummy2, slots)
+                            end;
+                            false -> case rest_after_ann.head.token.kind == kinds.left_arrow of {
+                                true -> do
+                                    rhs_slots2: ListTokenSlot <- rest_after_ann.tail;
+                                    (rhs_expr2: Expr, rest_after_rhs2: ListTokenSlot) <- extract_body(rhs_slots2);
+                                    after_semicolons2: ListTokenSlot <- skip_semicolons_after_whitespace(rest_after_rhs2);
+                                    (body2: Expr, rest_after_body2: ListTokenSlot) <- extract_function_body(after_semicolons2);
+                                    td_expr2: Expr <- tuple_decompose_build_expr(lparen_slot, rhs_expr2, body2, td_result, tr.type_str);
+                                    (td_expr2, rest_after_body2)
+                                end;
+                                false -> do
+                                    dummy3: Expr <- parser_ast@dummy_expr();
+                                    (dummy3, slots)
+                                end
+                            }
+                        }
+                    end;
+                    false -> do
+                        dummy4: Expr <- parser_ast@dummy_expr();
+                        (dummy4, slots)
+                    end
+                }
             }
         }
     end
@@ -1925,62 +2012,46 @@ fn extract_tuple_decompose_for_sequence(slots: ListTokenSlot, stop_kind: int64) 
         td_result: TupleDecomposeResult <- parser_tuples@extract_tuple_decompose_pattern_from_slots(slots);
         rest_after_rparen: ListTokenSlot <- td_result.rest_slots;
         kinds: TokenKinds <- lexer_token_kind@token_kinds();
-        case rest_after_rparen.is_nil of {
+        rest_w: ListTokenSlot <- skip_leading_whitespace_slots(rest_after_rparen);
+        case rest_w.is_nil of {
             true -> do
                 dummy: Expr <- parser_ast@dummy_expr();
                 (dummy, slots)
             end;
-            false -> case rest_after_rparen.head.token.kind == kinds.left_arrow of {
+            false -> case rest_w.head.token.kind == kinds.left_arrow of {
                 true -> do
-                    rhs_slots: ListTokenSlot <- rest_after_rparen.tail;
+                    rhs_slots: ListTokenSlot <- rest_w.tail;
                     (rhs_expr: Expr, rest_after_rhs: ListTokenSlot) <- extract_body(rhs_slots);
-                    after_rhs_w: ListTokenSlot <- skip_leading_whitespace_slots(rest_after_rhs);
-                    case after_rhs_w.is_nil of {
-                        true -> do
-                            after_semicolons: ListTokenSlot <- skip_semicolons_after_whitespace(rest_after_rhs);
-                            (body: Expr, rest_after_body: ListTokenSlot) <- extract_sequence_body(after_semicolons, stop_kind);
-                            td_expr: Expr <- Expr { kind: 10, value: "", name: "", location: lparen_slot.token.location, inner: rhs_expr, right_expr: body, pattern_bindings: parser_tuples@get_bindings_for_ast(td_result), sequence_effects: parser_ast@empty_effect_name_list() };
-                            (td_expr, rest_after_body)
-                        end;
-                        false -> case after_rhs_w.head.token.lexeme == ";" of {
-                            true -> do
-                                after_semis: ListTokenSlot <- skip_semicolons_after_whitespace(after_rhs_w);
-                                bound: ListTokenSlot <- skip_leading_whitespace_slots(after_semis);
-                                case bound.is_nil of {
-                                    true -> do
-                                        td_partial: Expr <- Expr { kind: 10, value: "", name: "", location: lparen_slot.token.location, inner: rhs_expr, right_expr: parser_ast@dummy_expr(), pattern_bindings: parser_tuples@get_bindings_for_ast(td_result), sequence_effects: parser_ast@empty_effect_name_list() };
-                                        err_wrap: Expr <- trailing_semicolon_marker(after_rhs_w.head.token.location, td_partial);
-                                        td_expr: Expr <- Expr { kind: 10, value: "", name: "", location: lparen_slot.token.location, inner: rhs_expr, right_expr: err_wrap, pattern_bindings: parser_tuples@get_bindings_for_ast(td_result), sequence_effects: parser_ast@empty_effect_name_list() };
-                                        (td_expr, bound)
-                                    end;
-                                    false -> case bound.head.token.kind == stop_kind or bound.head.token.lexeme == "produces" of {
-                                        true -> do
-                                            td_partial: Expr <- Expr { kind: 10, value: "", name: "", location: lparen_slot.token.location, inner: rhs_expr, right_expr: parser_ast@dummy_expr(), pattern_bindings: parser_tuples@get_bindings_for_ast(td_result), sequence_effects: parser_ast@empty_effect_name_list() };
-                                            err_wrap: Expr <- trailing_semicolon_marker(after_rhs_w.head.token.location, td_partial);
-                                            td_expr: Expr <- Expr { kind: 10, value: "", name: "", location: lparen_slot.token.location, inner: rhs_expr, right_expr: err_wrap, pattern_bindings: parser_tuples@get_bindings_for_ast(td_result), sequence_effects: parser_ast@empty_effect_name_list() };
-                                            (td_expr, bound)
-                                        end;
-                                        false -> do
-                                            (body: Expr, rest_after_body: ListTokenSlot) <- extract_sequence_body(after_semis, stop_kind);
-                                            td_expr: Expr <- Expr { kind: 10, value: "", name: "", location: lparen_slot.token.location, inner: rhs_expr, right_expr: body, pattern_bindings: parser_tuples@get_bindings_for_ast(td_result), sequence_effects: parser_ast@empty_effect_name_list() };
-                                            (td_expr, rest_after_body)
-                                        end
-                                    }
-                                }
-                            end;
-                            false -> do
-                                after_semicolons: ListTokenSlot <- skip_semicolons_after_whitespace(rest_after_rhs);
-                                (body: Expr, rest_after_body: ListTokenSlot) <- extract_sequence_body(after_semicolons, stop_kind);
-                                td_expr: Expr <- Expr { kind: 10, value: "", name: "", location: lparen_slot.token.location, inner: rhs_expr, right_expr: body, pattern_bindings: parser_tuples@get_bindings_for_ast(td_result), sequence_effects: parser_ast@empty_effect_name_list() };
-                                (td_expr, rest_after_body)
-                            end
-                        }
-                    }
+                    extract_tuple_decompose_sequence_after_rhs(lparen_slot, td_result, rhs_expr, rest_after_rhs, stop_kind, "")
                 end;
-                false -> do
-                    dummy: Expr <- parser_ast@dummy_expr();
-                    (dummy, slots)
-                end
+                false -> case rest_w.head.token.kind == kinds.colon of {
+                    true -> do
+                        after_colon: ListTokenSlot <- skip_leading_whitespace_slots(rest_w.tail);
+                        tr: TupleTypeResult <- parser_tuples@extract_tuple_type_from_slots(after_colon);
+                        rest_after_ann: ListTokenSlot <- skip_leading_whitespace_slots(tr.rest_slots);
+                        case rest_after_ann.is_nil of {
+                            true -> do
+                                dummy_c: Expr <- parser_ast@dummy_expr();
+                                (dummy_c, slots)
+                            end;
+                            false -> case rest_after_ann.head.token.kind == kinds.left_arrow of {
+                                true -> do
+                                    rhs_slots_c: ListTokenSlot <- rest_after_ann.tail;
+                                    (rhs_expr_c: Expr, rest_after_rhs_c: ListTokenSlot) <- extract_body(rhs_slots_c);
+                                    extract_tuple_decompose_sequence_after_rhs(lparen_slot, td_result, rhs_expr_c, rest_after_rhs_c, stop_kind, tr.type_str)
+                                end;
+                                false -> do
+                                    dummy_d: Expr <- parser_ast@dummy_expr();
+                                    (dummy_d, slots)
+                                end
+                            }
+                        }
+                    end;
+                    false -> do
+                        dummy_e: Expr <- parser_ast@dummy_expr();
+                        (dummy_e, slots)
+                    end
+                }
             }
         }
     end
@@ -2148,47 +2219,58 @@ fn extract_if_expression(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[Dev
 
 fn extract_body(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
-    first: TokenSlot <- slots.head;
-    rest: ListTokenSlot <- slots.tail;
-    case first.token.kind == kinds.produces_keyword or first.token.lexeme == "produces" of {
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
         true -> do
-            dummy: Expr <- parser_ast@dummy_expr();
-            (dummy, slots)
+            dummy_nil: Expr <- parser_ast@dummy_expr();
+            (dummy_nil, trimmed)
         end;
-        false -> case first.token.kind == kinds.right_paren of {
-            true -> do
-                dummy: Expr <- parser_ast@dummy_expr();
-                (dummy, slots)
-            end;
-            false -> case first.token.kind == kinds.sequence_keyword or first.token.lexeme == "sequence" of {
-                true -> extract_sequence(slots);
-                false -> case first.token.kind == kinds.if_keyword or first.token.lexeme == "if" of {
-                    true -> extract_if_expression(slots);
-                    false -> case first.token.kind == kinds.left_bracket and (constraint_core@slot_role(first) == capability_list@role_list_lit_lbracket() or is_list_literal_lbracket_fallback(slots, kinds)) of {
-                        true -> extract_list_literal(slots);
-                        false -> case first.token.kind == kinds.left_brace and is_struct_literal_lbrace_fallback(slots, kinds) of {
-                            true -> extract_struct_literal(slots);
-                            false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, first.token.kind) of {
-                            true -> case is_binding_start(slots) of {
-                                true -> extract_binding(slots);
-                                false -> extract_expr_with_precedence(slots, 0)
-                            };
-                            false -> case first.token.kind == kinds.left_paren of {
-                                true -> do
-                                    (td_expr: Expr, td_rest: ListTokenSlot) <- extract_tuple_decompose(slots);
-                                    case td_expr.kind == 10 of {
-                                        true -> (td_expr, td_rest);
-                                        false -> extract_expr_with_precedence(slots, 0)
+        false -> do
+            first: TokenSlot <- trimmed.head;
+            case first.token.kind == kinds.produces_keyword or first.token.lexeme == "produces" of {
+                true -> do
+                    dummy: Expr <- parser_ast@dummy_expr();
+                    (dummy, trimmed)
+                end;
+                false -> case first.token.kind == kinds.right_paren of {
+                    true -> do
+                        dummy_rp: Expr <- parser_ast@dummy_expr();
+                        (dummy_rp, trimmed)
+                    end;
+                    false -> case first.token.kind == kinds.sequence_keyword or first.token.lexeme == "sequence" of {
+                        true -> extract_sequence(trimmed);
+                        false -> case first.token.kind == kinds.if_keyword or first.token.lexeme == "if" of {
+                            true -> extract_if_expression(trimmed);
+                            false -> case first.token.kind == kinds.left_bracket and (constraint_core@slot_role(first) == capability_list@role_list_lit_lbracket() or is_list_literal_lbracket_fallback(trimmed, kinds)) of {
+                                true -> extract_list_literal(trimmed);
+                                false -> case first.token.kind == kinds.left_brace and is_struct_literal_lbrace_fallback(trimmed, kinds) of {
+                                    true -> extract_struct_literal(trimmed);
+                                    false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, first.token.kind) of {
+                                        true -> case is_binding_start(trimmed) of {
+                                            true -> extract_binding(trimmed);
+                                            false -> case parser_tuples@binding_starts_paren_tuple_type_after_colon(trimmed) of {
+                                                true -> extract_binding(trimmed);
+                                                false -> extract_expr_with_precedence(trimmed, 0)
+                                            }
+                                        };
+                                        false -> case first.token.kind == kinds.left_paren of {
+                                            true -> do
+                                                (td_expr: Expr, td_rest: ListTokenSlot) <- extract_tuple_decompose(trimmed);
+                                                case td_expr.kind == 10 of {
+                                                    true -> (td_expr, td_rest);
+                                                    false -> extract_expr_with_precedence(trimmed, 0)
+                                                }
+                                            end;
+                                            false -> extract_expr_with_precedence(trimmed, 0)
+                                        }
                                     }
-                                end;
-                                false -> extract_expr_with_precedence(slots, 0)
+                                }
                             }
-                        }
                         }
                     }
                 }
             }
-        }
+        end
     }
 }
 
@@ -2210,14 +2292,14 @@ fn extract_parenthesized_tail(lparen_slot: TokenSlot, first: Expr, rest_after_fi
                 single: Expr <- Expr { kind: 2, value: "", name: "", location: lparen_slot.token.location, inner: first, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
                 (single, rest_after_first)
             end;
-            false -> case rest_after_first.head.token.kind == kinds.comma of {
+            false -> case rest_after_first.head.token.lexeme == "," or rest_after_first.head.token.kind == kinds.comma of {
                 true -> case rest_after_first.tail.is_nil of {
                 true -> do
                     dummy: Expr <- parser_ast@dummy_expr();
                     sentinel: Expr <- Expr { kind: 999, value: "single_tuple", name: "", location: lparen_slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
                     (sentinel, rest_after_first)
                 end;
-                false -> case rest_after_first.tail.head.token.kind == kinds.right_paren of {
+                false -> case rest_after_first.tail.head.token.lexeme == ")" or rest_after_first.tail.head.token.kind == kinds.right_paren of {
                     true -> do
                         dummy: Expr <- parser_ast@dummy_expr();
                         sentinel: Expr <- Expr { kind: 999, value: "single_tuple", name: "", location: lparen_slot.token.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
@@ -2246,16 +2328,16 @@ fn extract_parenthesized_tail(lparen_slot: TokenSlot, first: Expr, rest_after_fi
 fn extract_tuple_elements_tail(first: Expr, rest: ListTokenSlot, kinds: TokenKinds) -> (Expr, ListTokenSlot) proc[DeviceIO] {
     case rest.is_nil of {
         true -> (first, rest);
-        false -> case rest.head.token.kind == kinds.right_paren of {
+        false -> case rest.head.token.lexeme == ")" or rest.head.token.kind == kinds.right_paren of {
             true -> (first, rest.tail);
-            false -> case rest.head.token.kind == kinds.comma of {
+            false -> case rest.head.token.lexeme == "," or rest.head.token.kind == kinds.comma of {
                 true -> case rest.tail.is_nil of {
                     true -> do
                         dummy: Expr <- parser_ast@dummy_expr();
                         sentinel: Expr <- Expr { kind: 999, value: "single_tuple", name: "", location: first.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
                         (sentinel, rest)
                     end;
-                    false -> case rest.tail.head.token.kind == kinds.right_paren of {
+                    false -> case rest.tail.head.token.lexeme == ")" or rest.tail.head.token.kind == kinds.right_paren of {
                         true -> do
                             dummy: Expr <- parser_ast@dummy_expr();
                             sentinel: Expr <- Expr { kind: 999, value: "single_tuple", name: "", location: first.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
@@ -2279,10 +2361,12 @@ fn extract_tuple_elements_tail(first: Expr, rest: ListTokenSlot, kinds: TokenKin
 // Comma-separated list literal elements; right-nested (a, (b, (c, d))) shape with kind 20 and value "" on pair nodes.
 // Closing `]` normally has role_list_lit_rbracket; if constraint propagation missed the role, still accept `]` when
 // `: List[...]` follows (same idea as parse_list_literal_type_suffix), so the suffix parser sees `:` not a stale `]`.
+// Also accept `)` or `,` after `]` when the list is a tuple element — constraints expect `;` after list_lit_rbracket,
+// so `]` before `)` (e.g. `(0, [0])`) or `,` (e.g. `(0, [0], 1)`) often has no role and must parse structurally.
 fn extract_list_elements_tail(first: Expr, rest: ListTokenSlot, kinds: TokenKinds) -> (Expr, ListTokenSlot) proc[DeviceIO] {
     case rest.is_nil of {
         true -> (first, rest);
-        false -> case rest.head.token.kind == kinds.right_bracket of {
+        false -> case rest.head.token.kind == kinds.right_bracket or rest.head.token.lexeme == "]" of {
             true -> do
                 role_ok: bool <- constraint_core@slot_role(rest.head) == capability_list@role_list_lit_rbracket();
                 after_rbr: ListTokenSlot <- rest.tail;
@@ -2295,19 +2379,27 @@ fn extract_list_elements_tail(first: Expr, rest: ListTokenSlot, kinds: TokenKind
                     true -> true;
                     false -> after_ws.head.token.kind == kinds.semicolon
                 };
-                case role_ok or colon_suffix_ok or semi_suffix_ok of {
+                rparen_suffix_ok: bool <- case slots_is_nil(after_ws) of {
+                    true -> false;
+                    false -> after_ws.head.token.kind == kinds.right_paren or after_ws.head.token.lexeme == ")"
+                };
+                comma_tuple_suffix_ok: bool <- case slots_is_nil(after_ws) of {
+                    true -> false;
+                    false -> after_ws.head.token.kind == kinds.comma or after_ws.head.token.lexeme == ","
+                };
+                case role_ok or colon_suffix_ok or semi_suffix_ok or rparen_suffix_ok or comma_tuple_suffix_ok of {
                     true -> (first, rest.tail);
                     false -> (first, rest)
                 }
             end;
-            false -> case rest.head.token.kind == kinds.comma of {
+            false -> case rest.head.token.kind == kinds.comma or rest.head.token.lexeme == "," of {
                 true -> case rest.tail.is_nil of {
                     true -> do
                         dummy: Expr <- parser_ast@dummy_expr();
                         sentinel: Expr <- Expr { kind: 999, value: "single_list", name: "", location: first.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
                         (sentinel, rest)
                     end;
-                    false -> case rest.tail.head.token.kind == kinds.right_bracket of {
+                    false -> case rest.tail.head.token.kind == kinds.right_bracket or rest.tail.head.token.lexeme == "]" of {
                         true -> do
                             dummy: Expr <- parser_ast@dummy_expr();
                             sentinel: Expr <- Expr { kind: 999, value: "single_list", name: "", location: first.location, inner: dummy, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
@@ -2367,7 +2459,7 @@ fn extract_list_literal(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[Devi
     after_open: ListTokenSlot <- slots.tail;
     case slots_is_nil(after_open) of {
         true -> (parser_ast@dummy_expr(), slots);
-        false -> case after_open.head.token.kind == kinds.right_bracket of {
+        false -> case after_open.head.token.kind == kinds.right_bracket or after_open.head.token.lexeme == "]" of {
             true -> do
                 role_ok: bool <- constraint_core@slot_role(after_open.head) == capability_list@role_list_lit_rbracket();
                 after_rbr_empty: ListTokenSlot <- after_open.tail;
@@ -2380,7 +2472,15 @@ fn extract_list_literal(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[Devi
                     true -> true;
                     false -> after_ws_empty.head.token.kind == kinds.semicolon
                 };
-                case role_ok or colon_suffix_ok or semi_suffix_ok of {
+                rparen_suffix_ok: bool <- case slots_is_nil(after_ws_empty) of {
+                    true -> false;
+                    false -> after_ws_empty.head.token.kind == kinds.right_paren or after_ws_empty.head.token.lexeme == ")"
+                };
+                comma_tuple_suffix_ok: bool <- case slots_is_nil(after_ws_empty) of {
+                    true -> false;
+                    false -> after_ws_empty.head.token.kind == kinds.comma or after_ws_empty.head.token.lexeme == ","
+                };
+                case role_ok or colon_suffix_ok or semi_suffix_ok or rparen_suffix_ok or comma_tuple_suffix_ok of {
                     true -> do
                         after_elems: ListTokenSlot <- after_open.tail;
                         dummy: Expr <- parser_ast@dummy_expr();
@@ -3118,6 +3218,7 @@ fn params_to_lambda_bindings(params: ListParam) -> ListTupleDecomposeBinding {
 }
 
 fn extract_lambda_expression(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
     kw_slot: TokenSlot <- slots.head;
     after_kw: ListTokenSlot <- slots.tail;
     (params: ListParam, ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- collect_params_and_find_type_and_body(after_kw);
@@ -3145,7 +3246,15 @@ fn extract_lambda_expression(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc
         pattern_bindings: bindings,
         sequence_effects: effects
     };
-    (lam, rest_after_body)
+    rest_ws: ListTokenSlot <- skip_leading_whitespace_slots(rest_after_body);
+    rest_after_lambda: ListTokenSlot <- case rest_ws.is_nil of {
+        true -> rest_ws;
+        false -> case rest_ws.head.token.kind == kinds.right_brace or rest_ws.head.token.lexeme == "}" of {
+            true -> rest_ws.tail;
+            false -> rest_ws
+        }
+    };
+    (lam, rest_after_lambda)
 }
 
 fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
