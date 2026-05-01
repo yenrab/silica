@@ -17,8 +17,10 @@
 
 // Compiler-bundled actor runtime: AArch64 assembly text maintained here (Silica string chunks).
 // Emitted into every module that uses actor prims (emitter_core). Links against libSystem
-// (_calloc, _free, _pthread_create, _os_unfair_lock_*, ___ulock_wait, ___ulock_wake, etc.) and
-// macOS TLV for thread-local current actor.
+// (_calloc, _free, _pthread_create, _pthread_key_create, _pthread_getspecific, _pthread_setspecific,
+// _os_unfair_lock_*, ___ulock_wait, ___ulock_wake, etc.).
+// Thread-local current actor pointer is stored via pthread_key_t (_silica_actor_pthread_key), not Mach-O TLV
+// (__thread/__tlv_bootstrap), so linker TLVP_* lowering cannot break pthread entry.
 // Phase E e4f: per-actor mutex + scheduler CV use os_unfair_lock + ___ulock (not pthread_mutex_t /
 // pthread_cond_t) — see actor_rt_asm_cv_chunk and supervisors_implementation_development_plan.md.
 // cpu_topology / cache / NUMA helpers (_silica_rt_apple_*, sysctl hw.*): macOS Apple Silicon only (see cpu_topology_implementation_plan Phase G).
@@ -33,6 +35,8 @@
 // `front`; when `front` is empty on a dequeue, `rear` is reversed in place to become the new `front` and `rear` is
 // cleared. Standard mailbox pair at (#128 front, #136 rear). Supervision ingress pair at (#232 front, #240 rear),
 // with u32 depth at #248 (bounded; overflow calls _abort in trusted runtime).
+// 152 B message nodes: #24 ingress_kind — 0 = structured child-exit heap payload ptr at #8 (Phase C; auto-restart reads #8);
+// non-zero = Phase B trial hook only: #8 holds inline int64 (not a pointer; sup_beh must run; skip maybe_restart).
 // Phase E e3a: child table anchors at #256 head ptr, #264 len (high-water row count), #272 reserved (0);
 // rows are singly-linked nodes (88 B: 80 B row + next@+80), no realloc — stable row pointers (Option B).
 // Phase E e3b: #280 = trampoline fn ptr (_silica_supervisor_start_<T>, 0 if non-supervisor), #288 = trampoline-ran flag (0/1).
@@ -186,14 +190,9 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 	mov	x19, x0
 	cbz	x0, LBBsl_4
 	stp	x21, x20, [x19]
-Lslp_tls0:
-	adrp	x0, _tl_current_actor@TLVPPAGE
-Lslp_tls1:
-	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
-	ldr	x8, [x0]
-	blr	x8
-	ldr	x0, [x0]
-	str	x0, [x19, #192]
+	bl	_silica_rt_tls_current_actor_get
+	mov	x21, x0
+	str	x21, [x19, #192]
 	str	x23, [x19, #200]
 	str	x24, [x19, #208]
 	str	xzr, [x19, #216]
@@ -260,7 +259,6 @@ LBBsl_4:
 	ldp	x22, x21, [sp, #16]
 	ldp	x24, x23, [sp], #64
 	ret
-	.loh AdrpLdr	Lslp_tls0, Lslp_tls1
 	.loh AdrpAdd	Lslp_tm0, Lslp_tm1
 	.cfi_endproc
                                         ; -- End function
@@ -284,13 +282,8 @@ fn actor_rt_asm_chunk_1() -> string {
 	.cfi_offset w21, -40
 	.cfi_offset w22, -48
 	mov	x19, x0
-Lloh2:
-	adrp	x0, _tl_current_actor@TLVPPAGE
-Lloh3:
-	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
-	ldr	x8, [x0]
-	blr	x8
-	str	x19, [x0]
+	bl	_silica_rt_ensure_actor_tls_key
+	bl	_silica_rt_tls_actor_set_from_x19
 ; Phase E e3b: first-schedule supervisor trampoline hook
 	ldr	x8, [x19, #280]
 	cbz	x8, LBB1_skip_tramp
@@ -346,7 +339,7 @@ fn actor_rt_asm_chunk_2() -> string {
 	ldr	w8, [x20, #16]
 	str	w8, [sp, #32]
 	mov	w22, w21
-	cbnz	w22, LBB1_ingress_no_beh
+	cbnz	w22, LBB1_ingress_check_kind
 	ldr	x0, [x20, #8]
 	ldp	x1, x8, [x19]
 	mov	x2, sp
@@ -354,11 +347,24 @@ fn actor_rt_asm_chunk_2() -> string {
 	ldr	x21, [x0, #8]
 	ldr	x9, [x0, #16]
 	b	LBB1_post_beh
+LBB1_ingress_check_kind:
+	ldr	w9, [x20, #24]
+	cbnz	w9, LBB1_ingress_user_beh
 LBB1_ingress_no_beh:
-; Ingress carries a failure payload at message[+8], not a user message. Invoking the behavior
-; would treat that pointer as (msg, …) and corrupt the actor / locks (phase_e4f rest_for_one).
+; Phase C / structured exit: message[+8] is heap payload; do not invoke beh(msg,…). phase_e4f rest_for_one.
 	mov	x21, xzr
 	mov	x9, xzr
+	b	LBB1_post_beh
+LBB1_ingress_user_beh:
+; Phase B trial: message[+8] is inline int64; run behavior like a normal dequeue.
+	ldr	x0, [x20, #8]
+	ldp	x1, x8, [x19]
+	mov	x2, sp
+	blr	x8
+	ldr	x21, [x0, #8]
+	ldr	x9, [x0, #16]
+	mov	w22, #0
+	b	LBB1_post_beh
 LBB1_post_beh:
 	ldr	x20, [sp, #24]
 	ldr	w8, [sp, #32]
@@ -392,6 +398,8 @@ LBB1_drain_ingress:
 	str	w9, [x19, #248]
 	add	x0, x19, #16
 	bl	_os_unfair_lock_unlock
+	ldr	w9, [x23, #24]
+	cbnz	w9, LBB1_drain_ingress_free_msg
 	ldr	x22, [x23, #8]
 	cbz	x22, LBB1_drain_ingress_free_msg
 	ldr	x0, [x22]
@@ -418,7 +426,10 @@ LBB1_drain_ingress_done:
 LBB1_free:
 ; Phase E e3c+e4b: if this was an ingress message (w21==1), attempt automatic restart before freeing. X2 = reason_tag from payload+8 (e4b).
 ; Payload ptr must live in a callee-saved reg across maybe_restart — x8 is caller-saved and was clobbered, yielding free(non-heap) (e.g. 0x1).
+; Phase B trial: message[+24]!=0 and +8 is inline int64 — do not treat +8 as heap or call maybe_restart (phase_b_ingress_before_cast).
 	cbz	w21, LBB1_free_skip_restart
+	ldr	w9, [x20, #24]
+	cbnz	w9, LBB1_free_skip_restart
 	ldr	x25, [x20, #8]
 	cbz	x25, LBB1_free_skip_restart
 	ldr	x0, [x25]
@@ -477,7 +488,6 @@ LBB1_exit_no_row:
 	ldp	x22, x21, [sp], #48             ; 16-byte Folded Reload
 	ret
 	.loh AdrpAdd	Lloh_rn0, Lloh_rn1
-	.loh AdrpLdr	Lloh2, Lloh3
 	.cfi_endproc
                                         ; -- End function
 	.p2align	2                               ; functional queue dequeue; caller holds queue's lock
@@ -714,16 +724,9 @@ _silica_rt_actor_self:                  ; @silica_rt_actor_self
 	.cfi_def_cfa w29, 16
 	.cfi_offset w30, -8
 	.cfi_offset w29, -16
-Lloh4:
-	adrp	x0, _tl_current_actor@TLVPPAGE
-Lloh5:
-	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
-	ldr	x8, [x0]
-	blr	x8
-	ldr	x0, [x0]
+	bl	_silica_rt_tls_current_actor_get
 	ldp	x29, x30, [sp], #16             ; 16-byte Folded Reload
 	ret
-	.loh AdrpLdr	Lloh4, Lloh5
 	.cfi_endproc
                                         ; -- End function
 "
@@ -1829,18 +1832,92 @@ L_bcp_fail:
 }
 
 fn actor_rt_asm_chunk_10() -> string {
-    ".tbss _tl_current_actor$tlv$init, 8, 3  ; @tl_current_actor
-
-	.section	__DATA,__thread_vars,thread_local_variables
-_tl_current_actor:
-	.quad	__tlv_bootstrap
-	.quad	0
-	.quad	_tl_current_actor$tlv$init
+    "	.section	__DATA,__bss
+	.p2align	3
+_silica_actor_pthread_key:
+	.zero	8
+_silica_actor_tls_init_lock:
+	.zero	4
+_silica_actor_tls_key_ready:
+	.zero	1
 "
 }
 
 fn actor_rt_asm_chunk_11() -> string {
     "	.section	__TEXT,__text,regular,pure_instructions
+	.globl	_silica_rt_ensure_actor_tls_key
+	.p2align	2
+_silica_rt_ensure_actor_tls_key:
+	.cfi_startproc
+	stp	x21, x20, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w21, -32
+	.cfi_offset w20, -24
+	adrp	x20, _silica_actor_tls_key_ready@PAGE
+	add	x20, x20, _silica_actor_tls_key_ready@PAGEOFF
+	ldrb	w8, [x20]
+	cbnz	w8, L_tlse_done
+	adrp	x0, _silica_actor_tls_init_lock@PAGE
+	add	x0, x0, _silica_actor_tls_init_lock@PAGEOFF
+	bl	_os_unfair_lock_lock
+	ldrb	w8, [x20]
+	cbnz	w8, L_tlse_unlock
+	adrp	x0, _silica_actor_pthread_key@PAGE
+	add	x0, x0, _silica_actor_pthread_key@PAGEOFF
+	mov	x1, xzr
+	bl	_pthread_key_create
+	cbnz	w0, L_tlse_unlock
+	mov	w8, #1
+	strb	w8, [x20]
+L_tlse_unlock:
+	adrp	x0, _silica_actor_tls_init_lock@PAGE
+	add	x0, x0, _silica_actor_tls_init_lock@PAGEOFF
+	bl	_os_unfair_lock_unlock
+L_tlse_done:
+	ldp	x29, x30, [sp, #16]
+	ldp	x21, x20, [sp], #32
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_tls_current_actor_get
+	.p2align	2
+_silica_rt_tls_current_actor_get:
+	.cfi_startproc
+	stp	x29, x30, [sp, #-16]!
+	mov	x29, sp
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	bl	_silica_rt_ensure_actor_tls_key
+	adrp	x8, _silica_actor_pthread_key@PAGE
+	add	x8, x8, _silica_actor_pthread_key@PAGEOFF
+	ldr	x0, [x8]
+	bl	_pthread_getspecific
+	ldp	x29, x30, [sp], #16
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_tls_actor_set_from_x19
+	.p2align	2
+_silica_rt_tls_actor_set_from_x19:
+	.cfi_startproc
+; Preserve ACB in x21 across pthread_setspecific — libc paths have been observed clobbering
+; the spilled x19 slot in this small leaf frame on some macOS stacks.
+	stp	x29, x30, [sp, #-32]!
+	mov	x29, sp
+	mov	x21, x19
+	bl	_silica_rt_ensure_actor_tls_key
+	mov	x1, x21
+	adrp	x8, _silica_actor_pthread_key@PAGE
+	add	x8, x8, _silica_actor_pthread_key@PAGEOFF
+	ldr	x0, [x8]
+	bl	_pthread_setspecific
+	mov	x19, x21
+	ldp	x29, x30, [sp], #32
+	ret
+	.cfi_endproc
 	.p2align	2
 _silica_rt_actor_init_region:           ; init growable stack region for actor
 	.cfi_startproc
@@ -2040,13 +2117,8 @@ _silica_rt_stack_fault_handler:         ; SIGSEGV handler for growable actor sta
 	.cfi_offset w21, -40
 	.cfi_offset w22, -48
 	ldr	x19, [x1, #24]
-Lloh_sh0:
-	adrp	x0, _tl_current_actor@TLVPPAGE
-Lloh_sh1:
-	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
-	ldr	x8, [x0]
-	blr	x8
-	ldr	x20, [x0]
+	bl	_silica_rt_tls_current_actor_get
+	mov	x20, x0
 	cbz	x20, LBBfh_crash
 	ldr	x21, [x20, #160]
 	cbz	x21, LBBfh_crash
@@ -2090,7 +2162,6 @@ LBBfh_crash:
 	ldp	x20, x19, [sp, #16]
 	ldp	x22, x21, [sp], #48
 	ret
-	.loh AdrpLdr	Lloh_sh0, Lloh_sh1
 	.cfi_endproc
                                         ; -- End function
 	.section	__DATA,__common
@@ -2126,13 +2197,8 @@ _silica_rt_region_alloc:                ; @silica_rt_region_alloc
 	.cfi_offset w19, -24
 	.cfi_offset w20, -32
 	mov	x19, x0
-Lloh_ra0:
-	adrp	x0, _tl_current_actor@TLVPPAGE
-Lloh_ra1:
-	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
-	ldr	x8, [x0]
-	blr	x8
-	ldr	x20, [x0]
+	bl	_silica_rt_tls_current_actor_get
+	mov	x20, x0
 	cbz	x20, LBBra_fallback
 	ldr	x8, [x20, #176]
 	cbz	x8, LBBra_fallback
@@ -2150,14 +2216,13 @@ LBBra_fallback:
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
 	ret
-	.loh AdrpLdr	Lloh_ra0, Lloh_ra1
 	.cfi_endproc
                                         ; -- End function
 	.globl	_silica_rt_actor_supervision_ingress_enqueue ; Phase B — synthetic exit / trial hook; bounded queue
 	.p2align	2
 _silica_rt_actor_supervision_ingress_enqueue:
 	.cfi_startproc
-; X0=target actor_ref, X1=int64 payload → X0=:ok (0). Cast-shaped 152 B node; payload in heap 8 B (matches cast +8 indirection).
+; X0=target actor_ref, X1=int64 payload → X0=:ok (0). Cast-shaped 152 B node; +8 = inline int64; +24 = 1 (trial; not heap payload).
 	stp	x22, x21, [sp, #-48]!
 	stp	x20, x19, [sp, #16]
 	stp	x29, x30, [sp, #32]
@@ -2184,6 +2249,8 @@ _silica_rt_actor_supervision_ingress_enqueue:
 	mov	x20, x0
 	str	x21, [x20, #8]
 	str	wzr, [x20, #16]
+	mov	w9, #1
+	str	w9, [x20, #24]
 	add	x0, x19, #232
 	mov	x1, x20
 	bl	_silica_rt_q_enqueue_locked
@@ -2225,13 +2292,8 @@ _silica_rt_actor_recv:                  ; @silica_rt_actor_recv
 	.cfi_offset w29, -16
 	.cfi_offset w19, -24
 	.cfi_offset w20, -32
-Lloh_recv0:
-	adrp	x0, _tl_current_actor@TLVPPAGE
-Lloh_recv1:
-	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
-	ldr	x8, [x0]
-	blr	x8
-	ldr	x19, [x0]
+	bl	_silica_rt_tls_current_actor_get
+	mov	x19, x0
 	cbz	x19, Lrecv_done_null
 	add	x0, x19, #16
 	bl	_os_unfair_lock_lock
@@ -2259,7 +2321,6 @@ Lrecv_done_null:
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
 	ret
-	.loh AdrpLdr	Lloh_recv0, Lloh_recv1
 	.cfi_endproc
                                         ; -- End function
 	.globl	_silica_rt_actor_link           ; Phase G — §15.4.8.4–8.5
@@ -2295,7 +2356,7 @@ _silica_rt_actor_demonitor:             ; @silica_rt_actor_demonitor
 // behavior-only trial accessors used by `phase_c_child_exit_notification.silica` to assert payload fields.
 // Payload layout (32 B, heap): [+0]=child_ref, [+8]=reason_tag (int64; 0=:normal for Phase C), [+16]=reason_atom
 // (atom index; 0 when not `(:explicit, …)`), [+24]=agent_type (atom copied from child's #200 slot).
-// Message node (152 B, heap) matches the standard cast shape: [+8]=payload pointer, [+16]=needs_reply=0.
+// Message node (152 B, heap) matches the standard cast shape: [+8]=payload pointer, [+16]=needs_reply=0, [+24]=ingress_kind (0 here).
 // Dead-supervisor handling (§15.4.10.4): caller is signalled via X0=1 to emit the existing root-actor stderr note.
 fn actor_rt_asm_phase_c_chunk() -> string {
     "	.section	__TEXT,__text,regular,pure_instructions
@@ -2393,13 +2454,8 @@ _silica_rt_actor_supervision_wait_and_drain_one:
 	.cfi_offset w20, -32
 	.cfi_offset w21, -40
 	.cfi_offset w22, -48
-Lloh_swd0:
-	adrp	x0, _tl_current_actor@TLVPPAGE
-Lloh_swd1:
-	ldr	x0, [x0, _tl_current_actor@TLVPPAGEOFF]
-	ldr	x8, [x0]
-	blr	x8
-	ldr	x19, [x0]
+	bl	_silica_rt_tls_current_actor_get
+	mov	x19, x0
 	cbz	x19, Lswd_null
 	add	x0, x19, #16
 	bl	_os_unfair_lock_lock
@@ -2446,7 +2502,6 @@ Lswd_null:
 	ldp	x20, x19, [sp, #16]
 	ldp	x22, x21, [sp], #48
 	ret
-	.loh AdrpLdr	Lloh_swd0, Lloh_swd1
 	.cfi_endproc
                                         ; -- End function
 	.globl	_silica_rt_actor_failure_reason_tag

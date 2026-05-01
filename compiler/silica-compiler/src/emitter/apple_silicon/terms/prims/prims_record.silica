@@ -34,6 +34,7 @@ export record_field_segment_name_sub/1;
 export record_type_flat_stack_bytes/1;
 export record_type_has_only_scalar_fields/1;
 export record_type_value_flat_byte_size/1;
+export record_type_list_cons_payload_bytes/1;
 
 fn record_type_has_only_scalar_fields(record_str: string) -> bool {
     t: string <- strip_spaces_rt(record_str);
@@ -113,6 +114,30 @@ fn record_type_value_flat_byte_size(record_str: string) -> int64 {
     case record_type_starts(t) of {
         false -> 8;
         true -> sum_field_value_flat_loop(extract_braced_body(t))
+    }
+}
+
+// Darwin AAPCS64: SP alignment at BL; matches term_emitter stack_alloc_round16.
+fn list_cons_stack_round16(nbytes: int64) -> int64 {
+    (nbytes + 15) / 16 * 16
+}
+
+// Bytes copied from SP into list cons cells for inline record heads. Must match record_make stack
+// allocation (term_emitter ~1890): scalar-only records → round16(value-flat); else →
+// flat_alloc_size(field_count). record_type_flat_stack_bytes can be larger (nested shell), which
+// made list_cons copy past the record_make frame (e.g. supervisor child_spec: 64 vs 48) and
+// corrupted tail pointers.
+fn record_type_list_cons_payload_bytes(record_str: string) -> int64 {
+    R: string <- strip_spaces_rt(record_str);
+    case record_type_starts(R) of {
+        false -> 8;
+        true -> case record_type_has_only_scalar_fields(R) of {
+            true -> list_cons_stack_round16(record_type_value_flat_byte_size(R));
+            false -> do
+                c: int64 <- count_record_fields(R);
+                (c + 1) / 2 * 16
+            end
+        }
     }
 }
 

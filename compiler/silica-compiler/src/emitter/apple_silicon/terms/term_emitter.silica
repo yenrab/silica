@@ -1466,7 +1466,6 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound, outer_for_body, false)
                 };
                 tuple_sret_outer_n: string <- var@find_sp_binding(outer_for_body, "_tuple_sret");
-                tail_stack_n: int64 <- case len(tuple_sret_outer_n) > 0 of { true -> 0; false -> let_tail_aggregate_stack_bytes(term.right_expr) };
                 // Phase E e4b: record_make always SUBs SP (see record_make emit comment ~line 1872) and is never written
                 // directly into the actor-reply SRET buffer. So even when _tuple_sret is set on the outer (e.g. behavior
                 // functions with an X20 reply buffer), an intermediate `spec <- { ... }` binding still needs ADD SP at
@@ -1475,6 +1474,14 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 base_stack_n: int64 <- case term.inner.kind == 6 and term.inner.name == "record_make" of {
                     true -> aggregate_callee_return_stack_bytes(term.inner);
                     false -> case len(tuple_sret_outer_n) > 0 of { true -> 0; false -> aggregate_callee_return_stack_bytes(term.inner) }
+                };
+                tail_stack_raw_n: int64 <- let_tail_aggregate_stack_bytes(term.right_expr);
+                tail_stack_n: int64 <- case len(tuple_sret_outer_n) > 0 of {
+                    true -> 0;
+                    false -> case base_stack_n > 0 and tail_stack_raw_n == base_stack_n of {
+                        true -> 0;
+                        false -> tail_stack_raw_n
+                    }
                 };
                 dealloc_bytes: int64 <- base_stack_n + tail_stack_n;
                 dealloc: string <- case dealloc_bytes > 0 of {
@@ -1599,12 +1606,19 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     false -> term_to_asm_opt_bound(term.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, term.name, body_bound_tl, outer_for_body_tl, false)
                 };
                 tuple_sret_outer_tl: string <- var@find_sp_binding(outer_for_body_tl, "_tuple_sret");
-                tail_stack_tl: int64 <- case len(tuple_sret_outer_tl) > 0 of { true -> 0; false -> let_tail_aggregate_stack_bytes(term.right_expr) };
                 // Phase E e4b (mirror of base_stack_n above): record_make never writes into SRET, so its SUB SP must
                 // always be balanced even when _tuple_sret is set on the outer (behavior reply path).
                 base_stack_tl: int64 <- case term.inner.kind == 6 and term.inner.name == "record_make" of {
                     true -> aggregate_callee_return_stack_bytes(term.inner);
                     false -> case len(tuple_sret_outer_tl) > 0 of { true -> 0; false -> aggregate_callee_return_stack_bytes(term.inner) }
+                };
+                tail_stack_raw_tl: int64 <- let_tail_aggregate_stack_bytes(term.right_expr);
+                tail_stack_tl: int64 <- case len(tuple_sret_outer_tl) > 0 of {
+                    true -> 0;
+                    false -> case base_stack_tl > 0 and tail_stack_raw_tl == base_stack_tl of {
+                        true -> 0;
+                        false -> tail_stack_raw_tl
+                    }
                 };
                 dealloc_bytes_tl: int64 <- base_stack_tl + tail_stack_tl;
                 dealloc: string <- case dealloc_bytes_tl > 0 of {
@@ -1854,9 +1868,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             true -> do
                 count: int64 <- prims_tuple@count_flat_elements(term);
                 sret_base: string <- var@find_sp_binding(outer_reg, "_tuple_sret");
+                outer_flat_bytes_tm: int64 <- tuple_make_rec_flat_outer_alloc_bytes(term, count);
                 alloc_asm: string <- case len(sret_base) > 0 of {
                     true -> "";
-                    false -> concat("    SUB SP, SP, #", concat(prims_tuple@flat_alloc_size_str(count), "\n"))
+                    false -> concat("    SUB SP, SP, #", concat(atom_table@int64_to_decimal_string(outer_flat_bytes_tm), "\n"))
                 };
                 stores_asm: string <- emit_flat_tuple_stores(term, 0, count, 0, 0, sret_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
                 nested_raw: int64 <- flat_tuple_nested_alloc(term, count, 0);
@@ -3007,8 +3022,13 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
                                 qw: int64 <- rsz / 8;
                                 memcpy_asm: string <- emit_reg_to_flat_qwords_memcpy_loop(0, qw, temp_reg, store_base, byte_cursor);
                                 next_bc: int64 <- byte_cursor + rsz;
+                                rec_sp_round: int64 <- case prims_record@record_type_has_only_scalar_fields(rec_R) of {
+                                    true -> stack_alloc_round16(rsz);
+                                    false -> prims_tuple@flat_alloc_size(prims_record@count_record_fields(rec_R))
+                                };
+                                restore_rec_sp: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(rec_sp_round), "\n"));
                                 rest_asm: string <- emit_flat_tuple_stores(term.right_expr, idx + 1, count, new_adjust, next_bc, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
-                                concat(concat(elem_asm, concat("\n", memcpy_asm)), concat("\n", rest_asm))
+                                concat(concat(elem_asm, concat("\n", memcpy_asm)), concat(concat("\n", restore_rec_sp), concat("\n", rest_asm)))
                             end;
                             false -> do
                                 store_offset: int64 <- idx * 8 + new_adjust;
@@ -3071,11 +3091,51 @@ fn flat_tuple_total_alloc(term: SIRTerm) -> int64 {
     case term.kind == 6 and term.name == "tuple_make" of {
         true -> do
             my_count: int64 <- prims_tuple@count_flat_elements(term);
-            my_size: int64 <- prims_tuple@flat_alloc_size(my_count);
-            nested: int64 <- flat_tuple_nested_alloc(term, my_count, 0);
-            my_size + nested
+            my_size: int64 <- tuple_make_rec_flat_outer_alloc_bytes(term, my_count);
+            nested_raw: int64 <- flat_tuple_nested_alloc(term, my_count, 0);
+            trim: int64 <- tuple_make_rec_flat_nested_trim_bytes(term, my_count);
+            nested_adj: int64 <- case nested_raw >= trim of { true -> nested_raw - trim; false -> 0 };
+            my_size + nested_adj
         end;
         false -> 0
+    }
+}
+
+// True when emit_flat_tuple_stores uses memcpy for a scalar record at idx 0 (rec_flat tuple head).
+fn tuple_make_scalar_rec_flat_first(term: SIRTerm, count: int64) -> bool {
+    case count < 2 of {
+        true -> false;
+        false -> case term.kind == 6 and term.name == "tuple_make" of {
+            true -> do
+                first: SIRTerm <- term.inner;
+                case first.kind == 6 and first.name == "record_make" of {
+                    false -> false;
+                    true -> prims_record@record_type_has_only_scalar_fields(first.type_name)
+                }
+            end;
+            false -> false
+        }
+    }
+}
+
+// Outer SUB SP bytes for tuple_make: flat pairing slots, widened when (record_make, ...) memcpy head needs more.
+fn tuple_make_rec_flat_outer_alloc_bytes(term: SIRTerm, count: int64) -> int64 {
+    base: int64 <- prims_tuple@flat_alloc_size(count);
+    case tuple_make_scalar_rec_flat_first(term, count) of {
+        false -> base;
+        true -> do
+            rsz: int64 <- prims_record@record_type_value_flat_byte_size(term.inner.type_name);
+            // Second field sits at byte offset rsz after value-flat memcpy; tail is 8 B per trailing slot (minimal safe bound for arity 2).
+            need: int64 <- stack_alloc_round16(rsz + 8 * (count - 1));
+            case need > base of { true -> need; false -> base }
+        end
+    }
+}
+
+fn tuple_make_rec_flat_nested_trim_bytes(term: SIRTerm, count: int64) -> int64 {
+    case tuple_make_scalar_rec_flat_first(term, count) of {
+        false -> 0;
+        true -> prims_record@record_type_value_flat_byte_size(term.inner.type_name)
     }
 }
 
