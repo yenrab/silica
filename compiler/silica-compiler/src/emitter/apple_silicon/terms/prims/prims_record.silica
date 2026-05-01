@@ -19,7 +19,6 @@
 // record_make / record_proj mirror tuple flat stack layout: field order matches `{ f1: T1, ... }`.
 
 use sir_ast;
-use prims_tuple;
 
 export record_type_starts/1;
 export find_field_type_in_record/2;
@@ -308,6 +307,40 @@ fn count_top_level_commas_from(content: string, i: int64, brace_depth: int64, br
     }
 }
 
+fn tuple_shell_flat_bytes(elem_count: int64) -> int64 {
+    (elem_count + 1) / 2 * 16
+}
+
+// Tuple arity / comma counting for `(T1, T2, …)` strings — mirrors prims_tuple.count_* without importing prims_tuple (cycle break).
+fn count_paren_tuple_commas(s: string, i: int64, paren_depth: int64, brace_depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> 0;
+        false -> case substring(s, i, i + 1) of {
+            "(" -> count_paren_tuple_commas(s, i + 1, paren_depth + 1, brace_depth);
+            ")" -> count_paren_tuple_commas(s, i + 1, paren_depth - 1, brace_depth);
+            "{" -> count_paren_tuple_commas(s, i + 1, paren_depth, brace_depth + 1);
+            "}" -> count_paren_tuple_commas(s, i + 1, paren_depth, brace_depth - 1);
+            "[" -> count_paren_tuple_commas(s, i + 1, paren_depth, brace_depth + 1);
+            "]" -> count_paren_tuple_commas(s, i + 1, paren_depth, brace_depth - 1);
+            "," -> case paren_depth == 0 and brace_depth == 0 of {
+                true -> 1 + count_paren_tuple_commas(s, i + 1, paren_depth, brace_depth);
+                false -> count_paren_tuple_commas(s, i + 1, paren_depth, brace_depth)
+            };
+            _: string -> count_paren_tuple_commas(s, i + 1, paren_depth, brace_depth)
+        }
+    }
+}
+
+fn count_paren_tuple_type_elements(type_name: string) -> int64 {
+    case len(type_name) < 2 of {
+        true -> 1;
+        false -> case substring(type_name, 0, 1) == "(" of {
+            true -> 1 + count_paren_tuple_commas(substring(type_name, 1, len(type_name) - 1), 0, 0, 0);
+            false -> 1
+        }
+    }
+}
+
 fn count_record_fields(record_str: string) -> int64 {
     t: string <- strip_spaces_rt(record_str);
     content: string <- extract_braced_body(t);
@@ -323,12 +356,12 @@ fn slot_bytes_for_field_type(fty: string) -> int64 {
     case record_type_starts(t) of {
         true -> do
             nf: int64 <- count_record_fields(t);
-            prims_tuple@flat_alloc_size(nf)
+            tuple_shell_flat_bytes(nf)
         end;
         false -> case len(t) > 0 and substring(t, 0, 1) == "(" of {
             true -> do
-                ne: int64 <- prims_tuple@count_type_elements(t);
-                prims_tuple@flat_alloc_size(ne)
+                ne: int64 <- count_paren_tuple_type_elements(t);
+                tuple_shell_flat_bytes(ne)
             end;
             false -> 8
         }
@@ -440,7 +473,7 @@ fn nested_stack_bytes_for_field_type(fty: string) -> int64 {
     case record_type_starts(t) of {
         true -> record_type_flat_stack_bytes(t);
         false -> case len(t) > 0 and substring(t, 0, 1) == "(" of {
-            true -> prims_tuple@flat_alloc_size(prims_tuple@count_type_elements(t));
+            true -> tuple_shell_flat_bytes(count_paren_tuple_type_elements(t));
             false -> 0
         }
     }
@@ -469,7 +502,7 @@ fn record_type_flat_stack_bytes(record_str: string) -> int64 {
             R: string <- strip_spaces_rt(record_str);
             content: string <- extract_braced_body(R);
             cnt: int64 <- count_record_fields(R);
-            shell: int64 <- prims_tuple@flat_alloc_size(cnt);
+            shell: int64 <- tuple_shell_flat_bytes(cnt);
             nest: int64 <- record_fields_nested_stack_bytes_loop(content);
             shell + nest
         end
