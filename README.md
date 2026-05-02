@@ -14,7 +14,18 @@ Silica is a **highly concurrent**, **functional**, **systems language**. This me
 
 ---
 
-**Motto: Secure by default at compile time — fail soft, never fail silent**
+<img
+  src="./silica_icon_emoji.png"
+  alt=""
+  style="
+    height: 1.5em;
+    width: auto;
+    object-fit: contain;
+    display: inline-block;
+    vertical-align: -0.5em;
+    margin-right: 0.2em;
+  "
+/><strong>Motto: Secure by default at compile time — fail soft, never fail silent</strong>
 
 ---
 
