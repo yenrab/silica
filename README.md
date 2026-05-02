@@ -1,29 +1,18 @@
-<p align="center">
-  <img src="./silica_icon_small.png" alt="Silica" width="192" />
-</p>
+
 
 # Silica
 
-**Silica's target is to be the world’s most secure language and runtime—without asking you to fight the tools or the language to get there.** With Silica, security is not a bolt-on checklist; it is woven through the language model, the compiler, and the runtime so that ordinary code reads clearly and dangerous patterns fail during compile-time, with explanations you can act on.
+**Silica's target is to be the world’s most honest, secure language and runtime—without asking you to fight the tools or the language to get there.** With Silica, security is not a bolt-on checklist; it is woven through the language model, the compiler, and the runtime so that ordinary code reads clearly and dangerous patterns fail during compile-time, with explanations you can act on.
 
 Silica is a **highly concurrent**, **functional**, **systems language**. This means you get explicit effects, **actor-based** message passing, and **region-based memory** with **no garbage collection**. Many other development stacks treat **memory**, **concurrency**, and **observable behavior** as separate concerns—each papered over with conventions, code reviews, and runtime luck. Silica **weaves them into one model**: regions and lifetimes give memory a coherent story **without** a collector; actors default to **isolation and messages** instead of ad hoc sharing; effects on types make mutation and all possible kinds of I/O something the compiler **checks**, not something teams infer from names and docs. That integration dramatically narrows where bugs can hide: whole classes of memory and concurrency mistakes fail **at compile time** with explanations tied to the spec, and ordinary modules stay easier to audit because intent is explicit. You keep **predictable performance** and a **small conceptual surface area**. **With Silica, you stay in control without being overwhelmed.**
 
 **Silica** is built for **today’s silicon** and **what real cores actually expose to software today**—so you are not stuck translating ideas through **obsolete machine models** or carry-over abstractions from another era. Real machines reward **locality**, **parallelism without accidental sharing**, and **contained failure**; the language and runtime are shaped so those ideas stay first-class, not bolted on after the fact or 'optimized in'. What you write maps to **performance aligned with the hardware** you can actually buy and use, not to a dangerously nostalgic picture of how chips and computers used to work.
 
+**Silica stays honest about FFI** since the **wrapper-first FFI contract** and the `dangerous_` **indicator** refuse to hide C-shaped boundaries behind ordinary Silica code: modules that are foreign wrappers—or **use any module whose name carries** `dangerous_`—must wear the same indicator themselves, and that naming obligation **walks up the dependency graph all the way to the root application**, so **your shipped binary’s identity reflects whether FFI is in play**. Silica does not hide language boundry crossings behind anonymous imports or reviewers memorizing transitive deps; pure Silica stays visibly pure at the module and artifact level, while mixed stacks advertise themselves **without digging through linker maps**. That turns **security audits**, dependency reviews, release gates, and hand-offs between creators and maintainers into **grep-friendly, architectural signals**: external calls stay bracketed by `**dangerous_*` modules**, `external_danger` effect typing, and wrapper-first boundaries the compiler can highlight risk, instead of burying it in tribal knowledge. See the [FFI wrapper specification](compiler/silica-compiler/design_documents/silica_ffi_wrapper_specification.md).
+
 ---
 
-<img
-  src="./silica_icon_emoji.png"
-  alt=""
-  style="
-    height: 1.5em;
-    width: auto;
-    object-fit: contain;
-    display: inline-block;
-    vertical-align: -0.5em;
-    margin-right: 0.2em;
-  "
-/><strong>Motto: Secure by default at compile time — fail soft, never fail silent</strong>
+**Motto: Secure by default at compile time — fail soft, never fail silent**
 
 ---
 
@@ -32,14 +21,14 @@ Silica is a **highly concurrent**, **functional**, **systems language**. This me
 ### Security and correctness by design
 
 - **Memory and effects are first-class.** Side effects are tracked in types; memory is organized through regions and references with static lifetime reasoning—so many whole classes of bugs never become runnable code. See the [language specification](compiler/silica-compiler/design_documents/silica-specification.md) (memory model, effects, actors). Related design docs: [actor capabilities and message ordering](compiler/silica-compiler/design_documents/silica_actor_capabilities_specification.md) (draft extension) and [memory effects on AArch64 / OS-free targets](compiler/silica-compiler/design_documents/memory-effects-aarch64-implementation-plan.md) (implementation plan).
-- **Memory is allocated in actor stacks, not heaps.** **Memory allocation happens in each actor’s stack**—storage is **stack-shaped and flexibly sized**, with **no per-actor or shared heap** for long-lived data. Lifetimes follow **calls and frames**, which keeps memory easy to reason about and **wipes out** typical **heap-style** mistakes (use-after-free, double-free, leaks, etc.) **without** a garbage collector. **Sharing stays message-shaped** and execution stays **predictable**. See [§15.1.2.2 — *Actor stack architecture*](compiler/silica-compiler/design_documents/silica-specification.md#spec-actor-stack-architecture) (stack allocation, growable stacks, handler-local memory); [§12.1.5 — *Region handles and actor spawn*](compiler/silica-compiler/design_documents/silica-specification.md#spec-region-handles-actor-spawn) (regions **move** in at `spawn`); and [§12.1.6 — *Region handles in actor messages*](compiler/silica-compiler/design_documents/silica-specification.md#spec-region-handles-actor-messages) (regions and related payloads **move** in `call` and `cast`, including **reply** ownership on `call`).
+- **Memory is allocated in actor stacks, not heaps.** **Memory allocation happens in each actor’s stack**—storage is **stack-shaped and flexibly sized**, with **no per-actor or shared heap** for long-lived data. Lifetimes follow **calls and frames**, which keeps memory easy to reason about and **wipes out** typical **heap-style** mistakes (use-after-free, double-free, leaks, etc.) **without** a garbage collector. **Sharing stays message-shaped** and execution stays **predictable**. See [§15.1.2.2 — *Actor stack architecture](compiler/silica-compiler/design_documents/silica-specification.md#spec-actor-stack-architecture)* (stack allocation, growable stacks, handler-local memory); [§12.1.5 — *Region handles and actor spawn](compiler/silica-compiler/design_documents/silica-specification.md#spec-region-handles-actor-spawn)* (regions **move** in at `spawn`); and [§12.1.6 — *Region handles in actor messages](compiler/silica-compiler/design_documents/silica-specification.md#spec-region-handles-actor-messages)* (regions and related payloads **move** in `call` and `cast`, including **reply** ownership on `call`).
 - **The compiler rejects “almost right” code.** Patterns that optimizers usually patch up—dead bindings, duplicate work, redundant arithmetic, loop-invariant mistakes—are **compile-time errors** so behavior stays intentional and predictable. See [additional compiler rules](compiler/silica-compiler/design_documents/silica-specification-additional.md).
 - **Cryptography gets language-level guardrails** (proposed): secret vs. public labels, constant-time comparisons, no secret-driven control flow, and protected buffers—shifting many crypto mistakes from “hope someone catches it” to “the compiler says no.” See [crypto proposal](compiler/silica-compiler/design_documents/crypto-proposal-introduction.md).
 - **Formal methods meet engineering.** The type system is aligned with a proof-oriented view of programs (Curry–Howard), with a path to richer verification as the toolchain matures. See [formal verification specification](compiler/silica-compiler/design_documents/silica-formal-verification-specification.md).
 
 ### A runtime built for isolation and recovery
 
-- **Unsafe worlds stay outside your safe core** (proposed). When you must touch C or other unsafe libraries, a **brokered IPC** design keeps the safe application free of in-process FFI to untrusted code: separate channels, validated messages, no shared memory with the worker, centralized policy—so isolation and recovery are architectural, not aspirational. See [brokered IPC architecture](compiler/silica-compiler/design_documents/brokered_ipc_isolation_architecture.md).
+- **Unsafe worlds stay outside your safe core** (proposed to replace FFI). When you must touch C or other unsafe libraries, a **brokered IPC** design keeps the safe application free of in-process FFI to untrusted code: separate channels, validated messages, no shared memory with the worker, centralized policy—so isolation and recovery are architectural, not aspirational. See [brokered IPC architecture](compiler/silica-compiler/design_documents/brokered_ipc_isolation_architecture.md).
 - **BEAM-inspired fault containment, native speed.** The runtime direction is **lightweight actors** running concurrenlty with independent stacks and no heap, message passing, and “let it crash” semantics at the process level—paired with hardware-assisted safety (e.g. **MTE** on AArch64) so faults become controlled events, not silent corruption. See [crash containment design](compiler/silica-compiler/design_documents/beam_like_crash_containment_design_notes.md).
 
 ### Still easy to read, write, and tool
@@ -86,15 +75,17 @@ The **bootstrap compiler** is complete; ongoing work below is grouped by whether
 
 The self-hosted toolchain is **validated end-to-end on macOS with Apple Silicon (AArch64)**. The table is **not a timeline** and **not a rigid pecking order**: **Planned focus** is **where work is intended to go next**—counting **within each strand** only (hosted vs bare metal stay **parallel**). Smaller numbers mean **sooner planned attention**, not a guarantee every row advances in lockstep or that cross-strand rows compete. Rows are **sorted by that band**; when two rows share the same band, **Hosted** is listed before **bare metal** for readability, not as ranking one strand above the other. Among bare-metal rows in the same band, **ESP32-S3** is listed first—there is **already a volunteer** driving that bring-up. If you enjoy **ABIs, triples, link steps, CI on new hosts, or bringing up a small runtime on a board with no OS**, pick a row and open a discussion or PR—see the [build plan](compiler/silica-compiler/design_documents/build-plan.md), `TARGET=…` and emitter layout under `[compiler/silica-compiler/src/emitter/](compiler/silica-compiler/src/emitter/)`, and [hosted vs bare-metal execution](compiler/silica-compiler/design_documents/execution-environments-hosted-vs-bare-metal.md).
 
-| Planned focus | Strand | Target | Why it helps |
-| ------------: | ------ | ------ | ------------ |
-| 1 | Hosted (chip + OS) | Linux on AArch64 | Same ISA as today’s primary machine, different syscall/link story; ARM cloud and desktop Linux for contributors and trials. |
-| 1 | Bare metal (OS-free, by chip) | ESP32-S3 (Xtensa LX7) | **Volunteer in flight**—this is the **first bare-metal bring-up planned** for this chip (ROM/startup, linker, and runtime on a widely used dev-board line). |
-| 1 | Bare metal (OS-free, by chip) | AArch64 | **Real cores without a full OS**; see [memory effects on AArch64 / OS-free targets](compiler/silica-compiler/design_documents/memory-effects-aarch64-implementation-plan.md); ABI/runtime on a minimal environment. |
-| 2 | Hosted (chip + OS) | Linux on x86_64 | Broad server and desktop footprint; strong payoff for CI and for developers not on Apple hardware. |
-| 2 | Bare metal (OS-free, by chip) | RISC-V (application-profile cores) | Broad embedded/accelerator footprint; calling convention, linker/platform story, trials or hardware-in-the-loop. |
-| 3 | Hosted (chip + OS) | Windows (x86_64; AArch64 when there is demand) | Lowers the barrier for contributors and teams on Windows workstations. |
-| 3 | Bare metal (OS-free, by chip) | Common MCU classes (e.g. 32-bit embedded) | Longer tail of boards/ISAs; linker scripts, platform packages, minimal-runtime contract per profile. |
+
+| Planned focus | Strand                        | Target                                         | Why it helps                                                                                                                                                                                                        |
+| ------------- | ----------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1             | Hosted (chip + OS)            | Linux on AArch64                               | Same ISA as today’s primary machine, different syscall/link story; ARM cloud and desktop Linux for contributors and trials.                                                                                         |
+| 1             | Bare metal (OS-free, by chip) | ESP32-S3 (Xtensa LX7)                          | **Volunteer in flight**—this is the **first bare-metal bring-up planned** for this chip (ROM/startup, linker, and runtime on a widely used dev-board line).                                                         |
+| 1             | Bare metal (OS-free, by chip) | AArch64                                        | **Real cores without a full OS**; see [memory effects on AArch64 / OS-free targets](compiler/silica-compiler/design_documents/memory-effects-aarch64-implementation-plan.md); ABI/runtime on a minimal environment. |
+| 2             | Hosted (chip + OS)            | Linux on x86_64                                | Broad server and desktop footprint; strong payoff for CI and for developers not on Apple hardware.                                                                                                                  |
+| 2             | Bare metal (OS-free, by chip) | RISC-V (application-profile cores)             | Broad embedded/accelerator footprint; calling convention, linker/platform story, trials or hardware-in-the-loop.                                                                                                    |
+| 3             | Hosted (chip + OS)            | Windows (x86_64; AArch64 when there is demand) | Lowers the barrier for contributors and teams on Windows workstations.                                                                                                                                              |
+| 3             | Bare metal (OS-free, by chip) | Common MCU classes (e.g. 32-bit embedded)      | Longer tail of boards/ISAs; linker scripts, platform packages, minimal-runtime contract per profile.                                                                                                                |
+
 
 **Phase 3 (next up)**
 
@@ -116,7 +107,7 @@ The self-hosted toolchain is **validated end-to-end on macOS with Apple Silicon 
 
 ### Compiler-building tools
 
-Tools for generating compiler code and coordinating Phase 2 work live under [`compiler/silica-compiler/compiler-building-tools/`](compiler/silica-compiler/compiler-building-tools/). For JSON-LD agent graphs, which files to use, and how they fit AI-assisted workflows, see **[compiler/silica-compiler/compiler-building-tools/README.md](compiler/silica-compiler/compiler-building-tools/README.md)**.
+Tools for generating compiler code and coordinating Phase 2 work live under `[compiler/silica-compiler/compiler-building-tools/](compiler/silica-compiler/compiler-building-tools/)`. For JSON-LD agent graphs, which files to use, and how they fit AI-assisted workflows, see **[compiler/silica-compiler/compiler-building-tools/README.md](compiler/silica-compiler/compiler-building-tools/README.md)**.
 
 ---
 
@@ -128,11 +119,11 @@ On a mainstream OS, kernel policy bounds what you can rely on for **memory space
 
 ### Design documents
 
-Indexed specifications, plans, and design notes in [`compiler/silica-compiler/design_documents/`](compiler/silica-compiler/design_documents/); start with the [language specification](compiler/silica-compiler/design_documents/silica-specification.md) and [additional compiler rules](compiler/silica-compiler/design_documents/silica-specification-additional.md). Also see [actor capabilities and message ordering](compiler/silica-compiler/design_documents/silica_actor_capabilities_specification.md) and [memory effects (AArch64 / OS-free)](compiler/silica-compiler/design_documents/memory-effects-aarch64-implementation-plan.md). These are **working documents** and change with the implementation.
+Indexed specifications, plans, and design notes in `[compiler/silica-compiler/design_documents/](compiler/silica-compiler/design_documents/)`; start with the [language specification](compiler/silica-compiler/design_documents/silica-specification.md) and [additional compiler rules](compiler/silica-compiler/design_documents/silica-specification-additional.md). Also see [actor capabilities and message ordering](compiler/silica-compiler/design_documents/silica_actor_capabilities_specification.md) and [memory effects (AArch64 / OS-free)](compiler/silica-compiler/design_documents/memory-effects-aarch64-implementation-plan.md). These are **working documents** and change with the implementation.
 
 ### Tutorials and how-tos
 
-Hands-on guides in [`compiler/silica-compiler/tutorials_and_howtos/`](compiler/silica-compiler/tutorials_and_howtos/) (actors, regions, lists, blocks, and related topics).
+Hands-on guides in `[compiler/silica-compiler/tutorials_and_howtos/](compiler/silica-compiler/tutorials_and_howtos/)` (actors, regions, lists, blocks, and related topics).
 
 ---
 
@@ -147,12 +138,12 @@ Instructions below follow the **roadmap tracks** described earlier (**Track 1** 
 **1. Install tooling**
 
 
-| Requirement                 | Role                                                                                                                                                                                                                                                                                |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Rust** (`rustc`, `cargo`) | **1.70+** — builds the bootstrap compiler (`[compiler/silica-bootstrap-compiler](compiler/silica-bootstrap-compiler)`).                                                                                                                                                             |
-| **GNU Make**                | Drives the Silica-in-Silica compiler build under `[compiler/silica-compiler/src](compiler/silica-compiler/src)`.                                                                                                                                                                    |
+| Requirement                 | Role                                                                                                                                                                                                                                                                                             |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Rust** (`rustc`, `cargo`) | **1.70+** — builds the bootstrap compiler (`[compiler/silica-bootstrap-compiler](compiler/silica-bootstrap-compiler)`).                                                                                                                                                                          |
+| **GNU Make**                | Drives the Silica-in-Silica compiler build under `[compiler/silica-compiler/src](compiler/silica-compiler/src)`.                                                                                                                                                                                 |
 | **LLVM tools**              | `llvm-as` and `llc` assemble and lower the generated LLVM IR; a **C linker** (typically **Clang**) links `main.o` with the bootstrap static runtime. The self-hosted compiler `Makefile` looks for tools on `PATH` and, on Apple Silicon Homebrew installs, under `/opt/homebrew/opt/llvm/bin/`. |
-| **Optional: LLVM 15**       | Enables the bootstrap compiler’s **LLVM bitcode backend** (`llvm_backend` feature). Set `LLVM_SYS_150_PREFIX` to your LLVM 15 prefix if you build with that feature. See `[compiler/silica-bootstrap-compiler/README.md](compiler/silica-bootstrap-compiler/README.md)`.            |
+| **Optional: LLVM 15**       | Enables the bootstrap compiler’s **LLVM bitcode backend** (`llvm_backend` feature). Set `LLVM_SYS_150_PREFIX` to your LLVM 15 prefix if you build with that feature. See `[compiler/silica-bootstrap-compiler/README.md](compiler/silica-bootstrap-compiler/README.md)`.                         |
 
 
 The self-hosted compiler build uses the bootstrap compiler **without** the LLVM backend feature (`cargo build --release --no-default-features`) so the pipeline stays consistent with text IR generation and the LLVM tools above.
