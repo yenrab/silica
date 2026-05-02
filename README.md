@@ -1,4 +1,6 @@
-
+<p align="center">
+  <img src="./silica_icon_small.png" alt="Silica" width="192" />
+</p>
 
 # Silica
 
