@@ -3115,6 +3115,24 @@ fn flat_tuple_total_alloc(term: SIRTerm) -> int64 {
     }
 }
 
+// True when emit_flat_tuple_stores memcpy-copies idx-0 record_make into the tuple outer slab (`rec_flat`, arity ≥ 2).
+fn tuple_make_memcpy_record_flat_head(term: SIRTerm) -> bool {
+    case term.kind == 6 of {
+        false -> false;
+        true -> case term.name != "tuple_make" of {
+            true -> false;
+            false -> do
+                c: int64 <- prims_tuple@count_flat_elements(term);
+                case c >= 2 of {
+                    false -> false;
+                    true -> term.inner.kind == 6 and term.inner.name == "record_make"
+                }
+            end
+        }
+    }
+}
+
+
 // True when emit_flat_tuple_stores uses memcpy for a scalar record at idx 0 (rec_flat tuple head).
 fn tuple_make_scalar_rec_flat_first(term: SIRTerm, count: int64) -> bool {
     case count < 2 of {
@@ -3132,14 +3150,16 @@ fn tuple_make_scalar_rec_flat_first(term: SIRTerm, count: int64) -> bool {
     }
 }
 
-// Outer SUB SP bytes for tuple_make: flat pairing slots, widened when (record_make, ...) memcpy head needs more.
+// Outer SUB SP bytes for tuple_make: flat pairing slots, widened when (record_make, …) memcpy head needs more.
+// emit_flat_tuple_stores uses memcpy for any idx-0 record_make when arity ≥ 2 (`rec_flat`). Supervisors_phase_e
+// init tuples embed a `{ strategy: atom , … }` record — atoms are non–value-flat leaves, but emit still memcpy-copies rsz bytes.
 fn tuple_make_rec_flat_outer_alloc_bytes(term: SIRTerm, count: int64) -> int64 {
     base: int64 <- prims_tuple@flat_alloc_size(count);
-    case tuple_make_scalar_rec_flat_first(term, count) of {
+    case tuple_make_memcpy_record_flat_head(term) of {
         false -> base;
         true -> do
             rsz: int64 <- prims_record@record_type_value_flat_byte_size(term.inner.type_name);
-            // Second field sits at byte offset rsz after value-flat memcpy; tail is 8 B per trailing slot (minimal safe bound for arity 2).
+            // Second field sits at byte offset rsz after memcpy; trailing slots are pointer-sized for flat tuple tails.
             need: int64 <- stack_alloc_round16(rsz + 8 * (count - 1));
             case need > base of { true -> need; false -> base }
         end
@@ -3403,22 +3423,7 @@ fn deepest_let_chain_leaf(term: SIRTerm) -> SIRTerm {
 
 // RHS stack record + nested lets → rec_flat tuple: leaf teardown + widen accounts for tuple slab; a full parent's
 // base_stack ADD would double-pop (#48 duplicate). Omitting it entirely leaves SP 16 B low before callee LDP — use +16 fixup.
-// True when tuple tail uses idx-0 memcpy path in emit_flat_tuple_stores (record_make head, arity ≥ 2)
-fn tuple_make_memcpy_record_flat_head(term: SIRTerm) -> bool {
-    case term.kind == 6 of {
-        false -> false;
-        true -> case term.name != "tuple_make" of {
-            true -> false;
-            false -> do
-                c: int64 <- prims_tuple@count_flat_elements(term);
-                case c >= 2 of {
-                    false -> false;
-                    true -> term.inner.kind == 6 and term.inner.name == "record_make"
-                }
-            end
-        }
-    }
-}
+// Uses tuple_make_memcpy_record_flat_head (defined above).
 
 fn let_suppress_base_stack_overlay_rec_flat(term: SIRTerm, base_stack: int64) -> bool {
     case term.right_expr.kind == 2 and base_stack > 0 of {
