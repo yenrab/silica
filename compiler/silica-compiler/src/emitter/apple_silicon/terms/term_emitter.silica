@@ -1475,15 +1475,22 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> aggregate_callee_return_stack_bytes(term.inner);
                     false -> case len(tuple_sret_outer_n) > 0 of { true -> 0; false -> aggregate_callee_return_stack_bytes(term.inner) }
                 };
+                base_stack_eff_n: int64 <- case let_suppress_base_stack_overlay_rec_flat(term, base_stack_n) of {
+                    true -> 16;
+                    false -> base_stack_n
+                };
                 tail_stack_raw_n: int64 <- let_tail_aggregate_stack_bytes(term.right_expr);
-                tail_stack_n: int64 <- case len(tuple_sret_outer_n) > 0 of {
+                tail_stack_n: int64 <- case term.right_expr.kind == 2 of {
                     true -> 0;
-                    false -> case base_stack_n > 0 and tail_stack_raw_n == base_stack_n of {
+                    false -> case len(tuple_sret_outer_n) > 0 of {
                         true -> 0;
-                        false -> tail_stack_raw_n
+                        false -> case base_stack_eff_n > 0 and tail_stack_raw_n == base_stack_eff_n of {
+                            true -> 0;
+                            false -> tail_stack_raw_n
+                        }
                     }
                 };
-                dealloc_bytes: int64 <- base_stack_n + tail_stack_n;
+                dealloc_bytes: int64 <- base_stack_eff_n + tail_stack_n;
                 dealloc: string <- case dealloc_bytes > 0 of {
                     true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(dealloc_bytes), "\n"));
                     false -> ""
@@ -1612,15 +1619,22 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     true -> aggregate_callee_return_stack_bytes(term.inner);
                     false -> case len(tuple_sret_outer_tl) > 0 of { true -> 0; false -> aggregate_callee_return_stack_bytes(term.inner) }
                 };
+                base_stack_eff_tl: int64 <- case let_suppress_base_stack_overlay_rec_flat(term, base_stack_tl) of {
+                    true -> 16;
+                    false -> base_stack_tl
+                };
                 tail_stack_raw_tl: int64 <- let_tail_aggregate_stack_bytes(term.right_expr);
-                tail_stack_tl: int64 <- case len(tuple_sret_outer_tl) > 0 of {
+                tail_stack_tl: int64 <- case term.right_expr.kind == 2 of {
                     true -> 0;
-                    false -> case base_stack_tl > 0 and tail_stack_raw_tl == base_stack_tl of {
+                    false -> case len(tuple_sret_outer_tl) > 0 of {
                         true -> 0;
-                        false -> tail_stack_raw_tl
+                        false -> case base_stack_eff_tl > 0 and tail_stack_raw_tl == base_stack_eff_tl of {
+                            true -> 0;
+                            false -> tail_stack_raw_tl
+                        }
                     }
                 };
-                dealloc_bytes_tl: int64 <- base_stack_tl + tail_stack_tl;
+                dealloc_bytes_tl: int64 <- base_stack_eff_tl + tail_stack_tl;
                 dealloc: string <- case dealloc_bytes_tl > 0 of {
                     true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(dealloc_bytes_tl), "\n"));
                     false -> ""
@@ -3368,10 +3382,51 @@ fn aggregate_callee_return_stack_bytes(rhs: SIRTerm) -> int64 {
     }
 }
 
+// Sequence/lowering nests lets (child; children; produces tuple). The terminal tuple_make is in
+// right_expr of the innermost let; count its stack slab for outer let dealloc (see supervisors e4a init).
 fn let_tail_aggregate_stack_bytes(tail: SIRTerm) -> int64 {
-    case tail.kind == 6 and (tail.name == "record_make" or tail.name == "tuple_make") and reg_conventions@is_aggregate_struct_or_tuple_return_type(tail.type_name) of {
-        true -> flat_tuple_dealloc_size(tail);
-        false -> 0
+    case tail.kind == 2 of {
+        true -> let_tail_aggregate_stack_bytes(tail.right_expr);
+        false -> case tail.kind == 6 and (tail.name == "record_make" or tail.name == "tuple_make") and reg_conventions@is_aggregate_struct_or_tuple_return_type(tail.type_name) of {
+            true -> flat_tuple_dealloc_size(tail);
+            false -> 0
+        }
+    }
+}
+
+fn deepest_let_chain_leaf(term: SIRTerm) -> SIRTerm {
+    case term.kind == 2 of {
+        true -> deepest_let_chain_leaf(term.right_expr);
+        false -> term
+    }
+}
+
+// RHS stack record + nested lets → rec_flat tuple: leaf teardown + widen accounts for tuple slab; a full parent's
+// base_stack ADD would double-pop (#48 duplicate). Omitting it entirely leaves SP 16 B low before callee LDP — use +16 fixup.
+// True when tuple tail uses idx-0 memcpy path in emit_flat_tuple_stores (record_make head, arity ≥ 2)
+fn tuple_make_memcpy_record_flat_head(term: SIRTerm) -> bool {
+    case term.kind == 6 of {
+        false -> false;
+        true -> case term.name != "tuple_make" of {
+            true -> false;
+            false -> do
+                c: int64 <- prims_tuple@count_flat_elements(term);
+                case c >= 2 of {
+                    false -> false;
+                    true -> term.inner.kind == 6 and term.inner.name == "record_make"
+                }
+            end
+        }
+    }
+}
+
+fn let_suppress_base_stack_overlay_rec_flat(term: SIRTerm, base_stack: int64) -> bool {
+    case term.right_expr.kind == 2 and base_stack > 0 of {
+        false -> false;
+        true -> do
+            leaf: SIRTerm <- deepest_let_chain_leaf(term.right_expr);
+            tuple_make_memcpy_record_flat_head(leaf)
+        end
     }
 }
 
