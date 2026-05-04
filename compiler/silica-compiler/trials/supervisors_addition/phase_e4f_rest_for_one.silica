@@ -1,29 +1,4 @@
-// *** VERY IMPORTANT — NOT A PRODUCTION PATTERN ***
-// Starting children and other logic shown in a supervisor's spawned behavior in this trial tree
-// (for example `spawn_linked`, `start_child`, and related orchestration in the behavior body) is only for
-// testing the runtime. Do not copy that style in production. In production, add supervised children through
-// the supervisor `init` callback (declarative child list) and/or have other actors create children using
-// the proper supported APIs — not by mirroring these trial-only behaviors.
-//
-// Phase E e4f (supervisors_implementation_development_plan.md §0): `:rest_for_one` cascade restart.
-// Five supervised children in stable table order: one declarative from `init`, then four via `start_child`
-// in `sup_beh` (avoids multi-`child_spec` list literal codegen issues). Row indices 0..4.
-// Row **1** (second child) dies abnormally → runtime kills rows **2, 3, 4** (three after it), then respawns
-// rows **1–4**; row **0** stays alive with the same initial state.
-//
-// Each later `child_spec` is bound only after the previous `start_child` so stack records cannot alias
-// (see e4b register/stack note).
-//
-// Workers use initial state 10, 20, 30, 40, 50 so `call(_, 1)` yields 11, 21, 31, 41, 51 before the kill.
-// Row 0: `child_table_first_ref()`. Rows 1–4: `child_table_row_ref(n)` for each probe and for
-// `kill_abnormal(child_table_row_ref(1))` — **no** long-lived `actor_ref` lets (e4d-style); the emitter can
-// leave later bindings in caller-saved registers that nested `call`/`start_child` clobbers.
-//
-// Output sequence: `11, 21, 31, 41, 51, about_to_kill, after_kill, done`.
-//
-// Flake hunting (lldb): `br set -n _silica_rt_cv_wait`, run, `thread until` / single-step across `bl ___ulock_wait`.
-// Do not insert a literal `nop` after that `bl` in the emitted asm — on arm64e it consistently SIGBUS here (PAC?).
-// Stress A/B: plain ldr/str for reply (+144) / reply_set (+136) stayed 1000/1000 clean; dmb / stlr+ldar increased failures.
+// Phase E e4f: declarative-only `:rest_for_one` (five children from supervisor init).
 
 use Supervisor;
 
@@ -47,11 +22,11 @@ fn init(initial_supervisor_state: ActorState) -> (
             restart: :permanent | :temporary | :transient,
             shutdown: int64
         },
-        normal
+        mem(normal)
     ]
 ) {
     sequence proc[mem(normal)]
-        child: {
+        c1: {
             id: atom,
             agent_type: atom,
             start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
@@ -64,27 +39,7 @@ fn init(initial_supervisor_state: ActorState) -> (
             restart: :permanent,
             shutdown: 0
         };
-        children: List[
-            {
-                id: atom,
-                agent_type: atom,
-                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
-                restart: :permanent | :temporary | :transient,
-                shutdown: int64
-            },
-            normal
-        ] <- [child]
-    produces
-        pure (
-            { strategy: :rest_for_one, allowed_restart_count: 5, restarts_time_frame: 60 },
-            children
-        )
-    end
-}
-
-fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
-    sequence proc[concurrency, device_io]
-        spec2: {
+        c2: {
             id: atom,
             agent_type: atom,
             start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
@@ -97,8 +52,7 @@ fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
             restart: :permanent,
             shutdown: 0
         };
-        _: actor_ref <- start_child(spec2);
-        spec3: {
+        c3: {
             id: atom,
             agent_type: atom,
             start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
@@ -111,8 +65,7 @@ fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
             restart: :permanent,
             shutdown: 0
         };
-        _: actor_ref <- start_child(spec3);
-        spec4: {
+        c4: {
             id: atom,
             agent_type: atom,
             start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
@@ -125,8 +78,7 @@ fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
             restart: :permanent,
             shutdown: 0
         };
-        _: actor_ref <- start_child(spec4);
-        spec5: {
+        c5: {
             id: atom,
             agent_type: atom,
             start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
@@ -139,7 +91,130 @@ fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
             restart: :permanent,
             shutdown: 0
         };
-        _: actor_ref <- start_child(spec5);
+        nil: List[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- empty[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ]();
+        r4: List[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- prepend[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ](c5, nil);
+        r3: List[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- prepend[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ](c4, r4);
+        r2: List[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- prepend[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ](c3, r3);
+        r1: List[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- prepend[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ](c2, r2);
+        children: List[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- prepend[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ](c1, r1)
+    produces
+        pure (
+            { strategy: :rest_for_one, allowed_restart_count: 5, restarts_time_frame: 60 },
+            children
+        )
+    end
+}
+
+fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
+    sequence proc[concurrency, device_io]
         print_int64(call(child_table_first_ref(), 1 impl ActorMessage {})); println("");
         print_int64(call(child_table_row_ref(1), 1 impl ActorMessage {})); println("");
         print_int64(call(child_table_row_ref(2), 1 impl ActorMessage {})); println("");

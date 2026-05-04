@@ -1,37 +1,7 @@
-// Phase E e4e (supervisors_implementation_development_plan.md §0): `:one_for_all` cascade restart.
-// One abnormal exit from any sibling under `:one_for_all` MUST kill the rest and respawn ALL — see
-// `_silica_rt_supervisor_maybe_restart`'s `Lmr_ofa_kill` (locks each sibling mutex, alive=0, signals
-// cond, unlocks — skipping the dying child's own row x23) and `Lmr_ofa_spawn` (iterates all rows,
-// spawn_linked from the row's stored start info, stores new ref).
+// Phase E e4e (E6.1 — declarative only): `:one_for_all` cascade restart.
+// Two **declarative** `:permanent` workers in `init`; `child_table_row_ref(1)` addresses the second row.
 //
-// Two `:permanent` workers: one declarative (id `:e4e_w1`), one added dynamically via `start_child`
-// (id `:e4e_w2`) so we sidestep the multi-child list-literal stack-aliasing bug noted in e4b. After
-// both children are alive and exchange call/reply pairs, `kill_abnormal(c1)` flips c1.alive=0 with
-// `pending_exit_reason_tag = 1`; c1's exit enqueues a failure with `reason_tag = 1` to the supervisor's
-// #232 ingress.
-//
-// `sup_beh` drains the c1 failure first; that drain calls `_silica_rt_supervisor_maybe_restart`
-// inline (`Lswd_free_wrap`'s pre-free hook), which dispatches `:permanent`/`:one_for_all`:
-//   1. Kill c2 in place: lock c2 mutex, alive=0, signal cond, unlock — `pending_exit_reason_tag` is
-//      NOT set, so c2's eventual `_silica_rt_actor_deliver_exit` reads `[ACB+#336] == 0` and
-//      enqueues a failure with `reason_tag = 0` (the runtime-side sibling kill is "normal" w.r.t.
-//      the exit envelope, even though semantically it is an induced cascade death).
-//   2. Respawn loop walks both rows: row[0] gets a fresh c1' actor_ref, row[1] gets c2'. Both rows
-//      now reference live actors with state = 0.
-//
-// The second drain picks up c2's queued failure (with `reason_tag = 0`); inside `maybe_restart` the
-// scan no longer finds the OLD c2 ACB pointer (row[1] was already overwritten with c2'), so it
-// falls through to `Lmr_done` without double-respawning.
-//
-// Final `call(child_table_first_ref(), 300)` hits c1' with state=0, returning msg+0 == 300, proving
-// the row[0] respawn succeeded. We don't separately verify c2' from `main` because there is no
-// public accessor for the second row; the c2 failure drain (with reason_tag 0) is itself the proof
-// that `:one_for_all` cascaded.
-//
-// Output sequence: `100, 200, 1, 0, 300, done`.
-//
-// Per e4a, `call(sup, …)` needs a non-zero message because `_silica_rt_actor_call` returns
-// immediately on null payloads via `cbz x1`.
+// Output sequence: `100, 200, 1, 0, 300, done` (see plan §0 e4e).
 
 use Supervisor;
 
@@ -59,13 +29,33 @@ fn init(initial_supervisor_state: ActorState) -> (
     ]
 ) {
     sequence proc[mem(normal)]
-        flags_and_children: (
-        {
-            strategy: :one_for_one | :one_for_all | :rest_for_one,
-            allowed_restart_count: int64,
-            restarts_time_frame: int64
-        },
-        List[
+        c0: {
+            id: atom,
+            agent_type: atom,
+            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        } <- {
+            id: :e4e_w1,
+            agent_type: :worker,
+            start: (0, worker),
+            restart: :permanent,
+            shutdown: 0
+        };
+        c1: {
+            id: atom,
+            agent_type: atom,
+            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        } <- {
+            id: :e4e_w2,
+            agent_type: :worker,
+            start: (0, worker),
+            restart: :permanent,
+            shutdown: 0
+        };
+        nil: List[
             {
                 id: atom,
                 agent_type: atom,
@@ -74,69 +64,66 @@ fn init(initial_supervisor_state: ActorState) -> (
                 shutdown: int64
             },
             mem(normal)
-        ]
-        ) <- (
-            { strategy: :one_for_all, allowed_restart_count: 10, restarts_time_frame: 60 },
-            [
-                {
-                    id: :e4e_w1,
-                    agent_type: :worker,
-                    start: (0, worker),
-                    restart: :permanent,
-                    shutdown: 0
-                },
-                {
-                    id: :e4e_w2,
-                    agent_type: :worker,
-                    start: (0, worker),
-                    restart: :permanent,
-                    shutdown: 0
-                },
-                {
-                    id: :e4e_w3,
-                    agent_type: :worker,
-                    start: (0, worker),
-                    restart: :permanent,
-                    shutdown: 0
-                },
-                {
-                    id: :e4e_w4,
-                    agent_type: :worker,
-                    start: (0, worker),
-                    restart: :permanent,
-                    shutdown: 0
-                },
-                {
-                    id: :e4e_w5,
-                    agent_type: :worker,
-                    start: (0, worker),
-                    restart: :permanent,
-                    shutdown: 0
-                }
-            ]
-        )
+        ] <- empty[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ]();
+        tail: List[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- prepend[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ](c1, nil);
+        children: List[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- prepend[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ](c0, tail)
     produces
-        pure flags_and_children
+        pure (
+            { strategy: :one_for_all, allowed_restart_count: 10, restarts_time_frame: 60 },
+            children
+        )
     end
 }
 
 fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
     sequence proc[concurrency, device_io]
-        spec: {
-            id: atom,
-            agent_type: atom,
-            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
-            restart: :permanent | :temporary | :transient,
-            shutdown: int64
-        } <- {
-            id: :e4e_dynamic_w1,
-            agent_type: :worker,
-            start: (0, worker),
-            restart: :permanent,
-            shutdown: 0
-        };
-        c2: actor_ref <- start_child(spec);
         c1: actor_ref <- child_table_first_ref();
+        c2: actor_ref <- child_table_row_ref(1);
         a: int64 <- call(c1, 100 impl ActorMessage {});
         print_int64(a); println("");
         b: int64 <- call(c2, 200 impl ActorMessage {});

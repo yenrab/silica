@@ -1,10 +1,13 @@
-// Phase E e4g (supervisors_implementation_development_plan.md §0): `start_child` dynamic row + `:permanent`
-// Flow mirrors `phase_e4a_permanent_one_for_one.silica`; expected stdout matches e4a:
-// `100`, `200`, `:worker`, `0`, `300`, `done`.
+// Phase E e4b single transient, normal-exit branch:
+// a declarative `:transient` child under `:one_for_one` must NOT restart after a normal exit.
+//
+// The trial removes the only child via `remove_actor`, drains the supervision payload, then checks
+// that the row has been tombstoned. This avoids an unhandled dead-actor call while still proving
+// the no-restart branch.
 
 use Supervisor;
 
-impl E4gSup for Supervisor;
+impl E4bSingleTransientNormal for Supervisor;
 
 fn worker(msg: int64, state: int64) -> (:reply, int64, int64) {
     (:reply, msg + state, state)
@@ -24,10 +27,23 @@ fn init(initial_supervisor_state: ActorState) -> (
             restart: :permanent | :temporary | :transient,
             shutdown: int64
         },
-        normal
+        mem(normal)
     ]
 ) {
     sequence proc[mem(normal)]
+        child: {
+            id: atom,
+            agent_type: atom,
+            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        } <- {
+            id: :e4b_transient_normal_worker,
+            agent_type: :worker,
+            start: (0, worker),
+            restart: :transient,
+            shutdown: 0
+        };
         children: List[
             {
                 id: atom,
@@ -36,18 +52,11 @@ fn init(initial_supervisor_state: ActorState) -> (
                 restart: :permanent | :temporary | :transient,
                 shutdown: int64
             },
-            normal
-        ] <- empty[
-            {
-                id: atom,
-                agent_type: atom,
-                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
-                restart: :permanent | :temporary | :transient,
-                shutdown: int64
-            },
-            normal
-        ]()
+            mem(normal)
+        ] <- [child]
     produces
+        // Inline flags record so tuple_make uses record_make + value-flat copy (materialize +0/+8/+16/+24).
+        // A separate `flags` binding becomes a var in tuple_make and would store a stack pointer in the heap tuple.
         pure (
             { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 },
             children
@@ -57,20 +66,6 @@ fn init(initial_supervisor_state: ActorState) -> (
 
 fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
     sequence proc[concurrency, device_io]
-        spec: {
-            id: atom,
-            agent_type: atom,
-            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
-            restart: :permanent | :temporary | :transient,
-            shutdown: int64
-        } <- {
-            id: :e4g_worker,
-            agent_type: :worker,
-            start: (0, worker),
-            restart: :permanent,
-            shutdown: 0
-        };
-        _: actor_ref <- start_child(spec);
         ch: actor_ref <- child_table_first_ref();
         a: int64 <- call(ch, 100 impl ActorMessage {});
         print_int64(a); println("");
@@ -83,9 +78,12 @@ fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
         tag: int64 <- failure_reason_tag(payload);
         print_int64(tag); println("");
         _: atom <- failure_release(payload);
-        ch2: actor_ref <- child_table_first_ref();
-        c: int64 <- call(ch2, 300 impl ActorMessage {});
-        print_int64(c); println("");
+        row0: int64 <- child_table_row_ref(0);
+        _: atom <- case row0 == 0 of {
+            true -> print_string("normal_no_restart")
+            false -> print_string("unexpected_restart")
+        };
+        _: atom <- println("");
         _: atom <- print_string("done");
         _: atom <- println("")
     produces

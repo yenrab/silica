@@ -1,15 +1,5 @@
-// Phase E e4b-cap-breach: same control flow as phase_e4b_transient.silica, but init declares
-// `allowed_restart_count: 0` with a non-zero `restarts_time_frame`. On the first abnormal
-// exit that would restart a `:transient` child, `_silica_rt_supervisor_maybe_restart` takes
-// `Lmr_freq_escalate` (restart_count 1 > allowed 0), clears the supervisor ACB #152, and
-// skips respawn. The root registered for `_silica_rt_wait_root_acb` is therefore dead while
-// `main` still runs; `wait_for_exit/0` observes `alive == 0` and returns without requiring the
-// stdin e-x-i-t line (policy-intentional cap breach for integration tests).
-//
-// After escalate, do not `call` via `child_table_first_ref`: restart was skipped, so the row may
-// still hold a non-zero stale `child_ref` while the worker is gone — `first_ref` only skips
-// tombstones (`child_ref==0`), so a third `call` blocks forever (same idea as e4d avoiding
-// post-escalation delivery).
+// Phase E e4b-cap-breach (E6.1 — declarative only): same cap policy as before, but both `:transient`
+// workers come from `init` (no `start_child`).
 
 use Supervisor;
 
@@ -33,23 +23,74 @@ fn init(initial_supervisor_state: ActorState) -> (
             restart: :permanent | :temporary | :transient,
             shutdown: int64
         },
-        normal
+        mem(normal)
     ]
 ) {
     sequence proc[mem(normal)]
-        child: {
+        c0: {
             id: atom,
             agent_type: atom,
             start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
             restart: :permanent | :temporary | :transient,
             shutdown: int64
         } <- {
-            id: :e4b_worker,
+            id: :e4b_w0,
             agent_type: :worker,
             start: (0, worker),
             restart: :transient,
             shutdown: 0
         };
+        c1: {
+            id: atom,
+            agent_type: atom,
+            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        } <- {
+            id: :e4b_w1,
+            agent_type: :worker,
+            start: (0, worker),
+            restart: :transient,
+            shutdown: 0
+        };
+        nil: List[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- empty[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ]();
+        tail: List[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- prepend[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ](c1, nil);
         children: List[
             {
                 id: atom,
@@ -58,8 +99,17 @@ fn init(initial_supervisor_state: ActorState) -> (
                 restart: :permanent | :temporary | :transient,
                 shutdown: int64
             },
-            normal
-        ] <- [child]
+            mem(normal)
+        ] <- prepend[
+            {
+                id: atom,
+                agent_type: atom,
+                start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ](c0, tail)
     produces
         pure (
             { strategy: :one_for_one, allowed_restart_count: 0, restarts_time_frame: 5 },
@@ -82,21 +132,8 @@ fn sup_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
         print_int64(t1); println("");
         print_string("about_to_release"); println("");
         _: atom <- failure_release(p1);
-        print_string("about_to_start_child"); println("");
-        spec: {
-            id: atom,
-            agent_type: atom,
-            start: (int64, fn(msg: int64, state: int64) -> (:reply, int64, int64)),
-            restart: :permanent | :temporary | :transient,
-            shutdown: int64
-        } <- {
-            id: :e4b_worker,
-            agent_type: :worker,
-            start: (0, worker),
-            restart: :transient,
-            shutdown: 0
-        };
-        ch2: actor_ref <- start_child(spec);
+        print_string("about_to_next_live_child"); println("");
+        ch2: actor_ref <- child_table_first_ref();
         print_string("about_to_call_child"); println("");
         b: int64 <- call(ch2, 200 impl ActorMessage {});
         print_int64(b); println("");
