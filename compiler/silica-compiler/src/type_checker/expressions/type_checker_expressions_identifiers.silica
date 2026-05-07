@@ -343,6 +343,34 @@ fn function_types_compatible_lifted_implementation(resolved: string, expected: s
     }
 }
 
+fn first_at_in_identifier_name(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "@" of {
+            true -> i;
+            false -> first_at_in_identifier_name(s, i + 1)
+        }
+    }
+}
+
+fn lookup_symbol_found_identifier(env: ListSymbolEntry, name: string) -> (bool, string) {
+    at: int64 <- first_at_in_identifier_name(name, 0);
+    case at < 0 of {
+        true -> type_checker_core@lookup_symbol_found(env, name);
+        false -> lookup_symbol_found_identifier_module(env, substring(name, at + 1, len(name)), substring(name, 0, at))
+    }
+}
+
+fn lookup_symbol_found_identifier_module(env: ListSymbolEntry, fn_name: string, required_module: string) -> (bool, string) {
+    case env.is_nil of {
+        true -> (false, "");
+        false -> case env.head.name == fn_name and env.head.is_effect_alias == false and env.head.source_module == required_module of {
+            true -> (true, env.head.type_name);
+            false -> lookup_symbol_found_identifier_module(env.tail, fn_name, required_module)
+        }
+    }
+}
+
 // Check Expr kind 1 (identifier). Lookup in context.env, verify matches expected_type.
 // Note: "true"/"false" identifiers are routed to boolean checker by type_checker_expressions dispatcher
 fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
@@ -350,12 +378,12 @@ fn check_expr(expr: Expr, expected_type: string, context: TypeContext, world: Li
         true -> case expr.name == "performance_cores" or expr.name == "efficiency_cores" of {
             true -> type_checker_core@type_check_ok();
             false -> do
-                (found: bool, _: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
+                (found: bool, _: string) <- lookup_symbol_found_identifier(context.env, expr.name);
                 case found of { true -> type_checker_core@type_check_ok(); false -> type_checker_core@type_check_err("E2002", expr.location, concat("undefined identifier: ", expr.name), "sect6") }
             end
         };
         false -> do
-            (found: bool, resolved_type: string) <- type_checker_core@lookup_symbol_found(context.env, expr.name);
+            (found: bool, resolved_type: string) <- lookup_symbol_found_identifier(context.env, expr.name);
             case found of {
                 false -> type_checker_core@type_check_err("E2002", expr.location, concat("undefined identifier: ", expr.name), "sect6");
                 true -> case resolved_type of {
