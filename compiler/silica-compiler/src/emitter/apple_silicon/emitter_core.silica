@@ -55,6 +55,8 @@ use var;
 
 export emit_module/1;
 export emit_module_debug/2;
+export module_needs_actor_runtime/1;
+export emit_actor_runtime_module/1;
 
 fn aggregate_return_heap_stub_fn(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
@@ -111,6 +113,15 @@ fn module_needs_region_alloc_for_aggregate_copy(sir_module: SIRModule) -> bool {
         true -> true;
         false -> module_has_aggregate_stack_let_scan(sir_module.functions)
     }
+}
+
+fn module_needs_actor_runtime(sir_module: SIRModule) -> bool {
+    sir_ast@sir_string_list_contains(sir_module.runtime_dependencies, "actor_runtime")
+}
+
+fn emit_actor_runtime_module(sir_module: SIRModule) -> string {
+    table: AtomTable <- atom_table@build_atom_table(sir_module);
+    concat("; Silica actor/supervisor runtime definitions. Link this object once per executable.\n", prims_actors_runtime_asm@emit_actor_runtime_helpers(table))
 }
 
 // Emit AArch64 assembly for a SIR module.
@@ -218,19 +229,10 @@ fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
         true -> concat("\n", prims_list@emit_list_length_helper());
         false -> ""
     };
-    needs_actor_rt_helper: bool <- case prims_actors@module_uses_actor_prims(sir_module) of {
-        true -> true;
-        false -> case sir_module.supervisor_impl_types.is_nil of {
-            true -> false;
-            false -> true
-        }
-    };
-    actor_rt_helper_asm: string <- case needs_actor_rt_helper of {
-        true -> concat("\n", prims_actors_runtime_asm@emit_actor_runtime_helpers(table));
-        false -> ""
-    };
+    needs_actor_runtime: bool <- module_needs_actor_runtime(sir_module);
+    actor_rt_helper_asm: string <- "";
     needs_alloc_region_stub: bool <- prims_memory@module_uses_alloc_region(sir_module);
-    needs_region_alloc_stub: bool <- case needs_actor_rt_helper of {
+    needs_region_alloc_stub: bool <- case needs_actor_runtime of {
         true -> false;
         false -> case needs_list_length_helper of {
             true -> true;
@@ -436,19 +438,10 @@ fn emit_module_debug(sir_module: SIRModule, debug: bool) -> string proc[DeviceIO
         true -> concat("\n", prims_list@emit_list_length_helper());
         false -> ""
     };
-    needs_actor_rt_helper: bool <- case prims_actors@module_uses_actor_prims(sir_module) of {
-        true -> true;
-        false -> case sir_module.supervisor_impl_types.is_nil of {
-            true -> false;
-            false -> true
-        }
-    };
-    actor_rt_helper_asm: string <- case needs_actor_rt_helper of {
-        true -> concat("\n", prims_actors_runtime_asm@emit_actor_runtime_helpers(table));
-        false -> ""
-    };
+    needs_actor_runtime: bool <- module_needs_actor_runtime(sir_module);
+    actor_rt_helper_asm: string <- "";
     needs_alloc_region_stub: bool <- prims_memory@module_uses_alloc_region(sir_module);
-    needs_region_alloc_stub: bool <- case needs_actor_rt_helper of {
+    needs_region_alloc_stub: bool <- case needs_actor_runtime of {
         true -> false;
         false -> case needs_list_length_helper of {
             true -> true;
@@ -1527,4 +1520,3 @@ fn main_returns_float16(name: string, return_type: string) -> bool {
         false -> false
     }
 }
-

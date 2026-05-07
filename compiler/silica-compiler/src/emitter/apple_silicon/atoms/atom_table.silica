@@ -192,21 +192,42 @@ fn sir_module_needs_topology_atom_indices(sir_module: SIRModule) -> bool {
     sir_module_needs_topology_atom_indices_loop(sir_module.functions)
 }
 
+fn seed_actor_runtime_atoms() -> (AtomTable, int64) {
+    do
+        (t0: AtomTable, _: int64) <- add_atom(empty_atom_table(), ":efficiency", 0);
+        (t1: AtomTable, _: int64) <- add_atom(t0, ":performance", 1);
+        (t2: AtomTable, _: int64) <- add_atom(t1, ":permanent", 2);
+        (t3: AtomTable, _: int64) <- add_atom(t2, ":transient", 3);
+        (t4: AtomTable, _: int64) <- add_atom(t3, ":temporary", 4);
+        (t5: AtomTable, _: int64) <- add_atom(t4, ":one_for_one", 5);
+        (t6: AtomTable, _: int64) <- add_atom(t5, ":one_for_all", 6);
+        (t7: AtomTable, _: int64) <- add_atom(t6, ":rest_for_one", 7);
+        (t7, 8)
+    end
+}
+
 // Build atom table from SIR module. Index 0 = first atom added / first reserved slot.
 // Topology modules: reserve :efficiency=0, :performance=1 then collect (matches runtime stubs).
 // Other modules: collect from empty table so e.g. :ok stays 0 when it is the only atom.
 fn build_atom_table(sir_module: SIRModule) -> AtomTable {
-    case sir_module_needs_topology_atom_indices(sir_module) of {
+    case sir_ast@sir_string_list_contains(sir_module.runtime_dependencies, "actor_runtime") of {
         true -> do
-            (t_eff: AtomTable, _: int64) <- add_atom(empty_atom_table(), ":efficiency", 0);
-            (t_both: AtomTable, _: int64) <- add_atom(t_eff, ":performance", 1);
-            (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, t_both, 2);
+            (seeded: AtomTable, next_idx: int64) <- seed_actor_runtime_atoms();
+            (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, seeded, next_idx);
             table
         end;
-        false -> do
-            (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, empty_atom_table(), 0);
-            table
-        end
+        false -> case sir_module_needs_topology_atom_indices(sir_module) of {
+            true -> do
+                (t_eff: AtomTable, _: int64) <- add_atom(empty_atom_table(), ":efficiency", 0);
+                (t_both: AtomTable, _: int64) <- add_atom(t_eff, ":performance", 1);
+                (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, t_both, 2);
+                table
+            end;
+            false -> do
+                (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, empty_atom_table(), 0);
+                table
+            end
+        }
     }
 }
 

@@ -3421,6 +3421,16 @@ fn deepest_let_chain_leaf(term: SIRTerm) -> SIRTerm {
     }
 }
 
+fn let_chain_has_later_record_make_rhs(term: SIRTerm) -> bool {
+    case term.kind == 2 of {
+        false -> false;
+        true -> case term.inner.kind == 6 and term.inner.name == "record_make" of {
+            true -> true;
+            false -> let_chain_has_later_record_make_rhs(term.right_expr)
+        }
+    }
+}
+
 // RHS stack record + nested lets → rec_flat tuple: leaf teardown + widen accounts for tuple slab; a full parent's
 // base_stack ADD would double-pop (#48 duplicate). Omitting it entirely leaves SP 16 B low before callee LDP — use +16 fixup.
 // Uses tuple_make_memcpy_record_flat_head (defined above).
@@ -3430,7 +3440,10 @@ fn let_suppress_base_stack_overlay_rec_flat(term: SIRTerm, base_stack: int64) ->
         false -> false;
         true -> do
             leaf: SIRTerm <- deepest_let_chain_leaf(term.right_expr);
-            tuple_make_memcpy_record_flat_head(leaf)
+            case let_chain_has_later_record_make_rhs(term.right_expr) of {
+                true -> false;
+                false -> tuple_make_memcpy_record_flat_head(leaf)
+            }
         end
     }
 }

@@ -237,15 +237,41 @@ fn linkage_qual_fn_top_level(name: string) -> string {
     }
 }
 
-fn linkage_asm_symbol_for_named_fn_ref(outer_reg: string, bare_sir_name: string) -> string {
-    mod: string <- linkage_module_from_outer(outer_reg);
-    qual: string <- linkage_qual_fn_top_level(bare_sir_name);
-    case qual == "main" or qual == "main.main" or qual == "main.m" of {
-        true -> "main";
-        false -> case len(qual) >= 5 and substring(qual, 0, 5) == "main." of {
-            true -> concat(mod, concat(".", substring(qual, 5, len(qual))));
-            false -> qual
+fn first_at_in_fn_ref(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "@" of {
+            true -> i;
+            false -> first_at_in_fn_ref(s, i + 1)
         }
+    }
+}
+
+fn linkage_asm_symbol_for_named_fn_ref(outer_reg: string, bare_sir_name: string) -> string {
+    at: int64 <- first_at_in_fn_ref(bare_sir_name, 0);
+    case at >= 0 of {
+        true -> do
+            qmod: string <- substring(bare_sir_name, 0, at);
+            qfn: string <- linkage_qual_fn_top_level(substring(bare_sir_name, at + 1, len(bare_sir_name)));
+            case qfn == "main" or qfn == "main.main" or qfn == "main.m" of {
+                true -> "main";
+                false -> case len(qfn) >= 5 and substring(qfn, 0, 5) == "main." of {
+                    true -> concat(qmod, concat(".", substring(qfn, 5, len(qfn))));
+                    false -> qfn
+                }
+            }
+        end;
+        false -> do
+            mod: string <- linkage_module_from_outer(outer_reg);
+            qual: string <- linkage_qual_fn_top_level(bare_sir_name);
+            case qual == "main" or qual == "main.main" or qual == "main.m" of {
+                true -> "main";
+                false -> case len(qual) >= 5 and substring(qual, 0, 5) == "main." of {
+                    true -> concat(mod, concat(".", substring(qual, 5, len(qual))));
+                    false -> qual
+                }
+            }
+        end
     }
 }
 
@@ -416,7 +442,10 @@ fn bare_qualifies_as_fn_pointer_asm_symbol(bare: string) -> bool {
         true -> true;
         false -> case len(bare) >= 5 and substring(bare, 0, 5) == "main." of {
             true -> true;
-            false -> sir_name_contains_lifted_lambda_sub(bare) or sir_name_contains_lifted_hof_wrapper_sub(bare)
+            false -> case first_at_in_fn_ref(bare, 0) >= 0 of {
+                true -> true;
+                false -> sir_name_contains_lifted_lambda_sub(bare) or sir_name_contains_lifted_hof_wrapper_sub(bare)
+            }
         }
     }
 }

@@ -33,6 +33,7 @@ export cons_sir_functions/2;
 export nil_sir_functions/0;
 export nil_sir_strings/0;
 export cons_sir_string/2;
+export sir_string_list_contains/2;
 export dummy_export_item/0;
 export nil_sir_exports/0;
 export cons_sir_export/2;
@@ -140,6 +141,8 @@ struct SIRModule {
     // supervisors plan Phase F (§15.4.13.4): actor types in `impl T for FailureReporter;` (tag 6) for root FailureReporter bootstrap / unwind delivery metadata.
     failure_reporter_impl_types: ListSirString,
     required_method_sigs: ListSIRRequiredMethodSig,
+    // Runtime dependencies required by this SIR module. The emitter lowers calls to these runtimes, while build output/linking supplies each runtime definition once.
+    runtime_dependencies: ListSirString,
     functions: ListSIRFunction
 }
 
@@ -168,6 +171,16 @@ fn nil_sir_strings() -> ListSirString {
 
 fn cons_sir_string(s: string, rest: ListSirString) -> ListSirString {
     ListSirString { is_nil: false, head: s, tail: rest }
+}
+
+fn sir_string_list_contains(items: ListSirString, needle: string) -> bool {
+    case items.is_nil of {
+        true -> false;
+        false -> case items.head == needle of {
+            true -> true;
+            false -> sir_string_list_contains(items.tail, needle)
+        }
+    }
 }
 
 fn dummy_export_item() -> SIRExportItem {
@@ -463,6 +476,10 @@ fn sir_module_to_text(sir_module: SIRModule) -> string {
         true -> "";
         false -> sir_required_sigs_to_text(sir_module.required_method_sigs, "")
     };
+    rt_line: string <- case sir_module.runtime_dependencies.is_nil of {
+        true -> "";
+        false -> concat(concat("  runtime ", sir_used_modules_to_text(sir_module.runtime_dependencies, "")), "\n")
+    };
     funcs: string <- sir_module_to_text_acc(sir_module.functions, "");
     do
         part1: string <- concat(header, uses_line);
@@ -473,6 +490,7 @@ fn sir_module_to_text(sir_module: SIRModule) -> string {
         part4b2: string <- concat(part4b, phe_line);
         part4c: string <- concat(part4b2, fr_line);
         part5: string <- concat(part4c, req_line);
-        concat(part5, funcs)
+        part6: string <- concat(part5, rt_line);
+        concat(part6, funcs)
     end
 }
