@@ -488,7 +488,7 @@ fn is_actor_runtime_helper_name(name: string) -> bool {
 // §4.5 actor_ref, §15 spawn, §16 call/cast/send, self; recv forbidden §15.1.2.
 // §15.4.8.5–§15.4.8.7: link, monitor, demonitor (Phase G: behavior-only for link/monitor/demonitor; E2091).
 fn is_actor_concurrency_builtin(name: string) -> bool {
-    name == "spawn" or name == "spawn_linked" or name == "link" or name == "monitor" or name == "demonitor" or name == "send" or name == "cast" or name == "call" or name == "self" or name == "recv" or name == "supervision_ingress_enqueue" or name == "supervision_wait_and_drain_one" or name == "failure_reason_tag" or name == "failure_agent_type" or name == "failure_release" or name == "start_child" or name == "child_table_first_ref" or name == "child_table_row_ref" or name == "kill_abnormal" or name == "wait_for_exit" or is_actor_runtime_helper_name(name)
+    name == "spawn" or name == "spawn_linked" or name == "link" or name == "monitor" or name == "demonitor" or name == "send" or name == "cast" or name == "call" or name == "self" or name == "recv" or name == "supervision_ingress_enqueue" or name == "supervision_wait_and_drain_one" or name == "failure_reason_tag" or name == "failure_reason_atom" or name == "failure_agent_type" or name == "failure_release" or name == "start_child" or name == "child_table_first_ref" or name == "child_table_row_ref" or name == "kill_abnormal" or name == "wait_for_exit" or is_actor_runtime_helper_name(name)
 }
 
 fn check_runtime_builtin_return(expr: Expr, inferred: string, expected_type: string) -> TypeCheckResult {
@@ -1151,6 +1151,28 @@ fn check_failure_reason_tag_call(expr: Expr, expected_type: string, context: Typ
     }
 }
 
+fn check_failure_reason_atom_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
+        false -> type_checker_core@type_check_err("E2091", expr.location, "failure_reason_atom may only be called from within an actor behavior function (supervisors plan Phase C)", "sect15.4.11");
+        true -> do
+            ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+            case ac == 1 of {
+                false -> type_checker_core@type_check_err("E2005", expr.location, "failure_reason_atom expects 1 argument: (payload: int64)", "sect15.4.11");
+                true -> do
+                    r0: TypeCheckResult <- check_expr(expr.inner, "int64", context, world);
+                    case r0.is_ok of {
+                        false -> r0;
+                        true -> case expected_type == "atom" or expected_type == "discard" of {
+                            true -> type_checker_core@type_check_ok();
+                            false -> type_checker_core@type_check_err("E2003", expr.location, concat("failure_reason_atom returns atom, expected ", expected_type), "sect15.4.11")
+                        }
+                    }
+                end
+            }
+        end
+    }
+}
+
 fn check_failure_agent_type_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case type_checker_expressions_actors@type_context_has_behavior_marker(context) of {
         false -> type_checker_core@type_check_err("E2091", expr.location, "failure_agent_type may only be called from within an actor behavior function (supervisors plan Phase C)", "sect15.4.11");
@@ -1364,6 +1386,8 @@ fn check_actor_concurrency_call(expr: Expr, expected_type: string, context: Type
                                             true -> check_supervision_wait_and_drain_one_call(expr, expected_type, context, world);
                                             false -> case eff == "failure_reason_tag" of {
                                                 true -> check_failure_reason_tag_call(expr, expected_type, context, world);
+                                            false -> case eff == "failure_reason_atom" of {
+                                                true -> check_failure_reason_atom_call(expr, expected_type, context, world);
                                                 false -> case eff == "failure_agent_type" of {
                                                     true -> check_failure_agent_type_call(expr, expected_type, context, world);
                                                     false -> case eff == "failure_release" of {
@@ -1390,7 +1414,7 @@ fn check_actor_concurrency_call(expr: Expr, expected_type: string, context: Type
                                                                 }
                                                             }
                                                         }
-                                                    }
+                                                    }}
                                                 }
                                             }
                                         }
@@ -1587,7 +1611,7 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext, world: Li
     case first_at_in_expr_call_name(expr.name, 0) >= 0 of {
         true -> do
             base: string <- type_checker_core@user_call_base_function_name(expr.name);
-            case base == "spawn" or base == "spawn_linked" or base == "link" or base == "monitor" or base == "demonitor" or base == "supervision_ingress_enqueue" or base == "supervision_wait_and_drain_one" or base == "failure_reason_tag" or base == "failure_agent_type" or base == "failure_release" or base == "start_child" or base == "child_table_first_ref" or base == "child_table_row_ref" or base == "kill_abnormal" or base == "wait_for_exit" of {
+            case base == "spawn" or base == "spawn_linked" or base == "link" or base == "monitor" or base == "demonitor" or base == "supervision_ingress_enqueue" or base == "supervision_wait_and_drain_one" or base == "failure_reason_tag" or base == "failure_reason_atom" or base == "failure_agent_type" or base == "failure_release" or base == "start_child" or base == "child_table_first_ref" or base == "child_table_row_ref" or base == "kill_abnormal" or base == "wait_for_exit" of {
                 true -> check_actor_concurrency_call(expr, expected_type, context, world);
                 false -> check_user_defined_call(expr, expected_type, context, world)
             }

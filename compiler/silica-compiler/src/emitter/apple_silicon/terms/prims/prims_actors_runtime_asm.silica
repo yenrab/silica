@@ -2358,8 +2358,14 @@ _silica_rt_actor_demonitor:             ; @silica_rt_actor_demonitor
 // (atom index; 0 when not `(:explicit, …)`), [+24]=agent_type (atom copied from child's #200 slot).
 // Message node (152 B, heap) matches the standard cast shape: [+8]=payload pointer, [+16]=needs_reply=0, [+24]=ingress_kind (0 here).
 // Dead-supervisor handling (§15.4.10.4): caller is signalled via X0=1 to emit the existing root-actor stderr note.
-fn actor_rt_asm_phase_c_chunk() -> string {
-    "	.section	__TEXT,__text,regular,pure_instructions
+fn actor_rt_asm_phase_c_chunk(table: AtomTable) -> string {
+    ok_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":ok"));
+    normal_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":normal"));
+    language_error_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":language_error"));
+    memory_fault_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":memory_fault"));
+    explicit_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":explicit"));
+    unknown_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":unknown"));
+    p0: string <- concat("	.section	__TEXT,__text,regular,pure_instructions
 	.globl	_silica_rt_actor_deliver_exit   ; Phase C — §15.4.10 unified delivery
 	.p2align	2
 _silica_rt_actor_deliver_exit:          ; X0=child self; X0 out: 0 delivered, 1 drop (no sup / dead / OOM)
@@ -2516,6 +2522,46 @@ Lfrt_zero:
 	ret
 	.cfi_endproc
                                         ; -- End function
+	.globl	_silica_rt_actor_failure_reason_atom
+	.p2align	2
+_silica_rt_actor_failure_reason_atom:   ; X0=payload ptr -> X0=atom failure_reason variant
+	.cfi_startproc
+	cbz	x0, Lfra_unknown
+	ldr	x8, [x0, #8]
+	cbz	x8, Lfra_normal
+	cmp	x8, #2
+	b.eq	Lfra_language_error
+	cmp	x8, #3
+	b.eq	Lfra_memory_fault
+	cmp	x8, #4
+	b.eq	Lfra_explicit
+	b	Lfra_unknown
+Lfra_normal:
+	mov	x0, #", normal_idx);
+    p1: string <- concat(p0, "
+	ret
+Lfra_language_error:
+	mov	x0, #");
+    p2: string <- concat(p1, language_error_idx);
+    p3: string <- concat(p2, "
+	ret
+Lfra_memory_fault:
+	mov	x0, #");
+    p4: string <- concat(p3, memory_fault_idx);
+    p5: string <- concat(p4, "
+	ret
+Lfra_explicit:
+	mov	x0, #");
+    p6: string <- concat(p5, explicit_idx);
+    p7: string <- concat(p6, "
+	ret
+Lfra_unknown:
+	mov	x0, #");
+    p8: string <- concat(p7, unknown_idx);
+    p9: string <- concat(p8, "
+	ret
+	.cfi_endproc
+                                        ; -- End function
 	.globl	_silica_rt_actor_failure_agent_type
 	.p2align	2
 _silica_rt_actor_failure_agent_type:    ; X0=payload ptr -> X0=atom agent_type
@@ -2530,23 +2576,27 @@ Lfat_zero:
                                         ; -- End function
 	.globl	_silica_rt_actor_failure_release
 	.p2align	2
-_silica_rt_actor_failure_release:       ; X0=payload ptr; frees payload; returns X0=atom :ok (index 0)
+_silica_rt_actor_failure_release:       ; X0=payload ptr; frees payload; returns X0=atom :ok
 	.cfi_startproc
 	cbz	x0, Lfrr_zero
 	stp	x29, x30, [sp, #-16]!
 	add	x29, sp, #0
 	bl	_free
-	mov	x0, #0
+	mov	x0, #");
+    p10: string <- concat(p9, ok_idx);
+    p11: string <- concat(p10, "
 	ldp	x29, x30, [sp], #16
 	ret
 Lfrr_zero:
-	mov	x0, #0
+	mov	x0, #");
+    p12: string <- concat(p11, ok_idx);
+    concat(p12, "
 	ret
 	.cfi_endproc
                                         ; -- End function
 
 .subsections_via_symbols
-"
+")
 }
 
 // Phase E e4f: lightweight CV primitives backed by os_unfair_lock + ___ulock_wait/___ulock_wake.
@@ -2936,10 +2986,10 @@ Lwi_ret_ok:
 "
 }
 
-fn actor_rt_emit_runtime_tail() -> string {
-    concat(concat(actor_rt_asm_phase_i_chunk(), actor_rt_asm_phase_c_chunk()), actor_rt_asm_phase_f_chunk())
+fn actor_rt_emit_runtime_tail(table: AtomTable) -> string {
+    concat(concat(actor_rt_asm_phase_i_chunk(), actor_rt_asm_phase_c_chunk(table)), actor_rt_asm_phase_f_chunk())
 }
 
 fn emit_actor_runtime_helpers(table: AtomTable) -> string {
-    concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(actor_rt_asm_chunk_0(), actor_rt_asm_chunk_1()), actor_rt_asm_chunk_2()), actor_rt_asm_chunk_3()), actor_rt_asm_chunk_4()), actor_rt_asm_chunk_5()), actor_rt_topology_phase_g_chunk()), actor_rt_asm_chunk_6()), actor_rt_asm_chunk_7()), actor_rt_asm_chunk_8()), actor_rt_asm_chunk_9()), actor_rt_asm_chunk_10()), actor_rt_asm_chunk_11()), actor_rt_asm_chunk_12()), actor_rt_asm_chunk_13()), actor_rt_asm_cv_chunk()), prims_actors_child_table_asm@emit_child_table_runtime_asm(table)), actor_rt_emit_runtime_tail())
+    concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(actor_rt_asm_chunk_0(), actor_rt_asm_chunk_1()), actor_rt_asm_chunk_2()), actor_rt_asm_chunk_3()), actor_rt_asm_chunk_4()), actor_rt_asm_chunk_5()), actor_rt_topology_phase_g_chunk()), actor_rt_asm_chunk_6()), actor_rt_asm_chunk_7()), actor_rt_asm_chunk_8()), actor_rt_asm_chunk_9()), actor_rt_asm_chunk_10()), actor_rt_asm_chunk_11()), actor_rt_asm_chunk_12()), actor_rt_asm_chunk_13()), actor_rt_asm_cv_chunk()), prims_actors_child_table_asm@emit_child_table_runtime_asm(table)), actor_rt_emit_runtime_tail(table))
 }
