@@ -117,6 +117,18 @@ fn record_type_value_flat_byte_size(record_str: string) -> int64 {
     }
 }
 
+fn record_type_is_child_spec(record_str: string) -> bool {
+    R: string <- strip_spaces_rt(record_str);
+    case record_type_starts(R) of {
+        false -> false;
+        true -> len(find_field_type_in_record(R, "id")) > 0
+            and len(find_field_type_in_record(R, "agent_type")) > 0
+            and len(find_field_type_in_record(R, "start")) > 0
+            and len(find_field_type_in_record(R, "restart")) > 0
+            and len(find_field_type_in_record(R, "shutdown")) > 0
+    }
+}
+
 // Darwin AAPCS64: SP alignment at BL; matches term_emitter stack_alloc_round16.
 fn list_cons_stack_round16(nbytes: int64) -> int64 {
     (nbytes + 15) / 16 * 16
@@ -131,12 +143,15 @@ fn record_type_list_cons_payload_bytes(record_str: string) -> int64 {
     R: string <- strip_spaces_rt(record_str);
     case record_type_starts(R) of {
         false -> 8;
-        true -> case record_type_has_only_scalar_fields(R) of {
-            true -> list_cons_stack_round16(record_type_value_flat_byte_size(R));
-            false -> do
-                c: int64 <- count_record_fields(R);
-                (c + 1) / 2 * 16
-            end
+        true -> case record_type_is_child_spec(R) of {
+            true -> 56;
+            false -> case record_type_has_only_scalar_fields(R) of {
+                true -> list_cons_stack_round16(record_type_value_flat_byte_size(R));
+                false -> do
+                    c: int64 <- count_record_fields(R);
+                    (c + 1) / 2 * 16
+                end
+            }
         }
     }
 }

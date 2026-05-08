@@ -203,6 +203,76 @@ fn is_aggregate_make(t: SIRTerm) -> bool {
     }
 }
 
+fn first_at_in_fn_label(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "@" of {
+            true -> i;
+            false -> first_at_in_fn_label(s, i + 1)
+        }
+    }
+}
+
+fn child_spec_supervisor_trampoline_symbol_from_label(label: string) -> string {
+    at: int64 <- first_at_in_fn_label(label, 0);
+    case at < 0 of {
+        true -> "";
+        false -> concat("_silica_supervisor_start_", substring(label, 0, at))
+    }
+}
+
+fn child_spec_start_fn_label(term: SIRTerm) -> string {
+    case term.kind == 6 and term.name == "record_make" of {
+        false -> "";
+        true -> case term.value == "start" and term.inner.kind == 6 and term.inner.name == "tuple_make" of {
+            true -> do
+                e1w: SIRTerm <- term.inner.right_expr;
+                e1: SIRTerm <- case e1w.kind == 6 and e1w.name == "tuple_make" of {
+                    true -> e1w.inner;
+                    false -> e1w
+                };
+                case e1.kind == 0 and e1.type_name == "fn_ptr" of {
+                    true -> e1.value;
+                    false -> ""
+                }
+            end;
+            false -> child_spec_start_fn_label(term.right_expr)
+        }
+    }
+}
+
+fn is_child_spec_record_type(R: string) -> bool {
+    len(prims_record@find_field_type_in_record(R, "id")) > 0
+        and len(prims_record@find_field_type_in_record(R, "agent_type")) > 0
+        and len(prims_record@find_field_type_in_record(R, "start")) > 0
+        and len(prims_record@find_field_type_in_record(R, "restart")) > 0
+        and len(prims_record@find_field_type_in_record(R, "shutdown")) > 0
+}
+
+fn emit_child_spec_hidden_trampoline_store(term: SIRTerm, R: string) -> string {
+    case is_child_spec_record_type(R) of {
+        false -> "";
+        true -> do
+            label: string <- child_spec_start_fn_label(term);
+            sym: string <- child_spec_supervisor_trampoline_symbol_from_label(label);
+            case len(sym) == 0 of {
+                true -> "    STR XZR, [SP, #48]";
+                false -> concat(concat(concat(concat("    ADRP X9, ", sym), "@PAGE\n    ADD X9, X9, "), sym), "@PAGEOFF\n    STR X9, [SP, #48]")
+            }
+        end
+    }
+}
+
+fn record_make_stack_alloc_size(R: string) -> int64 {
+    case is_child_spec_record_type(R) of {
+        true -> 64;
+        false -> case prims_record@record_type_has_only_scalar_fields(R) of {
+            true -> stack_alloc_round16(prims_record@record_type_value_flat_byte_size(R));
+            false -> prims_tuple@flat_alloc_size(prims_record@count_record_fields(R))
+        }
+    }
+}
+
 fn check_dot_from(value: string, pos: int64, length: int64) -> bool {
     case pos >= length of {
         true -> false;
@@ -1476,7 +1546,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     false -> case len(tuple_sret_outer_n) > 0 of { true -> 0; false -> aggregate_callee_return_stack_bytes(term.inner) }
                 };
                 base_stack_eff_n: int64 <- case let_suppress_base_stack_overlay_rec_flat(term, base_stack_n) of {
-                    true -> 16;
+                    true -> let_suppressed_base_stack_fixup(term);
                     false -> base_stack_n
                 };
                 tail_stack_raw_n: int64 <- let_tail_aggregate_stack_bytes(term.right_expr);
@@ -1572,7 +1642,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 spill_tl: bool <- len(spill_reg_tl) > 0;
                 rhs_bind_tl: string <- case spill_tl of { true -> spill_reg_tl; false -> rhs_reg };
                 mov_spill_tl: string <- case spill_tl of { true -> mov_spill_from_rhs(rhs_reg, spill_reg_tl); false -> "" };
-                is_simple_tuple_make: bool <- is_aggregate_make(term.inner) and tm_adj_tl == 0;
+                is_simple_tuple_make: bool <- term.inner.kind == 6 and term.inner.name == "tuple_make" and tm_adj_tl == 0;
                 body_bound_tl: string <- case is_simple_tuple_make of {
                     true -> case id_ret_aggregate_let(term) and len(var@find_sp_binding(outer_reg, "_callee_sret")) > 0 of {
                         true -> rhs_bind_tl;
@@ -1620,7 +1690,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     false -> case len(tuple_sret_outer_tl) > 0 of { true -> 0; false -> aggregate_callee_return_stack_bytes(term.inner) }
                 };
                 base_stack_eff_tl: int64 <- case let_suppress_base_stack_overlay_rec_flat(term, base_stack_tl) of {
-                    true -> 16;
+                    true -> let_suppressed_base_stack_fixup(term);
                     false -> base_stack_tl
                 };
                 tail_stack_raw_tl: int64 <- let_tail_aggregate_stack_bytes(term.right_expr);
@@ -1917,18 +1987,20 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 concat(alloc_asm, concat(stores_asm, case len(mov_asm) > 0 of { true -> concat("\n", mov_asm); false -> "" }))
             end;
             false -> case term.name == "record_make" of {
-            true -> do
-                count_r: int64 <- prims_record@count_record_fields(term.type_name);
-                Rm: string <- term.type_name;
-                alloc_sz_r: int64 <- case prims_record@record_type_has_only_scalar_fields(Rm) of {
-                    true -> stack_alloc_round16(prims_record@record_type_value_flat_byte_size(Rm));
-                    false -> prims_tuple@flat_alloc_size(count_r)
-                };
+                true -> do
+                    count_r: int64 <- prims_record@count_record_fields(term.type_name);
+                    Rm: string <- term.type_name;
+                alloc_sz_r: int64 <- record_make_stack_alloc_size(Rm);
                 // Ignore |_tuple_sret for record_make: always SUB SP + SP-relative stores. Tuple path may use X8
                 // safely when the make has no prior BL; record_make often follows region_alloc / other BL.
                 sret_base_r: string <- "";
                 alloc_asm_r: string <- concat("    SUB SP, SP, #", concat(atom_table@int64_to_decimal_string(alloc_sz_r), "\n"));
-                stores_asm_r: string <- emit_flat_record_stores(term, Rm, 0, 0, sret_base_r, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+                stores_base_asm_r: string <- emit_flat_record_stores(term, Rm, 0, 0, sret_base_r, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+                hidden_child_tramp_r: string <- emit_child_spec_hidden_trampoline_store(term, Rm);
+                stores_asm_r: string <- case len(hidden_child_tramp_r) > 0 of {
+                    true -> concat(stores_base_asm_r, concat("\n", hidden_child_tramp_r));
+                    false -> stores_base_asm_r
+                };
                 nested_adjust_r: int64 <- flat_record_sum_nested_inners(term);
                 dest_ptr_r: string <- case len(dest) > 0 and substring(dest, 0, 1) == "W" of {
                     true -> concat("X", substring(dest, 1, len(dest)));
@@ -3034,12 +3106,13 @@ fn emit_flat_tuple_stores(term: SIRTerm, idx: int64, count: int64, sp_adjust: in
                                 rec_R: string <- elem.type_name;
                                 rsz: int64 <- prims_record@record_type_value_flat_byte_size(rec_R);
                                 qw: int64 <- rsz / 8;
-                                memcpy_asm: string <- emit_reg_to_flat_qwords_memcpy_loop(0, qw, temp_reg, store_base, byte_cursor);
-                                next_bc: int64 <- byte_cursor + rsz;
-                                rec_sp_round: int64 <- case prims_record@record_type_has_only_scalar_fields(rec_R) of {
-                                    true -> stack_alloc_round16(rsz);
-                                    false -> prims_tuple@flat_alloc_size(prims_record@count_record_fields(rec_R))
+                                rec_sp_round: int64 <- record_make_stack_alloc_size(rec_R);
+                                dest_base: int64 <- case len(store_base) > 0 of {
+                                    true -> byte_cursor;
+                                    false -> byte_cursor + rec_sp_round
                                 };
+                                memcpy_asm: string <- emit_reg_to_flat_qwords_memcpy_loop(0, qw, temp_reg, store_base, dest_base);
+                                next_bc: int64 <- byte_cursor + rsz;
                                 restore_rec_sp: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(rec_sp_round), "\n"));
                                 rest_asm: string <- emit_flat_tuple_stores(term.right_expr, idx + 1, count, new_adjust, next_bc, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
                                 concat(concat(elem_asm, concat("\n", memcpy_asm)), concat(concat("\n", restore_rec_sp), concat("\n", rest_asm)))
@@ -3208,13 +3281,13 @@ fn flat_record_sum_nested_inners(term: SIRTerm) -> int64 {
 fn flat_record_total_alloc(term: SIRTerm) -> int64 {
     case term.kind == 6 and term.name == "record_make" of {
         true -> case prims_record@record_type_has_only_scalar_fields(term.type_name) of {
-            true -> prims_record@record_type_value_flat_byte_size(term.type_name);
+            true -> record_make_stack_alloc_size(term.type_name);
             false -> do
                 my_count: int64 <- prims_record@count_record_fields(term.type_name);
                 case my_count < 1 of {
                     true -> 0;
                     false -> do
-                        my_size: int64 <- prims_tuple@flat_alloc_size(my_count);
+                        my_size: int64 <- record_make_stack_alloc_size(term.type_name);
                         nested: int64 <- flat_record_sum_nested_inners(term);
                         my_size + nested
                     end
@@ -3445,6 +3518,13 @@ fn let_suppress_base_stack_overlay_rec_flat(term: SIRTerm, base_stack: int64) ->
                 false -> tuple_make_memcpy_record_flat_head(leaf)
             }
         end
+    }
+}
+
+fn let_suppressed_base_stack_fixup(term: SIRTerm) -> int64 {
+    case term.inner.kind == 6 and term.inner.name == "record_make" and is_child_spec_record_type(term.inner.type_name) of {
+        true -> 32;
+        false -> 16
     }
 }
 

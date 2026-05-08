@@ -282,6 +282,17 @@ fn e3b_trampoline_x3_prefix(value: string) -> string {
     }
 }
 
+fn e3b_trampoline_x4_prefix(value: string) -> string {
+    tn: string <- e3b_extract_type_name(value);
+    case len(tn) == 0 of {
+        true -> "    MOV X4, XZR\n";
+        false -> do
+            sym: string <- concat("_silica_supervisor_start_", tn);
+            concat(concat(concat(concat("    ADRP X4, ", sym), "@PAGE\n    ADD X4, X4, "), sym), "@PAGEOFF\n")
+        end
+    }
+}
+
 fn mov_dest_from_x0_for_type(dest: string, result_type: string) -> string {
     case dest == "X0" of {
         true -> "";
@@ -303,12 +314,13 @@ fn mov_dest_from_x0_for_type(dest: string, result_type: string) -> string {
 // ABI _silica_rt_actor_spawn_linked(X0 init, X1 beh, X2 agent_atom, X3 core_id): core_id 0 = default placement.
 // 3-arg SIR: right = tuple_make(beh, agent); 4-arg: flat [beh, agent, core] at X10 (nested tuple_make layout).
 fn emit_spawn_linked(dest: string, term: SIRTerm) -> string {
+    e3b_pfx: string <- e3b_trampoline_x4_prefix(term.value);
     four_args: bool <- term.right_expr.kind == 6 and term.right_expr.name == "tuple_make"
         and term.right_expr.inner.kind == 6 and term.right_expr.inner.name == "tuple_make";
     case four_args of {
-        true -> concat(concat("    MOV X0, X11\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n    LDR X3, [X10, #16]\n", asm_bl("_silica_rt_actor_spawn_linked")), mov_dest_from_x0_for_type(dest, term.type_name));
+        true -> concat(concat(concat(e3b_pfx, "    MOV X0, X11\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n    LDR X3, [X10, #16]\n"), asm_bl("_silica_rt_actor_spawn_linked")), mov_dest_from_x0_for_type(dest, term.type_name));
         false -> case term.right_expr.kind == 6 and term.right_expr.name == "tuple_make" of {
-            true -> concat(concat("    MOV X0, X11\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n    MOV X3, XZR\n", asm_bl("_silica_rt_actor_spawn_linked")), mov_dest_from_x0_for_type(dest, term.type_name));
+            true -> concat(concat(concat(e3b_pfx, "    MOV X0, X11\n    LDR X1, [X10]\n    LDR X2, [X10, #8]\n    MOV X3, XZR\n"), asm_bl("_silica_rt_actor_spawn_linked")), mov_dest_from_x0_for_type(dest, term.type_name));
             false -> do
                 nb_sl: int64 <- spawn_init_stack_bytes(term.inner);
                 copy_init_sl: bool <- spawn_init_needs_heap_copy(term.inner) and nb_sl > 0;
@@ -317,12 +329,12 @@ fn emit_spawn_linked(dest: string, term: SIRTerm) -> string {
                         promote_sl: string <- heap_promote_stack_aggregate_x0(nb_sl);
                         pop_stack_sl: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(nb_sl), "\n"));
                         pre_sl: string <- concat("    MOV X12, X10\n    MOV X0, X9\n", promote_sl);
-                        mid_sl: string <- concat(pre_sl, "    MOV X9, X0\n    MOV X10, X12\n    MOV X0, X9\n    MOV X1, X10\n    MOV X2, XZR\n    MOV X3, XZR\n");
+                        mid_sl: string <- concat(pre_sl, concat("    MOV X9, X0\n    MOV X10, X12\n", concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV X2, XZR\n    MOV X3, XZR\n")));
                         after_sl: string <- concat(mid_sl, asm_bl("_silica_rt_actor_spawn_linked"));
                         with_dest_sl: string <- concat(after_sl, mov_dest_from_x0_for_type(dest, term.type_name));
                         concat(with_dest_sl, pop_stack_sl)
                     end;
-                    false -> concat(concat("    MOV X0, X9\n    MOV X1, X10\n    MOV X2, XZR\n    MOV X3, XZR\n", asm_bl("_silica_rt_actor_spawn_linked")), mov_dest_from_x0_for_type(dest, term.type_name))
+                    false -> concat(concat(concat(e3b_pfx, "    MOV X0, X9\n    MOV X1, X10\n    MOV X2, XZR\n    MOV X3, XZR\n"), asm_bl("_silica_rt_actor_spawn_linked")), mov_dest_from_x0_for_type(dest, term.type_name))
                 }
             end
         }

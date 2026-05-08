@@ -119,9 +119,9 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 	.cfi_offset w24, -64
 	mov	x23, x2
 	mov	x24, x3
+	mov	x22, x4
 	mov	x20, x1
 	mov	x21, x0
-	mov	w22, #1
 	mov	w0, #1
 	mov	w1, #344
 	bl	_calloc
@@ -141,7 +141,7 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 	str	xzr, [x19, #256]
 	str	xzr, [x19, #264]
 	str	xzr, [x19, #272]
-	str	xzr, [x19, #280]
+	str	x22, [x19, #280]
 	str	xzr, [x19, #288]
 	str	xzr, [x19, #296]
 	str	xzr, [x19, #304]
@@ -164,7 +164,8 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 Lslp_skip_list:
 ; Phase E e4f: ACB+16 (os_unfair_lock) and ACB+80 (futex seq word) are pre-zeroed by calloc.
 ; OS_UNFAIR_LOCK_INIT == 0, seq baseline 0; no init call required.
-	str	w22, [x19, #152]
+	mov	w8, #1
+	str	w8, [x19, #152]
 Lslp_tm0:
 	adrp	x2, _actor_thread_main@PAGE
 Lslp_tm1:
@@ -375,11 +376,17 @@ LBB1_free_skip_restart:
 LBB1_exit:
 	add	x0, x19, #16
 	bl	_os_unfair_lock_unlock
+	ldr	x8, [x19, #272]
+	cbnz	x8, LBB1_exit_report_already_done
 	mov	x0, x19
 	bl	_silica_rt_actor_deliver_exit
 	mov	x20, x0
 	mov	x0, x19
 	bl	_silica_rt_actor_deliver_unwind_report
+	b	LBB1_exit_after_report
+LBB1_exit_report_already_done:
+	mov	x20, #0
+LBB1_exit_after_report:
 	cbz	x20, LBB1_exit_skip_legacy_root
 	mov	w0, #2
 Lloh_rn0:
@@ -395,6 +402,8 @@ LBB1_exit_skip_legacy_root:
 ; trampoline fn pointer routed to ACB[+280]), so x20 == 0 and the post-free flag write
 ; is skipped — there is no parent row to notify.
 	ldr	x20, [x19, #208]
+	ldr	x21, [x19, #192]
+	cbz	x21, LBB1_exit_no_row
 	mov	x0, x19
 	bl	_silica_rt_child_table_free
 	mov	x0, x19
@@ -2297,24 +2306,27 @@ _silica_rt_cv_wait:                     ; X0 = cv_addr, X1 = lock_addr. Caller m
 	.p2align	2
 _silica_rt_child_table_free:
 	.cfi_startproc
-	stp	x19, x30, [sp, #-16]!
-	.cfi_def_cfa wsp, 16
-	.cfi_offset w19, -16
-	.cfi_offset w30, -8
+	stp	x20, x19, [sp, #-32]!
+	str	x30, [sp, #16]
+	.cfi_def_cfa wsp, 32
+	.cfi_offset w20, -32
+	.cfi_offset w19, -24
+	.cfi_offset w30, -16
 	mov	x19, x0
 	ldr	x8, [x19, #256]
 Lct_free_loop:
 	cbz	x8, Lct_free_clear
-	ldr	x9, [x8, #80]
+	ldr	x20, [x8, #80]
 	mov	x0, x8
-	mov	x8, x9
 	bl	_free
+	mov	x8, x20
 	b	Lct_free_loop
 Lct_free_clear:
 	str	xzr, [x19, #256]
 	str	xzr, [x19, #264]
 	str	xzr, [x19, #272]
-	ldp	x19, x30, [sp], #16
+	ldr	x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
 	ret
 	.cfi_endproc
 	.globl	_silica_rt_child_table_ensure_min_cap
@@ -2415,11 +2427,23 @@ _silica_rt_supervisor_materialize_init_children:
 	mov	x19, x0
 	mov	x20, x1
 	ldr	x8, [x20]
+	cmp	x8, #4096
+	b.lo	Lmat_flags_flat
+	mov	x27, x8
+	ldr	x8, [x27]
+	str	x8, [x19, #296]
+	ldr	x8, [x27, #8]
+	str	x8, [x19, #304]
+	ldr	x8, [x27, #16]
+	str	x8, [x19, #312]
+	b	Lmat_flags_done
+Lmat_flags_flat:
 	str	x8, [x19, #296]
 	ldr	x8, [x20, #8]
 	str	x8, [x19, #304]
 	ldr	x8, [x20, #16]
 	str	x8, [x19, #312]
+Lmat_flags_done:
 	ldr	x21, [x20, #24]
 Lmat_loop:
 	cbz	x21, Lmat_done
@@ -2448,6 +2472,7 @@ Lmat_walk_row_done:
 	mov	x1, x23
 	mov	x2, x24
 	mov	x3, x28
+	ldr	x4, [x21, #48]
 	bl	_silica_rt_actor_spawn_linked
 	str	x0, [x28]
 	str	x25, [x28, #8]
@@ -2458,11 +2483,12 @@ Lmat_walk_row_done:
 	str	x27, [x28, #48]
 	str	xzr, [x28, #56]
 	str	xzr, [x28, #64]
-	str	xzr, [x28, #72]
+	ldr	x9, [x21, #48]
+	str	x9, [x28, #72]
 	ldr	x9, [x19, #264]
 	add	x9, x9, #1
 	str	x9, [x19, #264]
-	ldr	x21, [x21, #48]
+	ldr	x21, [x21, #56]
 	b	Lmat_loop
 Lmat_done:
 	ldp	x29, x30, [sp, #80]
@@ -2551,6 +2577,8 @@ Lsc_post_row:
 	mov	x1, x24
 	mov	x2, x22
 	mov	x3, x27
+	ldr	x4, [x20, #48]
+	str	x4, [x27, #72]
 	bl	_silica_rt_actor_spawn_linked
 	mov	x20, x0
 	str	x20, [x27]
@@ -2562,7 +2590,6 @@ Lsc_post_row:
 	str	x26, [x27, #48]
 	str	xzr, [x27, #56]
 	str	xzr, [x27, #64]
-	str	xzr, [x27, #72]
 	cbz	x28, Lsc_done
 	ldr	x9, [x19, #264]
 	add	x9, x9, #1
@@ -2575,6 +2602,78 @@ Lsc_done:
 	ldp	x24, x23, [sp, #32]
 	ldp	x26, x25, [sp, #16]
 	ldp	x28, x27, [sp], #96
+	ret
+	.cfi_endproc
+	.p2align	2
+_silica_rt_supervisor_drop_pending_exit:
+	.cfi_startproc
+	stp	x24, x23, [sp, #-64]!
+	stp	x22, x21, [sp, #16]
+	stp	x20, x19, [sp, #32]
+	stp	x29, x30, [sp, #48]
+	add	x29, sp, #48
+	mov	x19, x0
+	mov	x20, x1
+	add	x0, x19, #16
+	bl	_os_unfair_lock_lock
+	add	x23, x19, #232
+	ldr	x22, [x23]
+	mov	x24, xzr
+Ldpe_front_loop:
+	cbz	x22, Ldpe_scan_rear
+	ldr	x8, [x22, #8]
+	cbz	x8, Ldpe_front_next
+	ldr	x9, [x8]
+	cmp	x9, x20
+	b.eq	Ldpe_remove
+Ldpe_front_next:
+	mov	x24, x22
+	ldr	x22, [x22]
+	b	Ldpe_front_loop
+Ldpe_scan_rear:
+	add	x23, x19, #240
+	ldr	x22, [x23]
+	mov	x24, xzr
+Ldpe_rear_loop:
+	cbz	x22, Ldpe_not_found
+	ldr	x8, [x22, #8]
+	cbz	x8, Ldpe_rear_next
+	ldr	x9, [x8]
+	cmp	x9, x20
+	b.eq	Ldpe_remove
+Ldpe_rear_next:
+	mov	x24, x22
+	ldr	x22, [x22]
+	b	Ldpe_rear_loop
+Ldpe_remove:
+	ldr	x10, [x22]
+	cbz	x24, Ldpe_remove_head
+	str	x10, [x24]
+	b	Ldpe_removed_link
+Ldpe_remove_head:
+	str	x10, [x23]
+Ldpe_removed_link:
+	mov	x21, x8
+	ldr	w11, [x19, #248]
+	cbz	w11, Ldpe_depth_done
+	sub	w11, w11, #1
+	str	w11, [x19, #248]
+Ldpe_depth_done:
+	add	x0, x19, #16
+	bl	_os_unfair_lock_unlock
+	mov	x0, x21
+	bl	_free
+	mov	x0, x22
+	bl	_free
+	b	Ldpe_done
+Ldpe_not_found:
+	add	x0, x19, #16
+	bl	_os_unfair_lock_unlock
+Ldpe_done:
+	ldp	x29, x30, [sp, #48]
+	ldp	x20, x19, [sp, #32]
+	ldp	x22, x21, [sp, #16]
+	ldp	x24, x23, [sp], #64
 	ret
 	.cfi_endproc
 	.globl	_silica_rt_supervisor_maybe_restart
@@ -2622,9 +2721,9 @@ Lmr_scan_at_row:
 	cmp	x8, x19
 	b.ne	Lmr_next
 	ldr	x0, [x24, #40]
-	cmp	x0, #2
+	cmp	x0, #9
 	b.eq	Lmr_can_restart
-	cmp	x0, #3
+	cmp	x0, #10
 	b.eq	Lmr_check_transient
 	b	Lmr_tombstone_done
 Lmr_check_transient:
@@ -2634,6 +2733,7 @@ Lmr_can_restart:
 	ldr	x9, [x20, #312]
 	orr	x10, x8, x9
 	cbz	x10, Lmr_freq_ok
+	cbz	x8, Lmr_tombstone_done
 	mov	x0, xzr
 	bl	_time
 	mov	x25, x0
@@ -2667,12 +2767,27 @@ Lmr_freq_escalate:
 	bl	_silica_rt_cv_signal
 	add	x0, x20, #16
 	bl	_os_unfair_lock_unlock
+	ldr	x8, [x20, #192]
+	cbnz	x8, Lmr_done
+	ldr	x8, [x20, #272]
+	cbnz	x8, Lmr_done
+	mov	x8, #1
+	str	x8, [x20, #272]
+	mov	x0, x20
+	bl	_silica_rt_actor_deliver_unwind_report
+	mov	w0, #2
+Lmr_root_note_a:
+	adrp	x1, L_silica_root_actor_exit@PAGE
+Lmr_root_note_b:
+	add	x1, x1, L_silica_root_actor_exit@PAGEOFF
+	mov	w2, #43
+	bl	_write
 	b	Lmr_done
 Lmr_freq_ok:
 	ldr	x0, [x20, #296]
-	cmp	x0, #6
+	cmp	x0, #13
 	b.eq	Lmr_ofa_kill
-	cmp	x0, #7
+	cmp	x0, #14
 	b.eq	Lmr_rfo_kill
 	b	Lmr_ofo
 Lmr_ofo:
@@ -2682,6 +2797,7 @@ Lmr_ofo:
 	ldr	x1, [x24, #32]
 	ldr	x2, [x24, #16]
 	mov	x3, x24
+	ldr	x4, [x24, #72]
 	bl	_silica_rt_actor_spawn_linked
 	str	x0, [x24]
 	str	xzr, [x24, #56]
@@ -2744,6 +2860,7 @@ Lmr_ofa_spawn_at_idx:
 	ldr	x1, [x26, #32]
 	ldr	x2, [x26, #16]
 	mov	x3, x26
+	ldr	x4, [x26, #72]
 	bl	_silica_rt_actor_spawn_linked
 	str	x0, [x26]
 	str	xzr, [x26, #56]
@@ -2778,6 +2895,9 @@ Lmr_rfo_kill_at_idx:
 Lmr_rfo_kill_wait:
 	ldr	x8, [x26, #56]
 	cbz	x8, Lmr_rfo_kill_wait
+	mov	x0, x20
+	mov	x1, x27
+	bl	_silica_rt_supervisor_drop_pending_exit
 	str	xzr, [x26, #56]
 ; Tombstone the row only after the child has fully exited so Lmr_rfo_spawn does not run
 ; with a stale child_ref in the slot.
@@ -2805,6 +2925,7 @@ Lmr_rfo_spawn_at_idx:
 	ldr	x1, [x26, #32]
 	ldr	x2, [x26, #16]
 	mov	x3, x26
+	ldr	x4, [x26, #72]
 	bl	_silica_rt_actor_spawn_linked
 	str	x0, [x26]
 	str	xzr, [x26, #56]
@@ -3184,6 +3305,37 @@ Lfrt_zero:
 	ret
 	.cfi_endproc
                                         ; -- End function
+	.globl	_silica_rt_actor_failure_reason_atom
+	.p2align	2
+_silica_rt_actor_failure_reason_atom:   ; X0=payload ptr -> X0=atom failure_reason variant
+	.cfi_startproc
+	cbz	x0, Lfra_unknown
+	ldr	x8, [x0, #8]
+	cbz	x8, Lfra_normal
+	cmp	x8, #2
+	b.eq	Lfra_language_error
+	cmp	x8, #3
+	b.eq	Lfra_memory_fault
+	cmp	x8, #4
+	b.eq	Lfra_explicit
+	b	Lfra_unknown
+Lfra_normal:
+	mov	x0, #3
+	ret
+Lfra_language_error:
+	mov	x0, #4
+	ret
+Lfra_memory_fault:
+	mov	x0, #5
+	ret
+Lfra_explicit:
+	mov	x0, #6
+	ret
+Lfra_unknown:
+	mov	x0, #7
+	ret
+	.cfi_endproc
+                                        ; -- End function
 	.globl	_silica_rt_actor_failure_agent_type
 	.p2align	2
 _silica_rt_actor_failure_agent_type:    ; X0=payload ptr -> X0=atom agent_type
@@ -3198,17 +3350,17 @@ Lfat_zero:
                                         ; -- End function
 	.globl	_silica_rt_actor_failure_release
 	.p2align	2
-_silica_rt_actor_failure_release:       ; X0=payload ptr; frees payload; returns X0=atom :ok (index 0)
+_silica_rt_actor_failure_release:       ; X0=payload ptr; frees payload; returns X0=atom :ok
 	.cfi_startproc
 	cbz	x0, Lfrr_zero
 	stp	x29, x30, [sp, #-16]!
 	add	x29, sp, #0
 	bl	_free
-	mov	x0, #0
+	mov	x0, #2
 	ldp	x29, x30, [sp], #16
 	ret
 Lfrr_zero:
-	mov	x0, #0
+	mov	x0, #2
 	ret
 	.cfi_endproc
                                         ; -- End function
@@ -3224,7 +3376,7 @@ Ldup_oom_msg:
 	.asciz	"[silica] unwind report: malloc failed\n"
 	.p2align	2
 L_phase_f_unwind_fmt:
-	.asciz	"=== Silica Actor Failure ===\nactor_id: %p\nagent_type_atom: %lld\nreason_tag: %lld\nsupervisor_acb: %p\n=== End Silica Actor Failure ===\n"
+	.asciz	"\n=== Silica Actor Failure ===\nactor_id: %p\nagent_type_atom: %lld\nreason_tag: %lld\nsupervisor_acb: %p\n=== End Silica Actor Failure ===\n"
 	.section	__TEXT,__text,regular,pure_instructions
 	.globl	_silica_rt_failure_reporter_register
 	.p2align	2

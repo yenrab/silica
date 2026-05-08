@@ -31,6 +31,24 @@ use const_default;
 
 export emit_const/7;
 
+fn first_at_in_const_label(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "@" of {
+            true -> i;
+            false -> first_at_in_const_label(s, i + 1)
+        }
+    }
+}
+
+fn fn_ptr_link_label(label: string) -> string {
+    at: int64 <- first_at_in_const_label(label, 0);
+    case at < 0 of {
+        true -> label;
+        false -> substring(label, at + 1, len(label))
+    }
+}
+
 fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, outer_reg: string) -> string {
     case term.type_name of {
         "int64" -> case len(dest) > 0 and substring(dest, 0, 1) == "S" of {
@@ -49,7 +67,7 @@ fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int6
         "atom" -> const_atom@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
         "unit" -> const_unit@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
         "fn_ptr" -> do
-            label: string <- term.value;
+            label: string <- fn_ptr_link_label(term.value);
             // ADRP/ADD only accept X/W general-purpose regs, never D/S — load address in X8 then copy to dest.
             adrp: string <- concat(concat(concat("    ADRP X8, ", label), "@PAGE"), "\n");
             add_line: string <- concat(concat(concat("    ADD X8, X8, ", label), "@PAGEOFF"), "\n");

@@ -93,8 +93,10 @@ all: compile
 # integrate: For each linked entrypoint with a .scout golden, capture stdout + stderr + trailing exit code into
 # <base>.sout via run_integration_binary.sh: one braced "{ …; echo $?; } >"<base>.sout" 2>&1" (never ">out" for
 # the binary then ">>out" for $ — that can reorder or drop output).
-# Compare: default diff -Bw <base>.sout <base>.scout. If <base>.scout.multiset exists, use compare_scout_multiset.sh
-# (or compare_scout_multiset_oneof.sh when <base>.scout.alt exists — multiset matches any listed golden).
+# Compare: default diff -Bw <base>.sout <base>.scout. If <base>.scout.normalized exists, use
+# compare_scout_normalized.sh (ordered compare with dynamic runtime fields normalized). If <base>.scout.multiset
+# exists, use compare_scout_multiset.sh (or compare_scout_multiset_oneof.sh when <base>.scout.alt exists —
+# multiset matches any listed golden).
 integrate: silica.config compile
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
@@ -155,7 +157,15 @@ integrate: silica.config compile
 		if [ -x "$$base" ]; then \
 			if [ -f "$$base.scout" ]; then \
 				"$(SHELL)" "$(THIS_DIR)run_integration_binary.sh" "$$base"; \
-				if [ -f "$$base.scout.multiset" ]; then \
+				if [ -f "$$base.scout.normalized" ]; then \
+					if ! "$(SHELL)" "$(THIS_DIR)compare_scout_normalized.sh" "$$base.sout" "$$base.scout"; then \
+						echo "❌❌ $(MSG_PREFIX)$$base .sout normalized-compare differs from .scout"; \
+						ko=$$((ko + 1)); failed=1; \
+					else \
+						echo "✅✅ $(MSG_PREFIX)$$base output normalized-matches .scout"; \
+						ok=$$((ok + 1)); \
+					fi; \
+				elif [ -f "$$base.scout.multiset" ]; then \
 					if [ -f "$$base.scout.alt" ]; then \
 						if ! "$(SHELL)" "$(THIS_DIR)compare_scout_multiset_oneof.sh" "$$base.sout" "$$base.scout" "$$base.scout.alt"; then \
 							echo "❌❌ $(MSG_PREFIX)$$base .sout multiset-compare differs from all of .scout .scout.alt"; \
@@ -193,7 +203,8 @@ integrate: silica.config compile
 stress-j2:
 	@cd "$(THIS_DIR)" && bash ./stress_j2_supervision_harness.sh
 
-# clean removes build artifacts only. Preserves golden/compare inputs: *.scout, *.scout.multiset, *.scout.alt, *.ascomp.
+# clean removes build artifacts only. Preserves golden/compare inputs: *.scout, *.scout.normalized,
+# *.scout.multiset, *.scout.alt, *.ascomp.
 clean:
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sout traits/*.sams traits/*.o *.sams __silica_runtime.o && \
@@ -206,4 +217,4 @@ clean:
 
 help:
 	@echo "supervisors_addition: Phase A supervisor trial + local trait copy under traits/"
-	@echo "Targets: all (compile+link), compile (.sams), integrate (optional .ascomp/.scout; capture → diff or multiset / .scout.multiset + optional .scout.alt one-of), stress-j2 (Phase J2 harness), clean (keeps .scout / .scout.multiset / .ascomp)"
+	@echo "Targets: all (compile+link), compile (.sams), integrate (optional .ascomp/.scout; capture → diff, normalized / .scout.normalized, or multiset / .scout.multiset + optional .scout.alt one-of), stress-j2 (Phase J2 harness), clean (keeps .scout / .scout.normalized / .scout.multiset / .ascomp)"

@@ -26,8 +26,8 @@
 // cpu_topology / cache / NUMA helpers (_silica_rt_apple_*, sysctl hw.*): macOS Apple Silicon only (see cpu_topology_implementation_plan Phase G).
 // ABI: spawn(X0,X1,X2)->X0  send(X0,X1)  cast(X0,X1)->W0  call(X0,X1)->X0  self()->X0  recv()->X0
 // X2=optional core_id (0 default) per §15.1.1. Unified actor control block 344 B for spawn and spawn_linked (e3e: +32 B restart frequency fields; e4b: +8 B pending exit reason_tag).
-// spawn_linked Phase A (supervisors_implementation_development_plan): spawn_linked(X0,X1,X2,X3)->X0
-// X0=init X1=beh X2=agent_type (int64) X3=core_id (0 default).
+// spawn_linked Phase A (supervisors_implementation_development_plan): spawn_linked(X0,X1,X2,X3,X4)->X0
+// X0=init X1=beh X2=agent_type (int64) X3=row/core metadata (0 default), X4=optional supervisor trampoline.
 // Offsets: #192 supervisor actor_ref (0 root), #200 agent_type atom, #208 core_id, #216 first supervised child,
 // #224 next supervised sibling (intrusive list under parent's mutex +16).
 // Mailboxes (supervisors_implementation_development_plan §4 Phase B; §15.4.9, §16.2.7):
@@ -37,7 +37,8 @@
 // with u32 depth at #248 (bounded; overflow calls _abort in trusted runtime).
 // 152 B message nodes: #24 ingress_kind — 0 = structured child-exit heap payload ptr at #8 (Phase C; auto-restart reads #8);
 // non-zero = Phase B trial hook only: #8 holds inline int64 (not a pointer; sup_beh must run; skip maybe_restart).
-// Phase E e3a: child table anchors at #256 head ptr, #264 len (high-water row count), #272 reserved (0);
+// Phase E e3a: child table anchors at #256 head ptr, #264 len (high-water row count),
+// #272 sync_failure_reported (0/1; root restart-cap escalation reports before replying, thread exit skips duplicate);
 // rows are singly-linked nodes (88 B: 80 B row + next@+80), no realloc — stable row pointers (Option B).
 // Phase E e3b: #280 = trampoline fn ptr (_silica_supervisor_start_<T>, 0 if non-supervisor), #288 = trampoline-ran flag (0/1).
 // Phase E e3d: #296 = strategy atom ptr (0 if non-supervisor; set by materialize from init tuple+0).
@@ -181,9 +182,9 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 	.cfi_offset w24, -64
 	mov	x23, x2
 	mov	x24, x3
+	mov	x22, x4
 	mov	x20, x1
 	mov	x21, x0
-	mov	w22, #1
 	mov	w0, #1
 	mov	w1, #344
 	bl	_calloc
@@ -203,7 +204,7 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 	str	xzr, [x19, #256]
 	str	xzr, [x19, #264]
 	str	xzr, [x19, #272]
-	str	xzr, [x19, #280]
+	str	x22, [x19, #280]
 	str	xzr, [x19, #288]
 	str	xzr, [x19, #296]
 	str	xzr, [x19, #304]
@@ -226,7 +227,8 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 Lslp_skip_list:
 ; Phase E e4f: ACB+16 (os_unfair_lock) and ACB+80 (futex seq word) are pre-zeroed by calloc.
 ; OS_UNFAIR_LOCK_INIT == 0, seq baseline 0; no init call required.
-	str	w22, [x19, #152]
+	mov	w8, #1
+	str	w8, [x19, #152]
 Lslp_tm0:
 	adrp	x2, _actor_thread_main@PAGE
 Lslp_tm1:
@@ -445,11 +447,17 @@ LBB1_free_skip_restart:
 LBB1_exit:
 	add	x0, x19, #16
 	bl	_os_unfair_lock_unlock
+	ldr	x8, [x19, #272]
+	cbnz	x8, LBB1_exit_report_already_done
 	mov	x0, x19
 	bl	_silica_rt_actor_deliver_exit
 	mov	x20, x0
 	mov	x0, x19
 	bl	_silica_rt_actor_deliver_unwind_report
+	b	LBB1_exit_after_report
+LBB1_exit_report_already_done:
+	mov	x20, #0
+LBB1_exit_after_report:
 	cbz	x20, LBB1_exit_skip_legacy_root
 	mov	w0, #2
 Lloh_rn0:
@@ -465,6 +473,8 @@ LBB1_exit_skip_legacy_root:
 ; trampoline fn pointer routed to ACB[+280]), so x20 == 0 and the post-free flag write
 ; is skipped — there is no parent row to notify.
 	ldr	x20, [x19, #208]
+	ldr	x21, [x19, #192]
+	cbz	x21, LBB1_exit_no_row
 	mov	x0, x19
 	bl	_silica_rt_child_table_free
 	mov	x0, x19
@@ -2721,7 +2731,7 @@ Ldup_oom_msg:
 	.asciz	\"[silica] unwind report: malloc failed\\n\"
 	.p2align	2
 L_phase_f_unwind_fmt:
-	.asciz	\"=== Silica Actor Failure ===\\nactor_id: %p\\nagent_type_atom: %lld\\nreason_tag: %lld\\nsupervisor_acb: %p\\n=== End Silica Actor Failure ===\\n\"
+	.asciz	\"\\n=== Silica Actor Failure ===\\nactor_id: %p\\nagent_type_atom: %lld\\nreason_tag: %lld\\nsupervisor_acb: %p\\n=== End Silica Actor Failure ===\\n\"
 	.section	__TEXT,__text,regular,pure_instructions
 	.globl	_silica_rt_failure_reporter_register
 	.p2align	2
