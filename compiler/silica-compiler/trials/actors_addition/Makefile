@@ -55,10 +55,13 @@ executables: objects
 	@cd "$(THIS_DIR)" && for o in *.o; do \
 		[ -f "$$o" ] || continue; \
 		base=$${o%.o}; \
+		[ "$$base" = "__silica_runtime" ] && continue; \
+		runtime_obj=""; \
+		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base (rust-lld)"; \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base (rust-lld)"; \
 		else \
-			$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base (clang)"; \
+			$(ASSEMBLER) $$o $$runtime_obj -o $$base $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base (clang)"; \
 		fi; \
 	done
 
@@ -101,16 +104,20 @@ integrate: silica.config
 	for o in *.o; do \
 		[ -f "$$o" ] || continue; \
 		base=$${o%.o}; \
+		[ "$$base" = "__silica_runtime" ] && continue; \
 		echo "Linking $$base..."; \
+		runtime_obj=""; \
+		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) || failed=1; \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; \
 		else \
-			$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) || failed=1; \
+			$(ASSEMBLER) $$o $$runtime_obj -o $$base $(LDFLAGS_clang) || failed=1; \
 		fi; \
 	done; \
 	for exe in *.sams; do \
 		[ -f "$$exe" ] || continue; \
 		base=$${exe%.sams}; \
+		[ "$$base" = "__silica_runtime" ] && continue; \
 		if [ -x "$$base" ]; then \
 			if [ -f "$$base.scout" ]; then \
 				{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \

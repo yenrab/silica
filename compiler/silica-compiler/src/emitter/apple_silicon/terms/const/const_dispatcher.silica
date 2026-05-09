@@ -28,6 +28,7 @@ use const_bool;
 use const_atom;
 use const_unit;
 use const_default;
+use module_linkage;
 
 export emit_const/7;
 
@@ -67,12 +68,16 @@ fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int6
         "atom" -> const_atom@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
         "unit" -> const_unit@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
         "fn_ptr" -> do
-            label: string <- fn_ptr_link_label(term.value);
+            label: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.value);
             // ADRP/ADD only accept X/W general-purpose regs, never D/S — load address in X8 then copy to dest.
-            adrp: string <- concat(concat(concat("    ADRP X8, ", label), "@PAGE"), "\n");
-            add_line: string <- concat(concat(concat("    ADD X8, X8, ", label), "@PAGEOFF"), "\n");
+            addr_reg: string <- case len(dest) > 0 and substring(dest, 0, 1) == "X" of {
+                true -> dest;
+                false -> "X8"
+            };
+            adrp: string <- concat(concat(concat("    ADRP ", addr_reg), concat(", ", label)), concat("@PAGE", "\n"));
+            add_line: string <- concat(concat(concat(concat("    ADD ", addr_reg), concat(", ", addr_reg)), concat(", ", label)), concat("@PAGEOFF", "\n"));
             core: string <- concat(adrp, add_line);
-            case dest == "X8" of {
+            case dest == addr_reg of {
                 true -> core;
                 false -> do
                     d0: string <- substring(dest, 0, 1);
