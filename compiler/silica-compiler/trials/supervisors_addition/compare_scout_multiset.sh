@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Compare integrate capture <base>.sout to golden <base>.scout when line *order* (and glued vs split
-# Phase F banner lines) may differ but the multiset of logical lines should match.
+# Compare integrate capture <base>.sout to golden <base>.scout when line *order* (and known glued vs
+# split concurrent output fragments) may differ but the multiset of logical lines should match.
 #
 # Usage: compare_scout_multiset.sh <path/to/.sout> <path/to/.scout>
 # Exit 0 if equal after normalization; 1 otherwise (prints unified diff on stderr, same style as diff -u).
@@ -9,6 +9,7 @@
 #   - CR stripped from PTY / CRLF captures before trimming
 #   - trailing whitespace stripped per line (roughly aligned with diff -Bw)
 #   - lines containing "...=== Silica Actor Failure ===..." with a non-empty prefix split into prefix line + banner line
+#   - lines containing known async handle_report markers with a non-empty prefix split into prefix line + marker line
 #   - blank lines dropped (integrate output often differs only by extra blanks)
 #   - actor_id / supervisor_acb pointer hex normalized to 0x0 (ASLR) so .scout can use stable placeholders
 #   - agent_type_atom decimal normalized to 0 (intern table index varies by registration order)
@@ -18,11 +19,29 @@ sout="${1:?}"
 scout="${2:?}"
 
 mark='=== Silica Actor Failure ==='
+f6_mark='F6_handle_report'
+f8_mark='F8_handle_report_banner_ok'
 
 norm_file() {
   local f=$1
   sed $'s/\r$//' "$f" | sed 's/[[:space:]]*$//' | while IFS= read -r line || [ -n "${line-}" ]; do
     case "$line" in
+      *"$f6_mark"*)
+        before="${line%%"$f6_mark"*}"
+        after="${line#*"$f6_mark"}"
+        if [ -n "$before" ]; then
+          printf '%s\n' "$before"
+        fi
+        printf '%s%s\n' "$f6_mark" "$after"
+        ;;
+      *"$f8_mark"*)
+        before="${line%%"$f8_mark"*}"
+        after="${line#*"$f8_mark"}"
+        if [ -n "$before" ]; then
+          printf '%s\n' "$before"
+        fi
+        printf '%s%s\n' "$f8_mark" "$after"
+        ;;
       *"$mark"*)
         before="${line%%"$mark"*}"
         after="${line#*"$mark"}"

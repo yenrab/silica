@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # Integrate helper: run a trial with stdout/stderr on a PTY (line-oriented stdio) and stdin on a pipe.
-# Feed "exit\n" to stdin only after a full line equals <marker> (e.g. supervisor "done") **and** the PTY has
+# Feed "exit\n" to stdin only after a full line contains <marker> (e.g. supervisor "done") **and** the PTY has
 # been quiet for a short idle window (bounded). Some trials (e4f) print `done` before async failure banners;
 # sending exit on `done` alone tears down the process early → SIGBUS / `.sout` with only the exit code.
+# Matching by containment handles concurrent stdout fragments that glue onto the marker line, such as
+# `doneF8_handle_report_banner_ok`, without hanging forever.
 # Appends the process exit code as the final line (same as echo $? in run_integration_binary.sh).
 """Usage: run_integration_exit_after_marker.py <trial_dir> <basename> <out_path> <marker_line>"""
 
@@ -10,6 +12,7 @@ import errno
 import os
 import pty
 import select
+import signal
 import sys
 import time
 
@@ -49,6 +52,7 @@ def main() -> int:
         return 1
 
     marker_b = marker.encode("utf-8")
+    timeout_sec = float(os.environ.get("SILICA_INTEGRATION_MARKER_TIMEOUT_SEC", "30.0"))
 
     master, slave = pty.openpty()
     stdin_r, stdin_w = os.pipe()
@@ -77,10 +81,30 @@ def main() -> int:
 
     exit_sent = False
     buf = b""
+    deadline = time.monotonic() + timeout_sec
+    timed_out = False
     try:
         with open(out_path, "wb", buffering=0) as out_f:
             while True:
-                r, _, _ = select.select([master], [], [])
+                now = time.monotonic()
+                if not exit_sent and now >= deadline:
+                    out_f.write(
+                        f"run_integration_exit_after_marker.py: timed out waiting for marker {marker!r}\n".encode(
+                            "utf-8"
+                        )
+                    )
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    timed_out = True
+                    break
+                wait_sec = 0.25
+                if not exit_sent:
+                    wait_sec = max(0.0, min(wait_sec, deadline - now))
+                r, _, _ = select.select([master], [], [], wait_sec)
+                if not r:
+                    continue
                 chunk = os.read(master, 65536)
                 if not chunk:
                     break
@@ -93,7 +117,7 @@ def main() -> int:
                             break
                         line = buf[:idx].rstrip(b"\r")
                         buf = buf[idx + 1 :]
-                        if line == marker_b:
+                        if marker_b in line:
                             quiesce_pty(master, out_f)
                             try:
                                 os.write(stdin_w, b"exit\n")
@@ -108,6 +132,13 @@ def main() -> int:
         try:
             os.close(stdin_w)
         except OSError:
+            pass
+
+    if timed_out:
+        time.sleep(0.1)
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
             pass
 
     _pid, wstatus = os.waitpid(pid, 0)
