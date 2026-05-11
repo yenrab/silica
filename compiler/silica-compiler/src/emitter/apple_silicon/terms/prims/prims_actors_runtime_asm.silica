@@ -2725,13 +2725,42 @@ fn actor_rt_asm_phase_f_chunk() -> string {
 	.p2align	3
 .globl	_silica_rt_root_failure_reporter
 .comm	_silica_rt_root_failure_reporter,8,3
+.globl	_silica_rt_region_dump_limit
+.comm	_silica_rt_region_dump_limit,8,3
 	.section	__TEXT,__cstring,cstring_literals
 	.p2align	2
 Ldup_oom_msg:
 	.asciz	\"[silica] unwind report: malloc failed\\n\"
 	.p2align	2
 L_phase_f_unwind_fmt:
-	.asciz	\"\\n=== Silica Actor Failure ===\\nactor_id: %p\\nagent_type_atom: %lld\\nreason_tag: %lld\\nsupervisor_acb: %p\\n=== End Silica Actor Failure ===\\n\"
+	.asciz	\"\\n=== Silica Actor Failure ===\\nactor_id:        %p\\nagent_type_atom: %lld\\nreason_tag:      %lld\\nsupervisor_acb:  %p\\n\"
+	.p2align	2
+L_phase_f_cs_hdr:
+	.asciz	\"call_stack:\\n\"
+	.p2align	2
+L_phase_f_cs_frame0_fmt:
+	.asciz	\"  #0  %s\\n\"
+	.p2align	2
+L_phase_f_cs_frame0_unk:
+	.asciz	\"  #0  <unknown behavior>\\n\"
+	.p2align	2
+L_phase_f_cs_frame1:
+	.asciz	\"  #1  _actor_thread_main\\n\"
+	.p2align	2
+L_phase_f_end:
+	.asciz	\"=== End Silica Actor Failure ===\\n\"
+	.p2align	2
+L_rdump_hdr_fmt:
+	.asciz	\"\\n=== Region Dump ===\\nbase: 0x%016llx  dump_bytes: %llu  limit: %llu\\n\"
+	.p2align	2
+L_rdump_row_fmt:
+	.asciz	\"%04llx: \"
+	.p2align	2
+L_rdump_foot:
+	.asciz	\"=== End Region Dump ===\\n\"
+	.p2align	2
+L_silica_hex_nibbles:
+	.asciz	\"0123456789abcdef\"
 	.section	__TEXT,__text,regular,pure_instructions
 	.globl	_silica_rt_failure_reporter_register
 	.p2align	2
@@ -2753,21 +2782,41 @@ Lfr_reg_done:
 	.loh AdrpAdd	Lfr_ra_a, Lfr_ra_b
 	.cfi_endproc
                                         ; -- End function
+	.globl	_silica_rt_failure_reporter_set_dump_limit
+	.p2align	2
+_silica_rt_failure_reporter_set_dump_limit:
+	.cfi_startproc
+; X0=dump_limit (int64). Called by register_failure_reporter emission to cache region_dump_limit() result.
+Lfrdl_a:
+	adrp	x8, _silica_rt_region_dump_limit@PAGE
+Lfrdl_b:
+	add	x8, x8, _silica_rt_region_dump_limit@PAGEOFF
+	str	x0, [x8]
+	mov	x0, #0
+	ret
+	.loh AdrpAdd	Lfrdl_a, Lfrdl_b
+	.cfi_endproc
+                                        ; -- End function
 	.globl	_silica_rt_actor_deliver_unwind_report
 	.p2align	2
 _silica_rt_actor_deliver_unwind_report:
 	.cfi_startproc
-	stp	x26, x25, [sp, #-112]!
-	stp	x24, x23, [sp, #16]
-	stp	x22, x21, [sp, #32]
-	stp	x20, x19, [sp, #48]
-	stp	x29, x30, [sp, #64]
-	add	x29, sp, #64
+; X0=dying actor_ptr. Formats header + call stack (via dladdr on ACB[+8] behavior fn ptr).
+; Delivers to root FailureReporter via cast (transport string), or falls back to stderr.
+; Frame: 128 B -- x27=total_buf_size, x28 reserved for future dumps-list construction.
+	stp	x28, x27, [sp, #-128]!
+	stp	x26, x25, [sp, #16]
+	stp	x24, x23, [sp, #32]
+	stp	x22, x21, [sp, #48]
+	stp	x20, x19, [sp, #64]
+	stp	x29, x30, [sp, #80]
+	add	x29, sp, #80
 	.cfi_def_cfa w29, 48
 	.cfi_offset w30, -8
 	.cfi_offset w29, -16
 	mov	x21, x0
-	movz	x0, #0x800
+	mov	x27, #0x800
+	mov	x0, #0x800
 	bl	_malloc
 	cbz	x0, Ldup_malloc_fail
 	mov	x19, x0
@@ -2775,7 +2824,7 @@ _silica_rt_actor_deliver_unwind_report:
 	ldr	x24, [x21, #336]
 	ldr	x25, [x21, #192]
 	mov	x0, x19
-	movz	x1, #0x800
+	mov	x1, x27
 	Ldup_fmt_a:
 	adrp	x2, L_phase_f_unwind_fmt@PAGE
 Ldup_fmt_b:
@@ -2785,7 +2834,7 @@ Ldup_fmt_b:
 	mov	x5, x24
 	mov	x6, x25
 ; arm64 Darwin: variadic callers must spill register-passed unnamed args onto the stack
-; (matching Clang) so libc snprintf/vfprintf reads coherent values from the va_list backing.
+; so libc snprintf/vfprintf reads coherent values from the va_list backing.
 	sub	sp, sp, #32
 	stp	x3, x4, [sp]
 	stp	x5, x6, [sp, #16]
@@ -2794,6 +2843,109 @@ Ldup_fmt_b:
 	mov	w26, w0
 	cmp	w26, #0
 	csel	w26, wzr, w26, lt
+; --- Call stack trace ---
+; Step 1: behavior fn ptr lives at ACB[+8] (set by spawn, updated by behavior return).
+; Step 2: resolve it with dladdr() to produce a human-readable frame.
+; Write L_phase_f_cs_hdr char by char.
+Lcs_hdr_a:
+	adrp	x8, L_phase_f_cs_hdr@PAGE
+Lcs_hdr_b:
+	add	x8, x8, L_phase_f_cs_hdr@PAGEOFF
+Lcs_hdr_loop:
+	ldrb	w9, [x8], #1
+	cbz	w9, Lcs_dladdr
+	sub	x10, x27, x26
+	cbz	x10, Lcs_nul_term
+	add	x10, x19, x26
+	strb	w9, [x10]
+	add	x26, x26, #1
+	b	Lcs_hdr_loop
+Lcs_dladdr:
+; dladdr(behavior_fn, &Dl_info) -- Dl_info is 32 B on arm64; allocate 48 B for alignment.
+	sub	sp, sp, #48
+	ldr	x0, [x21, #8]
+	cbz	x0, Lcs_dladdr_null_fn
+	mov	x1, sp
+	bl	_dladdr
+	cbz	w0, Lcs_dladdr_failed
+	ldr	x9, [sp, #16]
+	add	sp, sp, #48
+	cbz	x9, Lcs_frame0_unk
+; x9 = dli_sname; format frame-0 line via snprintf.
+	sub	x1, x27, x26
+	cmp	x1, #8
+	b.lt	Lcs_frame1
+	add	x0, x19, x26
+Lcs_f0_fmt_a:
+	adrp	x2, L_phase_f_cs_frame0_fmt@PAGE
+Lcs_f0_fmt_b:
+	add	x2, x2, L_phase_f_cs_frame0_fmt@PAGEOFF
+	mov	x3, x9
+	sub	sp, sp, #16
+	str	x3, [sp]
+	bl	_snprintf
+	add	sp, sp, #16
+	cmp	w0, #0
+	b.le	Lcs_frame1
+	add	x26, x26, x0
+	b	Lcs_frame1
+Lcs_dladdr_null_fn:
+	add	sp, sp, #48
+	b	Lcs_frame0_unk
+Lcs_dladdr_failed:
+	add	sp, sp, #48
+Lcs_frame0_unk:
+; Write L_phase_f_cs_frame0_unk char by char.
+Lcs_unk_a:
+	adrp	x8, L_phase_f_cs_frame0_unk@PAGE
+Lcs_unk_b:
+	add	x8, x8, L_phase_f_cs_frame0_unk@PAGEOFF
+Lcs_unk_loop:
+	ldrb	w9, [x8], #1
+	cbz	w9, Lcs_frame1
+	sub	x10, x27, x26
+	cbz	x10, Lcs_nul_term
+	add	x10, x19, x26
+	strb	w9, [x10]
+	add	x26, x26, #1
+	b	Lcs_unk_loop
+Lcs_frame1:
+; Write L_phase_f_cs_frame1 char by char.
+Lcs_f1_a:
+	adrp	x8, L_phase_f_cs_frame1@PAGE
+Lcs_f1_b:
+	add	x8, x8, L_phase_f_cs_frame1@PAGEOFF
+Lcs_f1_loop:
+	ldrb	w9, [x8], #1
+	cbz	w9, Lcs_end_banner
+	sub	x10, x27, x26
+	cbz	x10, Lcs_nul_term
+	add	x10, x19, x26
+	strb	w9, [x10]
+	add	x26, x26, #1
+	b	Lcs_f1_loop
+Lcs_end_banner:
+; Write L_phase_f_end banner char by char.
+Lcs_end_a:
+	adrp	x8, L_phase_f_end@PAGE
+Lcs_end_b:
+	add	x8, x8, L_phase_f_end@PAGEOFF
+Lcs_end_loop:
+	ldrb	w9, [x8], #1
+	cbz	w9, Lcs_nul_term
+	sub	x10, x27, x26
+	cbz	x10, Lcs_nul_term
+	add	x10, x19, x26
+	strb	w9, [x10]
+	add	x26, x26, #1
+	b	Lcs_end_loop
+Lcs_nul_term:
+; NUL-terminate (x26 = content byte count, NUL not included in count).
+	sub	x10, x27, x26
+	cbz	x10, Ldup_no_dump
+	add	x10, x19, x26
+	strb	wzr, [x10]
+Ldup_no_dump:
 	Ldup_glob_a:
 	adrp	x8, _silica_rt_root_failure_reporter@PAGE
 Ldup_glob_b:
@@ -2810,7 +2962,7 @@ Ldup_fr_try:
 	mov	x0, x22
 	mov	x1, x19
 	bl	_silica_rt_actor_cast
-; F6: cast enqueue failure (OOM for 152 B node, null target, etc.) — same stderr fallback as F5 unregistered root.
+; F6: cast enqueue failure (OOM for 152 B node, null target, etc.) -- same stderr fallback as F5 unregistered root.
 	cbz	w0, Ldup_stderr_path
 	b	Ldup_leave_nofree
 Ldup_stderr_path:
@@ -2826,11 +2978,12 @@ Ldup_std_free_only:
 	b	Ldup_ep_ret
 Ldup_leave_nofree:
 	mov	x0, #0
-	ldp	x29, x30, [sp, #64]
-	ldp	x20, x19, [sp, #48]
-	ldp	x22, x21, [sp, #32]
-	ldp	x24, x23, [sp, #16]
-	ldp	x26, x25, [sp], #112
+	ldp	x29, x30, [sp, #80]
+	ldp	x20, x19, [sp, #64]
+	ldp	x22, x21, [sp, #48]
+	ldp	x24, x23, [sp, #32]
+	ldp	x26, x25, [sp, #16]
+	ldp	x28, x27, [sp], #128
 	ret
 Ldup_malloc_fail:
 ; F5: always surface *something* on stderr when unwind text cannot be allocated (independent of ingress).
@@ -2844,13 +2997,19 @@ Ldup_oom_b:
 	b	Ldup_ep_ret
 Ldup_ep_ret:
 	mov	x0, #0
-	ldp	x29, x30, [sp, #64]
-	ldp	x20, x19, [sp, #48]
-	ldp	x22, x21, [sp, #32]
-	ldp	x24, x23, [sp, #16]
-	ldp	x26, x25, [sp], #112
+	ldp	x29, x30, [sp, #80]
+	ldp	x20, x19, [sp, #64]
+	ldp	x22, x21, [sp, #48]
+	ldp	x24, x23, [sp, #32]
+	ldp	x26, x25, [sp, #16]
+	ldp	x28, x27, [sp], #128
 	ret
 	.loh AdrpAdd	Ldup_fmt_a, Ldup_fmt_b
+	.loh AdrpAdd	Lcs_hdr_a, Lcs_hdr_b
+	.loh AdrpAdd	Lcs_f0_fmt_a, Lcs_f0_fmt_b
+	.loh AdrpAdd	Lcs_unk_a, Lcs_unk_b
+	.loh AdrpAdd	Lcs_f1_a, Lcs_f1_b
+	.loh AdrpAdd	Lcs_end_a, Lcs_end_b
 	.loh AdrpAdd	Ldup_glob_a, Ldup_glob_b
 	.loh AdrpAdd	Ldup_oom_a, Ldup_oom_b
 	.cfi_endproc
@@ -2872,7 +3031,7 @@ _silica_rt_wait_for_exit:               ; Phase I - stdin line e-x-i-t OR root A
 	mov	x29, sp
 	stp	x19, x20, [sp, #16]
 	stp	x21, x22, [sp, #32]
-; Layout: fd_set 128 B @0, timeval 16 B @128, line buf 256 B @144, scratch @400 — 416 B total.
+; Layout: fd_set 128 B @0, timeval 16 B @128, line buf 256 B @144, scratch @400 -- 416 B total.
 ; poll(2) on macOS often never signals POLLIN for tty stdin; select(2) is reliable (Phase I trial / interactive main).
 	sub	sp, sp, #416
 	mov	x20, xzr

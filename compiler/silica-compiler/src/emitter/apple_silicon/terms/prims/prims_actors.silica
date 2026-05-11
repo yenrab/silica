@@ -427,6 +427,18 @@ fn emit_runtime_nullary(dest: string, term: SIRTerm) -> string {
     concat(asm_bl(runtime_label(term.name)), mov_dest_from_x0_for_type(dest, term.type_name))
 }
 
+// Emit register_failure_reporter(fr): before calling _silica_rt_failure_reporter_register, call
+// region_dump_limit() (the required FailureReporter trait method, always in-unit for current trials)
+// and pass the result to _silica_rt_failure_reporter_set_dump_limit so the runtime caches the limit.
+// X9 holds the fr actor_ref; save it across the region_dump_limit/set_dump_limit calls since X9 is caller-saved.
+fn emit_register_failure_reporter(dest: string, term: SIRTerm) -> string {
+    save: string <- "    SUB SP, SP, #16\n    STR X9, [SP, #0]\n";
+    call_rdl: string <- "    BL region_dump_limit\n    BL _silica_rt_failure_reporter_set_dump_limit\n";
+    restore: string <- "    LDR X9, [SP, #0]\n    ADD SP, SP, #16\n";
+    reg: string <- "    MOV X0, X9\n    BL _silica_rt_failure_reporter_register\n";
+    concat(concat(concat(concat(save, call_rdl), restore), reg), mov_dest_from_x0_for_type(dest, term.type_name))
+}
+
 fn emit_runtime_unary(dest: string, term: SIRTerm) -> string {
     concat(concat("    MOV X0, X9\n", asm_bl(runtime_label(term.name))), mov_dest_from_x0_for_type(dest, term.type_name))
 }
@@ -477,7 +489,7 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
         "move" -> emit_runtime_ternary(dest, term);
         "start_child" -> emit_runtime_unary(dest, term);
         "kill_abnormal" -> emit_runtime_unary(dest, term);
-        "register_failure_reporter" -> emit_runtime_unary(dest, term);
+        "register_failure_reporter" -> emit_register_failure_reporter(dest, term);
         "wait_for_exit" -> emit_runtime_nullary(dest, term);
         _: string -> concat(concat("    ; unsupported actor prim: ", term.name), "\n")
     }
