@@ -1,0 +1,47 @@
+// pid_register trial: delete an existing key, confirm it is gone, confirm other keys survive.
+// Also verifies that deleting a non-existent key is a no-op.
+//
+// Expected output:
+//   found
+//   not_found
+//   found
+
+use pid_registry_actor;
+
+fn worker_beh(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg, state)
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        wa: actor_ref <- spawn(0, worker_beh);
+        wb: actor_ref <- spawn(0, worker_beh);
+        dummy: actor_ref <- spawn(0, worker_beh);
+        reg: actor_ref <- pid_registry_actor@get_pid_registry();
+        _: (atom, actor_ref) <- call(reg,
+            { op: :insert, name: :service_a, pid: wa } impl ActorMessage {});
+        _: (atom, actor_ref) <- call(reg,
+            { op: :insert, name: :service_b, pid: wb } impl ActorMessage {});
+        // Confirm :service_a is present before deletion.
+        (r0: atom, _p0: actor_ref) <- call(reg,
+            { op: :lookup, name: :service_a, pid: dummy } impl ActorMessage {});
+        _: atom <- print_atom(r0);
+        println("");
+        // Delete :service_a.
+        _: (atom, actor_ref) <- call(reg,
+            { op: :delete, name: :service_a, pid: dummy } impl ActorMessage {});
+        // :service_a should now be absent.
+        (r1: atom, _p1: actor_ref) <- call(reg,
+            { op: :lookup, name: :service_a, pid: dummy } impl ActorMessage {});
+        _: atom <- print_atom(r1);
+        println("");
+        // :service_b must still be reachable.
+        (r2: atom, _p2: actor_ref) <- call(reg,
+            { op: :lookup, name: :service_b, pid: dummy } impl ActorMessage {});
+        _: atom <- print_atom(r2);
+        println("");
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

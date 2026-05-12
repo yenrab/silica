@@ -9,54 +9,202 @@ main:     STP X29, X30, [SP, #-16]!
 
     MOV X1, #3
 
-    STP X1, X2, [SP, #-16]!
-    MOV X0, #16
-    BL _silica_rt_region_alloc
-    LDP X1, X2, [SP], #16
-    STR X1, [X0]
-    STR X2, [X0, #8]
+    MOV X3, #8
+    MOV X4, #16
+    MOV X5, #0
+    BL L_list_prepend_helper
     MOV X2, X0
 
     MOV X1, #2
 
-    STP X1, X2, [SP, #-16]!
-    MOV X0, #16
-    BL _silica_rt_region_alloc
-    LDP X1, X2, [SP], #16
-    STR X1, [X0]
-    STR X2, [X0, #8]
+    MOV X3, #8
+    MOV X4, #16
+    MOV X5, #0
+    BL L_list_prepend_helper
     MOV X2, X0
 
     MOV X1, #1
 
-    STP X1, X2, [SP, #-16]!
-    MOV X0, #16
-    BL _silica_rt_region_alloc
-    LDP X1, X2, [SP], #16
-    STR X1, [X0]
-    STR X2, [X0, #8]
-    MOV X0, X0
+    MOV X3, #8
+    MOV X4, #16
+    MOV X5, #0
+    BL L_list_prepend_helper
     MOV X19, X0
     MOV X9, X19
     MOV X0, X9
-    MOV X2, #8
     BL L_list_length_helper
     MOV X20, X0
     MOV X0, X20
     LDP X19, X20, [SP], #16
     LDP X29, X30, [SP], #16
     RET
-L_list_length_helper:
-    MOV X4, X0
-    MOV X3, X2
+L_list_prepend_helper:
+    STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    STP X1, X2, [SP, #-16]!
+    STP X3, X4, [SP, #-16]!
+    STR X5, [SP, #-16]!
+    CBZ X2, L_lph_new_chunk
+    LDR X6, [X2, #16]
+    CBZ X6, L_lph_new_chunk
+    LDR X7, [X2, #8]
+    SUB X8, X6, X3
+    ADD X10, X7, X8
+    LDR X11, [SP]
+    CBZ X11, L_lph_room_scalar
+    MOV X12, #0
+L_lph_room_agg:
+    CMP X12, X3
+    B.GE L_lph_room_stored
+    LDR X13, [X1, X12]
+    STR X13, [X10, X12]
+    ADD X12, X12, #8
+    B L_lph_room_agg
+    B L_lph_room_stored
+L_lph_room_scalar:
+    CMP X3, #8
+    B.EQ L_lph_rs8
+    CMP X3, #4
+    B.EQ L_lph_rs4
+    CMP X3, #2
+    B.EQ L_lph_rs2
+    STRB W1, [X10]
+    B L_lph_room_stored
+L_lph_rs2:
+    STRH W1, [X10]
+    B L_lph_room_stored
+L_lph_rs4:
+    STR W1, [X10]
+    B L_lph_room_stored
+L_lph_rs8:
+    STR X1, [X10]
+L_lph_room_stored:
+    MOV X0, #24
+    BL _silica_rt_region_alloc
+    LDR X5, [SP], #16
+    LDP X3, X4, [SP], #16
+    LDP X1, X2, [SP], #16
+    LDR X6, [X2]
+    ADD X6, X6, #1
+    STR X6, [X0]
+    LDR X7, [X2, #8]
+    STR X7, [X0, #8]
+    LDR X8, [X2, #16]
+    SUB X8, X8, X3
+    STR X8, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+L_lph_new_chunk:
+    ADD X0, X4, #8
+    BL _silica_rt_region_alloc
+    MOV X6, X0
+    LDR X5, [SP]
+    LDP X3, X4, [SP, #16]
+    LDP X1, X2, [SP, #32]
+    SUB X8, X4, X3
+    ADD X10, X6, X8
+    CBZ X5, L_lph_new_scalar
+    MOV X12, #0
+L_lph_new_agg:
+    CMP X12, X3
+    B.GE L_lph_new_stored
+    LDR X13, [X1, X12]
+    STR X13, [X10, X12]
+    ADD X12, X12, #8
+    B L_lph_new_agg
+    B L_lph_new_stored
+L_lph_new_scalar:
+    CMP X3, #8
+    B.EQ L_lph_ns8
+    CMP X3, #4
+    B.EQ L_lph_ns4
+    CMP X3, #2
+    B.EQ L_lph_ns2
+    STRB W1, [X10]
+    B L_lph_new_stored
+L_lph_ns2:
+    STRH W1, [X10]
+    B L_lph_new_stored
+L_lph_ns4:
+    STR W1, [X10]
+    B L_lph_new_stored
+L_lph_ns8:
+    STR X1, [X10]
+L_lph_new_stored:
+    CBZ X2, L_lph_next_nil
+    LDR X9, [X2, #8]
+    STR X9, [X6, X4]
+    B L_lph_alloc_handle
+L_lph_next_nil:
+    STR XZR, [X6, X4]
+L_lph_alloc_handle:
+    STP X6, X8, [SP, #-16]!
+    MOV X0, #24
+    BL _silica_rt_region_alloc
+    LDP X6, X8, [SP], #16
+    LDR X5, [SP], #16
+    LDP X3, X4, [SP], #16
+    LDP X1, X2, [SP], #16
+    CBZ X2, L_lph_len1
+    LDR X9, [X2]
+    ADD X9, X9, #1
+    B L_lph_setlen
+L_lph_len1:
+    MOV X9, #1
+L_lph_setlen:
+    STR X9, [X0]
+    STR X6, [X0, #8]
+    STR X8, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+
+L_list_tail_helper:
+    STP X29, X30, [SP, #-16]!
+    MOV X29, SP
+    LDR X3, [X0]
+    LDR X4, [X0, #8]
+    LDR X5, [X0, #16]
+    ADD X6, X5, X1
+    CMP X6, X2
+    B.GE L_lth_next_chunk
+    SUB X3, X3, #1
+    CBZ X3, L_lth_nil
+    STP X3, X4, [SP, #-16]!
+    STP X6, XZR, [SP, #-16]!
+    MOV X0, #24
+    BL _silica_rt_region_alloc
+    LDP X6, XZR, [SP], #16
+    LDP X3, X4, [SP], #16
+    STR X3, [X0]
+    STR X4, [X0, #8]
+    STR X6, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+L_lth_next_chunk:
+    LDR X7, [X4, X2]
+    CBZ X7, L_lth_nil
+    SUB X3, X3, #1
+    CBZ X3, L_lth_nil
+    STP X3, X7, [SP, #-16]!
+    MOV X0, #24
+    BL _silica_rt_region_alloc
+    LDP X3, X7, [SP], #16
+    STR X3, [X0]
+    STR X7, [X0, #8]
+    STR XZR, [X0, #16]
+    LDP X29, X30, [SP], #16
+    RET
+L_lth_nil:
     MOV X0, #0
-L_list_len_loop:
-    CBZ X4, L_list_len_done
-    ADD X0, X0, #1
-    ADD X5, X4, X3
-    LDR X4, [X5]
-    B L_list_len_loop
-L_list_len_done:
+    LDP X29, X30, [SP], #16
+    RET
+
+L_list_length_helper:
+    CBZ X0, L_list_len_nil
+    LDR X0, [X0]
+    RET
+L_list_len_nil:
+    MOV X0, #0
     RET
 
 .globl _silica_rt_region_alloc

@@ -87,6 +87,12 @@ How **immutable, Erlang-style lists** are represented and lowered in the **Phase
 
 ---
 
+## [list_chunk_vector_alignment_todo.md](./list_chunk_vector_alignment_todo.md)
+
+**Open work** for making list **chunk data** sizing and codegen **follow target SIMD width** (**§4.5** bridge from design **§2/§4.1** to the current fixed **16-byte** minimum in **`prims_list.silica`**).
+
+---
+
 ## [parser_design.jsonld](./parser_design.jsonld)
 
 **Machine-readable** companion to [parser_design.md](./parser_design.md): structured design data (JSON-LD) for tooling and agents that consume the parser architecture graph.

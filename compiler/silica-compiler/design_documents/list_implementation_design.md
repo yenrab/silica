@@ -77,6 +77,20 @@ The **authoritative** surface syntax and typing rules remain in [silica-specific
 
 - Where the spec places **region references** into buffers for non-primitive `T`, follow that **indirection** model; **provenance** for pointed-to regions follows existing region rules.
 
+### 4.5 Emitter alignment (current silica-compiler)
+
+Sections **§2** (“**Vector chunks (day 1)**”) and **§4.1** describe chunks as **aligned to vector width on the target** (with **AArch64 examples** such as **128-bit** or **256-bit**), **packing** multiple elements per chunk when **`sizeof`**/**alignment** permit. That wording is **normative for representation goals**—slabs should eventually support **straightforward SIMD** traversal where the ISA allows.
+
+The **living Apple Silicon emitter** (`emitter/apple_silicon/terms/prims/prims_list.silica`) implements a **narrower**, **partial** slice of that intent:
+
+| Concern | In this document | In the emitter today |
+|--------|---------------------|----------------------|
+| **Chunk data bytes** \(**`CDATA`**\) | Vector width × packing rules (**§4.1**, **§4.2**) | **`CDATA = max(16, elem_slot_bytes)`**, where **`elem_slot_bytes`** is derived from **`T`** only (**`chunk_elem_slot_bytes`** / **`chunk_data_bytes`**). **`16`** matches **Neon’s 128-bit lane bundle** commonly used as a “minimum vector slab,” but **is not derived from ISA / `-mcpu` / feature-matrix selection** (**fixed constant today**). |
+| **Full chunk allocation** | **Chunk buffer** + linkage | **`CDATA`** bytes for **filled-back-to-front** slots (**§9.5**) plus **`8`** bytes for **`next`**; see file header comments in **`prims_list.silica`**. |
+| **Codegen** | **§9.5** fixed layout should **admit** eventual **vector loads/stores** | **Scalar** **`LDR`/`STR`** (and width variants); **no** Neon **`LD*`** list fast paths yet. |
+
+So: **documentation** states **SIMD-motivated sizing and packing** as the **target** behavior; **`silica-compiler`** currently uses a **fixed 128-bit-style minimum slab** (**16 bytes**) plus **scalar** helpers. Closing the gap (**256-bit slabs**, ISA-selected **`CDATA`**, **SIMD emits**, allocator **alignment**) is tracked in **[list_chunk_vector_alignment_todo.md](list_chunk_vector_alignment_todo.md)**.
+
 ---
 
 ## 5. Early desugaring
@@ -149,7 +163,7 @@ end
   - **`list_int64_prepend.silica`**, **`list_int64_remove_head.silica`** — head ops; **`mem(normal)`**.
   - **`list_int64_recursive_sum.silica`** — **recursive** **`sum_list`**; **`case`** **inside** **`sequence proc[mem(normal)]`** **(no** **`proc`** **on** **the** **function)**; **`main`** **also** **`sequence proc[mem(normal)]`** **for** **the** **literal**.
   - **`list_int64_two_primaries_shared_suffix.silica`** — two **`List[int64]`** **values**, **`case`** **on** **each** (**§6**/**§9.7**); **`mem(normal), device_io`** **for** **stdout**.
-  - **`list_uint32_prepend_second_chunk.silica`** — nine **`prepend`** **steps** **on** **`List[uint32]`** **after** **`empty`** so **at** **least** **two** **vector** **chunks** **are** **used** (**covers** **128-bit** **and** **256-bit** **chunk** **capacities** **per** **§4.1**).
+  - **`list_uint32_prepend_second_chunk.silica`** — nine **`prepend`** steps on **`List[uint32]`** after **`empty`** so **at least two** chunks on the spine are exercised (four **`uint32`** entries pack into the emitter’s **`CDATA = 16`** bytes; aligns with **§4.5**—not §4.1’s hypothetical **256-bit-only** slabs until **list_chunk_vector_alignment_todo.md** closes the gap).
 - **Memory-region** trials under **`trials/memory_region_addition/`** (and related) are **prerequisites** or **cross-checks** for buffer writes and region typing. **Each** **`.silica`** **file** **includes** a **header** **comment** **stating** **that** **the** **memory** **space** **`S`** **in** **`sequence proc[mem(S)]`**, **`alloc_region(S)`**, and **`region(L1, S)`** / **`ref`** / **`buf`** **uses** **the** **same** **vocabulary** **as** **`List[T, S]`** (§3.5, §9.8).
 
 ---
@@ -212,6 +226,7 @@ The following **§9** sections record **agreed** decisions for **list** **implem
 - `silica-compiler/tutorials_and_howtos/memory_region_types.md` — region spaces and allocation examples.
 - `silica-compiler/trials/list_addition/` — executable trials.
 - `silica-compiler/tutorials_and_howtos/list_memory_space_and_effects.md` — **lists**, **`mem(S)`**, and **`List[T, S]`** alignment with **regions**.
+- [list_chunk_vector_alignment_todo.md](list_chunk_vector_alignment_todo.md) — **TODO:** chunk SIMD width, allocator alignment, and vectorized emits vs §4.5.
 
 ---
 
@@ -234,3 +249,4 @@ The following **§9** sections record **agreed** decisions for **list** **implem
 | 1.12 | §7/§8: effects only on `sequence` (not function return types); `list_int64_recursive_sum` uses inner `sequence proc[mem(normal)]`. |
 | 1.13 | §3.5 `List[T, S]` and explicit memory space; §9.8 effect checker alignment; §7/§9.7 updated; `memory_region_addition` trial headers cross-reference; optional `with mem(S)` on functions. |
 | 1.14 | §3/§8: uniform list types—parameters, variables, literals, patterns must match; cross-ref silica-specification §4.2.4; trials use consistent `List[T, S]`. |
+| 1.15 | §4.5 emitter alignment vs §2/§4.1 vector-chunk wording; §8 trial wording for multi-chunk `uint32`; cross-ref **list_chunk_vector_alignment_todo.md**. |

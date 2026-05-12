@@ -16,9 +16,20 @@
 -}
 
 // List prim emission: list_nil, list_cons, list_length, list_head, list_remove_head
-// list_implementation_design.md §5–§6: immutable spine; v1 uses classic cons nodes in heap (malloc)
-// Layout per node: [0:payload) = head (flat layout matches tuple_make/record_make; scalars use 8 bytes),
-// [payload:payload+8) = tail pointer (0 = nil). Empty list: Xn = 0
+// list_implementation_design.md §4–§9: chunk-based spine; immutable handles, mutable chunks.
+//
+// List handle (24 bytes, heap-allocated; pointer = 0 for nil):
+//   [0..8)   = length  (int64, total list length)
+//   [8..16)  = chunk_ptr (pointer to first data chunk)
+//   [16..24) = cursor   (byte offset of first element within chunk data area)
+//
+// Data chunk (CDATA + 8 bytes, heap-allocated):
+//   [0..CDATA)          = element slots (filled back-to-front per §9.5)
+//   [CDATA..CDATA+8)    = next chunk pointer (0 = end of spine)
+//
+// CDATA = max(16, elem_slot_bytes).  Capacity = CDATA / elem_slot_bytes.
+// Empty list: register value 0.  Chunks are mutable (new slots filled in place);
+// elements once written are immutable.  Handles are immutable once created.
 
 use sir_ast;
 use reg_conventions;
@@ -30,9 +41,11 @@ use atom_table;
 export is_list_prim/1;
 export emit_prim_op/2;
 export module_uses_list_prims/1;
-export emit_list_length_helper/0;
+export emit_list_helpers/0;
 export emit_region_alloc_stub/0;
 export list_element_payload_bytes/1;
+export chunk_elem_slot_bytes/1;
+export chunk_data_bytes/1;
 
 fn is_list_prim(name: string) -> bool {
     name == "list_nil" or name == "list_cons" or name == "list_length" or name == "list_head" or name == "list_remove_head"
@@ -138,77 +151,75 @@ fn list_elem_type_from_list_t(list_t: string) -> string {
     }
 }
 
-fn list_tail_offset_from_inner_list(inner_list: SIRTerm) -> int64 {
-    em: string <- list_elem_type_from_list_t(inner_list.type_name);
-    case len(em) == 0 of {
-        true -> 8;
-        false -> list_element_payload_bytes(em)
-    }
-}
-
-// Flat byte size of one list element in a cons cell (matches record_make / tuple_make stack allocation).
-fn list_element_payload_bytes(elem_t: string) -> int64 {
+// Byte size of one element slot in a chunk.  Narrow scalars use their natural width
+// so that multiple elements pack into the 128-bit data area.
+fn chunk_elem_slot_bytes(elem_t: string) -> int64 {
     case reg_conventions@is_inline_struct_type(elem_t) of {
         true -> prims_record@record_type_list_cons_payload_bytes(elem_t);
         false -> case reg_conventions@is_tuple_type(elem_t) of {
             true -> prims_tuple@flat_alloc_size(prims_tuple@count_type_elements(elem_t));
-            false -> 8
+            false -> case elem_t of {
+                "int8"  -> 1;
+                "uint8" -> 1;
+                "int16" -> 2;
+                "uint16" -> 2;
+                "int32" -> 4;
+                "uint32" -> 4;
+                "float32" -> 4;
+                _: string -> 8
+            }
         }
     }
+}
+
+// Total data area per chunk (128-bit minimum, or elem_slot_bytes if element is larger).
+fn chunk_data_bytes(elem_t: string) -> int64 {
+    es: int64 <- chunk_elem_slot_bytes(elem_t);
+    case es > 16 of {
+        true -> es;
+        false -> 16
+    }
+}
+
+// Legacy export: flat byte size of one list element.
+fn list_element_payload_bytes(elem_t: string) -> int64 {
+    chunk_elem_slot_bytes(elem_t)
 }
 
 fn emit_list_nil(dest: string) -> string {
     concat(concat("    MOV ", dest), ", #0\n")
 }
 
-fn copy_head_payload_asm_loop(i: int64, words: int64, acc: string) -> string {
-    case i >= words of {
-        true -> acc;
-        false -> do
-            offb: int64 <- i * 8;
-            off: string <- atom_table@int64_to_decimal_string(offb);
-            pair: string <- concat("    LDR X3, [X1, #", concat(off, concat("]\n    STR X3, [X0, #", concat(off, "]\n"))));
-            copy_head_payload_asm_loop(i + 1, words, concat(acc, pair))
-        end
-    }
-}
-
-fn copy_head_payload_asm(payload: int64) -> string {
-    copy_head_payload_asm_loop(0, payload / 8, "")
-}
-
-// X1 = head (value or pointer to stack-built aggregate), X2 = tail list pointer. Result in dest.
+// X1 = head value (or ptr to aggregate), X2 = tail list handle (or 0).
+// Emits: set up X3=elem_size, X4=chunk_data_size, BL L_list_prepend_helper.
 fn emit_list_cons(term: SIRTerm, dest: string) -> string {
-    payload: int64 <- list_element_payload_bytes(term.inner.type_name);
-    node_sz: int64 <- payload + 8;
-    node_sz_s: string <- atom_table@int64_to_decimal_string(node_sz);
-    save: string <- "    STP X1, X2, [SP, #-16]!\n";
-    mov_sz: string <- concat("    MOV X0, #", concat(node_sz_s, "\n"));
-    bl_m: string <- "    BL _silica_rt_region_alloc\n";
-    restore: string <- "    LDP X1, X2, [SP], #16\n";
-    store_head_and_tail: string <- case payload > 8 of {
-        true -> do
-            copy_asm: string <- copy_head_payload_asm(payload);
-            pay_s: string <- atom_table@int64_to_decimal_string(payload);
-            st_t: string <- concat("    STR X2, [X0, #", concat(pay_s, "]\n"));
-            concat(copy_asm, st_t)
-        end;
-        false -> do
-            st_h: string <- "    STR X1, [X0]\n";
-            pay_s8: string <- atom_table@int64_to_decimal_string(payload);
-            st_t: string <- concat("    STR X2, [X0, #", concat(pay_s8, "]\n"));
-            concat(st_h, st_t)
-        end
+    et: string <- term.inner.type_name;
+    es: int64 <- chunk_elem_slot_bytes(et);
+    cd: int64 <- chunk_data_bytes(et);
+    es_s: string <- atom_table@int64_to_decimal_string(es);
+    cd_s: string <- atom_table@int64_to_decimal_string(cd);
+    is_agg: bool <- reg_conventions@is_aggregate_struct_or_tuple_return_type(et);
+    mov_es: string <- concat("    MOV X3, #", concat(es_s, "\n"));
+    mov_cd: string <- concat("    MOV X4, #", concat(cd_s, "\n"));
+    agg_flag: string <- case is_agg of {
+        true -> "    MOV X5, #1\n";
+        false -> "    MOV X5, #0\n"
     };
-    mov_d: string <- concat(concat("    MOV ", dest), ", X0\n");
-    concat(concat(concat(concat(concat(save, mov_sz), bl_m), restore), store_head_and_tail), mov_d)
+    bl: string <- "    BL L_list_prepend_helper\n";
+    mov_d: string <- case dest == "X0" of {
+        true -> "";
+        false -> concat(concat("    MOV ", dest), ", X0\n")
+    };
+    concat(concat(concat(concat(mov_es, mov_cd), agg_flag), bl), mov_d)
 }
 
-// X9 = list pointer (cons cell). Load first element into dest (narrow types use W*).
-// Aggregate heads live at [X9] with the same flat layout as record_make; expose address in dest.
+// X9 = list handle pointer.  Dereference handle → chunk → cursor → element.
 fn emit_list_head(term: SIRTerm, dest: string) -> string {
+    load_chunk: string <- "    LDR X10, [X9, #8]\n";
+    load_cursor: string <- "    LDR X11, [X9, #16]\n";
+    addr: string <- "    ADD X10, X10, X11\n";
     case reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name) of {
-        true -> concat(concat(concat(concat("    MOV ", dest), ", X9"), ""), "\n");
+        true -> concat(concat(load_chunk, load_cursor), concat(addr, concat(concat("    MOV ", dest), ", X10\n")));
         false -> do
             ed: string <- case reg_conventions@is_narrow_type(term.type_name) of {
                 true -> case len(dest) > 0 of {
@@ -220,38 +231,53 @@ fn emit_list_head(term: SIRTerm, dest: string) -> string {
                 };
                 false -> dest
             };
-            case reg_conventions@is_narrow_type(term.type_name) of {
+            ld: string <- case reg_conventions@is_narrow_type(term.type_name) of {
                 true -> case term.type_name of {
-                    "int8" -> concat(concat(concat(concat("    LDRSB ", ed), ", [X9]"), ""), "\n");
-                    "uint8" -> concat(concat(concat(concat("    LDRB ", ed), ", [X9]"), ""), "\n");
-                    "int16" -> concat(concat(concat(concat("    LDRSH ", ed), ", [X9]"), ""), "\n");
-                    "uint16" -> concat(concat(concat(concat("    LDRH ", ed), ", [X9]"), ""), "\n");
-                    _: string -> concat(concat(concat(concat("    LDR ", ed), ", [X9]"), ""), "\n")
+                    "int8" -> concat(concat("    LDRSB ", ed), ", [X10]\n");
+                    "uint8" -> concat(concat("    LDRB ", ed), ", [X10]\n");
+                    "int16" -> concat(concat("    LDRSH ", ed), ", [X10]\n");
+                    "uint16" -> concat(concat("    LDRH ", ed), ", [X10]\n");
+                    _: string -> concat(concat("    LDR ", ed), ", [X10]\n")
                 };
-                false -> concat(concat(concat(concat("    LDR ", dest), ", [X9]"), ""), "\n")
-            }
+                false -> concat(concat("    LDR ", dest), ", [X10]\n")
+            };
+            concat(concat(load_chunk, load_cursor), concat(addr, ld))
         end
     }
 }
 
+// X9 = list handle.  Produce tail handle via helper.
 fn emit_list_remove_head(term: SIRTerm, dest: string) -> string {
-    pay: int64 <- list_tail_offset_from_inner_list(term.inner);
-    pay_s: string <- atom_table@int64_to_decimal_string(pay);
-    concat(concat(concat(concat(concat(concat("    LDR ", dest), ", [X9, #"), pay_s), "]"), ""), "\n")
+    em: string <- list_elem_type_from_list_t(term.inner.type_name);
+    et: string <- case len(em) == 0 of { true -> "int64"; false -> em };
+    es: int64 <- chunk_elem_slot_bytes(et);
+    cd: int64 <- chunk_data_bytes(et);
+    es_s: string <- atom_table@int64_to_decimal_string(es);
+    cd_s: string <- atom_table@int64_to_decimal_string(cd);
+    setup: string <- concat("    MOV X0, X9\n", concat("    MOV X1, #", concat(es_s, concat("\n    MOV X2, #", concat(cd_s, "\n")))));
+    bl: string <- "    BL L_list_tail_helper\n";
+    mov_d: string <- case dest == "X0" of {
+        true -> "";
+        false -> concat(concat("    MOV ", dest), ", X0\n")
+    };
+    concat(concat(setup, bl), mov_d)
 }
 
-// X9 = list ptr. X2 = tail field byte offset (element payload size). Result length in dest.
+// X9 = list handle.  Length is memoized at handle[0].  O(1).
+// Call helper: X0=handle → X0=length.  Helper returns 0 for nil handle.
 fn emit_list_length(term: SIRTerm, dest: string) -> string {
-    off: int64 <- list_tail_offset_from_inner_list(term.inner);
-    off_s: string <- atom_table@int64_to_decimal_string(off);
     mov_arg: string <- "    MOV X0, X9\n";
-    mov_off: string <- concat("    MOV X2, #", concat(off_s, "\n"));
-    bl_h: string <- "    BL L_list_length_helper\n";
+    bl: string <- "    BL L_list_length_helper\n";
     mov_out: string <- case dest == "X0" of {
         true -> "";
         false -> concat(concat("    MOV ", dest), ", X0\n")
     };
-    concat(concat(concat(mov_arg, mov_off), bl_h), mov_out)
+    concat(concat(mov_arg, bl), mov_out)
+}
+
+// O(1) length helper: X0 = handle (or 0 for nil). Returns X0 = length.
+fn emit_list_length_helper() -> string {
+    "L_list_length_helper:\n    CBZ X0, L_list_len_nil\n    LDR X0, [X0]\n    RET\nL_list_len_nil:\n    MOV X0, #0\n    RET\n"
 }
 
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
@@ -265,9 +291,159 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     }
 }
 
-// X0 = list head pointer; X2 = byte offset from node start to tail pointer field. Returns X0 = length.
-fn emit_list_length_helper() -> string {
-    "L_list_length_helper:\n    MOV X4, X0\n    MOV X3, X2\n    MOV X0, #0\nL_list_len_loop:\n    CBZ X4, L_list_len_done\n    ADD X0, X0, #1\n    ADD X5, X4, X3\n    LDR X4, [X5]\n    B L_list_len_loop\nL_list_len_done:\n    RET\n"
+// Module-level helper: L_list_prepend_helper
+// X1 = head value (or pointer to aggregate), X2 = old handle (0=nil),
+// X3 = elem_slot_bytes, X4 = chunk_data_bytes, X5 = is_aggregate (0 or 1).
+// Returns X0 = new list handle.
+fn emit_list_prepend_helper() -> string {
+    concat(
+    concat(
+    concat(
+    "L_list_prepend_helper:\n",
+    concat(
+    "    STP X29, X30, [SP, #-16]!\n    MOV X29, SP\n",
+    concat(
+    "    STP X1, X2, [SP, #-16]!\n    STP X3, X4, [SP, #-16]!\n    STR X5, [SP, #-16]!\n",
+    concat(
+    "    CBZ X2, L_lph_new_chunk\n",
+    concat(
+    "    LDR X6, [X2, #16]\n",
+    "    CBZ X6, L_lph_new_chunk\n"
+    ))))),
+    concat(
+    concat(
+    "    LDR X7, [X2, #8]\n    SUB X8, X6, X3\n",
+    concat(
+    "    ADD X10, X7, X8\n",
+    concat(
+    "    LDR X11, [SP]\n    CBZ X11, L_lph_room_scalar\n",
+    concat(
+    "    MOV X12, #0\nL_lph_room_agg:\n    CMP X12, X3\n    B.GE L_lph_room_stored\n",
+    concat(
+    "    LDR X13, [X1, X12]\n    STR X13, [X10, X12]\n    ADD X12, X12, #8\n    B L_lph_room_agg\n",
+    "    B L_lph_room_stored\n"
+    ))))),
+    concat(
+    concat(
+    "L_lph_room_scalar:\n    CMP X3, #8\n    B.EQ L_lph_rs8\n    CMP X3, #4\n    B.EQ L_lph_rs4\n",
+    concat(
+    "    CMP X3, #2\n    B.EQ L_lph_rs2\n    STRB W1, [X10]\n    B L_lph_room_stored\n",
+    concat(
+    "L_lph_rs2:\n    STRH W1, [X10]\n    B L_lph_room_stored\n",
+    concat(
+    "L_lph_rs4:\n    STR W1, [X10]\n    B L_lph_room_stored\n",
+    "L_lph_rs8:\n    STR X1, [X10]\n"
+    )))),
+    concat(
+    "L_lph_room_stored:\n",
+    concat(
+    "    MOV X0, #24\n    BL _silica_rt_region_alloc\n",
+    concat(
+    "    LDR X5, [SP], #16\n    LDP X3, X4, [SP], #16\n    LDP X1, X2, [SP], #16\n",
+    concat(
+    "    LDR X6, [X2]\n    ADD X6, X6, #1\n    STR X6, [X0]\n",
+    concat(
+    "    LDR X7, [X2, #8]\n    STR X7, [X0, #8]\n",
+    concat(
+    "    LDR X8, [X2, #16]\n    SUB X8, X8, X3\n    STR X8, [X0, #16]\n",
+    "    LDP X29, X30, [SP], #16\n    RET\n"
+    ))))))))),
+    concat(
+    concat(
+    "L_lph_new_chunk:\n",
+    concat(
+    "    ADD X0, X4, #8\n    BL _silica_rt_region_alloc\n    MOV X6, X0\n",
+    concat(
+    "    LDR X5, [SP]\n    LDP X3, X4, [SP, #16]\n    LDP X1, X2, [SP, #32]\n",
+    concat(
+    "    SUB X8, X4, X3\n    ADD X10, X6, X8\n",
+    concat(
+    "    CBZ X5, L_lph_new_scalar\n",
+    concat(
+    "    MOV X12, #0\nL_lph_new_agg:\n    CMP X12, X3\n    B.GE L_lph_new_stored\n",
+    concat(
+    "    LDR X13, [X1, X12]\n    STR X13, [X10, X12]\n    ADD X12, X12, #8\n    B L_lph_new_agg\n",
+    "    B L_lph_new_stored\n"
+    ))))))),
+    concat(
+    concat(
+    "L_lph_new_scalar:\n    CMP X3, #8\n    B.EQ L_lph_ns8\n    CMP X3, #4\n    B.EQ L_lph_ns4\n",
+    concat(
+    "    CMP X3, #2\n    B.EQ L_lph_ns2\n    STRB W1, [X10]\n    B L_lph_new_stored\n",
+    concat(
+    "L_lph_ns2:\n    STRH W1, [X10]\n    B L_lph_new_stored\n",
+    concat(
+    "L_lph_ns4:\n    STR W1, [X10]\n    B L_lph_new_stored\n",
+    "L_lph_ns8:\n    STR X1, [X10]\n"
+    )))),
+    concat(
+    "L_lph_new_stored:\n",
+    concat(
+    "    CBZ X2, L_lph_next_nil\n    LDR X9, [X2, #8]\n",
+    concat(
+    "    STR X9, [X6, X4]\n    B L_lph_alloc_handle\n",
+    concat(
+    "L_lph_next_nil:\n    STR XZR, [X6, X4]\n",
+    concat(
+    "L_lph_alloc_handle:\n    STP X6, X8, [SP, #-16]!\n",
+    concat(
+    "    MOV X0, #24\n    BL _silica_rt_region_alloc\n",
+    concat(
+    "    LDP X6, X8, [SP], #16\n",
+    concat(
+    "    LDR X5, [SP], #16\n    LDP X3, X4, [SP], #16\n    LDP X1, X2, [SP], #16\n",
+    concat(
+    "    CBZ X2, L_lph_len1\n    LDR X9, [X2]\n    ADD X9, X9, #1\n    B L_lph_setlen\n",
+    concat(
+    "L_lph_len1:\n    MOV X9, #1\n",
+    concat(
+    "L_lph_setlen:\n    STR X9, [X0]\n    STR X6, [X0, #8]\n    STR X8, [X0, #16]\n",
+    "    LDP X29, X30, [SP], #16\n    RET\n"
+    )))))))))))
+    )))
+}
+
+// Module-level helper: L_list_tail_helper
+// X0 = handle, X1 = elem_slot_bytes, X2 = chunk_data_bytes.
+// Returns X0 = tail handle (or 0 for nil tail).
+fn emit_list_tail_helper() -> string {
+    concat(
+    concat(
+    "L_list_tail_helper:\n    STP X29, X30, [SP, #-16]!\n    MOV X29, SP\n",
+    concat(
+    "    LDR X3, [X0]\n    LDR X4, [X0, #8]\n    LDR X5, [X0, #16]\n",
+    "    ADD X6, X5, X1\n"
+    )),
+    concat(
+    concat(
+    "    CMP X6, X2\n    B.GE L_lth_next_chunk\n",
+    concat(
+    "    SUB X3, X3, #1\n    CBZ X3, L_lth_nil\n",
+    concat(
+    "    STP X3, X4, [SP, #-16]!\n    STP X6, XZR, [SP, #-16]!\n",
+    concat(
+    "    MOV X0, #24\n    BL _silica_rt_region_alloc\n",
+    concat(
+    "    LDP X6, XZR, [SP], #16\n    LDP X3, X4, [SP], #16\n",
+    "    STR X3, [X0]\n    STR X4, [X0, #8]\n    STR X6, [X0, #16]\n    LDP X29, X30, [SP], #16\n    RET\n"
+    ))))),
+    concat(
+    "L_lth_next_chunk:\n    LDR X7, [X4, X2]\n    CBZ X7, L_lth_nil\n",
+    concat(
+    "    SUB X3, X3, #1\n    CBZ X3, L_lth_nil\n",
+    concat(
+    "    STP X3, X7, [SP, #-16]!\n    MOV X0, #24\n    BL _silica_rt_region_alloc\n",
+    concat(
+    "    LDP X3, X7, [SP], #16\n",
+    concat(
+    "    STR X3, [X0]\n    STR X7, [X0, #8]\n    STR XZR, [X0, #16]\n",
+    "    LDP X29, X30, [SP], #16\n    RET\nL_lth_nil:\n    MOV X0, #0\n    LDP X29, X30, [SP], #16\n    RET\n"
+    )))))
+    ))
+}
+
+fn emit_list_helpers() -> string {
+    concat(emit_list_prepend_helper(), concat("\n", concat(emit_list_tail_helper(), concat("\n", emit_list_length_helper()))))
 }
 
 // Lightweight _silica_rt_region_alloc that just forwards to _malloc.

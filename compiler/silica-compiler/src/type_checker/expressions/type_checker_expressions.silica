@@ -16,7 +16,8 @@
 -}
 
 // Expression type-check dispatcher: Expr kind 0-4
-// Delegates to literals, identifiers; handles binary ops and calls inline (recursive)
+// Delegates to literals, identifiers; handles binary ops and calls inline (recursive).
+// Comparisons include ordering/index equality on atoms (<, >, <=, >=, ==, !=) per §4.1.7.
 
 use parser_ast;
 use type_checker_core;
@@ -60,7 +61,7 @@ fn is_arithmetic_op_lexeme(op: string) -> bool {
     op == "+" or op == "-" or op == "*" or op == "/" or op == "%"
 }
 
-// Comparison: <, >, <=, >=, ==, != - operands int64, int32, int16, int8, float32, float16, string, boolean; result bool
+// Comparison: <, >, <=, >=, ==, != — operands boolean, numeric primitives, string, or atom; result bool
 fn is_comparison_op_lexeme(op: string) -> bool {
     op == "<" or op == ">" or op == "<=" or op == ">=" or op == "==" or op == "!="
 }
@@ -75,7 +76,7 @@ fn check_comparison_operands(expr: Expr, operand_type: string, context: TypeCont
 }
 
 // Try each supported comparison operand type; first match wins.
-// Signed: int64, int32, int16, int8. Unsigned: uint64, uint32, uint16, uint8. Also float32, float16, string, boolean.
+// Signed: int64, int32, int16, int8. Unsigned: uint64, uint32, uint16, uint8. Also float32, float16, string, atom (ordering by atom table index), boolean.
 fn bool_result(expected_type: string, location: SourceLocation) -> TypeCheckResult {
     case expected_type of {
         "boolean" -> type_checker_core@type_check_ok();
@@ -136,7 +137,13 @@ fn check_comparison_result_rest(expr: Expr, expected_type: string, context: Type
                                                                                     rs: TypeCheckResult <- check_comparison_operands(expr, "string", context, world);
                                                                                     case rs.is_ok of {
                                                                                         true -> bool_result(expected_type, expr.location);
-                                                                                        false -> first_err
+                                                                                        false -> do
+                                                                                            ra: TypeCheckResult <- check_comparison_operands(expr, "atom", context, world);
+                                                                                            case ra.is_ok of {
+                                                                                                true -> bool_result(expected_type, expr.location);
+                                                                                                false -> first_err
+                                                                                            }
+                                                                                        end
                                                                                     }
                                                                                 end
                                                                             }
@@ -468,6 +475,8 @@ fn actor_runtime_builtin_return_type(name: string) -> string {
         "remove_actor" -> "(int64,affinity_error)";
         "pin_actor_to_numa_node" -> "(int64,affinity_error)";
         "unpin_actor" -> "atom";
+        "register_actor" -> "atom";
+        "get_registry_actor" -> "actor_ref";
         "set_actor_priority" -> "atom";
         "get_cpu_topology" -> "{ cores: List[{ id: int64, core_type: atom, capabilities: List[string,normal], frequency_mhz: int64 },normal], numa_nodes: List[{ id: int64, cores: List[int64,normal], memory_ranges: List[{ start_address: int64, size: int64, latency: int64 },normal] },normal], cache_hierarchy: { levels: List[{ level: int64, size_kb: int64, line_size: int64, associativity: int64, shared_cores: List[int64,normal] },normal] } }";
         "get_efficiency_cores" -> "List[int64,normal]";
@@ -644,7 +653,18 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                                                             }
                                                         end
                                                     };
-                                                    false -> case eff == "get_actor_memory_usage" of {
+                                                    false -> case eff == "register_actor" of {
+                                                        true -> case ac == 1 of {
+                                                            false -> type_checker_core@type_check_err("E2005", expr.location, "register_actor expects 1 argument: (actor_ref)", "sect15");
+                                                            true -> do
+                                                                r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
+                                                                case r0.is_ok of {
+                                                                    false -> r0;
+                                                                    true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                                                }
+                                                            end
+                                                        };
+                                                        false -> case eff == "get_actor_memory_usage" of {
                                                         true -> case ac == 1 of {
                                                             false -> type_checker_core@type_check_err("E2005", expr.location, "get_actor_memory_usage expects 1 argument: (actor_ref)", "sect15");
                                                             true -> do
@@ -706,10 +726,17 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                                                                             }
                                                                         end
                                                                     };
-                                                                    false -> type_checker_core@type_check_err("E2005", expr.location, "unknown actor runtime helper", "sect15")
+                                                                    false -> case eff == "get_registry_actor" of {
+                                                                        true -> case ac == 0 of {
+                                                                            false -> type_checker_core@type_check_err("E2005", expr.location, "get_registry_actor expects 0 arguments", "sect15");
+                                                                            true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                                                        };
+                                                                        false -> type_checker_core@type_check_err("E2005", expr.location, "unknown actor runtime helper", "sect15")
+                                                                    }
                                                                 }
                                                             }
                                                         }
+                                                    }
                                                     }
                                                 }
                                             }

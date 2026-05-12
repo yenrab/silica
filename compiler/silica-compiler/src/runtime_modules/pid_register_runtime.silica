@@ -1,0 +1,117 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Association list mapping atom keys to actor_ref process ids.
+// State type: List[{ name: atom, pid: actor_ref }, mem(normal)] — Silica's built-in recursive type.
+// All record types are structural and written inline per §3.4.2 (no struct/type declarations).
+// Atom equality uses the built-in == operator (compare by compile-time index).
+//
+// Operations are O(n) linear scans; suitable for process registries of modest size.
+
+export empty_reg/0;
+export pid_reg_insert/3;
+export pid_reg_lookup/2;
+export pid_reg_delete/2;
+
+fn no_op_beh(msg: int64, state: int64) -> int64 {
+    state
+}
+
+// Returns an empty registry.
+fn empty_reg() -> List[{ name: atom, pid: actor_ref }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ name: atom, pid: actor_ref }, mem(normal)] <- empty[{ name: atom, pid: actor_ref }, mem(normal)]()
+    produces
+        pure result
+    end
+}
+
+// Inserts (name, pid) into the registry.  If name already exists its pid is replaced.
+fn pid_reg_insert(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: atom, pid: actor_ref) -> List[{ name: atom, pid: actor_ref }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ name: atom, pid: actor_ref }, mem(normal)] <- case reg of {
+            []: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
+                prepend[{ name: atom, pid: actor_ref }, mem(normal)](
+                    { name: name, pid: pid },
+                    empty[{ name: atom, pid: actor_ref }, mem(normal)]()
+                );
+            [h: { name: atom, pid: actor_ref }, rest: List[{ name: atom, pid: actor_ref }, mem(normal)]] ->
+                case h.name == name of {
+                    true ->
+                        prepend[{ name: atom, pid: actor_ref }, mem(normal)](
+                            { name: name, pid: pid },
+                            rest
+                        );
+                    false ->
+                        prepend[{ name: atom, pid: actor_ref }, mem(normal)](
+                            h,
+                            pid_reg_insert(rest, name, pid)
+                        )
+                };
+            _: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
+                empty[{ name: atom, pid: actor_ref }, mem(normal)]()
+        }
+    produces
+        pure result
+    end
+}
+
+// Returns (:found, actor_ref) when name is registered, (:not_found, dummy_ref) otherwise.
+fn pid_reg_lookup(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: atom) -> (atom, actor_ref) {
+    sequence proc[concurrency]
+        result: (atom, actor_ref) <- case reg of {
+            []: List[{ name: atom, pid: actor_ref }, mem(normal)] -> do
+                dummy: actor_ref <- spawn(0, no_op_beh);
+                (:not_found, dummy)
+            end;
+            [h: { name: atom, pid: actor_ref }, rest: List[{ name: atom, pid: actor_ref }, mem(normal)]] ->
+                case h.name == name of {
+                    true -> (:found, h.pid);
+                    false -> pid_reg_lookup(rest, name)
+                };
+            _: List[{ name: atom, pid: actor_ref }, mem(normal)] -> do
+                dummy: actor_ref <- spawn(0, no_op_beh);
+                (:not_found, dummy)
+            end
+        }
+    produces
+        pure result
+    end
+}
+
+// Removes the entry with the given name.  Returns the registry unchanged if name is not found.
+fn pid_reg_delete(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: atom) -> List[{ name: atom, pid: actor_ref }, mem(normal)] {
+    sequence proc[mem(normal)]
+        result: List[{ name: atom, pid: actor_ref }, mem(normal)] <- case reg of {
+            []: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
+                empty[{ name: atom, pid: actor_ref }, mem(normal)]();
+            [h: { name: atom, pid: actor_ref }, rest: List[{ name: atom, pid: actor_ref }, mem(normal)]] ->
+                case h.name == name of {
+                    true -> rest;
+                    false ->
+                        prepend[{ name: atom, pid: actor_ref }, mem(normal)](
+                            h,
+                            pid_reg_delete(rest, name)
+                        )
+                };
+            _: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
+                empty[{ name: atom, pid: actor_ref }, mem(normal)]()
+        }
+    produces
+        pure result
+    end
+}

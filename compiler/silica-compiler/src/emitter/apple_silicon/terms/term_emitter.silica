@@ -768,11 +768,54 @@ fn list_cons_tail_ptr_reg(ext_for_alloc: string, scrut_reg: string) -> string {
     }
 }
 
-fn list_cons_emit_tail_ldr(scrut_reg: string, pay_h_s: string, tr: string) -> string {
-    concat("    LDR ", concat(tr, concat(", [", concat(scrut_reg, concat(", #", concat(pay_h_s, "]\n"))))))
+// Chunk-based tail: call L_list_tail_helper(handle, elem_slot_bytes, chunk_data_bytes).
+// scrut_reg holds the handle.  Result goes to tr (via X0).
+// tr must not be X0 or X1 (list_cons_tail_ptr_reg blocks them).
+fn list_cons_emit_tail_call(scrut_reg: string, elem_slot_s: string, cdata_s: string, tr: string) -> string {
+    save: string <- "    STP X0, X1, [SP, #-16]!\n    STP X2, X3, [SP, #-16]!\n";
+    setup: string <- concat(concat("    MOV X0, ", scrut_reg), concat("\n    MOV X1, #", concat(elem_slot_s, concat("\n    MOV X2, #", concat(cdata_s, "\n")))));
+    bl: string <- "    BL L_list_tail_helper\n";
+    mov_r: string <- concat(concat("    MOV ", tr), ", X0\n");
+    restore: string <- "    LDP X2, X3, [SP], #16\n    LDP X0, X1, [SP], #16\n";
+    concat(concat(save, setup), concat(bl, concat(mov_r, restore)))
+}
+
+// Chunk-based head load: handle → chunk_ptr (+8) → cursor (+16) → element at [chunk + cursor].
+// Uses X10, X11 as temporaries to avoid conflicts with scrutinee in X2/X3.
+fn list_cons_emit_head_ldr(scrut_reg: string, head_t: string, dest: string) -> string {
+    ld_chunk: string <- concat(concat("    LDR X10, [", scrut_reg), ", #8]\n");
+    ld_cursor: string <- concat(concat("    LDR X11, [", scrut_reg), ", #16]\n");
+    add_addr: string <- "    ADD X10, X10, X11\n";
+    case reg_conventions@is_aggregate_struct_or_tuple_return_type(head_t) of {
+        true -> concat(concat(ld_chunk, ld_cursor), concat(add_addr, concat(concat("    MOV ", dest), ", X10\n")));
+        false -> do
+            ed: string <- case reg_conventions@is_narrow_type(head_t) of {
+                true -> case len(dest) > 0 of {
+                    true -> case substring(dest, 0, 1) == "X" of {
+                        true -> concat("W", substring(dest, 1, len(dest)));
+                        false -> dest
+                    };
+                    false -> dest
+                };
+                false -> dest
+            };
+            ld: string <- case reg_conventions@is_narrow_type(head_t) of {
+                true -> case head_t of {
+                    "int8" -> concat(concat("    LDRSB ", ed), ", [X10]\n");
+                    "uint8" -> concat(concat("    LDRB ", ed), ", [X10]\n");
+                    "int16" -> concat(concat("    LDRSH ", ed), ", [X10]\n");
+                    "uint16" -> concat(concat("    LDRH ", ed), ", [X10]\n");
+                    _: string -> concat(concat("    LDR ", ed), ", [X10]\n")
+                };
+                false -> concat(concat("    LDR ", dest), ", [X10]\n")
+            };
+            concat(concat(ld_chunk, ld_cursor), concat(add_addr, ld))
+        end
+    }
 }
 
 // List cons pattern: branch.name is "%h|%t" (or _), branch.type_name is "head_t|list_t" (SIR).
+// Chunk-based: head via handle→chunk→cursor→element; tail via L_list_tail_helper.
 fn emit_list_cons_pattern_loads(branch: SIRTerm, scrut_reg: string, outer_reg: string) -> (string, string) {
     pipe_n: int64 <- var@find_pipe_from(branch.name, 0);
     case pipe_n < 0 of {
@@ -786,97 +829,37 @@ fn emit_list_cons_pattern_loads(branch: SIRTerm, scrut_reg: string, outer_reg: s
                 false -> substring(branch.type_name, 0, pipe_t)
             };
             ext0: string <- outer_reg;
-            pay_h: int64 <- prims_list@list_element_payload_bytes(head_t);
-            pay_h_s: string <- atom_table@int64_to_decimal_string(pay_h);
+            es: int64 <- prims_list@chunk_elem_slot_bytes(head_t);
+            cd: int64 <- prims_list@chunk_data_bytes(head_t);
+            es_s: string <- atom_table@int64_to_decimal_string(es);
+            cd_s: string <- atom_table@int64_to_decimal_string(cd);
             (asm_out: string, ext_out: string) <- case left_pat == "_" of {
                 true -> case right_pat == "_" of {
                     true -> ("", ext0);
                     false -> do
                         tr0: string <- list_cons_tail_ptr_reg(ext0, scrut_reg);
                         nb_t0: string <- var@reg_binding(right_pat, tr0);
-                        t_ld0: string <- list_cons_emit_tail_ldr(scrut_reg, pay_h_s, tr0);
+                        t_ld0: string <- list_cons_emit_tail_call(scrut_reg, es_s, cd_s, tr0);
                         (t_ld0, concat(ext0, nb_t0))
                     end
                 };
                 false -> case right_pat == "_" of {
-                    true -> case reg_conventions@is_aggregate_struct_or_tuple_return_type(head_t) of {
-                        true -> do
-                            hr_w: string <- spill_reg_chain_from_outer(concat(ext0, concat("|__silica_scr=", scrut_reg)));
-                            case len(hr_w) > 0 of {
-                                true -> do
-                                    mov_w: string <- concat(concat(concat("    MOV ", hr_w), ", "), concat(scrut_reg, "\n"));
-                                    nb_w: string <- concat("|", concat(left_pat, concat("=", hr_w)));
-                                    (mov_w, concat(ext0, nb_w))
-                                end;
-                                false -> do
-                                    nb_agg_h: string <- concat("|", concat(left_pat, concat("=", scrut_reg)));
-                                    ("", concat(ext0, nb_agg_h))
-                                end
-                            }
-                        end;
-                        false -> do
-                            hr_h: string <- var@next_free_int_reg(ext0);
-                            hr_hw: string <- case reg_conventions@is_narrow_type(head_t) of {
-                                true -> concat("W", substring(hr_h, 1, len(hr_h)));
-                                false -> hr_h
-                            };
-                            h_ld_h: string <- case reg_conventions@is_narrow_type(head_t) of {
-                                true -> case head_t of {
-                                    "int8" -> concat(concat(concat(concat("    LDRSB ", hr_hw), ", ["), scrut_reg), "]\n");
-                                    "uint8" -> concat(concat(concat(concat("    LDRB ", hr_hw), ", ["), scrut_reg), "]\n");
-                                    "int16" -> concat(concat(concat(concat("    LDRSH ", hr_hw), ", ["), scrut_reg), "]\n");
-                                    "uint16" -> concat(concat(concat(concat("    LDRH ", hr_hw), ", ["), scrut_reg), "]\n");
-                                    _: string -> concat(concat(concat(concat("    LDR ", hr_hw), ", ["), scrut_reg), "]\n")
-                                };
-                                false -> concat(concat(concat(concat("    LDR ", hr_h), ", ["), scrut_reg), "]\n")
-                            };
-                            nb_hh: string <- var@reg_binding(left_pat, hr_h);
-                            (h_ld_h, concat(ext0, nb_hh))
-                        end
-                    };
-                    false -> case reg_conventions@is_aggregate_struct_or_tuple_return_type(head_t) of {
-                        true -> do
-                            tr2: string <- list_cons_tail_ptr_reg(ext0, scrut_reg);
-                            nb_t2: string <- var@reg_binding(right_pat, tr2);
-                            t_ld2: string <- list_cons_emit_tail_ldr(scrut_reg, pay_h_s, tr2);
-                            hr2: string <- spill_reg_chain_from_outer(concat(concat(ext0, nb_t2), concat("|__silica_scr=", scrut_reg)));
-                            case len(hr2) > 0 of {
-                                true -> do
-                                    mov_h2: string <- concat(concat(concat("    MOV ", hr2), ", "), concat(scrut_reg, "\n"));
-                                    nb_h2b: string <- concat("|", concat(left_pat, concat("=", hr2)));
-                                    (concat(t_ld2, mov_h2), concat(concat(ext0, nb_h2b), nb_t2))
-                                end;
-                                false -> do
-                                    nb_agg_h2: string <- concat("|", concat(left_pat, concat("=", scrut_reg)));
-                                    ext_h2: string <- concat(ext0, nb_agg_h2);
-                                    (t_ld2, concat(ext_h2, nb_t2))
-                                end
-                            }
-                        end;
-                        false -> do
-                            trb: string <- list_cons_tail_ptr_reg(ext0, scrut_reg);
-                            nb_tb: string <- var@reg_binding(right_pat, trb);
-                            ext_tb: string <- concat(ext0, nb_tb);
-                            hr_b: string <- var@next_free_int_reg(concat(ext_tb, "|__silica_hdblk=X0"));
-                            hr_bw: string <- case reg_conventions@is_narrow_type(head_t) of {
-                                true -> concat("W", substring(hr_b, 1, len(hr_b)));
-                                false -> hr_b
-                            };
-                            h_ld_b: string <- case reg_conventions@is_narrow_type(head_t) of {
-                                true -> case head_t of {
-                                    "int8" -> concat(concat(concat(concat("    LDRSB ", hr_bw), ", ["), scrut_reg), "]\n");
-                                    "uint8" -> concat(concat(concat(concat("    LDRB ", hr_bw), ", ["), scrut_reg), "]\n");
-                                    "int16" -> concat(concat(concat(concat("    LDRSH ", hr_bw), ", ["), scrut_reg), "]\n");
-                                    "uint16" -> concat(concat(concat(concat("    LDRH ", hr_bw), ", ["), scrut_reg), "]\n");
-                                    _: string -> concat(concat(concat(concat("    LDR ", hr_bw), ", ["), scrut_reg), "]\n")
-                                };
-                                false -> concat(concat(concat(concat("    LDR ", hr_b), ", ["), scrut_reg), "]\n")
-                            };
-                            nb_hb: string <- var@reg_binding(left_pat, hr_b);
-                            t_ldb: string <- list_cons_emit_tail_ldr(scrut_reg, pay_h_s, trb);
-                            (concat(t_ldb, h_ld_b), concat(ext_tb, nb_hb))
-                        end
-                    }
+                    true -> do
+                        hr_h: string <- var@next_free_int_reg(ext0);
+                        h_ld_h: string <- list_cons_emit_head_ldr(scrut_reg, head_t, hr_h);
+                        nb_hh: string <- var@reg_binding(left_pat, hr_h);
+                        (h_ld_h, concat(ext0, nb_hh))
+                    end;
+                    false -> do
+                        tr_b: string <- list_cons_tail_ptr_reg(ext0, scrut_reg);
+                        nb_tb: string <- var@reg_binding(right_pat, tr_b);
+                        t_ld_b: string <- list_cons_emit_tail_call(scrut_reg, es_s, cd_s, tr_b);
+                        ext_tb: string <- concat(ext0, nb_tb);
+                        hr_b: string <- var@next_free_int_reg(concat(ext_tb, "|__silica_hdblk=X0"));
+                        h_ld_b: string <- list_cons_emit_head_ldr(scrut_reg, head_t, hr_b);
+                        nb_hb: string <- var@reg_binding(left_pat, hr_b);
+                        (concat(t_ld_b, h_ld_b), concat(ext_tb, nb_hb))
+                    end
                 }
             };
             (asm_out, ext_out)

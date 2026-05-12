@@ -1219,6 +1219,27 @@ _silica_rt_remove_actor:                ; @silica_rt_remove_actor
 	ret
 	.cfi_endproc
                                         ; -- End function
+	.globl	_silica_rt_register_actor       ; -- Begin function silica_rt_register_actor
+	.p2align	2
+_silica_rt_register_actor:              ; @silica_rt_register_actor
+	.cfi_startproc
+; %bb.0: X0=actor_ref; write to global _silica_pid_registry_ref. Returns X0=0 (atom :ok).
+	adrp	x1, _silica_pid_registry_ref@PAGE
+	str	x0, [x1, _silica_pid_registry_ref@PAGEOFF]
+	mov	x0, #0
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_get_registry_actor   ; -- Begin function silica_rt_get_registry_actor
+	.p2align	2
+_silica_rt_get_registry_actor:          ; @silica_rt_get_registry_actor
+	.cfi_startproc
+; %bb.0: Returns actor_ref stored by register_actor (or 0 if not yet initialised). X0=actor_ref.
+	adrp	x0, _silica_pid_registry_ref@PAGE
+	ldr	x0, [x0, _silica_pid_registry_ref@PAGEOFF]
+	ret
+	.cfi_endproc
+                                        ; -- End function
 ; Phase E e4b: _silica_rt_actor_kill_abnormal — set pending exit reason_tag to 1 (abnormal) and stop the actor.
 ; X0=actor_ref. Returns X0=0 (atom :ok). Used by trials to inject abnormal exits so :transient restart policy
 ; (restart iff reason_tag != 0) can be exercised. Mutex protects the alive/reason_tag transition vs
@@ -3022,7 +3043,24 @@ fn actor_rt_asm_phase_i_chunk() -> string {
 	.p2align	3
 .globl	_silica_rt_wait_root_acb
 .comm	_silica_rt_wait_root_acb,8,3
+; Global slot for the PID registry actor_ref (written by _silica_rt_register_actor / read by _silica_rt_get_registry_actor).
+.globl	_silica_pid_registry_ref
+.comm	_silica_pid_registry_ref,8,3
 	.section	__TEXT,__text,regular,pure_instructions
+; _silica_pid_registry_init: called once at program start from emitter-injected main prologue.
+; Calls pid_registry_actor.init_pid_registry_get_ref (Silica fn that spawns the registry actor),
+; then stores the returned actor_ref in _silica_pid_registry_ref.
+	.globl	_silica_pid_registry_init
+	.p2align	2
+_silica_pid_registry_init:
+	stp	x29, x30, [sp, #-16]!
+	mov	x29, sp
+	bl	pid_registry_actor.init_pid_registry_get_ref
+	adrp	x1, _silica_pid_registry_ref@PAGE
+	str	x0, [x1, _silica_pid_registry_ref@PAGEOFF]
+	mov	x0, #0
+	ldp	x29, x30, [sp], #16
+	ret
 	.globl	_silica_rt_wait_for_exit
 	.p2align	2
 _silica_rt_wait_for_exit:               ; Phase I - stdin line e-x-i-t OR root ACB alive clear (_silica_rt_wait_root_acb set from top-level spawn only)
