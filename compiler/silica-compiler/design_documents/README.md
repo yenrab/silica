@@ -51,6 +51,12 @@ Actor memory architecture: **growable per-actor stacks**, lazy page migration, i
 
 ---
 
+## [atom_actor_registry_direct_index_design.md](./atom_actor_registry_direct_index_design.md)
+
+**O(1) registry** mapping atom intern ids to **`actor_ref`**: contiguous **`0…N−1`** ids, contiguous slot buffer keyed by id, region-backed growth; contrast **`List`** scan, trees, no surface **`Map`**.
+
+---
+
 ## [beam_like_crash_containment_design_notes.md](./beam_like_crash_containment_design_notes.md)
 
 **BEAM-like lightweight process** semantics on a **native** runtime: fault isolation between processes, MTE/hardware hooks, when the runtime may recover vs. abort, and the relationship to memory safety in user code.
