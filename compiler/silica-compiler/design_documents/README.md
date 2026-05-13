@@ -99,6 +99,24 @@ How **immutable, Erlang-style lists** are represented and lowered in the **Phase
 
 ---
 
+## [graph_representation_design.md](./graph_representation_design.md)
+
+Graph representation designs for code generation without custom types: named design families for adjacency-list, compressed sparse row, dense matrix, and dense bitset graphs, with inline Silica shapes, construction/traversal operations, invariants, and when to use each family.
+
+---
+
+## [balanced_tree_and_heap_design.md](./balanced_tree_and_heap_design.md)
+
+Balanced tree and heap representations for code generation without custom types: `NodeIDBTree` vs. `CsrBTree` guidance, inline B-tree and heap shapes, construction/search/update algorithms, invariants, naming rules, and generator requirements.
+
+---
+
+## [btree_set_design.md](./btree_set_design.md)
+
+Generated B-tree set designs using the exact families `NodeIDBTreeSet` and `CsrBTreeSet`: when to use each, inline set shapes, construction/finalization paths, membership/insert/delete/range operations, invariants, naming rules, and generator requirements.
+
+---
+
 ## [parser_design.jsonld](./parser_design.jsonld)
 
 **Machine-readable** companion to [parser_design.md](./parser_design.md): structured design data (JSON-LD) for tooling and agents that consume the parser architecture graph.

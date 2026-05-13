@@ -15,12 +15,13 @@
    limitations under the License.
 -}
 
-// Association list mapping atom keys to actor_ref process ids.
-// State type: List[{ name: atom, pid: actor_ref }, mem(normal)] — Silica's built-in recursive type.
-// All record types are structural and written inline per §3.4.2 (no struct/type declarations).
-// Atom equality uses the built-in == operator (compare by compile-time index).
+// Process registry keyed by atom: dense atom id → indexed slot tables (design_documents/atom_actor_registry_direct_index_design.md).
 //
-// Operations are O(n) linear scans; suitable for process registries of modest size.
+// Representation: fixed direct table backed by paired `buf`s in one `region` (length 240 × int64 occupancy + 240 × opaque
+// actor-ref words fits the heap arena used by emitter `alloc_region` / `alloc_buf`). Indices `atom_bits(key)` drive O(1) access
+// for keys in `[0 .. 239]`. Larger ids use an assoc list overflow (same asymptotics as the previous pure-List registry).
+//
+// Primitives atom_bits / actor_ref_bits / actor_ref_of_word are GPR identity builtins (see emitter + type_checker).
 
 export empty_reg/0;
 export pid_reg_insert/3;
@@ -31,19 +32,63 @@ fn no_op_beh(msg: int64, state: int64) -> int64 {
     state
 }
 
-// Returns an empty registry.
-fn empty_reg() -> List[{ name: atom, pid: actor_ref }, mem(normal)] {
+fn pid_direct_cap() -> int64 {
+    240
+}
+
+// Zero [lo, hi_exclusive) occupancy and PID words (binary-split recursion ⇒ shallow stack vs linear 240 frames).
+fn pid_reg_clear_cells(lo: int64, hi_exclusive: int64, occ: buf(L1, normal, int64, 240), stor: buf(L1, normal, int64, 240)) -> atom {
     sequence proc[mem(normal)]
-        result: List[{ name: atom, pid: actor_ref }, mem(normal)] <- empty[{ name: atom, pid: actor_ref }, mem(normal)]()
+        _: atom <- case hi_exclusive <= lo of {
+            true -> :ok;
+            false -> case hi_exclusive == lo + 1 of {
+                true -> do
+                    _: atom <- write_buf(occ, lo, 0);
+                    write_buf(stor, lo, 0)
+                end;
+                false -> do
+                    mid: int64 <- (lo + hi_exclusive) / 2;
+                    _: atom <- pid_reg_clear_cells(lo, mid, occ, stor);
+                    pid_reg_clear_cells(mid, hi_exclusive, occ, stor)
+                end
+            }
+        }
     produces
-        pure result
+        pure :ok
     end
 }
 
-// Inserts (name, pid) into the registry.  If name already exists its pid is replaced.
-fn pid_reg_insert(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: atom, pid: actor_ref) -> List[{ name: atom, pid: actor_ref }, mem(normal)] {
+fn empty_reg() ->
+    {
+        rg: region(L1, normal),
+        occ: buf(L1, normal, int64, 240),
+        stor: buf(L1, normal, int64, 240),
+        overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+    }
+{
     sequence proc[mem(normal)]
-        result: List[{ name: atom, pid: actor_ref }, mem(normal)] <- case reg of {
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        occ_buf: buf(L1, normal, int64, 240) <- alloc_buf(r, pid_direct_cap());
+        stor_buf: buf(L1, normal, int64, 240) <- alloc_buf(r, pid_direct_cap());
+        _: atom <- pid_reg_clear_cells(0, pid_direct_cap(), occ_buf, stor_buf);
+        empty_ov: List[{ name: atom, pid: actor_ref }, mem(normal)] <- empty[{ name: atom, pid: actor_ref }, mem(normal)]();
+        tbl: {
+            rg: region(L1, normal),
+            occ: buf(L1, normal, int64, 240),
+            stor: buf(L1, normal, int64, 240),
+            overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+        } <- { rg: r, occ: occ_buf, stor: stor_buf, overflow: empty_ov };
+    produces
+        pure tbl
+    end
+}
+
+fn pid_overflow_insert(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: atom, pid: actor_ref)
+    -> List[{ name: atom, pid: actor_ref }, mem(normal)]
+{
+    sequence proc[mem(normal)]
+        next: List[{ name: atom, pid: actor_ref }, mem(normal)] <- case reg of {
             []: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
                 prepend[{ name: atom, pid: actor_ref }, mem(normal)](
                     { name: name, pid: pid },
@@ -59,21 +104,20 @@ fn pid_reg_insert(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: 
                     false ->
                         prepend[{ name: atom, pid: actor_ref }, mem(normal)](
                             h,
-                            pid_reg_insert(rest, name, pid)
+                            pid_overflow_insert(rest, name, pid)
                         )
                 };
             _: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
                 empty[{ name: atom, pid: actor_ref }, mem(normal)]()
         }
     produces
-        pure result
+        pure next
     end
 }
 
-// Returns (:found, actor_ref) when name is registered, (:not_found, dummy_ref) otherwise.
-fn pid_reg_lookup(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: atom) -> (atom, actor_ref) {
-    sequence proc[concurrency]
-        result: (atom, actor_ref) <- case reg of {
+fn pid_overflow_lookup(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: atom) -> (atom, actor_ref) {
+    sequence proc[mem(normal), concurrency]
+        lr: (atom, actor_ref) <- case reg of {
             []: List[{ name: atom, pid: actor_ref }, mem(normal)] -> do
                 dummy: actor_ref <- spawn(0, no_op_beh);
                 (:not_found, dummy)
@@ -81,22 +125,23 @@ fn pid_reg_lookup(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: 
             [h: { name: atom, pid: actor_ref }, rest: List[{ name: atom, pid: actor_ref }, mem(normal)]] ->
                 case h.name == name of {
                     true -> (:found, h.pid);
-                    false -> pid_reg_lookup(rest, name)
+                    false -> pid_overflow_lookup(rest, name)
                 };
             _: List[{ name: atom, pid: actor_ref }, mem(normal)] -> do
-                dummy: actor_ref <- spawn(0, no_op_beh);
-                (:not_found, dummy)
+                dummy2: actor_ref <- spawn(0, no_op_beh);
+                (:not_found, dummy2)
             end
         }
     produces
-        pure result
+        pure lr
     end
 }
 
-// Removes the entry with the given name.  Returns the registry unchanged if name is not found.
-fn pid_reg_delete(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: atom) -> List[{ name: atom, pid: actor_ref }, mem(normal)] {
+fn pid_overflow_delete(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: atom)
+    -> List[{ name: atom, pid: actor_ref }, mem(normal)]
+{
     sequence proc[mem(normal)]
-        result: List[{ name: atom, pid: actor_ref }, mem(normal)] <- case reg of {
+        next: List[{ name: atom, pid: actor_ref }, mem(normal)] <- case reg of {
             []: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
                 empty[{ name: atom, pid: actor_ref }, mem(normal)]();
             [h: { name: atom, pid: actor_ref }, rest: List[{ name: atom, pid: actor_ref }, mem(normal)]] ->
@@ -105,13 +150,134 @@ fn pid_reg_delete(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: 
                     false ->
                         prepend[{ name: atom, pid: actor_ref }, mem(normal)](
                             h,
-                            pid_reg_delete(rest, name)
+                            pid_overflow_delete(rest, name)
                         )
                 };
             _: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
                 empty[{ name: atom, pid: actor_ref }, mem(normal)]()
         }
     produces
-        pure result
+        pure next
+    end
+}
+
+fn pid_reg_insert(
+    tbl: {
+        rg: region(L1, normal),
+        occ: buf(L1, normal, int64, 240),
+        stor: buf(L1, normal, int64, 240),
+        overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+    },
+    name: atom,
+    pid: actor_ref
+) ->
+    {
+        rg: region(L1, normal),
+        occ: buf(L1, normal, int64, 240),
+        stor: buf(L1, normal, int64, 240),
+        overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+    }
+{
+    sequence proc[mem(normal)]
+        id: int64 <- atom_bits(name);
+        cap: int64 <- pid_direct_cap();
+        use_direct: bool <- id >= 0 and id < cap;
+        out: {
+            rg: region(L1, normal),
+            occ: buf(L1, normal, int64, 240),
+            stor: buf(L1, normal, int64, 240),
+            overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+        } <- case use_direct of {
+            true -> do
+                w: int64 <- actor_ref_bits(pid);
+                _: atom <- write_buf(tbl.occ, id, 1);
+                _: atom <- write_buf(tbl.stor, id, w);
+                tbl
+            end;
+            false -> do
+                next_ov: List[{ name: atom, pid: actor_ref }, mem(normal)] <- pid_overflow_insert(tbl.overflow, name, pid);
+                { rg: tbl.rg, occ: tbl.occ, stor: tbl.stor, overflow: next_ov }
+            end
+        }
+    produces
+        pure out
+    end
+}
+
+fn pid_reg_lookup(
+    tbl: {
+        rg: region(L1, normal),
+        occ: buf(L1, normal, int64, 240),
+        stor: buf(L1, normal, int64, 240),
+        overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+    },
+    name: atom
+) -> (atom, actor_ref)
+{
+    sequence proc[mem(normal), concurrency]
+        id: int64 <- atom_bits(name);
+        cap: int64 <- pid_direct_cap();
+        use_direct: bool <- id >= 0 and id < cap;
+        ans: (atom, actor_ref) <- case use_direct of {
+            false -> pid_overflow_lookup(tbl.overflow, name);
+            true -> do
+                mark: int64 <- read_buf(tbl.occ, id);
+                hit: bool <- mark == 1;
+                lr: (atom, actor_ref) <- case hit of {
+                    false -> do
+                        dummy: actor_ref <- spawn(0, no_op_beh);
+                        (:not_found, dummy)
+                    end;
+                    true -> do
+                        w: int64 <- read_buf(tbl.stor, id);
+                        rf: actor_ref <- actor_ref_of_word(w);
+                        (:found, rf)
+                    end
+                };
+                lr
+            end
+        };
+    produces
+        pure ans
+    end
+}
+
+fn pid_reg_delete(
+    tbl: {
+        rg: region(L1, normal),
+        occ: buf(L1, normal, int64, 240),
+        stor: buf(L1, normal, int64, 240),
+        overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+    },
+    name: atom
+) ->
+    {
+        rg: region(L1, normal),
+        occ: buf(L1, normal, int64, 240),
+        stor: buf(L1, normal, int64, 240),
+        overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+    }
+{
+    sequence proc[mem(normal)]
+        id: int64 <- atom_bits(name);
+        cap: int64 <- pid_direct_cap();
+        use_direct: bool <- id >= 0 and id < cap;
+        out: {
+            rg: region(L1, normal),
+            occ: buf(L1, normal, int64, 240),
+            stor: buf(L1, normal, int64, 240),
+            overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+        } <- case use_direct of {
+            false -> do
+                next_ov: List[{ name: atom, pid: actor_ref }, mem(normal)] <- pid_overflow_delete(tbl.overflow, name);
+                { rg: tbl.rg, occ: tbl.occ, stor: tbl.stor, overflow: next_ov }
+            end;
+            true -> do
+                _: atom <- write_buf(tbl.occ, id, 0);
+                tbl
+            end
+        };
+    produces
+        pure out
     end
 }

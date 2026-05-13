@@ -15,11 +15,13 @@
    limitations under the License.
 -}
 
-// Global PID registry actor: wraps a pid_register_runtime association list as actor state.
+// Global PID registry actor: wraps pid_register_runtime slot table (+ overflow list).
 //
 // All record types are structural and written inline per §3.4.2 (no struct/type declarations).
 //
-// State type : List[{ name: atom, pid: actor_ref }, mem(normal)]
+// State type :
+// { rg: region(L1, normal), occ: buf(L1, normal, int64, 240),
+//   stor: buf(L1, normal, int64, 240), overflow: List[{ name: atom, pid: actor_ref }, mem(normal)] }
 // Message type: { op: atom, name: atom, pid: actor_ref }
 //   op == :insert  — add or update (name -> pid)
 //   op == :lookup  — find name; reply (:found, ref) or (:not_found, dummy_ref)
@@ -37,20 +39,46 @@ export registry_beh/2;
 export init_pid_registry_get_ref/0;
 export get_pid_registry/0;
 
-fn registry_beh(msg: { op: atom, name: atom, pid: actor_ref }, state: List[{ name: atom, pid: actor_ref }, mem(normal)]) -> (:reply, (atom, actor_ref), List[{ name: atom, pid: actor_ref }, mem(normal)]) {
+fn registry_beh(msg: { op: atom, name: atom, pid: actor_ref }, state: {
+        rg: region(L1, normal),
+        occ: buf(L1, normal, int64, 240),
+        stor: buf(L1, normal, int64, 240),
+        overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+    }) -> (:reply, (atom, actor_ref), {
+        rg: region(L1, normal),
+        occ: buf(L1, normal, int64, 240),
+        stor: buf(L1, normal, int64, 240),
+        overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+    })
+{
     sequence proc[concurrency, mem(normal)]
-        result: (:reply, (atom, actor_ref), List[{ name: atom, pid: actor_ref }, mem(normal)]) <- case msg.op of {
+        result: (:reply, (atom, actor_ref), {
+            rg: region(L1, normal),
+            occ: buf(L1, normal, int64, 240),
+            stor: buf(L1, normal, int64, 240),
+            overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+        }) <- case msg.op of {
             :insert -> do
-                new_reg: List[{ name: atom, pid: actor_ref }, mem(normal)] <- pid_register_runtime@pid_reg_insert(state, msg.name, msg.pid);
-                (:reply, (:ok, msg.pid), new_reg)
+                updated: {
+                    rg: region(L1, normal),
+                    occ: buf(L1, normal, int64, 240),
+                    stor: buf(L1, normal, int64, 240),
+                    overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+                } <- pid_register_runtime@pid_reg_insert(state, msg.name, msg.pid);
+                (:reply, (:ok, msg.pid), updated)
             end;
             :lookup -> do
                 found: (atom, actor_ref) <- pid_register_runtime@pid_reg_lookup(state, msg.name);
                 (:reply, found, state)
             end;
             :delete -> do
-                new_reg: List[{ name: atom, pid: actor_ref }, mem(normal)] <- pid_register_runtime@pid_reg_delete(state, msg.name);
-                (:reply, (:ok, msg.pid), new_reg)
+                pruned: {
+                    rg: region(L1, normal),
+                    occ: buf(L1, normal, int64, 240),
+                    stor: buf(L1, normal, int64, 240),
+                    overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+                } <- pid_register_runtime@pid_reg_delete(state, msg.name);
+                (:reply, (:ok, msg.pid), pruned)
             end;
             _: atom -> (:reply, (:unknown_op, msg.pid), state)
         }
@@ -59,12 +87,17 @@ fn registry_beh(msg: { op: atom, name: atom, pid: actor_ref }, state: List[{ nam
     end
 }
 
-// Spawns the registry actor with an empty association list as initial state.
+// Spawns the registry actor with pid_register_runtime@empty_reg() slot table (+ overflow bucket).
 // Called from the assembly stub _silica_pid_registry_init (injected by emitter into main).
 // Returns the actor_ref so the stub can store it in _silica_pid_registry_ref.
 fn init_pid_registry_get_ref() -> actor_ref {
     sequence proc[concurrency, mem(normal)]
-        initial: List[{ name: atom, pid: actor_ref }, mem(normal)] <- pid_register_runtime@empty_reg();
+        initial: {
+            rg: region(L1, normal),
+            occ: buf(L1, normal, int64, 240),
+            stor: buf(L1, normal, int64, 240),
+            overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
+        } <- pid_register_runtime@empty_reg();
         reg: actor_ref <- spawn(initial, registry_beh)
     produces
         pure reg
