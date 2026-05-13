@@ -32,13 +32,13 @@ MSG_PREFIX := $(TRIAL_DIR)/
 .DEFAULT_GOAL := all
 .PHONY: all clean assembly objects executables integrate help silica.config
 
-silica.config:
+silica.config: | clean
 	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
 
 all: executables
 
 # Stage 1: silica-compiler generates .sams (reads silica.config internally)
-assembly: silica.config | clean
+assembly: clean silica.config
 	@echo "Compiling with silica-compiler..."
 	@$(SILICA_COMPILER)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
@@ -57,15 +57,18 @@ executables: objects
 	@for o in *.o; do \
 		[ -f "$$o" ] || continue; \
 		base=$${o%.o}; \
-		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base (rust-lld)"; \
+		[ "$$base" = "__silica_runtime" ] && continue; \
+		runtime_obj=""; \
+		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
+	if test -x "$(RUST_LLD)"; then \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base (rust-lld)"; \
 		else \
-			$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base (clang)"; \
+			$(ASSEMBLER) $$o $$runtime_obj -o $$base $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base (clang)"; \
 		fi; \
 	done
 
 # integrate: compile .silica per silica.config, diff .sams vs .ascomp, run binaries, diff .sout vs .scout
-integrate: silica.config | clean
+integrate: clean silica.config
 	@rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \
 		echo "SKIP: no silica.config"; \
@@ -82,7 +85,8 @@ integrate: silica.config | clean
 	for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
-		if [ ! -f "$$base.ascomp" ]; then \
+		[ "$$base" = "__silica_runtime" ] && continue; \
+	if [ ! -f "$$base.ascomp" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file"; \
 			ko=$$((ko + 1)); failed=1; \
 		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
@@ -103,17 +107,21 @@ integrate: silica.config | clean
 	for o in *.o; do \
 		[ -f "$$o" ] || continue; \
 		base=$${o%.o}; \
-		echo "Linking $$base..."; \
+		[ "$$base" = "__silica_runtime" ] && continue; \
+		runtime_obj=""; \
+		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
+	echo "Linking $$base..."; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$base $$o $(LDFLAGS_rust-lld) || failed=1; \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; \
 		else \
-			$(ASSEMBLER) $$o -o $$base $(LDFLAGS_clang) || failed=1; \
+			$(ASSEMBLER) $$o $$runtime_obj -o $$base $(LDFLAGS_clang) || failed=1; \
 		fi; \
 	done; \
 	for exe in *.sams; do \
 		[ -f "$$exe" ] || continue; \
 		base=$${exe%.sams}; \
-		if [ -x "$$base" ]; then \
+		[ "$$base" = "__silica_runtime" ] && continue; \
+	if [ -x "$$base" ]; then \
 			{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
 			if [ -f "$$base.scout" ]; then \
 				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \

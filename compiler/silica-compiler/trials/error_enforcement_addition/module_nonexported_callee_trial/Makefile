@@ -16,7 +16,7 @@ MSG_PREFIX := $(TRIAL_DIR)/
 # Parent: integrate -> silica.config all; sub: all == integrate == silica.config + golden check.
 all: integrate
 
-integrate: silica.config check | clean
+integrate: clean silica.config check
 
 check:
 	@cd "$(THIS_DIR)" && $(COMPILER) > main_use_partial.cur_fail 2>&1 || true
@@ -33,7 +33,7 @@ check:
 clean:
 	@rm -f "$(THIS_DIR)main_use_partial.cur_fail" "$(THIS_DIR)silica.config" "$(THIS_DIR).integrate_counts"
 
-silica.config:
+silica.config: | clean
 	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
 
 help:

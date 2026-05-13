@@ -9,7 +9,6 @@
 
 THIS_DIR        := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 SILICA_COMPILER := $(abspath $(THIS_DIR)../../src/silica-compiler)
-
 TRIAL_DIR := $(notdir $(patsubst %/,%,$(THIS_DIR)))
 MSG_PREFIX := $(TRIAL_DIR)/
 
@@ -30,18 +29,18 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 .DEFAULT_GOAL := all
 .PHONY: all clean assembly objects executables integrate help silica.config
 
-RUNTIME_MODULES_DIR := $(abspath $(THIS_DIR)../../src/runtime_modules)
-
-silica.config:
-	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && \
-	{ find "$$PWD" -type f -name '*.silica'; \
-	  find "$(RUNTIME_MODULES_DIR)" -type f -name '*.silica'; \
-	} > silica.config
+silica.config: | clean
+	@cd "$(THIS_DIR)" && \
+	{ \
+		for f in *.silica; do \
+			[ -f "$$f" ] && printf '%s\n' "$$f"; \
+		done; \
+	} | LC_ALL=C sort > silica.config
 
 all: executables
 
 # Stage 1: silica-compiler generates .sams (reads silica.config in THIS_DIR)
-assembly: silica.config | clean
+assembly: clean silica.config
 	@echo "Compiling with silica-compiler..."
 	@cd "$(THIS_DIR)" && $(SILICA_COMPILER)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
@@ -57,21 +56,26 @@ objects: assembly
 
 # Stage 3: Link .o -> executable
 executables: objects
-	@cd "$(THIS_DIR)" && for o in *.o; do \
-		[ -f "$$o" ] || continue; \
-		base=$${o%.o}; \
-		[ "$$base" = "__silica_runtime" ] && continue; \
-		runtime_obj=""; \
-		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
+	@cd "$(THIS_DIR)" && \
+	while read -r ln; do \
+		[ -n "$$ln" ] || continue; \
+		bn=$$(basename "$$ln"); \
+		stem=$${bn%.silica}; \
+		main_o="$$stem.o"; \
+		[ -f "$$main_o" ] || continue; \
+		[ "$$stem" = "__silica_runtime" ] && continue; \
+		rt_one=""; \
+		[ -f "__silica_runtime.o" ] && rt_one="__silica_runtime.o"; \
+		echo "Linking $$stem..."; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base (rust-lld)"; \
+			$(RUST_LLD) -flavor darwin -o $$stem $$main_o $$rt_one $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$stem (rust-lld)"; \
 		else \
-			$(ASSEMBLER) $$o $$runtime_obj -o $$base $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base (clang)"; \
+			$(ASSEMBLER) $$main_o $$rt_one -o $$stem $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$stem (clang)"; \
 		fi; \
-	done
+	done < silica.config
 
 # integrate: compile, diff .sams vs .ascomp (if present), run, diff .sout vs .scout (if present)
-integrate: silica.config | clean
+integrate: clean silica.config
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \
@@ -106,40 +110,43 @@ integrate: silica.config | clean
 		echo "Assembling $$sams..."; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o || { failed=1; break; }; \
 	done; \
-	for o in *.o; do \
-		[ -f "$$o" ] || continue; \
-		base=$${o%.o}; \
-		[ "$$base" = "__silica_runtime" ] && continue; \
-		echo "Linking $$base..."; \
-		runtime_obj=""; \
-		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
+	while read -r ln; do \
+		[ -n "$$ln" ] || continue; \
+		bn=$$(basename "$$ln"); \
+		stem=$${bn%.silica}; \
+		main_o="$$stem.o"; \
+		[ -f "$$main_o" ] || continue; \
+		[ "$$stem" = "__silica_runtime" ] && continue; \
+		rt_one=""; \
+		[ -f "__silica_runtime.o" ] && rt_one="__silica_runtime.o"; \
+		echo "Linking $$stem..."; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; \
+			$(RUST_LLD) -flavor darwin -o $$stem $$main_o $$rt_one $(LDFLAGS_rust-lld) || failed=1; \
 		else \
-			$(ASSEMBLER) $$o $$runtime_obj -o $$base $(LDFLAGS_clang) || failed=1; \
+			$(ASSEMBLER) $$main_o $$rt_one -o $$stem $(LDFLAGS_clang) || failed=1; \
 		fi; \
-	done; \
-	for exe in *.sams; do \
-		[ -f "$$exe" ] || continue; \
-		base=$${exe%.sams}; \
-		[ "$$base" = "__silica_runtime" ] && continue; \
-		if [ -x "$$base" ]; then \
-			if [ -f "$$base.scout" ]; then \
-				{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
-				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
-					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
-					diff -Bw "$$base.sout" "$$base.scout" || true; \
-					ko=$$((ko + 1)); failed=1; \
-				else \
-					echo "✅✅ $(MSG_PREFIX)$$base output matches .scout"; \
-					ok=$$((ok + 1)); \
-				fi; \
+	done < silica.config; \
+	while read -r ln; do \
+		[ -n "$$ln" ] || continue; \
+		bn=$$(basename "$$ln"); \
+		stem=$${bn%.silica}; \
+		[ "$$stem" = "__silica_runtime" ] && continue; \
+		[ ! -x "$$stem" ] && continue; \
+		if [ -f "$$stem.scout" ]; then \
+			{ printf 'exit\n' | ./$$stem 2>&1; echo $$?; } > "$$stem.sout"; \
+			if ! diff -Bw -q "$$stem.sout" "$$stem.scout" > /dev/null 2>&1; then \
+				echo "❌❌ $(MSG_PREFIX)$$stem .sout differs from .scout"; \
+				diff -Bw "$$stem.sout" "$$stem.scout" || true; \
+				ko=$$((ko + 1)); failed=1; \
 			else \
-				echo "✅✅ $(MSG_PREFIX)$$base built (no .scout; skipped run check)"; \
+				echo "✅✅ $(MSG_PREFIX)$$stem output matches .scout"; \
 				ok=$$((ok + 1)); \
 			fi; \
+		else \
+			echo "✅✅ $(MSG_PREFIX)$$stem built (no .scout; skipped run check)"; \
+			ok=$$((ok + 1)); \
 		fi; \
-	done; \
+	done < silica.config; \
 	[ "$$failed" -ne 0 ] && [ "$$ko" -eq 0 ] && ko=$$((ko + 1)); \
 	printf '%d %d\n' "$$ok" "$$ko" > .integrate_counts; \
 	exit $$failed
@@ -150,7 +157,7 @@ clean:
 		[ -f "$$s" ] || continue; \
 		rm -f $${s%.sams}; \
 	done; \
-	rm -f *.sams *.o *.sout silica.config .integrate_counts; \
+	rm -f *.sams *.o *.sout .integrate_counts silica.config; \
 	echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:

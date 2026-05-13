@@ -13,7 +13,8 @@ TRIAL_SUBDIRS := $(sort $(foreach mf,$(TRIAL_MAKEFILES),$(notdir $(patsubst %/,%
 .DEFAULT_GOAL := integrate
 
 # integrate: delegate; each trial writes .integrate_counts ("<ok> <fail>" one line) for the parent to sum
-# Runs full tree `clean` first, then each trial's integrate (trial Makefiles run clean again before assemble/compile).
+# Runs full tree `clean` first, then each trial's integrate (each trial lists `clean` before `silica.config` and
+# uses `silica.config: | clean` so regeneration never runs after a wipe that deletes the config).
 integrate: clean
 integrate:
 	@ok=0; ko=0; failed=0; \

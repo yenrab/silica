@@ -112,7 +112,7 @@ Deleting a registration entry does **not** shrink **`atom`** ids; **`high_water`
 
 | Approach | Complexity | Fits Silica today? |
 |-----------|-------------|---------------------|
-| **`List`** scan | **O(n)** | Yes, **`pid_register_runtime`**-style assoc list |
+| **`List`** scan | **O(n)** | Yes, assoc-list overflow (same shape as PID registry private overflow in **`pid_registry_actor`**) |
 | **BST / tree** recursive type | **`O(log n)`** nominal | Structural typing friction; user trees painful |
 | **Hash table (arbitrary keys)** | **`O(1)`** expectation | No language **`Map`**; hand-built open addressing works but unnecessary when **`atom_id`** is dense **`0…N`** |
 | **Direct index (**this doc**)** | **`O(1)`** | Yes, **minimal code**, **minimal metadata** |

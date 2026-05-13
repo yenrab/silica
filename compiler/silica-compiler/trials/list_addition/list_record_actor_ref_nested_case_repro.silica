@@ -1,0 +1,62 @@
+// Repro for list-returning nested case with inline record elements containing actor_ref.
+// This mirrors the pid_register_runtime overflow insert shape:
+//   outer case on List[{ name: atom, pid: actor_ref }, mem(normal)]
+//   cons branch returns a nested boolean case
+//   nested branches return the same List[...] type via prepend.
+
+fn replace_or_keep_cons(
+    h: { name: atom, pid: actor_ref },
+    rest: List[{ name: atom, pid: actor_ref }, mem(normal)],
+    name: atom,
+    pid: actor_ref
+) -> List[{ name: atom, pid: actor_ref }, mem(normal)]
+{
+    sequence proc[mem(normal)]
+        r: List[{ name: atom, pid: actor_ref }, mem(normal)] <- case (h.name == name) of {
+            true -> prepend[{ name: atom, pid: actor_ref }, mem(normal)]( { name: name, pid: pid }, rest );
+            false -> prepend[{ name: atom, pid: actor_ref }, mem(normal)]( h, replace_or_keep2(rest, name, pid) );
+        }
+    produces
+        pure r
+    end
+}
+
+fn replace_or_keep2(
+    reg: List[{ name: atom, pid: actor_ref }, mem(normal)],
+    name: atom,
+    pid: actor_ref
+) -> List[{ name: atom, pid: actor_ref }, mem(normal)]
+{
+    sequence proc[mem(normal)]
+        next: List[{ name: atom, pid: actor_ref }, mem(normal)] <- case reg of {
+            []: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
+                prepend[{ name: atom, pid: actor_ref }, mem(normal)](
+                    { name: name, pid: pid },
+                    empty[{ name: atom, pid: actor_ref }, mem(normal)]()
+                );
+            [h: { name: atom, pid: actor_ref }, rest: List[{ name: atom, pid: actor_ref }, mem(normal)]] ->
+                replace_or_keep_cons(h, rest, name, pid);
+            _: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
+                empty[{ name: atom, pid: actor_ref }, mem(normal)]()
+        }
+    produces
+        pure next
+    end
+}
+
+fn replace_or_keep(
+    reg: List[{ name: atom, pid: actor_ref }, mem(normal)],
+    name: atom,
+    pid: actor_ref
+) -> List[{ name: atom, pid: actor_ref }, mem(normal)]
+{
+    sequence proc[mem(normal)]
+        r: List[{ name: atom, pid: actor_ref }, mem(normal)] <- replace_or_keep2(reg, name, pid)
+    produces
+        pure r
+    end
+}
+
+fn main() -> int64 {
+    0
+}

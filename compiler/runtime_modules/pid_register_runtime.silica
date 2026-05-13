@@ -3,7 +3,7 @@
    Copyright 2026 Lee Scott Barney
 
    Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
+   you must not reuse this file except in compliance with the License.
    You may obtain a copy of the License at
 
        http://www.apache.org/licenses/LICENSE-2.0
@@ -28,8 +28,8 @@ export pid_reg_insert/3;
 export pid_reg_lookup/2;
 export pid_reg_delete/2;
 
-fn no_op_beh(msg: int64, state: int64) -> int64 {
-    state
+fn no_op_beh(msg: int64, state: int64) -> (:no_reply, int64) {
+    (:no_reply, state)
 }
 
 fn pid_direct_cap() -> int64 {
@@ -78,9 +78,34 @@ fn empty_reg() ->
             occ: buf(L1, normal, int64, 240),
             stor: buf(L1, normal, int64, 240),
             overflow: List[{ name: atom, pid: actor_ref }, mem(normal)]
-        } <- { rg: r, occ: occ_buf, stor: stor_buf, overflow: empty_ov };
+        } <- { rg: r, occ: occ_buf, stor: stor_buf, overflow: empty_ov }
     produces
         pure tbl
+    end
+}
+
+fn pid_overflow_insert_cons(
+    h: { name: atom, pid: actor_ref },
+    rest: List[{ name: atom, pid: actor_ref }, mem(normal)],
+    name: atom,
+    pid: actor_ref
+) -> List[{ name: atom, pid: actor_ref }, mem(normal)]
+{
+    sequence proc[mem(normal)]
+        r: List[{ name: atom, pid: actor_ref }, mem(normal)] <- case (h.name == name) of {
+            true ->
+                prepend[{ name: atom, pid: actor_ref }, mem(normal)](
+                    { name: name, pid: pid },
+                    rest
+                );
+            false ->
+                prepend[{ name: atom, pid: actor_ref }, mem(normal)](
+                    h,
+                    pid_overflow_insert(rest, name, pid)
+                )
+        }
+    produces
+        pure r
     end
 }
 
@@ -95,18 +120,7 @@ fn pid_overflow_insert(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], n
                     empty[{ name: atom, pid: actor_ref }, mem(normal)]()
                 );
             [h: { name: atom, pid: actor_ref }, rest: List[{ name: atom, pid: actor_ref }, mem(normal)]] ->
-                case h.name == name of {
-                    true ->
-                        prepend[{ name: atom, pid: actor_ref }, mem(normal)](
-                            { name: name, pid: pid },
-                            rest
-                        );
-                    false ->
-                        prepend[{ name: atom, pid: actor_ref }, mem(normal)](
-                            h,
-                            pid_overflow_insert(rest, name, pid)
-                        )
-                };
+                pid_overflow_insert_cons(h, rest, name, pid);
             _: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
                 empty[{ name: atom, pid: actor_ref }, mem(normal)]()
         }
@@ -115,25 +129,67 @@ fn pid_overflow_insert(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], n
     end
 }
 
-fn pid_overflow_lookup(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: atom) -> (atom, actor_ref) {
-    sequence proc[mem(normal), concurrency]
-        lr: (atom, actor_ref) <- case reg of {
-            []: List[{ name: atom, pid: actor_ref }, mem(normal)] -> do
-                dummy: actor_ref <- spawn(0, no_op_beh);
-                (:not_found, dummy)
-            end;
-            [h: { name: atom, pid: actor_ref }, rest: List[{ name: atom, pid: actor_ref }, mem(normal)]] ->
-                case h.name == name of {
-                    true -> (:found, h.pid);
-                    false -> pid_overflow_lookup(rest, name)
-                };
-            _: List[{ name: atom, pid: actor_ref }, mem(normal)] -> do
-                dummy2: actor_ref <- spawn(0, no_op_beh);
-                (:not_found, dummy2)
-            end
+fn pid_overflow_lookup_rec_cons(
+    h: { name: atom, pid: actor_ref },
+    rest: List[{ name: atom, pid: actor_ref }, mem(normal)],
+    name: atom
+) -> (boolean, actor_ref)
+{
+    sequence proc[mem(normal)]
+        lr: (boolean, actor_ref) <- case (h.name == name) of {
+            true -> (true, h.pid);
+            false -> pid_overflow_lookup_rec(rest, name)
         }
     produces
         pure lr
+    end
+}
+
+fn pid_overflow_lookup_rec(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: atom) -> (boolean, actor_ref) {
+    sequence proc[mem(normal)]
+        lr: (boolean, actor_ref) <- case reg of {
+            []: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
+                (false, actor_ref_of_word(0));
+            [h: { name: atom, pid: actor_ref }, rest: List[{ name: atom, pid: actor_ref }, mem(normal)]] ->
+                pid_overflow_lookup_rec_cons(h, rest, name);
+            _: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
+                (false, actor_ref_of_word(0))
+        }
+    produces
+        pure lr
+    end
+}
+
+fn pid_overflow_lookup(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], name: atom) -> (atom, actor_ref) {
+    sequence proc[mem(normal)]
+        p: (boolean, actor_ref) <- pid_overflow_lookup_rec(reg, name);
+        (hit: boolean, found_ref: actor_ref) <- p;
+        lr: (atom, actor_ref) <- case hit of {
+            true -> (:found, found_ref);
+            false -> (:not_found, actor_ref_of_word(0))
+        }
+    produces
+        pure lr
+    end
+}
+
+fn pid_overflow_delete_cons(
+    h: { name: atom, pid: actor_ref },
+    rest: List[{ name: atom, pid: actor_ref }, mem(normal)],
+    name: atom
+) -> List[{ name: atom, pid: actor_ref }, mem(normal)]
+{
+    sequence proc[mem(normal)]
+        r: List[{ name: atom, pid: actor_ref }, mem(normal)] <- case (h.name == name) of {
+            true -> rest;
+            false ->
+                prepend[{ name: atom, pid: actor_ref }, mem(normal)](
+                    h,
+                    pid_overflow_delete(rest, name)
+                )
+        }
+    produces
+        pure r
     end
 }
 
@@ -145,14 +201,7 @@ fn pid_overflow_delete(reg: List[{ name: atom, pid: actor_ref }, mem(normal)], n
             []: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
                 empty[{ name: atom, pid: actor_ref }, mem(normal)]();
             [h: { name: atom, pid: actor_ref }, rest: List[{ name: atom, pid: actor_ref }, mem(normal)]] ->
-                case h.name == name of {
-                    true -> rest;
-                    false ->
-                        prepend[{ name: atom, pid: actor_ref }, mem(normal)](
-                            h,
-                            pid_overflow_delete(rest, name)
-                        )
-                };
+                pid_overflow_delete_cons(h, rest, name);
             _: List[{ name: atom, pid: actor_ref }, mem(normal)] ->
                 empty[{ name: atom, pid: actor_ref }, mem(normal)]()
         }
@@ -224,10 +273,7 @@ fn pid_reg_lookup(
                 mark: int64 <- read_buf(tbl.occ, id);
                 hit: bool <- mark == 1;
                 lr: (atom, actor_ref) <- case hit of {
-                    false -> do
-                        dummy: actor_ref <- spawn(0, no_op_beh);
-                        (:not_found, dummy)
-                    end;
+                    false -> (:not_found, actor_ref_of_word(0));
                     true -> do
                         w: int64 <- read_buf(tbl.stor, id);
                         rf: actor_ref <- actor_ref_of_word(w);
@@ -236,7 +282,7 @@ fn pid_reg_lookup(
                 };
                 lr
             end
-        };
+        }
     produces
         pure ans
     end
@@ -276,7 +322,7 @@ fn pid_reg_delete(
                 _: atom <- write_buf(tbl.occ, id, 0);
                 tbl
             end
-        };
+        }
     produces
         pure out
     end

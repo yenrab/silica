@@ -58,6 +58,8 @@ export EffectCheckResult/0;
 export EffectEntry/0;
 export ListEffectEntry/0;
 export EffectContext/0;
+export TypeEntry/0;
+export ListTypeEntry/0;
 export effect_check_ok/0;
 export effect_check_err/4;
 export effects_equal/2;
@@ -69,6 +71,10 @@ export empty_effect_entry_list/0;
 export add_effect_entry/3;
 export lookup_fn_effects/2;
 export create_effect_context/2;
+export effect_context_with_type_env/2;
+export empty_type_entry_list/0;
+export add_type_entry/3;
+export lookup_type_entry/2;
 export is_builtin_effect/1;
 export is_empty_param/1;
 export is_valid_mem_parameter/1;
@@ -98,9 +104,21 @@ struct ListEffectEntry {
     tail: ListEffectEntry
 }
 
+struct TypeEntry {
+    name: string,
+    type_name: string
+}
+
+struct ListTypeEntry {
+    is_nil: bool,
+    head: TypeEntry,
+    tail: ListTypeEntry
+}
+
 struct EffectContext {
     fn_env: ListEffectEntry,
-    alias_env: ListEffectEntry
+    alias_env: ListEffectEntry,
+    type_env: ListTypeEntry
 }
 
 // --- Result constructors ---
@@ -156,7 +174,45 @@ fn lookup_fn_effects(env: ListEffectEntry, name: string) -> (bool, ListEffectNam
 }
 
 fn create_effect_context(fn_env: ListEffectEntry, alias_env: ListEffectEntry) -> EffectContext {
-    EffectContext { fn_env: fn_env, alias_env: alias_env }
+    fn_env_t: ListEffectEntry <- fn_env;
+    alias_env_t: ListEffectEntry <- alias_env;
+    type_env_t: ListTypeEntry <- empty_type_entry_list();
+    EffectContext { fn_env: fn_env_t, alias_env: alias_env_t, type_env: type_env_t }
+}
+
+fn effect_context_with_type_env(ctx: EffectContext, type_env: ListTypeEntry) -> EffectContext {
+    fn_env_t: ListEffectEntry <- ctx.fn_env;
+    alias_env_t: ListEffectEntry <- ctx.alias_env;
+    type_env_t: ListTypeEntry <- type_env;
+    EffectContext { fn_env: fn_env_t, alias_env: alias_env_t, type_env: type_env_t }
+}
+
+fn dummy_type_entry() -> TypeEntry {
+    TypeEntry { name: "", type_name: "" }
+}
+
+fn empty_type_entry_list() -> ListTypeEntry {
+    nil_placeholder: ListTypeEntry <- ListTypeEntry {
+        is_nil: true,
+        head: dummy_type_entry(),
+        tail: nil_placeholder
+    };
+    nil_placeholder
+}
+
+fn add_type_entry(env: ListTypeEntry, name: string, type_name: string) -> ListTypeEntry {
+    entry: TypeEntry <- TypeEntry { name: name, type_name: type_name };
+    ListTypeEntry { is_nil: false, head: entry, tail: env }
+}
+
+fn lookup_type_entry(env: ListTypeEntry, name: string) -> (bool, string) {
+    case env.is_nil of {
+        true -> (false, "");
+        false -> case env.head.name == name of {
+            true -> (true, env.head.type_name);
+            false -> lookup_type_entry(env.tail, name)
+        }
+    }
 }
 
 // --- Effect comparison ---
@@ -320,6 +376,8 @@ fn is_builtin_fn(name: string) -> bool {
         "unpin_actor" -> true;
         "remove_actor" -> true;
         "register_actor" -> true;
+        "get_registry_actor" -> true;
+        "get_pid_registry" -> true;
         "set_actor_priority" -> true;
         "pin_actor_to_numa_node" -> true;
         "get_cpu_topology" -> true;
@@ -391,6 +449,8 @@ fn builtin_fn_effects(name: string) -> (bool, ListEffectName) {
         "unpin_actor" -> (true, conc_list);
         "remove_actor" -> (true, conc_list);
         "register_actor" -> (true, conc_list);
+        "get_registry_actor" -> (true, conc_list);
+        "get_pid_registry" -> (true, conc_list);
         "set_actor_priority" -> (true, conc_list);
         "pin_actor_to_numa_node" -> (true, conc_list);
         "get_cpu_topology" -> (true, conc_list);

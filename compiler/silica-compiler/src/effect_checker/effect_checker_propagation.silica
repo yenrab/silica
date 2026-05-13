@@ -94,7 +94,8 @@ fn collect_expr_effects_outside_sequence_blocks_with_binding(expr: Expr, ctx: Ef
                 false -> case expr.kind == 6 of {
                     true -> do
                         rhs_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, expr.value);
-                        body_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, ctx, "");
+                        extended_ctx: EffectContext <- effect_checker_core@effect_context_with_type_env(ctx, effect_checker_core@add_type_entry(ctx.type_env, expr.name, expr.value));
+                        body_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.right_expr, extended_ctx, "");
                         union_effect_lists(rhs_effects, body_effects)
                     end;
                     false -> case expr.kind == 2 of {
@@ -145,8 +146,9 @@ fn collect_expr_effects_with_binding(expr: Expr, ctx: EffectContext, binding_typ
     case expr.kind == 4 of {
         true -> do
             callee_effects: ListEffectName <- resolve_call_effects_with_binding(expr.name, ctx, expr.inner, binding_type, expr.location, expr.value);
+            binding_list_effects: ListEffectName <- effect_checker_lists@mem_effects_for_list_literal(binding_type, expr.location);
             arg_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, "");
-            union_effect_lists(callee_effects, arg_effects)
+            union_effect_lists(union_effect_lists(callee_effects, binding_list_effects), arg_effects)
         end;
         false -> case expr.kind == 3 of {
             true -> do
@@ -157,7 +159,8 @@ fn collect_expr_effects_with_binding(expr: Expr, ctx: EffectContext, binding_typ
             false -> case expr.kind == 6 of {
                 true -> do
                     rhs_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, expr.value);
-                    body_effects: ListEffectName <- collect_expr_effects_with_binding(expr.right_expr, ctx, "");
+                    extended_ctx: EffectContext <- effect_checker_core@effect_context_with_type_env(ctx, effect_checker_core@add_type_entry(ctx.type_env, expr.name, expr.value));
+                    body_effects: ListEffectName <- collect_expr_effects_with_binding(expr.right_expr, extended_ctx, "");
                     union_effect_lists(rhs_effects, body_effects)
                 end;
                 false -> case expr.kind == 2 of {
@@ -281,13 +284,24 @@ fn resolve_call_effects(fn_name: string, ctx: EffectContext) -> ListEffectName {
     resolve_call_effects_with_binding(fn_name, ctx, parser_ast@dummy_expr(), "", parser_ast@zero_location(), "")
 }
 
+fn first_arg_region_type(first_arg: Expr, ctx: EffectContext) -> string {
+    case first_arg.kind == 1 of {
+        true -> do
+            (found: bool, typ: string) <- effect_checker_core@lookup_type_entry(ctx.type_env, first_arg.name);
+            case found of { true -> typ; false -> "" }
+        end;
+        false -> ""
+    }
+}
+
 {- generic_value: kind-4 call value field (generic instantiation text), empty if none. -}
 fn resolve_call_effects_with_binding(fn_name: string, ctx: EffectContext, first_arg: Expr, binding_type: string, location: SourceLocation, generic_value: string) -> ListEffectName {
     case effect_checker_lists@is_list_primitive_fn(fn_name) of {
         true -> effect_checker_lists@mem_effects_for_list_call(fn_name, generic_value, location);
         false -> case effect_checker_memory_regions@is_region_builtin_fn(fn_name) of {
             true -> do
-                (handled: bool, region_effects: ListEffectName) <- effect_checker_memory_regions@get_region_call_effects(fn_name, first_arg, binding_type, location);
+                first_arg_type: string <- first_arg_region_type(first_arg, ctx);
+                (handled: bool, region_effects: ListEffectName) <- effect_checker_memory_regions@get_region_call_effects(fn_name, first_arg, first_arg_type, binding_type, location);
                 case handled of {
                     true -> region_effects;
                     false -> parser_ast@empty_effect_name_list()

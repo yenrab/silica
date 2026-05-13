@@ -210,7 +210,13 @@ fn seed_actor_runtime_atoms() -> (AtomTable, int64) {
         (t12: AtomTable, _: int64) <- add_atom(t11, ":one_for_one", 12);
         (t13: AtomTable, _: int64) <- add_atom(t12, ":one_for_all", 13);
         (t14: AtomTable, _: int64) <- add_atom(t13, ":rest_for_one", 14);
-        (t14, 15)
+        (t15: AtomTable, _: int64) <- add_atom(t14, ":insert", 15);
+        (t16: AtomTable, _: int64) <- add_atom(t15, ":lookup", 16);
+        (t17: AtomTable, _: int64) <- add_atom(t16, ":delete", 17);
+        (t18: AtomTable, _: int64) <- add_atom(t17, ":found", 18);
+        (t19: AtomTable, _: int64) <- add_atom(t18, ":not_found", 19);
+        (t20: AtomTable, _: int64) <- add_atom(t19, ":unknown_op", 20);
+        (t20, 21)
     end
 }
 
@@ -249,55 +255,27 @@ fn collect_atoms_from_module_queue_tail(mods: ListSIRModule, table: AtomTable, n
 }
 
 // Process-wide dense atom numbering for every SIR module in one silica.config batch (queue: sir_ast@ListSIRModule).
-// Reservation policy: actor_runtime dependency in ANY module ⇒ full seeded prefix (matches per-module rule);
-// else if ANY module needs topology atoms ⇒ reserve :efficiency/:performance before collection;
-// else start from empty index 0. Modules are scanned in linker batch order (topological_sort order from main).
+// Reservation policy: the PID registry runtime is started by every generated main, so every
+// executable reserves the actor-runtime atom prefix before collecting user atoms.
 fn build_atom_table_executable(modules: ListSIRModule) -> AtomTable {
     case modules.is_nil of {
         true -> empty_atom_table();
-        false -> case queued_modules_any_actor_runtime(modules) of {
-            true -> do
-                (seeded_ar: AtomTable, next_ar: int64) <- seed_actor_runtime_atoms();
-                (tbl_ar: AtomTable, _: int64) <- collect_atoms_from_module_queue_tail(modules, seeded_ar, next_ar);
-                tbl_ar
-            end;
-            false -> case queued_modules_any_topology(modules) of {
-                true -> do
-                    (tx0: AtomTable, _: int64) <- add_atom(empty_atom_table(), ":efficiency", 0);
-                    (tx1: AtomTable, _: int64) <- add_atom(tx0, ":performance", 1);
-                    (tbl_tp: AtomTable, _: int64) <- collect_atoms_from_module_queue_tail(modules, tx1, 2);
-                    tbl_tp
-                end;
-                false -> do
-                    (tbl_pl: AtomTable, _: int64) <- collect_atoms_from_module_queue_tail(modules, empty_atom_table(), 0);
-                    tbl_pl
-                end
-            }
-        }
+        false -> do
+            (seeded_ar: AtomTable, next_ar: int64) <- seed_actor_runtime_atoms();
+            (tbl_ar: AtomTable, _: int64) <- collect_atoms_from_module_queue_tail(modules, seeded_ar, next_ar);
+            tbl_ar
+        end
     }
 }
 
-// Build atom table from SIR module (single-unit). Topology modules reserve :efficiency=0, :performance=1; actor_runtime uses seed prefix.
+// Build atom table from SIR module (single-unit). The runtime registry is always linked, so
+// every module gets the actor-runtime atom prefix before user atoms.
 fn build_atom_table(sir_module: SIRModule) -> AtomTable {
-    case sir_ast@sir_string_list_contains(sir_module.runtime_dependencies, "actor_runtime") of {
-        true -> do
-            (seeded: AtomTable, next_idx: int64) <- seed_actor_runtime_atoms();
-            (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, seeded, next_idx);
-            table
-        end;
-        false -> case sir_module_needs_topology_atom_indices(sir_module) of {
-            true -> do
-                (t_eff: AtomTable, _: int64) <- add_atom(empty_atom_table(), ":efficiency", 0);
-                (t_both: AtomTable, _: int64) <- add_atom(t_eff, ":performance", 1);
-                (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, t_both, 2);
-                table
-            end;
-            false -> do
-                (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, empty_atom_table(), 0);
-                table
-            end
-        }
-    }
+    do
+        (seeded: AtomTable, next_idx: int64) <- seed_actor_runtime_atoms();
+        (table: AtomTable, _: int64) <- collect_atoms_from_functions(sir_module.functions, seeded, next_idx);
+        table
+    end
 }
 
 // Reverse lexemes list so first-added is at head; matches BST index 0 = first-added for rodata labels.

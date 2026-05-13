@@ -30,13 +30,13 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 .DEFAULT_GOAL := all
 .PHONY: all clean assembly objects executables integrate help silica.config
 
-silica.config:
+silica.config: | clean
 	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
 
 all: executables
 
 # Stage 1: silica-compiler generates .sams (reads silica.config in THIS_DIR)
-assembly: silica.config | clean
+assembly: clean silica.config
 	@echo "Compiling with silica-compiler..."
 	@cd "$(THIS_DIR)" && $(SILICA_COMPILER)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
@@ -55,9 +55,9 @@ executables: objects
 	@cd "$(THIS_DIR)" && for o in *.o; do \
 		[ -f "$$o" ] || continue; \
 		base=$${o%.o}; \
-		[ "$$base" = "__silica_runtime" ] && continue; \
-		runtime_obj=""; \
-		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
+	[ "$$base" = "__silica_runtime" ] && continue; \
+	runtime_obj=""; \
+	[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
 			$(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base (rust-lld)"; \
 		else \
@@ -66,7 +66,7 @@ executables: objects
 	done
 
 # integrate: compile, diff .sams vs .ascomp (if present), run, diff .sout vs .scout (if present)
-integrate: silica.config | clean
+integrate: clean silica.config
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \
@@ -104,7 +104,9 @@ integrate: silica.config | clean
 	for o in *.o; do \
 		[ -f "$$o" ] || continue; \
 		base=$${o%.o}; \
-		[ "$$base" = "__silica_runtime" ] && continue; \
+	[ "$$base" = "__silica_runtime" ] && continue; \
+	runtime_obj=""; \
+	[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		echo "Linking $$base..."; \
 		runtime_obj=""; \
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
@@ -117,7 +119,8 @@ integrate: silica.config | clean
 	for exe in *.sams; do \
 		[ -f "$$exe" ] || continue; \
 		base=$${exe%.sams}; \
-		[ "$$base" = "__silica_runtime" ] && continue; \
+	[ "$$base" = "__silica_runtime" ] && continue; \
+	[ "$$base" = "__silica_runtime" ] && continue; \
 		if [ -x "$$base" ]; then \
 			if [ -f "$$base.scout" ]; then \
 				{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \

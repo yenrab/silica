@@ -3038,8 +3038,127 @@ Ldup_ep_ret:
 "
 }
 
-fn actor_rt_asm_phase_i_chunk() -> string {
-    "	.section	__DATA,__bss
+fn actor_rt_pid_registry_chunk(table: AtomTable) -> string {
+    insert_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":insert"));
+    lookup_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":lookup"));
+    delete_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":delete"));
+    ok_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":ok"));
+    found_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":found"));
+    not_found_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":not_found"));
+    unknown_op_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":unknown_op"));
+    p0: string <- "
+; PID registry primitive actor.
+; State layout: 3840 B calloc block, occ[240] at +0, actor_ref words[240] at +1920.
+; Message record layout follows value-flat record emission: op@0, name@8, pid@16.
+; Behavior return layout follows actor runtime convention: tag@0, reply@8, next_state@16.
+	.globl	_silica_rt_pid_registry_beh
+	.p2align	2
+_silica_rt_pid_registry_beh:
+	stp	x29, x30, [sp, #-64]!
+	stp	x19, x20, [sp, #16]
+	stp	x21, x22, [sp, #32]
+	stp	x23, x24, [sp, #48]
+	mov	x29, sp
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x21, [x19]       ; op atom index
+	ldr	x22, [x19, #8]   ; name atom index
+	ldr	x23, [x19, #16]  ; pid actor_ref
+	mov	x0, #1
+	mov	x1, #24
+	bl	_calloc
+	mov	x24, x0
+	cbz	x24, L_pidreg_ret_null
+	mov	x0, #1
+	mov	x1, #16
+	bl	_calloc
+	cbz	x0, L_pidreg_ret_null
+	str	x0, [x24, #8]
+	str	x20, [x24, #16]
+	cmp	x21, #";
+    p1: string <- concat(p0, insert_idx);
+    p2: string <- concat(p1, "
+	b.eq	L_pidreg_insert
+	cmp	x21, #");
+    p3: string <- concat(p2, lookup_idx);
+    p4: string <- concat(p3, "
+	b.eq	L_pidreg_lookup
+	cmp	x21, #");
+    p5: string <- concat(p4, delete_idx);
+    p6: string <- concat(p5, "
+	b.eq	L_pidreg_delete
+	mov	x8, #");
+    p7: string <- concat(p6, unknown_op_idx);
+    p8: string <- concat(p7, "
+	str	x8, [x0]
+	str	x23, [x0, #8]
+	b	L_pidreg_done
+L_pidreg_insert:
+	cmp	x22, #0
+	b.lt	L_pidreg_insert_ok
+	cmp	x22, #240
+	b.ge	L_pidreg_insert_ok
+	mov	x8, #1
+	str	x8, [x20, x22, lsl #3]
+	add	x9, x20, #1920
+	str	x23, [x9, x22, lsl #3]
+L_pidreg_insert_ok:
+	mov	x8, #");
+    p9: string <- concat(p8, ok_idx);
+    p10: string <- concat(p9, "
+	str	x8, [x0]
+	str	x23, [x0, #8]
+	b	L_pidreg_done
+L_pidreg_lookup:
+	cmp	x22, #0
+	b.lt	L_pidreg_not_found
+	cmp	x22, #240
+	b.ge	L_pidreg_not_found
+	ldr	x8, [x20, x22, lsl #3]
+	cmp	x8, #1
+	b.ne	L_pidreg_not_found
+	mov	x8, #");
+    p11: string <- concat(p10, found_idx);
+    p12: string <- concat(p11, "
+	str	x8, [x0]
+	add	x9, x20, #1920
+	ldr	x10, [x9, x22, lsl #3]
+	str	x10, [x0, #8]
+	b	L_pidreg_done
+L_pidreg_not_found:
+	mov	x8, #");
+    p13: string <- concat(p12, not_found_idx);
+    p14: string <- concat(p13, "
+	str	x8, [x0]
+	str	xzr, [x0, #8]
+	b	L_pidreg_done
+L_pidreg_delete:
+	cmp	x22, #0
+	b.lt	L_pidreg_delete_ok
+	cmp	x22, #240
+	b.ge	L_pidreg_delete_ok
+	str	xzr, [x20, x22, lsl #3]
+	add	x9, x20, #1920
+	str	xzr, [x9, x22, lsl #3]
+L_pidreg_delete_ok:
+	mov	x8, #");
+    p15: string <- concat(p14, ok_idx);
+    concat(p15, "
+	str	x8, [x0]
+	str	x23, [x0, #8]
+L_pidreg_done:
+	mov	x0, x24
+L_pidreg_ret_null:
+	ldp	x23, x24, [sp, #48]
+	ldp	x21, x22, [sp, #32]
+	ldp	x19, x20, [sp, #16]
+	ldp	x29, x30, [sp], #64
+	ret
+")
+}
+
+fn actor_rt_asm_phase_i_chunk(table: AtomTable) -> string {
+    concat("	.section	__DATA,__bss
 	.p2align	3
 .globl	_silica_rt_wait_root_acb
 .comm	_silica_rt_wait_root_acb,8,3
@@ -3047,15 +3166,40 @@ fn actor_rt_asm_phase_i_chunk() -> string {
 .globl	_silica_pid_registry_ref
 .comm	_silica_pid_registry_ref,8,3
 	.section	__TEXT,__text,regular,pure_instructions
+",
+concat(actor_rt_pid_registry_chunk(table),
+"
+; Spawn path for the global PID registry primitive actor.
+	.globl	_silica_rt_pid_registry_init_spawn
+	.p2align	2
+_silica_rt_pid_registry_init_spawn:
+	stp	x29, x30, [sp, #-16]!
+	stp	x19, x20, [sp, #-16]!
+	mov	x0, #1
+	mov	x1, #3840
+	bl	_calloc
+	mov	x19, x0
+	mov	x9, x19
+	adrp	x10, _silica_rt_pid_registry_beh@PAGE
+	add	x10, x10, _silica_rt_pid_registry_beh@PAGEOFF
+	mov	x3, xzr
+	mov	x0, x9
+	mov	x1, x10
+	mov	w2, wzr
+	bl	_silica_rt_actor_spawn
+	mov	x20, x0
+	mov	x0, x20
+	ldp	x19, x20, [sp], #16
+	ldp	x29, x30, [sp], #16
+	ret
 ; _silica_pid_registry_init: called once at program start from emitter-injected main prologue.
-; Calls pid_registry_actor.init_pid_registry_get_ref (Silica fn that spawns the registry actor),
-; then stores the returned actor_ref in _silica_pid_registry_ref.
+; Stores the spawned registry actor_ref in _silica_pid_registry_ref.
 	.globl	_silica_pid_registry_init
 	.p2align	2
 _silica_pid_registry_init:
 	stp	x29, x30, [sp, #-16]!
 	mov	x29, sp
-	bl	pid_registry_actor.init_pid_registry_get_ref
+	bl	_silica_rt_pid_registry_init_spawn
 	adrp	x1, _silica_pid_registry_ref@PAGE
 	str	x0, [x1, _silica_pid_registry_ref@PAGEOFF]
 	mov	x0, #0
@@ -3190,11 +3334,11 @@ Lwi_ret_ok:
 	ret
 	.loh AdrpAdd	Lwi_root_a, Lwi_root_b
 	.cfi_endproc
-"
+"))
 }
 
 fn actor_rt_emit_runtime_tail(table: AtomTable) -> string {
-    concat(concat(actor_rt_asm_phase_i_chunk(), actor_rt_asm_phase_c_chunk(table)), actor_rt_asm_phase_f_chunk())
+    concat(concat(actor_rt_asm_phase_i_chunk(table), actor_rt_asm_phase_c_chunk(table)), actor_rt_asm_phase_f_chunk())
 }
 
 fn emit_actor_runtime_helpers(table: AtomTable) -> string {

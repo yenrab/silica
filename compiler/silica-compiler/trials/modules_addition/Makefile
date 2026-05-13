@@ -23,12 +23,12 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
 .PHONY: all integrate clean help silica.config
 
-silica.config:
+silica.config: | clean
 	@cd "$(THIS_DIR)" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
 
 .DEFAULT_GOAL := all
 
-all: silica.config | clean
+all: clean silica.config
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sams lib/*.sams && \
 	echo "Compiling with silica-compiler..." && \
@@ -38,7 +38,7 @@ all: silica.config | clean
 	fi && \
 	echo "✅ $(MSG_PREFIX)Assembly generated"
 
-integrate: silica.config all | clean
+integrate: clean silica.config all
 	@cd "$(THIS_DIR)" && \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
@@ -68,6 +68,10 @@ integrate: silica.config all | clean
 		echo "Assembling $$sams..."; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
 	done; \
+	if [ -f "__silica_runtime.sams" ]; then \
+		echo "Assembling __silica_runtime.sams..."; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o" || failed=1; \
+	fi; \
 	for sams in lib/*.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$$(basename "$$sams" .sams); \
@@ -83,10 +87,12 @@ integrate: silica.config all | clean
 		for lib_obj in lib/*.o; do \
 			[ -f "$$lib_obj" ] && lib_objs="$$lib_objs $$lib_obj"; \
 		done; \
+		runtime_obj=""; \
+		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$lib_objs $(LDFLAGS_rust-lld) || failed=1; \
+			$(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$lib_objs $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; \
 		else \
-			$(ASSEMBLER) "$$base.o" $$lib_objs -o "$$base" $(LDFLAGS_clang) || failed=1; \
+			$(ASSEMBLER) "$$base.o" $$lib_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) || failed=1; \
 		fi; \
 	done; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
@@ -114,7 +120,7 @@ integrate: silica.config all | clean
 
 clean:
 	@cd "$(THIS_DIR)" && \
-	rm -f *.sout lib/*.sams lib/*.o *.sams && \
+	rm -f *.sout lib/*.sams lib/*.o *.sams __silica_runtime.o && \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
 		base=$${line%.silica}; \
 		rm -f "$$base" "$$base.o"; \

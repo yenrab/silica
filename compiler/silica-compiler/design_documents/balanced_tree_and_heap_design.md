@@ -2,7 +2,7 @@
 
 ## 1. Purpose and scope
 
-This document specifies balanced tree and heap representations that can be generated as Silica code without custom type declarations. It extends [graph_representation_design.md](graph_representation_design.md): trees and heaps are treated as constrained graph-like structures over integer node ids and region-backed storage.
+This document specifies balanced tree and heap representations that can be generated as Silica code without custom type declarations. It extends [graph_representation_design.md](graph_representation_design.md): trees and heaps are treated as constrained graph-like structures over integer node ids and region-backed storage. **`Storable`** is defined in [graph_representation_design.md](graph_representation_design.md) §2.4 and again in §2.4 here; **keys, values, and heap elements in add/find/remove APIs use `Storable`** in abstract signatures.
 
 The names in this document are **design/generator names**, not Silica type aliases. Generated Silica must still use inline structural record types in every parameter, return type, local binding, and pattern annotation.
 
@@ -104,6 +104,20 @@ RegionBinaryMinHeapUint32
 ```
 
 The first pass should not attempt generic B-trees.
+
+### 2.4 `Storable` marker trait
+
+```silica
+export trait Storable;
+```
+
+`Storable` is a **marker trait** (no methods). Generated balanced-tree and heap APIs use it for any parameter that supplies **data to add** (insert, push), **data to find** (contains, get, search, lower/upper bound keys), or **data to remove** (delete, pop by key when generated).
+
+- Tree **keys** and map **values** in those operations are typed with **`Storable`** in abstract signatures (same pattern as using a trait name as a type bound for actor messages).
+- Structural parameters (`order`, `node_count`, capacities, region handles, indices that are not stored user keys) stay plain `int64` or buffer types.
+- **Monomorphic** generators that emit `int64` keys/values rely on **`impl int64;` for `Storable`** (or stdlib registration) for the concrete specialization.
+
+Inline shapes may still show `List[int64, S]` or `buf(..., int64, ...)` for the *storage representation*; the **API surface** for insert/lookup/delete operands uses **`Storable`** in design-level signatures.
 
 ## 3. B-tree terminology
 
@@ -278,10 +292,10 @@ This is intentionally not the final high-performance form. It is for clarity and
 
 ### 4.5 Search algorithm
 
-Generated search over one node:
+Generated search over one node (`key` is **`Storable`**):
 
 ```text
-node_search_position(keys, key, index):
+node_search_position(keys, key: Storable, index):
     if index == key_count:
         return { found: false, index: index }
     current = keys[index]
@@ -295,7 +309,7 @@ node_search_position(keys, key, index):
 Tree search:
 
 ```text
-search_node(tree, node_id, key):
+search_node(tree, node_id, key: Storable):
     node = find_node(tree, node_id)
     pos = node_search_position(node.keys, key, 0)
     if pos.found:
@@ -313,6 +327,8 @@ btree_nodeid_int64_<space>_contains
 btree_nodeid_map_int64_int64_<space>_get
 btree_nodeid_int64_<space>_find_node
 ```
+
+Abstract operand types: **`contains(..., key: Storable)`**; **`get(..., key: Storable)`** returns map values typed **`Storable`** when present (`find_node` uses internal **`int64` node ids**, not `Storable`, because those are structural graph ids, not user keys).
 
 ### 4.6 Insertion strategy
 
@@ -338,12 +354,12 @@ Recommended generated result shape:
 
 For set-only trees, `replaced` can always be `false`.
 
-Internal helper shapes:
+Internal helper shapes (key/value operands **`Storable`**):
 
 ```text
-btree_nodeid_int64_<space>_split_child(tree, parent_id, child_index) -> { tree, promoted_key }
-btree_nodeid_int64_<space>_insert_nonfull(tree, node_id, key) -> { tree, inserted, replaced }
-btree_nodeid_map_int64_int64_<space>_insert_nonfull(tree, node_id, key, value) -> { tree, inserted, replaced }
+btree_nodeid_int64_<space>_split_child(tree, parent_id, child_index) -> { tree, promoted_key: Storable }
+btree_nodeid_int64_<space>_insert_nonfull(tree, node_id, key: Storable) -> { tree, inserted: bool, replaced: bool }
+btree_nodeid_map_int64_int64_<space>_insert_nonfull(tree, node_id, key: Storable, value: Storable) -> { tree, inserted: bool, replaced: bool }
 ```
 
 ### 4.7 Deletion strategy
@@ -359,6 +375,12 @@ When deletion is generated, use the standard top-down B-tree deletion algorithm:
 5. Delete from leaf directly.
 6. Delete from internal node by replacing with predecessor or successor, or by merging children.
 7. If the root becomes empty and has one child, make that child the new root.
+
+Abstract public signature when deletion is emitted:
+
+```text
+delete(tree, key: Storable) -> { tree, removed: bool }
+```
 
 Recommended initial generator stance:
 
@@ -553,10 +575,10 @@ btree_nodeid_map_int64_int64_<space>_to_csr
 
 ### 5.7 Search algorithm
 
-Search in a CSR node:
+Search in a CSR node (`key` is **`Storable`**):
 
 ```text
-search_csr_node(tree, node_id, key):
+search_csr_node(tree, node_id, key: Storable):
     key_start = read_buf(node_key_start, node_id)
     key_count = read_buf(node_key_count, node_id)
     pos = search_key_range(keys, key_start, key_count, key)
@@ -720,7 +742,8 @@ for every index i > 0:
 
 ### 6.3 Key/value heap shape
 
-For priority queues where payload differs from priority:
+For priority queues where payload differs from priority (both operand types **`Storable`** in abstract push/pop APIs):
+
 
 Design name:
 
@@ -780,6 +803,8 @@ Heapify is O(n). Repeated push is O(n log n). Prefer heapify for known static in
 
 ### 6.5 Push
 
+The pushed element is **stored data**; the abstract API is **`push(heap, value: Storable)`** (monomorphic generators emit `int64` and rely on `impl int64` for `Storable`).
+
 Generated `push` should return a result record:
 
 ```silica
@@ -794,7 +819,7 @@ Algorithm:
 ```text
 if heap.len == heap.capacity:
     return { heap: heap, ok: false }
-write value at index heap.len
+write value (type Storable) at index heap.len
 new_len = heap.len + 1
 sift_up(index = heap.len)
 return updated heap with len = new_len, ok = true
@@ -814,10 +839,10 @@ sift_up(p)
 
 ### 6.6 Peek and pop
 
-Peek result:
+Peek result (stored element typed **`Storable`** in the abstract API):
 
 ```silica
-{ ok: bool, value: int64 }
+{ ok: bool, value: Storable }
 ```
 
 `peek_min`:
@@ -835,7 +860,7 @@ Pop result:
 {
     heap: <full inline heap type>,
     ok: bool,
-    value: int64
+    value: Storable
 }
 ```
 
@@ -1116,10 +1141,10 @@ clear
 
 Use records rather than exceptions for ordinary capacity or lookup failure.
 
-Lookup:
+Lookup (map **`get`** and similar; the retrieved payload is **`Storable`**):
 
 ```silica
-{ found: bool, value: int64 }
+{ found: bool, value: Storable }
 ```
 
 Insert:
@@ -1141,13 +1166,13 @@ Heap push:
 }
 ```
 
-Heap pop:
+Heap pop (popped element **`Storable`**):
 
 ```silica
 {
     heap: <full inline heap type>,
     ok: bool,
-    value: int64
+    value: Storable
 }
 ```
 
@@ -1162,6 +1187,7 @@ The generator must:
 5. Use exact concrete buffer capacities in type positions.
 6. Keep `List` and `buf` memory spaces aligned with the enclosing `sequence proc[mem(S)]`.
 7. Generate monomorphic comparison logic for the key type.
+8. Declare **add / find / remove** operands (`key`, `value`, heap `value`, priority-queue priority and value where applicable) with the **`Storable`** marker in abstract APIs (see §2.4).
 
 ## 10. Implementation staging
 
@@ -1178,7 +1204,8 @@ Recommended staging:
 
 ## 11. References
 
-- [graph_representation_design.md](graph_representation_design.md) - graph families that these tree representations specialize.
+- **`Storable`** — marker trait for keys/values and heap elements in add/find/remove APIs (§2.4).
+- [graph_representation_design.md](graph_representation_design.md) - graph families that these tree representations specialize (includes §2.4 `Storable` for graph operands).
 - [silica-specification.md](silica-specification.md) - inline structural types, effects, lists, regions, buffers.
 - [list_implementation_design.md](list_implementation_design.md) - list storage and memory-space alignment.
 - [region_memory_safety_todo.md](region_memory_safety_todo.md) - region lifetime implementation gaps relevant to returned buffers.

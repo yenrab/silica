@@ -23,6 +23,7 @@ use type_checker_core;
 use type_checker_declarations_functions;
 use type_checker_failure_reporter;
 use type_checker_supervisor;
+use type_checker_callee_env;
 
 export empty_named_program_list/0;
 export cons_named_program/3;
@@ -80,68 +81,8 @@ fn params_equal(a: ListParam, b: ListParam) -> bool {
     }
 }
 
-fn is_decimal_digit_char(c: string) -> bool {
-    c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9"
-}
-
-fn parse_unsigned_decimal(s: string) -> (bool, int64) {
-    case len(s) == 0 of {
-        true -> (false, 0);
-        false -> parse_unsigned_decimal_loop(s, 0, 0)
-    }
-}
-
-fn parse_unsigned_decimal_loop(s: string, i: int64, acc: int64) -> (bool, int64) {
-    case i >= len(s) of {
-        true -> (true, acc);
-        false -> do
-            ch: string <- substring(s, i, i + 1);
-            case is_decimal_digit_char(ch) of {
-                false -> (false, 0);
-                true -> do
-                    digit: int64 <- case ch of {
-                        "0" -> 0;
-                        "1" -> 1;
-                        "2" -> 2;
-                        "3" -> 3;
-                        "4" -> 4;
-                        "5" -> 5;
-                        "6" -> 6;
-                        "7" -> 7;
-                        "8" -> 8;
-                        _: string -> 9
-                    };
-                    parse_unsigned_decimal_loop(s, i + 1, acc * 10 + digit)
-                end
-            }
-        end
-    }
-}
-
 fn export_key(fn_name: string, arity_lex: string) -> string {
     concat(concat(fn_name, "/"), arity_lex)
-}
-
-fn find_function_decl_by_name_arity_with_tag(decls: ListDeclaration, fn_name: string, arity: int64, want_tag: int64) -> (bool, Declaration) {
-    case decls.is_nil of {
-        true -> (false, parser_ast@dummy_decl());
-        false -> case decls.head.tag == want_tag of {
-            true -> case decls.head.name == fn_name and list_param_length(decls.head.parameters) == arity of {
-                true -> (true, decls.head);
-                false -> find_function_decl_by_name_arity_with_tag(decls.tail, fn_name, arity, want_tag)
-            };
-            false -> find_function_decl_by_name_arity_with_tag(decls.tail, fn_name, arity, want_tag)
-        }
-    }
-}
-
-// Export `f/n`: prefer concrete `impl fn` / ordinary fn (tag 0); else required trait signature (tag 7) when no implementation is present (spec §19.2.1, §3.4.8).
-fn find_function_decl_by_name_arity(decls: ListDeclaration, fn_name: string, arity: int64) -> (bool, Declaration) {
-    (z: bool, d: Declaration) <- find_function_decl_by_name_arity_with_tag(decls, fn_name, arity, 0);
-    case z of {
-        true -> (true, d);
-        false -> find_function_decl_by_name_arity_with_tag(decls, fn_name, arity, 7)
-    }
 }
 
 fn find_module_for_export_key(marks: ListModuleExportMark, key: string) -> string {
@@ -286,23 +227,6 @@ fn validate_explicit_module_scan(decls: ListDeclaration, expect: string, count: 
     }
 }
 
-fn validate_no_self_import(mod_names: ListParam, current: string, err_loc: SourceLocation) -> TypeCheckResult {
-    case current == "" of {
-        true -> type_checker_core@type_check_ok();
-        false -> validate_no_self_import_loop(mod_names, current, err_loc)
-    }
-}
-
-fn validate_no_self_import_loop(mod_names: ListParam, current: string, err_loc: SourceLocation) -> TypeCheckResult {
-    case mod_names.is_nil of {
-        true -> type_checker_core@type_check_ok();
-        false -> case mod_names.head.name == current of {
-            true -> type_checker_core@type_check_err("E4008", err_loc, "module cannot import itself (spec 19.4)", "sect19.4");
-            false -> validate_no_self_import_loop(mod_names.tail, current, err_loc)
-        }
-    }
-}
-
 fn validate_duplicate_function_definitions(decls: ListDeclaration) -> TypeCheckResult {
     validate_dup_fn_outer(decls, decls)
 }
@@ -333,73 +257,6 @@ fn count_matching_functions(decls: ListDeclaration, fn_name: string, arity: int6
     }
 }
 
-// In-TU copy of type_checker_declarations_functions@build_function_type: cross-.ll string return
-// from that `fn` corrupted exported function type strings (empty lookup → E2005 for mod@fn).
-fn param_types_str_for_module_export(params: ListParam) -> string {
-    case params.is_nil of {
-        true -> "";
-        false -> case params.tail.is_nil of {
-            true -> params.head.type_name;
-            false -> concat(concat(param_types_str_for_module_export(params.tail), ","), params.head.type_name)
-        }
-    }
-}
-
-fn build_function_type_for_module_export(decl: Declaration) -> string {
-    params_str: string <- param_types_str_for_module_export(decl.parameters);
-    case decl.parameters.is_nil of {
-        true -> concat("() -> ", decl.return_type_name);
-        false -> concat(concat(concat("(", params_str), ") -> "), decl.return_type_name)
-    }
-}
-
-// In-TU: type_checker_core@lookup_symbol_found tuple return from another .ll can corrupt (bool, string).
-fn lookup_symbol_found_here(env: ListSymbolEntry, name: string) -> (bool, string) {
-    case env.is_nil of {
-        true -> (false, "");
-        false -> case env.head.name == name of {
-            true -> (true, env.head.type_name);
-            false -> lookup_symbol_found_here(env.tail, name)
-        }
-    }
-}
-
-// "T1,T2 -> R" / "(T1,T2) -> R" style function types in the symbol table use " -> " (same idea as check_user_defined_call).
-fn find_arrow_in_symbol_type_str(s: string, i: int64) -> int64 {
-    case i + 4 > len(s) of {
-        true -> -1;
-        false -> case substring(s, i, i + 4) == " -> " of {
-            true -> i;
-            false -> find_arrow_in_symbol_type_str(s, i + 1)
-        }
-    }
-}
-
-fn is_function_type_symbol(type_name: string) -> bool {
-    find_arrow_in_symbol_type_str(type_name, 0) >= 0
-}
-
-// §19.3.2: same bare name may name multiple functions if parameter types differ (overload). Shadow only when
-// the name already denotes this exact signature, or a non-function / effect alias blocks the name.
-fn local_function_shadow_scan(env: ListSymbolEntry, fn_name: string, new_fn_ty: string, loc: SourceLocation) -> TypeCheckResult {
-    case env.is_nil of {
-        true -> type_checker_core@type_check_ok();
-        false -> case env.head.name == fn_name of {
-            false -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, loc);
-            true -> case env.head.is_effect_alias of {
-                true -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
-                false -> case is_function_type_symbol(env.head.type_name) of {
-                    false -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
-                    true -> case env.head.type_name == new_fn_ty of {
-                        true -> type_checker_core@type_check_err("E4011", loc, concat(concat("function ", fn_name), " shadows an imported or earlier definition (spec 19.3.2)"), "sect19.3.2");
-                        false -> local_function_shadow_scan(env.tail, fn_name, new_fn_ty, loc)
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn validate_module_program_surface(program: Program, current_module: string) -> TypeCheckResult {
     ord: TypeCheckResult <- validate_use_before_functions(program.declarations, false);
     case ord.is_ok of {
@@ -423,121 +280,6 @@ fn validate_module_program_surface(program: Program, current_module: string) -> 
                 end
             }
         end
-    }
-}
-
-fn add_exported_symbols_from_items(items: ListParam, whole: ListDeclaration, env: ListSymbolEntry, source_mod: string) -> (TypeCheckResult, ListSymbolEntry) proc[DeviceIO] {
-    case items.is_nil of {
-        true -> (type_checker_core@type_check_ok(), env);
-        false -> do
-            (ok_ar: bool, ar: int64) <- parse_unsigned_decimal(items.head.type_name);
-            case ok_ar of {
-                false -> (type_checker_core@type_check_err("E4014", items.head.location, "invalid export arity", "sect19.2"), env);
-                true -> do
-                    (fd: bool, decl: Declaration) <- find_function_decl_by_name_arity(whole, items.head.name, ar);
-                    case fd of {
-                        false -> (type_checker_core@type_check_err("E4010", items.head.location, "internal: missing export target", "sect19.2"), env);
-                        true -> do
-                            ft: string <- build_function_type_for_module_export(decl);
-                            (found: bool, _: string) <- lookup_symbol_found_here(env, decl.name);
-                            case found of {
-                                true -> (type_checker_core@type_check_err("E4011", items.head.location, concat(concat("symbol already in scope: ", decl.name), " (spec 19.3.3 shadowing)"), "sect19.3.3"), env);
-                                false -> add_exported_symbols_from_items(items.tail, whole, type_checker_core@add_symbol(env, decl.name, ft, decl.declared_effects, source_mod), source_mod)
-                            }
-                        end
-                    }
-                end
-            }
-        end
-    }
-}
-
-fn add_all_export_symbols_from_program(decls: ListDeclaration, env: ListSymbolEntry, source_mod: string) -> (TypeCheckResult, ListSymbolEntry) {
-    case decls.is_nil of {
-        true -> (type_checker_core@type_check_ok(), env);
-        false -> case decls.head.tag == 3 of {
-            true -> do
-                (r1: TypeCheckResult, e1: ListSymbolEntry) <- add_exported_symbols_from_items(decls.head.parameters, decls, env, source_mod);
-                case r1.is_ok of {
-                    true -> add_all_export_symbols_from_program(decls.tail, e1, source_mod);
-                    false -> (r1, e1)
-                }
-            end;
-            false -> add_all_export_symbols_from_program(decls.tail, env, source_mod)
-        }
-    }
-}
-
-fn apply_use_declaration_for_module(decl: Declaration, ctx: TypeContext, world: ListNamedProgram, current_module: string) -> (TypeCheckResult, TypeContext) {
-    self_chk: TypeCheckResult <- validate_no_self_import(decl.parameters, current_module, decl.location);
-    case self_chk.is_ok of {
-        false -> (self_chk, ctx);
-        true -> do
-            cf: TypeCheckResult <- check_use_conflicts_ordered(decl.parameters, world, empty_export_marks(), decl.location);
-            case cf.is_ok of {
-                false -> (cf, ctx);
-                true -> apply_use_add_symbols_loop(decl.parameters, ctx, world, decl.location)
-            }
-        end
-    }
-}
-
-fn apply_use_add_symbols_loop(mod_names: ListParam, ctx: TypeContext, world: ListNamedProgram, err_loc: SourceLocation) -> (TypeCheckResult, TypeContext) {
-    case mod_names.is_nil of {
-        true -> (type_checker_core@type_check_ok(), ctx);
-        false -> do
-            m: string <- mod_names.head.name;
-            (found: bool, prog: Program) <- parser_ast@find_named_program(m, world);
-            case found of {
-                false -> (type_checker_core@type_check_err("E4002", err_loc, concat("unknown module ", m), "sect19.3"), ctx);
-                true -> do
-                    (r1: TypeCheckResult, e1: ListSymbolEntry) <- add_all_export_symbols_from_program(prog.declarations, ctx.env, m);
-                    case r1.is_ok of {
-                        false -> (r1, ctx);
-                        true -> apply_use_add_symbols_loop(mod_names.tail, type_checker_core@type_context_with_env(ctx, e1), world, err_loc)
-                    }
-                end
-            }
-        end
-    }
-}
-
-fn local_function_shadows_existing(env: ListSymbolEntry, decl: Declaration) -> TypeCheckResult {
-    new_ty: string <- build_function_type_for_module_export(decl);
-    local_function_shadow_scan(env, decl.name, new_ty, decl.location)
-}
-
-fn add_all_declarations_with_world(decls: ListDeclaration, context: TypeContext, world: ListNamedProgram, current_module: string) -> (TypeCheckResult, TypeContext) {
-    case decls.is_nil of {
-        true -> (type_checker_core@type_check_ok(), context);
-        false -> case decls.head.tag of {
-            2 -> do
-                (u1: TypeCheckResult, c1: TypeContext) <- apply_use_declaration_for_module(decls.head, context, world, current_module);
-                case u1.is_ok of {
-                    false -> (u1, c1);
-                    true -> add_all_declarations_with_world(decls.tail, c1, world, current_module)
-                }
-            end;
-            3 -> add_all_declarations_with_world(decls.tail, context, world, current_module);
-            4 -> add_all_declarations_with_world(decls.tail, context, world, current_module);
-            0 -> do
-                sh: TypeCheckResult <- local_function_shadows_existing(context.env, decls.head);
-                case sh.is_ok of {
-                    false -> (sh, context);
-                    true -> do
-                        func_ty: string <- build_function_type_for_module_export(decls.head);
-                        new_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, decls.head.name, func_ty, decls.head.declared_effects, "");
-                        ctx2: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
-                        add_all_declarations_with_world(decls.tail, ctx2, world, current_module)
-                    end
-                }
-            end;
-            1 -> do
-                new_env: ListSymbolEntry <- type_checker_core@add_effect_alias_symbol(context.env, decls.head.name, decls.head.declared_effects);
-                add_all_declarations_with_world(decls.tail, type_checker_core@type_context_with_env(context, new_env), world, current_module)
-            end;
-            _: int64 -> add_all_declarations_with_world(decls.tail, context, world, current_module)
-        }
     }
 }
 
@@ -568,7 +310,7 @@ fn type_check_program_with_modules(program: Program, current_module: string, wor
     case surface.is_ok of {
         false -> (surface, context);
         true -> do
-            (pass1: TypeCheckResult, ctx1: TypeContext) <- add_all_declarations_with_world(program.declarations, context, world, current_module);
+            (pass1: TypeCheckResult, ctx1: TypeContext) <- type_checker_callee_env@add_all_declarations_with_world(program.declarations, context, world, current_module);
             case pass1.is_ok of {
                 false -> (pass1, ctx1);
                 true -> do

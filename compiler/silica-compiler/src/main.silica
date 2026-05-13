@@ -466,9 +466,9 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
                     tr_code: int64 <- trait_checker_core@trait_checker_check_program(program);
                     case tr_code != 0 of {
                         true -> (1, sir_ast@dummy_sir_module());
-                        false -> do
-                            println("  Effect checking...");
-                            effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(program);
+                    false -> do
+                        println("  Effect checking...");
+                        effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(program);
                     case effect_result.is_ok of {
                         true -> do
                             _: int64 <- case debug_compile(filename) of {
@@ -541,10 +541,7 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
                     false -> emitter_core@emit_module(sir_module)
                 };
                 build_output@write_assembly(filename, asm);
-                _: int64 <- case emitter_core@module_needs_actor_runtime(sir_module) of {
-                    true -> build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module(sir_module));
-                    false -> 0
-                };
+                _: int64 <- build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module(sir_module));
                 println(concat("Successfully built ", mod_name));
                 0
             end
@@ -626,10 +623,31 @@ fn compile_multi_unit_with_merged_atoms(sorted_topo: ListString, parsed_all: Lis
             emit_c: int64 <- emit_batch_with_exe_atom_table(sorted_topo, fwd_queue, exe_atom_tbl);
             case emit_c != 0 of {
                 true -> emit_c;
-                false -> case sir_queue_any_need_actor_runtime(fwd_queue) of {
-                    true -> build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module_with_atom_table(exe_atom_tbl));
-                    false -> 0
-                }
+                false -> build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module_with_atom_table(exe_atom_tbl))
+            }
+        end
+    }
+}
+
+fn compile_parsed_list_incremental(sorted: ListString, parsed: ListParsedFile, all_config_files: ListString) -> int64 proc[DeviceIO] {
+    case sorted.is_nil of {
+        true -> 0;
+        false -> do
+            (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, sorted.head);
+            world: ListNamedProgram <- build_module_world(parsed, sorted.head);
+            case found of {
+                false -> do
+                    println("Error: internal parse table missing file");
+                    print(sorted.head);
+                    1
+                end;
+                true -> do
+                    code: int64 <- compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed);
+                    case code != 0 of {
+                        true -> code;
+                        false -> compile_parsed_list_incremental(sorted.tail, parsed, all_config_files)
+                    }
+                end
             }
         end
     }
@@ -652,7 +670,7 @@ fn compile_parsed_list(sorted: ListString, parsed: ListParsedFile, all_config_fi
                     true -> compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed)
                 }
             end;
-            false -> compile_multi_unit_with_merged_atoms(sorted, parsed, all_config_files)
+            false -> compile_parsed_list_incremental(sorted, parsed, all_config_files)
         }
     }
 }

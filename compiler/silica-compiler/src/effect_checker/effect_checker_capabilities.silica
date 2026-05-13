@@ -159,6 +159,21 @@ fn check_function_decl(decl: Declaration, _ctx: EffectContext) -> EffectCheckRes
     effect_checker_core@effect_check_ok()
 }
 
+fn add_param_types_to_env(params: ListParam, env: ListTypeEntry) -> ListTypeEntry {
+    case params.is_nil of {
+        true -> env;
+        false -> do
+            next_env: ListTypeEntry <- effect_checker_core@add_type_entry(env, params.head.name, params.head.type_name);
+            add_param_types_to_env(params.tail, next_env)
+        end
+    }
+}
+
+fn context_for_decl_params(ctx: EffectContext, decl: Declaration) -> EffectContext {
+    param_env: ListTypeEntry <- add_param_types_to_env(decl.parameters, ctx.type_env);
+    effect_checker_core@effect_context_with_type_env(ctx, param_env)
+}
+
 {- Build E3001 message; when the missing effect is device_io or mem, add a suggestion. -}
 fn e3001_message(fn_name: string, eff: EffectName) -> string {
     base: string <- concat("Function '", concat(fn_name, concat("' uses effect ", concat(effect_checker_core@effect_name_to_string(eff), " but does not declare it in its signature"))));
@@ -218,16 +233,17 @@ fn check_all_fn_decls(decls: ListDeclaration, ctx: EffectContext) -> EffectCheck
         false -> case decls.head.tag == 0 of {
             true -> do
                 body: Expr <- decls.head.body;
+                decl_ctx: EffectContext <- context_for_decl_params(ctx, decls.head);
                 case body.kind == 11 of {
                     true -> do
-                        seq_result: EffectCheckResult <- check_sequence_blocks_in_expr(body, ctx);
+                        seq_result: EffectCheckResult <- check_sequence_blocks_in_expr(body, decl_ctx);
                         case seq_result.is_ok of {
                             true -> check_all_fn_decls(decls.tail, ctx);
                             false -> seq_result
                         }
                     end;
                     false -> do
-                        body_effects: ListEffectName <- effect_checker_propagation@collect_expr_effects_outside_sequence_blocks(body, ctx);
+                        body_effects: ListEffectName <- effect_checker_propagation@collect_expr_effects_outside_sequence_blocks(body, decl_ctx);
                         case body_effects.is_nil of {
                             true -> do
                                 inner_result: EffectCheckResult <- check_sequence_blocks_in_expr(body, ctx);

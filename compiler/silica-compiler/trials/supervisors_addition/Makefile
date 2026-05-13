@@ -28,12 +28,12 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
 .PHONY: all compile clean integrate stress-j2 help silica.config
 
-silica.config:
+silica.config: | clean
 	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
 
 .DEFAULT_GOAL := all
 
-compile: silica.config | clean
+compile: clean silica.config
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sams traits/*.sams __silica_runtime.o && \
 	echo "Compiling with silica-compiler..." && \
@@ -97,7 +97,7 @@ all: compile
 # compare_scout_normalized.sh (ordered compare with dynamic runtime fields normalized). If <base>.scout.multiset
 # exists, use compare_scout_multiset.sh (or compare_scout_multiset_oneof.sh when <base>.scout.alt exists —
 # multiset matches any listed golden).
-integrate: silica.config compile | clean
+integrate: clean silica.config compile
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \

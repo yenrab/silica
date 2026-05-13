@@ -27,7 +27,7 @@
 use parser_ast;
 
 export is_region_builtin_fn/1;
-export get_region_call_effects/4;
+export get_region_call_effects/5;
 export extract_space_from_region_type/1;
 
 // Valid memory spaces per spec §4.4.1, §9.1.1
@@ -187,9 +187,9 @@ fn space_from_alloc_region_arg(first_arg: Expr) -> (bool, string) {
    alloc_region: Space from first arg (expr.inner).
    alloc_region_on_numa_node: Space from second arg (not available here); fallback mem(normal).
    alloc_ref, alloc_buf, alloc_rec, build: Space from binding_type (result type); if Space is atomic, also atomic (§17.1.2).
-   read_ref, write_ref, read_buf, write_buf, buf_load, buf_store: Space from binding_type if ref/buf; else mem(normal).
+   read_ref, write_ref, read_buf, write_buf, buf_load, buf_store: Space from first_arg_type if ref/buf; else binding_type if ref/buf; else mem(normal).
    Returns (true, effects) if handled, (false, empty) if not a region op or Space unknown. -}
-fn get_region_call_effects(fn_name: string, first_arg: Expr, binding_type: string, location: SourceLocation) -> (bool, ListEffectName) {
+fn get_region_call_effects(fn_name: string, first_arg: Expr, first_arg_type: string, binding_type: string, location: SourceLocation) -> (bool, ListEffectName) {
     zero: SourceLocation <- parser_ast@zero_location();
     loc: SourceLocation <- case len(location.file) > 0 of { true -> location; false -> zero };
     case fn_name == "alloc_region" of {
@@ -220,7 +220,9 @@ fn get_region_call_effects(fn_name: string, first_arg: Expr, binding_type: strin
                 end;
                 false -> case fn_name == "read_ref" or fn_name == "write_ref" or fn_name == "read_buf" or fn_name == "write_buf" or fn_name == "buf_load" or fn_name == "buf_store" of {
                         true -> do
-                            (ok: bool, space: string) <- extract_space_from_region_type(binding_type);
+                            (ok_arg: bool, space_arg: string) <- extract_space_from_region_type(first_arg_type);
+                            source_type: string <- case ok_arg of { true -> first_arg_type; false -> binding_type };
+                            (ok: bool, space: string) <- extract_space_from_region_type(source_type);
                             case ok of {
                                 true -> do
                                     eff: EffectName <- EffectName { name: "mem", parameter: space, location: loc };

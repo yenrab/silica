@@ -76,7 +76,21 @@ Recommended weight type for first implementation: `int64`.
 | `Unweighted` | Neighbor id only. |
 | `WeightedInt64` | Neighbor id plus `int64` weight. |
 
-### 2.4 Memory space
+### 2.4 `Storable` marker trait
+
+Silica data structures that pack keys, edge endpoints, weights, or other **stored element** data into generated graphs should treat those operands uniformly via a **marker trait** (no methods, compile-time only):
+
+```silica
+export trait Storable;
+```
+
+**Convention for generated APIs:** Any function parameter that supplies **data to add** (insert an edge, push a neighbor, set a cell), **data to find** (lookup or query by a stored element, e.g. `has_edge` destination, `neighbors` center node id when that id is the lookup key), or **data to remove** (delete an edge or clear a stored value) shall use **`Storable`** as the type of that datum in abstract signatures.
+
+Structural metadata such as `node_count`, buffer capacities, generator constants, and region handles remain plain types (typically `int64` or buffer types), not `Storable`.
+
+**Monomorphic generators** (e.g. `int64` node ids only) emit the concrete element type in emitted Silica; they must assume a matching **`impl int64;` for `Storable`** (or equivalent stdlib registration) so call sites remain valid. Design-level examples in this document use **`Storable`** for those operands unless illustrating a concrete specialization.
+
+### 2.5 Memory space
 
 Every generated graph representation that allocates storage must carry a concrete memory space `S`.
 
@@ -91,7 +105,7 @@ Recommended spaces:
 
 Graph construction or mutation must occur in `sequence proc[mem(S)]`. The same `S` must appear in `List[..., S]`, `region(R, S)`, `ref(R, S, T)`, and `buf(R, S, T, N)`.
 
-### 2.5 Generated operation categories
+### 2.6 Generated operation categories
 
 Each graph family should expose operations in three groups.
 
@@ -141,7 +155,7 @@ Use it when:
 Avoid it when:
 
 - Graph traversal is performance critical.
-- Random `has_edge(u, v)` needs to be fast.
+- Random `has_edge(u: Storable, v: Storable)` needs to be fast.
 - The graph is very large.
 - Node ids are dense and the graph will be traversed many times. Use CSR instead.
 
@@ -263,7 +277,7 @@ fn graph_adj_directed_unweighted_normal_empty(
 }
 ```
 
-Add edge:
+Add edge (endpoints are stored data; use `Storable`):
 
 ```silica
 fn graph_adj_directed_unweighted_normal_add_edge(
@@ -272,8 +286,8 @@ fn graph_adj_directed_unweighted_normal_add_edge(
         edge_count: int64,
         nodes: List[{ id: int64, neighbors: List[int64, normal] }, normal]
     },
-    from_id: int64,
-    to_id: int64
+    from_id: Storable,
+    to_id: Storable
 ) -> {
     node_count: int64,
     edge_count: int64,
@@ -287,20 +301,20 @@ fn graph_adj_directed_unweighted_normal_add_edge(
 }
 ```
 
-Weighted add edge adds `weight: int64` and prepends `{ to: to_id, weight: weight }`.
+Weighted add edge adds `weight: Storable` and prepends `{ to: to_id, weight: weight }` (neighbor id `to_id: Storable` alongside `from_id: Storable`).
 
 ### 3.6 Traversal strategy
 
-Generated traversal should expose neighbor lists directly:
+Generated traversal should expose neighbor lists directly. The **node id** operand that selects whose neighbors to return is stored topology keyed by id; type it as **`Storable`** in abstract APIs:
 
 ```text
-neighbors(graph, id) -> List[int64, S]
-weighted_neighbors(graph, id) -> List[{ to: int64, weight: int64 }, S]
+neighbors(graph, id: Storable) -> List[int64, S]
+weighted_neighbors(graph, id: Storable) -> List[{ to: Storable, weight: Storable }, S]
 ```
 
 Implementation scans `graph.nodes` until it finds `node.id == id`.
 
-`has_edge(graph, from_id, to_id)`:
+`has_edge(graph, from_id: Storable, to_id: Storable)`:
 
 1. `neighbors(graph, from_id)`
 2. scan list for `to_id`
@@ -456,13 +470,13 @@ Input:
 
 ```text
 node_count: int64
-edges: List[{ from: int64, to: int64 }, S]
+edges: List[{ from: Storable, to: Storable }, S]
 ```
 
 For weighted:
 
 ```text
-edges: List[{ from: int64, to: int64, weight: int64 }, S]
+edges: List[{ from: Storable, to: Storable, weight: Storable }, S]
 ```
 
 Build steps:
@@ -573,7 +587,7 @@ Generated recursive traversal helper shape:
 walk_neighbors(g, u, i, end, acc)
 ```
 
-`has_edge(g, u, v)` scans `neighbors[start..end)`. If sorted adjacency is guaranteed, generate binary search; otherwise generate linear scan.
+`has_edge(g, u: Storable, v: Storable)` scans `neighbors[start..end)`. If sorted adjacency is guaranteed, generate binary search; otherwise generate linear scan.
 
 Cost:
 
@@ -618,7 +632,7 @@ index = from * node_count + to
 Use it when:
 
 - The graph is dense.
-- `has_edge(u, v)` must be O(1).
+- `has_edge(u: Storable, v: Storable)` must be O(1).
 - `node_count` is small enough that `node_count * node_count` storage is acceptable.
 - You need simple generated code and predictable indexing.
 
@@ -697,9 +711,9 @@ Static generation:
 
 1. Allocate `cells` or `present`/`weights`.
 2. Initialize all cells to `0`.
-3. For each edge, compute `index = from * node_count + to`.
+3. For each edge, compute `index = from * node_count + to` (`from` and `to` are endpoints with type **`Storable`** in abstract APIs; monomorphic generators fix them to `int64`).
 4. Write `1` to presence.
-5. For weighted graphs, write the weight.
+5. For weighted graphs, write the weight ( **`Storable`** operand in weighted APIs ).
 6. For undirected graphs, also write the mirror edge when `from != to`.
 
 Generated constructor shape:
@@ -731,14 +745,14 @@ For dynamic `node_count`, code generation must either:
 
 ### 5.6 Traversal strategy
 
-`has_edge(g, from_id, to_id)`:
+`has_edge(g, from_id: Storable, to_id: Storable)`:
 
 ```text
 idx = from_id * g.node_count + to_id
 read cells[idx] == 1
 ```
 
-`out_degree(g, from_id)`:
+`out_degree(g, from_id: Storable)`:
 
 ```text
 scan to_id from 0 to node_count - 1
@@ -749,7 +763,7 @@ Neighbors traversal scans an entire matrix row:
 
 ```text
 for to_id in 0..node_count:
-    if has_edge(g, from_id, to_id):
+    if has_edge(g, from_id, to_id):   // from_id, to_id: Storable where specialized
         visit(to_id)
 ```
 
@@ -818,7 +832,9 @@ mask = 1 << bit_offset
 
 ### 6.3 Operations
 
-`set_edge(g, from, to)`:
+Operands `from` and `to` are stored edge endpoints; in abstract APIs use **`Storable`**.
+
+`set_edge(g, from: Storable, to: Storable)`:
 
 ```text
 word = read_buf(words, word_index)
@@ -826,7 +842,7 @@ new_word = word | mask
 write_buf(words, word_index, new_word)
 ```
 
-`has_edge(g, from, to)`:
+`has_edge(g, from: Storable, to: Storable)`:
 
 ```text
 (read_buf(words, word_index) & mask) != 0
@@ -913,10 +929,12 @@ Weighted graph modules should also emit:
 weight_at, returning an explicit found flag plus weight
 ```
 
+For **`weight_at`**, **`has_edge`**, **`neighbors`**, and any **add/remove-edge** helpers, operands that denote **stored node ids or edge weights** use **`Storable`** in abstract signatures (§2.4). Monomorphic `int64` generators rely on `impl int64` for `Storable`.
+
 Recommended return shape for `weight_at`:
 
 ```silica
-{ found: bool, weight: int64 }
+{ found: bool, weight: Storable }
 ```
 
 ### 8.3 Error handling
@@ -1004,6 +1022,7 @@ fn use_graph(g: { node_count: int64, edge_count: int64, ... }) -> int64 {
 
 ## 10. References
 
+- **Storable** — marker trait for stored operands in add / find / remove APIs (§2.4).
 - [silica-specification.md](silica-specification.md) - inline structural types, lists, regions, effects.
 - [list_implementation_design.md](list_implementation_design.md) - `List[T, S]` as region-backed storage and bundle model.
 - [recursive_tuple_specification.md](recursive_tuple_specification.md) - why recursive pointer-shaped data uses inline `rec` and regions instead of named recursive types.

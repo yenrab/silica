@@ -26,12 +26,12 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
 .PHONY: all compile integrate clean help silica.config
 
-silica.config:
+silica.config: | clean
 	@cd "$(THIS_DIR)" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
 
 .DEFAULT_GOAL := all
 
-compile: silica.config | clean
+compile: clean silica.config
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sams traits/*.sams && \
 	echo "Compiling with silica-compiler..." && \
@@ -55,6 +55,10 @@ all: compile
 		echo "Assembling $$sams..."; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
 	done; \
+	if [ -f "__silica_runtime.sams" ]; then \
+		echo "Assembling __silica_runtime.sams..."; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o" || { failed=1; }; \
+	fi; \
 	for sams in traits/*.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$$(basename "$$sams" .sams); \
@@ -70,10 +74,12 @@ all: compile
 		for trait_obj in traits/*.o; do \
 			[ -f "$$trait_obj" ] && trait_objs="$$trait_objs $$trait_obj"; \
 		done; \
+		runtime_obj=""; \
+		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$trait_objs $(LDFLAGS_rust-lld) || failed=1; \
+			$(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$trait_objs $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; \
 		else \
-			$(ASSEMBLER) "$$base.o" $$trait_objs -o "$$base" $(LDFLAGS_clang) || failed=1; \
+			$(ASSEMBLER) "$$base.o" $$trait_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) || failed=1; \
 		fi; \
 	done; \
 	if [ $$failed -ne 0 ]; then \
@@ -82,7 +88,7 @@ all: compile
 	fi; \
 	echo "✅ $(MSG_PREFIX)Linked entrypoints (root *.silica from silica.config)"
 
-integrate: silica.config compile | clean
+integrate: clean silica.config compile
 	@cd "$(THIS_DIR)" && \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
@@ -96,6 +102,10 @@ integrate: silica.config compile | clean
 		echo "Assembling $$sams..."; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
 	done; \
+	if [ -f "__silica_runtime.sams" ]; then \
+		echo "Assembling __silica_runtime.sams..."; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o" || { failed=1; }; \
+	fi; \
 	for sams in traits/*.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$$(basename "$$sams" .sams); \
@@ -131,10 +141,12 @@ integrate: silica.config compile | clean
 		for trait_obj in traits/*.o; do \
 			[ -f "$$trait_obj" ] && trait_objs="$$trait_objs $$trait_obj"; \
 		done; \
+		runtime_obj=""; \
+		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$trait_objs $(LDFLAGS_rust-lld) || failed=1; \
+			$(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$trait_objs $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; \
 		else \
-			$(ASSEMBLER) "$$base.o" $$trait_objs -o "$$base" $(LDFLAGS_clang) || failed=1; \
+			$(ASSEMBLER) "$$base.o" $$trait_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) || failed=1; \
 		fi; \
 	done; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
@@ -162,7 +174,7 @@ integrate: silica.config compile | clean
 
 clean:
 	@cd "$(THIS_DIR)" && \
-	rm -f *.sout traits/*.sams traits/*.o *.sams && \
+	rm -f *.sout traits/*.sams traits/*.o *.sams __silica_runtime.o && \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
 		base=$${line%.silica}; \
 		rm -f "$$base" "$$base.o"; \

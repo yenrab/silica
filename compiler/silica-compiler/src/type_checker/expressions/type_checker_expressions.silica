@@ -33,6 +33,7 @@ use type_checker_lists;
 use type_checker_expressions_actors;
 use type_checker_record_types;
 use type_checker_traits;
+use type_checker_callee_env;
 
 export check_expr/4;
 export dispatch_actual_fits_impl_parameter/3;
@@ -75,6 +76,28 @@ fn check_comparison_operands(expr: Expr, operand_type: string, context: TypeCont
     }
 }
 
+fn is_comparison_operand_type(t: string) -> bool {
+    t == "boolean" or t == "int64" or t == "int32" or t == "int16" or t == "int8" or t == "uint64" or t == "uint32" or t == "uint16" or t == "uint8" or t == "float64" or t == "float32" or t == "float16" or t == "string" or t == "atom"
+}
+
+fn inferred_comparison_operand_type(expr: Expr, context: TypeContext) -> string {
+    left_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+    right_t: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.right_expr, context);
+    case len(left_t) > 0 of {
+        true -> case is_comparison_operand_type(left_t) of {
+            false -> "";
+            true -> case len(right_t) > 0 of {
+                true -> case left_t == right_t of { true -> left_t; false -> "" };
+                false -> left_t
+            }
+        };
+        false -> case len(right_t) > 0 of {
+            true -> case is_comparison_operand_type(right_t) of { true -> right_t; false -> "" };
+            false -> ""
+        }
+    }
+}
+
 // Try each supported comparison operand type; first match wins.
 // Signed: int64, int32, int16, int8. Unsigned: uint64, uint32, uint16, uint8. Also float32, float16, string, atom (ordering by atom table index), boolean.
 fn bool_result(expected_type: string, location: SourceLocation) -> TypeCheckResult {
@@ -86,10 +109,22 @@ fn bool_result(expected_type: string, location: SourceLocation) -> TypeCheckResu
 }
 
 fn check_comparison_result(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    rb: TypeCheckResult <- check_comparison_operands(expr, "boolean", context, world);
-    case rb.is_ok of {
-        true -> bool_result(expected_type, expr.location);
-        false -> check_comparison_result_rest(expr, expected_type, context, rb, world)
+    inferred_operand: string <- inferred_comparison_operand_type(expr, context);
+    case len(inferred_operand) > 0 of {
+        true -> do
+            ri: TypeCheckResult <- check_comparison_operands(expr, inferred_operand, context, world);
+            case ri.is_ok of {
+                false -> ri;
+                true -> bool_result(expected_type, expr.location)
+            }
+        end;
+        false -> do
+            rb: TypeCheckResult <- check_comparison_operands(expr, "boolean", context, world);
+            case rb.is_ok of {
+                true -> bool_result(expected_type, expr.location);
+                false -> check_comparison_result_rest(expr, expected_type, context, rb, world)
+            }
+        end
     }
 }
 
@@ -477,6 +512,7 @@ fn actor_runtime_builtin_return_type(name: string) -> string {
         "unpin_actor" -> "atom";
         "register_actor" -> "atom";
         "get_registry_actor" -> "actor_ref";
+        "get_pid_registry" -> "actor_ref";
         "set_actor_priority" -> "atom";
         "get_cpu_topology" -> "{ cores: List[{ id: int64, core_type: atom, capabilities: List[string,normal], frequency_mhz: int64 },normal], numa_nodes: List[{ id: int64, cores: List[int64,normal], memory_ranges: List[{ start_address: int64, size: int64, latency: int64 },normal] },normal], cache_hierarchy: { levels: List[{ level: int64, size_kb: int64, line_size: int64, associativity: int64, shared_cores: List[int64,normal] },normal] } }";
         "get_efficiency_cores" -> "List[int64,normal]";
@@ -731,7 +767,13 @@ fn check_actor_runtime_helper_call(expr: Expr, expected_type: string, context: T
                                                                             false -> type_checker_core@type_check_err("E2005", expr.location, "get_registry_actor expects 0 arguments", "sect15");
                                                                             true -> check_runtime_builtin_return(expr, inferred, expected_type)
                                                                         };
-                                                                        false -> type_checker_core@type_check_err("E2005", expr.location, "unknown actor runtime helper", "sect15")
+                                                                        false -> case eff == "get_pid_registry" of {
+                                                                            true -> case ac == 0 of {
+                                                                                false -> type_checker_core@type_check_err("E2005", expr.location, "get_pid_registry expects 0 arguments", "sect15");
+                                                                                true -> check_runtime_builtin_return(expr, inferred, expected_type)
+                                                                            };
+                                                                            false -> type_checker_core@type_check_err("E2005", expr.location, "unknown actor runtime helper", "sect15")
+                                                                        }
                                                                     }
                                                                 }
                                                             }
@@ -1683,7 +1725,7 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext, world: Li
     case first_at_in_expr_call_name(expr.name, 0) >= 0 of {
         true -> do
             base: string <- type_checker_core@user_call_base_function_name(expr.name);
-            case base == "spawn" or base == "spawn_linked" or base == "link" or base == "monitor" or base == "demonitor" or base == "supervision_ingress_enqueue" or base == "supervision_wait_and_drain_one" or base == "failure_reason_tag" or base == "failure_reason_atom" or base == "failure_agent_type" or base == "failure_release" or base == "start_child" or base == "child_table_first_ref" or base == "child_table_row_ref" or base == "kill_abnormal" or base == "wait_for_exit" of {
+            case base == "spawn" or base == "spawn_linked" or base == "link" or base == "monitor" or base == "demonitor" or base == "supervision_ingress_enqueue" or base == "supervision_wait_and_drain_one" or base == "failure_reason_tag" or base == "failure_reason_atom" or base == "failure_agent_type" or base == "failure_release" or base == "start_child" or base == "child_table_first_ref" or base == "child_table_row_ref" or base == "kill_abnormal" or base == "wait_for_exit" or base == "get_registry_actor" or base == "get_pid_registry" of {
                 true -> check_actor_concurrency_call(expr, expected_type, context, world);
                 false -> check_user_defined_call(expr, expected_type, context, world)
             }
@@ -1865,7 +1907,7 @@ fn count_call_args_user_call(expr: Expr) -> int64 {
     }
 }
 
-// Duplicated from type_checker_modules (cannot import modules here — dependency cycle). Used for module@fn resolution from world.
+// Local helper (same as type_checker_modules / type_checker_callee_env list_param_length). Avoid importing type_checker_modules (declarations_functions → … → expressions cycle).
 fn list_param_length_call(ps: ListParam) -> int64 {
     case ps.is_nil of {
         true -> 0;
@@ -2193,29 +2235,36 @@ fn validate_callsite_return_record_type(rt: string, loc: SourceLocation) -> Type
 }
 
 // Re-check callee body with formal parameters bound to inferred concrete types (trait dispatch / overloads inside the body).
-fn check_callsite_body_with_concrete_params(decl: Declaration, context: TypeContext, world: ListNamedProgram, conc_decl_order: ListParam) -> TypeCheckResult proc[DeviceIO] {
+// Pass-1 env must be the callee module's (use/export/local fns). The caller's env omits callee private helpers → E2005 on mod@-qualified calls.
+fn check_callsite_body_with_concrete_params(decl: Declaration, world: ListNamedProgram, conc_decl_order: ListParam, callee_mod_id: string, callee_prog: Program) -> TypeCheckResult proc[DeviceIO] {
     case list_param_length_call(decl.parameters) == list_param_length_call(conc_decl_order) of {
         false -> type_checker_core@type_check_err("E2005", decl.location, "internal: call-site parameter type list length mismatch", "sect6");
         true -> do
-            dp: ListParam <- parser_ast@param_list_normalize(decl.parameters);
-            cp: ListParam <- parser_ast@param_list_normalize(conc_decl_order);
-            ctx_params: TypeContext <- type_checker_core@add_params_concrete_loop1(ParamConcreteEnv { decl_params: dp, concrete_types: cp, base: context });
-            ret_rec: TypeCheckResult <- validate_callsite_return_record_type(decl.return_type_name, decl.return_type_location);
-            case ret_rec.is_ok of {
-                false -> ret_rec;
-                true -> case decl.return_type_name == "unit" of {
-                    true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
-                    false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
-                        true -> do
-                            mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(decl.return_type_name, decl.return_type_location);
-                            case mem_result.is_ok of {
-                                false -> mem_result;
-                                true -> check_expr(decl.body, decl.return_type_name, ctx_params, world)
+            (pass1: TypeCheckResult, ctx_callee: TypeContext) <- type_checker_callee_env@add_all_declarations_with_world(callee_prog.declarations, type_checker_core@create_type_context(), world, callee_mod_id);
+            case pass1.is_ok of {
+                false -> pass1;
+                true -> do
+                    dp: ListParam <- parser_ast@param_list_normalize(decl.parameters);
+                    cp: ListParam <- parser_ast@param_list_normalize(conc_decl_order);
+                    ctx_params: TypeContext <- type_checker_core@add_params_concrete_loop1(ParamConcreteEnv { decl_params: dp, concrete_types: cp, base: ctx_callee });
+                    ret_rec: TypeCheckResult <- validate_callsite_return_record_type(decl.return_type_name, decl.return_type_location);
+                    case ret_rec.is_ok of {
+                        false -> ret_rec;
+                        true -> case decl.return_type_name == "unit" of {
+                            true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
+                            false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
+                                true -> do
+                                    mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(decl.return_type_name, decl.return_type_location);
+                                    case mem_result.is_ok of {
+                                        false -> mem_result;
+                                        true -> check_expr(decl.body, decl.return_type_name, ctx_params, world)
+                                    }
+                                end;
+                                false -> check_expr(decl.body, decl.return_type_name, ctx_params, world)
                             }
-                        end;
-                        false -> check_expr(decl.body, decl.return_type_name, ctx_params, world)
+                        }
                     }
-                }
+                end
             }
         end
     }
@@ -2273,7 +2322,7 @@ fn try_resolve_qualified_call_func_type(expr: Expr, world: ListNamedProgram, con
 fn check_user_call_result_user_call(expr: Expr, expected_type: string, return_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
     case expected_type == "discard" of {
         true -> type_checker_core@type_check_ok();
-        false -> case expected_type == return_type of {
+        false -> case type_checker_lists@types_equal_strip(expected_type, return_type) of {
             true -> type_checker_core@type_check_ok();
             false -> case type_checker_traits@actual_type_satisfies_trait_expectation(return_type, expected_type, world) of {
                 true -> type_checker_core@type_check_ok();
@@ -2362,7 +2411,7 @@ fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: strin
                                             false -> chk_args;
                                             true -> do
                                                 conc_decl: ListParam <- parser_ast@list_param_reverse_with_acc(inf_left, parser_ast@nil_list_param());
-                                                body_ok: TypeCheckResult <- check_callsite_body_with_concrete_params(callee_decl, context, world, conc_decl);
+                                                body_ok: TypeCheckResult <- check_callsite_body_with_concrete_params(callee_decl, world, conc_decl, mod_id, pprog);
                                                 case body_ok.is_ok of {
                                                     false -> body_ok;
                                                     true -> check_user_call_result_user_call(expr, expected_type, return_type, context, world)
@@ -3071,7 +3120,7 @@ fn check_list_primitive_call(expr: Expr, expected_type: string, context: TypeCon
             list_t: string <- type_checker_lists@format_list_type_from_parts(elem, space);
             case expr.name == "empty" of {
                 true -> do
-                    ac: int64 <- type_checker_lists@count_call_args_list(expr);
+                    ac: int64 <- type_checker_lists@list_empty_effective_arg_count(expr);
                     case ac == 0 of {
                         false -> type_checker_core@type_check_err("E2005", expr.location, "empty expects 0 arguments", "list");
                         true -> case expected_type == "discard" of {

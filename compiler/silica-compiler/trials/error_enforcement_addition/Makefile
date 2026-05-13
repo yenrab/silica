@@ -27,11 +27,11 @@ SILICA_FILES := $(shell cd "$(THIS_DIR)" && find . \( -path './module_nonexporte
 .DEFAULT_GOAL := all
 .PHONY: all integrate clean help silica.config
 
-silica.config:
+silica.config: | clean
 	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find . \( -path './module_nonexported_callee_trial/*' -o -path './qualified_call_module_name_case_mismatch_trial/*' \) -prune -o -type f -name '*.silica' -print 2>/dev/null | sed 's|^\./||' > silica.config
 
 # Same checks as top-level trials Makefile for this directory (error output vs .golden_fail).
-integrate: silica.config all | clean
+integrate: clean silica.config all
 
 all: | clean
 	@failed=0; ok=0; ko=0; rm -f "$(THIS_DIR).integrate_counts"; \
