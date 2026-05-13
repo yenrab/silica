@@ -7,6 +7,7 @@
 # Linker: rust-lld if available, else clang
 
 SILICA_COMPILER := ../../src/silica-compiler
+THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
 # Rust toolchain linker (rust-lld) - optional override
 RUST_SYSROOT := $(shell rustc --print sysroot 2>/dev/null)
@@ -35,7 +36,7 @@ all: executables
 
 # Stage 1: Rebuild silica.config (all *.silica under this directory, relative paths)
 silica.config:
-	@cd "$(THIS_DIR)" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
+	@cd "$(THIS_DIR)" && find "$$PWD" -maxdepth 1 -type f -name '*.silica' | LC_ALL=C sort | sed "s|^$$PWD/||" > silica.config
 
 # Stage 2: silica-compiler generates .sams (reads silica.config)
 assembly: silica.config
@@ -131,6 +132,15 @@ integrate: silica.config
 		fi; \
 	done; \
 	[ "$$failed" -ne 0 ] && [ "$$ko" -eq 0 ] && ko=$$((ko + 1)); \
+	if [ -d "$(THIS_DIR)app_wide_atom" ] && [ -f "$(THIS_DIR)app_wide_atom/Makefile" ]; then \
+		if $(MAKE) -C "$(THIS_DIR)app_wide_atom" integrate; then :; else failed=1; fi; \
+		sf="$(THIS_DIR)app_wide_atom/.integrate_counts"; \
+		if [ -f "$$sf" ]; then \
+			read sub_ok sub_ko < "$$sf" || true; \
+			ok=$$((ok + $${sub_ok:-0})); \
+			ko=$$((ko + $${sub_ko:-0})); \
+		fi; \
+	fi; \
 	printf '%d %d\n' "$$ok" "$$ko" > .integrate_counts; \
 	exit $$failed
 
@@ -140,6 +150,7 @@ clean:
 		rm -f $${s%.sams}; \
 	done
 	rm -f *.sams *.o silica.config .integrate_counts
+	@$(MAKE) -C "$(THIS_DIR)app_wide_atom" clean 2>/dev/null || true
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
@@ -156,5 +167,5 @@ help:
 	@echo "  clean       - Remove .sams, .o, executables"
 	@echo "  help        - Show this help"
 	@echo ""
-	@echo "Config: silica.config (auto-generated from all .silica files in this directory)"
+	@echo "Config: silica.config — top-level *.silica in this folder (subtrial app_wide_atom has its own config)"
 	@echo "Linker: $(LINKER)"

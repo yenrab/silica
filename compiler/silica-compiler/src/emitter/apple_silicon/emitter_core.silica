@@ -55,6 +55,8 @@ use var;
 
 export emit_module/1;
 export emit_module_debug/2;
+export emit_module_with_atom_table/2;
+export emit_module_with_atom_and_debug/3;
 export module_needs_actor_runtime/1;
 export emit_actor_runtime_module/1;
 
@@ -120,440 +122,238 @@ fn module_needs_actor_runtime(sir_module: SIRModule) -> bool {
 }
 
 fn emit_actor_runtime_module(sir_module: SIRModule) -> string {
-    table: AtomTable <- atom_table@build_atom_table(sir_module);
-    concat("; Silica actor/supervisor runtime definitions. Link this object once per executable.\n", prims_actors_runtime_asm@emit_actor_runtime_helpers(table))
+    concat("; Silica actor/supervisor runtime definitions. Link this object once per executable.\n", prims_actors_runtime_asm@emit_actor_runtime_helpers(atom_table@build_atom_table(sir_module)))
 }
 
-// Emit AArch64 assembly for a SIR module.
-// Input: SIRModule (from sir_generator, post-optimization)
-// Output: Assembly text as string
+fn emit_actor_runtime_module_with_atom_table(atom_table_shared: AtomTable) -> string {
+    concat("; Silica actor/supervisor runtime definitions. Link this object once per executable.\n", prims_actors_runtime_asm@emit_actor_runtime_helpers(atom_table_shared))
+}
+
+// shared_atom_table: per-unit from build_atom_table, or executable-wide merged table from build_atom_table_executable for multi-unit silica.config batches.
+fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: AtomTable, emitter_debug: bool) -> string proc[DeviceIO] {
+    do
+    header: string <- case recursion_support@module_uses_tail_calls(sir_module) of {
+        true -> do
+            bss: string <- recursion_support@emit_recursion_bss_section();
+            p1: string <- recursion_support@emit_recursion_phase_header_comment();
+            p4: string <- recursion_support@emit_stack_trace_hook_comment();
+            p6: string <- recursion_support@emit_trampoline_fallback_stub();
+            base: string <- emit_module_asm_prelude(sir_module);
+            concat(concat(concat(concat(concat(concat(bss, "\n"), base), "\n"), p1), concat("\n", concat(p4, concat("\n", p6)))), "\n")
+        end;
+        false -> emit_module_asm_prelude(sir_module)
+    };
+    table: AtomTable <- shared_atom_table;
+    int64_table: Int64PrintTable <- int_rodata@build_int64_print_table(sir_module);
+    int32_table: Int32PrintTable <- int_rodata@build_int32_print_table(sir_module);
+    int16_table: Int16PrintTable <- int_rodata@build_int16_print_table(sir_module);
+    int8_table: Int8PrintTable <- int_rodata@build_int8_print_table(sir_module);
+    literal_table: Int64LiteralTable <- int64_literal_pool@build_int64_literal_table(sir_module);
+    float64_literal_table: Float64LiteralTable <- float64_literal_pool@build_float64_literal_table(sir_module);
+    float32_literal_table: Float32LiteralTable <- float32_literal_pool@build_float32_literal_table(sir_module);
+    string_literal_table: StringLiteralTable <- string_literal_pool@build_string_literal_table(sir_module);
+    funcs: string <- emit_functions(sir_module.functions, sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, emitter_debug, sir_module.module_name);
+    needs_region_overflow_helper: bool <- prims_memory@module_uses_region_allocation(sir_module);
+    region_overflow_helper: string <- case needs_region_overflow_helper of {
+        true -> concat("\n", prims_memory@emit_region_overflow_helper());
+        false -> ""
+    };
+    needs_pi_helper: bool <- int_rodata@module_uses_signed_print_var(sir_module);
+    needs_pu_helper: bool <- case int_rodata@module_uses_uint64_print_var(sir_module) of {
+        true -> true;
+        false -> case int_rodata@module_uses_uint32_print_var(sir_module) of {
+            true -> true;
+            false -> case int_rodata@module_uses_uint16_print_var(sir_module) of {
+                true -> true;
+                false -> int_rodata@module_uses_uint8_print_var(sir_module)
+            }
+        }
+    };
+    pi_helper: string <- case needs_pi_helper of {
+        true -> concat("\n", print_int64_inline@emit_print_int64_helper());
+        false -> ""
+    };
+    pu_helper: string <- case needs_pu_helper of {
+        true -> concat("\n", print_int64_inline@emit_print_uint64_helper());
+        false -> ""
+    };
+    needs_pb_helper: bool <- boolean_rodata@module_uses_print_bool_var(sir_module);
+    pb_helper: string <- case needs_pb_helper of {
+        true -> concat("\n", print_bool_inline@emit_print_bool_helper());
+        false -> ""
+    };
+    needs_pf64_helper: bool <- float64_rodata@module_uses_float64_print(sir_module);
+    pf64_helper: string <- case needs_pf64_helper of {
+        true -> concat("\n", print_float64_inline@emit_print_float64_helper());
+        false -> ""
+    };
+    needs_pf32_helper: bool <- float32_rodata@module_uses_float32_print(sir_module);
+    pf32_helper: string <- case needs_pf32_helper of {
+        true -> concat("\n", print_float32_inline@emit_print_float32_helper());
+        false -> ""
+    };
+    needs_ps_helper: bool <- string_rodata@module_uses_print_string_var(sir_module);
+    ps_helper: string <- case needs_ps_helper of {
+        true -> concat("\n", print_string_inline@emit_print_string_helper());
+        false -> ""
+    };
+    needs_ps_helper_stderr: bool <- string_rodata@module_uses_print_string_stderr_var(sir_module);
+    ps_helper_stderr: string <- case needs_ps_helper_stderr of {
+        true -> concat("\n", print_string_inline@emit_print_string_helper_stderr());
+        false -> ""
+    };
+    needs_concat_helper: bool <- string_rodata@module_uses_string_concat(sir_module);
+    concat_helper: string <- case needs_concat_helper of {
+        true -> concat("\n", string_concat_mmap_nomte@emit_string_concat_helper());
+        false -> ""
+    };
+    needs_substring_helper: bool <- string_rodata@module_uses_string_substring(sir_module);
+    substring_helper: string <- case needs_substring_helper of {
+        true -> concat("\n", string_substring_mmap_nomte@emit_string_substring_helper());
+        false -> ""
+    };
+    needs_substring_until_char_helper: bool <- string_rodata@module_uses_string_substring_until_char(sir_module);
+    substring_until_char_helper: string <- case needs_substring_until_char_helper of {
+        true -> concat("\n", string_substring_mmap_nomte@emit_string_substring_until_char_helper());
+        false -> ""
+    };
+    needs_length_bytes_helper: bool <- string_rodata@module_uses_string_length_bytes(sir_module);
+    length_bytes_helper: string <- case needs_length_bytes_helper of {
+        true -> concat("\n", string_length_mmap_nomte@emit_length_bytes_helper());
+        false -> ""
+    };
+    needs_length_chars_helper: bool <- string_rodata@module_uses_string_length_chars(sir_module);
+    length_chars_helper: string <- case needs_length_chars_helper of {
+        true -> concat("\n", string_length_mmap_nomte@emit_length_chars_helper());
+        false -> ""
+    };
+    needs_string_eq_helper: bool <- string_rodata@module_uses_string_case_pattern(sir_module);
+    string_eq_helper: string <- case needs_string_eq_helper of {
+        true -> concat("\n", string_eq_mmap_nomte@emit_string_eq_helper());
+        false -> ""
+    };
+    needs_list_helpers: bool <- prims_list@module_uses_list_prims(sir_module);
+    list_helpers_asm: string <- case needs_list_helpers of {
+        true -> concat("\n", prims_list@emit_list_helpers());
+        false -> ""
+    };
+    needs_actor_runtime: bool <- module_needs_actor_runtime(sir_module);
+    actor_rt_helper_asm: string <- "";
+    needs_alloc_region_stub: bool <- prims_memory@module_uses_alloc_region(sir_module);
+    needs_region_alloc_stub: bool <- case needs_actor_runtime of {
+        true -> false;
+        false -> case needs_list_helpers of {
+            true -> true;
+            false -> case needs_region_overflow_helper of {
+                true -> true;
+                false -> case needs_alloc_region_stub of {
+                    true -> true;
+                    false -> module_needs_region_alloc_for_aggregate_copy(sir_module)
+                }
+            }
+        }
+    };
+    region_alloc_stub_asm: string <- case needs_region_alloc_stub of {
+        true -> concat("\n", prims_list@emit_region_alloc_stub());
+        false -> ""
+    };
+    fwh_0: string <- concat(funcs, pi_helper);
+    fwh_1: string <- concat(fwh_0, pu_helper);
+    fwh_2: string <- concat(fwh_1, pb_helper);
+    fwh_3: string <- concat(fwh_2, pf64_helper);
+    fwh_4: string <- concat(fwh_3, pf32_helper);
+    fwh_5a: string <- concat(fwh_4, ps_helper);
+    fwh_5: string <- concat(fwh_5a, ps_helper_stderr);
+    fwh_6: string <- concat(fwh_5, concat_helper);
+    fwh_7: string <- concat(fwh_6, substring_helper);
+    fwh_8: string <- concat(fwh_7, substring_until_char_helper);
+    fwh_9: string <- concat(fwh_8, length_bytes_helper);
+    fwh_10: string <- concat(fwh_9, length_chars_helper);
+    fwh_11: string <- concat(fwh_10, string_eq_helper);
+    fwh_11b: string <- concat(fwh_11, list_helpers_asm);
+    fwh_11c: string <- concat(fwh_11b, actor_rt_helper_asm);
+    fwh_11d: string <- concat(fwh_11c, region_alloc_stub_asm);
+    funcs_with_helper: string <- concat(fwh_11d, region_overflow_helper);
+    atom_rodata_str: string <- atom_rodata@emit_atom_rodata_section(table);
+    bool_rodata: string <- boolean_rodata@emit_boolean_rodata_section();
+    int64_rodata_str: string <- int_rodata@emit_int64_rodata_section(int64_table);
+    int32_rodata_str: string <- int_rodata@emit_int32_rodata_section(int32_table);
+    int16_rodata_str: string <- int_rodata@emit_int16_rodata_section(int16_table);
+    int8_rodata_str: string <- int_rodata@emit_int8_rodata_section(int8_table);
+    code_part: string <- concat(concat(header, "\n"), funcs_with_helper);
+    with_atom: string <- case len(atom_rodata_str) > 0 of {
+        true -> concat(concat(code_part, "\n"), atom_rodata_str);
+        false -> code_part
+    };
+    with_bool: string <- case boolean_rodata@module_uses_booleans(sir_module) of {
+        true -> concat(concat(with_atom, "\n"), bool_rodata);
+        false -> with_atom
+    };
+    with_int64: string <- case int_rodata@module_uses_int64_print(sir_module) of {
+        true -> concat(concat(with_bool, "\n"), int64_rodata_str);
+        false -> with_bool
+    };
+    with_int32: string <- case int_rodata@module_uses_int32_print(sir_module) of {
+        true -> concat(concat(with_int64, "\n"), int32_rodata_str);
+        false -> with_int64
+    };
+    with_int16: string <- case int_rodata@module_uses_int16_print(sir_module) of {
+        true -> concat(concat(with_int32, "\n"), int16_rodata_str);
+        false -> with_int32
+    };
+    with_int8: string <- case int_rodata@module_uses_int8_print(sir_module) of {
+        true -> concat(concat(with_int16, "\n"), int8_rodata_str);
+        false -> with_int16
+    };
+    float64_helper_rodata: string <- case needs_pf64_helper of {
+        true -> concat("\n", float64_rodata@emit_float64_helper_rodata());
+        false -> ""
+    };
+    float32_helper_rodata: string <- case needs_pf32_helper of {
+        true -> concat("\n", float32_rodata@emit_float32_helper_rodata());
+        false -> ""
+    };
+    with_float64_helper: string <- concat(with_int8, float64_helper_rodata);
+    with_float32_helper: string <- concat(with_float64_helper, float32_helper_rodata);
+    int64_literal_rodata: string <- int64_literal_pool@emit_int64_literal_rodata_section(literal_table);
+    with_int64_literal: string <- case int64_literal_pool@module_uses_int64_literal_pool(sir_module) of {
+        true -> concat(concat(with_float32_helper, "\n"), int64_literal_rodata);
+        false -> with_float32_helper
+    };
+    float64_literal_rodata: string <- float64_literal_pool@emit_float64_literal_rodata_section(float64_literal_table);
+    with_float64_literal: string <- case float64_literal_pool@module_uses_float64_literal_pool(sir_module) of {
+        true -> concat(concat(with_int64_literal, "\n"), float64_literal_rodata);
+        false -> with_int64_literal
+    };
+    float32_literal_rodata: string <- float32_literal_pool@emit_float32_literal_rodata_section(float32_literal_table);
+    with_float32_literal: string <- case float32_literal_pool@module_uses_float32_literal_pool(sir_module) of {
+        true -> concat(concat(with_float64_literal, "\n"), float32_literal_rodata);
+        false -> with_float64_literal
+    };
+    string_literal_rodata: string <- string_literal_pool@emit_string_literal_rodata_section(string_literal_table);
+    with_string_literal: string <- case string_literal_pool@module_uses_string_literal_pool(sir_module) of {
+        true -> concat(concat(with_float32_literal, "\n"), string_literal_rodata);
+        false -> with_float32_literal
+    };
+    newline_rodata: string <- case string_rodata@module_uses_println(sir_module) of {
+        true -> concat("\n", print_string_inline@emit_newline_rodata());
+        false -> ""
+    };
+    with_newline: string <- concat(with_string_literal, newline_rodata);
+    with_newline
+    end
+}
+
 fn emit_module(sir_module: SIRModule) -> string proc[DeviceIO] {
-    do
-    header: string <- case recursion_support@module_uses_tail_calls(sir_module) of {
-        true -> do
-            bss: string <- recursion_support@emit_recursion_bss_section();
-            p1: string <- recursion_support@emit_recursion_phase_header_comment();
-            p4: string <- recursion_support@emit_stack_trace_hook_comment();
-            p6: string <- recursion_support@emit_trampoline_fallback_stub();
-            base: string <- emit_module_asm_prelude(sir_module);
-            concat(concat(concat(concat(concat(concat(bss, "\n"), base), "\n"), p1), concat("\n", concat(p4, concat("\n", p6)))), "\n")
-        end;
-        false -> emit_module_asm_prelude(sir_module)
-    };
-    table: AtomTable <- atom_table@build_atom_table(sir_module);
-    int64_table: Int64PrintTable <- int_rodata@build_int64_print_table(sir_module);
-    int32_table: Int32PrintTable <- int_rodata@build_int32_print_table(sir_module);
-    int16_table: Int16PrintTable <- int_rodata@build_int16_print_table(sir_module);
-    int8_table: Int8PrintTable <- int_rodata@build_int8_print_table(sir_module);
-    literal_table: Int64LiteralTable <- int64_literal_pool@build_int64_literal_table(sir_module);
-    float64_literal_table: Float64LiteralTable <- float64_literal_pool@build_float64_literal_table(sir_module);
-    float32_literal_table: Float32LiteralTable <- float32_literal_pool@build_float32_literal_table(sir_module);
-    string_literal_table: StringLiteralTable <- string_literal_pool@build_string_literal_table(sir_module);
-    funcs: string <- emit_functions(sir_module.functions, sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, false, sir_module.module_name);
-    needs_region_overflow_helper: bool <- prims_memory@module_uses_region_allocation(sir_module);
-    region_overflow_helper: string <- case needs_region_overflow_helper of {
-        true -> concat("\n", prims_memory@emit_region_overflow_helper());
-        false -> ""
-    };
-    needs_pi_helper: bool <- int_rodata@module_uses_signed_print_var(sir_module);
-    needs_pu_helper: bool <- case int_rodata@module_uses_uint64_print_var(sir_module) of {
-        true -> true;
-        false -> case int_rodata@module_uses_uint32_print_var(sir_module) of {
-            true -> true;
-            false -> case int_rodata@module_uses_uint16_print_var(sir_module) of {
-                true -> true;
-                false -> int_rodata@module_uses_uint8_print_var(sir_module)
-            }
-        }
-    };
-    pi_helper: string <- case needs_pi_helper of {
-        true -> concat("\n", print_int64_inline@emit_print_int64_helper());
-        false -> ""
-    };
-    pu_helper: string <- case needs_pu_helper of {
-        true -> concat("\n", print_int64_inline@emit_print_uint64_helper());
-        false -> ""
-    };
-    needs_pb_helper: bool <- boolean_rodata@module_uses_print_bool_var(sir_module);
-    pb_helper: string <- case needs_pb_helper of {
-        true -> concat("\n", print_bool_inline@emit_print_bool_helper());
-        false -> ""
-    };
-    needs_pf64_helper: bool <- float64_rodata@module_uses_float64_print(sir_module);
-    pf64_helper: string <- case needs_pf64_helper of {
-        true -> concat("\n", print_float64_inline@emit_print_float64_helper());
-        false -> ""
-    };
-    needs_pf32_helper: bool <- float32_rodata@module_uses_float32_print(sir_module);
-    pf32_helper: string <- case needs_pf32_helper of {
-        true -> concat("\n", print_float32_inline@emit_print_float32_helper());
-        false -> ""
-    };
-    needs_ps_helper: bool <- string_rodata@module_uses_print_string_var(sir_module);
-    ps_helper: string <- case needs_ps_helper of {
-        true -> concat("\n", print_string_inline@emit_print_string_helper());
-        false -> ""
-    };
-    needs_ps_helper_stderr: bool <- string_rodata@module_uses_print_string_stderr_var(sir_module);
-    ps_helper_stderr: string <- case needs_ps_helper_stderr of {
-        true -> concat("\n", print_string_inline@emit_print_string_helper_stderr());
-        false -> ""
-    };
-    needs_concat_helper: bool <- string_rodata@module_uses_string_concat(sir_module);
-    concat_helper: string <- case needs_concat_helper of {
-        true -> concat("\n", string_concat_mmap_nomte@emit_string_concat_helper());
-        false -> ""
-    };
-    needs_substring_helper: bool <- string_rodata@module_uses_string_substring(sir_module);
-    substring_helper: string <- case needs_substring_helper of {
-        true -> concat("\n", string_substring_mmap_nomte@emit_string_substring_helper());
-        false -> ""
-    };
-    needs_substring_until_char_helper: bool <- string_rodata@module_uses_string_substring_until_char(sir_module);
-    substring_until_char_helper: string <- case needs_substring_until_char_helper of {
-        true -> concat("\n", string_substring_mmap_nomte@emit_string_substring_until_char_helper());
-        false -> ""
-    };
-    needs_length_bytes_helper: bool <- string_rodata@module_uses_string_length_bytes(sir_module);
-    length_bytes_helper: string <- case needs_length_bytes_helper of {
-        true -> concat("\n", string_length_mmap_nomte@emit_length_bytes_helper());
-        false -> ""
-    };
-    needs_length_chars_helper: bool <- string_rodata@module_uses_string_length_chars(sir_module);
-    length_chars_helper: string <- case needs_length_chars_helper of {
-        true -> concat("\n", string_length_mmap_nomte@emit_length_chars_helper());
-        false -> ""
-    };
-    needs_string_eq_helper: bool <- string_rodata@module_uses_string_case_pattern(sir_module);
-    string_eq_helper: string <- case needs_string_eq_helper of {
-        true -> concat("\n", string_eq_mmap_nomte@emit_string_eq_helper());
-        false -> ""
-    };
-    needs_list_helpers: bool <- prims_list@module_uses_list_prims(sir_module);
-    list_helpers_asm: string <- case needs_list_helpers of {
-        true -> concat("\n", prims_list@emit_list_helpers());
-        false -> ""
-    };
-    needs_actor_runtime: bool <- module_needs_actor_runtime(sir_module);
-    actor_rt_helper_asm: string <- "";
-    needs_alloc_region_stub: bool <- prims_memory@module_uses_alloc_region(sir_module);
-    needs_region_alloc_stub: bool <- case needs_actor_runtime of {
-        true -> false;
-        false -> case needs_list_helpers of {
-            true -> true;
-            false -> case needs_region_overflow_helper of {
-                true -> true;
-                false -> case needs_alloc_region_stub of {
-                    true -> true;
-                    false -> module_needs_region_alloc_for_aggregate_copy(sir_module)
-                }
-            }
-        }
-    };
-    region_alloc_stub_asm: string <- case needs_region_alloc_stub of {
-        true -> concat("\n", prims_list@emit_region_alloc_stub());
-        false -> ""
-    };
-    fwh_0: string <- concat(funcs, pi_helper);
-    fwh_1: string <- concat(fwh_0, pu_helper);
-    fwh_2: string <- concat(fwh_1, pb_helper);
-    fwh_3: string <- concat(fwh_2, pf64_helper);
-    fwh_4: string <- concat(fwh_3, pf32_helper);
-    fwh_5a: string <- concat(fwh_4, ps_helper);
-    fwh_5: string <- concat(fwh_5a, ps_helper_stderr);
-    fwh_6: string <- concat(fwh_5, concat_helper);
-    fwh_7: string <- concat(fwh_6, substring_helper);
-    fwh_8: string <- concat(fwh_7, substring_until_char_helper);
-    fwh_9: string <- concat(fwh_8, length_bytes_helper);
-    fwh_10: string <- concat(fwh_9, length_chars_helper);
-    fwh_11: string <- concat(fwh_10, string_eq_helper);
-    fwh_11b: string <- concat(fwh_11, list_helpers_asm);
-    fwh_11c: string <- concat(fwh_11b, actor_rt_helper_asm);
-    fwh_11d: string <- concat(fwh_11c, region_alloc_stub_asm);
-    funcs_with_helper: string <- concat(fwh_11d, region_overflow_helper);
-    atom_rodata_str: string <- atom_rodata@emit_atom_rodata_section(table);
-    bool_rodata: string <- boolean_rodata@emit_boolean_rodata_section();
-    int64_rodata_str: string <- int_rodata@emit_int64_rodata_section(int64_table);
-    int32_rodata_str: string <- int_rodata@emit_int32_rodata_section(int32_table);
-    int16_rodata_str: string <- int_rodata@emit_int16_rodata_section(int16_table);
-    int8_rodata_str: string <- int_rodata@emit_int8_rodata_section(int8_table);
-    code_part: string <- concat(concat(header, "\n"), funcs_with_helper);
-    with_atom: string <- case len(atom_rodata_str) > 0 of {
-        true -> concat(concat(code_part, "\n"), atom_rodata_str);
-        false -> code_part
-    };
-    with_bool: string <- case boolean_rodata@module_uses_booleans(sir_module) of {
-        true -> concat(concat(with_atom, "\n"), bool_rodata);
-        false -> with_atom
-    };
-    with_int64: string <- case int_rodata@module_uses_int64_print(sir_module) of {
-        true -> concat(concat(with_bool, "\n"), int64_rodata_str);
-        false -> with_bool
-    };
-    with_int32: string <- case int_rodata@module_uses_int32_print(sir_module) of {
-        true -> concat(concat(with_int64, "\n"), int32_rodata_str);
-        false -> with_int64
-    };
-    with_int16: string <- case int_rodata@module_uses_int16_print(sir_module) of {
-        true -> concat(concat(with_int32, "\n"), int16_rodata_str);
-        false -> with_int32
-    };
-    with_int8: string <- case int_rodata@module_uses_int8_print(sir_module) of {
-        true -> concat(concat(with_int16, "\n"), int8_rodata_str);
-        false -> with_int16
-    };
-    float64_helper_rodata: string <- case needs_pf64_helper of {
-        true -> concat("\n", float64_rodata@emit_float64_helper_rodata());
-        false -> ""
-    };
-    float32_helper_rodata: string <- case needs_pf32_helper of {
-        true -> concat("\n", float32_rodata@emit_float32_helper_rodata());
-        false -> ""
-    };
-    with_float64_helper: string <- concat(with_int8, float64_helper_rodata);
-    with_float32_helper: string <- concat(with_float64_helper, float32_helper_rodata);
-    int64_literal_rodata: string <- int64_literal_pool@emit_int64_literal_rodata_section(literal_table);
-    with_int64_literal: string <- case int64_literal_pool@module_uses_int64_literal_pool(sir_module) of {
-        true -> concat(concat(with_float32_helper, "\n"), int64_literal_rodata);
-        false -> with_float32_helper
-    };
-    float64_literal_rodata: string <- float64_literal_pool@emit_float64_literal_rodata_section(float64_literal_table);
-    with_float64_literal: string <- case float64_literal_pool@module_uses_float64_literal_pool(sir_module) of {
-        true -> concat(concat(with_int64_literal, "\n"), float64_literal_rodata);
-        false -> with_int64_literal
-    };
-    float32_literal_rodata: string <- float32_literal_pool@emit_float32_literal_rodata_section(float32_literal_table);
-    with_float32_literal: string <- case float32_literal_pool@module_uses_float32_literal_pool(sir_module) of {
-        true -> concat(concat(with_float64_literal, "\n"), float32_literal_rodata);
-        false -> with_float64_literal
-    };
-    string_literal_rodata: string <- string_literal_pool@emit_string_literal_rodata_section(string_literal_table);
-    with_string_literal: string <- case string_literal_pool@module_uses_string_literal_pool(sir_module) of {
-        true -> concat(concat(with_float32_literal, "\n"), string_literal_rodata);
-        false -> with_float32_literal
-    };
-    newline_rodata: string <- case string_rodata@module_uses_println(sir_module) of {
-        true -> concat("\n", print_string_inline@emit_newline_rodata());
-        false -> ""
-    };
-    with_newline: string <- concat(with_string_literal, newline_rodata);
-    with_newline
-    end
+    emit_module_with_atom_and_debug(sir_module, atom_table@build_atom_table(sir_module), false)
 }
 
-// Emit with debug: when debug is true, term_emitter prints branch/register info to stderr
 fn emit_module_debug(sir_module: SIRModule, debug: bool) -> string proc[DeviceIO] {
-    do
-    header: string <- case recursion_support@module_uses_tail_calls(sir_module) of {
-        true -> do
-            bss: string <- recursion_support@emit_recursion_bss_section();
-            p1: string <- recursion_support@emit_recursion_phase_header_comment();
-            p4: string <- recursion_support@emit_stack_trace_hook_comment();
-            p6: string <- recursion_support@emit_trampoline_fallback_stub();
-            base: string <- emit_module_asm_prelude(sir_module);
-            concat(concat(concat(concat(concat(concat(bss, "\n"), base), "\n"), p1), concat("\n", concat(p4, concat("\n", p6)))), "\n")
-        end;
-        false -> emit_module_asm_prelude(sir_module)
-    };
-    table: AtomTable <- atom_table@build_atom_table(sir_module);
-    int64_table: Int64PrintTable <- int_rodata@build_int64_print_table(sir_module);
-    int32_table: Int32PrintTable <- int_rodata@build_int32_print_table(sir_module);
-    int16_table: Int16PrintTable <- int_rodata@build_int16_print_table(sir_module);
-    int8_table: Int8PrintTable <- int_rodata@build_int8_print_table(sir_module);
-    literal_table: Int64LiteralTable <- int64_literal_pool@build_int64_literal_table(sir_module);
-    float64_literal_table: Float64LiteralTable <- float64_literal_pool@build_float64_literal_table(sir_module);
-    float32_literal_table: Float32LiteralTable <- float32_literal_pool@build_float32_literal_table(sir_module);
-    string_literal_table: StringLiteralTable <- string_literal_pool@build_string_literal_table(sir_module);
-    funcs: string <- emit_functions(sir_module.functions, sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug, sir_module.module_name);
-    needs_region_overflow_helper: bool <- prims_memory@module_uses_region_allocation(sir_module);
-    region_overflow_helper: string <- case needs_region_overflow_helper of {
-        true -> concat("\n", prims_memory@emit_region_overflow_helper());
-        false -> ""
-    };
-    needs_pi_helper: bool <- int_rodata@module_uses_signed_print_var(sir_module);
-    needs_pu_helper: bool <- case int_rodata@module_uses_uint64_print_var(sir_module) of {
-        true -> true;
-        false -> case int_rodata@module_uses_uint32_print_var(sir_module) of {
-            true -> true;
-            false -> case int_rodata@module_uses_uint16_print_var(sir_module) of {
-                true -> true;
-                false -> int_rodata@module_uses_uint8_print_var(sir_module)
-            }
-        }
-    };
-    pi_helper: string <- case needs_pi_helper of {
-        true -> concat("\n", print_int64_inline@emit_print_int64_helper());
-        false -> ""
-    };
-    pu_helper: string <- case needs_pu_helper of {
-        true -> concat("\n", print_int64_inline@emit_print_uint64_helper());
-        false -> ""
-    };
-    needs_pb_helper: bool <- boolean_rodata@module_uses_print_bool_var(sir_module);
-    pb_helper: string <- case needs_pb_helper of {
-        true -> concat("\n", print_bool_inline@emit_print_bool_helper());
-        false -> ""
-    };
-    needs_pf64_helper: bool <- float64_rodata@module_uses_float64_print(sir_module);
-    pf64_helper: string <- case needs_pf64_helper of {
-        true -> concat("\n", print_float64_inline@emit_print_float64_helper());
-        false -> ""
-    };
-    needs_pf32_helper: bool <- float32_rodata@module_uses_float32_print(sir_module);
-    pf32_helper: string <- case needs_pf32_helper of {
-        true -> concat("\n", print_float32_inline@emit_print_float32_helper());
-        false -> ""
-    };
-    needs_ps_helper: bool <- string_rodata@module_uses_print_string_var(sir_module);
-    ps_helper: string <- case needs_ps_helper of {
-        true -> concat("\n", print_string_inline@emit_print_string_helper());
-        false -> ""
-    };
-    needs_ps_helper_stderr: bool <- string_rodata@module_uses_print_string_stderr_var(sir_module);
-    ps_helper_stderr: string <- case needs_ps_helper_stderr of {
-        true -> concat("\n", print_string_inline@emit_print_string_helper_stderr());
-        false -> ""
-    };
-    needs_concat_helper: bool <- string_rodata@module_uses_string_concat(sir_module);
-    concat_helper: string <- case needs_concat_helper of {
-        true -> concat("\n", string_concat_mmap_nomte@emit_string_concat_helper());
-        false -> ""
-    };
-    needs_substring_helper: bool <- string_rodata@module_uses_string_substring(sir_module);
-    substring_helper: string <- case needs_substring_helper of {
-        true -> concat("\n", string_substring_mmap_nomte@emit_string_substring_helper());
-        false -> ""
-    };
-    needs_substring_until_char_helper: bool <- string_rodata@module_uses_string_substring_until_char(sir_module);
-    substring_until_char_helper: string <- case needs_substring_until_char_helper of {
-        true -> concat("\n", string_substring_mmap_nomte@emit_string_substring_until_char_helper());
-        false -> ""
-    };
-    needs_length_bytes_helper: bool <- string_rodata@module_uses_string_length_bytes(sir_module);
-    length_bytes_helper: string <- case needs_length_bytes_helper of {
-        true -> concat("\n", string_length_mmap_nomte@emit_length_bytes_helper());
-        false -> ""
-    };
-    needs_length_chars_helper: bool <- string_rodata@module_uses_string_length_chars(sir_module);
-    length_chars_helper: string <- case needs_length_chars_helper of {
-        true -> concat("\n", string_length_mmap_nomte@emit_length_chars_helper());
-        false -> ""
-    };
-    needs_string_eq_helper: bool <- string_rodata@module_uses_string_case_pattern(sir_module);
-    string_eq_helper: string <- case needs_string_eq_helper of {
-        true -> concat("\n", string_eq_mmap_nomte@emit_string_eq_helper());
-        false -> ""
-    };
-    needs_list_helpers: bool <- prims_list@module_uses_list_prims(sir_module);
-    list_helpers_asm: string <- case needs_list_helpers of {
-        true -> concat("\n", prims_list@emit_list_helpers());
-        false -> ""
-    };
-    needs_actor_runtime: bool <- module_needs_actor_runtime(sir_module);
-    actor_rt_helper_asm: string <- "";
-    needs_alloc_region_stub: bool <- prims_memory@module_uses_alloc_region(sir_module);
-    needs_region_alloc_stub: bool <- case needs_actor_runtime of {
-        true -> false;
-        false -> case needs_list_helpers of {
-            true -> true;
-            false -> case needs_region_overflow_helper of {
-                true -> true;
-                false -> case needs_alloc_region_stub of {
-                    true -> true;
-                    false -> module_needs_region_alloc_for_aggregate_copy(sir_module)
-                }
-            }
-        }
-    };
-    region_alloc_stub_asm: string <- case needs_region_alloc_stub of {
-        true -> concat("\n", prims_list@emit_region_alloc_stub());
-        false -> ""
-    };
-    fwh_0: string <- concat(funcs, pi_helper);
-    fwh_1: string <- concat(fwh_0, pu_helper);
-    fwh_2: string <- concat(fwh_1, pb_helper);
-    fwh_3: string <- concat(fwh_2, pf64_helper);
-    fwh_4: string <- concat(fwh_3, pf32_helper);
-    fwh_5a: string <- concat(fwh_4, ps_helper);
-    fwh_5: string <- concat(fwh_5a, ps_helper_stderr);
-    fwh_6: string <- concat(fwh_5, concat_helper);
-    fwh_7: string <- concat(fwh_6, substring_helper);
-    fwh_8: string <- concat(fwh_7, substring_until_char_helper);
-    fwh_9: string <- concat(fwh_8, length_bytes_helper);
-    fwh_10: string <- concat(fwh_9, length_chars_helper);
-    fwh_11: string <- concat(fwh_10, string_eq_helper);
-    fwh_11b: string <- concat(fwh_11, list_helpers_asm);
-    fwh_11c: string <- concat(fwh_11b, actor_rt_helper_asm);
-    fwh_11d: string <- concat(fwh_11c, region_alloc_stub_asm);
-    funcs_with_helper: string <- concat(fwh_11d, region_overflow_helper);
-    atom_rodata_str: string <- atom_rodata@emit_atom_rodata_section(table);
-    bool_rodata: string <- boolean_rodata@emit_boolean_rodata_section();
-    int64_rodata_str: string <- int_rodata@emit_int64_rodata_section(int64_table);
-    int32_rodata_str: string <- int_rodata@emit_int32_rodata_section(int32_table);
-    int16_rodata_str: string <- int_rodata@emit_int16_rodata_section(int16_table);
-    int8_rodata_str: string <- int_rodata@emit_int8_rodata_section(int8_table);
-    code_part: string <- concat(concat(header, "\n"), funcs_with_helper);
-    with_atom: string <- case len(atom_rodata_str) > 0 of {
-        true -> concat(concat(code_part, "\n"), atom_rodata_str);
-        false -> code_part
-    };
-    with_bool: string <- case boolean_rodata@module_uses_booleans(sir_module) of {
-        true -> concat(concat(with_atom, "\n"), bool_rodata);
-        false -> with_atom
-    };
-    with_int64: string <- case int_rodata@module_uses_int64_print(sir_module) of {
-        true -> concat(concat(with_bool, "\n"), int64_rodata_str);
-        false -> with_bool
-    };
-    with_int32: string <- case int_rodata@module_uses_int32_print(sir_module) of {
-        true -> concat(concat(with_int64, "\n"), int32_rodata_str);
-        false -> with_int64
-    };
-    with_int16: string <- case int_rodata@module_uses_int16_print(sir_module) of {
-        true -> concat(concat(with_int32, "\n"), int16_rodata_str);
-        false -> with_int32
-    };
-    with_int8: string <- case int_rodata@module_uses_int8_print(sir_module) of {
-        true -> concat(concat(with_int16, "\n"), int8_rodata_str);
-        false -> with_int16
-    };
-    float64_helper_rodata: string <- case needs_pf64_helper of {
-        true -> concat("\n", float64_rodata@emit_float64_helper_rodata());
-        false -> ""
-    };
-    float32_helper_rodata: string <- case needs_pf32_helper of {
-        true -> concat("\n", float32_rodata@emit_float32_helper_rodata());
-        false -> ""
-    };
-    with_float64_helper: string <- concat(with_int8, float64_helper_rodata);
-    with_float32_helper: string <- concat(with_float64_helper, float32_helper_rodata);
-    int64_literal_rodata: string <- int64_literal_pool@emit_int64_literal_rodata_section(literal_table);
-    with_int64_literal: string <- case int64_literal_pool@module_uses_int64_literal_pool(sir_module) of {
-        true -> concat(concat(with_float32_helper, "\n"), int64_literal_rodata);
-        false -> with_float32_helper
-    };
-    float64_literal_rodata: string <- float64_literal_pool@emit_float64_literal_rodata_section(float64_literal_table);
-    with_float64_literal: string <- case float64_literal_pool@module_uses_float64_literal_pool(sir_module) of {
-        true -> concat(concat(with_int64_literal, "\n"), float64_literal_rodata);
-        false -> with_int64_literal
-    };
-    float32_literal_rodata: string <- float32_literal_pool@emit_float32_literal_rodata_section(float32_literal_table);
-    with_float32_literal: string <- case float32_literal_pool@module_uses_float32_literal_pool(sir_module) of {
-        true -> concat(concat(with_float64_literal, "\n"), float32_literal_rodata);
-        false -> with_float64_literal
-    };
-    string_literal_rodata: string <- string_literal_pool@emit_string_literal_rodata_section(string_literal_table);
-    with_string_literal: string <- case string_literal_pool@module_uses_string_literal_pool(sir_module) of {
-        true -> concat(concat(with_float32_literal, "\n"), string_literal_rodata);
-        false -> with_float32_literal
-    };
-    newline_rodata: string <- case string_rodata@module_uses_println(sir_module) of {
-        true -> concat("\n", print_string_inline@emit_newline_rodata());
-        false -> ""
-    };
-    with_newline: string <- concat(with_string_literal, newline_rodata);
-    with_newline
-    end
+    emit_module_with_atom_and_debug(sir_module, atom_table@build_atom_table(sir_module), debug)
+}
+
+fn emit_module_with_atom_table(sir_module: SIRModule, shared_atom_table: AtomTable) -> string proc[DeviceIO] {
+    emit_module_with_atom_and_debug(sir_module, shared_atom_table, false)
 }
 
 // Spec 19: assembly linkage — `use` list, .global for exports, .global main when defined.

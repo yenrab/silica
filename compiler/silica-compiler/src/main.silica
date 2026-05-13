@@ -31,6 +31,7 @@ use effect_checker_capabilities;
 use sir_generator_core;
 use sir_ast;
 use emitter_core;
+use atom_table;
 use build_output;
 use diagnostics_core;
 use module_checker_core;
@@ -44,7 +45,7 @@ fn build_module_world(all: ListParsedFile, exclude_path: string) -> ListNamedPro
         false -> case all.head.path == exclude_path of {
             true -> build_module_world(all.tail, exclude_path);
             false -> type_checker_modules@cons_named_program(
-                module_from_path(all.head.path),
+                module_checker_core@module_from_path(all.head.path),
                 all.head.program,
                 build_module_world(all.tail, exclude_path)
             )
@@ -77,29 +78,6 @@ fn parse_all_files_recursive(files: ListString, acc: ListParsedFile) -> (bool, L
                     (false, empty_parsed_files())
                 end;
                 true -> parse_all_files_recursive(files.tail, cons_parsed_file(files.head, parse_result.program, acc))
-            }
-        end
-    }
-}
-
-// all_config_files: every path from silica.config (not the recursive suffix) — needed for `use` / module@ validation per unit.
-fn compile_parsed_list(sorted: ListString, parsed: ListParsedFile, all_config_files: ListString) -> int64 proc[DeviceIO] {
-    case sorted.is_nil of {
-        true -> 0;
-        false -> do
-            (found: bool, prog: Program) <- find_program_in_parsed(parsed, sorted.head);
-            world: ListNamedProgram <- build_module_world(parsed, sorted.head);
-            code: int64 <- case found of {
-                false -> do
-                    println("Error: internal parse table missing file");
-                    print(sorted.head);
-                    1
-                end;
-                true -> compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed)
-            };
-            case code != 0 of {
-                true -> code;
-                false -> compile_parsed_list(sorted.tail, parsed, all_config_files)
             }
         end
     }
@@ -241,7 +219,7 @@ fn list_contains(lst: ListString, s: string) -> bool {
 fn path_for_module(files: ListString, mod_name: string) -> string {
     case files.is_nil of {
         true -> "";
-        false -> case module_from_path(files.head) == mod_name of {
+        false -> case module_checker_core@module_from_path(files.head) == mod_name of {
             true -> files.head;
             false -> path_for_module(files.tail, mod_name)
         }
@@ -470,20 +448,16 @@ fn debug_walk_decls(decls: ListDeclaration) -> int64 proc[DeviceIO] {
     }
 }
 
-// Module-check, type-check, trait-check, effect-check, SIR, emit for one unit; module_world is other parsed units (spec §19).
-// config_files: full silica.config path list — module checker validates `use` before type checking.
-// all_parsed: every ParsedFile from this compile — module checker verifies cross-module exports (§19.2).
-fn compile_parsed_unit(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile) -> int64 proc[DeviceIO] {
+// Module-check → SIR only (used for multi-unit silica.config: merge atoms, then emit with shared AtomTable).
+fn compile_to_sir_module(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile) -> (int64, SIRModule) proc[DeviceIO] {
     println("  Module checking...");
     mc: int64 <- module_checker_core@module_checker_check_program(program, config_files, all_parsed, filename);
     case mc == 0 of {
-        false -> 1;
+        false -> (1, sir_ast@dummy_sir_module());
         true -> do
             println("  Type checking...");
             context: TypeContext <- type_checker_core@create_type_context();
             mod_name: string <- module_checker_core@module_from_path(filename);
-            // Include self in world so that self-qualified calls (e.g. Shape@area inside traits/Shape.silica's
-            // provided body) resolve. validate_no_self_import runs first, so a spurious `use Self;` is still rejected.
             world_with_self: ListNamedProgram <- parser_ast@cons_named_program(mod_name, program, module_world);
             tc_out: ModuleTypecheckOutcome <- type_checker_modules@type_check_program_with_modules_outcome(program, mod_name, world_with_self, context);
             case tc_out.is_ok of {
@@ -491,7 +465,7 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
                     println("  Trait checking...");
                     tr_code: int64 <- trait_checker_core@trait_checker_check_program(program);
                     case tr_code != 0 of {
-                        true -> 1;
+                        true -> (1, sir_ast@dummy_sir_module());
                         false -> do
                             println("  Effect checking...");
                             effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(program);
@@ -506,13 +480,6 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
                                 false -> 0
                             };
                             println("  Generating SIR...");
-                            // Post-type-check pipeline (spec §3.4.8, §8.2.3):
-                            // 1) specialize provided trait methods (monomorphize on each concrete
-                            //    first-param impl type — must run AFTER type-check so the
-                            //    type-checker still sees the trait-typed formal and can dispatch
-                            //    integer literals via dispatch_actual_fits_impl_parameter).
-                            // 2) mangle qualified calls against the specialized world so callees
-                            //    with multiple overloads resolve to overload_mangle link names.
                             specialized_program: Program <- trait_specialization@specialize_program(program);
                             specialized_world: ListNamedProgram <- trait_specialization@specialize_named_program_list(world_with_self);
                             mangled_program: Program <- qualified_call_mangler@mangle_calls_in_program(specialized_program, specialized_world);
@@ -525,18 +492,7 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
                                 end;
                                 false -> 0
                             };
-                            println("  Emitting...");
-                            asm: string <- case debug_compile(filename) of {
-                                true -> emitter_core@emit_module_debug(sir_module, true);
-                                false -> emitter_core@emit_module(sir_module)
-                            };
-                            build_output@write_assembly(filename, asm);
-                            _: int64 <- case emitter_core@module_needs_actor_runtime(sir_module) of {
-                                true -> build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module(sir_module));
-                                false -> 0
-                            };
-                            println(concat("Successfully built ", mod_name));
-                            0
+                            (0, sir_module)
                         end;
                         false -> do
                             effect_error_code: string <- case effect_result.error_code == "" of {
@@ -548,7 +504,7 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
                                 false -> effect_result.spec_section
                             };
                             diagnostics_core@print_compiler_error("EffectError", effect_error_code, effect_result.error_location, effect_result.error_message, effect_spec_section);
-                            1
+                            (1, sir_ast@dummy_sir_module())
                         end
                     }
                         end
@@ -564,10 +520,140 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
                         false -> tc_out.spec_section
                     };
                     diagnostics_core@print_compiler_error("TypeError", error_code, tc_out.error_location, tc_out.error_message, spec_section);
-                    1
+                    (1, sir_ast@dummy_sir_module())
                 end
             }
         end
+    }
+}
+
+// Module-check, type-check, trait-check, effect-check, SIR, emit for one unit; module_world is other parsed units (spec §19).
+fn compile_parsed_unit(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile) -> int64 proc[DeviceIO] {
+    do
+        (sir_code: int64, sir_module: SIRModule) <- compile_to_sir_module(filename, program, module_world, config_files, all_parsed);
+        case sir_code != 0 of {
+            true -> sir_code;
+            false -> do
+                mod_name: string <- module_checker_core@module_from_path(filename);
+                println("  Emitting...");
+                asm: string <- case debug_compile(filename) of {
+                    true -> emitter_core@emit_module_with_atom_and_debug(sir_module, atom_table@build_atom_table(sir_module), true);
+                    false -> emitter_core@emit_module(sir_module)
+                };
+                build_output@write_assembly(filename, asm);
+                _: int64 <- case emitter_core@module_needs_actor_runtime(sir_module) of {
+                    true -> build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module(sir_module));
+                    false -> 0
+                };
+                println(concat("Successfully built ", mod_name));
+                0
+            end
+        }
+    end
+}
+
+// Reverse cons-built ListSIRModule (newest at head) into forward topological order.
+fn reverse_sir_modules_into_forward(lst: ListSIRModule, acc: ListSIRModule) -> ListSIRModule {
+    case lst.is_nil of {
+        true -> acc;
+        false -> reverse_sir_modules_into_forward(lst.tail, sir_ast@cons_sir_module(lst.head, acc))
+    }
+}
+
+// Walk sorted_topo; accumulate SIR in reverse (cons) for each unit, then caller reverses to match topo order.
+fn gather_sirs_rev(sorted_rem: ListString, parsed: ListParsedFile, config_files: ListString, acc_rev: ListSIRModule) -> (int64, ListSIRModule) proc[DeviceIO] {
+    case sorted_rem.is_nil of {
+        true -> (0, acc_rev);
+        false -> do
+            (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, sorted_rem.head);
+            world: ListNamedProgram <- build_module_world(parsed, sorted_rem.head);
+            case found of {
+                false -> do
+                    println("Error: internal parse table missing file");
+                    print(sorted_rem.head);
+                    (1, sir_ast@nil_sir_modules())
+                end;
+                true -> do
+                    (sir_c: int64, sir_val: SIRModule) <- compile_to_sir_module(sorted_rem.head, prog, world, config_files, parsed);
+                    case sir_c != 0 of {
+                        true -> (sir_c, sir_ast@nil_sir_modules());
+                        false -> gather_sirs_rev(sorted_rem.tail, parsed, config_files, sir_ast@cons_sir_module(sir_val, acc_rev))
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn sir_queue_any_need_actor_runtime(mods: ListSIRModule) -> bool {
+    case mods.is_nil of {
+        true -> false;
+        false -> case emitter_core@module_needs_actor_runtime(mods.head) of {
+            true -> true;
+            false -> sir_queue_any_need_actor_runtime(mods.tail)
+        }
+    }
+}
+
+fn emit_batch_with_exe_atom_table(paths: ListString, sirs: ListSIRModule, exe_tbl: AtomTable) -> int64 proc[DeviceIO] {
+    case paths.is_nil of {
+        true -> 0;
+        false -> case sirs.is_nil of {
+            true -> 1;
+            false -> do
+                mod_name: string <- module_checker_core@module_from_path(paths.head);
+                println("  Emitting...");
+                asm: string <- case debug_compile(paths.head) of {
+                    true -> emitter_core@emit_module_with_atom_and_debug(sirs.head, exe_tbl, true);
+                    false -> emitter_core@emit_module_with_atom_table(sirs.head, exe_tbl)
+                };
+                build_output@write_assembly(paths.head, asm);
+                println(concat("Successfully built ", mod_name));
+                emit_batch_with_exe_atom_table(paths.tail, sirs.tail, exe_tbl)
+            end
+        }
+    }
+}
+
+// Two or more units: one merged atom table for the whole config (link-batch / process-image atom ids), then emit each .sams with that table.
+fn compile_multi_unit_with_merged_atoms(sorted_topo: ListString, parsed_all: ListParsedFile, config_files: ListString) -> int64 proc[DeviceIO] {
+    (gather_code: int64, rev_queue: ListSIRModule) <- gather_sirs_rev(sorted_topo, parsed_all, config_files, sir_ast@nil_sir_modules());
+    case gather_code != 0 of {
+        true -> gather_code;
+        false -> do
+            fwd_queue: ListSIRModule <- reverse_sir_modules_into_forward(rev_queue, sir_ast@nil_sir_modules());
+            exe_atom_tbl: AtomTable <- atom_table@build_atom_table_executable(fwd_queue);
+            emit_c: int64 <- emit_batch_with_exe_atom_table(sorted_topo, fwd_queue, exe_atom_tbl);
+            case emit_c != 0 of {
+                true -> emit_c;
+                false -> case sir_queue_any_need_actor_runtime(fwd_queue) of {
+                    true -> build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module_with_atom_table(exe_atom_tbl));
+                    false -> 0
+                }
+            }
+        end
+    }
+}
+
+// all_config_files: every path from silica.config (not the recursive suffix) — needed for `use` / module@ validation per unit.
+fn compile_parsed_list(sorted: ListString, parsed: ListParsedFile, all_config_files: ListString) -> int64 proc[DeviceIO] {
+    case sorted.is_nil of {
+        true -> 0;
+        false -> case sorted.tail.is_nil of {
+            true -> do
+                (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, sorted.head);
+                world: ListNamedProgram <- build_module_world(parsed, sorted.head);
+                case found of {
+                    false -> do
+                        println("Error: internal parse table missing file");
+                        print(sorted.head);
+                        1
+                    end;
+                    true -> compile_parsed_unit(sorted.head, prog, world, all_config_files, parsed)
+                }
+            end;
+            false -> compile_multi_unit_with_merged_atoms(sorted, parsed, all_config_files)
+        }
     }
 }
 

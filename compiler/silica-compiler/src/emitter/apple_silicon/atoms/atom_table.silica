@@ -29,6 +29,7 @@ export AtomTable/0;
 export ListAtomLexeme/0;
 export empty_atom_table/0;
 export build_atom_table/1;
+export build_atom_table_executable/1;
 export atom_lexeme_to_index/2;
 export int64_to_decimal_string/1;
 export reverse_lexemes/1;
@@ -213,9 +214,70 @@ fn seed_actor_runtime_atoms() -> (AtomTable, int64) {
     end
 }
 
-// Build atom table from SIR module. Index 0 = first atom added / first reserved slot.
-// Topology modules: reserve :efficiency=0, :performance=1 then collect (matches runtime stubs).
-// Other modules: collect from empty table so e.g. :ok stays 0 when it is the only atom.
+fn sir_module_any_runtime_actor(sir_module: SIRModule) -> bool {
+    sir_ast@sir_string_list_contains(sir_module.runtime_dependencies, "actor_runtime")
+}
+
+fn queued_modules_any_actor_runtime(mods: ListSIRModule) -> bool {
+    case mods.is_nil of {
+        true -> false;
+        false -> case sir_module_any_runtime_actor(mods.head) of {
+            true -> true;
+            false -> queued_modules_any_actor_runtime(mods.tail)
+        }
+    }
+}
+
+fn queued_modules_any_topology(mods: ListSIRModule) -> bool {
+    case mods.is_nil of {
+        true -> false;
+        false -> case sir_module_needs_topology_atom_indices(mods.head) of {
+            true -> true;
+            false -> queued_modules_any_topology(mods.tail)
+        }
+    }
+}
+
+fn collect_atoms_from_module_queue_tail(mods: ListSIRModule, table: AtomTable, next_index: int64) -> (AtomTable, int64) {
+    case mods.is_nil of {
+        true -> (table, next_index);
+        false -> do
+            (t1: AtomTable, n1: int64) <- collect_atoms_from_functions(mods.head.functions, table, next_index);
+            collect_atoms_from_module_queue_tail(mods.tail, t1, n1)
+        end
+    }
+}
+
+// Process-wide dense atom numbering for every SIR module in one silica.config batch (queue: sir_ast@ListSIRModule).
+// Reservation policy: actor_runtime dependency in ANY module ⇒ full seeded prefix (matches per-module rule);
+// else if ANY module needs topology atoms ⇒ reserve :efficiency/:performance before collection;
+// else start from empty index 0. Modules are scanned in linker batch order (topological_sort order from main).
+fn build_atom_table_executable(modules: ListSIRModule) -> AtomTable {
+    case modules.is_nil of {
+        true -> empty_atom_table();
+        false -> case queued_modules_any_actor_runtime(modules) of {
+            true -> do
+                (seeded_ar: AtomTable, next_ar: int64) <- seed_actor_runtime_atoms();
+                (tbl_ar: AtomTable, _: int64) <- collect_atoms_from_module_queue_tail(modules, seeded_ar, next_ar);
+                tbl_ar
+            end;
+            false -> case queued_modules_any_topology(modules) of {
+                true -> do
+                    (tx0: AtomTable, _: int64) <- add_atom(empty_atom_table(), ":efficiency", 0);
+                    (tx1: AtomTable, _: int64) <- add_atom(tx0, ":performance", 1);
+                    (tbl_tp: AtomTable, _: int64) <- collect_atoms_from_module_queue_tail(modules, tx1, 2);
+                    tbl_tp
+                end;
+                false -> do
+                    (tbl_pl: AtomTable, _: int64) <- collect_atoms_from_module_queue_tail(modules, empty_atom_table(), 0);
+                    tbl_pl
+                end
+            }
+        }
+    }
+}
+
+// Build atom table from SIR module (single-unit). Topology modules reserve :efficiency=0, :performance=1; actor_runtime uses seed prefix.
 fn build_atom_table(sir_module: SIRModule) -> AtomTable {
     case sir_ast@sir_string_list_contains(sir_module.runtime_dependencies, "actor_runtime") of {
         true -> do
