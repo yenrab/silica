@@ -49,19 +49,20 @@ integrate:
 	fi; \
 	$(MAKE) -s assembly || exit 1; \
 	echo "=== $(MSG_PREFIX) (merged atoms across lib + main TU) ==="; \
-	check_needles () { \
-		s="$$1"; exp="$$2"; lab="$$3"; \
-		r_ok=1; \
-		if [ ! -f "$$s" ]; then echo "❌❌ $(MSG_PREFIX)missing $$s"; ko=$$((ko+1)); failed=1; return 1; fi; \
-		if [ ! -f "$$exp" ]; then echo "❌❌ $(MSG_PREFIX)missing $$exp"; ko=$$((ko+1)); failed=1; return 1; fi; \
-		while IFS= read -r needle || [ -n "$$needle" ]; do \
-			case "$$needle" in ''|'#'*) continue ;; esac; \
-			grep -Fq "$$needle" "$$s" > /dev/null || { echo "❌❌ $(MSG_PREFIX)$$lab missing rodata needle: $$needle"; r_ok=0; }; \
-		done < "$$exp"; \
-		if [ $$r_ok -eq 1 ]; then echo "✅✅ $(MSG_PREFIX)$$lab merged rodata (neighbor literals present)"; else ko=$$((ko+1)); failed=1; fi; \
+	check_merged_atom_rodata_hex () { \
+		main_s="$(MAIN_BASE).sams"; lib_s="$(LIB_SAM)"; \
+		if [ ! -f "$$main_s" ]; then echo "❌❌ $(MSG_PREFIX)missing $$main_s"; ko=$$((ko+1)); failed=1; return 1; fi; \
+		if [ ! -f "$$lib_s" ]; then echo "❌❌ $(MSG_PREFIX)missing $$lib_s"; ko=$$((ko+1)); failed=1; return 1; fi; \
+		lib_lit='0x66, 0x72, 0x6f, 0x6d, 0x5f, 0x6c, 0x69, 0x62'; \
+		main_lit='0x69, 0x6e, 0x5f, 0x6d, 0x61, 0x69, 0x6e'; \
+		ok_m=1; ok_l=1; \
+		grep -Fq "$$lib_lit" "$$main_s" || { echo "❌❌ $(MSG_PREFIX)$(MAIN_BASE).sams missing lib-only atom (:app_wide_atom_from_lib) bytes"; ok_m=0; }; \
+		grep -Fq "$$main_lit" "$$lib_s" || { echo "❌❌ $(MSG_PREFIX)$(LIB_SAM) missing main-only atom (:app_wide_atom_in_main) bytes"; ok_l=0; }; \
+		if [ $$ok_m -eq 1 ] && [ $$ok_l -eq 1 ]; then \
+			echo "✅✅ $(MSG_PREFIX)merged rodata fingerprints (cross-TU literals)"; \
+		else ko=$$((ko+1)); failed=1; fi; \
 	}; \
-	check_needles "$(MAIN_BASE).sams" "$(MAIN_BASE).atom_rotext.expect" "$(MAIN_BASE)"; \
-	check_needles "$(LIB_SAM)" lib/app_wide_atom_lib.atom_rotext.expect lib/app_wide_atom_lib; \
+	check_merged_atom_rodata_hex; \
 	if cmp -s "$(MAIN_BASE).sams" "$(LIB_SAM)"; then \
 		echo "❌❌ $(MSG_PREFIX).sams are identical unexpectedly"; ko=$$((ko+1)); failed=1; \
 	else echo "✅✅ $(MSG_PREFIX)main vs lib codegen differs"; fi; \
