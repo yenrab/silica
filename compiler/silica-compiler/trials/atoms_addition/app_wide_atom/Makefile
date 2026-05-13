@@ -28,7 +28,7 @@ LIB_O := lib/app_wide_atom_lib.o
 all:
 	@$(MAKE) -C "$(THIS_DIR)" assembly
 
-assembly:
+assembly: | clean
 	@cd "$(THIS_DIR)" && \
 	find . \( -maxdepth 1 -name '*.sams' \) ! -path './.*' -delete 2>/dev/null ; \
 	find ./lib \( -maxdepth 1 -name '*.sams' \) ! -path './.*' -delete 2>/dev/null ; \
@@ -39,7 +39,7 @@ assembly:
 	fi && \
 	echo "✅ $(MSG_PREFIX)Assembly generated"
 
-integrate:
+integrate: | clean
 	@cd "$(THIS_DIR)" || exit 1; \
 	ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \

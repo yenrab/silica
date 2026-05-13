@@ -36,7 +36,7 @@ silica.config:
 all: executables
 
 # Stage 1: silica-compiler generates .sams (reads silica.config in THIS_DIR)
-assembly: silica.config
+assembly: silica.config | clean
 	@echo "Compiling with silica-compiler..."
 	@cd "$(THIS_DIR)" && $(SILICA_COMPILER)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
@@ -66,7 +66,7 @@ executables: objects
 	done
 
 # integrate: compile, diff .sams vs .ascomp (if present), run, diff .sout vs .scout (if present)
-integrate: silica.config
+integrate: silica.config | clean
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \

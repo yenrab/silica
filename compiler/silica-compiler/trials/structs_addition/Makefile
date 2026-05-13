@@ -40,7 +40,7 @@ silica.config:
 all: executables
 
 # Populate silica.config from *.silica, then run compiler (cwd = this trial dir)
-assembly: silica.config
+assembly: silica.config | clean
 	@echo "Compiling with silica-compiler..."
 	@cd "$(MAKEFILE_DIR)" && test -s silica.config || (echo "Error: no .silica files in $(MAKEFILE_DIR)"; exit 1)
 	@cd "$(MAKEFILE_DIR)" && "$(SILICA_COMPILER)"
@@ -68,7 +68,7 @@ executables: objects
 	done
 
 # integrate: compile .silica per silica.config, diff .sams vs .ascomp, run binaries, diff .sout vs .scout
-integrate: silica.config
+integrate: silica.config | clean
 	@cd "$(MAKEFILE_DIR)" && { \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \

@@ -13,6 +13,8 @@ TRIAL_SUBDIRS := $(sort $(foreach mf,$(TRIAL_MAKEFILES),$(notdir $(patsubst %/,%
 .DEFAULT_GOAL := integrate
 
 # integrate: delegate; each trial writes .integrate_counts ("<ok> <fail>" one line) for the parent to sum
+# Runs full tree `clean` first, then each trial's integrate (trial Makefiles run clean again before assemble/compile).
+integrate: clean
 integrate:
 	@ok=0; ko=0; failed=0; \
 	for dir in $(TRIAL_SUBDIRS); do \
@@ -53,7 +55,7 @@ help:
 	@echo "====================="
 	@echo ""
 	@echo "Targets:"
-	@echo "  integrate  - For each trial subdir with a Makefile: make -C <dir> integrate"
+	@echo "  integrate  - Full tree clean, then for each trial subdir: make -C <dir> integrate"
 	@echo "               (compiler output and pass/fail rules are defined in that subdir)"
 	@echo "               Ends with totals: success: ✅✅ <n>  fail: ❌❌ <m>"
 	@echo "               (<n>/<m> sum each trial's .integrate_counts: ok fail)"

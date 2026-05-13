@@ -31,9 +31,9 @@ silica.config:
 	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find . \( -path './module_nonexported_callee_trial/*' -o -path './qualified_call_module_name_case_mismatch_trial/*' \) -prune -o -type f -name '*.silica' -print 2>/dev/null | sed 's|^\./||' > silica.config
 
 # Same checks as top-level trials Makefile for this directory (error output vs .golden_fail).
-integrate: silica.config all
+integrate: silica.config all | clean
 
-all:
+all: | clean
 	@failed=0; ok=0; ko=0; rm -f "$(THIS_DIR).integrate_counts"; \
 	for silica in $(SILICA_FILES); do \
 		[ -f "$(THIS_DIR)$$silica" ] || { echo "❌❌ $(MSG_PREFIX)$$silica: file not found"; ko=$$((ko + 1)); failed=1; continue; }; \

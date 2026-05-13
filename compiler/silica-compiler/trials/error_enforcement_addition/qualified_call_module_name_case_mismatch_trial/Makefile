@@ -14,7 +14,7 @@ MSG_PREFIX := $(TRIAL_DIR)/
 
 all: integrate
 
-integrate: silica.config check
+integrate: silica.config check | clean
 
 check:
 	@cd "$(THIS_DIR)" && $(COMPILER) > main_use_camelcase_qualifier.cur_fail 2>&1 || true

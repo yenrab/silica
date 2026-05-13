@@ -32,7 +32,7 @@ silica.config:
 
 all: executables
 
-assembly: silica.config
+assembly: silica.config | clean
 	@echo "Compiling with silica-compiler..."
 	@cd "$(THIS_DIR)" && $(SILICA_COMPILER)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
@@ -56,7 +56,7 @@ executables: objects
 		fi; \
 	done
 
-integrate: silica.config
+integrate: silica.config | clean
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \

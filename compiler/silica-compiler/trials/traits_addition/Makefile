@@ -31,7 +31,7 @@ silica.config:
 
 .DEFAULT_GOAL := all
 
-compile: silica.config
+compile: silica.config | clean
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sams traits/*.sams && \
 	echo "Compiling with silica-compiler..." && \
@@ -82,7 +82,7 @@ all: compile
 	fi; \
 	echo "✅ $(MSG_PREFIX)Linked entrypoints (root *.silica from silica.config)"
 
-integrate: silica.config compile
+integrate: silica.config compile | clean
 	@cd "$(THIS_DIR)" && \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \

@@ -44,7 +44,7 @@ silica.config:
 all: executables
 
 # Stage 1: write silica.config via find (recursive), then silica-compiler -> .sams
-assembly: silica.config $(CONFIG_FILES)
+assembly: silica.config $(CONFIG_FILES) | clean
 	@echo "Compiling with silica-compiler..."
 	@cd "$(THIS_DIR)" && $(SILICA_COMPILER)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
@@ -68,7 +68,7 @@ executables: assembly $(OBJ_FILES)
 	done
 
 # integrate: compile .silica per silica.config, diff .sams vs .ascomp, run binaries, diff .sout vs .scout
-integrate: silica.config
+integrate: silica.config | clean
 	@rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	if [ ! -s silica.config ]; then \
 		echo "SKIP: no silica.config"; \

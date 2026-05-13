@@ -28,7 +28,7 @@ silica.config:
 
 .DEFAULT_GOAL := all
 
-all: silica.config
+all: silica.config | clean
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sams lib/*.sams && \
 	echo "Compiling with silica-compiler..." && \
@@ -38,7 +38,7 @@ all: silica.config
 	fi && \
 	echo "✅ $(MSG_PREFIX)Assembly generated"
 
-integrate: silica.config all
+integrate: silica.config all | clean
 	@cd "$(THIS_DIR)" && \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \

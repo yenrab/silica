@@ -16,7 +16,7 @@ MSG_PREFIX := $(TRIAL_DIR)/
 # Parent: integrate -> silica.config all; sub: all == integrate == silica.config + golden check.
 all: integrate
 
-integrate: silica.config check
+integrate: silica.config check | clean
 
 check:
 	@cd "$(THIS_DIR)" && $(COMPILER) > main_use_partial.cur_fail 2>&1 || true
