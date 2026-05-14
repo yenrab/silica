@@ -29,6 +29,7 @@ export supervisor_init_return_has_phase_e_declarative_fields/1;
 export program_has_impl_for_supervisor/1;
 export collect_supervisor_impl_types_csv/1;
 export check_init_if_supervisor_impl_phase_e/2;
+export check_supervisor_impl_has_init_phase_b/1;
 
 fn supervisor_string_contains_from(h: string, needle: string, i: int64, nh: int64) -> bool {
     case i + nh > len(h) of {
@@ -117,11 +118,14 @@ fn supervisor_init_return_has_phase_e_declarative_fields(ret: string) -> bool {
                             false -> false;
                             true -> case supervisor_string_contains(t, "agent_type :") of {
                                 false -> false;
-                                true -> case supervisor_string_contains(t, "start :") of {
+                                true -> case supervisor_string_contains(t, "initial_state :") of {
                                     false -> false;
-                                    true -> case supervisor_string_contains(t, "restart :") of {
+                                    true -> case supervisor_string_contains(t, "behavior :") of {
                                         false -> false;
-                                        true -> supervisor_string_contains(t, "shutdown :")
+                                        true -> case supervisor_string_contains(t, "restart :") of {
+                                            false -> false;
+                                            true -> supervisor_string_contains(t, "shutdown :")
+                                        }
                                     }
                                 }
                             }
@@ -199,7 +203,56 @@ fn collect_supervisor_impl_types_csv(decls: ListDeclaration) -> string {
     collect_supervisor_impl_types_csv_loop(decls, "")
 }
 
-// When a module defines `impl T for Supervisor` and `fn init(st: ActorState) -> ...`, the return type must
+fn init_decl_has_one_parameter(decl: Declaration) -> bool {
+    case decl.name == "init" of {
+        false -> false;
+        true -> case decl.parameters.is_nil of {
+            true -> false;
+            false -> decl.parameters.tail.is_nil
+        }
+    }
+}
+
+fn program_has_init_one_loop(decls: ListDeclaration) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 0 and init_decl_has_one_parameter(decls.head) of {
+            true -> true;
+            false -> program_has_init_one_loop(decls.tail)
+        }
+    }
+}
+
+fn first_supervisor_impl_location_loop(decls: ListDeclaration) -> SourceLocation {
+    case decls.is_nil of {
+        true -> parser_ast@zero_location();
+        false -> case decls.head.tag == 6 of {
+            true -> do
+                t: string <- type_checker_traits@trim_type_text(decls.head.return_type_name);
+                case string_ends_with_suffix(t, for_supervisor_impl_suffix()) of {
+                    true -> decls.head.location;
+                    false -> first_supervisor_impl_location_loop(decls.tail)
+                }
+            end;
+            false -> first_supervisor_impl_location_loop(decls.tail)
+        }
+    }
+}
+
+fn check_supervisor_impl_has_init_phase_b(decls: ListDeclaration) -> TypeCheckResult {
+    case program_has_impl_for_supervisor(decls) of {
+        false -> type_checker_core@type_check_ok();
+        true -> case program_has_init_one_loop(decls) of {
+            true -> type_checker_core@type_check_ok();
+            false -> do
+                loc: SourceLocation <- first_supervisor_impl_location_loop(decls);
+                type_checker_core@type_check_err("E2092", loc, "impl T for Supervisor requires fn init/1; supervisor init is called only by spawn_registered_supervisor", "sect15.4.13")
+            end
+        }
+    }
+}
+
+// When a module defines `impl T for Supervisor` and `fn init(state) -> ...`, the return type must
 // name Phase E declarative `supervisor_flags` + `List[child_spec, mem(ρ)|…]` (or legacy `, normal`) fields
 // (runtime static table and automatic restart per §15.4.13.1–2).
 fn check_supervisor_init_return_type_phase_e_shape(decl: Declaration) -> TypeCheckResult {
@@ -209,7 +262,7 @@ fn check_supervisor_init_return_type_phase_e_shape(decl: Declaration) -> TypeChe
         true -> case supervisor_init_return_tuple_has_flags_and_children(decl.return_type_name) of {
             false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init must return a tuple (supervisor_flags, static child list) per spec §15.4.13.1 (supervisors plan Phase E)", "sect15.4.13.1");
             true -> case supervisor_init_return_has_phase_e_declarative_fields(decl.return_type_name) of {
-                false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init return type must include supervisor_flags (strategy, allowed_restart_count, restarts_time_frame) and child_spec fields (id, agent_type, start, restart, shutdown) in List[..., mem(ρ) | …] or List[..., normal] for automatic restart (supervisors plan Phase E; spec §15.4.13.2)", "sect15.4.13.2");
+                false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init return type must include supervisor_flags (strategy, allowed_restart_count, restarts_time_frame) and child_spec fields (id, agent_type, initial_state, behavior, restart, shutdown) in List[..., mem(ρ) | …] or List[..., normal] for automatic restart (supervisors plan Phase B; spec §15.4.13.2)", "sect15.4.13.2");
                 true -> type_checker_core@type_check_ok()
             }
         }
@@ -221,15 +274,9 @@ fn check_init_if_supervisor_impl_phase_e(decl: Declaration, all_decls: ListDecla
         false -> type_checker_core@type_check_ok();
         true -> case decl.name == "init" of {
             false -> type_checker_core@type_check_ok();
-            true -> case decl.parameters.is_nil of {
-                true -> type_checker_core@type_check_ok();
-                false -> case decl.parameters.tail.is_nil of {
-                    false -> type_checker_core@type_check_ok();
-                    true -> case type_checker_traits@trim_type_text(decl.parameters.head.type_name) == "ActorState" of {
-                        false -> type_checker_core@type_check_ok();
-                        true -> check_supervisor_init_return_type_phase_e_shape(decl)
-                    }
-                }
+            true -> case init_decl_has_one_parameter(decl) of {
+                false -> type_checker_core@type_check_ok();
+                true -> check_supervisor_init_return_type_phase_e_shape(decl)
             }
         }
     }

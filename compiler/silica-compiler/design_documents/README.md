@@ -41,7 +41,7 @@ Actor memory architecture: **growable per-actor stacks**, lazy page migration, i
 
 ## [supervisors_implementation_development_plan.md](./supervisors_implementation_development_plan.md)
 
-**Supervision roadmap** aligned with [silica-specification.md](./silica-specification.md) §15.4: `Supervisor` trait, `spawn_linked`, supervision ingress, exit payloads, restart strategies, `FailureReporter`, and `link` / `monitor` interactions—phased after the core actor runtime.
+**Supervision roadmap** aligned with [silica-specification.md](./silica-specification.md) §15.4: `Supervisor` trait, `supervisor_ref`, `spawn_registered_supervisor`, `call_supervisor`, runtime-owned child tables, restart strategies, `FailureReporter`, and `link` / `monitor` interactions—phased after the core actor runtime.
 
 ---
 

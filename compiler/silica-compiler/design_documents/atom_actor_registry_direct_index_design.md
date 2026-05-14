@@ -2,23 +2,23 @@
 
 ## 1. Purpose
 
-Silica currently has no built-in hash map type. Recursive user-defined tree shapes for associative lookup are awkward or forbidden under structural typing. At the same time, process registries keyed by **`atom`** and storing **`actor_ref`** need expected **O(1)** lookup—not **O(n)** scans over **`List`**.
+Silica currently has no built-in hash map type. Recursive user-defined tree shapes for associative lookup are awkward or forbidden under structural typing. At the same time, process registries keyed by **`atom`** and storing runtime references such as **`actor_ref`** and **`supervisor_ref`** need expected **O(1)** lookup—not **O(n)** scans over **`List`**.
 
 This document specifies a **representation and protocol** based on Silica's **atom model**: atoms are backed by **dense integer ids** in a **single intern table per process image** (see §2). The **`id`** range is **`0 … N−1`** (**contiguous** for **`N`** distinct interned literals in that image), optionally after a fixed **reserved prefix** consumed by ABI/runtime. **Density**—not the order in which the compiler/linker discovers or reads literals—is what permits a **simple direct index** into **`slots`** (no hashing, no tree, no chunk-spine traversal for lookup). Assignment order vs source text order is explicitly **unspecified**: only **`(lexeme ↔ id)`** stability and **`0…N−1`** compactness matter here.
 
-**Distinct from `actor_ref`:** only **`atom_id`** occupies **`0 … N−1`** in registry indexing. **`actor_ref`** remains an opaque handle (e.g. pointer); slot values are **not** dense small integers unless the runtime chooses that internally.
+**Distinct from runtime refs:** only **`atom_id`** occupies **`0 … N−1`** in registry indexing. **`actor_ref`** and **`supervisor_ref`** remain opaque handles (e.g. pointers); slot values are **not** dense small integers unless the runtime chooses that internally.
 
 **Scope**
 
-- Naming: “registry”, “ETS-like slot table”, **atom → actor_ref**.
-- Targets user code (`runtime_modules/`, supervisory registry actors) and optionally future compiler/runtime helpers.
+- Naming: “registry”, “ETS-like slot table”, **atom → runtime ref**.
+- Targets user code (`runtime_modules/`), registered ordinary actors from `spawn_registered`, registered supervisors from `spawn_registered_supervisor`, and optionally future compiler/runtime helpers.
 
 **Non-goals**
 
 - General **`Map[K,V]`** in the surface language (this remains a specialised pattern keyed by **`atom`** only).
 - String-based hashing of atom spellings at lookup time (**not needed** when the **`atom`** value already denotes an **`int64`**‑class identifier).
 
-Normative Silica semantics for **`atom`**, **`actor_ref`**, and regions remain in [silica-specification.md](./silica-specification.md).
+Normative Silica semantics for **`atom`**, **`actor_ref`**, **`supervisor_ref`**, and regions remain in [silica-specification.md](./silica-specification.md).
 
 ---
 

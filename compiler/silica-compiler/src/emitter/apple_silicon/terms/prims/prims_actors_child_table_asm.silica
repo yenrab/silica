@@ -396,6 +396,38 @@ Lsc_done:
 "
 }
 
+// Phase D: call_supervisor(..., { op: :add_child, child: spec }) uses the same row allocation
+// and supervised spawn path as start_child, but takes the supervisor ref explicitly because
+// public supervisor calls are made by ordinary actors/main, not from inside the supervisor thread.
+fn child_table_rt_asm_chunk_2b() -> string {
+    "	.globl	_silica_rt_supervisor_add_child
+	.p2align	2
+_silica_rt_supervisor_add_child:
+	.cfi_startproc
+	stp	x22, x21, [sp, #-48]!
+	stp	x20, x19, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	add	x29, sp, #32
+	mov	x20, x0
+	mov	x21, x1
+	bl	_silica_rt_tls_current_actor_get
+	mov	x22, x0
+	mov	x19, x20
+	bl	_silica_rt_tls_actor_set_from_x19
+	mov	x0, x21
+	bl	_silica_rt_supervisor_start_child
+	mov	x20, x0
+	mov	x19, x22
+	bl	_silica_rt_tls_actor_set_from_x19
+	mov	x0, x20
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
+	ret
+	.cfi_endproc
+"
+}
+
 // Phase E e3d+e3e+e4b: _silica_rt_supervisor_maybe_restart
 // X0 = dead child_ref, X1 = supervisor ACB, X2 = reason_tag (0=:normal default; !=0 abnormal — e4b).
 // Scans linked child row list for matching child_ref. child_ref==0 is an e3f tombstone. If found, dispatches by
@@ -842,6 +874,6 @@ fn emit_child_table_runtime_asm(table: AtomTable) -> string {
         t: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":transient");
         o: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":one_for_all");
         r: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":rest_for_one");
-        concat(concat(concat(concat(concat(child_table_rt_asm_chunk_0(), child_table_rt_asm_chunk_1()), child_table_rt_asm_chunk_2()), child_table_rt_asm_chunk_3(p, t, o, r)), child_table_rt_asm_chunk_4()), child_table_rt_asm_chunk_5())
+        concat(concat(concat(concat(concat(concat(child_table_rt_asm_chunk_0(), child_table_rt_asm_chunk_1()), child_table_rt_asm_chunk_2()), child_table_rt_asm_chunk_2b()), child_table_rt_asm_chunk_3(p, t, o, r)), child_table_rt_asm_chunk_4()), child_table_rt_asm_chunk_5())
     end
 }

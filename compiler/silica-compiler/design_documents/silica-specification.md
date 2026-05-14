@@ -209,12 +209,12 @@ The following identifiers are reserved keywords:
 
 ```
 actor      actor_ref  atom      atomic    boolean      buf       case
-cast       char       concurrency core_id  core_set device_io effect
+call_supervisor cast   char      concurrency core_id    core_set device_io effect
 efficiency_cores else end        enum      export    false     float16   float32
 float64    fn         for        from      hot_swap   if        impl      import    int8
 int16      int32      int64      lifetime  mailbox  mem       module    network_io normal    not
 of         performance_cores proc      produces  provided pub       pure      recv      ref       region    register_rwr required return
-sequence   spawn     string    struct    trait     true      type
+sequence   spawn     spawn_registered spawn_registered_supervisor string    struct    supervisor_ref trait     true      type
 uint8      uint16     uint32     uint64    underscore unit       use        where
 ```
 
@@ -3273,9 +3273,12 @@ Actor references are a primitive type (like `int` or `boolean`):
 
 ```
 actor_ref                            // actor reference (primitive type)
+supervisor_ref                       // supervisor reference (primitive type)
 ```
 
 The `actor_ref` type is not parameterized by message type. It is a primitive type that represents a reference to an actor, created by the `spawn()` function.
+
+The `supervisor_ref` type is distinct from `actor_ref`. It represents a runtime-managed supervisor created by `spawn_registered_supervisor(...)`. It is not accepted by ordinary `call()` or `cast()`; supervisor maintenance uses `call_supervisor(...)`.
 
 ### 4.6 Core Affinity Types
 
@@ -7265,7 +7268,7 @@ alloc_ref(r, 42)    // Runtime error: capability violation
 
 ## 15. Actor Model Semantics
 
-**Intrinsic Functions**: Actors and all actor-related functions defined in this specification (`spawn()`, `spawn_linked()`, `call()`, `cast()`, `self()`, `recv()`, etc.) are intrinsic to the Silica compiler. They are implemented directly in the compiler and runtime, similar to how basic arithmetic operators (`+`, `-`, `*`, `/`) are implemented. These functions are not defined in user code or standard libraries but are built-in language primitives.
+**Intrinsic Functions**: Actors, supervisors, and their related functions defined in this specification (`spawn()`, `spawn_registered()`, `spawn_registered_supervisor()`, `call()`, `call_supervisor()`, `cast()`, `self()`, `recv()`, etc.) are intrinsic to the Silica compiler. They are implemented directly in the compiler and runtime, similar to how basic arithmetic operators (`+`, `-`, `*`, `/`) are implemented. These functions are not defined in user code or standard libraries but are built-in language primitives.
 
 ### 15.1 Actor Lifecycle
 
@@ -7274,13 +7277,14 @@ Actors are created with initial state and behavior function:
 
 ```
 spawn(initial_state, behavior_fn [, core_id]) -> actor_ref
-spawn_linked(initial_state, behavior_fn, agent_type: atom [, core_id]) -> actor_ref proc[concurrency]
+spawn_registered(initial_state, behavior_fn, name: atom [, core_id]) -> actor_ref proc[concurrency]
+spawn_registered_supervisor(supervisor_impl_type, initial_state, name: atom [, core_id]) -> supervisor_ref proc[concurrency]
 link(target: actor_ref) -> :ok  proc[concurrency]
 monitor(target: actor_ref) -> monitor_ref  proc[concurrency]
 demonitor(ref: monitor_ref) -> :ok  proc[concurrency]
 ```
 
-`spawn` creates a standalone actor with no supervisor. `spawn_linked` atomically creates the actor and establishes a bidirectional supervision link between the calling actor and the new child; see **§15.4.8.3** for full semantics. `spawn_linked` may only be called from within an actor behavior function. `link`, `monitor`, and `demonitor` operate on already-running actors; see **§15.4.8.5–§15.4.8.7**.
+`spawn` creates an ordinary anonymous actor. `spawn_registered` creates an ordinary actor and registers it under an atom name; it does not create a supervisor and does not imply a supervision link. `spawn_registered_supervisor` creates a runtime-managed supervisor, registers it under an atom name, calls the required `Supervisor.init/1` implementation for the named supervisor implementation type, and returns a `supervisor_ref`; see **§15.4.8** and **§15.4.13**. `link`, `monitor`, and `demonitor` operate on already-running ordinary actors; see **§15.4.8.5–§15.4.8.7**.
 
 When `initial_state` contains a region handle, the handle is moved from `spawn` to the actor. The actor receives exclusive ownership of the region.
 
@@ -7316,7 +7320,7 @@ The `initial_state` parameter must implement the `ActorState` trait (for named t
 - The new state becomes the actor's state for the next message
 - This preserves region ownership and avoids unnecessary copying
 
-**Supervisor Registration:** Each actor can register a **supervisor** that is notified when the actor terminates (see §15.1.3).
+**Supervisor Registration:** Actors supervised by a runtime-managed supervisor have an owning `supervisor_ref` recorded in runtime metadata; that supervisor is notified when the actor terminates (see §15.1.3).
 
 #### 15.1.1.1 Handler Functions and Module System
 
@@ -7488,7 +7492,7 @@ fn main() -> atom {
 
 When a behavior function detects a shutdown signal and returns, the runtime:
 - Stops the actor’s message loop
-- Notifies any registered supervisor (see §15.1.3)
+- Notifies its owning supervisor, if any (see §15.1.3)
 - Drops all remaining messages in the mailbox
 - Terminates the actor thread
 
@@ -7510,12 +7514,12 @@ fn server(msg: atom, state: int64) -> (:no_reply, int64) {
 
 #### 15.1.3 Supervisor Notification
 
-**Supervisor Registration:** When an actor terminates (either via shutdown message or due to an error), any registered supervisor is notified. The supervisor receives a termination message.
+**Supervisor Registration:** When an actor terminates (either via shutdown message or due to an error), its owning runtime-managed supervisor, if any, is notified through the supervision ingress.
 
 **Supervisor Semantics:**
-- A supervisor is itself an actor that monitors one or more child actors
-- When a supervised actor terminates, the supervisor receives a message (implementation-defined format)
-- The supervisor can inspect the termination reason, log it, restart the actor, or take other action
+- A supervisor is a runtime-managed process referenced by `supervisor_ref`
+- When a supervised actor terminates, the runtime enqueues a structured notification on the supervisor ingress
+- The runtime-owned supervisor behavior inspects the termination reason and applies restart, removal, termination, or escalation policy
 - This enables supervisor trees and fault tolerance (OTP-style supervision)
 
 **Supervisor Specification:** Full details of supervisor registration, failure notification delivery, the high-priority supervision ingress, restart protocols, and the required `Supervisor` trait are specified in **§15.4 Supervision and Fault Tolerance**.
@@ -8688,57 +8692,79 @@ Values that cannot be safely transferred (e.g. certain unresolved region handles
 
 #### 15.4.8 Supervisor Actors
 
-##### 15.4.8.1 Supervisor as an Actor Implementing the Supervisor Trait
+##### 15.4.8.1 Runtime-Managed Supervisors
 
-A **supervisor** is a Silica actor whose module implements the `Supervisor` trait (§15.4.13). The trait is how the programmer defines the supervisor's unique behavior — the restart policy, child specifications, and failure handling logic. It also has state, a behavior function, and a standard mailbox for ordinary messages.
+A **supervisor** is a runtime-managed Silica process created only by `spawn_registered_supervisor(...)` (§15.1.1). A supervisor implementation module uses the required `Supervisor` trait (§15.4.13) to provide `init/1`, which returns restart policy and initial `child_spec` values. The programmer does **not** provide or modify the supervisor behavior function.
 
-What the runtime provides to any actor implementing `Supervisor`:
+The runtime-owned supervisor behavior accepts only the fixed supervisor-maintenance protocol (§15.4.8.3), maintains the supervisor child table (§15.4.13.3), receives child-exit notifications through the supervision ingress (§15.4.9), and applies restart policy (§15.4.12).
 
-1. A **heap-allocated, growable internal child table** (§15.4.13.3) for every supervisor actor, referenced from its actor control block. The table holds the information needed to apply **declarative** and **dynamically registered** `child_spec` restarts, escalation counters, and the current `actor_ref` for each row.
-2. The ability to call **`start_child(spec)`** (§15.4.13.3) to add **dynamic** supervised children, and to call `spawn_linked()` to create **linked** children; children whose restart policy is enforced by the runtime (§15.4.12.1) must appear as rows in the child table. Bare `spawn_linked` without a table row is supported for ad-hoc links but does not receive **automatic** restarts (§15.4.13.3).
-3. Automatic delivery of exit notifications for linked children to the **supervision ingress** (§15.4.9).
-4. Draining of the supervision ingress before the standard mailbox each scheduling turn.
+The source-level handle for a supervisor is `supervisor_ref`, distinct from `actor_ref`. A `supervisor_ref` is not accepted by ordinary `call()` or `cast()`. Supervisor maintenance is synchronous and explicit through `call_supervisor(supervisor_ref, SupervisorMessage)`, which returns the concrete record type specified in §15.4.8.3.
 
-A supervisor may itself be supervised (nested trees). Having one supervisor does not prevent an actor from supervising others.
+A supervisor may itself be a child of another supervisor through that parent supervisor's `child_spec` table. Ordinary actors do not become supervisors by implementing actor behavior; supervisor identity comes from `spawn_registered_supervisor` and the `supervisor_ref` it returns.
 
 ##### 15.4.8.2 Single Supervisor Per Child
 
-Each child actor has **at most one** supervisor — the actor that called `spawn_linked()` to create it. This simplifies failure delivery addressing and matches the single-parent supervision tree model (cf. OTP).
+Each child actor has **at most one** supervisor — the runtime-managed supervisor that spawned it from a `child_spec` returned by `init/1` or accepted through `call_supervisor(..., { op: :add_child, ... })`. This simplifies failure delivery addressing and matches the single-parent supervision tree model (cf. OTP).
 
 An actor that has no supervisor is a **root actor**. When a root actor dies, the unwind report (§15.4.6.4) is written to stderr.
 
-##### 15.4.8.3 Spawning Linked Children (`spawn_linked`)
+##### 15.4.8.3 Supervisor Maintenance Calls
 
-```
-spawn_linked(initial_state, behavior_fn, agent_type: atom [, core_id]) -> actor_ref proc[concurrency]
-```
-
-`spawn_linked` is an intrinsic (like `spawn`) that atomically:
-
-1. Creates the child actor with the given initial state and behavior function.
-2. Establishes a **bidirectional link** between the calling actor (the supervisor) and the child in runtime metadata.
-3. Records `agent_type` in the child's runtime metadata — a static atom identifying the child's role, used in exit notifications (§15.4.11.1) so the supervisor can branch policy without inspecting opaque state.
-
-`spawn_linked` must be called from within an actor behavior function (where `self()` is defined). Calling it from outside an actor context is a compile-time error.
-
-The child's initial state does **not** need to contain the supervisor's `actor_ref`. The link is entirely runtime-managed.
-
-**Atomic spawn-and-link**: The link is established before the child's first message is processed, eliminating the race window that would exist if `spawn` and a separate `link` call were used.
+Supervisor maintenance is performed by sending a fixed message protocol to the runtime-owned supervisor behavior:
 
 ```silica
-fn supervisor_behavior(msg: supervisor_msg, state: supervisor_state) -> (:no_reply, supervisor_state) {
-    sequence proc[concurrency]
-        case msg of {
-            :start_children -> {
-                child: actor_ref <- spawn_linked({ counter: 0 }, child_behavior, :counter_worker);
-                new_state: supervisor_state <- add_child(state, child);
-                (:no_reply, new_state)
-            }
-            _: supervisor_msg -> (:no_reply, state)
-        };
-    produces pure (:no_reply, state) end
-}
+call_supervisor(supervisor_ref, SupervisorMessage) -> {
+    tag: :child_started | :ok | :children | :count | :child_info | :error,
+    child: actor_ref,
+    status: atom,
+    children: List[
+        {
+            id: atom,
+            agent_type: atom,
+            child: actor_ref,
+            restart: :permanent | :temporary | :transient
+        },
+        mem(normal)
+    ],
+    count: int64,
+    child_info: {
+        id: atom,
+        agent_type: atom,
+        child: actor_ref,
+        restart: :permanent | :temporary | :transient
+    },
+    error: atom
+} proc[concurrency]
 ```
+
+`call_supervisor` has one concrete, non-polymorphic return type. The return type is not inferred from the `SupervisorMessage` variant.
+
+```
+SupervisorMessage =
+    { op: :add_child, child: child_spec }
+  | { op: :remove_child, id: atom }
+  | { op: :restart_child, id: atom }
+  | { op: :terminate_child, id: atom }
+  | { op: :which_children }
+  | { op: :count_children }
+  | { op: :get_child, id: atom }
+```
+
+The expected replies are:
+
+| Message | Successful reply |
+|---------|------------------|
+| `{ op: :add_child, child: child_spec }` | `{ tag: :child_started, child: actor_ref, ... }` |
+| `{ op: :remove_child, id: atom }` | `{ tag: :ok, status: :removed, ... }` |
+| `{ op: :restart_child, id: atom }` | `{ tag: :child_started, child: actor_ref, ... }` |
+| `{ op: :terminate_child, id: atom }` | `{ tag: :ok, status: :terminated, ... }` |
+| `{ op: :which_children }` | `{ tag: :children, children: List[child_info, mem(normal)], ... }` |
+| `{ op: :count_children }` | `{ tag: :count, count: int64, ... }` |
+| `{ op: :get_child, id: atom }` | `{ tag: :child_info, child_info: child_info, ... }` |
+
+Any operation can return `{ tag: :error, error: reason_atom, ... }`.
+
+There is no `cast_supervisor`, and `cast(supervisor_ref, ...)` is invalid. `call(supervisor_ref, ...)` is invalid; ordinary actor `call()` accepts `actor_ref`, not `supervisor_ref`.
 
 ##### 15.4.8.4 Exit Propagation
 
@@ -8750,14 +8776,14 @@ Links are bidirectional. If the supervisor dies, the runtime delivers exit signa
 link(target: actor_ref) -> :ok  proc[concurrency]
 ```
 
-Establishes a bidirectional link between the calling actor and `target` after both are already running. The semantics are identical to the link established by `spawn_linked`: if either actor subsequently dies, the other receives an exit signal.
+Establishes a bidirectional link between the calling ordinary actor and `target` after both are already running: if either actor subsequently dies, the other receives an exit signal. This is an actor-linking primitive, not the public supervisor child-creation path.
 
 **Rules**:
 
 - If `target` is already dead when `link` is called, the calling actor receives an exit notification immediately — it does not silently succeed.
 - `link` is idempotent: calling it multiple times between the same pair of actors has the same effect as calling it once.
 - `link` may only be called from within an actor behavior function.
-- A supervisor actor receiving an exit signal via a `link`-established link processes it through the supervision ingress (§15.4.9), identical to `spawn_linked`-established links.
+- Supervisor-owned children are created from `child_spec` rows. Their exit notifications are routed to the owning supervisor's supervision ingress (§15.4.9). Ordinary `link` does not add a child table row and does not make the target supervised by the caller.
 - A non-supervisor actor receiving an exit signal from a linked actor terminates with the linked actor's `failure_reason` as its own exit reason.
 
 ##### 15.4.8.6 Monitors (`monitor`, `demonitor`)
@@ -8799,12 +8825,12 @@ A monitor is a **unidirectional** observation: the monitoring actor is notified 
 
 ##### 15.4.8.7 Links vs. Monitors — When to Use Each
 
-| | Link (`spawn_linked` / `link`) | Monitor |
+| | Link (`link`) | Monitor |
 |---|---|---|
 | Direction | Bidirectional | Unidirectional |
 | Effect on observer if target dies | Observer also exits (unless supervisor) | Observer receives `DOWN` message only |
 | Effect on target if observer dies | Target also exits (unless supervisor) | None |
-| Typical use | Supervisor–child relationships | Client observing a server; one-shot `call` with death detection |
+| Typical use | Peer failure coupling between ordinary actors | Client observing a server; one-shot `call` with death detection |
 
 ---
 
@@ -8816,42 +8842,42 @@ Failure notifications from supervised children must reach the supervisor **ahead
 
 ##### 15.4.9.2 Dedicated Ingress Channel
 
-Each supervisor actor maintains a **supervision ingress** — a separate, bounded-priority queue distinct from its standard mailbox. The runtime drains this queue **before** delivering messages from the standard mailbox on each scheduling turn.
+Each supervisor maintains a **supervision ingress** — a separate, bounded-priority queue used by the runtime-owned supervisor behavior. The runtime drains this queue before processing ordinary supervisor-maintenance calls on each scheduling turn.
 
 | Channel | Contents | Priority |
 |---------|----------|----------|
-| Standard mailbox | Ordinary `call()` / `cast()` messages | Normal FIFO |
+| Supervisor call queue | `call_supervisor()` maintenance messages | Normal FIFO |
 | Supervision ingress | Child failure notifications | Checked first each turn |
 
-The supervision ingress is a runtime-internal structure. It is not a second "mailbox" that user code can address directly as an `actor_ref`.
+The supervision ingress is a runtime-internal structure. It is not a second "mailbox" that user code can address directly as an `actor_ref` or `supervisor_ref`.
 
-**Note**: This extends the single-mailbox model described in §16.2.2. Supervisor actors have two receive channels; non-supervisor actors have only the standard mailbox (see §15.4.16.2).
+**Note**: This extends the single-mailbox model described in §16.2.2. Supervisors have a runtime-maintained ingress plus their synchronous supervisor-call queue; ordinary actors have only the standard mailbox (see §15.4.16.2).
 
 ##### 15.4.9.3 How the Ingress is Populated
 
-The supervision ingress is populated exclusively by the **trusted runtime** — never by user-level `cast()` calls. When a linked child dies (for any reason — see §15.4.10), the runtime constructs an exit notification (§15.4.11) and enqueues it directly into the supervisor's ingress. No user code in the dying actor participates in this delivery.
+The supervision ingress is populated exclusively by the **trusted runtime** — never by user-level `cast()` calls. When a supervised child dies (for any reason — see §15.4.10), the runtime constructs an exit notification (§15.4.11) and enqueues it directly into the owning supervisor's ingress. No user code in the dying actor participates in this delivery.
 
-From the supervisor's behavior function, ingress messages appear as the first messages each scheduling turn. The behavior function pattern-matches on the exit notification type to distinguish them from ordinary messages.
+The supervisor's runtime-owned behavior processes ingress notifications before ordinary `call_supervisor` maintenance messages.
 
 ##### 15.4.9.4 Ordering Guarantee
 
 The runtime guarantees:
 
-- Failure notifications from a child are visible to the supervisor's behavior function before any message the child sent on its standard mailbox **after** the failure notification was enqueued.
+- Failure notifications from a child are visible to the supervisor runtime before any later supervisor-maintenance call is processed.
 - Multiple children's failure notifications are delivered in ingress-arrival order (FIFO within the ingress).
 
 ---
 
-#### 15.4.10 Exit Notification via Links
+#### 15.4.10 Exit Notification for Supervised Children
 
-When a linked child dies, the runtime delivers exactly **one** exit notification to the supervisor's supervision ingress. The delivery mechanism is identical regardless of how the child died — there is no separate "orderly path" and "trap path" at the notification level.
+When a supervised child dies, the runtime delivers exactly **one** exit notification to the owning supervisor's supervision ingress. The delivery mechanism is identical regardless of how the child died — there is no separate "orderly path" and "trap path" at the notification level.
 
 ##### 15.4.10.1 Unified Delivery
 
 On any child death (language-level error, hardware memory fault, explicit termination, or normal shutdown), `handle_actor_crash` or the equivalent orderly teardown path in the runtime:
 
 1. Unwinds the actor's stack (§15.4.6.4) and produces the unwind report before reclaiming the stack.
-2. Reads the child's runtime metadata: actor id, `agent_type`, failure reason, and the supervisor ref recorded at `spawn_linked` time.
+2. Reads the child's runtime metadata: actor id, `agent_type`, failure reason, and the owning `supervisor_ref` recorded when the supervisor spawned the child from its `child_spec`.
 3. Constructs an exit notification (§15.4.11) from that metadata.
 4. Enqueues the notification directly into the supervisor's supervision ingress (§15.4.9).
 
@@ -8919,22 +8945,23 @@ For **root actors** (no supervisor), this field has no recipient — the runtime
 
 When a child exits and the **row** in the internal child table (§15.4.13.3) for that `child_ref` has a `restart` value that permits a restart (§15.4.13.2), the runtime:
 
-1. Extracts the `start: (initial_state, start_link_fn)` pair from the **stored** `child_spec` fields for that row (whether the row was created from `init` or from `start_child` — §15.4.13.3).
-2. Calls `spawn_linked(initial_state, start_link_fn, agent_type)` to create the replacement child.
+1. Extracts the `initial_state` and `behavior` fields from the **stored** `child_spec` for that row.
+2. Uses the supervisor runtime's internal child-spawn operation to create the replacement child, attach it to the same `supervisor_ref`, and record the row metadata needed for future exit notifications.
 3. Updates that row in the **heap child table** with the new `actor_ref`; the old ref is permanently dead.
 
-`call()` or `cast()` to a dead `actor_ref` raises `actor_not_found` (§16.1.4). The supervisor's behavior function is not involved in the restart; the runtime applies the strategy from `supervisor_flags` directly.
+`call()` or `cast()` to a dead `actor_ref` raises `actor_not_found` (§16.1.4). User code is not involved in the restart; the runtime-owned supervisor behavior applies the strategy from `supervisor_flags` directly.
 
 ##### 15.4.12.2 Coordinated Shutdown of Live Children
 
-When a supervisor is tearing down its subtree (for restart or shutdown):
+When a supervisor is tearing down children for restart or termination:
 
-1. For each live child whose `actor_ref` is held in supervisor state, the supervisor sends a shutdown message via `cast()` (or `call()` if a confirmation reply is needed).
-2. Children handle the shutdown message, perform cleanup, and stop.
-3. If `cast()` or `call()` to a child raises `actor_not_found`, the child is already dead — treat this as a successful shutdown for that child.
-4. After all children are confirmed stopped (or already dead), the supervisor may respawn them or terminate itself.
+1. For each live child whose `actor_ref` is held in the supervisor child table, the runtime-owned supervisor behavior applies the child row's `shutdown` policy.
+2. If `shutdown` is `0`, the child is killed immediately.
+3. If `shutdown` is greater than `0`, the runtime requests orderly termination and waits up to that many milliseconds before killing the child.
+4. If the child is already dead, the child is treated as successfully stopped.
+5. After the affected children are stopped, the supervisor may respawn them or remove their rows according to the operation and restart strategy.
 
-This protocol is entirely in user/supervisor code using standard `cast()` / `call()`. It does not interact with the §15.4.6 trap recovery path.
+This protocol is supervisor-runtime behavior. It does not expose public shutdown supervisor messages and does not interact with the §15.4.6 trap recovery path.
 
 ##### 15.4.12.3 Restart Policies
 
@@ -8944,17 +8971,20 @@ Restart policies are declared via `supervisor_flags.strategy` in the `Supervisor
 
 #### 15.4.13 Supervisor Trait
 
-The `Supervisor` trait is the **required** mechanism for defining a supervisor actor. A module implementing `Supervisor` defines which children to start, the restart strategy, and per-child restart behaviour. The runtime uses the values returned from `init` to spawn declared children and enforce restart policy.
+The `Supervisor` trait is the **required** mechanism for defining a supervisor implementation. A module implementing `Supervisor` defines which children to start, the restart strategy, and per-child restart behaviour through `init/1`. The runtime uses the values returned from `init` to spawn declared children and enforce restart policy. The programmer does not provide the supervisor behavior function.
 
 ##### 15.4.13.1 Required Callback
 
 ```silica
 trait Supervisor {
-    fn init(self: ActorState) -> (supervisor_flags, [child_spec]);
+    fn init(initial_state: ActorState) -> (
+        supervisor_flags,
+        List[child_spec, mem(normal)]
+    );
 }
 ```
 
-`init` is called once when the supervisor actor starts. It takes a single parameter — the supervisor's initial state — of type `ActorState` (see §3.4.13). It returns the supervisor's restart strategy and the list of children to start. The runtime spawns each child in the returned list via `spawn_linked` and appends a **row** to the **heap-allocated internal child table** (§15.4.13.3) for each, recording the `child_ref` and the `child_spec` data needed for restarts. Additional table rows may be created later by **`start_child(spec)`** (§15.4.13.3).
+`init` is called exactly once when `spawn_registered_supervisor(supervisor_impl_type, initial_state, name)` starts the supervisor. It takes the supervisor's initial state as its single parameter. It returns the supervisor's restart strategy and the list of children to start. The runtime spawns each child in the returned list using its internal supervisor child-spawn operation and appends a **row** to the **heap-allocated internal child table** (§15.4.13.3), recording the `child_ref` and the `child_spec` data needed for restarts. Additional table rows may be created later by `call_supervisor(..., { op: :add_child, child: spec })`.
 
 ##### 15.4.13.2 Supporting Types
 
@@ -8980,11 +9010,12 @@ If the number of restarts within `restarts_time_frame` seconds exceeds `allowed_
 
 ```
 child_spec ::= {
-    id:           atom,
-    agent_type:   atom,
-    start:        (initial_state, start_link_fn),
-    restart:      :permanent | :temporary | :transient,
-    shutdown:     int   -- 0 = immediate kill; >0 = milliseconds to wait
+    id:             atom,
+    agent_type:     atom,
+    initial_state:  ActorState,
+    behavior:       fn(msg: ActorMessage, state: ActorState) -> ChildReturn,
+    restart:        :permanent | :temporary | :transient,
+    shutdown:       int   -- 0 = immediate kill; >0 = milliseconds to wait
 }
 ```
 
@@ -9002,21 +9033,50 @@ child_spec ::= {
 
 **Representation.** For each supervisor actor, the runtime maintains an **internal child table** that is **heap-allocated** and **growable** (explicit pointer, length, and capacity, or equivalent). The table is not required to live inside a fixed-size inline control block; the actor control block stores at least a **pointer** to the table and metadata needed to find it. Implementation may reallocate the buffer when the number of **supervised** children grows. This matches the usual Erlang/OTP model where the supervisor process holds a variable-size structure for its child specs, while still allowing a compact fixed header for schedulers and fast paths.
 
-**Row contents.** Each row must contain at least: the current `actor_ref`; the **`child_spec` fields** required to apply the restart protocol (§15.4.12.1) — in particular `start`, `restart`, `agent_type`, and `id` where needed for **`:rest_for_one` ordering**; **per-child** (or per-supervisor, per spec) data for `shutdown` and for restart-intensity / escalation (`allowed_restart_count` / `restarts_time_frame` are taken from `supervisor_flags` returned by `init` and apply to **all** rows unless the language adds a more granular rule later).
+**Row contents.** Each row must contain at least: the current `actor_ref`; the **`child_spec` fields** required to apply the restart protocol (§15.4.12.1) — in particular `initial_state`, `behavior`, `restart`, `agent_type`, and `id` where needed for **`:rest_for_one` ordering**; **per-child** (or per-supervisor, per spec) data for `shutdown` and for restart-intensity / escalation (`allowed_restart_count` / `restarts_time_frame` are taken from `supervisor_flags` returned by `init` and apply to **all** rows unless the language adds a more granular rule later).
 
 **Declarative children.** For each `child_spec` in the list returned from **`init`**, the runtime (typically via the **supervisor start trampoline**; see implementation plan) spawns the child, **appends** a row, and records the resulting ref. The order of spawns and rows **must** match the order of the `init` list so that **`:rest_for_one`** (§15.4.13.2) is well-defined.
 
-**Dynamic supervised children (OTP-style).** For children **not** in `init`'s list but that should still receive the **same** automatic restart, strategy, and escalation behaviour, the supervisor's behavior uses **`start_child(spec: child_spec) -> actor_ref`**. The runtime must:
+**Dynamic supervised children (OTP-style).** For children **not** in `init`'s list but that should still receive the **same** automatic restart, strategy, and escalation behaviour, user code calls the supervisor's built-in protocol:
+
+```silica
+reply: {
+    tag: :child_started | :ok | :children | :count | :child_info | :error,
+    child: actor_ref,
+    status: atom,
+    children: List[
+        {
+            id: atom,
+            agent_type: atom,
+            child: actor_ref,
+            restart: :permanent | :temporary | :transient
+        },
+        mem(normal)
+    ],
+    count: int64,
+    child_info: {
+        id: atom,
+        agent_type: atom,
+        child: actor_ref,
+        restart: :permanent | :temporary | :transient
+    },
+    error: atom
+} <- call_supervisor(sup, {
+    op: :add_child,
+    child: spec
+} impl SupervisorMessage {});
+```
+
+The runtime must:
 
 1. **Append** a new row to the same internal child table, using the same `supervisor_flags` in effect for this supervisor (from `init`).
-2. Perform **`spawn_linked(start.0, start.1, spec.agent_type)`** (or an internal equivalent that establishes the same link and metadata) so the new child is indistinguishable from a declarative child with respect to links and §15.4.9–§15.4.11.
+2. Spawn the child from `spec.initial_state` and `spec.behavior`, attach it to this `supervisor_ref`, and record `spec.agent_type` for exit payloads so the new child is indistinguishable from a declarative child with respect to §15.4.9–§15.4.11.
 3. Store the new `child_ref` in the new row.
+4. Reply with `{ tag: :child_started, child: child_ref, ... }` or `{ tag: :error, error: reason_atom, ... }`.
 
-`start_child` is the Silica analogue of **`supervisor:start_child/2`** in Erlang/OTP: one operation records policy and spawns. The exact **surface** (trait `provided` method, intrinsic, or stdlib binding) is fixed by the compiler and `stdlib`/`Supervisor` module; **normative** semantics are as above.
+`call_supervisor(..., { op: :add_child, ... })` is the Silica analogue of Erlang/OTP's dynamic child-start operation: one operation records policy and spawns. There is no public `spawn_linked` path and no ad-hoc linked child that bypasses the child table.
 
-**Ad-hoc `spawn_linked` without a table row.** A supervisor may still call **`spawn_linked`** directly (§15.4.8.3) without going through `start_child` or `init`. That child is **linked**; exit notifications are still delivered to the **supervision ingress** (§15.4.9–§15.4.10). The **runtime** does **not** apply the automatic restart protocol in §15.4.12.1 to that child, because there is **no** `child_spec` row. The supervisor's behavior is responsible for any policy. Use **`start_child(spec)`** when the child should participate in the **same** restart machinery as declarative children.
-
-**`:one_for_all` and `:rest_for_one`.** For strategies that require iterating or ordering children, the runtime **walks the internal child table** (in a defined order: declaration order, including `init` rows first in `init` order, then dynamic rows in append order from `start_child`, unless an implementation document specifies a different stable ordering; **`:rest_for_one`** may require that `id` or spawn order is recorded so “started after” is defined). See the development plan for staged implementation of full strategy semantics.
+**`:one_for_all` and `:rest_for_one`.** For strategies that require iterating or ordering children, the runtime **walks the internal child table** (in a defined order: declaration order, including `init` rows first in `init` order, then dynamic rows in append order from `:add_child`, unless an implementation document specifies a different stable ordering; **`:rest_for_one`** may require that `id` or spawn order is recorded so “started after” is defined). See the development plan for staged implementation of full strategy semantics.
 
 ##### 15.4.13.4 FailureReporter Trait
 
@@ -9194,11 +9254,11 @@ No open items. All previously deferred decisions have been resolved and their sp
 | Signal handler | Containment gate (§15.4.4) | Gate passes → single actor dies, process continues; gate fails → process aborts |
 | Recovery (`siglongjmp`) | Non-local jump to per-actor recovery point | Mutator torn down cleanly; runtime stack intact |
 | Actor isolation | Per-actor stacks (§15.1.2.2) | One actor's stack cannot corrupt another's; stack growth is transparent |
-| Links (`spawn_linked`) | Bidirectional runtime link at spawn time | Supervisor notified of every child death regardless of cause; cascading shutdown on supervisor exit |
+| Supervised child table | Runtime-owned rows created from `child_spec` | Supervisor notified of every child death regardless of cause; restart policy has stored spawn metadata |
 | Supervision ingress | Dedicated high-priority channel per supervisor | Exit notifications arrive before ordinary `call`/`cast` backlog |
 | Unified exit delivery | Runtime constructs and enqueues notification; no user code in dying actor | All failure causes covered uniformly; no double-notification race |
 | Stack unwind (§15.4.6.4) | SFT-driven unwind before stack reclaim | Human-readable + LLM-parseable report enqueued to `FailureReporter` / `handle_report` (§15.4.13.4) |
-| Policy | Supervisor behavior function via required `Supervisor` trait (§15.4.13) | Restart, shutdown, and escalation logic in user space |
+| Policy | Required `Supervisor.init/1` plus runtime-owned supervisor behavior (§15.4.13) | Restart, shutdown, and escalation logic is applied by the runtime |
 
 ---
 
@@ -9238,6 +9298,37 @@ If the behavior returns `(:reply, int64, State)`, then `call()` returns `int64`.
 - If Reply type does not match expected return type, the compiler reports a **type error**: `"reply type mismatch: expected X, got Y"`
 
 The `message` argument must satisfy `ActorMessage` — typically `expr impl ActorMessage {}` (§3.3, §16.3.2) or a type that has `impl ConcreteType;` registered in `actormessage.silica`.
+
+#### 16.1.1.1 Supervisor Call
+
+Supervisor maintenance uses a separate synchronous builtin:
+
+```
+call_supervisor(supervisor: supervisor_ref, message: SupervisorMessage) -> {
+    tag: :child_started | :ok | :children | :count | :child_info | :error,
+    child: actor_ref,
+    status: atom,
+    children: List[
+        {
+            id: atom,
+            agent_type: atom,
+            child: actor_ref,
+            restart: :permanent | :temporary | :transient
+        },
+        mem(normal)
+    ],
+    count: int64,
+    child_info: {
+        id: atom,
+        agent_type: atom,
+        child: actor_ref,
+        restart: :permanent | :temporary | :transient
+    },
+    error: atom
+} proc[concurrency]
+```
+
+`call_supervisor` accepts only `supervisor_ref`, not `actor_ref`. Its return type is the concrete record shown above; it is not inferred from the message variant. Supervisors do not accept ordinary `call()` or `cast()`.
 
 #### 16.1.2 Asynchronous Cast
 Messages can be sent asynchronously without blocking, with success/failure indication:
@@ -9340,7 +9431,7 @@ recv() -> Msg proc[concurrency]  // Runtime internal function
 User behavior functions receive messages as parameters rather than calling `recv()` directly. **Outbound messaging** (`call`, `cast`, etc.) is **allowed** inside the behavior body when effects permit; only **reception** is reserved to the runtime loop (see §15.1.2).
 
 #### 16.2.2 Mailbox Semantics
-Most actors have exactly one FIFO mailbox that queues incoming messages. Supervisor actors (those implementing the `Supervisor` trait) additionally have a supervision ingress — a high-priority channel drained before the standard mailbox each scheduling turn. See §15.4.9.
+Ordinary actors have exactly one FIFO mailbox that queues incoming messages. Runtime-managed supervisors have a supervisor-call queue for `call_supervisor` maintenance requests plus a supervision ingress — a high-priority channel drained before supervisor calls each scheduling turn. See §15.4.9.
 
 ```
 Mailbox State:
@@ -9533,11 +9624,11 @@ error: cannot call(self(), ...)
 
 ### 16.2.7 Supervisor Actors
 
-**Concept**: Supervisor actors monitor and manage child actors. A supervisor is an ordinary Silica actor (see §15.4.8.1) that implements the required `Supervisor` trait (§15.4.13) — the trait is the mechanism by which the programmer defines restart policy and child specifications.
+**Concept**: Supervisors monitor and manage child actors. A supervisor is a runtime-managed process (see §15.4.8.1) created by `spawn_registered_supervisor`; it uses the required `Supervisor` trait (§15.4.13) for restart policy and child specifications.
 
-**Full specification**: See **§15.4 Supervision and Fault Tolerance**, which covers supervisor registration (§15.4.8), the high-priority supervision ingress (§15.4.9), failure notification paths (§15.4.10), failure payload format (§15.4.11), restart and shutdown protocols (§15.4.12), and the `Supervisor` trait (§15.4.13).
+**Full specification**: See **§15.4 Supervision and Fault Tolerance**, which covers supervisor registration and `call_supervisor` (§15.4.8), the high-priority supervision ingress (§15.4.9), failure notification paths (§15.4.10), failure payload format (§15.4.11), restart and shutdown protocols (§15.4.12), and the `Supervisor` trait (§15.4.13).
 
-**Note on mailbox model**: Supervisor actors have two receive channels — the standard mailbox (§16.2.2) and a supervision ingress (§15.4.9.2). The runtime drains the supervision ingress before the standard mailbox on each scheduling turn. Non-supervisor actors have only the standard mailbox.
+**Note on mailbox model**: Supervisors have a runtime-owned supervisor-call queue and a supervision ingress (§15.4.9.2). The runtime drains the supervision ingress before handling `call_supervisor` maintenance calls on each scheduling turn. Ordinary actors have only the standard mailbox.
 
 ### 16.2.8 Backpressure and Mailbox Management
 
@@ -11525,7 +11616,7 @@ fn assert(condition: boolean, message: string)  // Terminate process if conditio
 **Assertion Semantics:**
 Assertions check for programming errors during development and testing. When an assertion fails:
 - The current process/actor terminates with an `AssertionError`
-- Supervisors can catch this and decide whether to restart or escalate
+- Runtime-managed supervisors can apply their restart strategy or escalate
 - Failed assertions should not occur in production code
 - Unlike exceptions, assertions are for catching logic errors, not recoverable runtime conditions
 
@@ -14552,19 +14643,43 @@ fn failing_actor(msg: unit, state: unit) -> atom proc[concurrency] {
 ### 25.3 Error Recovery
 
 #### 25.3.1 Supervision
-Actors can supervise other actors:
+Supervisors are runtime-managed and are created with `spawn_registered_supervisor`:
 
-```
-fn supervisor(child_failure: down_message, state: supervisor_state)
- -> supervisor_state proc[concurrency] {
+```silica
+sup: supervisor_ref <- spawn_registered_supervisor(MySup, initial_state, :my_sup);
 
-    case child_failure of
-        Down(child_ref, reason) ->
-            new_child: actor_ref <- spawn_actor(initial_state, child_behavior)
-            // restart failed child
-            return updated_state
-    end
-}
+reply: {
+    tag: :child_started | :ok | :children | :count | :child_info | :error,
+    child: actor_ref,
+    status: atom,
+    children: List[
+        {
+            id: atom,
+            agent_type: atom,
+            child: actor_ref,
+            restart: :permanent | :temporary | :transient
+        },
+        mem(normal)
+    ],
+    count: int64,
+    child_info: {
+        id: atom,
+        agent_type: atom,
+        child: actor_ref,
+        restart: :permanent | :temporary | :transient
+    },
+    error: atom
+} <- call_supervisor(sup, {
+    op: :add_child,
+    child: {
+        id: :worker,
+        agent_type: :worker,
+        initial_state: 0,
+        behavior: worker_fn,
+        restart: :permanent,
+        shutdown: 0
+    }
+} impl SupervisorMessage {});
 ```
 
 #### 25.3.2 Try-Catch Style

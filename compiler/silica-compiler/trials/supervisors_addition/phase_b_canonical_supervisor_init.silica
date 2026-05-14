@@ -1,0 +1,65 @@
+// Phase B supervisor trial: canonical Supervisor.init/1 contract.
+//
+// This trial proves the stdlib Supervisor trait accepts child specs with
+// `initial_state` and `behavior`, and does not rely on the removed `start` field.
+
+use Supervisor;
+
+impl PhaseBSup for Supervisor;
+
+fn phase_b_worker(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state)
+}
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: atom,
+            initial_state: int64,
+            behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 1, restarts_time_frame: 5 };
+        children: List[
+            {
+                id: atom,
+                agent_type: atom,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :phase_b_worker,
+                agent_type: :phase_b_worker,
+                initial_state: initial_state,
+                behavior: phase_b_worker,
+                restart: :permanent,
+                shutdown: 0
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    0
+}

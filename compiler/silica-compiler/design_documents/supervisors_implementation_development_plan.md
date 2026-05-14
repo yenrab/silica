@@ -1,446 +1,379 @@
 # Supervisors Implementation — Development Plan
 
 **Date started**: April 18, 2026  
-**Last status update**: May 4, 2026  
-**Status**: Phases A–D complete; Phase E runtime **e3a** (linked-list child table, Option B) + **e3b** (first-schedule hook + materialize) + **e3b2** (`start_child`) + **e3c** (automatic restart `:one_for_one`/`:permanent`) + **e3d** (`:one_for_all` / `:rest_for_one` strategies) + **e3e** (restart-frequency cap + escalation) + **e3f** (tombstones/reuse) complete; trial **e4a**–**e4g** complete (including **e4g** dynamic `start_child` row + `:permanent`/`:one_for_one`, same observable line as **e4a**); per-actor sync for **ACB+16 / ACB+80** and **call-wrapper+72 / +24** uses `**os_unfair_lock` + `___ulock_wait`/`___ulock_wake`** (`UL_COMPARE_AND_WAIT_SHARED`), not `pthread_mutex_t`/`pthread_cond_t` (see `prims_actors_runtime_asm.silica::actor_rt_asm_cv_chunk`). **e5** (full integrate) complete; **Phase F** 🟨 partial — **F1–F7 ✅** (see §4 Phase F; **F7** — `**[supervisors_f7_bootstrap_ordering.md](supervisors_f7_bootstrap_ordering.md)`** + `**phase_f7_bootstrap_ordering**`); **F8 ⬜**; **F6 delivery model** (**bounded async enqueue** to `FailureReporter`, `**handle_report`** on FR thread only — §15.4.13.4) **implemented** for **(a)** (`String` report + empty `region_dumps`) in spec (`silica-specification.md` §15.4.13.4); Phases **G–I** pending; **Phase J** — **[J1 ✅](supervisors_j1_invariant_audit.md)**; **[J2 ✅](supervisors_j2_runtime_hardening.md)** (runtime playbook + `stress_j2_supervision_harness.sh` / `**make stress-j2`**); **J3** ⬜ (see §4)  
-**Primary specification**: [silica-specification.md](silica-specification.md) — §15.1.3, §15.4 (Supervision and Fault Tolerance), §16.2.7  
+**Last design update**: May 14, 2026
+**Primary specification**: [silica-specification.md](silica-specification.md) — §15.4 (Supervision and Fault Tolerance), §16.2.7
 
-**Related plans and docs**:
-
-- [actor_implementation_plan.md](actor_implementation_plan.md) — baseline actor runtime, mailboxes, `spawn`, effects
-- [silica-specification.md](silica-specification.md) §15.4.6 — trap / unwind / failure reporting (ingress is separate from `FailureReporter`)
-- [supervisors_f5_exit_path_audit.md](supervisors_f5_exit_path_audit.md) — Phase **F5** unwind vs ingress teardown ordering (`_silica_rt_actor_deliver_*` sequencing)
-- [supervisors_f7_bootstrap_ordering.md](supervisors_f7_bootstrap_ordering.md) — Phase **F7** root `FailureReporter` `**main`** / `register_failure_reporter` ordering vs dependents (Phase **I** `wait_for_exit` deferred)
-- [supervisors_j1_invariant_audit.md](supervisors_j1_invariant_audit.md) — Phase **J1** “one logical writer” checklist + runtime code-path audit (`maybe_restart`, ingress ordering, child-table writers)
-- [supervisors_j2_runtime_hardening.md](supervisors_j2_runtime_hardening.md) — Phase **J2** ulock/barrier/pthread constraints, regression window, `**trials/supervisors_addition/stress_j2_supervision_harness.sh`**
-- [silica_actor_capabilities_specification.md](silica_actor_capabilities_specification.md) — if present, align capability boundaries with supervision
+This document describes the target supervisor design. Earlier prototypes used public `spawn_linked`, user-authored supervisor behaviors, and `start_child(spec)`. Those are no longer the source-level design. The runtime may still use internal link-like metadata, but user code creates and talks to supervisors through the builtins described here.
 
 ---
 
-## 0. Current Status Dashboard
+## 1. Target Model
 
-### Phase-level progress
+A supervisor is a runtime-managed process with a built-in behavior. User code cannot replace or modify that behavior.
 
+User code defines a supervisor by implementing the canonical `stdlib/Supervisor.silica` trait:
 
-| Phase | Area                                                                                                                                                                                 | Status                                                                                                                           | Trials (supervisors_addition)                                                                                                                                   |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A     | Runtime metadata + `spawn_linked`                                                                                                                                                    | ✅ complete                                                                                                                       | `phase_a_supervisor_spawn_linked`                                                                                                                               |
-| B     | Supervision ingress + scheduler ordering (two-list functional queue: front/rear, reverse-on-empty)                                                                                   | ✅ complete                                                                                                                       | `phase_b_ingress_before_cast`                                                                                                                                   |
-| C     | Exit notification construction + delivery; dead-supervisor stderr route                                                                                                              | ✅ complete                                                                                                                       | `phase_c_child_exit_notification`                                                                                                                               |
-| D     | `Supervisor` trait surface + `impl T for Supervisor;` marker + `spawn_linked`/`link` behavior-only check + runtime metadata emission                                                 | ✅ complete                                                                                                                       | `phase_d_supervisor_module_compiles`                                                                                                                            |
-| E     | Declarative + **dynamic** supervised children, automatic restart (heap child table)                                                                                                  | ✅ runtime **e3a–e3f** + trials **e4a–e4g**; emitter discipline **subphase E6**: **E6.1 / e6a** (declarative/`init` first), then **E6.2 / e6b** (`start_child`); see §0 *Phase E — subphase E6* | `phase_e_actor_state_probe`, `phase_e_probe` (compile-only); **e4a** / materialize; dynamic **`phase_e4g_start_child_one_for_one`** |
-| F     | `FailureReporter` + unwind path integration                                                                                                                                          | 🟨 **partial** — **F1–F7 ✅**; `**F8` ⬜** (dual-channel acceptance)                                                               | `**phase_f5_unwind_stderr_fallback`** (F5); `**phase_f_failure_reporter_cast_alignment**` (F6); `**phase_f7_bootstrap_ordering**` (**F7** ordering doc + probe) |
-| G     | `link`/`monitor`/cascading shutdown polish                                                                                                                                           | ⬜ not started (partial scaffolding only)                                                                                         | —                                                                                                                                                               |
-| H     | Coordinated subtree shutdown (user-level)                                                                                                                                            | ⬜ not started                                                                                                                    | —                                                                                                                                                               |
-| I     | `wait_for_exit/0` in `main/0` (`[concurrency, device_io]`); silent stdin loop; returns on line `exit` or root-supervisor termination; other input discarded; parse errors if misused | ⬜ not started                                                                                                                    | —                                                                                                                                                               |
-| J     | Supervisor **stability / flake reduction** — BEAM ERTS-style invariants, shared-runtime hardening, optional architecture follow-up (see §4 Phase J)                                  | **J1 ✅** [audit](supervisors_j1_invariant_audit.md); **J2 ✅** [runtime hardening](supervisors_j2_runtime_hardening.md); **J3** ⬜ | `**make stress-j2`** (+ `stress_j2_supervision_harness.sh`); `**stress_j1_supervision_batch.sh**`; `phase_e4e_one_for_all` / `phase_e4f_rest_for_one` as repros |
+```silica
+use Supervisor;
 
+impl MySup for Supervisor;
 
-### Phase E — unified heap child table (design snapshot)
-
-Normative detail is in **silica-specification.md §15.4.13.3**. Summary for implementers:
-
-- **One** internal child table per supervisor: **heap-allocated**, **growable** (`realloc` or equivalent); the **ACB** stores a **pointer** (and len/cap metadata), not the full table inline in a fixed-size block.
-- **Declarative** children: returned from `**init`**; trampoline walks the list and **appends** one row per `child_spec`.
-- **Dynamic** supervised children (OTP-style): `**start_child(spec)`** appends a row and spawns; **same** `supervisor_flags`, restart, and escalation rules as declarative rows.
-- **Bare `spawn_linked`**: still creates a **link** and **ingress** notifications; **no** table row ⇒ **no** automatic restarts (behavior may implement policy manually).
-
-### Phase E — subphase **E6**: emitter / SIR dual-flow (E6.1 → E6.2)
-
-The **runtime model stays unified**: one heap child table and the same logical `child_spec` layout whether the row comes from **`init`** (materialize) or from **`start_child(spec)`** (§15.4.13.3).  
-
-**Compiler implementation** intentionally uses **two flows inside the existing emitter** (not a second emitter codebase). Fixes for dynamic `start_child` repeatedly interacted with stack bookkeeping (`record_make` / let RHS vs unary actor arg / top-level vs nested let teardown), which risks regressing **declarative-only** supervisors that never call `start_child`. To stabilize work, **E6** splits emitter-facing work into two ordered subphases (tracked in the task grid as **e6a** / **e6b**):
-
-**E6.1 — Declarative children first (declarative flow)**  
-   - **Covers**: supervisor children introduced **only** via **`init`** → `_silica_rt_supervisor_materialize_init_children` walks the cons-list and appends rows; behavior code may use table probes (`child_table_first_ref`, etc.) **without** relying on stack-built specs passed into `start_child`.  
-   - **Emitter/SIR focus**: tuple-return layout from `init`, materialize assumptions, value-flat row payloads, trials such as **`phase_e4a_permanent_one_for_one`** (and other **e4\*** trials **in their declarative aspects**).  
-   - **Primary cross-refs**: **e1d–e2b** (canonical `init` shape + trampoline/materialize wiring), **e3a–e3e** (heap table + first schedule + restart/cap runtime used for materialized rows), trial **e4a** as the declarative anchor.  
-   - **Priority**: **implement, regression-test, and freeze E6.1** before expanding E6.2.
-
-**E6.2 — Dynamic children next (dynamic flow)**  
-   - **Covers**: **`start_child(spec)`** where `spec` may be a stack record literal and/or a let-bound aggregate whose binding resolves to **`SP`** (operand asm is pointer preparation + `BL _silica_rt_supervisor_start_child`).  
-   - **Emitter/SIR focus**: SP slab allocation/teardown around the runtime call, compatibility with let-end **`ADD SP`** accounting (`base_stack_n` vs **`base_stack_tl`** / `_tuple_sret`), and trials **`phase_e4g_start_child_one_for_one`** plus mixed declarative+dynamic scenarios (**e4b–e4f**).  
-   - **Primary cross-refs**: **e3b2** (runtime + compiler `start_child`), **e3f** (tombstones/reuse for dynamic rows), trials **e4g** and **e4b–e4f**.  
-   - **Priority**: **follows** E6.1; changes must keep **`phase_e4a`** (and the integrate subset defined for declarative anchors) green.
-
-3. **Sir_generator responsibility (E6.2 discipline)**  
-   - The emitter should **not** infer “dynamic vs declarative” from fragile IR shape alone (e.g. scanning for `%spec` / asm substrings).  
-   - **Plan**: carry an explicit **SIR discriminator** — e.g. a **tag on the `start_child` prim** (parallel to existing **`[concurrency]|e3b:…`**-style tagging for spawn), or a **distinct lowered prim name** that still resolves to **`_silica_rt_supervisor_start_child`** — so **`term_emitter`** selects **E6.2 (dynamic-flow)** emission rules only when that bit is set. Declarative/materialize-only modules never take the dynamic branch.
-
-4. **Testing discipline**  
-   - Any merge touching **E6.2** runs **both**: declarative anchor (**e4a** minimum) **and** at least one dynamic trial (**e4g** or mixed **e4b**).  
-   - Golden / integrate policy unchanged unless explicitly revised elsewhere.
-
-### Phase E task breakdown (detailed)
-
-Canonical `init` signature (confirmed in `stdlib/Supervisor.silica`):
-
+fn init(initial_state: ActorState) -> (
+    supervisor_flags,
+    List[child_spec, mem(normal)]
+) {
+    ...
+}
 ```
-fn init(initial_supervisor_state: ActorState) -> (
-    { strategy: :one_for_one | :one_for_all | :rest_for_one,
-      allowed_restart_count: int64,
-      restarts_time_frame: int64 },
-    List[
-      { id: atom,
+
+`init/1` is the programmer-provided configuration callback. It is called exactly once when the supervisor starts. It returns the restart strategy and the initial child specs. The runtime then spawns those children, records them in the supervisor child table, and applies restart policy.
+
+There is no user-written supervisor behavior function. A supervisor receives only the fixed supervisor-maintenance protocol through `call_supervisor`.
+
+---
+
+## 2. Public Surface
+
+### Reference Types
+
+```silica
+actor_ref
+supervisor_ref
+```
+
+`actor_ref` refers to ordinary actors. `supervisor_ref` refers to runtime-managed supervisors and is intentionally distinct.
+
+### Creation Builtins
+
+```silica
+spawn(initial_state, behavior_fn) -> actor_ref
+
+spawn_registered(
+    initial_state,
+    behavior_fn,
+    name: atom
+) -> actor_ref
+
+spawn_registered_supervisor(
+    supervisor_impl_type,
+    initial_state,
+    name: atom
+) -> supervisor_ref
+```
+
+`spawn_registered` creates an ordinary registered actor. It is not linked and not supervisory.
+
+`spawn_registered_supervisor(MySup, initial_state, :my_sup)` creates a runtime-managed supervisor, registers it, calls `MySup.init(initial_state)`, materializes the initial child specs, and returns a `supervisor_ref`.
+
+There is no public `spawn_linked` in this design.
+
+### Calls
+
+```silica
+call(actor_ref, ActorMessage) -> Reply
+
+call_supervisor(
+    supervisor_ref,
+    SupervisorMessage
+) -> {
+    tag: :child_started | :ok | :children | :count | :child_info | :error,
+    child: actor_ref,
+    status: atom,
+    children: List[
+        {
+            id: atom,
+            agent_type: atom,
+            child: actor_ref,
+            restart: :permanent | :temporary | :transient
+        },
+        mem(normal)
+    ],
+    count: int64,
+    child_info: {
+        id: atom,
         agent_type: atom,
-        start: (int64, fn(msg: int64, state: int64) -> (:no_reply, int64)),
-        restart: :permanent | :temporary | :transient,
-        shutdown: int64 },
-      normal
-    ]
-)
+        child: actor_ref,
+        restart: :permanent | :temporary | :transient
+    },
+    error: atom
+}
 ```
 
+Invalid source forms:
 
-| ID   | Deliverable                                                                                                                                                                         | Status            | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| e1a  | Phase E probe trial with canonical `init` shape                                                                                                                                     | ✅                 | `trials/supervisors_addition/phase_e_probe.silica` exposes type-checker/emitter gaps                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| e1b  | Type-checker: atom-union as a record field type (`restart`, `strategy`)                                                                                                             | ✅                 | `type_checker_expressions_atoms.silica`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| e1c  | Type-checker: `fn(...) -> ...` as a record field type (`child_spec.start`)                                                                                                          | ✅                 | `type_checker_expressions_identifiers.silica`, `type_checker_expressions.silica`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| e1d  | Type-checker: nested record literals in tuple return (`supervisor_flags` + `List[child_spec, normal]`)                                                                              | ✅                 | `type_checker_expressions.silica`, `type_checker_record_types.silica`, `prims_record.silica` (paren/brace/bracket-depth tracking)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| e1e  | Type-checker: `ActorState` recognised as a parameter type (alias for concrete actor state in `impl`)                                                                                | ✅                 | `type_checker_supervisor.silica`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| e1f  | Upgrade Phase D trial to the canonical `init` signature; golden refreshed                                                                                                           | ✅                 | `phase_d_supervisor_module_compiles`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| e1g  | Emitter: function-valued identifiers emit `ADRP/ADD` (not `MOV reg, %name`)                                                                                                         | ✅                 | `emitter/apple_silicon/terms/var.silica` (`is_ident_*`, `bare_name_is_valid_symbol`, `emit_fn_symbol_adrp_add`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| e1h  | Fix latent `MOV X9, SP` for function identifiers inside `sequence` blocks (function-typed var in nested aggregate make)                                                             | ✅                 | `var.silica`: `emit_var_with_sp_check` / `emit_var_reg` now short-circuit on function type_name for both the source form `fn(...) -> R` and the SIR-stripped form `(...) -> R`; `type_name_is_function` + `find_top_arrow_from` helpers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| e2a  | SIR: extract `init` symbol name + child-spec layout metadata                                                                                                                        | ✅ (reduced scope) | Bootstrap compiler is flat-namespace: every supervisor module's `init` is the bare symbol `init`, so the stub trampoline needs no extra SIR fields. A future multi-init-per-link-unit change must add an `init_symbol` field to `SIRSupervisorPhaseE`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| e2b  | Emit per-supervisor `_silica_supervisor_start_<T>` trampoline                                                                                                                       | ✅ (stub)          | `module_linkage.silica::emit_supervisor_start_trampolines` wired via `emitter_core.silica::emit_module_asm_prelude`. Current body: `STP LR; MOV X0, #0; BL init; LDP LR; RET`. One stanza per `impl T for Supervisor;` row. Symbol links cleanly even when not yet called by runtime.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| e3a  | Runtime: **Option B** — singly-linked child row list: **#256** head, **#264** len (high-water), **#272** reserved; **88 B/node** (80 B row payload + next@+80); **no realloc** (`ensure_min_cap` appends). | ✅                 | **Do not** require the full table to live in the fixed 256 B block — only **anchor** in ACB (and bump allocation size for new slots only, per header comment in `prims_actors_runtime_asm.silica`). Implemented: 280 B ACB, anchors **#256/#264/#272**, `prims_actors_child_table_asm.silica` (`_silica_rt_child_table_free`, `_silica_rt_child_table_ensure_min_cap`), 80 B row layout; spawn path init + thread exit free. Table rows: `child_ref`, `child_spec` data needed for restart (`start` pair, `restart`, `agent_type`, `id`, `shutdown`, …), escalation **counters** per spec. Goldens refreshed (`actors_addition`, `supervisors_addition`, `cpu_discovery_and_spawn_pinning`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| e3b  | Runtime: invoke `_silica_supervisor_start_<T>` on first schedule of a supervisor actor                                                                                              | ✅                 | ACB 296 B (+16: **#280** trampoline ptr, **#288** ran flag). `_actor_thread_main` hook: `LDR [#280]; CBZ skip; LDR [#288]; CBNZ skip; BLR; STR 1`. SIR value tag `[concurrency]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| e3b2 | Compiler/runtime: `**start_child(spec) -> actor_ref`** for supervisors                                                                                                              | ✅                 | Type checker: `start_child` in `is_actor_concurrency_builtin`, `check_start_child_call` (1-arg, behavior-only, returns `actor_ref`). SIR: `build_start_child_prim` (unary, `[concurrency]`). Emitter: `is_actor_prim`, `runtime_label` → `_silica_rt_supervisor_start_child`, dispatched via `emit_runtime_unary`. Runtime (`prims_actors_child_table_asm.silica`): reads TLS for supervisor ACB, `spawn_linked(start.0, start.1, agent_type, row_ptr)`, appends linked row node via `ensure_min_cap`, returns child `actor_ref` in X0. `stdlib/Supervisor.silica` exports `start_child/1`. Goldens refreshed. Baseline **1289** ✅ / 0 ❌ (1 skip).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| e3c  | Runtime: automatic restart on ingress drain — `:one_for_one` + `:permanent`                                                                                                         | ✅                 | `_actor_thread_main` `LBB1_free`: when `w21==1` (ingress), loads payload child_ref `[x20+8]+0`, calls `_silica_rt_supervisor_maybe_restart(child_ref, ACB)`. New routine (`prims_actors_child_table_asm.silica`): scans heap table rows (child_ref@+0), on match loads restart atom @+40, `strcmp` vs embedded `L_atom_permanent` (`:permanent`); if equal, `spawn_linked(start.0, start.1, agent_type, 0)` and stores new child_ref into row. `:one_for_one` (single-child restart). Goldens refreshed. Baseline **1289** ✅ / 0 ❌ (1 skip).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| e3d  | Runtime: `:one_for_all` and `:rest_for_one` strategies                                                                                                                              | ✅                 | ACB extended 296→**304 B**; new field **#296** = strategy atom ptr (set by materialize from `init` tuple+0, zeroed on spawn). `_silica_rt_supervisor_maybe_restart` rewritten: after finding dead child + confirming `:permanent` restart, loads strategy from `[ACB, #296]` and `strcmp`-dispatches: `**:one_for_one`** (default) — respawn single child; `**:one_for_all*`* — kill all OTHER children (lock mutex, alive=0, signal cond, unlock on each sibling ACB), then respawn ALL in table order; `**:rest_for_one**` — kill children AFTER dead child index, then respawn dead + rest. Embedded atom strings `L_atom_one_for_all` / `L_atom_rest_for_one` via `.byte`. Frame expanded to 96 B (x19–x28, x29/x30) for kill/respawn loop registers. Goldens refreshed (28 actor + supervisor files). Baseline **1289** ✅ / 0 ❌ (1 skip).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| e3e  | Runtime: restart-frequency cap + escalation                                                                                                                                         | ✅                 | ACB extended 304→**336 B**; new fields **#304** `allowed_restart_count` (i64), **#312** `restarts_time_frame` (i64, seconds), **#320** `restart_count` (current window), **#328** `window_start_time` (seconds from `time(NULL)`). Materialize stores #304/#312 from `init` tuple flags (+8, +16). In `_silica_rt_supervisor_maybe_restart`: after `:permanent` check, if both #304 and #312 are 0 → unlimited (skip cap). Otherwise calls `_time(NULL)` for current seconds; if window_start is 0 or elapsed > time_frame → reset window (start=now, count=1); else increment count. If `count > allowed_restart_count` → **escalate**: lock supervisor mutex, set alive=0, signal cond, unlock → supervisor exits loop → Phase C link propagation. Goldens refreshed (28 files). Baseline **1289** ✅ / 0 ❌ (1 skip).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| e3f  | Runtime: **remove** or repurpose **supervised** child row when child is removed (optional API later) / document tombstones                                                          | ✅                 | Tombstone model implemented in `prims_actors_child_table_asm.silica`: `child_ref == 0` marks inactive rows; `start_child` reuses the first tombstone before growing; cascade restart loops skip tombstones. Bare `spawn_linked` children **without** a row need no change (§15.4.13.3).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| e4a  | Trial: `:permanent` restart under `:one_for_one`                                                                                                                                    | ✅                 | `trials/supervisors_addition/phase_e4a_permanent_one_for_one.silica`: supervisor prints probe; `main` holds only supervisor ref; `sup_beh` uses `child_table_first_ref` + `call`, `remove_actor`, ingress drain, third `call` returns **msg+0** (300) after restart. Runtime fixes: value-flat list payload loads `restart`/`shutdown` at **+32/+40** in materialize; `_silica_rt_supervisor_maybe_restart` compares **atom indices** (`lexeme_to_index_first_added_order`) instead of `strcmp`; no `cbz` on restart atom (index 0 is valid).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| e4b  | Trial: `:transient` no-restart-on-`:normal` + restart-on-abnormal                                                                                                                   | ✅                 | `trials/supervisors_addition/phase_e4b_transient.silica`: one declarative `:transient` child + one dynamic via `start_child`. **Normal exit** (`remove_actor`, `reason_tag=0`) ⇒ no restart, row tombstoned, `child_table_first_ref` skips it. **Abnormal exit** (`kill_abnormal`, `reason_tag=1`) ⇒ restart in place; third `call` returns msg+0 (1300) on the fresh state slot. Runtime: ACB extended **336→344 B** (`#336` `pending_exit_reason_tag`); new helper `_silica_rt_actor_kill_abnormal` flips `#336=1` then alive=0 + cond_signal; `_silica_rt_actor_deliver_exit` reads `#336` into payload `+8`; `_silica_rt_supervisor_maybe_restart` takes `reason_tag` in **X2/x28** with `:permanent` (always) / `:transient` (skip iff `x28==0`) dispatch, fall-through to tombstone for unmatched policy. `_silica_rt_child_table_first_ref` now scans rows and returns the first non-tombstone `child_ref`. `_silica_rt_supervisor_start_child` ABI corrected to value-flat 48 B spec (`restart@+32, shutdown@+40`) — earlier 72 B comment was never matched by the emitter's `record_make`. Compiler: `kill_abnormal/1` wired through type checker / SIR / effect / emitter as `[concurrency]` builtin. Emitter dealloc bug fix: actor-reply behavior fns set `_tuple_sret=X20`, which was suppressing the `ADD SP` that balances an intermediate `record_make` let-binding (`record_make` always SUBs SP — see record-emit comment). `term_emitter.silica` now special-cases `term.inner.kind==6 && name=="record_make"` so the dealloc bytes are computed regardless of `_tuple_sret`; without this, behavior fns building a literal record (e.g. `start_child(spec)`) returned with `SP` 48 B too low and crashed the LDP epilogue with SIGBUS. Goldens refreshed (actors_addition: 25 .ascomp; supervisors_addition: 6 .ascomp + new `phase_e4b_transient.{ascomp,scout}`). Baseline **1295** ✅ / 0 ❌. |
-| e4c  | Trial: `:temporary` never-restart                                                                                                                                                   | ✅                 | `trials/supervisors_addition/phase_e4c_temporary.silica`: declarative `:temporary` child + two dynamic via `start_child`. **Normal exit** (`remove_actor`, `reason_tag=0`) ⇒ no restart, row tombstoned. **Abnormal exit** (`kill_abnormal`, `reason_tag=1`) ⇒ ALSO no restart (unlike `:transient`), row tombstoned. Each follow-up `start_child` reuses a tombstone slot (e3f) before append, so the test sequence (`init child → kill normal → start_child reuses → kill abnormal → start_child reuses again`) implicitly proves both branches of `maybe_restart_policy_dispatch` fall through to `Lmr_tombstone_done` for `:temporary` (the dispatch matches neither `:permanent` nor `:transient`, so the leading `b Lmr_tombstone_done` fires for both `reason_tag=0` and `reason_tag=1`). No runtime or compiler changes — pure trial: `:temporary` was already correctly handled by the dispatch added in e4b. Output: `100, 0, 200, 1, 700, done`. Goldens added: `phase_e4c_temporary.{ascomp,scout}`. Baseline **1297** ✅ / 0 ❌.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| e4d  | Trial: restart-storm escalation (cap breach terminates supervisor)                                                                                                                  | ✅                 | `trials/supervisors_addition/phase_e4d_restart_storm.silica`: `:one_for_one` + `:permanent` worker, `allowed_restart_count=2`, `restarts_time_frame=60`. Three back-to-back `kill_abnormal` + drain cycles drive `restart_count` 0→1→2→3; the 3rd hits `count > allowed (3 > 2)` → `Lmr_freq_escalate` clears the supervisor's `alive`, signals its cond, skips respawn. After `sup_beh` returns its reply the actor loop sees `alive == 0` and exits; deliver_exit finds no parent (main is not an actor) and falls through to the `L_silica_root_actor_exit` stderr note (`[silica] root actor exited (no supervisor)`) — the visible escalation marker. Output: `100, 1, 200, 1, 300, 1, [silica] root actor exited (no supervisor), done`. **Register-allocator bug surfaced**: `term_emitter.silica::spill_reg_chain_from_outer` only walks X19..X28 in order with no stack-spill fallback, so binding more than ~7 live values in one behavior fn (msg/state/sret already burn X19/X20/X21) silently lets later let-bindings get caller-saved X9 and be overwritten by the next BL — the third named `ch` becomes 0 and `kill_abnormal(0)` SIGBUSes. Trial-local workaround only: inline `child_table_first_ref()` and `failure_reason_tag(p)` instead of binding `ch_i` / `t_i`, dropping live bindings to {a, p1, b, p2, c, p3} = 6. Proper compiler fix (real spill slots) deferred. No runtime changes for e4d — e3e's cap mechanism was already correct. Goldens added: `phase_e4d_restart_storm.{ascomp,scout}`. Baseline **1299** ✅ / 0 ❌.                                                                                                                                                                                                                                                                                                                                                            |
-| e4e  | Trial: `:one_for_all` cascade restart                                                                                                                                               | ✅                 | `trials/supervisors_addition/phase_e4e_one_for_all.silica`: `:one_for_all` strategy; one declarative `:permanent` worker + one dynamic via `start_child`; after calls, `kill_abnormal` + two ingress drains (`reason_tag` **1** then **0**) + `call(child_table_first_ref(), …)` on respawned first child. Output: `100, 200, 1, 0, 300, done`. Goldens: `phase_e4e_one_for_all.{ascomp,scout}`. Full `make integrate` baseline **1301** ✅ / **0** ❌ (verified).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| e4f  | Trial: `:rest_for_one` cascade restart                                                                                                                                              | ✅                 | `phase_e4f_rest_for_one.silica` + `phase_e4f_rest_for_one.scout` (expected `11,21,31,41,51,about_to_kill,after_kill,done,0` plus **four** stderr failure blocks: `reason_tag` **1** then **0** ×3 — abnormal row **1** + three cascade-killed rows **2–4**). One declarative child in `init` + **four** via `start_child` in `sup_beh`. Compiler/runtime: `child_table_row_ref` builtin; `Lmr_rfo_kill` tombstones tail rows after unlock. Uses `child_table_first_ref()` for row-0 probes to avoid stale `actor_ref` / register-pressure bugs. **Sync:** ACB **+16/+80** and call-wrapper **+72/+24** use `os_unfair_lock` + 32-bit futex + `___ulock_wait`/`___ulock_wake` with `**UL_COMPARE_AND_WAIT_SHARED` (3)** — opcode **1** (`UL_COMPARE_AND_WAIT` alone) was associated with intermittent `EXC_BAD_ACCESS`/`Bus error` under stress. A removed experimental **declarative-only multi-child** variant intermittently hit `mfm_alloc`/`_os_unfair_lock_corruption_abort` and is not part of integrate.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| e4g  | Trial: `**start_child` dynamic row** + `:permanent` restart under `:one_for_one` (heap table row *not* from `init`)                                                                 | ✅                 | `trials/supervisors_addition/phase_e4g_start_child_one_for_one.silica`: empty declarative list (`empty[…]()`), `start_child(spec)` then same sequence as **e4a** (`call`/`remove_actor`/ingress/`call`) — stdout matches e4a; goldens `.ascomp`/`.scout`. Mixed `init`+`start_child` covered by **e4b**–**e4f**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| e5   | Run full `make integrate`, refresh all goldens, confirm no regressions                                                                                                              | ✅                 | Full `trials/Makefile` `integrate` after `**e4g`** with goldens refreshed; no regressions (`**e4f**` timing note in §0 **e4f** if flakes reappear).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| e6a  | **E6.1** — Declarative child path: `init` tuple + materialize + emitter focus for supervisors without stack-built `start_child` specs                                              | ✅                 | Roll-up of **E6.1** (see §0 *Phase E — subphase E6*): land **e1d–e2b** + runtime **e3a–e3e** for materialized rows; freeze with trial **e4a** before expanding **e6b**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| e6b  | **E6.2** — Dynamic child path: `start_child(spec)` SIR/emitter + stack teardown rules + runtime append                                                                                                | ✅                 | Roll-up of **E6.2**: **e3b2** + **e3f**; trials **e4g** (dynamic-only row) and **e4b–e4f** (mixed init + `start_child`); merge policy: **e4a** stays green.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+```silica
+call(supervisor_ref, ...)
+cast(supervisor_ref, ...)
+call_supervisor(actor_ref, ...)
+```
 
+There is no supervisor cast path. Supervisor maintenance is synchronous through `call_supervisor`.
 
-### Resumption checklist (to pick up Phase E runtime in a fresh session)
-
-1. **Verify baseline**: `cd compiler/silica-compiler/src && make && cd ../trials && make integrate` should print `success: ✅✅ 1301` / `fail: ❌❌ 0` when the full suite is green (counts vary if trials are skipped).
-2. **Read the runtime asm** end-to-end: `compiler/silica-compiler/src/emitter/apple_silicon/terms/prims/prims_actors_runtime_asm.silica` — ACB offsets: #128 front / #136 rear / #144 thread / #152 alive / #192 supervisor / … / #248 ingress-depth / **#256–#272 heap child table anchors** / **#280 trampoline ptr** / **#288 ran flag** / **#296 strategy atom ptr** (e3d) / **#304 allowed_restart_count** / **#312 restarts_time_frame** / **#320 restart_count** / **#328 window_start_time** (e3e). The ACB is a **336**-byte `calloc` (e3e).
-3. **ACB vs heap child buffer**: **e3a** adds anchor fields **#256** ptr, **#264** len, **#272** cap; the **row array** is `calloc`/`realloc` in `prims_actors_child_table_asm.silica` **out of line**. **e3b** adds #280/#288 for first-schedule trampoline. **e3d** adds #296 for strategy atom. **e3e** adds #304/#312/#320/#328 for restart frequency cap.
-4. **Trampoline** (`module_linkage.silica::format_one_supervisor_trampoline`) now calls `init` with `LDR X0, [ACB]` (initial state) then `BL _silica_rt_supervisor_materialize_init_children(ACB, tuple_ptr)`. Materialize walks cons list at tuple+24, `spawn_linked` each child, appends 80 B row.
-5. **Tuple-return layout for `init`** (observed in `phase_d_supervisor_module_compiles.sams`, fields at bytes 0–79 of the 80-byte heap block): flags record at `+0..+23` (strategy atom @ +0, allowed_restart_count i64 @ +8, restarts_time_frame i64 @ +16); children-list head pointer at `+24` (list cons nodes: payload 72 B inline, tail at +72). Each child_spec: `id` @ +0, `agent_type` @ +8, `start.0` @ +16, `start.1` @ +24, `restart` @ +40, `shutdown` @ +48. `**start_child**` must append a row with the same logical fields (spec §15.4.13.3).
-6. **Stage goldens in order** (commit between each): e3b2 (`start_child` + one dynamic trial pointer) → e3c → e4a / e4g → e3d / e3e → e4b–e4f.
-7. **Emitter dual-flow — subphase E6 (§0)**: Prefer an explicit **SIR tag or prim variant** for dynamic `start_child` so `term_emitter` selects stack/teardown rules without fragile IR heuristics. **Work order**: complete **E6.1 / e6a** (`init`/materialize + **e4a**) before **E6.2 / e6b**; require **e4a** (minimum) plus a dynamic trial (**e4g** or mixed **e4b**) before merging emitter changes that touch supervision table emission.
+`call_supervisor` has one concrete return type. The reply type is not inferred from the message variant.
 
 ---
 
-## 1. Goal
+## 3. Supervisor Types
 
-Implement **OTP-style supervision** as specified: supervisor actors implementing the `**Supervisor` trait**, `**spawn_linked`** and `**start_child(spec)`** (§15.4.13.3) as the two parent–child bindings for **ad-hoc** vs **supervised (table)** children, a **heap-allocated, growable internal child table**, a **high-priority supervision ingress** for exit notifications, structured **failure payloads**, **declarative and dynamic** `child_spec` restart behaviour under `**supervisor_flags`**, independent unwind reports to `**FailureReporter`**, and correct interaction with `**link**`, `**monitor**`, and cascading shutdown.
+### supervisor_flags
 
-The **unified** model is: **all** children that participate in the **runtime** restart protocol (§15.4.12.1) have a **row** in the same internal table, whether the row was created from `**init`** or from `**start_child`**. **Bare `spawn_linked`** without a row remains valid for **ingress only**; no automatic restarts (§15.4.13.3). Out of scope unless explicitly pulled in: full `**:one_for_all` / `:rest_for_one`** in the first tranche of Phase E (may still be deferred per milestone), **FFI fault containment** (§15.4.13.5) beyond hooks for ordinary actor death, `**delete_child` / row removal** (see e3f) until a stable API is needed, **migrate_actor** and topology that depend on unimplemented `move()` semantics.
+```silica
+supervisor_flags = {
+    strategy: :one_for_one | :one_for_all | :rest_for_one,
+    allowed_restart_count: int64,
+    restarts_time_frame: int64
+}
+```
 
----
+### child_spec
 
-## 2. Specification Map (authoritative sections)
+```silica
+child_spec = {
+    id: atom,
+    agent_type: atom,
+    initial_state: ActorState,
+    behavior: fn(msg: ActorMessage, state: ActorState) -> ChildReturn,
+    restart: :permanent | :temporary | :transient,
+    shutdown: int64
+}
+```
 
+The child spec uses explicit fields:
 
-| Topic                                                                      | Spec anchor                |
-| -------------------------------------------------------------------------- | -------------------------- |
-| Supervisor as actor + `Supervisor` trait                                   | §15.4.8.1, §15.4.13        |
-| Single supervisor per child; root actor                                    | §15.4.8.2                  |
-| `spawn_linked` intrinsic; `agent_type`; behavior-only call site            | §15.4.8.3                  |
-| Exit propagation; `link`; non-supervisor exit                              | §15.4.8.4–§15.4.8.5        |
-| `monitor` / `demonitor`; `DOWN` to **standard** mailbox                    | §15.4.8.6–§15.4.8.7        |
-| Supervision ingress motivation, structure, population, ordering            | §15.4.9                    |
-| Unified exit notification delivery                                         | §15.4.10                   |
-| Failure payload fields; `failure_reason` sum type                          | §15.4.11                   |
-| Restart protocol; coordinated shutdown; restart strategies                 | §15.4.12, §15.4.13.2       |
-| `child_spec`, `supervisor_flags`, `start_child`, internal heap child table | §15.4.13.1–§15.4.13.3      |
-| `FailureReporter` trait; ordering vs restart                               | §15.4.13.4                 |
-| Two-channel mailbox model for supervisors                                  | §16.2.2 extension, §16.2.7 |
+```silica
+initial_state: 0,
+behavior: worker_fn
+```
 
+It does not use a `start: (initial_state, behavior_fn)` tuple.
 
----
+The supervisor owns child lifecycle. User code sends a `child_spec`; the supervisor runtime spawns, tracks, restarts, terminates, and removes the child.
 
-## 3. Prerequisites (inventory before coding)
+### child_info
 
-1. **Runtime audit**: Document current actor struct layout, spawn path, any partial `spawn_linked` / link metadata, and where child death is handled today (`handle_actor_crash` or equivalent per §15.4.10.3).
-2. **Compiler audit**: Whether `spawn_linked`, `link`, `monitor`, `Supervisor`, or ingress types appear in lexer/parser/SIR/emitter stubs.
-3. **Test harness**: Decide trial layout under `compiler/silica-compiler/trials/` (e.g. new `supervisors_addition` or extend `actors_addition`) for golden / integration checks of exit ordering and restart counts.
+The exact `child_info` record layout can be finalized during implementation, but it must at least identify the child row and current child reference:
 
----
-
-## 4. Phased Implementation
-
-### Phase A — Runtime metadata and `spawn_linked` (foundation)
-
-**Spec**: §15.4.8.2–§15.4.8.3  
-
-**Deliverables**:
-
-- Child metadata: **supervisor ref** (or none for root), `**agent_type` atom**, bidirectional **link set** or equivalent structure.
-- `**spawn_linked(initial_state, behavior_fn, agent_type [, core_id])`**: intrinsic available **only** from behavior context (compile-time enforcement in Phase D; runtime guard acceptable for early bring-up).
-- Link established **atomically** before child processes first message.
-- **Root actors**: on death with no supervisor, unwind report path to **stderr** (or existing behavior) until `FailureReporter` exists (Phase F).
-
-**Exit criteria**: Unit-level or trial: parent and child both alive; killing child does not yet require full ingress if notifications are stubbed—optional stub callback into runtime test hook.
+```silica
+child_info = {
+    id: atom,
+    agent_type: atom,
+    child: actor_ref,
+    restart: :permanent | :temporary | :transient
+}
+```
 
 ---
 
-### Phase B — Supervision ingress + scheduler ordering
+## 4. Supervisor Protocol
 
-**Spec**: §15.4.9, §16.2.7  
+```silica
+SupervisorMessage =
+    { op: :add_child, child: child_spec }
+  | { op: :remove_child, id: atom }
+  | { op: :restart_child, id: atom }
+  | { op: :terminate_child, id: atom }
+  | { op: :which_children }
+  | { op: :count_children }
+  | { op: :get_child, id: atom }
+```
 
-**Deliverables**:
+Suggested successful replies:
 
-- Per-actor **second queue** for actors marked as supervisors (or lazily allocated on first `spawn_linked` from a supervisor module—design choice: spec assumes supervisor implements `Supervisor` trait; ingress may be allocated when supervisor actor starts after `init`).
-- Scheduler / run loop: **drain ingress completely (or bounded batch with fairness policy)** before dequeuing standard mailbox, each scheduling turn.
-- **Bounded** ingress: document max depth; policy on overflow (spec implies trusted runtime only—overflow should be treated as runtime invariant failure or documented drop with escalation).
+| Message | Successful reply |
+|---------|------------------|
+| `{ op: :add_child, child: child_spec }` | `{ tag: :child_started, child: actor_ref, ... }` |
+| `{ op: :remove_child, id: atom }` | `{ tag: :ok, status: :removed, ... }` |
+| `{ op: :restart_child, id: atom }` | `{ tag: :child_started, child: actor_ref, ... }` |
+| `{ op: :terminate_child, id: atom }` | `{ tag: :ok, status: :terminated, ... }` |
+| `{ op: :which_children }` | `{ tag: :children, children: List[child_info, mem(normal)], ... }` |
+| `{ op: :count_children }` | `{ tag: :count, count: int64, ... }` |
+| `{ op: :get_child, id: atom }` | `{ tag: :child_info, child_info: child_info, ... }` |
 
-**Exit criteria**: Synthetic trial: flood standard mailbox; inject synthetic exit notification; supervisor behavior observes exit **before** backlog `cast` (ordering test).
+Any operation may return `{ tag: :error, error: reason_atom, ... }`.
 
----
-
-### Phase C — Exit notification construction and delivery
-
-**Spec**: §15.4.10, §15.4.11, §15.4.10.4  
-
-**Deliverables**:
-
-- On **any** linked child death (normal, error, explicit, memory fault per §15.4.10.1): build payload with `**child_ref`**, `**failure_reason`**, `**agent_type**` (§15.4.11.1).
-- Enqueue exactly **one** notification to supervisor ingress; **no user code** in child participates.
-- **Dead supervisor** (§15.4.10.4): drop notification; ensure unwind still reaches stderr / `FailureReporter` per §15.4.11.4.
-- **Stack growth** never generates supervision events (§15.4.10.2).
-
-**Exit criteria**: Trials diff structured output or assert on discriminated `failure_reason` variants where stable.
-
----
-
-### Phase D — Language surface: `Supervisor` trait and checking
-
-**Spec**: §15.4.13, §15.4.8.1  
-
-**Deliverables**:
-
-- Parse and type-check `**trait Supervisor { fn init(self) -> (supervisor_flags, [child_spec]); }`** (exact surface per spec §15.4.13.1–§15.4.13.2).
-- Types: `**supervisor_flags`**, `**restart_strategy**`, `**child_spec**` with documented fields (`shutdown` ms semantics, `restart` enum).
-- **Compile-time rule**: `spawn_linked` only inside behavior functions (§15.4.8.3); same for `**link`** (§15.4.8.5).
-- Mark supervisor actors for runtime (metadata flag) from trait implementation.
-
-**Exit criteria**: Programs that misuse `spawn_linked` / `link` fail type check with stable error codes; minimal supervisor module compiles.
+No shutdown-clean messages are part of the public supervisor protocol.
 
 ---
 
-### Phase E — Declarative + dynamic supervised children and automatic restart
+## 5. Runtime Responsibilities
 
-**Spec**: §15.4.12.1, §15.4.12.3, §15.4.13.2, **§15.4.13.3 (heap child table, `start_child`)**  
+Each supervisor has a heap-allocated, growable child table. Rows are created from:
 
-**Status (cross-reference)**: See the **Phase E task breakdown** in §0 for the e1a–e6b ID grid (`**e6a**`/**e6b** roll up **subphase E6**); `e1a`–`e1h` + `e2a`/`e2b` + `**e3a`**–`**e3f`** (including **e3b2**) are complete; `**e4a`–`e4g`** are complete; `**e5**` (full integrate pass) is complete; **E6.1/E6.2** (`**e6a**`/**e6b**) document the declarative-then-dynamic emitter ordering.
+1. `child_spec` values returned by `init/1`.
+2. `child_spec` values accepted through `call_supervisor(..., { op: :add_child, child: spec })`.
 
-**Deliverables**:
+Each row records at least:
 
-- **Internal child table** (§15.4.13.3): **heap-allocated**, growable; ACB holds **pointer + len + cap** (or equivalent), not a large inline fixed array. Same restart machinery for every **table** row.
-- On supervisor start: runtime calls `**init`**, spawns each declarative `child_spec` via internal `**spawn_linked`**, **appends** a **row** to the child table. `**supervisor_flags`** from `init` apply to **all** table rows.
-- **Dynamic** supervised children: `**start_child(spec)`** appends a row and spawns; behaviour matches `**supervisor:start_child/2`** in OTP (one operation). Implement **e3b2** and wire `stdlib` / compiler as in §0.
-- On child exit: if the **row**’s `**restart`** and `**strategy`** permit, runtime performs the restart protocol (§15.4.12.1) **for any row** (declarative or `start_child`)—mechanical respawn without supervisor **behavior** participation; **ingress** still delivers the structured notification. **Escalation** and **bare `spawn_linked`** (no row) per §15.4.13.3.
-- **Optional**: `delete_child` / row removal deferred to **e3f** or later.
+- current `actor_ref`
+- `id`
+- `agent_type`
+- `initial_state`
+- `behavior`
+- `restart`
+- `shutdown`
+- row order for `:rest_for_one`
 
-**Exit criteria**: Trials **e4a–e4e** for restart modes and strategies (including **e4e** `:one_for_all` cascade); **e4f** for `:rest_for_one`; **e4g** for dynamic `start_child`-only row + `:permanent`/`one_for_one` restart (**e4a**-equivalent observables); `**:one_for_one` minimum** before full `**:one_for_all` / `:rest_for_one`** (e3d / e4e / e4f) if still phased.
+When a supervised child exits, the runtime uses the owning `supervisor_ref` and child table row to deliver a structured failure notification to the supervisor ingress. The runtime-owned supervisor behavior drains the ingress before ordinary supervisor-maintenance calls and applies the configured restart strategy.
 
-**Files touched so far (reference for resumption)**:
-
-- Compiler type-checker: `src/type_checker/expressions/type_checker_expressions.silica`, `..._atoms.silica`, `..._identifiers.silica`, `..._record_types.silica`, `src/type_checker/type_checker_supervisor.silica`
-- Compiler emitter: `src/emitter/apple_silicon/terms/var.silica` (function-typed var ADRP/ADD), `src/emitter/apple_silicon/terms/prims/prims_record.silica` (paren-depth fix), `src/emitter/apple_silicon/module_linkage.silica` (`emit_supervisor_start_trampolines`), `src/emitter/apple_silicon/emitter_core.silica` (wire trampolines into prelude)
-- SIR generator (unchanged for e2a stub): `src/sir_generator/declarations/traits.silica`, `src/sir_generator/sir_ast.silica` already carry `SIRSupervisorPhaseE { actor_type, init_return_sir }` — may need extension for `start_child` symbol / supervisor-only intrinsics
-- `stdlib/Supervisor.silica` — add `**start_child`** per §15.4.13.3 (e3b2)
-- Trials: `trials/supervisors_addition/phase_e_probe.silica` (compile-only probe), `phase_e_actor_state_probe.silica` (compile-only), `phase_d_supervisor_module_compiles.silica` (upgraded to canonical `init` signature); `**phase_e4g_start_child_one_for_one.silica`** (**e4g**)
-- Runtime — **e3a** child table: `src/emitter/apple_silicon/terms/prims/prims_actors_child_table_asm.silica`, `src/emitter/apple_silicon/terms/prims/prims_actors_runtime_asm.silica` (ACB size, init, exit `free`); next: **e3b** trampoline + first schedule.
+Restart uses the stored `initial_state` and `behavior` fields from the row. Public user code does not call `spawn_linked`; the runtime uses an internal child-spawn operation that records the owning supervisor and child metadata atomically before the child can process messages.
 
 ---
 
-### Phase F — `FailureReporter` and unwind path integration
+## 6. Implementation Phases
 
-**Spec**: §15.4.11.4, §15.4.13.4–§15.4.13.6  
+### Phase A — Type and Parser Surface
 
-**Deliverables** (rollup of subphases F1–F8 below):
+- Add `supervisor_ref`.
+- Add `spawn_registered_supervisor`.
+- Add `call_supervisor`.
+- Add concrete `SupervisorMessage` handling and the direct record return type for `call_supervisor`.
+- Remove public `spawn_linked` from the language surface.
+- Reject `call(supervisor_ref, ...)`, `cast(supervisor_ref, ...)`, and `call_supervisor(actor_ref, ...)`.
 
-- Root `**FailureReporter`** actor started before other system actors (bootstrap ordering).
-- `**handle_report`**: string report + region dumps per spec; **never** block restart logic. Runtime delivery follows **bounded async enqueue** to the root `FailureReporter` (see `**F6`** row and §15.4.13.4): the dying teardown path **does not** synchronously invoke SILICA `handle_report`; the FR actor’s thread runs `handle_report` when scheduled.
-- **Transport vs. typed report** (**spec §15.4.13.4**): **F3–F5**–era paths are **transport** (NUL-terminated text buffer, `**_silica_rt_actor_cast`** / mailbox pointer envelope). The **typed** SILICA `**handle_report(String, region_dumps)`** is built **on the FR thread** — milestone **(a)** full `**report`** `**String**` + `**region_dumps = []**`; milestone **(b)** `**region_dumps`** per §15.4.13.6 when the binary bridge lands. `**F8**` may credit dual-channel **(a)** before **(b)**.
-- All actor deaths, including supervisor deaths, generate unwind report to `FailureReporter` or stderr fallback; **independent** of supervisor ingress payload.
+### Phase B — Canonical Supervisor Trait
 
-**Subphases** — complete roughly **in order** (each assumes prior items exist or stubs are landed). Later subphases may **refresh** assemblies / goldens from earlier compiler/runtime work—re-run `**supervisors_addition`** `make integrate` (or staged golden updates) before calling Phase F “done.”
+- Update `stdlib/Supervisor.silica` to the canonical `init/1` shape.
+- Replace `child_spec.start` with `child_spec.initial_state` and `child_spec.behavior`.
+- Require every `impl T for Supervisor` to provide a matching `init/1`.
+- Ensure `init/1` is invoked only by supervisor startup, not by ordinary actor spawn.
 
-**Subphase status legend:** **✅** = evidenced in-tree (proof called out); **⬜** = not yet evidenced (or intentionally deferred). Update this column when a subphase is **proven**, not when it is merely planned.
+### Phase C — Runtime Supervisor Startup
 
+- Implement `spawn_registered_supervisor`.
+- Allocate a supervisor runtime control block and return `supervisor_ref`.
+- Register the supervisor name.
+- Call `T.init(initial_state)` exactly once.
+- Materialize returned child specs into the heap child table.
+- Spawn each child with internal supervised-child metadata.
 
-| ID                                                      | Status                     | Goal                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Typical artifacts / proof                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ------------------------------------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **F1 — Trait + compiler plumbing**                      | ✅                          | `export trait FailureReporter` with §15.4.13.4 required-method shapes; `**register_failure_reporter/1`** and related builtins through lexer → SIR → type/effect checker → emitter.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | **✅** `type_checker_failure_reporter.silica` + `module_checker_core.silica` enforce required shapes; `**traits/FailureReporter.silica`** + `**register_failure_reporter**` through SIR/emitter (`actor_calls`, `prims_actors.silica`); `**parser/constraint_extract.silica**` `atom_literal` return types for `**-> :ok**`; supervisors trial `**phase_f_***` compiles/links.                                                                                                                                                                                                                                                                                                                                      |
-| **F2 — Runtime registration slot**                      | ✅                          | Global / TLS pointer (or documented anchor) storing the registered reporter `**actor_ref` / ACB**; `**_silica_rt_failure_reporter_register`** (or alias) persists the target atomically relative to concurrent spawns/deaths.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | **✅** Emitter/runtime emit `**_silica_rt_failure_reporter_register`** (`trials/supervisors_addition/*.sams`); `**phase_f_failure_reporter_cast_alignment**` issues `**register_failure_reporter**` (see `.sams`). **Open:** formal concurrency proof / stress (not required for status flag).                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| **F3 — Cast mailbox contract (FR-facing)**              | ✅                          | Unwind→reporter delivery uses `**_silica_rt_actor_cast`** onto the reporter actor with the **same** mailbox node layout Phase Actor work already relies on (**payload pointer at +8**, behavior invoked with `**X0` = payload** unless spec says otherwise).                                                                                                                                                                                                                                                                                                                                                                                                                                                          | **✅** `**prims_actors_runtime_asm.silica`** trampoline + trial `**phase_f_failure_reporter_cast_alignment.silica**` documents offset-8 / `**int64**` shim; `**trial_fr_beh**` is the cast receiver (prints when a non-zero payload is delivered). **Note:** current default `**main`/`sup_beh`** path may not schedule an unwind-originated cast—end-to-end observable **unwind → cast** is tracked under **F5/F8**, not required to stamp **F3** done.                                                                                                                                                                                                                                                            |
-| **F4 — Unwind / trap → report dispatch**                | ✅                          | `**_silica_rt_actor_deliver_unwind_report`** (and any **LBB1**/`trap`/unwind hook per §15.4.6) formats a NUL-terminated textual report (`**snprintf`/`vsnprintf`-style**) and invokes **F3** for the (**one**) registered reporter—or **drops** safely if reporter resolution fails.                                                                                                                                                                                                                                                                                                                                                                                                                                  | **✅** Routine `**_silica_rt_actor_deliver_unwind_report`** present in linked runtime asm (e.g. `**prims_actors_runtime_asm.silica**` Phase F chunk); symbol appears in supervisor trial link units. **⬜ Gap vs full acceptance:** not every actor-death path audited to **call** into this routine (**→ F5**); LBB/trap wiring may be partial.                                                                                                                                                                                                                                                                                                                                                                     |
-| **F5 — Path coverage + stderr fallback (independence)** | ✅                          | **Every actor death category** slated by spec—including **supervisors** and paths where **ingress notifications are suppressed** §15.4.10.4—still produces an unwind-side report (**F4**) or `**FailureReporter`**-equivalent `**stderr**` fallback (§15.4.11.4 order vs restart). Ingress remains structured **failure payloads** only (Phase **C**/E); unwind text is separate. Code audit checklist: `**_silica_rt_actor_deliver_exit`**, escalate/kill/teardown/root-exit helpers.                                                                                                                                                                                                                                | **✅ Core proof:** `**actor_thread_main`** always calls `**_silica_rt_actor_deliver_unwind_report**` immediately after `**_silica_rt_actor_deliver_exit**` (`**prims_actors_runtime_asm.silica**` `LBB1_exit`)—ordering independent of ingress success. `**_silica_rt_actor_deliver_unwind_report**` stderr path when `**_silica_rt_root_failure_reporter` == 0**. **OOM** path after `**malloc(2048)`** `**_write`s** `**Ldup_oom_msg`**. `**design_documents/supervisors_f5_exit_path_audit.md**`; trial `**trials/supervisors_addition/phase_f5_unwind_stderr_fallback**`. **⬜ Remaining stretch:** exhaustive matrix (`:one_for_all` escalate, stress) per risk register—not required to stamp **F5** baseline. |
-| **F6 — `handle_report` + blocking semantics**           | ✅ **(a) impl** — **(b) ⬜** | **Accepted model:** **bounded asynchronous handoff** + **transport vs. typed report** (**§15.4.13.4**): unwind path emits **transport** (bounded text + cast/mailbox envelope); `**handle_report`** is **typed** on FR — **(a)** `**String` `report`** + empty `**region_dumps**`; **(b)** `**region_dumps`** per §15.4.13.6. The C/unwind side **enqueues** via `**_silica_rt_actor_cast`**; `**handle_report**` runs only on the FR scheduler thread. `**_silica_rt_actor_deliver_unwind_report**`: if `**_silica_rt_actor_cast**` returns failure (null target, OOM for mailbox node), **stderr** fallback + `**free`** transport buffer — same family as F5. Normative: `**silica-specification.md` §15.4.13.4**. | **✅** `**phase_f_failure_reporter_cast_alignment`**: `**trial_fr_beh(transport: string)**` → `**handle_report(empty[(atom, bytes), normal], transport)**`; probe `**F6_handle_report**`. Runtime: `**cbz w0, Ldup_stderr_path**` after cast. **(b)** binary region dumps still **⬜**.                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| **F7 — Bootstrap ordering**                             | ✅                          | In **real programs**, root `**FailureReporter`** is spawned and `**register_failure_reporter**` runs **before** other root actors that may emit unwind-visible exits; **ordering doc** + `**main/0` skeleton**. No linker/runtime auto-init of FR (**spec**: program responsibility). **Phase I** `**wait_for_exit`** wraps the same startup ordering when landed.                                                                                                                                                                                                                                                                                                                                                    | **✅** `**[supervisors_f7_bootstrap_ordering.md](supervisors_f7_bootstrap_ordering.md)`** (`_silica_rt_root_failure_reporter`, anti-patterns, Phase I note). `**phase_f7_bootstrap_ordering**` — `**F7_bootstrap_ok**` after `**register_failure_reporter**`, before supervisor `**spawn**`; `**handle_report**` silent on **stdout** for deterministic goldens (F6 trial proves typed unwind).                                                                                                                                                                                                                                                                                                                     |
-| **F8 — Acceptance trials + baseline**                   | ⬜                          | **Exit criterion trial**: supervised child exits such that (**a**) supervisor **ingress** sees **structured fields only**, (**b**) `**FailureReporter`** observes the **full string report** via `**handle_report`** (visible probe: prints, asserts, or goldens)—**both channels** in one scripted run. **Staged per §15.4.13.4:** **(a)** may use `**region_dumps = []`**; extend **F8** / trials when **binary `region_dumps` (b)** is required. `**make integrate`** (or supervisors-only staged integrate) refreshed; **§0 Phase F dashboard** row flipped to ✅ with trial filenames.                                                                                                                            | Current `**phase_f_failure_reporter_cast_alignment`** asserts **ingress**-style probes (`:phase_f_child`, `**failure_reason_tag`**), not the Phase F **dual-channel** `**FailureReporter` string-report** probe; supervisors `**make integrate`** not baselined as all-green alongside new goldens (**→** refresh when acceptance trial lands).                                                                                                                                                                                                                                                                                                                                                                    |
+### Phase D — Supervisor Protocol
 
+- Implement `call_supervisor`.
+- Implement the fixed maintenance messages:
+  - `:add_child`
+  - `:remove_child`
+  - `:restart_child`
+  - `:terminate_child`
+  - `:which_children`
+  - `:count_children`
+  - `:get_child`
+- Return only the concrete record type shown in the `call_supervisor` signature.
 
-*Note*: **F5** before **F6** keeps unwind dispatch and path coverage honest before investing in `**handle_report`** bridging. If string/region plumbing is ready early, **F6** can start in parallel with **F5**—but **F8** (acceptance) should not ship until **F5**’s audit is closed or explicitly waived with spec sign-off.
+### Phase E — Restart Semantics
 
-**F6 bounded async enqueue (summary).** The runtime **never** calls SILICA `**handle_report`** synchronously from the exiting actor’s stack or from supervisor restart/cascade C code. It **enqueues** a bounded **transport** job to the root `**FailureReporter`**; that actor’s thread builds the **typed** `**handle_report(report, region_dumps)`** invocation. **Transport vs. typed** (**§15.4.13.4**): **F3–F5** prove **transport** (text buffer + cast); **F6–F8** may land **(a)** typed `**String`** + empty `**region_dumps**` before **(b)** binary dumps. This preserves **§15.4.13.4** visibility (FR is the logging sink) while matching **Phase J** expectations: restart logic stays off `**handle_report`**, and death-path work stays **bounded** (see **J2** allocator stress notes).
+- Implement `:permanent`, `:temporary`, and `:transient`.
+- Implement `:one_for_one`, `:one_for_all`, and `:rest_for_one`.
+- Enforce `allowed_restart_count` within `restarts_time_frame`.
+- On escalation, terminate the supervisor and propagate failure to its parent supervisor if it has one.
 
-**Exit criteria**: Supervised child dies: ingress gets structured fields only; `FailureReporter` receives full string report (trial asserts both channels)—**map to completion of F4–F8** (with **F1–F3** landed as prerequisite), with `**handle_report`** delivered per **bounded async enqueue** and **transport → typed** staging (**F6** / §15.4.13.4 **Transport vs. typed report**). **F5** documents ingress/unwind separation and proves stderr unwind without FR (`**phase_f5_unwind_stderr_fallback`**); dual-channel `**FailureReporter` string-report** assertion remains **F8** ( `**region_dumps`** **optional** for first **F8** green per **(`a`)** / **(`b`)** split).
+### Phase F — Failure Reporting
 
----
+- Keep supervisor ingress separate from `FailureReporter`.
+- Deliver structured child-exit metadata to the supervisor.
+- Deliver human-readable unwind reports to the root `FailureReporter`.
+- Preserve the existing root stderr fallback when no supervisor/failure reporter is available.
 
-### Phase G — `link`, `monitor`, cascading shutdown polish
+### Phase G — Integration and Compatibility Cleanup
 
-**Spec**: §15.4.8.4–§15.4.8.7, §15.4.8.5 (supervisor vs non-supervisor exit)  
-
-**Deliverables**:
-
-- `**link`**: idempotent; immediate exit if target dead; supervisor receives via **ingress**; non-supervisor exits with linked failure reason.
-- `**monitor` / `demonitor`**: `DOWN` to **standard** mailbox only.
-- Supervisor death: exit signals to linked children; non-supervisor children terminate; supervisor children route via ingress (§15.4.8.4, §15.4.8.5).
-
-**Exit criteria**: Matrix trial: link vs monitor vs spawn_linked combinations.
-
----
-
-### Phase H — Coordinated subtree shutdown (user-level protocol)
-
-**Spec**: §15.4.12.2  
-
-**Deliverables**:
-
-- Documentation + examples: supervisor tears down children with `**cast`/`call`** shutdown messages; `actor_not_found` treated as already stopped.
-- No conflation with §15.4.6 trap recovery path.
-
-**Exit criteria**: Example supervisor in trials performs clean restart cycle.
-
----
-
-### Phase I — Blocking run-loop helper for `main/0`
-
-**Spec**: TBD (add §15.4.x or §16.x note when scoped; coordinate with `main/0` semantics).
-
-**Motivation**: Today `main/0` returns immediately after `spawn`/`spawn_linked`, which tears down the process and every supervised actor with it. Real applications (and supervisor trials that need wall-clock time) need a way for `main/0` to **block** so the runtime keeps scheduling actors. `**wait_for_exit/0`** is a small, explicit hold-open: the process stays up while it waits for either a sentinel stdin line or **root** supervisor termination, without requiring a separate “all subtrees idle” policy in this phase.
-
-**Deliverables**:
-
-- A **stdlib / runtime** blocking entry point `**wait_for_exit/0`**, callable only from `**main/0`**.
-- **Semantics**: The call **reads from the command line (standard input) and prints nothing**. It **returns** when **either** (a) a read yields a line that **is** the token `**exit`**, or (b) the **root** supervisor actor **terminates**. On **any other** line, the call **discards** it and **reads again**. Exact line trimming / comparison rules (e.g. surrounding whitespace) are TBD; the intent is: only the literal `exit` line ends the wait from stdin, while root-supervisor exit ends the wait regardless of stdin. Runtime wiring should observe root-supervisor death without busy-spinning (e.g. block or wait that multiplexes stdin with root-actor exit).
-- **Effect-system wiring**: the call is legal only in a sequence block whose effect row is `**[concurrency, device_io]`** (both required), matching other main-line concurrency + I/O usage.
-- **Static placement and use rules (parser-enforced)**:
-  - A **parse error** if `wait_for_exit/0` appears **outside** of `main/0` (not only wrong module — any function body other than `main` is rejected).
-- Compiler surface: parser rules above, then type-checker / SIR / emitter wiring as a primitive (mirrors `start_child` plumbing).
-- **Future / separate work**: a distinct helper that blocks until **arbitrary** lifecycle predicates (e.g. all leaf actors, custom graphs) is **out of scope**; this phase only covers stdin `exit` and root-supervisor termination.
-- Trial: a `main/0` that calls `wait_for_exit/0` and returns after stdin `exit` *or* root-supervisor exit; a scenario combining `spawn`/`spawn_linked` + `wait_for_exit/0` so restarts and escalation (e.g. e4d-style) are observable before the wait returns.
-
-**Out of scope**: full OTP-style `application` controller, release/upgrade semantics, multi-node coordination, helpers keyed on arbitrary "all actors down" graphs beyond the root supervisor (see **Future / separate work** above).
-
-**Exit criteria**: A trial shows `main/0` calling `wait_for_exit/0`; the process stays in the function until stdin line `exit` **or** root-supervisor termination; other stdin lines are discarded; the helper produces **no** output. A combined scenario can keep the process up long enough to observe a restart cycle (e.g. e4a-style) or escalation (e4d) before the wait returns.
+- Rename or retire trials that imply public `spawn_linked` or user-authored supervisor behavior.
+- Update examples to use `spawn_registered_supervisor` and `call_supervisor`.
+- Update goldens and diagnostics.
+- Add negative tests for invalid supervisor calls and invalid ordinary actor/supervisor ref mixing.
 
 ---
 
-### Phase J — Supervisor stability: flake reduction (BEAM ERTS–inspired, Silica-runtime–specific)
+## 7. Example
 
-**Motivation.** Intermittent failures under supervisor load (SIGBUS on `malloc` paths, hangs, garbled stdout, occasional integrate flakes) have been observed across `**:one_for_one`**, `**:one_for_all**`, and `**:rest_for_one**` — the common factor is **shared actor runtime infrastructure** (`prims_actors_runtime_asm.silica`, `prims_actors_child_table_asm.silica`: ACB locks, ulock-backed condition variables, ingress delivery, cascade kill/respawn), **not** the OTP restart strategy identifier. Erlang supervision **policies** are implemented in Erlang user code (`supervisor` behaviour), but the **BEAM virtual machine’s C runtime** achieves stability by restricting **who mutates persistent process state when** (per-process heaps, mailbox/signal queues, scheduler discipline). Phase J captures **actionable parallels** plus **facts already validated** in-tree so implementers (including LLM-assisted sessions) fix **root causes** instead of blaming strategy names or adding random barriers.
+```silica
+use Supervisor;
 
-#### J1 — Tighten invariants: “one logical writer” for supervised state (parallel to BEAM process semantics)
+impl MySup for Supervisor;
 
-**Goal.** Align Silica’s **supervisor child table and automatic restart protocol** with a **single mutator / single consumer** discipline as far as the **pthread-based** design allows:
+fn worker_fn(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state)
+}
 
-- **Child table rows and `_silica_rt_supervisor_maybe_restart`** should behave as if **only the supervisor actor’s thread** applies policy mutations; other threads should **enqueue** supervision events (ingress) or run **narrow, documented** teardown paths — not race second copies of restart logic.
-- Preserve and **audit** the existing ordering contract: `**_actor_thread_main` drains supervision ingress before the standard mailbox** each scheduling turn (`prims_actors_runtime_asm.silica` header); `**_silica_rt_actor_supervision_wait_and_drain_one`** unlocks **before** `maybe_restart` so restart/spawn/cascade kills **do not** hold **ACB+16** across the restart routine (explicitly commented in-runtime — keep it that way).
-- **Document / eliminate** duplicate or ambiguous entry points that could invoke restart or table mutation without the same ingress ordering (e.g. any future helper that mirrored `maybe_restart` without going through ingress).
-- `**one_for_all` / `rest_for_one`** amplify **sibling ACB locking and table walks** versus `**one_for_one`**; treat heavier cascade trials (`**phase_e4e_one_for_all**`, `**phase_e4f_rest_for_one**`) as **stress reproducers**, not proof that OTP strategy choice fixes low-level flakes.
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: atom,
+            initial_state: int64,
+            behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        },
+        mem(normal)
+    ]
+) {
+    ...
+}
 
-**Exit criteria.** Written invariant checklist + code-path audit notes in-repo (or superseding doc); optionally a stress loop over full integrate or targeted trials proving **no regressions** and **measurable** flake reduction versus baseline batches.
+fn main() -> int64 {
+    sequence proc[concurrency]
+        sup: supervisor_ref <- spawn_registered_supervisor(MySup, 0, :my_sup);
 
-**Completed (J1).** See `**[supervisors_j1_invariant_audit.md](supervisors_j1_invariant_audit.md)`** for the checklist, call-site audit (two `maybe_restart` sites in `prims_actors_runtime_asm.silica` only), child-table writer table, and ordering contract. Optional batch driver: `**trials/supervisors_addition/stress_j1_supervision_batch.sh**`.
+        reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: atom,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: atom,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, {
+            op: :add_child,
+            child: {
+                id: :worker,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: worker_fn,
+                restart: :permanent,
+                shutdown: 0
+            }
+        } impl SupervisorMessage {});
 
-#### J2 — Continue hardening shared C runtime primitives (locks, waits, allocator, TLS)
+        sum: int64 <- case reply.tag of {
+            :child_started -> {
+                sequence proc[concurrency]
+                    value: int64 <- call(reply.child, 40 impl ActorMessage {})
+                produces
+                    pure value
+                end
+            }
+            :error -> -1;
+            _: atom -> -1
+        }
+    produces
+        pure 0
+    end
+}
+```
 
-**Goal.** Address the layers where Erlang hides complexity behind per-process heaps and VM-internal queues — Silica’s **explicit** POSIX/C integration:
+The source-level distinction is explicit:
 
-- `**os_unfair_lock` + `___ulock_wait` / `___ulock_wake`:** Use `**UL_COMPARE_AND_WAIT_SHARED` (3)** on the futex/seq words (`bsd/sys/ulock.h`); opcode **1** (`UL_COMPARE_AND_WAIT` alone) was associated with intermittent `**EXC_BAD_ACCESS`** / bus errors under stress (see **§0 e4f** notes and `**actor_rt_asm_cv_chunk`** comments). Do **not** reintroduce `**pthread_cond_t`** / `**pthread_mutex_t**` embedded in `**calloc**`’d ACBs without full destroy semantics — historical `**libpthread` kwq** state + heap corruption (`mfm_alloc` SIGBUS, `_os_unfair_lock_corruption_abort`) motivated the unfair-lock + ulock design.
-- **Barriers.** Empirical A/B (`actor_rt_asm_cv_chunk`): extra ARM barriers (`dmb ish`/`st`/`ldar`/`stlr`, waiter-side `dmb`) **increased** failure rates vs plain `ldr`/`str` + existing `**os_unfair_lock`** pairing. **Do not** treat flaky restarts as a simple “missing memory fence”; treat **ordering bugs** here as requiring **instrumentation and proof**, not blind barrier insertion.
-- **Tooling caveat (LLM / patching):** In the `**actor_rt_asm_cv_chunk` / `_silica_rt_cv_wait`** region, **do not** insert even a `**nop`** or stray label immediately after `**bl ___ulock_wait**` in a way `**llvm-as` rejects** — documented risk of `**SIGBUS` on arm64e** tied to signed return / resume; debug by single-stepping in lldb at `**_silica_rt_cv_wait`**, not arbitrary patch NOPs.
-- **Suspects when failures cluster:** **Allocator** (`calloc`/`free` churn), **TLS** (`_tl_current_actor` / new-actor instantiation), **scheduler load**, not only logic bugs — prioritize **repro + Instruments / sanitizer / batch runs** before speculative concurrency “fixes.”
+```silica
+worker: actor_ref <- spawn_registered(0, worker_fn, :worker);
+sup: supervisor_ref <- spawn_registered_supervisor(MySup, 0, :my_sup);
+```
 
-**Exit criteria.** Repeatable stress script (trial integrate loop or standalone harness); documented regression window; any runtime change justified by profiler, sanitizer, or bisect — not solely by hypothesis.
-
-**Completed (J2).** See `**[supervisors_j2_runtime_hardening.md](supervisors_j2_runtime_hardening.md)`** — verified `**UL_COMPARE_AND_WAIT_SHARED` (3)** usage in `**actor_rt_asm_cv_chunk`**, barrier/pthread/`___ulock_wait` patching caveats, allocator–TLS–scheduler suspect matrix, regression window (`**make integrate**` + `**ok`/`ko**` counts), evidence bar for ASM changes. **Harness:** `**trials/supervisors_addition/stress_j2_supervision_harness.sh`** wraps `**INTEGRATE_ROUNDS**` × `**make integrate**` then `**stress_j1_supervision_batch.sh**`; `**make stress-j2**` in `**trials/supervisors_addition/**`.
-
-#### J3 — Long-term architectural option if J1+J2 plateau (fewer pthreads touching shared supervisor state)
-
-**Goal.** Acknowledge **architectural** separation: **BEAM** mostly avoids “two OS threads concurrently mutating the same logical supervisor structure” because **Erlang processes are VM-scheduled**, not **1:1 pthread-per-actor** with cross-thread child-table contention. **If** flake reduction stalls after shared-runtime hardening, evaluate **silica-specific** directions (non-normative; may require broader actor-runtime work outside this doc’s scope):
-
-- **M:N or pool scheduling** analogues: fewer OS threads multiplexing actors so supervision metadata stays on **narrower** shared surfaces.
-- Stronger **message-queue handoff** between **dying child** and **supervisor**, minimizing concurrent **ACB grabs** across the whole subtree during restart (**escalates** contention in `**one_for_all` / `rest_for_one`** by design).
-- **Do not** expect changing `**supervisor_flags.strategy`** in application Silica code to erase **C-runtime** races — strategy changes only reduce **work**, not redefine **lock/alloc** correctness.
-
-**Exit criteria.** ADR-level note or roadmap branch item; no mandate to implement Phase J3 in Silica compiler until product priorities require.
-
-#### Reference reading (optional, for humans / LLM context — not OTP `supervisor.erl`)
-
-- **OTP / BEAM (`erts`):** internals around **process struct**, **run queues**, **message send**, **links/monitors**, **EXIT/signal queues** (`erl_*` / `erts_*`) — analogous to Silica’s “shared infrastructure layer,” whereas `**supervisor.erl`** is policy on top.
-- **Primary implementation files already named in this doc:**  
-`emitter/apple_silicon/terms/prims/prims_actors_runtime_asm.silica` (ACB layout, ingress ordering, `**actor_rt_asm_cv_chunk`**)  
-`emitter/apple_silicon/terms/prims/prims_actors_child_table_asm.silica` (`_silica_rt_supervisor_maybe_restart`, cascades).
-
----
-
-## 5. Risk register (short)
-
-
-| Risk                                                                           | Mitigation                                                                                                                                                              |
-| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ingress vs mailbox deadlock or starvation                                      | Bounded ingress + fairness tests; document batching if not full drain                                                                                                   |
-| Restart storm / livelock                                                       | Enforce `allowed_restart_count` / `restarts_time_frame` early; metrics in trials                                                                                        |
-| Spec ambiguity: whether supervisor behavior always runs before runtime restart | Spec clarification note in implementation doc; match §15.4.12.1 literally                                                                                               |
-| **Heap child table: realloc fail, ACB/heap out of sync**                       | Validate cap growth path; on OOM, documented containment/abort per §15.4.4; do not leave dangling pointer in ACB                                                        |
-| `**init` order vs `start_child` order for strategies**                         | Spec §15.4.13.3: stable combined ordering; document in e3d implementation note                                                                                          |
-| `FailureReporter` blocking                                                     | **Adopted:** bounded async enqueue to FR (**F6**); `**handle_report`** only on FR’s thread; stderr when enqueue fails or overflows (policy TBD vs §15.4.11.4 fallbacks) |
-| **Stress / flake under supervision load** (Phase J)                            | **J1/J2** docs + `**make stress-j2`**; avoid strategy-name churn; `**e5` integrate green** ≠ stress-stable — heavier trials (**e4e**/ **e4f**) as repros                |
-
-
----
-
-## 6. Suggested order of work
-
-1. **A → B → C** (runtime spine: metadata, ingress, notifications)
-2. **F** in parallel once C produces unwind hooks, or immediately after A if reports are currently stderr-only
-3. **D** (language) when runtime needs stable types for `child_spec` / flags
-4. **E** (heap child table, `**init` + `start_child`**, automatic restart — §15.4.13.3)
-5. **G**, **H** (polish and documentation-heavy)
-6. **I** when applications need `main/0` to block with `wait_for_exit/0` (stdin `exit` or root-supervisor exit; silent; discard other lines)
-7. **J** (**Phase J**) iteratively alongside or after `**e5` full integrate**: **stability/flake reduction** — **J1** invariants audit, **J2** shared-runtime hardening (ulock / lock / alloc / TLS), **J3** only if plateau (see §4 Phase J). Not a substitute for `**e5`** milestones.
-
----
-
-## 7. Completion checklist (project-wide)
-
-- Phase A landed (`phase_a_supervisor_spawn_linked` trial)  
-- Phase B landed (`phase_b_ingress_before_cast` trial; two-list functional-queue mailbox)  
-- Phase C landed (`phase_c_child_exit_notification` trial; dead-supervisor stderr route)  
-- Phase D landed (`phase_d_supervisor_module_compiles` trial; `Supervisor` trait + `impl T for Supervisor;` marker recognised)  
-- Phase E landed — compiler through trampoline stub (e1a–e1h + e2a/e2b); runtime **e3a–e3f** + **`start_child` (e3b2)**; restart + dynamic trials **e4a–e4g**; integrate (**e5**); emitter order documented as **subphase E6** (**e6a** declarative / **e6b** dynamic). See §0 task grid.  
-- Phase F partial (`FailureReporter` — **F1–F7 ✅** per §4 — **F7** `[supervisors_f7_bootstrap_ordering.md](supervisors_f7_bootstrap_ordering.md)` + `**phase_f7_bootstrap_ordering`**; **F8 ⬜**; full dual-channel acceptance + integrate green still gated by **F8**)  
-- Phase G landed (`link` / `monitor` / cascading shutdown polish)  
-- Phase H landed (coordinated subtree shutdown examples)  
-- Phase I landed (`wait_for_exit/0` — `main/0` only, `[concurrency, device_io]`, parse-enforced; reads stdin with no output; returns on line `exit` or root-supervisor termination; discards any other line and reads again)  
-- Phase J staged or completed (§4 Phase **J1–J3**): supervisor **stability/flake reduction** aligned with BEAM *ERTS*-style single-writer and shared-runtime disciplines; `**e5` green + stress batches** tracked — **J1** `[supervisors_j1_invariant_audit.md](supervisors_j1_invariant_audit.md)`; **J2** `[supervisors_j2_runtime_hardening.md](supervisors_j2_runtime_hardening.md)` + `**make stress-j2`**  
-- All §15.4.8–§15.4.13 acceptance bullets have a trial or unit test pointer  
-- `silica-specification.md` cross-references remain valid (update if section numbers shift)  
-- `actor_implementation_plan.md` updated with “Supervision: see supervisors_implementation_development_plan.md” when Phase A lands
-
-**Current baseline** (as of last status update): `**e5`** is the logged full `**make integrate**` under `compiler/silica-compiler/trials/` with refreshed goldens and no regressions. Re-run after every milestone and trial addition; refresh goldens per stage (`**phase_e4f_rest_for_one`** remains timing-sensitive — see §0 **e4f**).
-
----
-
-*This document is a development roadmap only; normative behavior remains defined in `silica-specification.md`.*
+There is no hidden inference from `impl MySup for Supervisor`, no dummy supervisor behavior, no public `spawn_linked`, and no polymorphic `call_supervisor` return.

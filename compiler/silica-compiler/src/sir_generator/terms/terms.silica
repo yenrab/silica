@@ -64,6 +64,46 @@ export expr_to_sir/2;
 export expr_to_sir_with_expected/3;
 export expr_to_sir_function_body/3;
 
+fn find_struct_field_expr(expr: Expr, field_name: string) -> (bool, Expr) {
+    case expr.kind == 21 of {
+        false -> (false, expr);
+        true -> case expr.name == field_name of {
+            true -> (true, expr.inner);
+            false -> find_struct_field_expr(expr.right_expr, field_name)
+        }
+    }
+}
+
+fn sir_atom_const(value: string) -> SIRTerm {
+    SIRTerm { kind: 0, type_name: "atom", value: value, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
+}
+
+fn sir_int64_const(value: string) -> SIRTerm {
+    SIRTerm { kind: 0, type_name: "int64", value: value, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
+}
+
+fn build_supervisor_child_info_record(child_ref: SIRTerm) -> SIRTerm {
+    ci_t: string <- "{ id: atom, agent_type: atom, child: actor_ref, restart: :permanent | :temporary | :transient }";
+    ci_sir_t: string <- types@type_name_to_sir(ci_t);
+    r4: SIRTerm <- struct_terms@build_record_make_layer(ci_sir_t, "restart", sir_atom_const(":permanent"), sir_ast@dummy_sir_term());
+    r3: SIRTerm <- struct_terms@build_record_make_layer(ci_sir_t, "child", child_ref, r4);
+    r2: SIRTerm <- struct_terms@build_record_make_layer(ci_sir_t, "agent_type", sir_atom_const(":unknown"), r3);
+    struct_terms@build_record_make_layer(ci_sir_t, "id", sir_atom_const(":unknown"), r2)
+}
+
+fn build_call_supervisor_child_started_reply(child_ref: SIRTerm) -> SIRTerm {
+    reply_t: string <- type_checker_expressions_actors@supervisor_reply_record_type();
+    reply_sir_t: string <- types@type_name_to_sir(reply_t);
+    child_info: SIRTerm <- build_supervisor_child_info_record(child_ref);
+    r7: SIRTerm <- struct_terms@build_record_make_layer(reply_sir_t, "error", sir_atom_const(":ok"), sir_ast@dummy_sir_term());
+    r6: SIRTerm <- struct_terms@build_record_make_layer(reply_sir_t, "child_info", child_info, r7);
+    r5: SIRTerm <- struct_terms@build_record_make_layer(reply_sir_t, "count", sir_int64_const("0"), r6);
+    r4: SIRTerm <- struct_terms@build_record_make_layer(reply_sir_t, "children", sir_int64_const("0"), r5);
+    r3: SIRTerm <- struct_terms@build_record_make_layer(reply_sir_t, "status", sir_atom_const(":ok"), r4);
+    r2: SIRTerm <- struct_terms@build_record_make_layer(reply_sir_t, "child", child_ref, r3);
+    struct_terms@build_record_make_layer(reply_sir_t, "tag", sir_atom_const(":child_started"), r2)
+}
+
 // Lower actor / concurrency builtins (silica-spec §15–16) to SIR prims; used from kind-4 call dispatch.
 fn sir_subexpr_for_actor(context: TypeContext, e: Expr, t: string, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
     case in_body of {
@@ -148,6 +188,18 @@ fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: str
                 end
             }
         end;
+        false -> case ab == "spawn_registered_supervisor" of {
+            true -> do
+                init_srs_e: Expr <- actor_calls@actor_call_second_arg(expr);
+                name_srs_e: Expr <- spawn_call_third_arg_expr(expr);
+                init_srs: SIRTerm <- sir_subexpr_for_actor(context, init_srs_e, "discard", in_body, bound_name, bound_type);
+                name_srs: SIRTerm <- sir_subexpr_for_actor(context, name_srs_e, "atom", in_body, bound_name, bound_type);
+                sup_name: string <- case expr.inner.kind == 1 of {
+                    true -> expr.inner.name;
+                    false -> type_checker_core@lookup_supervisor_csv(context)
+                };
+                actor_calls@build_spawn_registered_supervisor_prim(sup_name, init_srs, name_srs)
+            end;
         false -> case ab == "spawn_linked" of {
             true -> do
                 ac_sl: int64 <- type_checker_expressions_actors@count_chain_args(expr);
@@ -347,10 +399,28 @@ fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: str
                                                                         end;
                                                                         false -> sir_ast@dummy_sir_term()
                                                                     };
-                                                                    false -> lower_actor_runtime_helper_expr(context, expr, in_body, bound_name, bound_type)
+                                    false -> case ab == "call_supervisor" of {
+                                        true -> case type_checker_expressions_actors@count_chain_args(expr) == 2 of {
+                                            true -> do
+                                                sup_sir: SIRTerm <- sir_subexpr_for_actor(context, expr.inner, "supervisor_ref", in_body, bound_name, bound_type);
+                                                msg_expr: Expr <- actor_calls@actor_call_second_arg(expr);
+                                                (child_found: bool, child_expr: Expr) <- find_struct_field_expr(msg_expr, "child");
+                                                case child_found of {
+                                                    true -> do
+                                                        child_spec_sir: SIRTerm <- sir_subexpr_for_actor(context, child_expr, "discard", in_body, bound_name, bound_type);
+                                                        child_ref_sir: SIRTerm <- actor_calls@build_supervisor_add_child_prim(sup_sir, child_spec_sir);
+                                                        build_call_supervisor_child_started_reply(child_ref_sir)
+                                                    end;
+                                                    false -> build_call_supervisor_child_started_reply(sir_int64_const("0"))
+                                                }
+                                            end;
+                                            false -> sir_ast@dummy_sir_term()
+                                        };
+                                        false -> lower_actor_runtime_helper_expr(context, expr, in_body, bound_name, bound_type)
                                     }
                             }
                         }
+                    }
                     }
                 }
             }
@@ -369,6 +439,7 @@ fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: str
                 }
                 }
             }
+        }
         }
         }
     }

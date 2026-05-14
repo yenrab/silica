@@ -1,0 +1,141 @@
+// Phase A supervisor trial: source-level supervisor creation must be explicit.
+//
+// New design target:
+// - `Supervisor.silica` is the canonical trait.
+// - A supervisor is created with `spawn_registered_supervisor`, not ordinary `spawn`.
+// - The result is `supervisor_ref`, not `actor_ref`.
+// - The programmer provides `init/1`; the supervisor behavior is runtime-owned.
+// - Dynamic children are added with `call_supervisor` and a `child_spec`.
+// - There is no public `spawn_linked` and no manual `add_child(parent_ref, child_ref)` path.
+//
+// Expect `40` on stdout once the new supervisor surface is implemented.
+
+use Supervisor;
+
+impl PhaseASup for Supervisor;
+
+fn child_worker(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state)
+}
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: atom,
+            initial_state: int64,
+            behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        children: List[
+            {
+                id: atom,
+                agent_type: atom,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- empty[
+            {
+                id: atom,
+                agent_type: atom,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ]()
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sup: supervisor_ref <- spawn_registered_supervisor(PhaseASup, 0, :phase_a_sup);
+        reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: atom,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: atom,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, {
+            op: :add_child,
+            child: {
+                id: :phase_a_worker,
+                agent_type: :phase_a_worker,
+                initial_state: 0,
+                behavior: child_worker,
+                restart: :permanent,
+                shutdown: 0
+            }
+        } impl SupervisorMessage {});
+        sum: int64 <- case reply.tag of {
+            :child_started -> {
+                sequence proc[concurrency]
+                    value: int64 <- call(reply.child, 40 impl ActorMessage {})
+                produces
+                    pure value
+                end
+            }
+            :error -> {
+                sequence proc[device_io]
+                    print_string("supervisor error: ");
+                    print_atom(reply.error);
+                    println("")
+                produces
+                    pure -1
+                end
+            }
+            _: atom -> {
+                sequence proc[device_io]
+                    print_string("unexpected supervisor reply");
+                    println("")
+                produces
+                    pure -1
+                end
+            }
+        };
+        print_string("sum: ");  // effects [device_io]
+        _: atom <- print_int64(sum);
+        println("");
+        _: atom <- print_int64(sum);
+        println("");
+        _: int64 <- wait_for_exit()
+    produces
+        pure sum
+    end
+}

@@ -29,7 +29,10 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 .PHONY: all compile clean integrate stress-j2 help silica.config
 
 silica.config: | clean
-	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
+	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && { \
+		find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||"; \
+		echo "../../stdlib/Supervisor.silica"; \
+	} > silica.config
 
 .DEFAULT_GOAL := all
 
