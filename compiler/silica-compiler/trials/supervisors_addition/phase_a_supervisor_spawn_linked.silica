@@ -1,37 +1,40 @@
-// Phase A supervisor trial: §15.4.8.3 `spawn_linked` from a behavior + local Supervisor trait module
+// Phase A supervisor trial: explicit supervisor-child linking from a behavior + local Supervisor trait module
 // (`traits/SupervisorPhaseA.silica`, copy of stdlib `Supervisor.silica` with matching module name).
 // supervisors_implementation_development_plan.md Phase A — parent/child both runnable (ingress/restart are later phases).
 //
-// Runtime: `spawn_linked` uses the same 256 B control block as `spawn` (Phase A); expect `40` on stdout.
+// Runtime: `spawn`, pid-registry insert, and `add_child(parent, child)` establish the child relationship.
+// Expect `40` on stdout.
 // Root-actor stderr note (Phase A): emitted when a thread tears down after `alive` (#152) is cleared
 // and `#192` supervisor is null (e.g. `_silica_rt_remove_actor` / fault teardown), not on ordinary trial exit.
 
 use SupervisorPhaseA;
 
+impl PhaseASup for SupervisorPhaseA;
+
 fn child_worker(msg: int64, state: int64) -> (:reply, int64, int64) {
     (:reply, msg + state, state)
 }
 
-fn parent_supervisor(msg: int64, state: int64) -> (:reply, int64, int64) {
-    sequence proc[concurrency, device_io]
-        child: actor_ref <- spawn_linked(0, child_worker, :phase_a_worker);
-        sum: int64 <- call(child, msg impl ActorMessage {});
-        print_string("sum: ");  // effects [device_io]
-        _: atom <- print_int64(sum);
-        println("")
-    produces
-        pure (:reply, sum, state) 
-    end
+fn noop(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, 0, state) 
 }
 
 fn main() -> int64 {
     sequence proc[concurrency, device_io]
-        sup: actor_ref <- spawn(0, parent_supervisor);
-        out: int64 <- call(sup, 40 impl ActorMessage {});
-        print_int64(out);
+        sup: actor_ref <- spawn(0, noop);
+        child: actor_ref <- spawn(0, child_worker);
+        reg: actor_ref <- get_pid_registry();
+        _: (atom, actor_ref) <- call(reg,
+            { op: :insert, name: :phase_a_worker, pid: child } impl ActorMessage {});
+        _: atom <- add_child(sup, child);
+        sum: int64 <- call_registered(:phase_a_worker, 40 impl ActorMessage {});
+        print_string("sum: ");  // effects [device_io]
+        _: atom <- print_int64(sum);
+        println("");
+        _: atom <- print_int64(sum);
         println("");
         _: int64 <- wait_for_exit()
     produces
-        pure out
+        pure sum
     end
 }

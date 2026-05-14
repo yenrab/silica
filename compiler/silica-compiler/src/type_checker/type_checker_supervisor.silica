@@ -27,6 +27,7 @@ use type_checker_traits;
 export supervisor_init_return_tuple_has_flags_and_children/1;
 export supervisor_init_return_has_phase_e_declarative_fields/1;
 export program_has_impl_for_supervisor/1;
+export collect_supervisor_impl_types_csv/1;
 export check_init_if_supervisor_impl_phase_e/2;
 
 fn supervisor_string_contains_from(h: string, needle: string, i: int64, nh: int64) -> bool {
@@ -136,6 +137,10 @@ fn for_supervisor_impl_suffix() -> string {
     " for Supervisor"
 }
 
+fn for_supervisor_phase_a_impl_suffix() -> string {
+    " for SupervisorPhaseA"
+}
+
 fn string_ends_with_suffix(s: string, suf: string) -> bool {
     ls: int64 <- len(s);
     lf: int64 <- len(suf);
@@ -161,6 +166,37 @@ fn program_has_impl_for_supervisor_loop(decls: ListDeclaration) -> bool {
 
 fn program_has_impl_for_supervisor(decls: ListDeclaration) -> bool {
     program_has_impl_for_supervisor_loop(decls)
+}
+
+fn collect_supervisor_impl_types_csv_loop(decls: ListDeclaration, acc: string) -> string {
+    case decls.is_nil of {
+        true -> acc;
+        false -> case decls.head.tag == 6 of {
+            true -> do
+                t: string <- type_checker_traits@trim_type_text(decls.head.return_type_name);
+                case string_ends_with_suffix(t, for_supervisor_impl_suffix()) or string_ends_with_suffix(t, for_supervisor_phase_a_impl_suffix()) of {
+                    true -> do
+                        suffix_len: int64 <- case string_ends_with_suffix(t, for_supervisor_impl_suffix()) of {
+                            true -> len(for_supervisor_impl_suffix());
+                            false -> len(for_supervisor_phase_a_impl_suffix())
+                        };
+                        actor_ty: string <- substring(t, 0, len(t) - suffix_len);
+                        next: string <- case len(acc) == 0 of {
+                            true -> actor_ty;
+                            false -> concat(concat(acc, ","), actor_ty)
+                        };
+                        collect_supervisor_impl_types_csv_loop(decls.tail, next)
+                    end;
+                    false -> collect_supervisor_impl_types_csv_loop(decls.tail, acc)
+                }
+            end;
+            false -> collect_supervisor_impl_types_csv_loop(decls.tail, acc)
+        }
+    }
+}
+
+fn collect_supervisor_impl_types_csv(decls: ListDeclaration) -> string {
+    collect_supervisor_impl_types_csv_loop(decls, "")
 }
 
 // When a module defines `impl T for Supervisor` and `fn init(st: ActorState) -> ...`, the return type must

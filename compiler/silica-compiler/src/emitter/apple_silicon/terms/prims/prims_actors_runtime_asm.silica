@@ -191,9 +191,10 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 	mov	x19, x0
 	cbz	x0, LBBsl_4
 	stp	x21, x20, [x19]
-	bl	_silica_rt_tls_current_actor_get
-	mov	x21, x0
-	str	x21, [x19, #192]
+; Parent/supervisor is explicit: add_child(parent, child) sets ACB#192 and the parent's child list.
+	str	xzr, [x19, #192]
+	mov	x21, xzr
+	mov	x0, xzr
 	str	x23, [x19, #200]
 	str	x24, [x19, #208]
 	str	xzr, [x19, #216]
@@ -721,6 +722,64 @@ LBB4_9:
 	ldp	x29, x30, [sp, #32]             ; 16-byte Folded Reload
 	ldp	x20, x19, [sp, #16]             ; 16-byte Folded Reload
 	ldp	x22, x21, [sp], #48             ; 16-byte Folded Reload
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_call_registered ; -- Begin function silica_rt_actor_call_registered
+	.p2align	2
+_silica_rt_actor_call_registered:       ; @silica_rt_actor_call_registered
+	.cfi_startproc
+; X0=atom registry key, X1=message. Resolve through the global PID registry, then tail-call actor_call.
+	mov	x11, x0
+	mov	x12, x1
+	adrp	x8, _silica_pid_registry_ref@PAGE
+	ldr	x8, [x8, _silica_pid_registry_ref@PAGEOFF]
+	cbz	x8, LBB4r_not_found
+	ldr	x9, [x8]
+	cbz	x9, LBB4r_not_found
+	cmp	x11, #0
+	b.lt	LBB4r_not_found
+	cmp	x11, #240
+	b.ge	LBB4r_not_found
+	ldr	x10, [x9, x11, lsl #3]
+	cmp	x10, #1
+	b.ne	LBB4r_not_found
+	add	x9, x9, #1920
+	ldr	x0, [x9, x11, lsl #3]
+	cbz	x0, LBB4r_not_found
+	mov	x1, x12
+	b	_silica_rt_actor_call
+LBB4r_not_found:
+	mov	x0, #0
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_cast_registered ; -- Begin function silica_rt_actor_cast_registered
+	.p2align	2
+_silica_rt_actor_cast_registered:       ; @silica_rt_actor_cast_registered
+	.cfi_startproc
+; X0=atom registry key, X1=message. Resolve through the global PID registry, then tail-call actor_cast.
+	mov	x11, x0
+	mov	x12, x1
+	adrp	x8, _silica_pid_registry_ref@PAGE
+	ldr	x8, [x8, _silica_pid_registry_ref@PAGEOFF]
+	cbz	x8, LBB3r_not_found
+	ldr	x9, [x8]
+	cbz	x9, LBB3r_not_found
+	cmp	x11, #0
+	b.lt	LBB3r_not_found
+	cmp	x11, #240
+	b.ge	LBB3r_not_found
+	ldr	x10, [x9, x11, lsl #3]
+	cmp	x10, #1
+	b.ne	LBB3r_not_found
+	add	x9, x9, #1920
+	ldr	x0, [x9, x11, lsl #3]
+	cbz	x0, LBB3r_not_found
+	mov	x1, x12
+	b	_silica_rt_actor_cast
+LBB3r_not_found:
+	mov	x0, #0
 	ret
 	.cfi_endproc
                                         ; -- End function
@@ -2351,6 +2410,34 @@ Lrecv_done_null:
 	mov	x0, #0
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_add_child      ; Explicit supervisor child registration
+	.p2align	2
+_silica_rt_actor_add_child:             ; @silica_rt_actor_add_child
+	.cfi_startproc
+; X0=parent supervisor actor_ref, X1=child actor_ref -> X0=atom :ok.
+; Records the explicit parent/child relationship used by supervisor ingress teardown.
+	cbz	x0, Ladd_child_done
+	cbz	x1, Ladd_child_done
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	mov	x19, x0
+	mov	x20, x1
+	str	x19, [x20, #192]
+	add	x0, x19, #16
+	bl	_os_unfair_lock_lock
+	ldr	x8, [x19, #216]
+	str	x8, [x20, #224]
+	str	x20, [x19, #216]
+	add	x0, x19, #16
+	bl	_os_unfair_lock_unlock
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+Ladd_child_done:
+	mov	x0, #0
 	ret
 	.cfi_endproc
                                         ; -- End function
