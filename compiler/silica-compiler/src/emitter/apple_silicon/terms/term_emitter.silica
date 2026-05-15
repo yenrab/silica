@@ -138,6 +138,7 @@ fn let_rhs_type_spills_across_io(type_name: string) -> bool {
         "boolean" -> true;
         "bool" -> true;
         "actor_ref" -> true;
+        "supervisor_ref" -> true;
         "string" -> true;
         _: string -> case type_name_is_list_like(type_name) of {
             true -> true;
@@ -254,6 +255,16 @@ fn is_child_spec_record_type(R: string) -> bool {
         and len(prims_record@find_field_type_in_record(R, "shutdown")) > 0
 }
 
+fn is_supervisor_reply_record_type(R: string) -> bool {
+    len(prims_record@find_field_type_in_record(R, "tag")) > 0
+        and len(prims_record@find_field_type_in_record(R, "child")) > 0
+        and len(prims_record@find_field_type_in_record(R, "status")) > 0
+        and len(prims_record@find_field_type_in_record(R, "children")) > 0
+        and len(prims_record@find_field_type_in_record(R, "count")) > 0
+        and len(prims_record@find_field_type_in_record(R, "child_info")) > 0
+        and len(prims_record@find_field_type_in_record(R, "error")) > 0
+}
+
 fn emit_child_spec_hidden_trampoline_store(term: SIRTerm, R: string) -> string {
     case is_child_spec_record_type(R) of {
         false -> "";
@@ -268,12 +279,53 @@ fn emit_child_spec_hidden_trampoline_store(term: SIRTerm, R: string) -> string {
     }
 }
 
+fn child_spec_field_abi_offset(fname: string) -> int64 {
+    case fname == "id" of {
+        true -> 0;
+        false -> case fname == "agent_type" of {
+            true -> 8;
+            false -> case fname == "initial_state" of {
+                true -> 16;
+                false -> case fname == "behavior" of {
+                    true -> 24;
+                    false -> case fname == "start" of {
+                        true -> 16;
+                        false -> case fname == "restart" of {
+                            true -> 32;
+                            false -> case fname == "shutdown" of {
+                                true -> 40;
+                                false -> -1
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn record_store_offset_for_field(R: string, fname: string, field_prefix: int64, base_off: int64, sp_adjust: int64) -> int64 {
+    case is_child_spec_record_type(R) of {
+        false -> field_prefix + base_off + sp_adjust;
+        true -> do
+            abi: int64 <- child_spec_field_abi_offset(fname);
+            case abi < 0 of {
+                true -> field_prefix + base_off + sp_adjust;
+                false -> field_prefix + abi
+            }
+        end
+    }
+}
+
 fn record_make_stack_alloc_size(R: string) -> int64 {
     case is_child_spec_record_type(R) of {
         true -> 64;
-        false -> case prims_record@record_type_has_only_scalar_fields(R) of {
-            true -> stack_alloc_round16(prims_record@record_type_value_flat_byte_size(R));
-            false -> prims_tuple@flat_alloc_size(prims_record@count_record_fields(R))
+        false -> case is_supervisor_reply_record_type(R) of {
+            true -> 80;
+            false -> case prims_record@record_type_has_only_scalar_fields(R) of {
+                true -> stack_alloc_round16(prims_record@record_type_value_flat_byte_size(R));
+                false -> prims_tuple@flat_alloc_size(prims_record@count_record_fields(R))
+            }
         }
     }
 }
@@ -2128,11 +2180,32 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 root_rec_ty: string <- record_proj_root_record_type(term);
                 root_rec_stripped: string <- prims_record@strip_spaces_rt(root_rec_ty);
                 use_add_for_embedded_substruct: bool <- len(root_rec_stripped) > 0 and prims_record@record_type_starts(root_rec_stripped) and reg_conventions@is_inline_struct_type(term.type_name) and prims_record@record_type_has_only_scalar_fields(root_rec_stripped);
-                add_imm_rp: int64 <- byte_off + va_adj_rp;
+                // Supervisor reply get_child path stores the live child_ref in top-level `child`.
+                // Accesses written as `reply.child_info.child` should resolve to that same live ref.
+                supervisor_child_info_child_chain: bool <- term.inner.kind == 6 and term.inner.name == "record_proj"
+                    and term.inner.value == "child_info" and term.value == "child"
+                    and is_supervisor_reply_record_type(root_rec_ty);
+                eff_byte_off: int64 <- case supervisor_child_info_child_chain of {
+                    true -> prims_record@offset_bytes_before_field(root_rec_ty, "child");
+                    false -> byte_off
+                };
+                add_imm_rp: int64 <- eff_byte_off + va_adj_rp;
                 add_imm_s_rp: string <- atom_table@int64_to_decimal_string(add_imm_rp);
                 case use_add_for_embedded_substruct of {
                     true -> concat(preserve_base_rp, concat("    ADD ", concat(proj_ldr_reg_rp, concat(", ", concat(effective_base_rp, concat(", #", concat(add_imm_s_rp, "\n")))))));
-                    false -> concat(preserve_base_rp, concat("    LDR ", concat(proj_ldr_reg_rp, concat(", ", proj_mem_ref_rp))))
+                    false -> concat(preserve_base_rp, concat("    LDR ", concat(proj_ldr_reg_rp, concat(", ", case len(tuple_base_reg_rp) > 0 of {
+                        true -> var@reg_offset_for_byte(effective_base_rp, add_imm_rp);
+                        false -> do
+                            sp_adj_eff: int64 <- case len(va_str_rp) > 0 of {
+                                true -> va_adj_rp;
+                                false -> do
+                                    adj_str_eff: string <- var@find_sp_binding(outer_reg, "_adj");
+                                    case len(adj_str_eff) > 0 of { true -> string_parse@string_to_int64(adj_str_eff); false -> 0 }
+                                end
+                            };
+                            var@sp_offset_for_byte_adj(eff_byte_off, sp_adj_eff)
+                        end
+                    }))))
                 }
             end;
             false -> case term.name == "tuple_proj" of {
@@ -2381,7 +2454,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                     false -> term_to_asm_opt_bound(term.inner, "X9", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                 };
                                 spawn_three: bool <- (term.name == "spawn" or term.name == "spawn_linked") and term.right_expr.kind == 6 and term.right_expr.name == "tuple_make";
-                                actor_msg_binary: bool <- term.name == "send" or term.name == "actor_call" or term.name == "actor_call_registered" or term.name == "actor_cast" or term.name == "actor_cast_registered";
+                                actor_msg_binary: bool <- term.name == "send" or term.name == "actor_call" or term.name == "actor_call_registered" or term.name == "actor_cast" or term.name == "actor_cast_registered" or term.name == "supervisor_add_child";
                                 init_hold_spawn: string <- case spawn_three or actor_msg_binary of { true -> "    MOV X11, X9\n"; false -> "" };
                                 right_asm_a: string <- case debug of {
                                     true -> do term_to_asm_opt_bound_debug(term.right_expr, "X10", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
@@ -3364,7 +3437,7 @@ fn emit_flat_record_stores(term: SIRTerm, R: string, sp_adjust: int64, field_pre
                                 true -> do term_to_asm_opt_bound_debug(e0_sf, "X9", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                 false -> term_to_asm_opt_bound(e0_sf, "X9", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                             };
-                            off0_sf: int64 <- field_prefix + base_off + sp_adjust;
+                            off0_sf: int64 <- record_store_offset_for_field(R, fname, field_prefix, base_off, sp_adjust);
                             st0_sf: string <- concat("    STR X9, ", concat(tuple_flat_memref(store_base, off0_sf), "\n"));
                             a1_sf: string <- case debug of {
                                 true -> do term_to_asm_opt_bound_debug(e1_sf, "X10", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
@@ -3393,7 +3466,7 @@ fn emit_flat_record_stores(term: SIRTerm, R: string, sp_adjust: int64, field_pre
                                 false -> 0
                             };
                             new_adjust: int64 <- sp_adjust + nested_bytes;
-                            store_offset: int64 <- field_prefix + base_off + new_adjust;
+                            store_offset: int64 <- record_store_offset_for_field(R, fname, field_prefix, base_off, new_adjust);
                             store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))));
                             concat(elem_asm, concat("\n", store_asm))
                         end
@@ -3425,7 +3498,7 @@ fn emit_flat_record_stores(term: SIRTerm, R: string, sp_adjust: int64, field_pre
                                 true -> do term_to_asm_opt_bound_debug(e0, "X9", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                 false -> term_to_asm_opt_bound(e0, "X9", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                             };
-                            off0: int64 <- field_prefix + base_off + sp_adjust;
+                            off0: int64 <- record_store_offset_for_field(R, fname, field_prefix, base_off, sp_adjust);
                             st0: string <- concat("    STR X9, ", concat(tuple_flat_memref(store_base, off0), "\n"));
                             a1: string <- case debug of {
                                 true -> do term_to_asm_opt_bound_debug(e1, "X10", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
@@ -3456,7 +3529,7 @@ fn emit_flat_record_stores(term: SIRTerm, R: string, sp_adjust: int64, field_pre
                                 false -> 0
                             };
                             new_adjust: int64 <- sp_adjust + nested_bytes;
-                            store_offset: int64 <- field_prefix + base_off + new_adjust;
+                            store_offset: int64 <- record_store_offset_for_field(R, fname, field_prefix, base_off, new_adjust);
                             store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))));
                             rest_asm: string <- emit_flat_record_stores(term.right_expr, R, new_adjust, field_prefix, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
                             concat(concat(elem_asm, concat("\n", store_asm)), concat("\n", rest_asm))

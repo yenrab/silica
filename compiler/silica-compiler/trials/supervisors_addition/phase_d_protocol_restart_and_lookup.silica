@@ -1,0 +1,231 @@
+// Phase D protocol trial:
+// Focuses on add/restart/get/count sequence.
+
+use Supervisor;
+
+impl PhaseDProtocolRestartSup for Supervisor;
+
+fn worker(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state + 1)
+}
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: atom,
+            initial_state: int64,
+            behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 5, restarts_time_frame: 10 };
+        children: List[
+            {
+                id: atom,
+                agent_type: atom,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- empty[
+            {
+                id: atom,
+                agent_type: atom,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ]()
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sup: supervisor_ref <- spawn_registered_supervisor(PhaseDProtocolRestartSup, 0, :phase_d_restart_sup);
+
+        add_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: atom,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: atom,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, {
+            op: :add_child,
+            child: {
+                id: :phase_d_worker_b,
+                agent_type: :phase_d_worker,
+                initial_state: 100,
+                behavior: worker,
+                restart: :permanent,
+                shutdown: 0
+            }
+        } impl SupervisorMessage {});
+
+        // Advance original child state once before restart.
+        pre_restart_call_value: int64 <- call(add_reply.child, 1 impl ActorMessage {});
+
+        restart_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: atom,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: atom,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :restart_child, id: :phase_d_worker_b } impl SupervisorMessage {});
+
+        get_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: atom,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: atom,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :get_child, id: :phase_d_worker_b } impl SupervisorMessage {});
+
+        count_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: atom,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: atom,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :count_children } impl SupervisorMessage {});
+
+        _: int64 <- case add_reply.tag of {
+            :child_started -> 1;
+            _: atom -> -1
+        };
+
+        _: int64 <- case restart_reply.tag of {
+            :child_started -> 2;
+            _: atom -> -1
+        };
+
+        // Restart identity/safety checks via state-reset behavior:
+        // worker increments state each call, so a restarted child should answer 101 again (reset to initial 100).
+        first_post_restart_call_value: int64 <- call(restart_reply.child, 1 impl ActorMessage {});
+        second_post_restart_call_value: int64 <- call(restart_reply.child, 1 impl ActorMessage {});
+        // Calling through get_child top-level `child` must still reach the live restarted child.
+        get_child_call_value: int64 <- call(get_reply.child, 1 impl ActorMessage {});
+        _: atom <- print_int64(case count_reply.count == 1 of {
+            true -> 1;
+            false -> 0
+        });
+        println("");
+        _: atom <- print_int64(case get_reply.child_info.id of {
+            :unknown -> 0;
+            _: atom -> 1
+        });
+        println("");
+        _: atom <- print_int64(case get_reply.child_info.agent_type of {
+            :unknown -> 0;
+            _: atom -> 1
+        });
+        println("");
+        _: atom <- print_int64(case get_reply.tag of {
+            :child_info -> 1;
+            _: atom -> 0
+        });
+        println("");
+        _: atom <- print_int64(case pre_restart_call_value == 101 of {
+            true -> 1;
+            false -> 0
+        });
+        println("");
+        _: atom <- print_int64(case first_post_restart_call_value == 101 of {
+            true -> 1;
+            false -> 0
+        });
+        println("");
+        _: atom <- print_int64(case second_post_restart_call_value == 102 of {
+            true -> 1;
+            false -> 0
+        });
+        println("");
+        _: atom <- print_int64(case call(restart_reply.child, 1 impl ActorMessage {}) != 0 of {
+            true -> 1;
+            false -> 0
+        });
+        println("");
+        println("done")
+    produces
+        pure 0
+    end
+}

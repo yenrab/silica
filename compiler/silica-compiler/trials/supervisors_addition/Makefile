@@ -49,7 +49,7 @@ compile: clean silica.config
 all: compile
 	@failed=0; \
 	cd "$(THIS_DIR)" && \
-	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./stdlib/'); do \
 		base=$${line%.silica}; \
 		sams="$$base.sams"; \
 		if [ ! -f "$$sams" ]; then \
@@ -71,7 +71,7 @@ all: compile
 		echo "Assembling __silica_runtime.sams..."; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o" || failed=1; \
 	fi; \
-	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./stdlib/'); do \
 		base=$${line%.silica}; \
 		[ -f "$$base.o" ] || continue; \
 		echo "Linking $$base..."; \
@@ -93,9 +93,9 @@ all: compile
 	fi; \
 	echo "✅ $(MSG_PREFIX)Linked entrypoints (root *.silica + traits/*.o)"
 
-# integrate: For each linked entrypoint with a .scout golden, capture stdout + stderr + trailing exit code into
-# <base>.sout via run_integration_binary.sh: one braced "{ …; echo $?; } >"<base>.sout" 2>&1" (never ">out" for
-# the binary then ">>out" for $ — that can reorder or drop output).
+# integrate: For each linked entrypoint with a .scout golden, run via
+# run_integration_exit_after_marker.py and wait for a line containing "done" before writing "exit\n".
+# The helper captures stdout + stderr and appends trailing exit code into <base>.sout.
 # Compare: default diff -Bw <base>.sout <base>.scout. If <base>.scout.normalized exists, use
 # compare_scout_normalized.sh (ordered compare with dynamic runtime fields normalized). If <base>.scout.multiset
 # exists, use compare_scout_multiset.sh (or compare_scout_multiset_oneof.sh when <base>.scout.alt exists —
@@ -103,7 +103,7 @@ all: compile
 integrate: clean silica.config compile
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
-	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./stdlib/'); do \
 		base=$${line%.silica}; \
 		sams="$$base.sams"; \
 		if [ ! -f "$$sams" ]; then \
@@ -139,7 +139,7 @@ integrate: clean silica.config compile
 			fi; \
 		fi; \
 	done; \
-	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./stdlib/'); do \
 		base=$${line%.silica}; \
 		[ -f "$$base.o" ] || continue; \
 		echo "Linking $$base..."; \
@@ -155,14 +155,24 @@ integrate: clean silica.config compile
 			$(ASSEMBLER) "$$base.o" $$trait_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) || failed=1; \
 		fi; \
 	done; \
-	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./stdlib/'); do \
 		base=$${line%.silica}; \
 		if [ -x "$$base" ]; then \
 			if [ -f "$$base.scout" ]; then \
-				"$(SHELL)" "$(THIS_DIR)run_integration_binary.sh" "$$base"; \
+				if [ -f "$(THIS_DIR)run_integration_exit_after_marker.py" ]; then \
+					python3 "$(THIS_DIR)run_integration_exit_after_marker.py" "$(THIS_DIR)" "$$base" "$$base.sout" "done"; \
+				else \
+					echo "❌❌ $(MSG_PREFIX)$$base missing run_integration_exit_after_marker.py"; \
+					ko=$$((ko + 1)); failed=1; \
+					continue; \
+				fi; \
 				if [ -f "$$base.scout.normalized" ]; then \
-					if ! "$(SHELL)" "$(THIS_DIR)compare_scout_normalized.sh" "$$base.sout" "$$base.scout"; then \
+					if [ -f "$(THIS_DIR)compare_scout_normalized.sh" ] && ! "$(SHELL)" "$(THIS_DIR)compare_scout_normalized.sh" "$$base.sout" "$$base.scout"; then \
 						echo "❌❌ $(MSG_PREFIX)$$base .sout normalized-compare differs from .scout"; \
+						ko=$$((ko + 1)); failed=1; \
+					elif [ ! -f "$(THIS_DIR)compare_scout_normalized.sh" ] && ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
+						echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout (missing compare_scout_normalized.sh; used diff -Bw)"; \
+						diff -Bw "$$base.sout" "$$base.scout" || true; \
 						ko=$$((ko + 1)); failed=1; \
 					else \
 						echo "✅✅ $(MSG_PREFIX)$$base output normalized-matches .scout"; \
@@ -170,15 +180,23 @@ integrate: clean silica.config compile
 					fi; \
 				elif [ -f "$$base.scout.multiset" ]; then \
 					if [ -f "$$base.scout.alt" ]; then \
-						if ! "$(SHELL)" "$(THIS_DIR)compare_scout_multiset_oneof.sh" "$$base.sout" "$$base.scout" "$$base.scout.alt"; then \
+						if [ -f "$(THIS_DIR)compare_scout_multiset_oneof.sh" ] && ! "$(SHELL)" "$(THIS_DIR)compare_scout_multiset_oneof.sh" "$$base.sout" "$$base.scout" "$$base.scout.alt"; then \
 							echo "❌❌ $(MSG_PREFIX)$$base .sout multiset-compare differs from all of .scout .scout.alt"; \
+							ko=$$((ko + 1)); failed=1; \
+						elif [ ! -f "$(THIS_DIR)compare_scout_multiset_oneof.sh" ] && ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
+							echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout (missing compare_scout_multiset_oneof.sh; used diff -Bw)"; \
+							diff -Bw "$$base.sout" "$$base.scout" || true; \
 							ko=$$((ko + 1)); failed=1; \
 						else \
 							echo "✅✅ $(MSG_PREFIX)$$base output multiset-matches a golden (.scout or .scout.alt)"; \
 							ok=$$((ok + 1)); \
 						fi; \
-					elif ! "$(SHELL)" "$(THIS_DIR)compare_scout_multiset.sh" "$$base.sout" "$$base.scout"; then \
+					elif [ -f "$(THIS_DIR)compare_scout_multiset.sh" ] && ! "$(SHELL)" "$(THIS_DIR)compare_scout_multiset.sh" "$$base.sout" "$$base.scout"; then \
 						echo "❌❌ $(MSG_PREFIX)$$base .sout multiset-compare differs from .scout"; \
+						ko=$$((ko + 1)); failed=1; \
+					elif [ ! -f "$(THIS_DIR)compare_scout_multiset.sh" ] && ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
+						echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout (missing compare_scout_multiset.sh; used diff -Bw)"; \
+						diff -Bw "$$base.sout" "$$base.scout" || true; \
 						ko=$$((ko + 1)); failed=1; \
 					else \
 						echo "✅✅ $(MSG_PREFIX)$$base output multiset-matches .scout"; \
@@ -211,7 +229,7 @@ stress-j2:
 clean:
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sout traits/*.sams traits/*.o *.sams __silica_runtime.o && \
-	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
+	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/' | grep -v '^\.\./\.\./stdlib/'); do \
 		base=$${line%.silica}; \
 		rm -f "$$base" "$$base.o"; \
 	done && \

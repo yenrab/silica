@@ -3142,7 +3142,7 @@ fn extract_case_expression(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[D
 }
 
 fn is_actor_callable_keyword(kinds: TokenKinds, token_kind: int64) -> bool {
-    token_kind == kinds.spawn_keyword or token_kind == kinds.spawn_linked_keyword or token_kind == kinds.link_keyword or token_kind == kinds.monitor_keyword or token_kind == kinds.demonitor_keyword or token_kind == kinds.send_keyword or token_kind == kinds.cast_keyword or token_kind == kinds.self_keyword or lexer_token_kind@is_actor_runtime_helper_kind(kinds, token_kind)
+    token_kind == kinds.spawn_keyword or token_kind == kinds.spawn_registered_keyword or token_kind == kinds.spawn_linked_keyword or token_kind == kinds.spawn_registered_supervisor_keyword or token_kind == kinds.call_supervisor_keyword or token_kind == kinds.link_keyword or token_kind == kinds.monitor_keyword or token_kind == kinds.demonitor_keyword or token_kind == kinds.send_keyword or token_kind == kinds.cast_keyword or token_kind == kinds.self_keyword or lexer_token_kind@is_actor_runtime_helper_kind(kinds, token_kind)
 }
 
 fn expr_fn_type_opaque_from_slots(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO] {
@@ -3685,6 +3685,23 @@ fn is_impl_fn_decl_start(slots: ListTokenSlot) -> bool {
     }
 }
 
+fn is_postfix_message_impl_marker_start(after_impl: ListTokenSlot) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case after_impl.is_nil of {
+        true -> false;
+        false -> case after_impl.head.token.lexeme == "ActorMessage" or after_impl.head.token.lexeme == "SupervisorMessage" of {
+            false -> false;
+            true -> do
+                after_name: ListTokenSlot <- skip_leading_whitespace_slots(after_impl.tail);
+                case after_name.is_nil of {
+                    true -> false;
+                    false -> after_name.head.token.kind == kinds.left_brace
+                }
+            end
+        }
+    }
+}
+
 fn is_trait_marker_impl_start(slots: ListTokenSlot) -> bool {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     case slots.is_nil of {
@@ -3696,7 +3713,13 @@ fn is_trait_marker_impl_start(slots: ListTokenSlot) -> bool {
                 case w.is_nil of {
                     true -> false;
                     false -> case slots.head.token.kind == kinds.impl_keyword of {
-                        true -> w.head.token.kind != kinds.fn_keyword;
+                        true -> case w.head.token.kind == kinds.fn_keyword of {
+                            true -> false;
+                            false -> case is_postfix_message_impl_marker_start(w) of {
+                                true -> false;
+                                false -> true
+                            }
+                        };
                         false -> false
                     }
                 }

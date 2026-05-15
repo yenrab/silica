@@ -58,6 +58,21 @@ export add_effect_if_absent/2;
 export expand_effect_list/2;
 export expand_single_effect/2;
 
+fn stamp_effect_locations(effects: ListEffectName, location: SourceLocation) -> ListEffectName {
+    case effects.is_nil of {
+        true -> parser_ast@empty_effect_name_list();
+        false -> do
+            stamped_head: EffectName <- EffectName {
+                name: effects.head.name,
+                parameter: effects.head.parameter,
+                location: location
+            };
+            stamped_tail: ListEffectName <- stamp_effect_locations(effects.tail, location);
+            parser_ast@cons_effect_name(stamped_head, stamped_tail)
+        end
+    }
+}
+
 // --- Effect collection from expressions ---
 
 {- Traverse an Expr tree and collect the union of all effects from function calls.
@@ -146,7 +161,10 @@ fn collect_expr_effects_with_binding(expr: Expr, ctx: EffectContext, binding_typ
     case expr.kind == 4 of {
         true -> do
             callee_effects: ListEffectName <- resolve_call_effects_with_binding(expr.name, ctx, expr.inner, binding_type, expr.location, expr.value);
-            binding_list_effects: ListEffectName <- effect_checker_lists@mem_effects_for_list_literal(binding_type, expr.location);
+            binding_list_effects: ListEffectName <- case type_checker_core@user_call_base_function_name(expr.name) == "call_supervisor" of {
+                true -> parser_ast@empty_effect_name_list();
+                false -> effect_checker_lists@mem_effects_for_list_literal(binding_type, expr.location)
+            };
             arg_effects: ListEffectName <- collect_expr_effects_with_binding(expr.inner, ctx, "");
             union_effect_lists(union_effect_lists(callee_effects, binding_list_effects), arg_effects)
         end;
@@ -297,13 +315,13 @@ fn first_arg_region_type(first_arg: Expr, ctx: EffectContext) -> string {
 {- generic_value: kind-4 call value field (generic instantiation text), empty if none. -}
 fn resolve_call_effects_with_binding(fn_name: string, ctx: EffectContext, first_arg: Expr, binding_type: string, location: SourceLocation, generic_value: string) -> ListEffectName {
     case effect_checker_lists@is_list_primitive_fn(fn_name) of {
-        true -> effect_checker_lists@mem_effects_for_list_call(fn_name, generic_value, location);
+        true -> stamp_effect_locations(effect_checker_lists@mem_effects_for_list_call(fn_name, generic_value, location), location);
         false -> case effect_checker_memory_regions@is_region_builtin_fn(fn_name) of {
             true -> do
                 first_arg_type: string <- first_arg_region_type(first_arg, ctx);
                 (handled: bool, region_effects: ListEffectName) <- effect_checker_memory_regions@get_region_call_effects(fn_name, first_arg, first_arg_type, binding_type, location);
                 case handled of {
-                    true -> region_effects;
+                    true -> stamp_effect_locations(region_effects, location);
                     false -> parser_ast@empty_effect_name_list()
                 }
             end;
@@ -313,11 +331,11 @@ fn resolve_call_effects_with_binding(fn_name: string, ctx: EffectContext, first_
                         base: string <- type_checker_core@user_call_base_function_name(fn_name);
                         (found_mq: bool, mq_effects: ListEffectName) <- effect_checker_core@lookup_fn_effects(ctx.fn_env, base);
                         case found_mq of {
-                            true -> expand_effect_list(mq_effects, ctx.alias_env);
+                            true -> stamp_effect_locations(expand_effect_list(mq_effects, ctx.alias_env), location);
                             false -> do
                                 (found_builtin_mq: bool, builtin_mq_effects: ListEffectName) <- effect_checker_core@builtin_fn_effects(base);
                                 case found_builtin_mq of {
-                                    true -> builtin_mq_effects;
+                                    true -> stamp_effect_locations(builtin_mq_effects, location);
                                     false -> parser_ast@empty_effect_name_list()
                                 }
                             end
@@ -326,11 +344,11 @@ fn resolve_call_effects_with_binding(fn_name: string, ctx: EffectContext, first_
                     false -> do
                         (found_user: bool, user_effects: ListEffectName) <- effect_checker_core@lookup_fn_effects(ctx.fn_env, fn_name);
                         case found_user of {
-                            true -> expand_effect_list(user_effects, ctx.alias_env);
+                            true -> stamp_effect_locations(expand_effect_list(user_effects, ctx.alias_env), location);
                             false -> do
                                 (found_builtin: bool, builtin_effects: ListEffectName) <- effect_checker_core@builtin_fn_effects(fn_name);
                                 case found_builtin of {
-                                    true -> builtin_effects;
+                                    true -> stamp_effect_locations(builtin_effects, location);
                                     false -> parser_ast@empty_effect_name_list()
                                 }
                             end

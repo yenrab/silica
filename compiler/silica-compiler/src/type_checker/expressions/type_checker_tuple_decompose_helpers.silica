@@ -816,7 +816,17 @@ fn skip_bindings_with_prefix(bindings: ListTupleDecomposeBinding, prefix: string
 }
 
 fn types_equal(a: string, b: string) -> bool {
-    strip_spaces(a) == strip_spaces(b)
+    normalize_mem_normal_alias(strip_spaces(a)) == normalize_mem_normal_alias(strip_spaces(b))
+}
+
+fn normalize_mem_normal_alias(s: string) -> string {
+    case len(s) < 11 of {
+        true -> s;
+        false -> case substring(s, 0, 11) == "mem(normal)" of {
+            true -> concat("normal", normalize_mem_normal_alias(substring(s, 11, len(s))));
+            false -> concat(substring(s, 0, 1), normalize_mem_normal_alias(substring(s, 1, len(s))))
+        }
+    }
 }
 
 fn strip_spaces(s: string) -> string {
@@ -1057,6 +1067,42 @@ fn is_primitive_numeric_type_name(t: string) -> bool {
     t == "int8" or t == "int16" or t == "int32" or t == "int64" or t == "uint8" or t == "uint16" or t == "uint32" or t == "uint64" or t == "float16" or t == "float32" or t == "float64"
 }
 
+fn case_find_union_bar(s: string, pos: int64) -> int64 {
+    case pos >= len(s) of {
+        true -> -1;
+        false -> case substring(s, pos, pos + 1) == "|" of {
+            true -> pos;
+            false -> case_find_union_bar(s, pos + 1)
+        }
+    }
+}
+
+fn case_atom_union_contains(union_text: string, atom_name: string) -> bool {
+    needle: string <- concat(":", atom_name);
+    parts: string <- strip_spaces(union_text);
+    case len(parts) == 0 of {
+        true -> false;
+        false -> case parts == needle of {
+            true -> true;
+            false -> do
+                bar: int64 <- case_find_union_bar(parts, 0);
+                case bar < 0 of {
+                    true -> false;
+                    false -> case substring(parts, 0, bar) == needle of {
+                        true -> true;
+                        false -> case_atom_union_contains(substring(parts, bar + 1, len(parts)), atom_name)
+                    }
+                }
+            end
+        }
+    }
+}
+
+fn case_type_is_atom_union(t: string) -> bool {
+    s: string <- strip_spaces(t);
+    len(s) > 0 and substring(s, 0, 1) == ":" and case_find_union_bar(s, 0) >= 0
+}
+
 fn case_list_cons_matches(pi: CasePatternInfo, scrutinee_type: string) -> bool {
     (ok_s: bool, se: string, _: string) <- type_checker_lists@parse_list_type_params(scrutinee_type);
     case ok_s of {
@@ -1079,19 +1125,22 @@ fn case_pattern_matches_scrutinee(pi: CasePatternInfo, scrutinee_type: string) -
                 true -> pi.bind_name == "_";
                 false -> case types_equal(scrutinee_type, pi.bind_type) of {
                     true -> true;
-                    false -> case len(pi.bind_type) >= 5 of {
-                        true -> case substring(pi.bind_type, 0, 5) == "List[" of {
-                            true -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
+                    false -> case types_equal(pi.bind_type, "atom") and case_type_is_atom_union(scrutinee_type) of {
+                        true -> true;
+                        false -> case len(pi.bind_type) >= 5 of {
+                            true -> case substring(pi.bind_type, 0, 5) == "List[" of {
+                                true -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
+                                false -> false
+                            };
                             false -> false
-                        };
-                        false -> false
+                        }
                     }
                 }
             };
             4 -> is_primitive_numeric_type_name(scrutinee_type);
             5 -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
             6 -> case_list_cons_matches(pi, scrutinee_type);
-            7 -> types_equal(scrutinee_type, "atom") or types_equal(scrutinee_type, "failure_reason");
+            7 -> types_equal(scrutinee_type, "atom") or types_equal(scrutinee_type, "failure_reason") or case_atom_union_contains(scrutinee_type, pi.str_lit);
             8 -> case_record_pat_matches_full(pi.bind_type, scrutinee_type);
             _: int64 -> false
         }

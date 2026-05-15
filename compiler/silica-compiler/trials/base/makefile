@@ -50,20 +50,29 @@ assembly: clean silica.config $(CONFIG_FILES)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
 
 # Stage 2: Assemble .sams -> .o (no Rust code, clang assembler only)
-objects: $(OBJ_FILES)
-
-%.o: %.sams
-	@echo "Assembling: $< -> $@"
-	@$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $< -o $@
+objects: assembly
+	@cd "$(THIS_DIR)" && \
+	for sams in *.sams; do \
+		[ -f "$$sams" ] || continue; \
+		base=$${sams%.sams}; \
+		echo "Assembling: $$sams -> $$base.o"; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || exit 1; \
+	done
 
 # Stage 3: Link .o -> executable (rust-lld or clang)
-executables: assembly $(OBJ_FILES)
+executables: objects
 	@echo "Linking..."
-	@for exe in $(EXECUTABLES); do \
+	@cd "$(THIS_DIR)" && \
+	for o in *.o; do \
+		[ -f "$$o" ] || continue; \
+		base=$${o%.o}; \
+		[ "$$base" = "__silica_runtime" ] && continue; \
+		runtime_obj=""; \
+		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$exe $$exe.o $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$exe (rust-lld)"; \
+			$(RUST_LLD) -flavor darwin -o "$$base" "$$o" $$runtime_obj $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base (rust-lld)"; \
 		else \
-			$(ASSEMBLER) $$exe.o -o $$exe $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$exe (clang)"; \
+			$(ASSEMBLER) "$$o" $$runtime_obj -o "$$base" $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base (clang)"; \
 		fi; \
 	done
 

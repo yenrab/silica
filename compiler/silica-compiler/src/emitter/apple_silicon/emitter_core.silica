@@ -178,6 +178,9 @@ fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: Ato
         true -> concat("\n", print_int64_inline@emit_print_uint64_helper());
         false -> ""
     };
+    // Emit print_atom(var) helper unconditionally so callsites can always branch to L_pa_helper.
+    // This avoids missing-helper assembler failures when usage detection misses a nested shape.
+    pa_helper: string <- concat("\n", print_atom_inline@emit_print_atom_helper(table));
     needs_pb_helper: bool <- boolean_rodata@module_uses_print_bool_var(sir_module);
     pb_helper: string <- case needs_pb_helper of {
         true -> concat("\n", print_bool_inline@emit_print_bool_helper());
@@ -263,7 +266,8 @@ fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: Ato
     };
     fwh_0: string <- concat(funcs, pi_helper);
     fwh_1: string <- concat(fwh_0, pu_helper);
-    fwh_2: string <- concat(fwh_1, pb_helper);
+    fwh_1b: string <- concat(fwh_1, pa_helper);
+    fwh_2: string <- concat(fwh_1b, pb_helper);
     fwh_3: string <- concat(fwh_2, pf64_helper);
     fwh_4: string <- concat(fwh_3, pf32_helper);
     fwh_5a: string <- concat(fwh_4, ps_helper);
@@ -280,6 +284,7 @@ fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: Ato
     funcs_with_helper: string <- concat(fwh_11d, region_overflow_helper);
     atom_rodata_str: string <- atom_rodata@emit_atom_rodata_section(table);
     bool_rodata: string <- boolean_rodata@emit_boolean_rodata_section();
+    pa_table_rodata: string <- print_atom_inline@emit_print_atom_rodata_table(table);
     int64_rodata_str: string <- int_rodata@emit_int64_rodata_section(int64_table);
     int32_rodata_str: string <- int_rodata@emit_int32_rodata_section(int32_table);
     int16_rodata_str: string <- int_rodata@emit_int16_rodata_section(int16_table);
@@ -293,9 +298,10 @@ fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: Ato
         true -> concat(concat(with_atom, "\n"), bool_rodata);
         false -> with_atom
     };
+    with_pa_table: string <- concat(concat(with_bool, "\n"), pa_table_rodata);
     with_int64: string <- case int_rodata@module_uses_int64_print(sir_module) of {
-        true -> concat(concat(with_bool, "\n"), int64_rodata_str);
-        false -> with_bool
+        true -> concat(concat(with_pa_table, "\n"), int64_rodata_str);
+        false -> with_pa_table
     };
     with_int32: string <- case int_rodata@module_uses_int32_print(sir_module) of {
         true -> concat(concat(with_int64, "\n"), int32_rodata_str);

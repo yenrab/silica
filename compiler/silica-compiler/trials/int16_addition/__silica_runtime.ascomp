@@ -128,9 +128,10 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 	mov	x19, x0
 	cbz	x0, LBBsl_4
 	stp	x21, x20, [x19]
-	bl	_silica_rt_tls_current_actor_get
-	mov	x21, x0
-	str	x21, [x19, #192]
+; Parent/supervisor is explicit: add_child(parent, child) sets ACB#192 and the parent's child list.
+	str	xzr, [x19, #192]
+	mov	x21, xzr
+	mov	x0, xzr
 	str	x23, [x19, #200]
 	str	x24, [x19, #208]
 	str	xzr, [x19, #216]
@@ -273,6 +274,7 @@ LBB1_process:
 	cbnz	w22, LBB1_ingress_check_kind
 	ldr	x0, [x20, #8]
 	ldp	x1, x8, [x19]
+	cbz	x8, LBB1_ingress_no_beh
 	mov	x2, sp
 	blr	x8
 	ldr	x21, [x0, #8]
@@ -290,6 +292,7 @@ LBB1_ingress_user_beh:
 ; Phase B trial: message[+8] is inline int64; run behavior like a normal dequeue.
 	ldr	x0, [x20, #8]
 	ldp	x1, x8, [x19]
+	cbz	x8, LBB1_ingress_no_beh
 	mov	x2, sp
 	blr	x8
 	ldr	x21, [x0, #8]
@@ -638,6 +641,64 @@ LBB4_9:
 	ldp	x29, x30, [sp, #32]             ; 16-byte Folded Reload
 	ldp	x20, x19, [sp, #16]             ; 16-byte Folded Reload
 	ldp	x22, x21, [sp], #48             ; 16-byte Folded Reload
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_call_registered ; -- Begin function silica_rt_actor_call_registered
+	.p2align	2
+_silica_rt_actor_call_registered:       ; @silica_rt_actor_call_registered
+	.cfi_startproc
+; X0=atom registry key, X1=message. Resolve through the global PID registry, then tail-call actor_call.
+	mov	x11, x0
+	mov	x12, x1
+	adrp	x8, _silica_pid_registry_ref@PAGE
+	ldr	x8, [x8, _silica_pid_registry_ref@PAGEOFF]
+	cbz	x8, LBB4r_not_found
+	ldr	x9, [x8]
+	cbz	x9, LBB4r_not_found
+	cmp	x11, #0
+	b.lt	LBB4r_not_found
+	cmp	x11, #240
+	b.ge	LBB4r_not_found
+	ldr	x10, [x9, x11, lsl #3]
+	cmp	x10, #1
+	b.ne	LBB4r_not_found
+	add	x9, x9, #1920
+	ldr	x0, [x9, x11, lsl #3]
+	cbz	x0, LBB4r_not_found
+	mov	x1, x12
+	b	_silica_rt_actor_call
+LBB4r_not_found:
+	mov	x0, #0
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_actor_cast_registered ; -- Begin function silica_rt_actor_cast_registered
+	.p2align	2
+_silica_rt_actor_cast_registered:       ; @silica_rt_actor_cast_registered
+	.cfi_startproc
+; X0=atom registry key, X1=message. Resolve through the global PID registry, then tail-call actor_cast.
+	mov	x11, x0
+	mov	x12, x1
+	adrp	x8, _silica_pid_registry_ref@PAGE
+	ldr	x8, [x8, _silica_pid_registry_ref@PAGEOFF]
+	cbz	x8, LBB3r_not_found
+	ldr	x9, [x8]
+	cbz	x9, LBB3r_not_found
+	cmp	x11, #0
+	b.lt	LBB3r_not_found
+	cmp	x11, #240
+	b.ge	LBB3r_not_found
+	ldr	x10, [x9, x11, lsl #3]
+	cmp	x10, #1
+	b.ne	LBB3r_not_found
+	add	x9, x9, #1920
+	ldr	x0, [x9, x11, lsl #3]
+	cbz	x0, LBB3r_not_found
+	mov	x1, x12
+	b	_silica_rt_actor_cast
+LBB3r_not_found:
+	mov	x0, #0
 	ret
 	.cfi_endproc
                                         ; -- End function
@@ -1817,18 +1878,17 @@ _silica_rt_tls_current_actor_get:
 	.p2align	2
 _silica_rt_tls_actor_set_from_x19:
 	.cfi_startproc
-; Preserve ACB in x21 across pthread_setspecific — libc paths have been observed clobbering
-; the spilled x19 slot in this small leaf frame on some macOS stacks.
+; Preserve ACB on the stack across pthread_setspecific without clobbering callee-saved x21.
 	stp	x29, x30, [sp, #-32]!
 	mov	x29, sp
-	mov	x21, x19
+	str	x19, [sp, #16]
 	bl	_silica_rt_ensure_actor_tls_key
-	mov	x1, x21
+	ldr	x1, [sp, #16]
 	adrp	x8, _silica_actor_pthread_key@PAGE
 	add	x8, x8, _silica_actor_pthread_key@PAGEOFF
 	ldr	x0, [x8]
 	bl	_pthread_setspecific
-	mov	x19, x21
+	ldr	x19, [sp, #16]
 	ldp	x29, x30, [sp], #32
 	ret
 	.cfi_endproc
@@ -2229,6 +2289,34 @@ Lrecv_done_null:
 	ret
 	.cfi_endproc
                                         ; -- End function
+	.globl	_silica_rt_actor_add_child      ; Explicit supervisor child registration
+	.p2align	2
+_silica_rt_actor_add_child:             ; @silica_rt_actor_add_child
+	.cfi_startproc
+; X0=parent supervisor actor_ref, X1=child actor_ref -> X0=atom :ok.
+; Records the explicit parent/child relationship used by supervisor ingress teardown.
+	cbz	x0, Ladd_child_done
+	cbz	x1, Ladd_child_done
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	mov	x19, x0
+	mov	x20, x1
+	str	x19, [x20, #192]
+	add	x0, x19, #16
+	bl	_os_unfair_lock_lock
+	ldr	x8, [x19, #216]
+	str	x8, [x20, #224]
+	str	x20, [x19, #216]
+	add	x0, x19, #16
+	bl	_os_unfair_lock_unlock
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+Ladd_child_done:
+	mov	x0, #0
+	ret
+	.cfi_endproc
+                                        ; -- End function
 	.globl	_silica_rt_actor_link           ; Phase G — §15.4.8.4–8.5
 	.p2align	2
 _silica_rt_actor_link:                  ; @silica_rt_actor_link
@@ -2450,6 +2538,7 @@ _silica_rt_supervisor_materialize_init_children:
 	ldr	x8, [x20]
 	cmp	x8, #4096
 	b.lo	Lmat_flags_flat
+	mov	x15, #8
 	mov	x27, x8
 	ldr	x8, [x27]
 	str	x8, [x19, #296]
@@ -2459,13 +2548,15 @@ _silica_rt_supervisor_materialize_init_children:
 	str	x8, [x19, #312]
 	b	Lmat_flags_done
 Lmat_flags_flat:
+	mov	x15, #24
 	str	x8, [x19, #296]
 	ldr	x8, [x20, #8]
 	str	x8, [x19, #304]
 	ldr	x8, [x20, #16]
 	str	x8, [x19, #312]
 Lmat_flags_done:
-	ldr	x21, [x20, #24]
+	add	x14, x20, x15
+	ldr	x21, [x14]
 Lmat_loop:
 	cbz	x21, Lmat_done
 	ldr	x22, [x21, #16]
@@ -2623,6 +2714,31 @@ Lsc_done:
 	ldp	x24, x23, [sp, #32]
 	ldp	x26, x25, [sp, #16]
 	ldp	x28, x27, [sp], #96
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_add_child
+	.p2align	2
+_silica_rt_supervisor_add_child:
+	.cfi_startproc
+	stp	x22, x21, [sp, #-48]!
+	stp	x20, x19, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	add	x29, sp, #32
+	mov	x20, x0
+	mov	x21, x1
+	bl	_silica_rt_tls_current_actor_get
+	mov	x22, x0
+	mov	x19, x20
+	bl	_silica_rt_tls_actor_set_from_x19
+	mov	x0, x21
+	bl	_silica_rt_supervisor_start_child
+	mov	x20, x0
+	mov	x19, x22
+	bl	_silica_rt_tls_actor_set_from_x19
+	mov	x0, x20
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #48
 	ret
 	.cfi_endproc
 	.p2align	2
@@ -3033,6 +3149,399 @@ Lctrr_empty:
 Lctrr_done:
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_count_children
+	.p2align	2
+_silica_rt_supervisor_count_children:
+	.cfi_startproc
+	stp	x21, x20, [sp, #-48]!
+	stp	x19, x29, [sp, #16]
+	str	x30, [sp, #32]
+	add	x29, sp, #16
+	mov	x19, x0
+	ldr	x20, [x19, #256]
+	mov	x21, #0
+Lscount_loop:
+	cbz	x20, Lscount_done
+	ldr	x8, [x20]
+	cbz	x8, Lscount_next
+	add	x21, x21, #1
+Lscount_next:
+	ldr	x20, [x20, #80]
+	b	Lscount_loop
+Lscount_done:
+	mov	x0, x21
+	ldr	x30, [sp, #32]
+	ldp	x19, x29, [sp, #16]
+	ldp	x21, x20, [sp], #48
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_get_child
+	.p2align	2
+_silica_rt_supervisor_get_child:
+	.cfi_startproc
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x9, [x19, #256]
+Lsget_loop:
+	cbz	x9, Lsget_none
+	ldr	x10, [x9]
+	cbz	x10, Lsget_next
+	b	Lsget_found
+Lsget_next:
+	ldr	x9, [x9, #80]
+	b	Lsget_loop
+Lsget_found:
+	mov	x0, x10
+	b	Lsget_done
+Lsget_none:
+	ldr	x9, [x19, #256]
+Lsget_fallback_scan:
+	cbz	x9, Lsget_fallback_none
+	ldr	x10, [x9]
+	cbnz	x10, Lsget_found
+	ldr	x9, [x9, #80]
+	b	Lsget_fallback_scan
+Lsget_fallback_none:
+	mov	x0, #0
+Lsget_done:
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_get_child_info
+	.p2align	2
+_silica_rt_supervisor_get_child_info:
+	.cfi_startproc
+	stp	x21, x20, [sp, #-48]!
+	stp	x19, x29, [sp, #16]
+	str	x30, [sp, #32]
+	add	x29, sp, #16
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x9, [x19, #256]
+Lsgetinfo_loop:
+	cbz	x9, Lsgetinfo_none
+	ldr	x10, [x9]
+	cbz	x10, Lsgetinfo_next
+	b	Lsgetinfo_found
+Lsgetinfo_next:
+	ldr	x9, [x9, #80]
+	b	Lsgetinfo_loop
+Lsgetinfo_found:
+	mov	x19, x9
+	mov	x0, #32
+	bl	_silica_rt_region_alloc
+	mov	x21, x0
+	str	x20, [x21]
+	ldr	x11, [x19, #16]
+	mov	x12, #7
+	cmp	x11, x12
+	b.ne	Lsgetinfo_agent_done
+	ldr	x11, [x19, #8]
+Lsgetinfo_agent_done:
+	str	x11, [x21, #8]
+	ldr	x8, [x19]
+	str	x8, [x21, #16]
+	ldr	x8, [x19, #40]
+	cbz	x8, Lsgetinfo_restart_default
+	b	Lsgetinfo_restart_done
+Lsgetinfo_restart_default:
+	mov	x8, #9
+Lsgetinfo_restart_done:
+	str	x8, [x21, #24]
+	mov	x0, x21
+	b	Lsgetinfo_done
+Lsgetinfo_none:
+	ldr	x9, [x19, #256]
+Lsgetinfo_fallback_scan:
+	cbz	x9, Lsgetinfo_zero
+	ldr	x10, [x9]
+	cbnz	x10, Lsgetinfo_found
+	ldr	x9, [x9, #80]
+	b	Lsgetinfo_fallback_scan
+Lsgetinfo_zero:
+	mov	x0, #32
+	bl	_silica_rt_region_alloc
+	mov	x21, x0
+	str	xzr, [x21]
+	str	xzr, [x21, #8]
+	str	xzr, [x21, #16]
+	str	xzr, [x21, #24]
+	mov	x0, x21
+Lsgetinfo_done:
+	ldr	x30, [sp, #32]
+	ldp	x19, x29, [sp, #16]
+	ldp	x21, x20, [sp], #48
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_get_child_id
+	.p2align	2
+_silica_rt_supervisor_get_child_id:
+	.cfi_startproc
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x9, [x19, #256]
+Lsgetid_loop:
+	cbz	x9, Lsgetid_none
+	ldr	x10, [x9]
+	cbz	x10, Lsgetid_next
+	ldr	x11, [x9, #8]
+	cmp	x11, x20
+	b.eq	Lsgetid_found
+Lsgetid_next:
+	ldr	x9, [x9, #80]
+	b	Lsgetid_loop
+Lsgetid_found:
+	ldr	x0, [x9, #8]
+	b	Lsgetid_done
+Lsgetid_none:
+	mov	x0, #0
+Lsgetid_done:
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_get_child_agent_type
+	.p2align	2
+_silica_rt_supervisor_get_child_agent_type:
+	.cfi_startproc
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x9, [x19, #256]
+Lsgetagt_loop:
+	cbz	x9, Lsgetagt_none
+	ldr	x10, [x9]
+	cbz	x10, Lsgetagt_next
+	ldr	x11, [x9, #8]
+	cmp	x11, x20
+	b.eq	Lsgetagt_found
+Lsgetagt_next:
+	ldr	x9, [x9, #80]
+	b	Lsgetagt_loop
+Lsgetagt_found:
+	ldr	x0, [x9, #16]
+	b	Lsgetagt_done
+Lsgetagt_none:
+	mov	x0, #0
+Lsgetagt_done:
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_get_child_restart
+	.p2align	2
+_silica_rt_supervisor_get_child_restart:
+	.cfi_startproc
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x9, [x19, #256]
+Lsgetrst_loop:
+	cbz	x9, Lsgetrst_none
+	ldr	x10, [x9]
+	cbz	x10, Lsgetrst_next
+	ldr	x11, [x9, #8]
+	cmp	x11, x20
+	b.eq	Lsgetrst_found
+Lsgetrst_next:
+	ldr	x9, [x9, #80]
+	b	Lsgetrst_loop
+Lsgetrst_found:
+	ldr	x0, [x9, #40]
+	b	Lsgetrst_done
+Lsgetrst_none:
+	mov	x0, #0
+Lsgetrst_done:
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_which_children
+	.p2align	2
+_silica_rt_supervisor_which_children:
+	.cfi_startproc
+	stp	x28, x27, [sp, #-96]!
+	stp	x26, x25, [sp, #16]
+	stp	x24, x23, [sp, #32]
+	stp	x22, x21, [sp, #48]
+	stp	x20, x19, [sp, #64]
+	stp	x29, x30, [sp, #80]
+	add	x29, sp, #80
+	mov	x19, x0
+	ldr	x20, [x19, #256]
+	mov	x21, #0
+Lswhich_scan:
+	cbz	x20, Lswhich_done
+	ldr	x22, [x20]
+	cbz	x22, Lswhich_next
+	mov	x0, #32
+	bl	_silica_rt_region_alloc
+	mov	x23, x0
+	ldr	x24, [x20, #8]
+	ldr	x25, [x20, #16]
+	ldr	x26, [x20, #40]
+	str	x24, [x23]
+	str	x25, [x23, #8]
+	str	x22, [x23, #16]
+	str	x26, [x23, #24]
+	mov	x0, #40
+	bl	_silica_rt_region_alloc
+	mov	x24, x0
+	ldr	x8, [x23]
+	str	x8, [x24]
+	ldr	x8, [x23, #8]
+	str	x8, [x24, #8]
+	ldr	x8, [x23, #16]
+	str	x8, [x24, #16]
+	ldr	x8, [x23, #24]
+	str	x8, [x24, #24]
+	cbz	x21, Lswhich_chunk_nil
+	ldr	x8, [x21, #8]
+	str	x8, [x24, #32]
+	b	Lswhich_chunk_ready
+Lswhich_chunk_nil:
+	str	xzr, [x24, #32]
+Lswhich_chunk_ready:
+	mov	x0, #24
+	bl	_silica_rt_region_alloc
+	mov	x27, x0
+	cbz	x21, Lswhich_len_one
+	ldr	x8, [x21]
+	add	x8, x8, #1
+	b	Lswhich_set_len
+Lswhich_len_one:
+	mov	x8, #1
+Lswhich_set_len:
+	str	x8, [x27]
+	str	x24, [x27, #8]
+	str	xzr, [x27, #16]
+	mov	x21, x27
+Lswhich_next:
+	ldr	x20, [x20, #80]
+	b	Lswhich_scan
+Lswhich_done:
+	mov	x0, x21
+	ldp	x29, x30, [sp, #80]
+	ldp	x20, x19, [sp, #64]
+	ldp	x22, x21, [sp, #48]
+	ldp	x24, x23, [sp, #32]
+	ldp	x26, x25, [sp, #16]
+	ldp	x28, x27, [sp], #96
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_terminate_child
+	.p2align	2
+_silica_rt_supervisor_terminate_child:
+	.cfi_startproc
+	stp	x24, x23, [sp, #-64]!
+	stp	x22, x21, [sp, #16]
+	stp	x20, x19, [sp, #32]
+	stp	x29, x30, [sp, #48]
+	add	x29, sp, #48
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x23, [x19, #256]
+Lsterm_find:
+	cbz	x23, Lsterm_done
+	ldr	x22, [x23]
+	cbz	x22, Lsterm_next
+	ldr	x8, [x23, #8]
+	cmp	x8, x20
+	b.ne	Lsterm_next
+	add	x0, x22, #16
+	bl	_os_unfair_lock_lock
+	str	wzr, [x22, #160]
+	add	x0, x22, #192
+	bl	_pthread_cond_signal
+	add	x0, x22, #16
+	bl	_os_unfair_lock_unlock
+	str	xzr, [x23]
+	str	xzr, [x23, #56]
+	b	Lsterm_done
+Lsterm_next:
+	ldr	x23, [x23, #80]
+	b	Lsterm_find
+Lsterm_done:
+	mov	x0, #0
+	ldp	x29, x30, [sp, #48]
+	ldp	x20, x19, [sp, #32]
+	ldp	x22, x21, [sp, #16]
+	ldp	x24, x23, [sp], #64
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_remove_child
+	.p2align	2
+_silica_rt_supervisor_remove_child:
+	.cfi_startproc
+	stp	x29, x30, [sp, #-16]!
+	add	x29, sp, #0
+	bl	_silica_rt_supervisor_terminate_child
+	ldp	x29, x30, [sp], #16
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_supervisor_restart_child
+	.p2align	2
+_silica_rt_supervisor_restart_child:
+	.cfi_startproc
+	stp	x24, x23, [sp, #-80]!
+	stp	x22, x21, [sp, #16]
+	stp	x20, x19, [sp, #32]
+	stp	x28, x27, [sp, #48]
+	stp	x29, x30, [sp, #64]
+	add	x29, sp, #64
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x23, [x19, #256]
+Lsrestart_find:
+	cbz	x23, Lsrestart_none
+	ldr	x8, [x23, #8]
+	cmp	x8, x20
+	b.ne	Lsrestart_next
+	ldr	x22, [x23]
+	cbz	x22, Lsrestart_spawn
+	add	x0, x22, #16
+	bl	_os_unfair_lock_lock
+	str	wzr, [x22, #160]
+	add	x0, x22, #192
+	bl	_pthread_cond_signal
+	add	x0, x22, #16
+	bl	_os_unfair_lock_unlock
+	str	xzr, [x23]
+Lsrestart_spawn:
+	ldr	x0, [x23, #24]
+	ldr	x1, [x23, #32]
+	ldr	x2, [x23, #16]
+	mov	x3, x23
+	ldr	x4, [x23, #72]
+	bl	_silica_rt_actor_spawn_linked
+	str	x0, [x23]
+	str	xzr, [x23, #56]
+	str	xzr, [x23, #64]
+	b	Lsrestart_done
+Lsrestart_next:
+	ldr	x23, [x23, #80]
+	b	Lsrestart_find
+Lsrestart_none:
+	mov	x0, #0
+Lsrestart_done:
+	ldp	x29, x30, [sp, #64]
+	ldp	x28, x27, [sp, #48]
+	ldp	x20, x19, [sp, #32]
+	ldp	x22, x21, [sp, #16]
+	ldp	x24, x23, [sp], #80
 	ret
 	.cfi_endproc
 	.section	__DATA,__bss

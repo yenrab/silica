@@ -345,6 +345,7 @@ fn actor_rt_asm_chunk_2() -> string {
 	cbnz	w22, LBB1_ingress_check_kind
 	ldr	x0, [x20, #8]
 	ldp	x1, x8, [x19]
+	cbz	x8, LBB1_ingress_no_beh
 	mov	x2, sp
 	blr	x8
 	ldr	x21, [x0, #8]
@@ -362,6 +363,7 @@ LBB1_ingress_user_beh:
 ; Phase B trial: message[+8] is inline int64; run behavior like a normal dequeue.
 	ldr	x0, [x20, #8]
 	ldp	x1, x8, [x19]
+	cbz	x8, LBB1_ingress_no_beh
 	mov	x2, sp
 	blr	x8
 	ldr	x21, [x0, #8]
@@ -1993,18 +1995,17 @@ _silica_rt_tls_current_actor_get:
 	.p2align	2
 _silica_rt_tls_actor_set_from_x19:
 	.cfi_startproc
-; Preserve ACB in x21 across pthread_setspecific — libc paths have been observed clobbering
-; the spilled x19 slot in this small leaf frame on some macOS stacks.
+; Preserve ACB on the stack across pthread_setspecific without clobbering callee-saved x21.
 	stp	x29, x30, [sp, #-32]!
 	mov	x29, sp
-	mov	x21, x19
+	str	x19, [sp, #16]
 	bl	_silica_rt_ensure_actor_tls_key
-	mov	x1, x21
+	ldr	x1, [sp, #16]
 	adrp	x8, _silica_actor_pthread_key@PAGE
 	add	x8, x8, _silica_actor_pthread_key@PAGEOFF
 	ldr	x0, [x8]
 	bl	_pthread_setspecific
-	mov	x19, x21
+	ldr	x19, [sp, #16]
 	ldp	x29, x30, [sp], #32
 	ret
 	.cfi_endproc
