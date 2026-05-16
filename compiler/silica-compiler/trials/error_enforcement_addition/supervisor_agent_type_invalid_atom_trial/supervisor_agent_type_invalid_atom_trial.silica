@@ -1,0 +1,100 @@
+// Error-enforcement trial: child_spec agent_type accepts only :worker | :supervisor.
+// Any other atom literal must fail type checking (E2093).
+
+use Supervisor;
+
+impl AgentTypeInvalidTrial for Supervisor;
+
+fn child_worker(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state)
+}
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 5 };
+        _: unit <- { agent_type: :counter_worker };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- empty[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ]()
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency]
+        sup: supervisor_ref <- spawn_registered_supervisor(AgentTypeInvalidTrial, 0, :agent_type_invalid_trial);
+        _: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: :worker | :supervisor,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, {
+            op: :add_child,
+            child: {
+                id: :illegal_child,
+                agent_type: :counter_worker,
+                initial_state: 0,
+                behavior: child_worker,
+                restart: :permanent,
+                shutdown: 0
+            }
+        } impl SupervisorMessage {});
+        pure 0
+    end
+}

@@ -173,7 +173,7 @@ fn is_caller_saved_gpr(reg: string) -> bool {
 fn compute_let_rhs_spill_reg(term: SIRTerm, rhs_reg: string, outer_reg: string) -> string {
     case is_caller_saved_gpr(rhs_reg) of {
         false -> "";
-        true -> case let_rhs_type_spills_across_io(term.type_name) of {
+        true -> case let_rhs_type_spills_across_io(term.inner.type_name) of {
             true -> spill_reg_chain_from_outer(outer_reg);
             false -> ""
         }
@@ -215,10 +215,32 @@ fn first_at_in_fn_label(s: string, i: int64) -> int64 {
 }
 
 fn child_spec_supervisor_trampoline_symbol_from_label(label: string) -> string {
-    at: int64 <- first_at_in_fn_label(label, 0);
+    clean_label: string <- case len(label) > 0 and substring(label, 0, 1) == "%" of {
+        true -> substring(label, 1, len(label));
+        false -> label
+    };
+    at: int64 <- first_at_in_fn_label(clean_label, 0);
     case at < 0 of {
-        true -> "";
-        false -> concat("_silica_supervisor_start_", substring(label, 0, at))
+        true -> do
+            suffix: string <- "_child_start";
+            suffix_len: int64 <- len(suffix);
+            label_len: int64 <- len(clean_label);
+            case label_len > suffix_len and substring(clean_label, label_len - suffix_len, label_len) == suffix of {
+                true -> concat("_silica_supervisor_start_", substring(clean_label, 0, label_len - suffix_len));
+                false -> ""
+            }
+        end;
+        false -> concat("_silica_supervisor_start_", substring(clean_label, 0, at))
+    }
+}
+
+fn child_spec_fn_label_from_term(term: SIRTerm) -> string {
+    case term.kind == 0 and term.type_name == "fn_ptr" of {
+        true -> term.value;
+        false -> case term.kind == 1 of {
+            true -> term.name;
+            false -> ""
+        }
     }
 }
 
@@ -232,15 +254,28 @@ fn child_spec_start_fn_label(term: SIRTerm) -> string {
                     true -> e1w.inner;
                     false -> e1w
                 };
-                case e1.kind == 0 and e1.type_name == "fn_ptr" of {
-                    true -> e1.value;
-                    false -> ""
-                }
+                child_spec_fn_label_from_term(e1)
             end;
-            false -> case term.value == "behavior" and term.inner.kind == 0 and term.inner.type_name == "fn_ptr" of {
-                true -> term.inner.value;
+            false -> case term.value == "behavior" of {
+                true -> do
+                    label: string <- child_spec_fn_label_from_term(term.inner);
+                    case len(label) > 0 of {
+                        true -> label;
+                        false -> child_spec_start_fn_label(term.right_expr)
+                    }
+                end;
                 false -> child_spec_start_fn_label(term.right_expr)
             }
+        }
+    }
+}
+
+fn child_spec_agent_type_atom(term: SIRTerm) -> string {
+    case term.kind == 6 and term.name == "record_make" of {
+        false -> "";
+        true -> case term.value == "agent_type" and term.inner.kind == 0 and term.inner.type_name == "atom" of {
+            true -> term.inner.value;
+            false -> child_spec_agent_type_atom(term.right_expr)
         }
     }
 }
@@ -269,11 +304,19 @@ fn emit_child_spec_hidden_trampoline_store(term: SIRTerm, R: string) -> string {
     case is_child_spec_record_type(R) of {
         false -> "";
         true -> do
-            label: string <- child_spec_start_fn_label(term);
-            sym: string <- child_spec_supervisor_trampoline_symbol_from_label(label);
-            case len(sym) == 0 of {
-                true -> "    STR XZR, [SP, #48]";
-                false -> concat(concat(concat(concat("    ADRP X9, ", sym), "@PAGE\n    ADD X9, X9, "), sym), "@PAGEOFF\n    STR X9, [SP, #48]")
+            // Agent role is explicit in child_spec.agent_type (:worker | :supervisor).
+            // Do not infer role from child record shape or behavior naming.
+            agent_atom: string <- child_spec_agent_type_atom(term);
+            case agent_atom == ":supervisor" of {
+                false -> "    STR XZR, [SP, #48]";
+                true -> do
+                    label: string <- child_spec_start_fn_label(term);
+                    sym: string <- child_spec_supervisor_trampoline_symbol_from_label(label);
+                    case len(sym) == 0 of {
+                        true -> "    STR XZR, [SP, #48]";
+                        false -> concat(concat(concat(concat("    ADRP X9, ", sym), "@PAGE\n    ADD X9, X9, "), sym), "@PAGEOFF\n    STR X9, [SP, #48]")
+                    }
+                end
             }
         end
     }
@@ -1414,9 +1457,12 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 clean_bound: string <- var@base_reg_of(bound_reg);
                 clean_outer: string <- var@base_reg_of(outer_reg);
                 base_rhs: string <- let_dispatcher@compute_rhs_reg_in_let(term, dest, bound_name, clean_bound, outer_reg);
-                rhs_reg: string <- case term.inner.kind == 0 and term.inner.type_name == "int64" and dest == "X0" and clean_bound == "X1" of {
-                    true -> "X2";
-                    false -> base_rhs
+                rhs_reg: string <- case term.inner.kind == 6 and term.inner.name == "record_make" of {
+                    true -> "X0";
+                    false -> case term.inner.kind == 0 and term.inner.type_name == "int64" and dest == "X0" and clean_bound == "X1" of {
+                        true -> "X2";
+                        false -> base_rhs
+                    }
                 };
                 outer_rhs_b: string <- outer_for_aggregate_let_rhs(term, outer_reg);
                 rhs_asm: string <- case term.inner.kind < 0 of {
@@ -1636,9 +1682,12 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             end;
             false -> do
                 base_rhs: string <- let_dispatcher@compute_rhs_reg_top_level(term, bound_reg, dest);
-                rhs_reg: string <- case term.inner.kind == 0 and term.inner.type_name == "int64" and dest == "X0" and term.right_expr.kind != 4 of {
-                    true -> "X1";
-                    false -> base_rhs
+                rhs_reg: string <- case term.inner.kind == 6 and term.inner.name == "record_make" of {
+                    true -> "X0";
+                    false -> case term.inner.kind == 0 and term.inner.type_name == "int64" and dest == "X0" and term.right_expr.kind != 4 of {
+                        true -> "X1";
+                        false -> base_rhs
+                    }
                 };
                 outer_rhs_tl: string <- outer_for_aggregate_let_rhs(term, outer_reg);
                 rhs_asm: string <- case term.inner.kind < 0 of {

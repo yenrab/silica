@@ -30,7 +30,7 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
 silica.config: | clean
 	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && { \
-		find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||"; \
+		find "$$PWD" -type f -name '*.silica' ! -name 'trial_negative_*.silica' | sed "s|^$$PWD/||"; \
 		echo "../../stdlib/Supervisor.silica"; \
 	} > silica.config
 

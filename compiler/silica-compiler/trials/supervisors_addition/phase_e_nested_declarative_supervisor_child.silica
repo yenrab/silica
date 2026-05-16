@@ -1,0 +1,163 @@
+// Phase E nested declarative supervisor trial:
+// root supervisor -> child supervisor -> five declarative worker actors.
+
+use Supervisor;
+use PhaseENestedChildSup;
+
+impl PhaseENestedRootSup for Supervisor;
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(initial_state: int64) -> (
+                {
+                    strategy: :one_for_one | :one_for_all | :rest_for_one,
+                    allowed_restart_count: int64,
+                    restarts_time_frame: int64
+                },
+                List[
+                    {
+                        id: atom,
+                        agent_type: :worker | :supervisor,
+                        initial_state: int64,
+                        behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                        restart: :permanent | :temporary | :transient,
+                        shutdown: int64
+                    },
+                    mem(normal)
+                ]
+            ),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 10, restarts_time_frame: 5 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(initial_state: int64) -> (
+                    {
+                        strategy: :one_for_one | :one_for_all | :rest_for_one,
+                        allowed_restart_count: int64,
+                        restarts_time_frame: int64
+                    },
+                    List[
+                        {
+                            id: atom,
+                            agent_type: :worker | :supervisor,
+                            initial_state: int64,
+                            behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                            restart: :permanent | :temporary | :transient,
+                            shutdown: int64
+                        },
+                        mem(normal)
+                    ]
+                ),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :phase_e_nested_child_sup,
+                agent_type: :supervisor,
+                initial_state: initial_state + 10,
+                behavior: PhaseENestedChildSup@PhaseENestedChildSup_child_start,
+                restart: :permanent,
+                shutdown: 0
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io, mem(normal)]
+        root: supervisor_ref <- spawn_registered_supervisor(PhaseENestedRootSup, 500, :phase_e_nested_root_sup);
+        root_count: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)],
+            count: int64,
+            child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient },
+            error: atom
+        } <- call_supervisor(root, { op: :count_children } impl SupervisorMessage {});
+        child_lookup: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)],
+            count: int64,
+            child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient },
+            error: atom
+        } <- call_supervisor(root, { op: :get_child, id: :phase_e_nested_child_sup } impl SupervisorMessage {});
+        nested_probe: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)],
+            count: int64,
+            child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient },
+            error: atom
+        } <- call_supervisor(child_lookup.child, { op: :count_children } impl SupervisorMessage {});
+        nested_count: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)],
+            count: int64,
+            child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient },
+            error: atom
+        } <- call_supervisor(child_lookup.child, { op: :count_children } impl SupervisorMessage {});
+        nested_children: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)],
+            count: int64,
+            child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient },
+            error: atom
+        } <- call_supervisor(child_lookup.child, { op: :which_children } impl SupervisorMessage {});
+        worker_lookup: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)],
+            count: int64,
+            child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient },
+            error: atom
+        } <- call_supervisor(child_lookup.child, { op: :get_child, id: :phase_e_nested_worker_00 } impl SupervisorMessage {});
+        worker_value: int64 <- call(worker_lookup.child, 1 impl ActorMessage {});
+
+        _: atom <- print_int64(case root_count.count == 1 of { true -> 1; false -> 0 });
+        println("");
+        _: atom <- print_int64(case nested_probe.count == 5 or nested_count.count == 5 of { true -> 1; false -> 0 });
+        println("");
+        _: atom <- print_int64(case length[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)](nested_children.children) == 5 of { true -> 1; false -> 0 });
+        println("");
+        _: atom <- print_int64(case worker_value == 511 of { true -> 1; false -> 0 });
+        println("");
+        println("done")
+    produces
+        pure 0
+    end
+}

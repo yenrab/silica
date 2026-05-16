@@ -30,6 +30,8 @@ export program_has_impl_for_supervisor/1;
 export collect_supervisor_impl_types_csv/1;
 export check_init_if_supervisor_impl_phase_e/2;
 export check_supervisor_impl_has_init_phase_b/1;
+export supervisor_walk_validate_child_spec_agent_type_atoms/1;
+export validate_supervisor_init_body_literal_agent_types_if_needed/2;
 
 fn supervisor_string_contains_from(h: string, needle: string, i: int64, nh: int64) -> bool {
     case i + nh > len(h) of {
@@ -116,7 +118,7 @@ fn supervisor_init_return_has_phase_e_declarative_fields(ret: string) -> bool {
                         false -> false;
                         true -> case supervisor_string_contains(t, "id :") of {
                             false -> false;
-                            true -> case supervisor_string_contains(t, "agent_type :") of {
+                            true -> case supervisor_string_contains(t, "agent_type : :worker | :supervisor") of {
                                 false -> false;
                                 true -> case supervisor_string_contains(t, "initial_state :") of {
                                     false -> false;
@@ -262,7 +264,7 @@ fn check_supervisor_init_return_type_phase_e_shape(decl: Declaration) -> TypeChe
         true -> case supervisor_init_return_tuple_has_flags_and_children(decl.return_type_name) of {
             false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init must return a tuple (supervisor_flags, static child list) per spec §15.4.13.1 (supervisors plan Phase E)", "sect15.4.13.1");
             true -> case supervisor_init_return_has_phase_e_declarative_fields(decl.return_type_name) of {
-                false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init return type must include supervisor_flags (strategy, allowed_restart_count, restarts_time_frame) and child_spec fields (id, agent_type, initial_state, behavior, restart, shutdown) in List[..., mem(ρ) | …] or List[..., normal] for automatic restart (supervisors plan Phase B; spec §15.4.13.2)", "sect15.4.13.2");
+                false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init return type must include supervisor_flags (strategy, allowed_restart_count, restarts_time_frame) and child_spec fields (id, agent_type: :worker | :supervisor, initial_state, behavior, restart, shutdown) in List[..., mem(ρ) | …] or List[..., normal] for automatic restart (supervisors plan Phase B; spec §15.4.13.2)", "sect15.4.13.2");
                 true -> type_checker_core@type_check_ok()
             }
         }
@@ -277,6 +279,79 @@ fn check_init_if_supervisor_impl_phase_e(decl: Declaration, all_decls: ListDecla
             true -> case init_decl_has_one_parameter(decl) of {
                 false -> type_checker_core@type_check_ok();
                 true -> check_supervisor_init_return_type_phase_e_shape(decl)
+            }
+        }
+    }
+}
+
+fn supervisor_child_spec_agent_type_initializer_ok(init_e: Expr) -> bool {
+    case init_e.kind == 5 of {
+        false -> false;
+        true -> init_e.value == ":worker" or init_e.value == ":supervisor"
+    }
+}
+
+// child_spec.agent_type must be a literal :worker or :supervisor (no other atoms, no variables).
+fn supervisor_validate_record_field_agent_type(field_e: Expr) -> TypeCheckResult {
+    case field_e.name == "agent_type" of {
+        false -> type_checker_core@type_check_ok();
+        true -> case field_e.inner.kind == 5 of {
+            false -> type_checker_core@type_check_err(
+                "E2093",
+                field_e.location,
+                "child_spec agent_type must be a literal :worker or :supervisor (§15.4.13.2 / supervisor child table)",
+                "sect15.4.13.2"
+            );
+            true -> case supervisor_child_spec_agent_type_initializer_ok(field_e.inner) of {
+                true -> type_checker_core@type_check_ok();
+                false -> type_checker_core@type_check_err(
+                    "E2093",
+                    field_e.inner.location,
+                    concat(concat("invalid child_spec agent_type ", field_e.inner.value), "; only :worker or :supervisor are allowed"),
+                    "sect15.4.13.2"
+                )
+            }
+        }
+    }
+}
+
+// Walk an expression AST and validate every inline record field named agent_type used in supervisor child specs.
+fn supervisor_walk_validate_child_spec_agent_type_atoms(expr: Expr) -> TypeCheckResult {
+    case expr.kind < 0 of {
+        true -> type_checker_core@type_check_ok();
+        false -> do
+            fld: TypeCheckResult <- case expr.kind == 21 of {
+                true -> supervisor_validate_record_field_agent_type(expr);
+                false -> type_checker_core@type_check_ok()
+            };
+            case fld.is_ok of {
+                false -> fld;
+                true -> case expr.kind == 991 of {
+                    true -> supervisor_walk_validate_child_spec_agent_type_atoms(expr.inner);
+                    false -> case expr.kind == 992 of {
+                        true -> type_checker_core@type_check_ok();
+                        false -> do
+                            rin: TypeCheckResult <- supervisor_walk_validate_child_spec_agent_type_atoms(expr.inner);
+                            case rin.is_ok of {
+                                false -> rin;
+                                true -> supervisor_walk_validate_child_spec_agent_type_atoms(expr.right_expr)
+                            }
+                        end
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn validate_supervisor_init_body_literal_agent_types_if_needed(decl: Declaration, all_decls: ListDeclaration) -> TypeCheckResult {
+    case program_has_impl_for_supervisor(all_decls) of {
+        false -> type_checker_core@type_check_ok();
+        true -> case decl.name == "init" of {
+            false -> type_checker_core@type_check_ok();
+            true -> case init_decl_has_one_parameter(decl) of {
+                false -> type_checker_core@type_check_ok();
+                true -> supervisor_walk_validate_child_spec_agent_type_atoms(decl.body)
             }
         }
     }

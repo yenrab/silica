@@ -1,0 +1,318 @@
+// Phase D protocol trial (long-lived binding reproducer):
+// Same lifecycle flow as phase_d_protocol_lifecycle_queries, but intentionally keeps
+// a long-lived supervisor reply binding across multiple effectful calls.
+
+use Supervisor;
+
+impl PhaseDProtocolLifecycleSupLong for Supervisor;
+
+fn worker(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state)
+}
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 5, restarts_time_frame: 10 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- empty[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ]()
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io, mem(normal)]
+        sup: supervisor_ref <- spawn_registered_supervisor(PhaseDProtocolLifecycleSupLong, 3, :phase_d_lifecycle_sup_long);
+
+        add_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: :worker | :supervisor,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, {
+            op: :add_child,
+            child: {
+                id: :phase_d_worker_a,
+                agent_type: :worker,
+                initial_state: 7,
+                behavior: worker,
+                restart: :permanent,
+                shutdown: 0
+            }
+        } impl SupervisorMessage {});
+
+        _: int64 <- case add_reply.tag of {
+            :child_started -> 1;
+            _: atom -> -1
+        };
+
+        count_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: :worker | :supervisor,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :count_children } impl SupervisorMessage {});
+
+        get_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: :worker | :supervisor,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :get_child, id: :phase_d_worker_a } impl SupervisorMessage {});
+
+        which_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: :worker | :supervisor,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :which_children } impl SupervisorMessage {});
+
+        get_child_call_result: int64 <- call(get_reply.child, 4 impl ActorMessage {});
+
+        terminate_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: :worker | :supervisor,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :terminate_child, id: :phase_d_worker_a } impl SupervisorMessage {});
+
+        remove_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: :worker | :supervisor,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :remove_child, id: :phase_d_worker_a } impl SupervisorMessage {});
+
+        count_after_terminate_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: :worker | :supervisor,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :count_children } impl SupervisorMessage {});
+
+        // Intentional long-lived binding to reproduce register/liveness bug.
+        count_after_remove_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: :worker | :supervisor,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :count_children } impl SupervisorMessage {});
+
+        _: atom <- print_int64(case count_reply.count == 1 of {
+            true -> 1;
+            false -> 0
+        });
+        println("");
+        _: atom <- print_int64(case get_reply.child_info.id of {
+            :unknown -> 0;
+            _: atom -> 1
+        });
+        println("");
+        _: atom <- print_int64(case get_reply.child_info.agent_type of {
+            :worker -> 1;
+            :supervisor -> 1
+        });
+        println("");
+        _: atom <- print_int64(case get_reply.tag of {
+            :child_info -> 1;
+            _: atom -> 0
+        });
+        println("");
+        _: atom <- print_int64(case get_child_call_result == 11 of {
+            true -> 1;
+            false -> 0
+        });
+        println("");
+        _: atom <- print_int64(case length[{
+            id: atom,
+            agent_type: :worker | :supervisor,
+            child: actor_ref,
+            restart: :permanent | :temporary | :transient
+        }, mem(normal)](which_reply.children) == 1 of {
+            true -> 1;
+            false -> 0
+        });
+        println("");
+        _: atom <- print_int64(case count_after_terminate_reply.count == 0 of {
+            true -> 1;
+            false -> 0
+        });
+        println("");
+        _: atom <- print_int64(case count_after_remove_reply.count == 0 of {
+            true -> 1;
+            false -> 0
+        });
+        println("");
+        println("done")
+    produces
+        pure 0
+    end
+}

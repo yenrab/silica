@@ -1,0 +1,44 @@
+// Phase E declarative trial: ten static children under :rest_for_one.
+
+use Supervisor;
+
+impl PhaseEDecl10RestForOneSup for Supervisor;
+
+fn worker(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state + 1)
+}
+
+fn init(initial_state: int64) -> (
+    { strategy: :one_for_one | :one_for_all | :rest_for_one, allowed_restart_count: int64, restarts_time_frame: int64 },
+    List[{ id: atom, agent_type: :worker | :supervisor, initial_state: int64, behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64), restart: :permanent | :temporary | :transient, shutdown: int64 }, mem(normal)]
+) {
+    sequence proc[mem(normal)]
+        flags: { strategy: :one_for_one | :one_for_all | :rest_for_one, allowed_restart_count: int64, restarts_time_frame: int64 } <- { strategy: :rest_for_one, allowed_restart_count: 20, restarts_time_frame: 10 };
+        children: List[{ id: atom, agent_type: :worker | :supervisor, initial_state: int64, behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64), restart: :permanent | :temporary | :transient, shutdown: int64 }, mem(normal)] <- [
+            { id: :phase_e_rfo_00, agent_type: :worker, initial_state: initial_state + 0, behavior: worker, restart: :permanent, shutdown: 0 },
+            { id: :phase_e_rfo_01, agent_type: :worker, initial_state: initial_state + 1, behavior: worker, restart: :permanent, shutdown: 0 },
+            { id: :phase_e_rfo_02, agent_type: :worker, initial_state: initial_state + 2, behavior: worker, restart: :permanent, shutdown: 0 },
+            { id: :phase_e_rfo_03, agent_type: :worker, initial_state: initial_state + 3, behavior: worker, restart: :permanent, shutdown: 0 },
+            { id: :phase_e_rfo_04, agent_type: :worker, initial_state: initial_state + 4, behavior: worker, restart: :permanent, shutdown: 0 },
+            { id: :phase_e_rfo_05, agent_type: :worker, initial_state: initial_state + 5, behavior: worker, restart: :permanent, shutdown: 0 },
+            { id: :phase_e_rfo_06, agent_type: :worker, initial_state: initial_state + 6, behavior: worker, restart: :permanent, shutdown: 0 },
+            { id: :phase_e_rfo_07, agent_type: :worker, initial_state: initial_state + 7, behavior: worker, restart: :permanent, shutdown: 0 },
+            { id: :phase_e_rfo_08, agent_type: :worker, initial_state: initial_state + 8, behavior: worker, restart: :permanent, shutdown: 0 },
+            { id: :phase_e_rfo_09, agent_type: :worker, initial_state: initial_state + 9, behavior: worker, restart: :permanent, shutdown: 0 }
+        ]
+    produces pure (flags, children) end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sup: supervisor_ref <- spawn_registered_supervisor(PhaseEDecl10RestForOneSup, 400, :phase_e_decl_10_rfo_sup);
+        restart_reply: { tag: :child_started | :ok | :children | :count | :child_info | :error, child: actor_ref, status: atom, children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)], count: int64, child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, error: atom } <- call_supervisor(sup, { op: :restart_child, id: :phase_e_rfo_05 } impl SupervisorMessage {});
+        count_reply: { tag: :child_started | :ok | :children | :count | :child_info | :error, child: actor_ref, status: atom, children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)], count: int64, child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, error: atom } <- call_supervisor(sup, { op: :count_children } impl SupervisorMessage {});
+        value: int64 <- call(restart_reply.child, 1 impl ActorMessage {});
+        _: atom <- print_int64(case count_reply.count == 10 of { true -> 1; false -> 0 });
+        println("");
+        _: atom <- print_int64(case value == 406 of { true -> 1; false -> 0 });
+        println("");
+        println("done")
+    produces pure 0 end
+}

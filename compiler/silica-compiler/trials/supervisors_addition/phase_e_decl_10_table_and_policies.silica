@@ -1,0 +1,105 @@
+// Phase E declarative trial:
+// `init/1` returns ten child specs directly, with mixed restart policies.
+
+use Supervisor;
+
+impl PhaseEDecl10TableSup for Supervisor;
+
+fn worker(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, msg + state, state + 1)
+}
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 20, restarts_time_frame: 10 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- [
+            { id: :phase_e_decl_00, agent_type: :worker, initial_state: initial_state + 0, behavior: worker, restart: :permanent, shutdown: 0 },
+            { id: :phase_e_decl_01, agent_type: :worker, initial_state: initial_state + 1, behavior: worker, restart: :temporary, shutdown: 0 },
+            { id: :phase_e_decl_02, agent_type: :worker, initial_state: initial_state + 2, behavior: worker, restart: :transient, shutdown: 0 },
+            { id: :phase_e_decl_03, agent_type: :worker, initial_state: initial_state + 3, behavior: worker, restart: :permanent, shutdown: 0 },
+            { id: :phase_e_decl_04, agent_type: :worker, initial_state: initial_state + 4, behavior: worker, restart: :temporary, shutdown: 0 },
+            { id: :phase_e_decl_05, agent_type: :worker, initial_state: initial_state + 5, behavior: worker, restart: :transient, shutdown: 0 },
+            { id: :phase_e_decl_06, agent_type: :worker, initial_state: initial_state + 6, behavior: worker, restart: :permanent, shutdown: 0 },
+            { id: :phase_e_decl_07, agent_type: :worker, initial_state: initial_state + 7, behavior: worker, restart: :temporary, shutdown: 0 },
+            { id: :phase_e_decl_08, agent_type: :worker, initial_state: initial_state + 8, behavior: worker, restart: :transient, shutdown: 0 },
+            { id: :phase_e_decl_09, agent_type: :worker, initial_state: initial_state + 9, behavior: worker, restart: :permanent, shutdown: 0 }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io, mem(normal)]
+        sup: supervisor_ref <- spawn_registered_supervisor(PhaseEDecl10TableSup, 100, :phase_e_decl_10_table_sup);
+        count_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)],
+            count: int64,
+            child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient },
+            error: atom
+        } <- call_supervisor(sup, { op: :count_children } impl SupervisorMessage {});
+        which_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)],
+            count: int64,
+            child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient },
+            error: atom
+        } <- call_supervisor(sup, { op: :which_children } impl SupervisorMessage {});
+        get_reply: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)],
+            count: int64,
+            child_info: { id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient },
+            error: atom
+        } <- call_supervisor(sup, { op: :get_child, id: :phase_e_decl_00 } impl SupervisorMessage {});
+        first_value: int64 <- call(get_reply.child, 1 impl ActorMessage {});
+
+        _: atom <- print_int64(case count_reply.count == 10 of { true -> 1; false -> 0 });
+        println("");
+        _: atom <- print_int64(case length[{ id: atom, agent_type: :worker | :supervisor, child: actor_ref, restart: :permanent | :temporary | :transient }, mem(normal)](which_reply.children) == 10 of { true -> 1; false -> 0 });
+        println("");
+        _: atom <- print_int64(case first_value == 101 of { true -> 1; false -> 0 });
+        println("");
+        println("done")
+    produces
+        pure 0
+    end
+}
