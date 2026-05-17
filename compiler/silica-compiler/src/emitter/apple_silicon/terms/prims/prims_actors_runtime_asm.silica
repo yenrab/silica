@@ -558,7 +558,6 @@ _silica_rt_actor_send:                  ; @silica_rt_actor_send
 	cbz	x0, LBB2_5
 ; %bb.1:
 	mov	x21, x1
-	cbz	x1, LBB2_5
 ; %bb.2:
 	mov	x19, x0
 	mov	w0, #1                          ; =0x1
@@ -614,7 +613,6 @@ _silica_rt_actor_cast:                  ; @silica_rt_actor_cast
 	cbz	x0, LBB3_7
 ; %bb.1:
 	mov	x22, x1
-	cbz	x1, LBB3_7
 ; %bb.2:
 	mov	x19, x0
 	mov	w0, #1                          ; =0x1
@@ -668,7 +666,6 @@ _silica_rt_actor_call:                  ; @silica_rt_actor_call
 	cbz	x20, LBB4_9
 ; %bb.1:
 	mov	x21, x1
-	cbz	x1, LBB4_9
 ; %bb.2:
 	mov	w22, #1                         ; =0x1
 	mov	w0, #1                          ; =0x1
@@ -1280,13 +1277,47 @@ _silica_rt_remove_actor:                ; @silica_rt_remove_actor
 	ret
 	.cfi_endproc
                                         ; -- End function
+	.globl	_silica_rt_register_actor_named ; -- Begin function silica_rt_register_actor_named
+	.p2align	2
+_silica_rt_register_actor_named:        ; @silica_rt_register_actor_named
+	.cfi_startproc
+; X0=actor_ref, X1=atom registry key. Insert directly into the PID registry table.
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	mov	x19, x0
+	mov	x20, x1
+	adrp	x8, _silica_pid_registry_ref@PAGE
+	ldr	x8, [x8, _silica_pid_registry_ref@PAGEOFF]
+	cbz	x8, Lreg_named_done
+	ldr	x9, [x8]
+	cbz	x9, Lreg_named_done
+	cmp	x20, #0
+	b.lt	Lreg_named_done
+	cmp	x20, #240
+	b.ge	Lreg_named_done
+	mov	x10, #1
+	str	x10, [x9, x20, lsl #3]
+	add	x9, x9, #1920
+	str	x19, [x9, x20, lsl #3]
+Lreg_named_done:
+	mov	x0, #0
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.cfi_endproc
+                                        ; -- End function
 	.globl	_silica_rt_register_actor       ; -- Begin function silica_rt_register_actor
 	.p2align	2
 _silica_rt_register_actor:              ; @silica_rt_register_actor
 	.cfi_startproc
-; %bb.0: X0=actor_ref; write to global _silica_pid_registry_ref. Returns X0=0 (atom :ok).
-	adrp	x1, _silica_pid_registry_ref@PAGE
-	str	x0, [x1, _silica_pid_registry_ref@PAGEOFF]
+; Legacy unary register_actor(actor_ref). The global slot belongs to the PID registry actor;
+; named insertion is handled by _silica_rt_register_actor_named.
 	mov	x0, #0
 	ret
 	.cfi_endproc
@@ -1302,22 +1333,47 @@ _silica_rt_get_registry_actor:          ; @silica_rt_get_registry_actor
 	.cfi_endproc
                                         ; -- End function
 ; Phase E e4b: _silica_rt_actor_kill_abnormal — set pending exit reason_tag to 1 (abnormal) and stop the actor.
-; X0=actor_ref. Returns X0=0 (atom :ok). Used by trials to inject abnormal exits so :transient restart policy
+; X0=actor_ref or atom registry key. Returns X0=0 (atom :ok). Used by trials to inject abnormal exits so :transient restart policy
 ; (restart iff reason_tag != 0) can be exercised. Mutex protects the alive/reason_tag transition vs
 ; deliver_exit reading [ACB+#336] from the actor's own thread.
 	.globl	_silica_rt_actor_kill_abnormal
 	.p2align	2
 _silica_rt_actor_kill_abnormal:
 	.cfi_startproc
-	stp	x20, x19, [sp, #-32]!
+	stp	x21, x20, [sp, #-48]!
 	stp	x29, x30, [sp, #16]
+	str	x19, [sp, #32]
 	add	x29, sp, #16
 	.cfi_def_cfa w29, 16
 	.cfi_offset w30, -8
 	.cfi_offset w29, -16
 	.cfi_offset w19, -24
 	.cfi_offset w20, -32
+; Accept atom target by resolving through PID registry (same table layout as call_registered/cast_registered).
+	mov	x11, x0
+	cmp	x11, #0
+	b.lt	Lkab_use_direct
+	cmp	x11, #240
+	b.ge	Lkab_use_direct
+	adrp	x8, _silica_pid_registry_ref@PAGE
+	ldr	x8, [x8, _silica_pid_registry_ref@PAGEOFF]
+	cbz	x8, Lkab_not_found
+	ldr	x9, [x8]
+	cbz	x9, Lkab_not_found
+	ldr	x10, [x9, x11, lsl #3]
+	cmp	x10, #1
+	b.ne	Lkab_not_found
+	add	x9, x9, #1920
+	ldr	x0, [x9, x11, lsl #3]
+	cbz	x0, Lkab_not_found
+	b	Lkab_resolved
+Lkab_use_direct:
+	mov	x0, x11
+Lkab_resolved:
 	mov	x19, x0
+	cbz	x19, Lkab_not_found
+	ldr	x20, [x19, #208]
+	ldr	x21, [x19, #192]
 	add	x0, x19, #16
 	bl	_os_unfair_lock_lock
 	mov	x8, #1
@@ -1327,9 +1383,22 @@ _silica_rt_actor_kill_abnormal:
 	bl	_silica_rt_cv_signal
 	add	x0, x19, #16
 	bl	_os_unfair_lock_unlock
+	cmp	x20, #4096
+	b.lo	Lkab_not_found
+	bl	_silica_rt_tls_current_actor_get
+	cmp	x0, x19
+	b.eq	Lkab_not_found
+Lkab_wait_exit_done:
+	ldr	x8, [x20, #56]
+	cbz	x8, Lkab_wait_exit_done
+	cbz	x21, Lkab_not_found
+	mov	x0, x21
+	bl	_silica_rt_supervisor_drain_ingress
+Lkab_not_found:
 	mov	x0, #0
+	ldr	x19, [sp, #32]
 	ldp	x29, x30, [sp, #16]
-	ldp	x20, x19, [sp], #32
+	ldp	x21, x20, [sp], #48
 	ret
 	.cfi_endproc
                                         ; -- End function
