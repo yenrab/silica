@@ -65,12 +65,17 @@ TRIALS_ROOT := ../trials
 TRIAL_MAKEFILES := $(wildcard $(TRIALS_ROOT)/*/Makefile $(TRIALS_ROOT)/*/makefile)
 TRIAL_SUBDIRS := $(sort $(foreach mf,$(TRIAL_MAKEFILES),$(notdir $(patsubst %/,%,$(dir $(mf))))))
 
-.PHONY: all clean executables modules subdirs help integrate $(SUBDIRS)
+.PHONY: all clean build executables modules subdirs help integrate $(SUBDIRS)
 
 .DEFAULT_GOAL := all
 
-# Default target - ensure bootstrap compiler exists, then compile subdirs, modules, and main
-all: $(SILICA_COMPILER) subdirs modules executables
+# Default target - clean first, then build
+
+all: clean build
+
+# Real build target - ensure bootstrap compiler exists, then compile subdirs, modules, and main
+
+build: $(SILICA_COMPILER) subdirs modules executables
 
 # Build all subdirectories with Makefiles (before compiling main.silica)
 # subdirs requires bootstrap compiler to exist first

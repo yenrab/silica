@@ -8,11 +8,16 @@ COMPILER_BINARY := target/release/silica-boot
 EXPERIMENTS_DIR := ../experiments_to_test_bootstrap_only
 
 .DEFAULT_GOAL := all
-.PHONY: all clean clean-compiler clean-experiments compiler experiments help
 
-# Default target - build everything
-all: compiler experiments
-	@echo "✅ Silica AArch64 build complete!"
+.PHONY: all build clean clean-compiler clean-experiments compiler experiments help
+
+# Default target - clean first, then build everything
+
+all: clean build
+
+# Current default build behavior
+
+build: compiler experiments
 
 # Build the bootstrap compiler
 compiler: $(COMPILER_BINARY)

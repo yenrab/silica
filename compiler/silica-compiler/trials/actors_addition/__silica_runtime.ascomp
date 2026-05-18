@@ -371,10 +371,10 @@ LBB1_drain_ingress_done:
 	bl	_os_unfair_lock_unlock
 	b	LBB1_loop
 LBB1_free:
-; Phase E e3c+e4b: if this was an ingress message (w21==1), attempt automatic restart before freeing. X2 = reason_tag from payload+8 (e4b).
+; Phase E e3c+e4b: if this was an ingress message (w22==1), attempt automatic restart before freeing. X2 = reason_tag from payload+8 (e4b).
 ; Payload ptr must live in a callee-saved reg across maybe_restart — x8 is caller-saved and was clobbered, yielding free(non-heap) (e.g. 0x1).
 ; Phase B trial: message[+24]!=0 and +8 is inline int64 — do not treat +8 as heap or call maybe_restart (phase_b_ingress_before_cast).
-	cbz	w21, LBB1_free_skip_restart
+	cbz	w22, LBB1_free_skip_restart
 	ldr	w9, [x20, #24]
 	cbnz	w9, LBB1_free_skip_restart
 	ldr	x25, [x20, #8]
@@ -4010,7 +4010,7 @@ _silica_pid_registry_init:
 	ret
 	.globl	_silica_rt_wait_for_exit
 	.p2align	2
-_silica_rt_wait_for_exit:               ; Phase I - stdin line e-x-i-t OR root ACB alive clear (_silica_rt_wait_root_acb set from top-level spawn only)
+_silica_rt_wait_for_exit:               ; Phase I - stdin line e-x-i-t terminates process; EOF returns 0.
 	.cfi_startproc
 	stp	x29, x30, [sp, #-80]!
 	mov	x29, sp
@@ -4021,14 +4021,7 @@ _silica_rt_wait_for_exit:               ; Phase I - stdin line e-x-i-t OR root A
 	sub	sp, sp, #416
 	mov	x20, xzr
 Lwi_loop:
-Lwi_root_a:
-	adrp	x8, _silica_rt_wait_root_acb@PAGE
-Lwi_root_b:
-	add	x8, x8, _silica_rt_wait_root_acb@PAGEOFF
-	ldr	x22, [x8]
-	cbz	x22, Lwi_after_root
-	ldr	w9, [x22, #152]
-	cbz	w9, Lwi_ret_ok
+	mov	x22, xzr
 Lwi_after_root:
 	mov	x0, sp
 	mov	x1, xzr
@@ -4099,7 +4092,7 @@ Lwi_cmp_exit:
 	ldrb	w9, [x21, #3]
 	cmp	w9, #116
 	b.ne	Lwi_line_reset
-	b	Lwi_ret_ok
+	b	Lwi_process_exit
 Lwi_line_reset:
 	mov	x20, xzr
 	b	Lwi_loop
@@ -4128,6 +4121,10 @@ Lwi_select_sleep:
 	mov	w2, #100
 	bl	_poll
 	b	Lwi_loop
+Lwi_process_exit:
+	mov	w0, wzr
+	bl	_exit
+	b	Lwi_process_exit
 Lwi_ret_ok:
 	mov	x0, #0
 	add	sp, sp, #416
@@ -4135,7 +4132,6 @@ Lwi_ret_ok:
 	ldp	x19, x20, [x29, #16]
 	ldp	x29, x30, [sp], #80
 	ret
-	.loh AdrpAdd	Lwi_root_a, Lwi_root_b
 	.cfi_endproc
 	.section	__TEXT,__text,regular,pure_instructions
 	.globl	_silica_rt_actor_deliver_exit   ; Phase C — §15.4.10 unified delivery

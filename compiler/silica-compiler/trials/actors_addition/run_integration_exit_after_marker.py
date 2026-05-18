@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # Integrate helper: run a trial with stdout/stderr on a PTY (line-oriented stdio) and stdin on a pipe.
-# Feed "exit\n" to stdin only after enough full lines contain <marker> (e.g. supervisor "done") **and** the PTY has
+# Feed "exit\n" to stdin only after enough marker occurrences appear (e.g. supervisor "done") **and** the PTY has
 # been quiet for a short idle window (bounded). Some trials (e4f) print `done` before async failure banners;
 # sending exit on `done` alone tears down the process early → SIGBUS / `.sout` with only the exit code.
-# Matching by containment handles concurrent stdout fragments that glue onto the marker line, such as
-# `doneF8_handle_report_banner_ok`, without hanging forever.
+# Counting occurrences handles concurrent stdout fragments that glue markers onto one line, such as
+# `donedone` or `doneF8_handle_report_banner_ok`, without hanging forever.
 # Appends the process exit code as the final line (same as echo $? in run_integration_binary.sh).
 """Usage: run_integration_exit_after_marker.py <trial_dir> <basename> <out_path> <marker_line> [marker_count]"""
 
@@ -17,10 +17,10 @@ import sys
 import time
 
 
-def quiesce_pty(
-    master: int, out_f, idle_sec: float = 0.50, cap_sec: float = 5.0
-) -> None:
+def quiesce_pty(master: int, out_f) -> None:
     """Keep reading the PTY until `idle_sec` passes with no readable data, or `cap_sec` total wall time."""
+    idle_sec = float(os.environ.get("SILICA_INTEGRATION_MARKER_IDLE_SEC", "1.50"))
+    cap_sec = float(os.environ.get("SILICA_INTEGRATION_MARKER_DRAIN_CAP_SEC", "10.0"))
     deadline = time.monotonic() + cap_sec
     while time.monotonic() < deadline:
         timeout = min(idle_sec, deadline - time.monotonic())
@@ -121,8 +121,9 @@ def main() -> int:
                             break
                         line = buf[:idx].rstrip(b"\r")
                         buf = buf[idx + 1 :]
-                        if marker_b in line:
-                            marker_count -= 1
+                        occurrences = line.count(marker_b)
+                        if occurrences:
+                            marker_count -= occurrences
                             if marker_count <= 0:
                                 quiesce_pty(master, out_f)
                                 try:

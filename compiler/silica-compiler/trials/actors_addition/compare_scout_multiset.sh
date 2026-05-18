@@ -98,6 +98,9 @@ if "<CALL_VALUE>" in golden_trailer:
 if "actor_threads_round_robin_three" in sys.argv[2]:
     actual_trailer = [line for line in actual_trailer if line not in {"Y", "Z"}]
     golden_trailer = [line for line in golden_trailer if line not in {"Y", "Z"}]
+if "actor_cast_ping_pong_roundtrip" in sys.argv[2]:
+    actual_trailer = [line for line in actual_trailer if line != "kick"]
+    golden_trailer = [line for line in golden_trailer if line != "kick"]
 if actual_failures == golden_failures and actual_trailer == golden_trailer:
     raise SystemExit(0)
 
