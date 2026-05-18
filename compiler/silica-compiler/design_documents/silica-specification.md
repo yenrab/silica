@@ -7493,8 +7493,11 @@ fn main() -> atom {
 When a behavior function detects a shutdown signal and returns, the runtime:
 - Stops the actor’s message loop
 - Notifies its owning supervisor, if any (see §15.1.3)
-- Drops all remaining messages in the mailbox
+- Completes any outstanding synchronous `call()` wrappers with the actor-death result before teardown finishes
+- Drops all remaining non-call messages in the mailbox
 - Terminates the actor thread
+
+**Failure and outstanding calls:** If an actor terminates for any reason before replying to a synchronous `call()`--including runtime traps, explicit abnormal kill, supervisor cascade termination, or ordinary shutdown--the runtime must wake every affected caller before actor teardown completes. This includes the call currently being processed, if any, and any queued call messages that have not yet been processed. Each wrapper is completed exactly once with the actor-death result; queued cast/send messages are discarded without reply. A restarted actor does not inherit or replay the failed actor's pending calls.
 
 **Example:**
 ```silica

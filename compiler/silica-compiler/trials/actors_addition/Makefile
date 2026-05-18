@@ -65,7 +65,10 @@ executables: objects
 		fi; \
 	done
 
-# integrate: compile, diff .sams vs .ascomp (if present), run, diff .sout vs .scout (if present)
+# integrate: compile, diff .sams vs .ascomp (if present), run, diff .sout vs .scout (if present).
+# Trials with <base>.wait_for_exit print one or more "done" markers and then call wait_for_exit/0; they are
+# run through run_integration_exit_after_marker.py, which sends "exit\n" after seeing the marker count.
+# Unmarked trials use the ordinary direct executable runner.
 integrate: clean silica.config
 	@cd "$(THIS_DIR)" || exit 1; \
 	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
@@ -123,8 +126,32 @@ integrate: clean silica.config
 	[ "$$base" = "__silica_runtime" ] && continue; \
 		if [ -x "$$base" ]; then \
 			if [ -f "$$base.scout" ]; then \
-				{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
-				if ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
+				if [ -f "$$base.wait_for_exit" ]; then \
+					if [ -f "$(THIS_DIR)run_integration_exit_after_marker.py" ]; then \
+						marker=$$(awk 'NF { print $$1; found=1; exit } END { if (!found) print "done" }' "$$base.wait_for_exit"); \
+						marker_count=$$(awk 'NF { print ($$2 == "" ? 1 : $$2); found=1; exit } END { if (!found) print 1 }' "$$base.wait_for_exit"); \
+						python3 "$(THIS_DIR)run_integration_exit_after_marker.py" "$(THIS_DIR)" "$$base" "$$base.sout" "$$marker" "$$marker_count"; \
+					else \
+						echo "❌❌ $(MSG_PREFIX)$$base missing run_integration_exit_after_marker.py"; \
+						ko=$$((ko + 1)); failed=1; \
+						continue; \
+					fi; \
+				else \
+					{ ./$$base 2>&1; echo $$?; } > "$$base.sout"; \
+				fi; \
+				if [ -f "$$base.scout.multiset" ]; then \
+					if [ -f "$(THIS_DIR)compare_scout_multiset.sh" ] && ! "$(SHELL)" "$(THIS_DIR)compare_scout_multiset.sh" "$$base.sout" "$$base.scout"; then \
+						echo "❌❌ $(MSG_PREFIX)$$base .sout multiset-compare differs from .scout"; \
+						ko=$$((ko + 1)); failed=1; \
+					elif [ ! -f "$(THIS_DIR)compare_scout_multiset.sh" ] && ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
+						echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout (missing compare_scout_multiset.sh; used diff -Bw)"; \
+						diff -Bw "$$base.sout" "$$base.scout" || true; \
+						ko=$$((ko + 1)); failed=1; \
+					else \
+						echo "✅✅ $(MSG_PREFIX)$$base output multiset-matches .scout"; \
+						ok=$$((ok + 1)); \
+					fi; \
+				elif ! diff -Bw -q "$$base.sout" "$$base.scout" > /dev/null 2>&1; then \
 					echo "❌❌ $(MSG_PREFIX)$$base .sout differs from .scout"; \
 					diff -Bw "$$base.sout" "$$base.scout" || true; \
 					ko=$$((ko + 1)); failed=1; \

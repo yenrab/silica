@@ -25,7 +25,7 @@ _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 	mov	x21, x0
 	mov	w22, #1                         ; =0x1
 	mov	w0, #1                          ; =0x1
-	mov	w1, #344
+	mov	w1, #352
 	bl	_calloc
 	mov	x19, x0
 	cbz	x0, LBB0_4
@@ -49,6 +49,8 @@ _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 	str	xzr, [x19, #312]
 	str	xzr, [x19, #320]
 	str	xzr, [x19, #328]
+	str	xzr, [x19, #336]
+	str	xzr, [x19, #344]
 ; Phase E e4f: ACB+16 is now an os_unfair_lock (4 B) and ACB+80 is a 4 B futex seq word.
 ; Both are zero from calloc above (OS_UNFAIR_LOCK_INIT == 0); no init call needed.
 	str	w22, [x19, #152]
@@ -123,7 +125,7 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 	mov	x20, x1
 	mov	x21, x0
 	mov	w0, #1
-	mov	w1, #344
+	mov	w1, #352
 	bl	_calloc
 	mov	x19, x0
 	cbz	x0, LBBsl_4
@@ -149,6 +151,8 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 	str	xzr, [x19, #312]
 	str	xzr, [x19, #320]
 	str	xzr, [x19, #328]
+	str	xzr, [x19, #336]
+	str	xzr, [x19, #344]
 	cbz	x0, Lslp_skip_list
 	sub	sp, sp, #16
 	str	x0, [sp, #8]
@@ -249,6 +253,8 @@ LBB1_wait:
 	mov	w21, #1
 	b	LBB1_process
 LBB1_try_std:
+	ldr	w9, [x19, #152]
+	cbz	w9, LBB1_exit
 	add	x0, x19, #128
 	bl	_silica_rt_q_dequeue_locked
 	mov	x20, x0
@@ -270,6 +276,12 @@ LBB1_process:
 	str	x20, [sp, #24]
 	ldr	w8, [x20, #16]
 	str	w8, [sp, #32]
+	cbz	w8, LBB1_no_active_call
+	str	x20, [x19, #344]
+	b	LBB1_active_call_set
+LBB1_no_active_call:
+	str	xzr, [x19, #344]
+LBB1_active_call_set:
 	mov	w22, w21
 	cbnz	w22, LBB1_ingress_check_kind
 	ldr	x0, [x20, #8]
@@ -303,6 +315,7 @@ LBB1_post_beh:
 	ldr	x20, [sp, #24]
 	ldr	w8, [sp, #32]
 	add	sp, sp, #48
+	str	xzr, [x19, #344]
 	cbnz	w22, LBB1_skip_actor_state
 	str	x9, [x19]
 LBB1_skip_actor_state:
@@ -379,6 +392,8 @@ LBB1_free_skip_restart:
 LBB1_exit:
 	add	x0, x19, #16
 	bl	_os_unfair_lock_unlock
+	mov	x0, x19
+	bl	_silica_rt_actor_signal_pending_call_deaths
 	ldr	x8, [x19, #272]
 	cbnz	x8, LBB1_exit_report_already_done
 	mov	x0, x19
@@ -566,6 +581,72 @@ LBB3_7:
 	ret
 	.cfi_endproc
                                         ; -- End function
+	.globl	_silica_rt_actor_signal_call_death
+	.p2align	2
+_silica_rt_actor_signal_call_death:
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	mov	x19, x0
+	cbz	x19, LBBsig_done
+	add	x0, x19, #72
+	bl	_os_unfair_lock_lock
+	ldr	w8, [x19, #136]
+	cbnz	w8, LBBsig_unlock
+	str	xzr, [x19, #144]
+	mov	w8, #1
+	str	w8, [x19, #136]
+	add	x0, x19, #24
+	bl	_silica_rt_cv_signal
+LBBsig_unlock:
+	add	x0, x19, #72
+	bl	_os_unfair_lock_unlock
+LBBsig_done:
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.globl	_silica_rt_actor_signal_pending_call_deaths
+	.p2align	2
+_silica_rt_actor_signal_pending_call_deaths:
+	stp	x24, x23, [sp, #-64]!
+	stp	x22, x21, [sp, #16]
+	stp	x20, x19, [sp, #32]
+	stp	x29, x30, [sp, #48]
+	add	x29, sp, #48
+	mov	x19, x0
+	cbz	x19, LBBsigpend_done
+	ldr	x20, [x19, #344]
+	str	xzr, [x19, #344]
+	cbz	x20, LBBsigpend_lock_mailbox
+	mov	x0, x20
+	bl	_silica_rt_actor_signal_call_death
+LBBsigpend_lock_mailbox:
+	add	x0, x19, #16
+	bl	_os_unfair_lock_lock
+LBBsigpend_loop:
+	add	x0, x19, #128
+	bl	_silica_rt_q_dequeue_locked
+	mov	x20, x0
+	cbz	x20, LBBsigpend_unlock
+	ldr	w8, [x20, #16]
+	cbz	w8, LBBsigpend_free_message
+	mov	x0, x20
+	bl	_silica_rt_actor_signal_call_death
+	b	LBBsigpend_loop
+LBBsigpend_free_message:
+	mov	x0, x20
+	bl	_free
+	b	LBBsigpend_loop
+LBBsigpend_unlock:
+	add	x0, x19, #16
+	bl	_os_unfair_lock_unlock
+LBBsigpend_done:
+	ldp	x29, x30, [sp, #48]
+	ldp	x20, x19, [sp, #32]
+	ldp	x22, x21, [sp, #16]
+	ldp	x24, x23, [sp], #64
+	ret
+                                        ; -- End function
 	.globl	_silica_rt_actor_call           ; -- Begin function silica_rt_actor_call
 	.p2align	2
 _silica_rt_actor_call:                  ; @silica_rt_actor_call
@@ -601,6 +682,8 @@ _silica_rt_actor_call:                  ; @silica_rt_actor_call
 ; Both are pre-zeroed by calloc; no init call required.
 	add	x0, x20, #16
 	bl	_os_unfair_lock_lock
+	ldr	w8, [x20, #152]
+	cbz	w8, LBB4_dead_locked
 	add	x0, x20, #128
 	mov	x1, x19
 	bl	_silica_rt_q_enqueue_locked
@@ -608,6 +691,15 @@ _silica_rt_actor_call:                  ; @silica_rt_actor_call
 	bl	_silica_rt_cv_signal
 	add	x0, x20, #16
 	bl	_os_unfair_lock_unlock
+	b	LBB4_wait_start
+LBB4_dead_locked:
+	add	x0, x20, #16
+	bl	_os_unfair_lock_unlock
+	mov	x0, x19
+	bl	_free
+	mov	x0, #0
+	b	LBB4_9
+LBB4_wait_start:
 	add	x0, x19, #72
 	bl	_os_unfair_lock_lock
 	ldr	w8, [x19, #136]
