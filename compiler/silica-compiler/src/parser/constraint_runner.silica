@@ -162,6 +162,72 @@ fn has_proc_after_return_type(slots: ListTokenSlot) -> (bool, SourceLocation) {
     }
 }
 
+fn skip_function_parameter_list(slots: ListTokenSlot, depth: int64) -> ListTokenSlot {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> slots;
+        false -> case slots.head.token.kind == kinds.left_paren of {
+            true -> skip_function_parameter_list(slots.tail, depth + 1);
+            false -> case slots.head.token.kind == kinds.right_paren of {
+                true -> case depth <= 1 of {
+                    true -> slots.tail;
+                    false -> skip_function_parameter_list(slots.tail, depth - 1)
+                };
+                false -> skip_function_parameter_list(slots.tail, depth)
+            }
+        }
+    }
+}
+
+fn scan_function_after_params_for_return_arrow(slots: ListTokenSlot) -> (bool, SourceLocation) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> case slots.head.token.kind == kinds.right_arrow of {
+            true -> (false, parser_ast@zero_location());
+            false -> case slots.head.token.kind == kinds.left_brace of {
+                true -> (true, slots.head.token.location);
+                false -> case slots.head.token.kind == kinds.semicolon of {
+                    true -> (true, slots.head.token.location);
+                    false -> scan_function_after_params_for_return_arrow(slots.tail)
+                }
+            }
+        }
+    }
+}
+
+fn has_missing_function_return_type(slots: ListTokenSlot) -> (bool, SourceLocation, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case slots.head.token.kind == kinds.fn_keyword of {
+            true -> case slots.tail.is_nil of {
+                true -> (false, parser_ast@zero_location(), "");
+                false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, slots.tail.head.token.kind) of {
+                    false -> has_missing_function_return_type(slots.tail);
+                    true -> do
+                        fn_name: string <- slots.tail.head.token.lexeme;
+                        after_name: ListTokenSlot <- slots.tail.tail;
+                        scan_from: ListTokenSlot <- case after_name.is_nil of {
+                            true -> after_name;
+                            false -> case after_name.head.token.kind == kinds.left_paren of {
+                                true -> skip_function_parameter_list(after_name, 0);
+                                false -> after_name
+                            }
+                        };
+                        (missing: bool, loc: SourceLocation) <- scan_function_after_params_for_return_arrow(scan_from);
+                        case missing of {
+                            true -> (true, loc, fn_name);
+                            false -> has_missing_function_return_type(slots.tail)
+                        }
+                    end
+                }
+            };
+            false -> has_missing_function_return_type(slots.tail)
+        }
+    }
+}
+
 fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
     reversed: ListToken <- reverse_tokens(lexer_runner@empty_token_list(), tokens);
     slots: ListTokenSlot <- tokens_to_slots(reversed);
@@ -171,31 +237,37 @@ fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
     case has_proc_error of {
         true -> parser_core@parse_err("E3009", err_loc, "proc[...] is only allowed on sequence clauses directly after the sequence keyword, not on function return types", "sect9.3.1");
         false -> do
-            program: Program <- constraint_extract@slots_to_program(propagated);
-            lifted: Program <- constraint_extract@lift_lambda_expressions(program);
-            wrapped_prog: Program <- constraint_extract@wrap_lifted_lambda_hof_calls(lifted);
-            result0: ParseResult <- constraint_extract@validate_required_statement_terminators(wrapped_prog);
-            case result0.is_ok of {
-                true -> do
-                    result0b: ParseResult <- constraint_extract@validate_no_illegal_trailing_semicolon(result0.program);
-                    case result0b.is_ok of {
+            (has_missing_ret: bool, missing_ret_loc: SourceLocation, missing_ret_fn: string) <- has_missing_function_return_type(propagated);
+            case has_missing_ret of {
+                true -> parser_core@parse_err("E1042", missing_ret_loc, concat(concat("function '", missing_ret_fn), "' is missing a return type; write '-> <type>' before the function body"), "sect3.4");
+                false -> do
+                    program: Program <- constraint_extract@slots_to_program(propagated);
+                    lifted: Program <- constraint_extract@lift_lambda_expressions(program);
+                    wrapped_prog: Program <- constraint_extract@wrap_lifted_lambda_hof_calls(lifted);
+                    result0: ParseResult <- constraint_extract@validate_required_statement_terminators(wrapped_prog);
+                    case result0.is_ok of {
                         true -> do
-                            result1: ParseResult <- constraint_extract@validate_no_single_element_tuples(result0b.program);
-                            case result1.is_ok of {
+                            result0b: ParseResult <- constraint_extract@validate_no_illegal_trailing_semicolon(result0.program);
+                            case result0b.is_ok of {
                                 true -> do
-                                    result2: ParseResult <- constraint_extract@validate_max_params(result1.program);
-                                    case result2.is_ok of {
-                                        true -> constraint_extract@validate_max_tuple_decompose_bindings(result2.program);
-                                        false -> result2
+                                    result1: ParseResult <- constraint_extract@validate_no_single_element_tuples(result0b.program);
+                                    case result1.is_ok of {
+                                        true -> do
+                                            result2: ParseResult <- constraint_extract@validate_max_params(result1.program);
+                                            case result2.is_ok of {
+                                                true -> constraint_extract@validate_max_tuple_decompose_bindings(result2.program);
+                                                false -> result2
+                                            }
+                                        end;
+                                        false -> result1
                                     }
                                 end;
-                                false -> result1
+                                false -> result0b
                             }
                         end;
-                        false -> result0b
+                        false -> result0
                     }
-                end;
-                false -> result0
+                end
             }
         end
     }
