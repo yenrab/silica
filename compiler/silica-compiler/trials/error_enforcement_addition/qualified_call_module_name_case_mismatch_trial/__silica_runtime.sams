@@ -371,10 +371,10 @@ LBB1_drain_ingress_done:
 	bl	_os_unfair_lock_unlock
 	b	LBB1_loop
 LBB1_free:
-; Phase E e3c+e4b: if this was an ingress message (w21==1), attempt automatic restart before freeing. X2 = reason_tag from payload+8 (e4b).
+; Phase E e3c+e4b: if this was an ingress message (w22==1), attempt automatic restart before freeing. X2 = reason_tag from payload+8 (e4b).
 ; Payload ptr must live in a callee-saved reg across maybe_restart — x8 is caller-saved and was clobbered, yielding free(non-heap) (e.g. 0x1).
 ; Phase B trial: message[+24]!=0 and +8 is inline int64 — do not treat +8 as heap or call maybe_restart (phase_b_ingress_before_cast).
-	cbz	w21, LBB1_free_skip_restart
+	cbz	w22, LBB1_free_skip_restart
 	ldr	w9, [x20, #24]
 	cbnz	w9, LBB1_free_skip_restart
 	ldr	x25, [x20, #8]
@@ -4010,7 +4010,7 @@ _silica_pid_registry_init:
 	ret
 	.globl	_silica_rt_wait_for_exit
 	.p2align	2
-_silica_rt_wait_for_exit:               ; Phase I - stdin line e-x-i-t OR root ACB alive clear (_silica_rt_wait_root_acb set from top-level spawn only)
+_silica_rt_wait_for_exit:               ; Phase I - stdin line e-x-i-t terminates process; EOF returns 0.
 	.cfi_startproc
 	stp	x29, x30, [sp, #-80]!
 	mov	x29, sp
@@ -4021,14 +4021,7 @@ _silica_rt_wait_for_exit:               ; Phase I - stdin line e-x-i-t OR root A
 	sub	sp, sp, #416
 	mov	x20, xzr
 Lwi_loop:
-Lwi_root_a:
-	adrp	x8, _silica_rt_wait_root_acb@PAGE
-Lwi_root_b:
-	add	x8, x8, _silica_rt_wait_root_acb@PAGEOFF
-	ldr	x22, [x8]
-	cbz	x22, Lwi_after_root
-	ldr	w9, [x22, #152]
-	cbz	w9, Lwi_ret_ok
+	mov	x22, xzr
 Lwi_after_root:
 	mov	x0, sp
 	mov	x1, xzr
@@ -4099,7 +4092,7 @@ Lwi_cmp_exit:
 	ldrb	w9, [x21, #3]
 	cmp	w9, #116
 	b.ne	Lwi_line_reset
-	b	Lwi_ret_ok
+	b	Lwi_process_exit
 Lwi_line_reset:
 	mov	x20, xzr
 	b	Lwi_loop
@@ -4128,6 +4121,10 @@ Lwi_select_sleep:
 	mov	w2, #100
 	bl	_poll
 	b	Lwi_loop
+Lwi_process_exit:
+	mov	w0, wzr
+	bl	_exit
+	b	Lwi_process_exit
 Lwi_ret_ok:
 	mov	x0, #0
 	add	sp, sp, #416
@@ -4135,7 +4132,6 @@ Lwi_ret_ok:
 	ldp	x19, x20, [x29, #16]
 	ldp	x29, x30, [sp], #80
 	ret
-	.loh AdrpAdd	Lwi_root_a, Lwi_root_b
 	.cfi_endproc
 	.section	__TEXT,__text,regular,pure_instructions
 	.globl	_silica_rt_actor_deliver_exit   ; Phase C — §15.4.10 unified delivery
@@ -4648,4 +4644,71 @@ Ldup_ep_ret:
 	.loh AdrpAdd	Ldup_oom_a, Ldup_oom_b
 	.cfi_endproc
                                         ; -- End function
+
+	.globl	_silica_rt_badarith
+	.p2align	2
+_silica_rt_badarith:
+	.cfi_startproc
+	stp	x21, x20, [sp, #-48]!
+	stp	x29, x30, [sp, #16]
+	str	x19, [sp, #32]
+	add	x29, sp, #16
+	bl	_silica_rt_tls_current_actor_get
+	mov	x19, x0
+	cbz	x19, Lbadarith_process
+	add	x0, x19, #16
+	bl	_os_unfair_lock_lock
+	mov	x8, #1
+	str	x8, [x19, #336]
+	str	wzr, [x19, #152]
+	add	x0, x19, #80
+	bl	_silica_rt_cv_signal
+	add	x0, x19, #16
+	bl	_os_unfair_lock_unlock
+	mov	x0, x19
+	bl	_silica_rt_actor_signal_pending_call_deaths
+	ldr	x8, [x19, #272]
+	cbnz	x8, Lbadarith_report_already_done
+	mov	x0, x19
+	bl	_silica_rt_actor_deliver_exit
+	mov	x20, x0
+	mov	x0, x19
+	bl	_silica_rt_actor_deliver_unwind_report
+	b	Lbadarith_after_report
+Lbadarith_report_already_done:
+	mov	x20, #0
+Lbadarith_after_report:
+	ldr	x20, [x19, #208]
+	ldr	x21, [x19, #192]
+	cbz	x21, Lbadarith_thread_exit
+	mov	x0, x19
+	bl	_silica_rt_child_table_free
+	mov	x0, x19
+	bl	_silica_rt_actor_dealloc_region
+	mov	x0, x19
+	bl	_free
+	cbz	x20, Lbadarith_thread_exit
+	mov	x9, #1
+	str	x9, [x20, #56]
+Lbadarith_thread_exit:
+	mov	x0, #0
+	bl	_pthread_exit
+	b	Lbadarith_thread_exit
+Lbadarith_process:
+	mov	w0, #2
+Lbadarith_msg_a:
+	adrp	x1, L_silica_badarith_msg@PAGE
+Lbadarith_msg_b:
+	add	x1, x1, L_silica_badarith_msg@PAGEOFF
+	mov	w2, #9
+	bl	_write
+	mov	w0, #1
+	bl	_exit
+	b	Lbadarith_process
+	.loh AdrpAdd	Lbadarith_msg_a, Lbadarith_msg_b
+	.cfi_endproc
+	.section	__TEXT,__cstring,cstring_literals
+L_silica_badarith_msg:
+	.asciz	"badarith\n"
+	.section	__TEXT,__text,regular,pure_instructions
 
