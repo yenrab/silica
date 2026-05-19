@@ -39,6 +39,7 @@ use print_int16_inline;
 use print_int8_inline;
 use print_float64_inline;
 use print_float32_inline;
+use print_float16_inline;
 use print_string_inline;
 use int_rodata;
 use int64_literal_pool;
@@ -1886,7 +1887,16 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                         inline_asm: string <- print_float32_inline@emit_print_float32_var(term, dest, table);
                                         concat(concat(arg_asm, "\n"), inline_asm)
                                     end;
-                                    false -> case term.name == "main.print_int64" of {
+                                    false -> case term.name == "main.print_float16" of {
+                                        true -> do
+                                            arg_asm: string <- case debug of {
+                                                true -> do term_to_asm_opt_bound_debug(term.inner, "H0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                                false -> term_to_asm_opt_bound(term.inner, "H0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                                            };
+                                            inline_asm: string <- print_float16_inline@emit_print_float16_var(term, dest, table);
+                                            concat(concat(arg_asm, "\n"), inline_asm)
+                                        end;
+                                        false -> case term.name == "main.print_int64" of {
                                 true -> case print_int64_inline@is_print_int64_const_arg(term, table) of {
                                     true -> print_int64_inline@emit_print_int64_inline(term, dest, table, int64_table);
                                     false -> do
@@ -2081,12 +2091,13 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                             }
                             }
                             }
-                        }
-                    }
-                }
+	                        }
+	                    }
+	                }
+	            }
             }
-        };
-        5 -> emit_generic_user_call_asm_inner(term, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug, true, "[]", "", "");
+	        };
+	        5 -> emit_generic_user_call_asm_inner(term, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug, true, "[]", "", "");
         6 -> case term.name == "tuple_make" of {
             true -> do
                 count: int64 <- prims_tuple@count_flat_elements(term);
@@ -2534,7 +2545,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 end;
                 false -> do
             // Comparisons (lt, gt, le, ge, eq, nq) have result type "bool" but operands determine reg size
-            is_cmp: bool <- term.type_name == "bool" and (term.name == "lt" or term.name == "gt" or term.name == "le" or term.name == "ge" or term.name == "eq" or term.name == "nq");
+            is_cmp: bool <- term.type_name == "bool" and (term.name == "lt" or term.name == "gt" or term.name == "le" or term.name == "ge" or term.name == "eq" or term.name == "nq" or term.name == "is_nan" or term.name == "is_inf" or term.name == "is_finite");
             prim_type: string <- case is_cmp of { true -> term.inner.type_name; false -> term.type_name };
             is_float64: bool <- prim_type == "float64";
             is_float32: bool <- prim_type == "float32";
@@ -2556,7 +2567,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             };
             left_reg: string <- case is_string_prim of { true -> "X0"; false -> case is_float64 or is_float32 or is_float16 of { true -> concat(reg_prefix, "1"); false -> concat(reg_prefix, "9") } };
             right_reg: string <- case is_string_prim of { true -> "X1"; false -> case is_float64 or is_float32 or is_float16 of { true -> concat(reg_prefix, "2"); false -> concat(reg_prefix, "10") } };
-            case term.name == "neg" of {
+            is_unary_prim: bool <- term.name == "neg" or term.name == "is_nan" or term.name == "is_inf" or term.name == "is_finite";
+            case is_unary_prim of {
                 true -> do
                     // Unary negate_* / prim neg: operand in left_reg only (right_expr is dummy)
                     // Float neg must write back to left_reg (S1/D1/H1) so a following FCMP still sees the result in r1.

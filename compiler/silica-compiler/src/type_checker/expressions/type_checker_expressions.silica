@@ -1760,8 +1760,72 @@ fn check_actor_concurrency_call(expr: Expr, expected_type: string, context: Type
     }
 }
 
+fn is_float_special_const_name(name: string) -> bool {
+    name == "float16_nan" or name == "float16_inf" or name == "float16_neg_inf" or name == "float32_nan" or name == "float32_inf" or name == "float32_neg_inf" or name == "float64_nan" or name == "float64_inf" or name == "float64_neg_inf"
+}
+
+fn float_special_const_type(name: string) -> string {
+    case substring(name, 0, 7) == "float16" of {
+        true -> "float16";
+        false -> case substring(name, 0, 7) == "float32" of {
+            true -> "float32";
+            false -> "float64"
+        }
+    }
+}
+
+fn is_float_predicate_name(name: string) -> bool {
+    name == "float16_is_nan" or name == "float16_is_inf" or name == "float16_is_finite" or name == "float32_is_nan" or name == "float32_is_inf" or name == "float32_is_finite" or name == "float64_is_nan" or name == "float64_is_inf" or name == "float64_is_finite"
+}
+
+fn float_predicate_arg_type(name: string) -> string {
+    case substring(name, 0, 7) == "float16" of {
+        true -> "float16";
+        false -> case substring(name, 0, 7) == "float32" of {
+            true -> "float32";
+            false -> "float64"
+        }
+    }
+}
+
+fn check_float_special_const_call(expr: Expr, expected_type: string) -> TypeCheckResult {
+    ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    ret: string <- float_special_const_type(expr.name);
+    case ac == 0 of {
+        false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " expects 0 arguments"), "sect6");
+        true -> case expected_type == ret or expected_type == "discard" of {
+            true -> type_checker_core@type_check_ok();
+            false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(expr.name, " returns "), ret), concat(", expected ", expected_type)), "sect6")
+        }
+    }
+}
+
+fn check_float_predicate_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    do
+    ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    case ac == 1 of {
+        false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " expects 1 argument"), "sect6");
+        true -> do
+            arg_t: string <- float_predicate_arg_type(expr.name);
+            r: TypeCheckResult <- check_expr(expr.inner, arg_t, context, world);
+            case r.is_ok of {
+                false -> r;
+                true -> case expected_type == "bool" or expected_type == "boolean" or expected_type == "discard" of {
+                    true -> type_checker_core@type_check_ok();
+                    false -> type_checker_core@type_check_err("E2003", expr.location, concat(expr.name, concat(" returns bool, expected ", expected_type)), "sect6")
+                }
+            }
+        end
+    }
+    end
+}
+
 fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    case type_checker_memory_regions@is_region_builtin_call(expr.name) of {
+    case is_float_special_const_name(expr.name) of {
+        true -> check_float_special_const_call(expr, expected_type);
+        false -> case is_float_predicate_name(expr.name) of {
+            true -> check_float_predicate_call(expr, expected_type, context, world);
+            false -> case type_checker_memory_regions@is_region_builtin_call(expr.name) of {
         true -> check_region_builtin_call(expr, expected_type, context, world);
         false -> case is_actor_concurrency_builtin(expr.name) of {
             true -> check_actor_concurrency_call(expr, expected_type, context, world);
@@ -1853,9 +1917,14 @@ fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: Type
                                                                     arg_result: TypeCheckResult <- check_expr(expr.inner, "float32", context, world);
                                                                     type_checker_expressions_float32_calls@check_print_float32_call(expr, expected_type, arg_result)
                                                                 end;
-                                                                false -> case expr.name == "print_string" of {
-                                                                    true -> check_print_call(expr, "string", expected_type, context, world);
-                                                                    false -> case expr.name == "println" of {
+                                                                false -> case expr.name == "print_float16" of {
+                                                                    true -> do
+                                                                        arg_result: TypeCheckResult <- check_expr(expr.inner, "float16", context, world);
+                                                                        type_checker_expressions_float32_calls@check_print_float32_call(expr, expected_type, arg_result)
+                                                                    end;
+                                                                    false -> case expr.name == "print_string" of {
+                                                                        true -> check_print_call(expr, "string", expected_type, context, world);
+                                                                        false -> case expr.name == "println" of {
                                                                         true -> check_print_call(expr, "string", expected_type, context, world);
                                                                         false -> case expr.name == "print_string_stderr" of {
                                                                             true -> check_print_call(expr, "string", expected_type, context, world);
@@ -1918,6 +1987,7 @@ fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: Type
                                                                         }
                                                                     }
                                                                 }
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -1938,6 +2008,8 @@ fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: Type
     }
     }
     }
+    }
+        }
     }
 }
 

@@ -30,8 +30,16 @@ fn dest_to_h_reg(dest: string) -> string {
     }
 }
 
+fn pred_bool_dest(dest: string) -> string {
+    case len(dest) > 0 and (substring(dest, 0, 1) == "S" or substring(dest, 0, 1) == "D" or substring(dest, 0, 1) == "H" or substring(dest, 0, 1) == "X") of {
+        true -> concat("W", substring(dest, 1, len(dest)));
+        false -> dest
+    }
+}
+
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     dest_reg: string <- dest_to_h_reg(dest);
+    bdest: string <- pred_bool_dest(dest);
     case term.name of {
         "neg" -> arithmetic@emit_fneg_h_op(dest_reg);
         "add" -> arithmetic@emit_fadd_h_op(dest_reg);
@@ -44,6 +52,9 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
         "ge" -> comparison@emit_fcmp_ge_op(dest_reg, "H");
         "eq" -> comparison@emit_fcmp_eq_op(dest_reg, "H");
         "nq" -> comparison@emit_fcmp_ne_op(dest_reg, "H");
+        "is_nan" -> concat("    FCMP H1, H1\n    CSET ", concat(bdest, ", VS"));
+        "is_inf" -> concat("    FABS H16, H1\n    MOV W8, #0x7C00\n    FMOV H17, W8\n    FCMP H16, H17\n    CSET ", concat(bdest, ", EQ"));
+        "is_finite" -> concat("    FABS H16, H1\n    MOV W8, #0x7C00\n    FMOV H17, W8\n    FCMP H16, H17\n    CSET ", concat(bdest, ", MI"));
         _: string -> concat("    ; unsupported float16 prim: ", term.name)
     }
 }

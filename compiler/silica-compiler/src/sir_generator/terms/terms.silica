@@ -78,6 +78,62 @@ fn sir_atom_const(value: string) -> SIRTerm {
     SIRTerm { kind: 0, type_name: "atom", value: value, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
 }
 
+fn is_float_special_const_name(name: string) -> bool {
+    name == "float16_nan" or name == "float16_inf" or name == "float16_neg_inf" or name == "float32_nan" or name == "float32_inf" or name == "float32_neg_inf" or name == "float64_nan" or name == "float64_inf" or name == "float64_neg_inf"
+}
+
+fn float_special_const_type(name: string) -> string {
+    case substring(name, 0, 7) == "float16" of {
+        true -> "float16";
+        false -> case substring(name, 0, 7) == "float32" of {
+            true -> "float32";
+            false -> "float64"
+        }
+    }
+}
+
+fn float_special_const_value(name: string) -> string {
+    case name == "float16_nan" or name == "float32_nan" or name == "float64_nan" of {
+        true -> "nan";
+        false -> case name == "float16_neg_inf" or name == "float32_neg_inf" or name == "float64_neg_inf" of {
+            true -> "-inf";
+            false -> "inf"
+        }
+    }
+}
+
+fn build_float_special_const(name: string) -> SIRTerm {
+    SIRTerm { kind: 0, type_name: float_special_const_type(name), value: float_special_const_value(name), name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
+}
+
+fn is_float_predicate_name(name: string) -> bool {
+    name == "float16_is_nan" or name == "float16_is_inf" or name == "float16_is_finite" or name == "float32_is_nan" or name == "float32_is_inf" or name == "float32_is_finite" or name == "float64_is_nan" or name == "float64_is_inf" or name == "float64_is_finite"
+}
+
+fn float_predicate_arg_type(name: string) -> string {
+    case substring(name, 0, 7) == "float16" of {
+        true -> "float16";
+        false -> case substring(name, 0, 7) == "float32" of {
+            true -> "float32";
+            false -> "float64"
+        }
+    }
+}
+
+fn float_predicate_prim_name(name: string) -> string {
+    case name == "float16_is_nan" or name == "float32_is_nan" or name == "float64_is_nan" of {
+        true -> "is_nan";
+        false -> case name == "float16_is_inf" or name == "float32_is_inf" or name == "float64_is_inf" of {
+            true -> "is_inf";
+            false -> "is_finite"
+        }
+    }
+}
+
+fn build_float_predicate_from_sir(name: string, arg: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "bool", value: "", name: float_predicate_prim_name(name), inner: arg, right_expr: sir_ast@dummy_sir_term() }
+}
+
 fn sir_int64_const(value: string) -> SIRTerm {
     SIRTerm { kind: 0, type_name: "int64", value: value, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
 }
@@ -1234,7 +1290,14 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
         end;
         4 -> do
             call_base: string <- type_checker_core@user_call_base_function_name(expr.name);
-            case call_base == "spawn_registered_supervisor" of {
+            case is_float_special_const_name(call_base) of {
+                true -> build_float_special_const(call_base);
+                false -> case is_float_predicate_name(call_base) of {
+                    true -> do
+                        arg_fp: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, float_predicate_arg_type(call_base));
+                        build_float_predicate_from_sir(call_base, arg_fp)
+                    end;
+                    false -> case call_base == "spawn_registered_supervisor" of {
                 true -> lower_spawn_registered_supervisor_expr(context, expr, true, bound_name, bound_type);
                 false -> case call_base == "call_supervisor" of {
                     true -> lower_call_supervisor_expr(context, expr, true, bound_name, bound_type);
@@ -1292,6 +1355,8 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                     }
                 }
             }
+                }
+            }
         end;
         19 -> if_expr_to_sir(context, expr, expected_type, bound_name, bound_type, true);
         _: int64 -> sir_ast@dummy_sir_term();
@@ -1321,7 +1386,7 @@ fn build_single_arg_call(context: TypeContext, expr: Expr, arg: SIRTerm) -> SIRT
                                         true -> int8_calls@build_print_int8_from_sir(expr.name, arg);
                                         false -> case expr.name == "print_uint8" of {
                                             true -> int8_calls@build_print_int8_from_sir(expr.name, arg);
-                                            false -> case expr.name == "print_float32" of {
+                                            false -> case expr.name == "print_float32" or expr.name == "print_float16" of {
                                                 true -> float32_calls@build_print_float32_from_sir(expr.name, arg);
                                                 false -> case expr.name == "print_string" of {
                                                     true -> string_calls@build_print_string_from_sir(expr.name, arg);
@@ -1721,7 +1786,7 @@ fn expr_to_sir_function_body(context: TypeContext, expr: Expr, expected_type: st
 }
 
 fn is_single_arg_builtin(call_name: string) -> bool {
-    call_name == "atom_bits" or call_name == "actor_ref_bits" or call_name == "actor_ref_of_word" or call_name == "print_atom" or call_name == "print_int32" or call_name == "print_uint32" or call_name == "print_int16" or call_name == "print_uint16" or call_name == "print_int8" or call_name == "print_uint8" or call_name == "print_float32" or call_name == "print_string" or call_name == "println" or call_name == "print_string_stderr" or call_name == "println_stderr" or call_name == "length_bytes" or call_name == "length_chars" or call_name == "print_int64" or call_name == "print_uint64" or call_name == "print_bool" or call_name == "print_float64"
+    call_name == "atom_bits" or call_name == "actor_ref_bits" or call_name == "actor_ref_of_word" or call_name == "print_atom" or call_name == "print_int32" or call_name == "print_uint32" or call_name == "print_int16" or call_name == "print_uint16" or call_name == "print_int8" or call_name == "print_uint8" or call_name == "print_float16" or call_name == "print_float32" or call_name == "print_string" or call_name == "println" or call_name == "print_string_stderr" or call_name == "println_stderr" or call_name == "length_bytes" or call_name == "length_chars" or call_name == "print_int64" or call_name == "print_uint64" or call_name == "print_bool" or call_name == "print_float64"
 }
 
 fn arg_expected_type(call_name: string, expected_type: string) -> string {
@@ -1746,6 +1811,7 @@ fn arg_expected_type(call_name: string, expected_type: string) -> string {
         "print_uint8" -> "uint8";
         "print_uint64" -> "uint64";
         "print_float64" -> "float64";
+        "print_float16" -> "float16";
         "print_float32" -> "float32";
         _: string -> expected_type
     }
@@ -1961,7 +2027,14 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
         end;
         4 -> do
             call_base: string <- type_checker_core@user_call_base_function_name(expr.name);
-            case call_base == "spawn_registered_supervisor" of {
+            case is_float_special_const_name(call_base) of {
+                true -> build_float_special_const(call_base);
+                false -> case is_float_predicate_name(call_base) of {
+                    true -> do
+                        arg_fp: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, float_predicate_arg_type(call_base));
+                        build_float_predicate_from_sir(call_base, arg_fp)
+                    end;
+                    false -> case call_base == "spawn_registered_supervisor" of {
                 true -> lower_spawn_registered_supervisor_expr(context, expr, false, "", "");
                 false -> case call_base == "call_supervisor" of {
                     true -> lower_call_supervisor_expr(context, expr, false, "", "");
@@ -2018,6 +2091,8 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
                 }
                 }
                     }
+                }
+            }
                 }
             }
         end;
