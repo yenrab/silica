@@ -1,0 +1,174 @@
+// Phase E runtime failure trial:
+// integer division by zero terminates the worker, notifies the supervisor,
+// and restarts a transient child because the exit reason is abnormal.
+
+use Supervisor;
+
+impl PhaseEIntegerDivisionByZeroSup for Supervisor;
+
+fn div_worker(msg: int64, state: int64) -> (:reply, int64, int64) {
+    (:reply, state / msg, state + 1)
+}
+
+fn init(initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 3, restarts_time_frame: 10 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: int64, state: int64) -> (:reply, int64, int64),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :phase_e_div_zero_worker,
+                agent_type: :worker,
+                initial_state: initial_state,
+                behavior: div_worker,
+                restart: :transient,
+                shutdown: 0
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sup: supervisor_ref <- spawn_registered_supervisor(PhaseEIntegerDivisionByZeroSup, 20, :phase_e_div_zero_sup);
+
+        first_get: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: :worker | :supervisor,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :get_child, id: :phase_e_div_zero_worker } impl SupervisorMessage {});
+
+        _: int64 <- call(first_get.child, 0 impl ActorMessage {});
+
+        count_after_crash: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: :worker | :supervisor,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :count_children } impl SupervisorMessage {});
+
+        drain_after_crash: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: :worker | :supervisor,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :count_children } impl SupervisorMessage {});
+
+        second_get: {
+            tag: :child_started | :ok | :children | :count | :child_info | :error,
+            child: actor_ref,
+            status: atom,
+            children: List[
+                {
+                    id: atom,
+                    agent_type: :worker | :supervisor,
+                    child: actor_ref,
+                    restart: :permanent | :temporary | :transient
+                },
+                mem(normal)
+            ],
+            count: int64,
+            child_info: {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                child: actor_ref,
+                restart: :permanent | :temporary | :transient
+            },
+            error: atom
+        } <- call_supervisor(sup, { op: :get_child, id: :phase_e_div_zero_worker } impl SupervisorMessage {});
+
+        restarted_value: int64 <- call(second_get.child, 5 impl ActorMessage {});
+
+        _: atom <- print_int64(case count_after_crash.count == 1 of { true -> 1; false -> 0 });
+        println("");
+        _: atom <- print_int64(case drain_after_crash.count == 1 of { true -> 1; false -> 0 });
+        println("");
+        _: atom <- print_int64(case second_get.tag of { :child_info -> 1; _: atom -> 0 });
+        println("");
+        _: atom <- print_int64(case restarted_value == 4 of { true -> 1; false -> 0 });
+        println("");
+        println("done")
+    produces
+        pure 0
+    end
+}

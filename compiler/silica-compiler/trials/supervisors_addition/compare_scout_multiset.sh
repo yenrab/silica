@@ -15,6 +15,7 @@ FAILURE_RE = re.compile(
     r"=== Silica Actor Failure ===\n.*?=== End Silica Actor Failure ===",
     re.DOTALL,
 )
+ROOT_EXIT = "[silica] root actor exited (no supervisor)"
 
 
 def normalized_text(path):
@@ -29,7 +30,30 @@ def split_failure_multiset(path):
     text = normalized_text(path)
     failures = sorted(match.group(0).strip() for match in FAILURE_RE.finditer(text))
     trailer = FAILURE_RE.sub("", text)
-    trailer_lines = [line for line in trailer.splitlines() if line.strip()]
+    trailer_lines = []
+    for raw_line in trailer.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        # stdout (`done`) and stderr (root-exit notice) can be flushed together.
+        # Treat the glued forms as the same two logical trailer events.
+        if line == "done" + ROOT_EXIT:
+            trailer_lines.extend(["done", ROOT_EXIT])
+        elif line == ROOT_EXIT + "done":
+            trailer_lines.extend([ROOT_EXIT, "done"])
+        else:
+            trailer_lines.append(line)
+    if "done" in trailer_lines and ROOT_EXIT in trailer_lines:
+        canonical = []
+        inserted_pair = False
+        for line in trailer_lines:
+            if line == "done" or line == ROOT_EXIT:
+                if not inserted_pair:
+                    canonical.extend([ROOT_EXIT, "done"])
+                    inserted_pair = True
+            else:
+                canonical.append(line)
+        trailer_lines = canonical
     return failures, trailer_lines
 
 
