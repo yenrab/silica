@@ -94,6 +94,73 @@ fn spill_reg_chain_from_outer(outer_reg: string) -> string {
     }
 }
 
+fn is_float_scalar_type(type_name: string) -> bool {
+    type_name == "float64" or type_name == "float32" or type_name == "float16"
+}
+
+fn fp_prefix_for_type(type_name: string) -> string {
+    case type_name == "float64" of {
+        true -> "D";
+        false -> case type_name == "float32" of {
+            true -> "S";
+            false -> "H"
+        }
+    }
+}
+
+fn fp_reg_for_type_index(type_name: string, idx: int64) -> string {
+    concat(fp_prefix_for_type(type_name), atom_table@int64_to_decimal_string(idx))
+}
+
+fn fp_v_index_bound(outer_reg: string, idx: int64) -> bool {
+    s: string <- atom_table@int64_to_decimal_string(idx);
+    var@is_reg_bound(outer_reg, concat("D", s)) or var@is_reg_bound(outer_reg, concat("S", s)) or var@is_reg_bound(outer_reg, concat("H", s))
+}
+
+fn fp_spill_reg_chain_from_outer(type_name: string, outer_reg: string) -> string {
+    case fp_v_index_bound(outer_reg, 8) of {
+        false -> fp_reg_for_type_index(type_name, 8);
+        true -> case fp_v_index_bound(outer_reg, 9) of {
+            false -> fp_reg_for_type_index(type_name, 9);
+            true -> case fp_v_index_bound(outer_reg, 10) of {
+                false -> fp_reg_for_type_index(type_name, 10);
+                true -> case fp_v_index_bound(outer_reg, 11) of {
+                    false -> fp_reg_for_type_index(type_name, 11);
+                    true -> case fp_v_index_bound(outer_reg, 12) of {
+                        false -> fp_reg_for_type_index(type_name, 12);
+                        true -> case fp_v_index_bound(outer_reg, 13) of {
+                            false -> fp_reg_for_type_index(type_name, 13);
+                            true -> case fp_v_index_bound(outer_reg, 14) of {
+                                false -> fp_reg_for_type_index(type_name, 14);
+                                true -> case fp_v_index_bound(outer_reg, 15) of {
+                                    false -> fp_reg_for_type_index(type_name, 15);
+                                    true -> ""
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn is_caller_saved_fp(reg: string) -> bool {
+    case len(reg) < 2 of {
+        true -> false;
+        false -> do
+            p: string <- substring(reg, 0, 1);
+            case p == "D" or p == "S" or p == "H" of {
+                false -> false;
+                true -> do
+                    n: int64 <- string_parse@string_to_int64(substring(reg, 1, len(reg)));
+                    n >= 0 and n <= 7
+                end
+            }
+        end
+    }
+}
+
 // Parser joins list types with spaces (e.g. "List [int64, normal]"), not only "List[int64, normal]".
 fn type_name_is_list_like(type_name: string) -> bool {
     case len(type_name) >= 5 and substring(type_name, 0, 5) == "List[" of {
@@ -172,18 +239,31 @@ fn is_caller_saved_gpr(reg: string) -> bool {
 }
 
 fn compute_let_rhs_spill_reg(term: SIRTerm, rhs_reg: string, outer_reg: string) -> string {
-    case is_caller_saved_gpr(rhs_reg) of {
-        false -> "";
-        true -> case let_rhs_type_spills_across_io(term.inner.type_name) of {
-            true -> spill_reg_chain_from_outer(outer_reg);
+    case is_float_scalar_type(term.inner.type_name) of {
+        true -> case is_caller_saved_fp(rhs_reg) of {
+            true -> fp_spill_reg_chain_from_outer(term.inner.type_name, outer_reg);
             false -> ""
+        };
+        false -> case is_caller_saved_gpr(rhs_reg) of {
+            false -> "";
+            true -> case let_rhs_type_spills_across_io(term.inner.type_name) of {
+                true -> spill_reg_chain_from_outer(outer_reg);
+                false -> ""
+            }
         }
     }
 }
 
 fn mov_spill_from_rhs(rhs_reg: string, spill_reg: string) -> string {
-    src: string <- prims_actors@gpr_x_view(rhs_reg);
-    concat(concat(concat("    MOV ", spill_reg), ", "), concat(src, "\n"))
+    rhs_p: string <- case len(rhs_reg) > 0 of { true -> substring(rhs_reg, 0, 1); false -> "" };
+    spill_p: string <- case len(spill_reg) > 0 of { true -> substring(spill_reg, 0, 1); false -> "" };
+    case rhs_p == "D" or rhs_p == "S" or rhs_p == "H" or spill_p == "D" or spill_p == "S" or spill_p == "H" of {
+        true -> concat(concat(concat("    FMOV ", spill_reg), ", "), concat(rhs_reg, "\n"));
+        false -> do
+            src: string <- prims_actors@gpr_x_view(rhs_reg);
+            concat(concat(concat("    MOV ", spill_reg), ", "), concat(src, "\n"))
+        end
+    }
 }
 
 // Total stack bytes to deallocate for tuple-constructed call arguments.
@@ -2759,16 +2839,22 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                         left_is_call: bool <- term.inner.kind == 4;
                                         right_is_call: bool <- term.right_expr.kind == 4;
                                         save_x0_before_right_when_both_calls: string <- case left_is_call and right_is_call of {
-                                            true -> case is_string_prim of {
-                                                true -> "    STR X0, [SP, #-16]!\n";
-                                                false -> "    STR X0, [SP, #-16]!\n"
+                                            true -> case is_float64 or is_float32 or is_float16 of {
+                                                true -> "";
+                                                false -> case is_string_prim of {
+                                                    true -> "    STR X0, [SP, #-16]!\n";
+                                                    false -> "    STR X0, [SP, #-16]!\n"
+                                                }
                                             };
                                             false -> ""
                                         };
                                         restore_x0_before_left_when_both_calls: string <- case left_is_call and right_is_call of {
-                                            true -> case is_string_prim of {
-                                                true -> "    LDR X0, [SP], #16\n";
-                                                false -> "    LDR X0, [SP], #16\n"
+                                            true -> case is_float64 or is_float32 or is_float16 of {
+                                                true -> "";
+                                                false -> case is_string_prim of {
+                                                    true -> "    LDR X0, [SP], #16\n";
+                                                    false -> "    LDR X0, [SP], #16\n"
+                                                }
                                             };
                                             false -> ""
                                         };
@@ -2955,17 +3041,26 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 // For string_prim with left=const: loading literal into X0 (left_reg) clobbers right var if right is in X0.
                                 // Emit right first (MOV X1, X0) to save right before loading left literal into X0.
                                 // When right operand is a call (kind 4), save/restore left_reg across it (AAPCS64: X9-X15 are caller-saved).
+                                left_is_call: bool <- term.inner.kind == 4;
                                 right_is_call: bool <- term.right_expr.kind == 4;
-                                case right_is_call and is_float64 == false and is_float32 == false and is_float16 == false and is_string_prim == false of {
+                                case right_is_call and is_string_prim == false of {
                                     true -> do
                                         save_left: string <- concat(concat("    STR ", left_reg), ", [SP, #-16]!\n");
                                         restore_left: string <- concat(concat("    LDR ", left_reg), ", [SP], #16\n");
                                         combined: string <- concat(concat(concat(concat(concat(concat(l, "\n"), save_left), r), "\n"), restore_left), "");
                                         (combined, "")
                                     end;
-                                    false -> case is_float32 or is_float64 or is_float16 or (is_string_prim and term.inner.kind == 0) of {
-                                        true -> (r, l);
-                                        false -> (l, r)
+                                    false -> case left_is_call and is_string_prim == false of {
+                                        true -> do
+                                            save_right: string <- concat(concat("    STR ", right_reg), ", [SP, #-16]!\n");
+                                            restore_right: string <- concat(concat("    LDR ", right_reg), ", [SP], #16\n");
+                                            combined: string <- concat(concat(concat(concat(concat(concat(r, "\n"), save_right), l), "\n"), restore_right), "");
+                                            (combined, "")
+                                        end;
+                                        false -> case is_float32 or is_float64 or is_float16 or (is_string_prim and term.inner.kind == 0) of {
+                                            true -> (r, l);
+                                            false -> (l, r)
+                                        }
                                     }
                                 }
                             end

@@ -1041,6 +1041,10 @@ fn count_callee_saved_spill_pressure(term: SIRTerm) -> int64 {
     count_spill_eligible_lets_in_term(term) + count_list_cons_nonwild_tail_bindings(term) * 3 + count_list_cons_aggregate_head_nonwild_bindings(term) * 3
 }
 
+fn term_type_is_float_scalar(type_name: string) -> bool {
+    type_name == "float64" or type_name == "float32" or type_name == "float16"
+}
+
 // Count non-discarded let bindings whose type is spill-eligible (not float, not unit).
 // Used to decide how many callee-saved register pairs (X19–X28) to save in the prologue.
 // Overcounting is harmless (a few extra STP/LDP instructions); undercounting corrupts the caller's callee-saved state.
@@ -1061,6 +1065,28 @@ fn count_spill_eligible_lets_in_term(term: SIRTerm) -> int64 {
             6 -> count_spill_eligible_lets_in_term(term.inner) + count_spill_eligible_lets_in_term(term.right_expr);
             7 -> count_spill_eligible_lets_in_term(term.inner) + count_spill_eligible_lets_in_term(term.right_expr);
             8 -> count_spill_eligible_lets_in_term(term.inner) + count_spill_eligible_lets_in_term(term.right_expr);
+            _: int64 -> 0
+        }
+    }
+}
+
+fn count_float_spill_eligible_lets_in_term(term: SIRTerm) -> int64 {
+    case term.kind < 0 of {
+        true -> 0;
+        false -> case term.kind of {
+            2 -> do
+                c: int64 <- case term.name != "%_" and term.name != "_" and term_type_is_float_scalar(term.type_name) of {
+                    true -> 1;
+                    false -> 0
+                };
+                c + count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr)
+            end;
+            3 -> count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr);
+            4 -> count_float_spill_eligible_lets_in_term(term.inner);
+            5 -> count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr);
+            6 -> count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr);
+            7 -> count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr);
+            8 -> count_float_spill_eligible_lets_in_term(term.inner) + count_float_spill_eligible_lets_in_term(term.right_expr);
             _: int64 -> 0
         }
     }
@@ -1101,6 +1127,34 @@ fn needs_callee_x27_x28_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> count_callee_saved_spill_pressure(fn_val.body) >= 9
+    }
+}
+
+fn needs_callee_d8_d9_frame(fn_val: SIRFunction) -> bool {
+    case fn_val.body.kind == 5 of {
+        true -> false;
+        false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 1
+    }
+}
+
+fn needs_callee_d10_d11_frame(fn_val: SIRFunction) -> bool {
+    case fn_val.body.kind == 5 of {
+        true -> false;
+        false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 3
+    }
+}
+
+fn needs_callee_d12_d13_frame(fn_val: SIRFunction) -> bool {
+    case fn_val.body.kind == 5 of {
+        true -> false;
+        false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 5
+    }
+}
+
+fn needs_callee_d14_d15_frame(fn_val: SIRFunction) -> bool {
+    case fn_val.body.kind == 5 of {
+        true -> false;
+        false -> count_float_spill_eligible_lets_in_term(fn_val.body) >= 7
     }
 }
 
@@ -1218,7 +1272,23 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
         true -> "    STP X27, X28, [SP, #-16]!\n";
         false -> ""
     };
-    prologue_full: string <- concat(prologue, concat(shadow_prologue, concat(callee_saved_frame, concat(actor_x21_x22_frame, concat(callee_x23_x24_frame, concat(callee_x25_x26_frame, concat(callee_x27_x28_frame, concat(int64_abi_shadow_asm, concat(aggregate_x11_mov, actor_sret_mov)))))))));
+    callee_d8_d9_frame: string <- case needs_callee_d8_d9_frame(fn_val) of {
+        true -> "    STP D8, D9, [SP, #-16]!\n";
+        false -> ""
+    };
+    callee_d10_d11_frame: string <- case needs_callee_d10_d11_frame(fn_val) of {
+        true -> "    STP D10, D11, [SP, #-16]!\n";
+        false -> ""
+    };
+    callee_d12_d13_frame: string <- case needs_callee_d12_d13_frame(fn_val) of {
+        true -> "    STP D12, D13, [SP, #-16]!\n";
+        false -> ""
+    };
+    callee_d14_d15_frame: string <- case needs_callee_d14_d15_frame(fn_val) of {
+        true -> "    STP D14, D15, [SP, #-16]!\n";
+        false -> ""
+    };
+    prologue_full: string <- concat(prologue, concat(shadow_prologue, concat(callee_saved_frame, concat(actor_x21_x22_frame, concat(callee_x23_x24_frame, concat(callee_x25_x26_frame, concat(callee_x27_x28_frame, concat(callee_d8_d9_frame, concat(callee_d10_d11_frame, concat(callee_d12_d13_frame, concat(callee_d14_d15_frame, concat(int64_abi_shadow_asm, concat(aggregate_x11_mov, actor_sret_mov)))))))))))));
     main_kind5_no_tail: bool <- recursion_support@main_kind5_body_uses_non_tail_call(fn_val.name, fn_val.return_type, fn_val.body, all_functions);
     main_k5_asm_line_before_call: string <- case main_kind5_no_tail of {
         true -> case fn_val.return_type == "float32" or fn_val.return_type == "float64" or fn_val.return_type == "float16" of {
@@ -1305,6 +1375,22 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
         true -> "    LDP X27, X28, [SP], #16\n";
         false -> ""
     };
+    callee_d8_d9_restore: string <- case needs_callee_d8_d9_frame(fn_val) of {
+        true -> "    LDP D8, D9, [SP], #16\n";
+        false -> ""
+    };
+    callee_d10_d11_restore: string <- case needs_callee_d10_d11_frame(fn_val) of {
+        true -> "    LDP D10, D11, [SP], #16\n";
+        false -> ""
+    };
+    callee_d12_d13_restore: string <- case needs_callee_d12_d13_frame(fn_val) of {
+        true -> "    LDP D12, D13, [SP], #16\n";
+        false -> ""
+    };
+    callee_d14_d15_restore: string <- case needs_callee_d14_d15_frame(fn_val) of {
+        true -> "    LDP D14, D15, [SP], #16\n";
+        false -> ""
+    };
     // Restore in reverse order of save: X27,X28 → X25,X26 → X23,X24 → X21,X22 → X19,X20
     epilogue: string <- case kind5_tail_returns_directly of {
         true -> "";
@@ -1315,7 +1401,11 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
                 ep_sh_2: string <- concat(callee_x23_x24_restore, ep_sh_1);
                 ep_sh_3: string <- concat(callee_x25_x26_restore, ep_sh_2);
                 ep_sh_4: string <- concat(callee_x27_x28_restore, ep_sh_3);
-                concat(tuple_ret_dealloc, ep_sh_4)
+                ep_sh_5: string <- concat(callee_d8_d9_restore, ep_sh_4);
+                ep_sh_6: string <- concat(callee_d10_d11_restore, ep_sh_5);
+                ep_sh_7: string <- concat(callee_d12_d13_restore, ep_sh_6);
+                ep_sh_8: string <- concat(callee_d14_d15_restore, ep_sh_7);
+                concat(tuple_ret_dealloc, ep_sh_8)
             end;
             false -> do
                 ep_ns: string <- concat(callee_saved_restore, control@function_epilogue_with_effects(fn_val.effects));
@@ -1323,7 +1413,11 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
                 ep_ns_2: string <- concat(callee_x23_x24_restore, ep_ns_1);
                 ep_ns_3: string <- concat(callee_x25_x26_restore, ep_ns_2);
                 ep_ns_4: string <- concat(callee_x27_x28_restore, ep_ns_3);
-                concat(tuple_ret_dealloc, ep_ns_4)
+                ep_ns_5: string <- concat(callee_d8_d9_restore, ep_ns_4);
+                ep_ns_6: string <- concat(callee_d10_d11_restore, ep_ns_5);
+                ep_ns_7: string <- concat(callee_d12_d13_restore, ep_ns_6);
+                ep_ns_8: string <- concat(callee_d14_d15_restore, ep_ns_7);
+                concat(tuple_ret_dealloc, ep_ns_8)
             end
         }
     };
