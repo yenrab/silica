@@ -15,7 +15,7 @@
 
 This specification defines the rules for outbound calls from Silica to external libraries through C-compatible wrapper functions.
 
-This specification applies only to calls from Silica to C libraries and to other language libraries that expose a C-compatible interface. Calls from C or other languages into Silica are out of scope and are specified in a separate inbound-interop specification.
+This specification applies only to calls from Silica to C libraries and to other language libraries that expose a C-compatible interface. Underlying external libraries may be provided as dynamically linked shared libraries or as statically linked archive/object libraries. Calls from C or other languages into Silica are out of scope and are specified in a separate inbound-interop specification.
 
 Silica does not call arbitrary external APIs directly. Every external operation callable from Silica must be exposed through a Silica-compatible C wrapper function. The wrapper function adapts the original external API into a stable, explicit ABI boundary that the Silica compiler can type-check, effect-check, and validate.
 
@@ -1408,6 +1408,7 @@ A Silica package that uses C wrappers is required to declare:
 - include paths;
 - library search paths;
 - libraries to link;
+- link mode for each external library, where relevant: dynamically linked shared library or statically linked archive/object library;
 - optional `pkg-config` package names;
 - target-specific conditions.
 
@@ -1418,9 +1419,12 @@ foreign package db {
     headers: ["dangerous_exposure_source/db/silica_db_wrapper.h"]
     sources: ["dangerous_exposure_source/db/silica_db_wrapper.c"]
     libraries: ["db"]
+    link_mode: "dynamic"
     pkg_config: "db"
 }
 ```
+
+The Silica build tool must support both dynamically linked and statically linked external libraries for C wrapper packages. Package metadata must be able to distinguish the two modes whenever the target platform or package layout requires different linker flags, search paths, runtime search paths, archive ordering, or deployment behavior.
 
 The exact package metadata syntax is outside the scope of this document.
 
@@ -1590,4 +1594,3 @@ Ordinary Silica code is required to call Silica adapter functions through `dange
 Any C array return maps to a Silica buffer. Any non-array C pointer must be converted to type before being sent to Silica. Any `void *` from the underlying library must be translated by wrapper code into an approved concrete Silica-facing representation before Silica sees it. Opaque C structs must be de-opaqueified into Silica-compatible contents, not exposed as handles, raw pointers, or opaque external types.
 
 No external-danger-touched data may be retained after an `external_danger` sequence completes unless it has been converted according to this specification. External-danger-touched data must not cross actor `call` or `cast` message boundaries and must not be used in sequence blocks declaring `device_io`, `network_io`, `hot_swap`, or `register_rwr`.
-
