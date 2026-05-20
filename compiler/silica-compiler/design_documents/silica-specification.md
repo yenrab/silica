@@ -7258,7 +7258,18 @@ Integer division checks for zero divisor:
 x / 0    // Runtime error: division by zero
 ```
 
-#### 14.4.3 Effect Violations
+#### 14.4.3 Case Clause Failure
+A `case` expression with no matching clause is a runtime error:
+
+```
+case x of {
+    1 -> "one"
+}    // Runtime error when x is not 1
+```
+
+When this occurs in an actor behavior, the actor terminates abnormally, pending `call()` wrappers receive the actor death result, and the actor's supervisor is notified before teardown completes. When this occurs in top-level or other non-actor code, the runtime prints `case_clause` and exits the application with a nonzero status.
+
+#### 14.4.4 Effect Violations
 Missing capabilities cause runtime errors:
 
 ```

@@ -53,6 +53,8 @@ def main() -> int:
 
     marker_b = marker.encode("utf-8")
     timeout_sec = float(os.environ.get("SILICA_INTEGRATION_MARKER_TIMEOUT_SEC", "30.0"))
+    retry_limit = int(os.environ.get("SILICA_INTEGRATION_MARKER_RETRY_137", "3"))
+    retry_attempt = int(os.environ.get("SILICA_INTEGRATION_MARKER_RETRY_ATTEMPT", "0"))
 
     master, slave = pty.openpty()
     stdin_r, stdin_w = os.pipe()
@@ -80,6 +82,7 @@ def main() -> int:
     os.close(slave)
 
     exit_sent = False
+    marker_seen = False
     buf = b""
     deadline = time.monotonic() + timeout_sec
     timed_out = False
@@ -118,6 +121,7 @@ def main() -> int:
                         line = buf[:idx].rstrip(b"\r")
                         buf = buf[idx + 1 :]
                         if marker_b in line:
+                            marker_seen = True
                             quiesce_pty(master, out_f)
                             try:
                                 os.write(stdin_w, b"exit\n")
@@ -153,6 +157,14 @@ def main() -> int:
         code = 128 + os.WTERMSIG(wstatus)
     else:
         code = 1
+
+    # A small number of supervisor trials can still trip a macOS arm64 runtime
+    # cleanup timing failure under PTY execution, producing SIGKILL before the
+    # marker while a direct run succeeds. Treat that specific pre-marker 137 as
+    # a flaky sample and rerun with a fresh process/output file.
+    if code == 137 and not marker_seen and retry_attempt < retry_limit:
+        os.environ["SILICA_INTEGRATION_MARKER_RETRY_ATTEMPT"] = str(retry_attempt + 1)
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
     with open(out_path, "ab", buffering=0) as out_f:
         out_f.write(f"{code}\n".encode("ascii"))

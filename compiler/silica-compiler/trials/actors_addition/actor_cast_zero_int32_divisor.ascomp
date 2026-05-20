@@ -1,88 +1,85 @@
-.bss
-.balign 8
-.lcomm _silica_frame_depth, 8
-.lcomm _silica_frame_max, 8
-.lcomm _silica_fuel, 8
-.lcomm _silica_saved_pc, 8
-
 .text
 .global main
 
-    ; --- recursion phases (recursion_implementation.jsonld) ---
-    ; p1: explicit frame fields; p2: push/dispatch/pop; p3: fuel on back-edges
-    ; p4: PC/source map hooks; p5: tail BR (see emit_tail_call_body); p6: trampoline fallback
 
-    ; p4 observability: frame -> (fn id, source id) map; filter trampoline frames
-
-    ; p6 trampoline fallback (optional):
-    ; _silica_trampoline_dispatch: load target from frame / BR X8
-    ; never rely on unbounded native recursion for general calls
-
-
-
-sum_to:     STP X29, X30, [SP, #-16]!
+divide_by_message:     STP X29, X30, [SP, #-16]!
     STP X19, X20, [SP, #-16]!
-    MOV X19, X0
-    MOV X20, X1
 
-    MOV X9, X19
-    MOV X10, #0
-
-
-    CMP X9, X10
-    CSET X2, LE
-L_case_o111_br_0:
-    CMP W2, #1
-    B.NE L_case_o111_br_1
-    MOV X0, X20
-    B L_case_o111_done
-L_case_o111_br_1:
-    CMP W2, #0
-    B.NE L_case_o111_fb
-    MOV X9, X20
-    MOV X10, X19
+    MOV X9, #21
+    STR X9, [X8, #0]
+    MOV W9, #42
+    MOV W10, W0
 
 
-    ADD X1, X9, X10
-
-    MOV X9, X19
-    MOV X10, #1
-
-
-    SUB X0, X9, X10
-    ; effects []|sir_rec:o166|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
-    ADRP X9, sum_to@PAGE
-    ADD X9, X9, sum_to@PAGEOFF
-    BLR X9
-    B L_case_o111_done
-L_case_o111_fb:
-    BL _silica_rt_case_clause
-    MOV X0, #0
-    B L_case_o111_done
-L_case_o111_done:
-
+    CMP W10, #0
+    B.NE 1f
+    BL _silica_rt_badarith
+1:
+    SDIV W9, W9, W10
+    STR W9, [X8, #8]
+    MOV X0, X8
     LDP X19, X20, [SP], #16
     LDP X29, X30, [SP], #16
     RET
 
 main:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
 
     BL _silica_pid_registry_init
-    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
-    MOV X0, #10
-    MOV X1, #0
+    MOV X9, #0
+    ADRP X10, divide_by_message@PAGE
+    ADD X10, X10, divide_by_message@PAGEOFF
 
-    ; effects []|sir_rec:o223|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    MOV X3, XZR
+    MOV X0, X9
+    MOV X1, X10
+    MOV W2, WZR
+    BL _silica_rt_actor_spawn
+
+    MOV X19, X0
+    MOV X9, X19
+    MOV X11, X9
+    MOV X10, #0
+    MOV X0, X11
+    MOV X1, X10
+    BL _silica_rt_actor_cast
+
+    MOV X20, X0
+    ; effects [device_io]
+    MOV X0, #1
+    ADRP X1, L_str_0@PAGE
+    ADD X1, X1, L_str_0@PAGEOFF
+    MOV X2, #4
+
+    STP X19, X20, [SP, #-16]!
+    MOV X16, #4
+    SVC #0x80
+    LDP X19, X20, [SP], #16
+    MOV X0, #0
+
+
+    ; effects [device_io]
+    MOV X0, #1
+    ADRP X1, L_newline@PAGE
+    ADD X1, X1, L_newline@PAGEOFF
+    MOV X2, #1
+
+    STP X19, X20, [SP, #-16]!
+    MOV X16, #4
+    SVC #0x80
+    LDP X19, X20, [SP], #16
+    MOV X0, #0
+
+    BL _silica_rt_wait_for_exit
+    MOV X21, X0
+    MOV X0, #0
+    LDP X19, X20, [SP], #16
     LDP X29, X30, [SP], #16
-
-    ADRP X9, sum_to@PAGE
-    ADD X9, X9, sum_to@PAGEOFF
-    BR X9
-
+    RET
 L_pa_helper:
     CMP X0, #0
     B.lt L_pa_oob
-    CMP X0, #21
+    CMP X0, #22
     B.ge L_pa_oob
     ADRP X9, L_pa_table@PAGE
     ADD X9, X9, L_pa_table@PAGEOFF
@@ -143,6 +140,8 @@ atom_19:
     .byte  0x3a, 0x6e, 0x6f, 0x74, 0x5f, 0x66, 0x6f, 0x75, 0x6e, 0x64, 0
 atom_20:
     .byte  0x3a, 0x75, 0x6e, 0x6b, 0x6e, 0x6f, 0x77, 0x6e, 0x5f, 0x6f, 0x70, 0
+atom_21:
+    .byte  0x3a, 0x6e, 0x6f, 0x5f, 0x72, 0x65, 0x70, 0x6c, 0x79, 0
 .section __DATA_CONST,__const
 .align	3
 L_pa_table:
@@ -188,4 +187,18 @@ L_pa_table:
     .quad 10
     .quad atom_20
     .quad 11
+    .quad atom_21
+    .quad 9
+
+.section __TEXT,__rodata
+.align	8
+L_str_0:
+    .ascii "done"
+    .byte 0
+L_str_1:
+    .ascii "\n"
+    .byte 0
+
+L_newline:
+    .byte 10
 
