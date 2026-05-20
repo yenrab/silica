@@ -228,6 +228,109 @@ fn has_missing_function_return_type(slots: ListTokenSlot) -> (bool, SourceLocati
     }
 }
 
+fn token_end_offset(token: Token) -> int64 {
+    token.location.offset + len(token.lexeme)
+}
+
+fn is_adjacent_token_pair(left: Token, right: Token) -> bool {
+    token_end_offset(left) == right.location.offset
+}
+
+fn token_starts_with_colon(token: Token) -> bool {
+    case token.lexeme == ":" of {
+        true -> true;
+        false -> case len(token.lexeme) > 0 of {
+            true -> substring(token.lexeme, 0, 1) == ":";
+            false -> false
+        }
+    }
+}
+
+fn has_bind_arrow_before_statement_boundary(slots: ListTokenSlot, paren_depth: int64, brace_depth: int64) -> bool {
+    case slots.is_nil of {
+        true -> false;
+        false -> case slots.head.token.lexeme == "<-" of {
+            true -> case paren_depth == 0 and brace_depth == 0 of {
+                true -> true;
+                false -> has_bind_arrow_before_statement_boundary(slots.tail, paren_depth, brace_depth)
+            };
+            false -> case slots.head.token.lexeme == ";" or slots.head.token.lexeme == "if" or slots.head.token.lexeme == "->" of {
+                true -> case paren_depth == 0 and brace_depth == 0 of {
+                    true -> false;
+                    false -> has_bind_arrow_before_statement_boundary(slots.tail, paren_depth, brace_depth)
+                };
+                false -> case slots.head.token.lexeme == "(" of {
+                    true -> has_bind_arrow_before_statement_boundary(slots.tail, paren_depth + 1, brace_depth);
+                    false -> case slots.head.token.lexeme == ")" of {
+                        true -> case paren_depth <= 0 of {
+                            true -> false;
+                            false -> has_bind_arrow_before_statement_boundary(slots.tail, paren_depth - 1, brace_depth)
+                        };
+                        false -> case slots.head.token.lexeme == "{" of {
+                            true -> has_bind_arrow_before_statement_boundary(slots.tail, paren_depth, brace_depth + 1);
+                            false -> case slots.head.token.lexeme == "}" of {
+                                true -> case brace_depth <= 0 of {
+                                    true -> false;
+                                    false -> has_bind_arrow_before_statement_boundary(slots.tail, paren_depth, brace_depth - 1)
+                                };
+                                false -> has_bind_arrow_before_statement_boundary(slots.tail, paren_depth, brace_depth)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn has_spaced_bind_colon(slots: ListTokenSlot) -> (bool, SourceLocation, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case slots.tail.is_nil of {
+            true -> (false, parser_ast@zero_location(), "");
+            false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, slots.head.token.kind) and token_starts_with_colon(slots.tail.head.token) and has_bind_arrow_before_statement_boundary(slots.tail.tail, 0, 0) of {
+                true -> case is_adjacent_token_pair(slots.head.token, slots.tail.head.token) of {
+                    true -> has_spaced_bind_colon(slots.tail);
+                    false -> (true, slots.tail.head.token.location, slots.head.token.lexeme)
+                };
+                false -> has_spaced_bind_colon(slots.tail)
+            }
+        }
+    }
+}
+
+fn prev_allows_atom_literal(slots_before_colon_reversed: ListTokenSlot) -> bool {
+    case slots_before_colon_reversed.is_nil of {
+        true -> true;
+        false -> case slots_before_colon_reversed.head.token.lexeme == "<-" or slots_before_colon_reversed.head.token.lexeme == "->" or slots_before_colon_reversed.head.token.lexeme == "{" or slots_before_colon_reversed.head.token.lexeme == "(" or slots_before_colon_reversed.head.token.lexeme == "," or slots_before_colon_reversed.head.token.lexeme == ";" or slots_before_colon_reversed.head.token.lexeme == "==" or slots_before_colon_reversed.head.token.lexeme == "!=" of {
+            true -> true;
+            false -> false
+        }
+    }
+}
+
+fn has_spaced_atom_literal_from(slots: ListTokenSlot, reversed_prefix: ListTokenSlot) -> (bool, SourceLocation) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> case slots.tail.is_nil of {
+            true -> (false, parser_ast@zero_location());
+            false -> case slots.head.token.lexeme == ":" and lexer_token_kind@is_identifier_lexeme_token(kinds, slots.tail.head.token.kind) and prev_allows_atom_literal(reversed_prefix) of {
+                true -> case is_adjacent_token_pair(slots.head.token, slots.tail.head.token) of {
+                    true -> has_spaced_atom_literal_from(slots.tail, constraint_core@cons_slot(slots.head, reversed_prefix));
+                    false -> (true, slots.tail.head.token.location)
+                };
+                false -> has_spaced_atom_literal_from(slots.tail, constraint_core@cons_slot(slots.head, reversed_prefix))
+            }
+        }
+    }
+}
+
+fn has_spaced_atom_literal(slots: ListTokenSlot) -> (bool, SourceLocation) {
+    has_spaced_atom_literal_from(slots, constraint_core@empty_list_slot())
+}
+
 fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
     reversed: ListToken <- reverse_tokens(lexer_runner@empty_token_list(), tokens);
     slots: ListTokenSlot <- tokens_to_slots(reversed);
@@ -237,35 +340,47 @@ fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
     case has_proc_error of {
         true -> parser_core@parse_err("E3009", err_loc, "proc[...] is only allowed on sequence clauses directly after the sequence keyword, not on function return types", "sect9.3.1");
         false -> do
-            (has_missing_ret: bool, missing_ret_loc: SourceLocation, missing_ret_fn: string) <- has_missing_function_return_type(propagated);
-            case has_missing_ret of {
-                true -> parser_core@parse_err("E1042", missing_ret_loc, concat(concat("function '", missing_ret_fn), "' is missing a return type; write '-> <type>' before the function body"), "sect3.4");
+            (has_bind_colon_space: bool, bind_colon_loc: SourceLocation, bind_name: string) <- has_spaced_bind_colon(slots);
+            case has_bind_colon_space of {
+                true -> parser_core@parse_err("E1043", bind_colon_loc, concat(concat("variable declaration name '", bind_name), "' must be followed immediately by ':' with no whitespace"), "sect3");
                 false -> do
-                    program: Program <- constraint_extract@slots_to_program(propagated);
-                    lifted: Program <- constraint_extract@lift_lambda_expressions(program);
-                    wrapped_prog: Program <- constraint_extract@wrap_lifted_lambda_hof_calls(lifted);
-                    result0: ParseResult <- constraint_extract@validate_required_statement_terminators(wrapped_prog);
-                    case result0.is_ok of {
-                        true -> do
-                            result0b: ParseResult <- constraint_extract@validate_no_illegal_trailing_semicolon(result0.program);
-                            case result0b.is_ok of {
-                                true -> do
-                                    result1: ParseResult <- constraint_extract@validate_no_single_element_tuples(result0b.program);
-                                    case result1.is_ok of {
+                    (has_atom_space: bool, atom_loc: SourceLocation) <- has_spaced_atom_literal(slots);
+                    case has_atom_space of {
+                        true -> parser_core@parse_err("E1044", atom_loc, "atom literal ':' must be followed immediately by the atom name with no whitespace", "sect3");
+                        false -> do
+                            (has_missing_ret: bool, missing_ret_loc: SourceLocation, missing_ret_fn: string) <- has_missing_function_return_type(propagated);
+                            case has_missing_ret of {
+                                true -> parser_core@parse_err("E1042", missing_ret_loc, concat(concat("function '", missing_ret_fn), "' is missing a return type; write '-> <type>' before the function body"), "sect3.4");
+                                false -> do
+                                    program: Program <- constraint_extract@slots_to_program(propagated);
+                                    lifted: Program <- constraint_extract@lift_lambda_expressions(program);
+                                    wrapped_prog: Program <- constraint_extract@wrap_lifted_lambda_hof_calls(lifted);
+                                    result0: ParseResult <- constraint_extract@validate_required_statement_terminators(wrapped_prog);
+                                    case result0.is_ok of {
                                         true -> do
-                                            result2: ParseResult <- constraint_extract@validate_max_params(result1.program);
-                                            case result2.is_ok of {
-                                                true -> constraint_extract@validate_max_tuple_decompose_bindings(result2.program);
-                                                false -> result2
+                                            result0b: ParseResult <- constraint_extract@validate_no_illegal_trailing_semicolon(result0.program);
+                                            case result0b.is_ok of {
+                                                true -> do
+                                                    result1: ParseResult <- constraint_extract@validate_no_single_element_tuples(result0b.program);
+                                                    case result1.is_ok of {
+                                                        true -> do
+                                                            result2: ParseResult <- constraint_extract@validate_max_params(result1.program);
+                                                            case result2.is_ok of {
+                                                                true -> constraint_extract@validate_max_tuple_decompose_bindings(result2.program);
+                                                                false -> result2
+                                                            }
+                                                        end;
+                                                        false -> result1
+                                                    }
+                                                end;
+                                                false -> result0b
                                             }
                                         end;
-                                        false -> result1
+                                        false -> result0
                                     }
-                                end;
-                                false -> result0b
+                                end
                             }
                         end;
-                        false -> result0
                     }
                 end
             }
