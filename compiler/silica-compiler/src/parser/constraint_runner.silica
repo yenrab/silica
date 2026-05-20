@@ -331,6 +331,151 @@ fn has_spaced_atom_literal(slots: ListTokenSlot) -> (bool, SourceLocation) {
     has_spaced_atom_literal_from(slots, constraint_core@empty_list_slot())
 }
 
+fn slot_is_whitespace(slot: TokenSlot) -> bool {
+    slot.token.lexeme == " " or slot.token.lexeme == "\t" or slot.token.lexeme == "\n" or slot.token.lexeme == "\r"
+}
+
+fn slot_is_horizontal_whitespace(slot: TokenSlot) -> bool {
+    slot.token.lexeme == " " or slot.token.lexeme == "\t" or slot.token.lexeme == "\r"
+}
+
+fn skip_leading_whitespace_slots(slots: ListTokenSlot) -> ListTokenSlot {
+    case slots.is_nil of {
+        true -> slots;
+        false -> case slot_is_whitespace(slots.head) of {
+            true -> skip_leading_whitespace_slots(slots.tail);
+            false -> slots
+        }
+    }
+}
+
+fn skip_leading_horizontal_whitespace_slots(slots: ListTokenSlot) -> ListTokenSlot {
+    case slots.is_nil of {
+        true -> slots;
+        false -> case slot_is_horizontal_whitespace(slots.head) of {
+            true -> skip_leading_horizontal_whitespace_slots(slots.tail);
+            false -> slots
+        }
+    }
+}
+
+fn slots_after_matching_rparen(slots: ListTokenSlot, depth: int64) -> ListTokenSlot {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> slots;
+        false -> case slots.head.token.kind == kinds.left_paren of {
+            true -> slots_after_matching_rparen(slots.tail, depth + 1);
+            false -> case slots.head.token.kind == kinds.right_paren of {
+                true -> case depth <= 1 of {
+                    true -> slots.tail;
+                    false -> slots_after_matching_rparen(slots.tail, depth - 1)
+                };
+                false -> slots_after_matching_rparen(slots.tail, depth)
+            }
+        }
+    }
+}
+
+fn slots_have_function_body_lbrace_on_line(slots: ListTokenSlot, paren_depth: int64, bracket_depth: int64, source_line: int64) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_horizontal_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> false;
+        false -> case trimmed.head.token.location.line != source_line of {
+            true -> false;
+            false -> case trimmed.head.token.kind == kinds.left_paren of {
+                true -> slots_have_function_body_lbrace_on_line(trimmed.tail, paren_depth + 1, bracket_depth, source_line);
+                false -> case trimmed.head.token.kind == kinds.right_paren of {
+                    true -> case paren_depth <= 0 of {
+                        true -> false;
+                        false -> slots_have_function_body_lbrace_on_line(trimmed.tail, paren_depth - 1, bracket_depth, source_line)
+                    };
+                    false -> case trimmed.head.token.kind == kinds.left_bracket of {
+                        true -> slots_have_function_body_lbrace_on_line(trimmed.tail, paren_depth, bracket_depth + 1, source_line);
+                        false -> case trimmed.head.token.kind == kinds.right_bracket of {
+                            true -> case bracket_depth <= 0 of {
+                                true -> false;
+                                false -> slots_have_function_body_lbrace_on_line(trimmed.tail, paren_depth, bracket_depth - 1, source_line)
+                            };
+                            false -> case trimmed.head.token.kind == kinds.left_brace of {
+                                true -> paren_depth == 0 and bracket_depth == 0;
+                                false -> case trimmed.head.token.kind == kinds.semicolon of {
+                                    true -> false;
+                                    false -> slots_have_function_body_lbrace_on_line(trimmed.tail, paren_depth, bracket_depth, source_line)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn slots_start_missing_fn_signature(slots: ListTokenSlot) -> bool {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> false;
+        false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, trimmed.head.token.kind) of {
+            false -> false;
+            true -> do
+                after_name: ListTokenSlot <- skip_leading_whitespace_slots(trimmed.tail);
+                case after_name.is_nil of {
+                    true -> false;
+                    false -> case after_name.head.token.kind == kinds.left_paren of {
+                        false -> false;
+                        true -> do
+                            after_params: ListTokenSlot <- skip_leading_whitespace_slots(slots_after_matching_rparen(after_name.tail, 1));
+                            case after_params.is_nil of {
+                                true -> false;
+                                false -> case after_params.head.token.kind == kinds.right_arrow of {
+                                    true -> slots_have_function_body_lbrace_on_line(after_params.tail, 0, 0, trimmed.head.token.location.line);
+                                    false -> false
+                                }
+                            }
+                        end
+                    }
+                }
+            end
+        }
+    }
+}
+
+fn has_missing_fn_prefix_at_depth(slots: ListTokenSlot, brace_depth: int64) -> (bool, SourceLocation, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case trimmed.head.token.kind == kinds.left_brace of {
+            true -> has_missing_fn_prefix_at_depth(trimmed.tail, brace_depth + 1);
+            false -> case trimmed.head.token.kind == kinds.right_brace of {
+                true -> case brace_depth <= 0 of {
+                    true -> has_missing_fn_prefix_at_depth(trimmed.tail, 0);
+                    false -> has_missing_fn_prefix_at_depth(trimmed.tail, brace_depth - 1)
+                };
+                false -> case brace_depth == 0 and slots_start_missing_fn_signature(trimmed) of {
+                    true -> (true, trimmed.head.token.location, trimmed.head.token.lexeme);
+                    false -> case brace_depth == 0 and trimmed.head.token.kind == kinds.fn_keyword of {
+                        true -> do
+                            after_fn: ListTokenSlot <- skip_leading_whitespace_slots(trimmed.tail);
+                            case after_fn.is_nil of {
+                                true -> (false, parser_ast@zero_location(), "");
+                                false -> has_missing_fn_prefix_at_depth(after_fn.tail, brace_depth)
+                            }
+                        end;
+                        false -> has_missing_fn_prefix_at_depth(trimmed.tail, brace_depth)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn has_missing_fn_prefix(slots: ListTokenSlot) -> (bool, SourceLocation, string) {
+    has_missing_fn_prefix_at_depth(slots, 0)
+}
+
 fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
     reversed: ListToken <- reverse_tokens(lexer_runner@empty_token_list(), tokens);
     slots: ListTokenSlot <- tokens_to_slots(reversed);
@@ -348,35 +493,41 @@ fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
                     case has_atom_space of {
                         true -> parser_core@parse_err("E1044", atom_loc, "atom literal ':' must be followed immediately by the atom name with no whitespace", "sect3");
                         false -> do
-                            (has_missing_ret: bool, missing_ret_loc: SourceLocation, missing_ret_fn: string) <- has_missing_function_return_type(propagated);
-                            case has_missing_ret of {
-                                true -> parser_core@parse_err("E1042", missing_ret_loc, concat(concat("function '", missing_ret_fn), "' is missing a return type; write '-> <type>' before the function body"), "sect3.4");
+                            (missing_fn: bool, missing_fn_loc: SourceLocation, missing_fn_name: string) <- has_missing_fn_prefix(slots);
+                            case missing_fn of {
+                                true -> parser_core@parse_err("E1045", missing_fn_loc, concat(concat("function declaration '", missing_fn_name), "' is missing the 'fn' prefix; write 'fn <name>(...) -> <type> { ... }'"), "sect3.4");
                                 false -> do
-                                    program: Program <- constraint_extract@slots_to_program(propagated);
-                                    lifted: Program <- constraint_extract@lift_lambda_expressions(program);
-                                    wrapped_prog: Program <- constraint_extract@wrap_lifted_lambda_hof_calls(lifted);
-                                    result0: ParseResult <- constraint_extract@validate_required_statement_terminators(wrapped_prog);
-                                    case result0.is_ok of {
-                                        true -> do
-                                            result0b: ParseResult <- constraint_extract@validate_no_illegal_trailing_semicolon(result0.program);
-                                            case result0b.is_ok of {
+                                    (has_missing_ret: bool, missing_ret_loc: SourceLocation, missing_ret_fn: string) <- has_missing_function_return_type(propagated);
+                                    case has_missing_ret of {
+                                        true -> parser_core@parse_err("E1042", missing_ret_loc, concat(concat("function '", missing_ret_fn), "' is missing a return type; write '-> <type>' before the function body"), "sect3.4");
+                                        false -> do
+                                            program: Program <- constraint_extract@slots_to_program(propagated);
+                                            lifted: Program <- constraint_extract@lift_lambda_expressions(program);
+                                            wrapped_prog: Program <- constraint_extract@wrap_lifted_lambda_hof_calls(lifted);
+                                            result0: ParseResult <- constraint_extract@validate_required_statement_terminators(wrapped_prog);
+                                            case result0.is_ok of {
                                                 true -> do
-                                                    result1: ParseResult <- constraint_extract@validate_no_single_element_tuples(result0b.program);
-                                                    case result1.is_ok of {
+                                                    result0b: ParseResult <- constraint_extract@validate_no_illegal_trailing_semicolon(result0.program);
+                                                    case result0b.is_ok of {
                                                         true -> do
-                                                            result2: ParseResult <- constraint_extract@validate_max_params(result1.program);
-                                                            case result2.is_ok of {
-                                                                true -> constraint_extract@validate_max_tuple_decompose_bindings(result2.program);
-                                                                false -> result2
+                                                            result1: ParseResult <- constraint_extract@validate_no_single_element_tuples(result0b.program);
+                                                            case result1.is_ok of {
+                                                                true -> do
+                                                                    result2: ParseResult <- constraint_extract@validate_max_params(result1.program);
+                                                                    case result2.is_ok of {
+                                                                        true -> constraint_extract@validate_max_tuple_decompose_bindings(result2.program);
+                                                                        false -> result2
+                                                                    }
+                                                                end;
+                                                                false -> result1
                                                             }
                                                         end;
-                                                        false -> result1
+                                                        false -> result0b
                                                     }
                                                 end;
-                                                false -> result0b
+                                                false -> result0
                                             }
-                                        end;
-                                        false -> result0
+                                        end
                                     }
                                 end
                             }
