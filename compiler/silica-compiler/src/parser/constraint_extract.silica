@@ -38,6 +38,7 @@ export validate_max_params/1;
 export validate_max_tuple_decompose_bindings/1;
 export validate_required_statement_terminators/1;
 export validate_no_illegal_trailing_semicolon/1;
+export validate_no_unused_scope_bindings/1;
 export lift_lambda_expressions/1;
 export wrap_lifted_lambda_hof_calls/1;
 
@@ -4898,6 +4899,179 @@ fn validate_no_illegal_trailing_semicolon(program: Program) -> ParseResult {
     (found: bool, err_loc: SourceLocation) <- decls_has_illegal_trailing_semicolon(program.declarations);
     case found of {
         true -> parser_core@parse_err("E1041", err_loc, "the last expression in this block must not be followed by ';'", "sect3");
+        false -> parser_core@parse_ok(program)
+    }
+}
+
+// --- E1055: local bindings must be used within their lexical scope ---
+
+fn is_unused_scope_discard_name(nm: string) -> bool {
+    case len(nm) == 0 of {
+        true -> false;
+        false -> substring(nm, 0, 1) == "_"
+    }
+}
+
+fn tuple_binding_names_contains(bindings: ListTupleDecomposeBinding, nm: string) -> bool {
+    case bindings.is_nil of {
+        true -> false;
+        false -> case bindings.head.name == nm of {
+            true -> true;
+            false -> tuple_binding_names_contains(bindings.tail, nm)
+        }
+    }
+}
+
+fn expr_contains_identifier_named(expr: Expr, nm: string) -> bool {
+    case expr.kind == -1 of {
+        true -> false;
+        false -> case expr.kind == 1 of {
+            true -> expr.name == nm;
+            false -> case expr.kind == 4 of {
+                true -> expr.name == nm or expr_contains_identifier_named(expr.inner, nm) or expr_contains_identifier_named(expr.right_expr, nm);
+                false -> case expr.kind == 6 of {
+                true -> case expr.name == nm of {
+                    // Typed call/site args (`f(x: T)`) reuse kind 6 with dummy inner; the name is the use.
+                    true -> case expr.inner.kind == -1 of {
+                        true -> true;
+                        false -> expr_contains_identifier_named(expr.inner, nm)
+                    };
+                    false -> expr_contains_identifier_named(expr.inner, nm) or expr_contains_identifier_named(expr.right_expr, nm)
+                };
+                false -> case expr.kind == 10 of {
+                    true -> case tuple_binding_names_contains(expr.pattern_bindings, nm) of {
+                        true -> expr_contains_identifier_named(expr.inner, nm);
+                        false -> expr_contains_identifier_named(expr.inner, nm) or expr_contains_identifier_named(expr.right_expr, nm)
+                    };
+                    false -> case expr.kind == 991 of {
+                        true -> case tuple_binding_names_contains(expr.pattern_bindings, nm) of {
+                            true -> false;
+                            false -> expr_contains_identifier_named(expr.inner, nm)
+                        };
+                        false -> case expr.kind == 22 of {
+                            true -> expr_contains_identifier_named(expr.inner, nm);
+                            false -> expr_contains_identifier_named(expr.inner, nm) or expr_contains_identifier_named(expr.right_expr, nm)
+                        }
+                    }
+                }
+            }
+            }
+        }
+    }
+}
+
+fn tuple_bindings_find_unused(bindings: ListTupleDecomposeBinding, body: Expr, extra: Expr) -> (bool, string) {
+    case bindings.is_nil of {
+        true -> (false, "");
+        false -> do
+            nm: string <- bindings.head.name;
+            case is_unused_scope_discard_name(nm) of {
+                true -> tuple_bindings_find_unused(bindings.tail, body, extra);
+                false -> case expr_contains_identifier_named(body, nm) or expr_contains_identifier_named(extra, nm) of {
+                    true -> tuple_bindings_find_unused(bindings.tail, body, extra);
+                    false -> (true, nm)
+                }
+            }
+        end
+    }
+}
+
+fn expr_contains_unused_binding_exempt_expr(expr: Expr) -> bool {
+    case expr.kind == -1 of {
+        true -> false;
+        false -> case expr.kind == 4 or expr.kind == 12 or expr.kind == 991 of {
+            true -> true;
+            false -> expr_contains_unused_binding_exempt_expr(expr.inner) or expr_contains_unused_binding_exempt_expr(expr.right_expr)
+        }
+    }
+}
+
+fn expr_has_unused_scope_binding(expr: Expr, extra_scope_result: Expr) -> (bool, SourceLocation, string) {
+    case expr.kind == -1 of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case expr.kind == 6 of {
+            true -> case expr.inner.kind == -1 of {
+                // Typed call/site arg (`f(x: T)`): kind 6 with dummy inner — not a scope binding.
+                true -> (false, parser_ast@zero_location(), "");
+                false -> do
+                    (rhs_found: bool, rhs_loc: SourceLocation, rhs_name: string) <- expr_has_unused_scope_binding(expr.inner, parser_ast@dummy_expr());
+                    case rhs_found of {
+                        true -> (true, rhs_loc, rhs_name);
+                        false -> case is_unused_scope_discard_name(expr.name) of {
+                            true -> expr_has_unused_scope_binding(expr.right_expr, extra_scope_result);
+                            false -> case expr_contains_identifier_named(expr.right_expr, expr.name) or expr_contains_identifier_named(extra_scope_result, expr.name) of {
+                                true -> expr_has_unused_scope_binding(expr.right_expr, extra_scope_result);
+                                false -> case expr_contains_unused_binding_exempt_expr(expr.inner) of {
+                                    true -> expr_has_unused_scope_binding(expr.right_expr, extra_scope_result);
+                                    false -> (true, expr.location, expr.name)
+                                }
+                            }
+                        }
+                    }
+                end
+            };
+            false -> case expr.kind == 10 of {
+                true -> do
+                    (rhs_td_found: bool, rhs_td_loc: SourceLocation, rhs_td_name: string) <- expr_has_unused_scope_binding(expr.inner, parser_ast@dummy_expr());
+                    case rhs_td_found of {
+                        true -> (true, rhs_td_loc, rhs_td_name);
+                        false -> do
+                            (unused_td: bool, unused_td_name: string) <- tuple_bindings_find_unused(expr.pattern_bindings, expr.right_expr, extra_scope_result);
+                            case unused_td of {
+                                true -> case expr_contains_unused_binding_exempt_expr(expr.inner) of {
+                                    true -> expr_has_unused_scope_binding(expr.right_expr, extra_scope_result);
+                                    false -> (true, expr.location, unused_td_name)
+                                };
+                                false -> expr_has_unused_scope_binding(expr.right_expr, extra_scope_result)
+                            }
+                        end
+                    }
+                end;
+                false -> case expr.kind == 11 of {
+                    true -> do
+                        (body_found: bool, body_loc: SourceLocation, body_name: string) <- expr_has_unused_scope_binding(expr.inner, expr.right_expr);
+                        case body_found of {
+                            true -> (true, body_loc, body_name);
+                            false -> expr_has_unused_scope_binding(expr.right_expr, parser_ast@dummy_expr())
+                        }
+                    end;
+                    false -> do
+                        (inner_found: bool, inner_loc: SourceLocation, inner_name: string) <- expr_has_unused_scope_binding(expr.inner, parser_ast@dummy_expr());
+                        case inner_found of {
+                            true -> (true, inner_loc, inner_name);
+                            false -> expr_has_unused_scope_binding(expr.right_expr, parser_ast@dummy_expr())
+                        }
+                    end
+                }
+            }
+        }
+    }
+}
+
+fn decl_has_unused_scope_binding(decl: Declaration) -> (bool, SourceLocation, string) {
+    case decl.tag == 0 of {
+        true -> expr_has_unused_scope_binding(decl.body, parser_ast@dummy_expr());
+        false -> (false, parser_ast@zero_location(), "")
+    }
+}
+
+fn decls_has_unused_scope_binding(decls: ListDeclaration) -> (bool, SourceLocation, string) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> do
+            (head_found: bool, head_loc: SourceLocation, head_name: string) <- decl_has_unused_scope_binding(decls.head);
+            case head_found of {
+                true -> (true, head_loc, head_name);
+                false -> decls_has_unused_scope_binding(decls.tail)
+            }
+        end
+    }
+}
+
+fn validate_no_unused_scope_bindings(program: Program) -> ParseResult {
+    (found: bool, err_loc: SourceLocation, bind_name: string) <- decls_has_unused_scope_binding(program.declarations);
+    case found of {
+        true -> parser_core@parse_err("E1055", err_loc, concat(concat("unused variable '", bind_name), "' in this scope; use it, pass it to a function, return it, or bind it as '_'"), "sect3");
         false -> parser_core@parse_ok(program)
     }
 }
