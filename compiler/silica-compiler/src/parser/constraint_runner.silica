@@ -620,6 +620,153 @@ fn has_named_struct_declaration(slots: ListTokenSlot) -> (bool, SourceLocation, 
     }
 }
 
+fn skip_bracketed_slots(slots: ListTokenSlot, depth: int64) -> ListTokenSlot {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> slots;
+        false -> case slots.head.token.kind == kinds.left_bracket of {
+            true -> skip_bracketed_slots(slots.tail, depth + 1);
+            false -> case slots.head.token.kind == kinds.right_bracket of {
+                true -> case depth <= 1 of {
+                    true -> slots.tail;
+                    false -> skip_bracketed_slots(slots.tail, depth - 1)
+                };
+                false -> skip_bracketed_slots(slots.tail, depth)
+            }
+        }
+    }
+}
+
+fn slots_after_sequence_prefix(slots_after_sequence: ListTokenSlot) -> ListTokenSlot {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    after_seq: ListTokenSlot <- skip_leading_whitespace_slots(slots_after_sequence);
+    case after_seq.is_nil of {
+        true -> after_seq;
+        false -> case after_seq.head.token.kind == kinds.proc_keyword or after_seq.head.token.lexeme == "proc" of {
+            true -> do
+                after_proc: ListTokenSlot <- skip_leading_whitespace_slots(after_seq.tail);
+                case after_proc.is_nil of {
+                    true -> after_proc;
+                    false -> case after_proc.head.token.kind == kinds.left_bracket of {
+                        true -> skip_leading_whitespace_slots(skip_bracketed_slots(after_proc, 0));
+                        false -> after_seq
+                    }
+                }
+            end;
+            false -> after_seq
+        }
+    }
+}
+
+fn find_sequence_produces(slots: ListTokenSlot, brace_depth: int64) -> (bool, SourceLocation, ListTokenSlot) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> (false, parser_ast@zero_location(), trimmed);
+        false -> case trimmed.head.token.kind == kinds.produces_keyword or trimmed.head.token.lexeme == "produces" of {
+            true -> case brace_depth == 0 of {
+                true -> (true, trimmed.head.token.location, trimmed.tail);
+                false -> find_sequence_produces(trimmed.tail, brace_depth)
+            };
+            false -> case trimmed.head.token.kind == kinds.right_brace or trimmed.head.token.lexeme == "}" of {
+                true -> case brace_depth <= 0 of {
+                    true -> (false, trimmed.head.token.location, trimmed);
+                    false -> find_sequence_produces(trimmed.tail, brace_depth - 1)
+                };
+                false -> case trimmed.head.token.kind == kinds.left_brace or trimmed.head.token.lexeme == "{" of {
+                    true -> find_sequence_produces(trimmed.tail, brace_depth + 1);
+                    false -> find_sequence_produces(trimmed.tail, brace_depth)
+                }
+            }
+        }
+    }
+}
+
+fn find_sequence_end(slots: ListTokenSlot, brace_depth: int64) -> (bool, SourceLocation, ListTokenSlot) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> (false, parser_ast@zero_location(), trimmed);
+        false -> case trimmed.head.token.kind == kinds.end_keyword or trimmed.head.token.lexeme == "end" of {
+            true -> case brace_depth == 0 of {
+                true -> (true, trimmed.head.token.location, trimmed.tail);
+                false -> find_sequence_end(trimmed.tail, brace_depth)
+            };
+            false -> case trimmed.head.token.kind == kinds.right_brace or trimmed.head.token.lexeme == "}" of {
+                true -> case brace_depth <= 0 of {
+                    true -> (false, trimmed.head.token.location, trimmed);
+                    false -> find_sequence_end(trimmed.tail, brace_depth - 1)
+                };
+                false -> case trimmed.head.token.kind == kinds.left_brace or trimmed.head.token.lexeme == "{" of {
+                    true -> find_sequence_end(trimmed.tail, brace_depth + 1);
+                    false -> find_sequence_end(trimmed.tail, brace_depth)
+                }
+            }
+        }
+    }
+}
+
+fn has_malformed_sequence_keywords(slots: ListTokenSlot) -> (bool, SourceLocation, string, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> (false, parser_ast@zero_location(), "", "");
+        false -> case trimmed.head.token.kind == kinds.sequence_keyword or trimmed.head.token.lexeme == "sequence" of {
+            true -> do
+                after_prefix: ListTokenSlot <- slots_after_sequence_prefix(trimmed.tail);
+                case after_prefix.is_nil of {
+                    true -> (true, trimmed.head.token.location, "E1049", "sequence block is missing 'produces'; write 'sequence ... produces pure <expr> end'");
+                    false -> case after_prefix.head.token.kind == kinds.sequence_keyword or after_prefix.head.token.lexeme == "sequence" of {
+                        true -> (true, after_prefix.head.token.location, "E1052", "duplicate 'sequence' keyword in sequence block; write a single 'sequence ... produces pure <expr> end'");
+                        false -> do
+                            (found_produces: bool, produces_or_boundary_loc: SourceLocation, after_produces: ListTokenSlot) <- find_sequence_produces(after_prefix, 0);
+                            case found_produces of {
+                                false -> (true, trimmed.head.token.location, "E1049", "sequence block is missing 'produces'; write 'sequence ... produces pure <expr> end'");
+                                true -> do
+                                    after_produces_trimmed: ListTokenSlot <- skip_leading_whitespace_slots(after_produces);
+                                    case after_produces_trimmed.is_nil of {
+                                        true -> (true, produces_or_boundary_loc, "E1050", "sequence produces clause is missing 'pure'; write 'produces pure <expr> end'");
+                                        false -> case after_produces_trimmed.head.token.kind == kinds.produces_keyword or after_produces_trimmed.head.token.lexeme == "produces" of {
+                                            true -> (true, after_produces_trimmed.head.token.location, "E1053", "duplicate 'produces' keyword in sequence block; write 'produces pure <expr> end'");
+                                            false -> case after_produces_trimmed.head.token.kind == kinds.pure_keyword or after_produces_trimmed.head.token.lexeme == "pure" of {
+                                                false -> (true, after_produces_trimmed.head.token.location, "E1050", "sequence produces clause is missing 'pure'; write 'produces pure <expr> end'");
+                                                true -> do
+                                                    (found_end: bool, end_or_boundary_loc: SourceLocation, after_end: ListTokenSlot) <- find_sequence_end(after_produces_trimmed.tail, 0);
+                                                    case found_end of {
+                                                        true -> do
+                                                            after_end_trimmed: ListTokenSlot <- skip_leading_whitespace_slots(after_end);
+                                                            case after_end_trimmed.is_nil of {
+                                                                true -> has_malformed_sequence_keywords(after_end);
+                                                                false -> case after_end_trimmed.head.token.kind == kinds.end_keyword or after_end_trimmed.head.token.lexeme == "end" of {
+                                                                    true -> (true, after_end_trimmed.head.token.location, "E1054", "extra 'end' after sequence block; sequence blocks close with one 'end' and functions close with '}'");
+                                                                    false -> has_malformed_sequence_keywords(after_end)
+                                                                }
+                                                            }
+                                                        end;
+                                                        false -> (true, end_or_boundary_loc, "E1051", "sequence block is missing closing 'end'; write 'sequence ... produces pure <expr> end'")
+                                                    }
+                                                end
+                                            }
+                                        }
+                                    }
+                                end
+                            }
+                        end
+                    }
+                }
+            end;
+            false -> case trimmed.head.token.kind == kinds.produces_keyword or trimmed.head.token.lexeme == "produces" of {
+                true -> (true, trimmed.head.token.location, "E1048", "'produces' appears without a preceding 'sequence'; write 'sequence ... produces pure <expr> end'");
+                false -> has_malformed_sequence_keywords(trimmed.tail)
+            }
+        }
+    }
+}
+
+fn has_sequence_keyword_error(slots: ListTokenSlot) -> (bool, SourceLocation, string, string) {
+    has_malformed_sequence_keywords(slots)
+}
+
 fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
     reversed: ListToken <- reverse_tokens(lexer_runner@empty_token_list(), tokens);
     slots: ListTokenSlot <- tokens_to_slots(reversed);
@@ -649,35 +796,41 @@ fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
                                             case has_record_bad_tail of {
                                                 true -> parser_core@parse_err("E1046", record_bad_tail_loc, concat(concat("unexpected '", record_bad_tail_token), "' after the last item in a struct/record; close it with '}'"), "sect3");
                                                 false -> do
-                                                    (has_missing_ret: bool, missing_ret_loc: SourceLocation, missing_ret_fn: string) <- has_missing_function_return_type(propagated);
-                                                    case has_missing_ret of {
-                                                        true -> parser_core@parse_err("E1042", missing_ret_loc, concat(concat("function '", missing_ret_fn), "' is missing a return type; write '-> <type>' before the function body"), "sect3.4");
+                                                    (has_sequence_err: bool, sequence_err_loc: SourceLocation, sequence_err_code: string, sequence_err_msg: string) <- has_sequence_keyword_error(slots);
+                                                    case has_sequence_err of {
+                                                        true -> parser_core@parse_err(sequence_err_code, sequence_err_loc, sequence_err_msg, "sect9.3.1");
                                                         false -> do
-                                                            program: Program <- constraint_extract@slots_to_program(propagated);
-                                                            lifted: Program <- constraint_extract@lift_lambda_expressions(program);
-                                                            wrapped_prog: Program <- constraint_extract@wrap_lifted_lambda_hof_calls(lifted);
-                                                            result0: ParseResult <- constraint_extract@validate_required_statement_terminators(wrapped_prog);
-                                                            case result0.is_ok of {
-                                                                true -> do
-                                                                    result0b: ParseResult <- constraint_extract@validate_no_illegal_trailing_semicolon(result0.program);
-                                                                    case result0b.is_ok of {
+                                                            (has_missing_ret: bool, missing_ret_loc: SourceLocation, missing_ret_fn: string) <- has_missing_function_return_type(propagated);
+                                                            case has_missing_ret of {
+                                                                true -> parser_core@parse_err("E1042", missing_ret_loc, concat(concat("function '", missing_ret_fn), "' is missing a return type; write '-> <type>' before the function body"), "sect3.4");
+                                                                false -> do
+                                                                    program: Program <- constraint_extract@slots_to_program(propagated);
+                                                                    lifted: Program <- constraint_extract@lift_lambda_expressions(program);
+                                                                    wrapped_prog: Program <- constraint_extract@wrap_lifted_lambda_hof_calls(lifted);
+                                                                    result0: ParseResult <- constraint_extract@validate_required_statement_terminators(wrapped_prog);
+                                                                    case result0.is_ok of {
                                                                         true -> do
-                                                                            result1: ParseResult <- constraint_extract@validate_no_single_element_tuples(result0b.program);
-                                                                            case result1.is_ok of {
+                                                                            result0b: ParseResult <- constraint_extract@validate_no_illegal_trailing_semicolon(result0.program);
+                                                                            case result0b.is_ok of {
                                                                                 true -> do
-                                                                                    result2: ParseResult <- constraint_extract@validate_max_params(result1.program);
-                                                                                    case result2.is_ok of {
-                                                                                        true -> constraint_extract@validate_max_tuple_decompose_bindings(result2.program);
-                                                                                        false -> result2
+                                                                                    result1: ParseResult <- constraint_extract@validate_no_single_element_tuples(result0b.program);
+                                                                                    case result1.is_ok of {
+                                                                                        true -> do
+                                                                                            result2: ParseResult <- constraint_extract@validate_max_params(result1.program);
+                                                                                            case result2.is_ok of {
+                                                                                                true -> constraint_extract@validate_max_tuple_decompose_bindings(result2.program);
+                                                                                                false -> result2
+                                                                                            }
+                                                                                        end;
+                                                                                        false -> result1
                                                                                     }
                                                                                 end;
-                                                                                false -> result1
+                                                                                false -> result0b
                                                                             }
                                                                         end;
-                                                                        false -> result0b
+                                                                        false -> result0
                                                                     }
-                                                                end;
-                                                                false -> result0
+                                                                end
                                                             }
                                                         end
                                                     }
