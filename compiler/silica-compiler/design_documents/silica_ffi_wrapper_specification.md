@@ -1,11 +1,14 @@
 # Silica External Library Call Wrapper Specification
 
+**Last updated**: May 21, 2026
+
 ## Related Documents
 
 | Document                             | Purpose                                                                  |
 | ------------------------------------ | ------------------------------------------------------------------------ |
 | `silica-specification.md`            | Core language syntax, effects, actors, regions, and compiler diagnostics |
 | `silica-specification-additional.md` | Additional compile-time failure rules                                    |
+| `ffi_wrapper_implementation_plan.md` | Compiler implementation phases for this specification                    |
 
 ---
 
@@ -17,19 +20,23 @@ This specification defines the rules for outbound calls from Silica to external 
 
 This specification applies only to calls from Silica to C libraries and to other language libraries that expose a C-compatible interface. Underlying external libraries may be provided as dynamically linked shared libraries or as statically linked archive/object libraries. Calls from C or other languages into Silica are out of scope and are specified in a separate inbound-interop specification.
 
-Silica does not call arbitrary external APIs directly. Every external operation callable from Silica must be exposed through a Silica-compatible C wrapper function. The wrapper function adapts the original external API into a stable, explicit ABI boundary that the Silica compiler can type-check, effect-check, and validate.
+Silica does not call arbitrary external APIs directly. Every external operation callable from Silica must be exposed through a Silica-compatible C wrapper function. The wrapper function adapts the original external API into a stable, explicit ABI boundary that the Silica compiler can type-check and effect-check. In the initial implementation, the toolchain validates wrapper symbols at **link time only**; it does not parse C headers.
 
 ### 1.2 Design Principles
 
 - **Wrapper-First External Calls**: External libraries are adapted through wrapper functions before Silica calls them.
 - **Explicit Danger Boundary**: Every module that declares or exposes foreign functions, or that imports or otherwise uses any module whose name begins with `dangerous_`, must itself use the `dangerous_` module-name prefix. That naming requirement propagates along the module dependency graph to the root application module, so the compiled application name carries `dangerous_` whenever the program depends—directly or transitively—on any `dangerous_*` module. A module that never depends on a `dangerous_*` module is not required to use the prefix.
-- **Actor-Scoped External Calls**: External calls are permitted only inside the behavior function passed directly to `spawn`.
-- **Explicit Effect Tracking**: Calls to `dangerous_*` modules are required to appear only in the sequence portion of `sequence proc[external_danger] ... produces pure ... end`.
-- **No Retained Dangerous Data**: A completed `external_danger` sequence produces only pure Silica values.
-- **Strong Typing at the Boundary**: Wrapper code must translate C values into concrete Silica-compatible types.
-- **No Raw Pointer Exposure**: Raw pointers, `void *`, and opaque C structs must not be exposed directly to Silica.
+- **Cast-Mediated Foreign Calls**: Application actors never call `dangerous_*` module functions directly. Every outbound foreign operation is requested by `cast` to a dedicated **FFI worker actor**; the worker executes the C wrapper call and delivers the outcome by `cast` to a designated receiver actor.
+- **Cast-Only Client Behaviors**: An actor whose behavior initiates foreign work must be a **cast-only behavior** (it handles incoming messages through `cast`, not `call`).
+- **Worker-Scoped `external_danger`**: Calls to `dangerous_*` modules are required to appear only in the sequence portion of `sequence proc[external_danger] ... produces pure ... end` inside an FFI worker actor behavior.
+- **No Retained Dangerous Data in `produces pure`**: A completed `external_danger` sequence produces only structurally pure Silica values. Foreign results leave the worker through designated FFI result casts, not through a tainted `produces pure` value.
+- **Strict Structural Taint**: Values returned from `dangerous_*` modules remain external-danger-touched at every depth. This specification version does not define validator-based de-taint.
+- **Strong Typing at the Boundary**: Silica foreign declarations, explicit `wrapper_meta` references, and sidecar metadata define the Silica-facing ABI; link time verifies symbol presence only.
+- **Two-Layer String Declarations**: Raw foreign bindings use pointer-plus-length arguments; exported adapter wrappers accept Silica `string` and perform the copy before calling the raw binding.
+- **No Raw Pointer Exposure**: Raw pointers, `void *`, and opaque C structs must not be exposed directly to Silica source types.
 - **Non-Recursive Data Only**: Recursive C struct shapes must not be sent to Silica.
 - **Outbound Only**: This specification does not define callbacks, trampolines, exported Silica functions, or external calls into Silica.
+- **Prebuilt Wrapper Libraries (initial toolchain)**: C wrapper object code is supplied as prebuilt static libraries; the Silica build tool links them but does not compile C wrapper sources in the initial implementation.
 
 ### 1.3 Scope
 
@@ -37,10 +44,11 @@ This specification defines:
 
 1. C wrapper function requirements.
 2. Silica `dangerous_*` module requirements, including naming rules that cascade along module dependencies to the root application module and compiled application name.
-3. The `external_danger` effect.
+3. Cast-mediated foreign calls, cast-only client behaviors, and the `external_danger` effect.
 4. Rules for strings, buffers, pointers, arrays, and de-opaqueified C structs.
 5. Restrictions on dangerous data crossing actor and effect boundaries.
-6. Compile-time, parser, type-check, and wrapper-validation failures.
+6. Sidecar wrapper metadata and link-time symbol validation.
+7. Compile-time, parser, type-check, and link-time failures.
 
 This specification does not define:
 
@@ -92,6 +100,20 @@ The property is structural. Records, tuples, lists, sums, buffers, and nested va
 
 Silica does not receive the opaque object itself. Silica receives concrete data derived from the object.
 
+### 2.7 FFI worker actor
+
+An **FFI worker actor** is a spawned actor whose behavior executes outbound foreign calls. It receives foreign-call request messages by `cast`, invokes `dangerous_*` module functions inside `sequence proc[external_danger] ... produces pure ... end`, and delivers outcomes by `cast` to a designated receiver actor named in the request.
+
+### 2.8 Cast-only behavior
+
+A **cast-only behavior** is an actor behavior function that handles incoming actor messages exclusively through `cast`. It must not be written as a `call`-reply behavior. Application actors that initiate foreign work, and FFI worker actors that execute foreign calls, must use cast-only behaviors.
+
+### 2.9 Sidecar metadata file
+
+A **sidecar metadata file** is a macro-free metadata file stored under `dangerous_exposure_source/`. It declares link libraries and per-symbol wrapper facts that cannot be derived from Silica foreign declarations alone.
+
+Sidecar files are **not** discovered automatically from header names or directory layout. A `dangerous_*` module references sidecar files explicitly through `wrapper_meta` declarations in Silica source (§3.2).
+
 ---
 
 ## 3. Program Structure and Module Rules
@@ -140,10 +162,28 @@ A module that imports or uses a dangerous_* module must use the dangerous_ prefi
 
 ### 3.2 Foreign declaration syntax
 
-This specification adds the following declaration form:
+This specification adds the following declaration forms.
+
+**Sidecar reference (module level)** — required in any module that declares one or more raw foreign bindings:
+
+```silica
+wrapper_meta "dangerous_exposure_source/db/silica_db_wrapper.meta";
+```
+
+A module may declare multiple `wrapper_meta` paths when its foreign bindings draw metadata from more than one sidecar file.
+
+**Raw foreign binding**:
 
 ```silica
 foreign c_wrapper "symbol_name"
+fn local_name(arg1: Type1, arg2: Type2) -> ReturnType;
+```
+
+**Optional per-binding sidecar override** — when one foreign binding uses a different sidecar file from the module defaults:
+
+```silica
+foreign c_wrapper "symbol_name"
+    meta "dangerous_exposure_source/other/extra.meta"
 fn local_name(arg1: Type1, arg2: Type2) -> ReturnType;
 ```
 
@@ -152,8 +192,30 @@ Example:
 ```silica
 module dangerous_legacy_math;
 
+wrapper_meta "dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta";
+
 foreign c_wrapper "silica_legacy_math_add_int64"
 fn add_raw(left: int64, right: int64) -> int64;
+```
+
+**Sidecar reference rules**:
+
+- Every module containing a `foreign c_wrapper` declaration must declare at least one `wrapper_meta` path, unless every such declaration carries its own `meta` clause.
+- Each `wrapper_meta` and `meta` path must be a string literal.
+- Each path must be rooted under the project `dangerous_exposure_source/` directory.
+- The compiler loads **only** sidecar files referenced by `wrapper_meta` or `meta` declarations in the module being compiled. It does not infer paths from header basenames, directory walks, or symbol naming conventions.
+- Each `foreign c_wrapper "symbol"` declaration must have exactly one matching `wrapper symbol { ... }` entry in a sidecar file referenced by that module.
+
+**Compiler failures**:
+
+```text
+MissingWrapperMetaError:
+A module that declares foreign c_wrapper bindings must declare wrapper_meta paths or a meta path on each foreign binding.
+```
+
+```text
+WrapperMetaPathError:
+wrapper_meta and meta paths must be located under dangerous_exposure_source at the root of the Silica project.
 ```
 
 A foreign declaration binds a C wrapper symbol to a Silica function name in the current module.
@@ -164,9 +226,9 @@ A foreign declaration binds a C wrapper symbol to a Silica function name in the 
 
 Raw foreign bindings must not be exported directly to application code.
 
-A Silica adapter wrapper is a Silica function that calls one or more raw foreign bindings and returns a Silica-facing value that conforms to this specification.
+**Adapter detection rule**: An exported function from a `dangerous_*` module is a valid Silica adapter wrapper if and only if it is an ordinary Silica function declaration with a body. A `foreign c_wrapper` declaration is never a valid export.
 
-Any exported adapter wrapper from a `dangerous_*` module is part of the danger boundary. It may be called only under the `external_danger` placement and effect rules in §4.
+A Silica adapter wrapper is a Silica function with a body that calls one or more raw foreign bindings and returns a Silica-facing value that conforms to this specification. Exported adapter wrappers are callable only from FFI worker actors inside `external_danger` sequences (§4). Application actors must not call them directly; they request foreign work by `cast` to an FFI worker actor (§4.2).
 
 Example:
 
@@ -174,6 +236,8 @@ Example:
 module dangerous_legacy_math;
 
 export add/2;
+
+wrapper_meta "dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta";
 
 foreign c_wrapper "silica_legacy_math_add_int64"
 fn add_raw(left: int64, right: int64) -> int64;
@@ -183,13 +247,13 @@ fn add(left: int64, right: int64) -> int64 {
 }
 ```
 
-The exported name `add/2` is callable only inside the sequence portion of a valid `sequence proc[external_danger] ... produces pure ... end` block.
+The exported name `add/2` is not callable from application actor behaviors. An FFI worker actor calls it inside the sequence portion of a valid `sequence proc[external_danger] ... produces pure ... end` block.
 
 The raw foreign binding `add_raw/2` is not exported.
 
 ---
 
-## 4. The `external_danger` Effect
+## 4. Cast-Mediated Foreign Calls and the `external_danger` Effect
 
 ### 4.1 Effect declaration
 
@@ -199,105 +263,120 @@ This specification adds the following effect:
 external_danger
 ```
 
-### 4.2 Required effect rule
+### 4.2 Cast-mediated call model
 
-**Rule**: A call to any function in any `dangerous_*` module must appear in the sequence portion of an enclosing `sequence proc[external_danger] ... produces pure ... end` block.
+**Rule**: Every outbound foreign operation uses a cast-mediated handshake. Application actors must not call `dangerous_*` module functions directly.
+
+Required flow:
+
+1. A **client actor** with a cast-only behavior receives work by `cast`.
+2. The client actor sends a foreign-call request by `cast` to an **FFI worker actor**.
+3. The FFI worker actor executes the requested operation inside `sequence proc[external_danger] ... produces pure ... end`, calling one or more `dangerous_*` module functions as needed.
+4. If the operation has a result, the FFI worker actor delivers it by `cast` to the receiver actor named in the request (typically the client actor).
+
+This cast-mediated model applies to all outbound foreign calls. From the perspective of Silica actor scheduling, every foreign call is **non-blocking**: the client actor sends a request cast and resumes; the FFI worker actor performs the call and delivers the outcome by a separate result cast (§12).
+
+### 4.3 Cast-only client behavior rule
+
+**Rule**: An actor whose behavior initiates foreign work must be spawned with a cast-only behavior.
+
+Such a behavior:
+
+- handles incoming messages exclusively through `cast`;
+- must not use the `call`-reply behavior shape;
+- requests foreign operations only by casting to an FFI worker actor;
+- receives foreign outcomes only by handling FFI result casts.
+
+**Parser failure**:
+
+```text
+ExternalDangerClientBehaviorError:
+Actors that initiate foreign work must use cast-only behaviors.
+```
+
+### 4.4 FFI worker actor rule
+
+**Rule**: Outbound C wrapper execution occurs only inside an FFI worker actor behavior spawned by `spawn`.
+
+An FFI worker actor:
+
+- uses a cast-only behavior;
+- receives foreign-call request casts;
+- executes `dangerous_*` module calls only inside `sequence proc[external_danger] ... produces pure ... end`;
+- delivers foreign outcomes by `cast` to the receiver named in the request;
+- must not deliver external-danger-touched data through the `produces pure` clause (§7.4).
+
+A program may use one shared FFI worker actor or multiple specialized worker actors. The worker behavior must be the function passed directly to `spawn`.
+
+### 4.5 Required effect rule
+
+**Rule**: A call to any function in any `dangerous_*` module must appear in the sequence portion of an enclosing `sequence proc[external_danger] ... produces pure ... end` block inside an FFI worker actor behavior.
 
 This rule applies to:
 
 - raw foreign bindings called by adapter wrappers inside `dangerous_*` modules;
 - Silica adapter functions declared in `dangerous_*` modules;
-- helper functions exposed by `dangerous_*` modules;
+- helper functions defined in `dangerous_*` modules;
 - functions that return only pure Silica values but reside in a `dangerous_*` module.
 
-Valid:
+Calls to `dangerous_*` module functions from application actor behaviors, ordinary top-level functions, or non-worker actor behaviors are invalid.
+
+Valid (inside FFI worker behavior):
 
 ```silica
 sequence proc[external_danger]
-    parsed: Ok(int64) | Error(int64) <- dangerous_net@parse_port(msg.text);
+    sum: int64 <- dangerous_legacy_math@add(req.left, req.right);
+    cast(req.reply_to, { tag: :foreign_ok, value: sum });
 produces
-    pure parsed
+    pure state
 end
 ```
 
-Invalid:
+Invalid (direct call from application behavior):
 
 ```silica
-parsed: Ok(int64) | Error(int64) <- dangerous_net@parse_port(text);
+sum: int64 <- dangerous_legacy_math@add(left, right);
 ```
 
 **Parser failure**:
 
 ```text
 DangerousModuleCallError:
-Calls to dangerous_* module functions must appear in the sequence portion of sequence proc[external_danger] ... produces pure ... end.
+Calls to dangerous_* module functions must appear in the sequence portion of sequence proc[external_danger] ... produces pure ... end inside an FFI worker actor behavior.
 ```
 
-### 4.3 Actor placement rule
+### 4.6 Worker placement rule
 
-**Rule**: A `sequence proc[external_danger] ... produces pure ... end` block is valid only when it appears directly inside the function passed to `spawn` as the actor behavior function.
+**Rule**: A `sequence proc[external_danger] ... produces pure ... end` block is valid only when it appears directly inside the cast-only behavior function passed to `spawn` for an FFI worker actor.
 
-The actor behavior may be written as a function literal at the `spawn` call site or as a named top-level function passed directly to `spawn`. In both cases, the function containing the `external_danger` sequence must be the actor behavior function supplied to `spawn`.
-
-Valid:
-
-```silica
-fn main() -> int64 {
-    sequence proc[concurrency]
-        worker_ref: actor_ref <- spawn(
-            { count: 0 },
-            fn(msg: { text: string }, state: { count: int64 }) -> { count: int64 } {
-                sequence proc[external_danger]
-                    parsed: Ok(int64) | Error(int64) <- dangerous_net@parse_port(msg.text);
-                produces
-                    pure case parsed of {
-                        Ok(port: int64) -> { count: state.count + port };
-                        Error(code: int64) -> state;
-                    }
-                end
-            }
-        );
-    produces
-        pure 0
-    end
-}
-```
-
-Invalid:
-
-```silica
-fn parse_from_regular_function(text: string) -> Ok(int64) | Error(int64) {
-    sequence proc[external_danger]
-        parsed: Ok(int64) | Error(int64) <- dangerous_net@parse_port(text);
-    produces
-        pure parsed
-    end
-}
-```
+The worker behavior may be written as a function literal at the `spawn` call site or as a named top-level function passed directly to `spawn`. In both cases, the function containing the `external_danger` sequence must be the FFI worker behavior function supplied to `spawn`.
 
 **Parser failure**:
 
 ```text
 ExternalDangerPlacementError:
-external_danger sequence blocks are only valid directly inside the function spawned for an actor.
+external_danger sequence blocks are only valid directly inside the cast-only behavior function spawned for an FFI worker actor.
 ```
 
-### 4.4 Disallowed placements
+### 4.7 Disallowed placements
 
 The parser must reject an `external_danger` sequence block in any of the following positions:
 
 - inside an ordinary top-level function body;
-- inside a helper function;
-- inside a function literal that is not passed directly to `spawn` as the actor behavior;
-- inside a named function that is not passed directly to `spawn` as the actor behavior;
-- inside a nested expression that is not the direct body of the spawned actor behavior function;
+- inside a helper function that is not the FFI worker behavior passed directly to `spawn`;
+- inside an application actor behavior;
+- inside a function literal that is not passed directly to `spawn` as an FFI worker behavior;
+- inside a named function that is not passed directly to `spawn` as an FFI worker behavior;
+- inside a nested expression that is not the direct body of the spawned FFI worker behavior function;
 - inside any non-actor context.
 
-### 4.5 Interaction with other effects
+The parser must reject a direct call to any `dangerous_*` module function outside an FFI worker actor `external_danger` sequence.
 
-An actor behavior function is permitted to contain a sequence block tagged only with `external_danger` when the block performs only dangerous module calls and pure computation.
+### 4.8 Interaction with other effects
 
-If the actor behavior function performs other effects, the sequence block is permitted to include additional effects only when those effects are valid in actor behavior functions and are not restricted by this specification.
+An FFI worker behavior is permitted to contain a sequence block tagged only with `external_danger` when the block performs only dangerous module calls, pure computation, concurrency casts required for FFI result delivery, and no other effects.
+
+If the worker behavior performs other effects, the sequence block is permitted to include additional effects only when those effects are valid in actor behavior functions and are not restricted by this specification.
 
 The following effects are restricted for external-danger-touched data:
 
@@ -436,16 +515,40 @@ A wrapper receiving a boolean argument is required to reject values other than `
 
 Silica strings passed to C wrapper functions are never passed as references to the original Silica string storage.
 
-For every Silica `string` argument passed to a C wrapper function, the runtime presents the wrapper with a copy of the string's memory.
+This specification uses a **two-layer declaration model**:
 
-The wrapper receives the copied string as a pointer-plus-length pair:
+1. **Raw foreign binding**: declares the C ABI shape using pointer-plus-length arguments.
+2. **Exported adapter wrapper**: accepts a Silica `string`, copies it to actor-stack scratch memory, and calls the raw foreign binding.
+
+Raw foreign binding example (the enclosing module must also declare `wrapper_meta`; see §3.2):
+
+```silica
+wrapper_meta "dangerous_exposure_source/net/silica_net_wrapper.meta";
+
+foreign c_wrapper "silica_net_parse_port"
+fn parse_port_raw(text_ptr: uint8, text_len: uint64) -> { tag: int64, value: int64, error_code: int64 };
+```
+
+Adapter wrapper example:
+
+```silica
+export parse_port/1;
+
+fn parse_port(text: string) -> { tag: int64, value: int64, error_code: int64 } {
+    parse_port_raw(text)
+}
+```
+
+The compiler lowers a Silica `string` argument at a raw foreign binding call site into an actor-stack copy exposed to C as:
 
 ```c
 const uint8_t *text_ptr,
 uint64_t text_len
 ```
 
-The copied memory resides in the expandable stack of the encompassing Silica actor. It is not allocated in the general heap.
+When the call site is an adapter wrapper with a `string` parameter, the adapter body calls the raw binding; the compiler performs the same copy lowering for that call.
+
+The copied memory resides in the expandable stack of the encompassing Silica actor (the FFI worker actor executing the foreign call). It is not allocated in the general heap.
 
 The original Silica string is not modifiable from C. The C wrapper must treat `text_ptr` as read-only memory.
 
@@ -595,7 +698,7 @@ Such structs must:
 - avoid bitfields;
 - avoid flexible array members;
 - avoid compiler-specific packing unless explicitly declared and checked;
-- have layout verified by compile-time or build-time checks;
+- have layout declared consistently in Silica foreign declarations and sidecar metadata;
 - be non-recursive.
 
 ### 6.9 Variadic functions
@@ -634,7 +737,7 @@ A string or byte buffer returned from a `dangerous_*` module is external-danger-
 
 The compiler is not required to prove whether such data is executable binary content or system command text.
 
-Instead, Silica treats such values as tainted external data. They must not be passed to APIs that execute commands, load dynamic code, write executable files, spawn processes, evaluate scripts, or cross actor `call` or `cast` message boundaries unless converted by an explicit validator.
+Instead, Silica treats such values as tainted external data. They must not be passed to APIs that execute commands, load dynamic code, write executable files, spawn processes, evaluate scripts, or cross ordinary actor `call` or `cast` message boundaries. The sole exception is the **FFI result cast** path defined in §4.2 and §7.6.
 
 Command execution APIs must not accept raw string commands. They must accept structured command values, such as an allowlisted program identifier plus an argument list.
 
@@ -670,18 +773,21 @@ external_danger-touched data cannot be used inside sequence blocks that declare 
 
 ### 7.4 Sequence completion rule
 
-Silica retains no dangerous data at the completion of a `sequence proc[external_danger] ... produces pure ... end` block.
+Silica retains no external-danger-touched data in the `produces pure` value of a `sequence proc[external_danger] ... produces pure ... end` block.
 
-The value produced by the `produces pure` clause must contain only pure Silica values. It must not contain external-danger-touched data at any depth.
+The value produced by the `produces pure` clause must contain only structurally pure Silica values. It must not contain external-danger-touched data at any depth.
 
-Before the sequence block completes, every external-danger-touched value must be one of the following:
+**Strict structural taint**: In this specification version, external-danger-touched data is not cleared by destructuring, tag matching, field projection, copying into fresh records, or user-defined helper functions. A value returned from a `dangerous_*` module remains external-danger-touched at every depth until it is consumed entirely inside the `external_danger` sequence block without appearing in `produces pure`.
 
-- consumed entirely within the block;
-- converted by an explicit validator into a non-tainted Silica value;
-- copied or decoded by a wrapper or validator into a pure Silica value;
-- rejected through an explicit error result.
+Foreign outcomes leave an FFI worker actor through the designated **FFI result cast** to the receiver named in the request (§4.2). The cast payload may contain external-danger-touched data. The worker's `produces pure` value must contain only structurally pure actor state.
 
-The sequence boundary is a taint boundary. External-danger-touched data may exist only inside the dynamic and lexical extent of the `external_danger` sequence block, except for region values explicitly converted into actor-state-owned region references under §7.5.
+Before the sequence block completes, every external-danger-touched value inside the sequence must be one of the following:
+
+- consumed entirely within the block without appearing in `produces pure`;
+- delivered to the designated receiver by an FFI result cast executed inside the block;
+- rejected through explicit control flow that does not place tainted data in `produces pure`.
+
+The sequence boundary is a taint boundary for `produces pure`. External-danger-touched data may exist inside the dynamic and lexical extent of the `external_danger` sequence block, and may appear only in FFI result casts executed from that block, except for region values explicitly converted into actor-state-owned region references under §7.5.
 
 The result of the `produces pure` expression must be checked structurally. If any field, tuple element, list element, sum payload, or nested value contains external-danger-touched data, compilation fails.
 
@@ -694,9 +800,9 @@ sequence proc[external_danger] must produce only pure Silica values; external_da
 
 ### 7.5 Actor-local memory-region containment
 
-Any memory region modified, created, or used within a sequence block tagged with `external_danger` is actor-local to the behavior function in which that sequence block appears.
+Any memory region modified, created, or used within a sequence block tagged with `external_danger` is actor-local to the FFI worker behavior function in which that sequence block appears.
 
-Such a memory region must never be moved out of the actor behavior, except that it may be explicitly converted into an actor-state-owned region reference and stored in the actor state returned by that behavior invocation.
+Such a memory region must never be moved out of the FFI worker behavior, except that it may be explicitly converted into an actor-state-owned region reference and stored in the actor state returned by that behavior invocation, or delivered through an FFI result cast under §7.6.
 
 This rule applies to:
 
@@ -707,36 +813,40 @@ This rule applies to:
 
 Actor state is the only permitted long-lived destination for such memory regions. These regions must not cross actor message boundaries.
 
-The parser must reject any program that attempts to move an external-danger-touched memory region out of the actor behavior, except when the region is explicitly converted into an actor-state-owned region reference and placed into the actor state returned by that same behavior invocation.
+The parser must reject any program that attempts to move an external-danger-touched memory region out of the FFI worker behavior, except when the region is explicitly converted into an actor-state-owned region reference and placed into the actor state returned by that same behavior invocation, or delivered through an FFI result cast under §7.6.
 
 **Parser failure**:
 
 ```text
 ExternalDangerRegionEscapeError:
-Memory regions created, modified, or used inside sequence proc[external_danger] cannot move out of the actor behavior function, except when explicitly converted into actor-state-owned region references returned as actor state.
+Memory regions created, modified, or used inside sequence proc[external_danger] cannot move out of the FFI worker behavior function, except when explicitly converted into actor-state-owned region references returned as actor state, or delivered through an FFI result cast under §7.6.
 ```
 
 ### 7.6 Actor call and cast boundary rule
 
 An external-danger-touched memory region must not be included at any depth in:
 
-- a return value produced for an actor `call`;
-- a payload sent through an actor `cast`.
+- a return value produced for an ordinary actor `call`;
+- an ordinary actor `cast` payload.
 
 This prohibition is structural. Wrapping the region inside records, tuples, lists, or sum variants does not make it valid.
+
+**FFI result cast exception**: An FFI worker actor may include external-danger-touched data, including memory-region references, in a cast payload sent to the receiver named in a foreign-call request, provided the cast is executed inside the requesting worker's `external_danger` sequence block. No other cast or call path may carry external-danger-touched memory regions.
+
+A client actor that receives an FFI result cast must consume or discard any external-danger-touched payload within that cast handler. It must not place external-danger-touched memory regions into actor state, ordinary outbound casts, or `call` replies.
 
 **Type-check failure**:
 
 ```text
 ExternalDangerMessageBoundaryError:
-Memory regions created, modified, or used inside sequence proc[external_danger] cannot appear at any depth in a return value for call or in a payload for cast.
+Memory regions created, modified, or used inside sequence proc[external_danger] cannot appear at any depth in an ordinary call reply or cast payload. Only FFI result casts from an FFI worker actor to the designated receiver are permitted.
 ```
 
 ### 7.7 Validator rule
 
-An explicit validator is permitted to convert external-danger-touched data into a non-tainted value only when the validator's specification permits that conversion.
+Validator-based de-taint is **out of scope** for this specification version. External-danger-touched data remains tainted structurally until consumed inside an permitted `external_danger` sequence block or delivered through an FFI result cast as defined in §4.2 and §7.6.
 
-Validator design is outside the scope of this version of the specification.
+A future specification may define explicit validators that convert external-danger-touched data into non-tainted values.
 
 ---
 
@@ -761,14 +871,16 @@ When Silica calls a C wrapper function, Silica values are lowered into the wrapp
 | `float32`          | `float`                                                              |
 | `float64`          | `double`                                                             |
 | `boolean`          | `uint8_t`, where `0 = false` and `1 = true`                          |
-| `string`           | actor-stack copy exposed as `const uint8_t *` plus `uint64_t` length |
+| `string` (adapter) | adapter parameter only; lowered at raw call to actor-stack copy as `const uint8_t *` plus `uint64_t` length |
+| `string` (raw foreign binding) | not permitted; raw bindings use pointer-plus-length arguments |
 | `buf(region, T)`   | typed pointer plus `uint64_t` length                                 |
 | inline record      | C struct with matching field order and verified layout               |
 | inline sum         | C struct with explicit `tag` and payload fields                      |
 
 Rules for values sent from Silica:
 
-- Silica strings are copied into the encompassing actor's expandable stack before the wrapper receives them.
+- Raw foreign bindings declare pointer-plus-length arguments for string data; exported adapter wrappers accept Silica `string`.
+- Silica strings are copied into the FFI worker actor's expandable stack before the raw foreign binding call reaches C.
 - The original Silica string storage is never exposed to C.
 - The wrapper must treat string pointers as read-only.
 - Silica buffers must be passed with their length.
@@ -805,7 +917,7 @@ Rules for values returned to Silica:
 - Opaque C structs must be de-opaqueified into actual Silica-compatible contents.
 - Recursive C struct definitions must not be returned to Silica.
 - `void *` must never be returned to Silica as an untyped pointer.
-- Returned values from `dangerous_*` modules are external-danger-touched until consumed, validated, copied, decoded, or converted according to this specification.
+- Returned values from `dangerous_*` modules are external-danger-touched until consumed inside an FFI worker `external_danger` sequence or delivered through an FFI result cast.
 - A wrapper must return an explicit error when it cannot determine a returned pointer's element type, pointee type, length, layout, or de-opaqueified contents.
 
 ---
@@ -925,6 +1037,8 @@ module dangerous_legacy_math;
 
 export add/2;
 
+wrapper_meta "dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta";
+
 foreign c_wrapper "silica_legacy_math_add_int64"
 fn add_raw(left: int64, right: int64) -> int64;
 
@@ -940,22 +1054,56 @@ module dangerous_math_app;
 
 use dangerous_legacy_math;
 
-fn math_actor_behavior(
-    msg: { left: int64, right: int64 },
-    state: { value: int64 }
-) -> { value: int64 } {
-    sequence proc[external_danger]
+fn ffi_worker_behavior(
+    msg: {
+        op: :foreign_call,
+        reply_to: actor_ref,
+        left: int64,
+        right: int64
+    },
+    state: { pending: int64 }
+) -> { pending: int64 } {
+    sequence proc[external_danger, concurrency]
         sum: int64 <- dangerous_legacy_math@add(msg.left, msg.right);
+        cast(msg.reply_to, { tag: :foreign_ok, value: sum });
     produces
-        pure { value: sum }
+        pure state
     end
+}
+
+fn client_behavior(
+    msg: {
+        op: :compute,
+        left: int64,
+        right: int64
+    } | {
+        tag: :foreign_ok,
+        value: int64
+    },
+    state: { value: int64, worker: actor_ref, self_ref: actor_ref }
+) -> { value: int64, worker: actor_ref, self_ref: actor_ref } {
+    case msg of {
+        { op: :compute, left: left, right: right } -> {
+            cast(state.worker, {
+                op: :foreign_call,
+                reply_to: state.self_ref,
+                left: left,
+                right: right
+            });
+            state
+        };
+        { tag: :foreign_ok, value: value } -> {
+            { value: value, worker: state.worker, self_ref: state.self_ref }
+        };
+    }
 }
 
 fn main() -> int64 {
     sequence proc[concurrency]
-        worker_ref: actor_ref <- spawn(
-            { value: 0 },
-            math_actor_behavior
+        worker_ref: actor_ref <- spawn({ pending: 0 }, ffi_worker_behavior);
+        client_ref: actor_ref <- spawn(
+            { value: 0, worker: worker_ref, self_ref: client_ref },
+            client_behavior
         );
     produces
         pure 0
@@ -967,10 +1115,10 @@ This example is valid because:
 
 - the importing compilation unit is a `dangerous_*` module (`dangerous_math_app`), satisfying the dangerous dependency naming rule in §3.1;
 - the external call is exposed only through a `dangerous_*` module;
-- the call appears inside the sequence portion of `sequence proc[external_danger] ... produces pure ... end`;
-- the function containing the `external_danger` sequence is the function passed to `spawn` as the actor behavior;
-- `main` only performs the actor spawn and does not contain the `external_danger` sequence;
-- the produced value contains only a pure Silica record.
+- the call appears inside the sequence portion of `sequence proc[external_danger] ... produces pure ... end` in an FFI worker cast-only behavior;
+- the client actor requests foreign work by `cast` and receives the outcome by FFI result cast;
+- the worker's `produces pure` value contains only structurally pure actor state; the foreign result leaves through an FFI result cast;
+- `main` only performs actor spawns and does not contain an `external_danger` sequence.
 
 ### 10.2 Fallible parser wrapper returning pure data
 
@@ -1025,11 +1173,25 @@ module dangerous_net;
 
 export parse_port/1;
 
+wrapper_meta "dangerous_exposure_source/net/silica_net_wrapper.meta";
+
 foreign c_wrapper "silica_net_parse_port"
-fn parse_port_raw(text: string) -> { tag: int64, value: int64, error_code: int64 };
+fn parse_port_raw(text_ptr: uint8, text_len: uint64) -> { tag: int64, value: int64, error_code: int64 };
 
 fn parse_port(text: string) -> { tag: int64, value: int64, error_code: int64 } {
     parse_port_raw(text)
+}
+```
+
+Sidecar metadata referenced by `wrapper_meta` (`dangerous_exposure_source/net/silica_net_wrapper.meta`):
+
+```text
+link_library: "silica_net"
+
+wrapper silica_net_parse_port {
+    symbol: "silica_net_parse_port"
+    result: "tagged_result"
+    error_domain: "dangerous_net"
 }
 ```
 
@@ -1040,25 +1202,46 @@ module dangerous_parser_app;
 
 use dangerous_net;
 
-fn parser_actor_behavior(
-    msg: { text: string },
-    state: { last_port: int64 }
-) -> { last_port: int64 } {
-    sequence proc[external_danger]
+fn ffi_worker_behavior(
+    msg: {
+        op: :foreign_call,
+        reply_to: actor_ref,
+        text: string
+    },
+    state: { pending: int64 }
+) -> { pending: int64 } {
+    sequence proc[external_danger, concurrency]
         raw: { tag: int64, value: int64, error_code: int64 } <- dangerous_net@parse_port(msg.text);
+        cast(msg.reply_to, { tag: :foreign_ok, raw: raw });
     produces
-        pure case raw.tag of {
-            0: int64 -> { last_port: raw.value };
-            _: int64 -> state;
-        }
+        pure state
     end
+}
+
+fn client_behavior(
+    msg: { op: :parse, text: string } | { tag: :foreign_ok, raw: { tag: int64, value: int64, error_code: int64 } },
+    state: { last_port: int64, worker: actor_ref, self_ref: actor_ref }
+) -> { last_port: int64, worker: actor_ref, self_ref: actor_ref } {
+    case msg of {
+        { op: :parse, text: text } -> {
+            cast(state.worker, { op: :foreign_call, reply_to: state.self_ref, text: text });
+            state
+        };
+        { tag: :foreign_ok, raw: raw } -> {
+            case raw.tag of {
+                0: int64 -> { last_port: raw.value, worker: state.worker, self_ref: state.self_ref };
+                _: int64 -> state;
+            }
+        };
+    }
 }
 
 fn main() -> int64 {
     sequence proc[concurrency]
+        worker_ref: actor_ref <- spawn({ pending: 0 }, ffi_worker_behavior);
         parser_ref: actor_ref <- spawn(
-            { last_port: 0 },
-            parser_actor_behavior
+            { last_port: 0, worker: worker_ref, self_ref: parser_ref },
+            client_behavior
         );
     produces
         pure 0
@@ -1066,9 +1249,11 @@ fn main() -> int64 {
 }
 ```
 
-This example is valid because the importing compilation unit is a `dangerous_*` module (`dangerous_parser_app`), the `external_danger` sequence is in the function passed to `spawn`, not in `main`, the result of the `external_danger` sequence is a pure actor-state record, and the raw result from the dangerous module does not escape the sequence block.
+This example is valid because the importing compilation unit is a `dangerous_*` module (`dangerous_parser_app`), the client actor uses a cast-only behavior, the `external_danger` sequence is in the FFI worker behavior rather than in `main`, the raw foreign binding uses pointer-plus-length while the adapter accepts `string`, and the worker delivers the foreign result through an FFI result cast rather than through `produces pure`.
 
 ### 10.3 Array return mapped to a Silica buffer
+
+Examples §10.3–§10.5 show `dangerous_*` module and C wrapper shapes only. Application integration uses the cast-mediated FFI worker model from §4 and §10.1–§10.2.
 
 Original external C API:
 
@@ -1103,6 +1288,8 @@ Silica dangerous module:
 module dangerous_values;
 
 export get_all/0;
+
+wrapper_meta "dangerous_exposure_source/values/silica_values_wrapper.meta";
 
 foreign c_wrapper "silica_values_get_all"
 fn get_all_raw() -> { tag: int64, items: buf(region, int64), error_code: int64 };
@@ -1193,6 +1380,8 @@ module dangerous_point;
 
 export current/0;
 
+wrapper_meta "dangerous_exposure_source/point/silica_point_wrapper.meta";
+
 foreign c_wrapper "silica_point_current"
 fn current_raw() -> { tag: int64, value: { x: int64, y: int64 }, error_code: int64 };
 
@@ -1247,6 +1436,8 @@ Silica dangerous module:
 module dangerous_db_result;
 
 export current_snapshot/0;
+
+wrapper_meta "dangerous_exposure_source/db/silica_db_result_wrapper.meta";
 
 foreign c_wrapper "silica_db_result_snapshot_current"
 fn current_snapshot_raw() -> {
@@ -1310,13 +1501,15 @@ Wrapper implementations are required to detect invalid or already-closed resourc
 
 ---
 
-## 12. Blocking Behavior
+## 12. Non-Blocking Foreign Calls
 
-A wrapper function that may block must be documented as blocking.
+All outbound foreign calls use the cast-mediated model in §4.2. Client actors and FFI worker actors both use cast-only behaviors. A client never waits synchronously inside an `external_danger` sequence for a C library call to finish.
 
-Blocking behavior matters for actor scheduling and runtime responsiveness.
+**Architectural rule**: Every foreign call is non-blocking at the Silica actor level. The client sends a foreign-call request cast and continues until it handles the FFI result cast. Any synchronous wait inside the underlying C wrapper executes on the FFI worker actor's thread only and does not block other actors' scheduling.
 
-A future Silica implementation may route blocking C wrapper calls through a worker thread. Any such routing must preserve the rule that Silica source code can use `external_danger` only directly within the spawned actor behavior function.
+Sidecar metadata does **not** declare `blocking`. That field is redundant because the cast-only FFI worker model already isolates potentially blocking C library calls to the worker actor thread.
+
+Wrapper authors remain responsible for not performing unbounded blocking work that would stall an FFI worker actor, but that is an operational constraint on worker design—not a separate metadata dimension tracked by the compiler.
 
 ---
 
@@ -1326,43 +1519,90 @@ The wrapper must be macro-free.
 
 C wrapper headers and C wrapper implementation files must not define or require Silica-specific C preprocessor macros for ownership, lifetime, blocking behavior, result semantics, ABI versioning, or binding generation.
 
-Wrapper metadata that cannot be derived from the C function signature must be declared outside the C preprocessor macro system.
+Wrapper metadata that cannot be derived from Silica foreign declarations must be supplied in **sidecar metadata files** stored under `dangerous_exposure_source/`.
 
-Permitted metadata mechanisms are:
+### 13.1 Sidecar reference and discovery
 
-1. Silica package metadata;
-2. a separate wrapper metadata file;
-3. explicit Silica foreign declarations;
-4. build-system metadata consumed by the Silica compiler or binding generator.
+Sidecar metadata files live under `dangerous_exposure_source/` but are located **only** through explicit Silica source references:
 
-The metadata must describe any boundary property that is not mechanically derivable from the wrapper signature, including:
+```silica
+wrapper_meta "dangerous_exposure_source/db/silica_db_wrapper.meta";
+```
 
-- borrowed inputs;
-- retained external data;
-- out-parameters;
-- blocking behavior;
-- result tag conventions;
-- array element type and length source;
-- de-opaqueification contract;
-- non-recursive struct proof metadata;
-- error-code domain.
+or, for a single binding override:
 
-Example metadata shape:
+```silica
+foreign c_wrapper "silica_db_get_i64"
+    meta "dangerous_exposure_source/db/silica_db_wrapper.meta"
+fn get_i64_raw(key_ptr: uint8, key_len: uint64) -> { tag: int64, value: int64, error_code: int64 };
+```
+
+Example layout:
+
+```text
+dangerous_exposure_source/db/silica_db_wrapper.h      # C header (authoring reference; not parsed by toolchain)
+dangerous_exposure_source/db/silica_db_wrapper.meta    # sidecar metadata
+dangerous_exposure_source/lib/libsilica_db.a           # prebuilt archive
+```
+
+```silica
+module dangerous_db;
+
+wrapper_meta "dangerous_exposure_source/db/silica_db_wrapper.meta";
+
+foreign c_wrapper "silica_db_get_i64"
+fn get_i64_raw(key_ptr: uint8, key_len: uint64) -> { tag: int64, value: int64, error_code: int64 };
+```
+
+Rules:
+
+- The compiler loads a sidecar file if and only if a `wrapper_meta` or `meta` declaration in the compiling module names that path.
+- The compiler does **not** infer sidecar paths from header basenames, directory walks, `silica_<module>_<function>` symbol names, or build-system defaults.
+- A module with foreign bindings must declare at least one reachable sidecar path before compilation succeeds.
+- Each `foreign c_wrapper "symbol"` declaration must have exactly one matching `wrapper symbol { ... }` entry in a referenced sidecar file.
+- A sidecar file may declare one `link_library` name used at link time for all wrappers listed in that file.
+
+The Silica compiler reads explicitly referenced sidecar metadata during compilation. The linker verifies that each referenced wrapper symbol exists in the prebuilt library named by `link_library`.
+
+### 13.2 Required sidecar fields (initial implementation)
+
+Each `wrapper` entry must include at minimum:
 
 ```text
 wrapper silica_db_get_i64 {
     symbol: "silica_db_get_i64"
-    blocking: true
     result: "tagged_result"
     error_domain: "dangerous_db"
+}
+```
+
+Optional argument metadata may describe properties not visible in Silica foreign declarations:
+
+```text
     arguments: [
         { name: "key_ptr", lifetime: "borrowed", retain: false },
         { name: "key_len", role: "length", length_of: "key_ptr" }
     ]
-}
 ```
 
-The exact metadata file syntax is outside the scope of this document.
+Required documented properties include, when applicable:
+
+- borrowed inputs;
+- retained external data;
+- out-parameters;
+- result tag conventions;
+- array element type and length source;
+- de-opaqueification contract;
+- non-recursive struct declarations;
+- error-code domain.
+
+`blocking` is not a sidecar field. The cast-only FFI worker architecture makes blocking metadata redundant (§12).
+
+### 13.3 What the toolchain does not validate initially
+
+The initial Silica toolchain does **not** parse C headers or C source. It does not mechanically verify C struct layout, C type spelling, variadic signatures, or wrapper implementation behavior.
+
+Silica-side foreign declarations and sidecar metadata are the source of truth for the Silica-facing ABI. Link time verifies symbol presence in the named prebuilt library only.
 
 ---
 
@@ -1390,18 +1630,35 @@ src/ffi/silica_db_wrapper.h
 wrappers/silica_sqlite_wrapper.h
 ```
 
-The Silica compiler, build tool, or wrapper validator  rejects any wrapper header file located outside `dangerous_exposure_source`.
+The Silica compiler rejects any `wrapper_meta` or `meta` path, or any sidecar metadata file referenced by those declarations, located outside `dangerous_exposure_source`.
 
-Required wrapper-validation failure:
+Required failure:
 
 ```text
-DangerousExposureSourceError:
-C wrapper header files must be located under dangerous_exposure_source at the root of the Silica project.
+WrapperMetaPathError:
+wrapper_meta and meta paths must be located under dangerous_exposure_source at the root of the Silica project.
 ```
 
-### 14.2 Package declarations
+### 14.2 Prebuilt wrapper libraries (initial implementation)
 
-A Silica package that uses C wrappers is required to declare:
+In the initial implementation, C wrapper object code is supplied as **prebuilt static libraries**. The Silica build tool links these libraries but does not compile C wrapper sources.
+
+Conventions:
+
+- A sidecar file names the library to link: `link_library: "silica_db"`.
+- Prebuilt archives live under `dangerous_exposure_source/lib/`, for example `dangerous_exposure_source/lib/libsilica_db.a`.
+- The linker must resolve every `foreign c_wrapper "symbol"` used by the program against the libraries named by the referenced sidecar files.
+
+**Link-time failure**:
+
+```text
+MissingForeignSymbolError:
+Required C wrapper symbol is not defined in the linked prebuilt libraries.
+```
+
+### 14.3 Package declarations (future)
+
+A future Silica package format may additionally declare:
 
 - wrapper header files located under `dangerous_exposure_source`;
 - wrapper implementation files;
@@ -1412,21 +1669,18 @@ A Silica package that uses C wrappers is required to declare:
 - optional `pkg-config` package names;
 - target-specific conditions.
 
-Example package metadata shape:
+Example future package metadata shape:
 
 ```text
 foreign package db {
     headers: ["dangerous_exposure_source/db/silica_db_wrapper.h"]
-    sources: ["dangerous_exposure_source/db/silica_db_wrapper.c"]
-    libraries: ["db"]
-    link_mode: "dynamic"
-    pkg_config: "db"
+    sidecars: ["dangerous_exposure_source/db/silica_db_wrapper.meta"]
+    libraries: ["dangerous_exposure_source/lib/libsilica_db.a"]
+    link_mode: "static"
 }
 ```
 
-The Silica build tool must support both dynamically linked and statically linked external libraries for C wrapper packages. Package metadata must be able to distinguish the two modes whenever the target platform or package layout requires different linker flags, search paths, runtime search paths, archive ordering, or deployment behavior.
-
-The exact package metadata syntax is outside the scope of this document.
+Compilation of C wrapper sources and dynamic linking support are out of scope for the initial implementation described by this specification version.
 
 ---
 
@@ -1435,7 +1689,7 @@ The exact package metadata syntax is outside the scope of this document.
 The compile-time and parser checks are divided into two categories:
 
 1. Silica-side checks; and
-2. wrapper-side checks.
+2. link-time and metadata checks.
 
 ### 15.1 Silica-side checks
 
@@ -1446,29 +1700,58 @@ Required Silica-side hard errors:
 - foreign declaration in a module whose name does not begin with `dangerous_`;
 - import or other use of a `dangerous_*` module from a module whose own name does not begin with `dangerous_`;
 - raw foreign binding exported directly to application code;
-- exported function from a `dangerous_*` module that is not a Silica adapter wrapper;
+- exported function from a `dangerous_*` module that is not a Silica adapter wrapper with a body;
+- module containing `foreign c_wrapper` declarations with no `wrapper_meta` declaration and no per-binding `meta` clause;
+- `wrapper_meta` or `meta` path not located under `dangerous_exposure_source`;
+- sidecar file referenced by `wrapper_meta` or `meta` that does not exist on disk;
+- direct call to any function in a `dangerous_*` module from an application actor behavior or outside an FFI worker actor;
 - call to any function in a `dangerous_*` module outside the sequence portion of a `sequence proc[external_danger] ... produces pure ... end` block;
 - `dangerous_*` module call outside the sequence portion of a sequence block that declares `external_danger`;
 - `dangerous_*` module call inside a sequence block that does not declare `external_danger`;
-- `external_danger` sequence block outside the function literal passed directly to `spawn` as the actor behavior function;
+- actor that initiates foreign work spawned with a behavior that is not cast-only;
+- `external_danger` sequence block outside the cast-only behavior function passed directly to `spawn` for an FFI worker actor;
 - `external_danger` sequence block inside an ordinary top-level function body;
-- `external_danger` sequence block inside a helper function;
-- `external_danger` sequence block inside a function literal that is not passed directly as the behavior function to `spawn`;
-- `external_danger` sequence block in a nested expression position that is not the direct body of the spawned actor behavior function;
+- `external_danger` sequence block inside a helper function that is not the FFI worker behavior passed directly to `spawn`;
+- `external_danger` sequence block inside an application actor behavior;
+- `external_danger` sequence block inside a function literal that is not passed directly as an FFI worker behavior to `spawn`;
+- `external_danger` sequence block in a nested expression position that is not the direct body of the spawned FFI worker behavior function;
+- raw foreign binding declaration using Silica `string` instead of pointer-plus-length arguments;
 - more than eight Silica-level arguments after lowering;
 - raw pointers in Silica-facing declarations;
-- memory region created, modified, or used within `sequence proc[external_danger] ... produces pure ... end` moved out of the actor behavior except through explicit conversion into an actor-state-owned region reference returned as actor state;
-- `sequence proc[external_danger] ... produces pure ... end` block producing a value containing unconverted external-danger-touched data at any depth;
-- memory region created, modified, or used within `sequence proc[external_danger] ... produces pure ... end` included at any depth in a return value for `call` or in a payload for `cast`;
+- missing or mismatched sidecar metadata entry for a used `foreign c_wrapper` symbol;
+- memory region created, modified, or used within `sequence proc[external_danger] ... produces pure ... end` moved out of the FFI worker behavior except through explicit conversion into an actor-state-owned region reference returned as actor state;
+- `sequence proc[external_danger] ... produces pure ... end` block producing a value containing external-danger-touched data at any depth;
+- memory region created, modified, or used within `sequence proc[external_danger] ... produces pure ... end` included at any depth in an ordinary `call` reply or cast payload;
 - external-danger-touched data used inside a sequence block that declares `device_io`, `network_io`, `hot_swap`, or `register_rwr`;
 - recursive Silica record shape sent to a C wrapper;
-- foreign declaration whose Silica type does not match the wrapper-side ABI contract.
+- foreign declaration whose Silica type disagrees with the declared sidecar metadata contract.
+
+Required parser failure:
+
+```text
+MissingWrapperMetaError:
+A module that declares foreign c_wrapper bindings must declare wrapper_meta paths or a meta path on each foreign binding.
+```
+
+Required parser failure:
+
+```text
+WrapperMetaPathError:
+wrapper_meta and meta paths must be located under dangerous_exposure_source at the root of the Silica project.
+```
+
+Required parser failure:
+
+```text
+ExternalDangerClientBehaviorError:
+Actors that initiate foreign work must use cast-only behaviors.
+```
 
 Required parser failure:
 
 ```text
 ExternalDangerPlacementError:
-external_danger sequence blocks are only valid directly inside the function spawned for an actor.
+external_danger sequence blocks are only valid directly inside the cast-only behavior function spawned for an FFI worker actor.
 ```
 
 Required parser failure:
@@ -1482,14 +1765,14 @@ Required parser failure:
 
 ```text
 DangerousModuleCallError:
-Calls to dangerous_* module functions must appear in the sequence portion of sequence proc[external_danger] ... produces pure ... end.
+Calls to dangerous_* module functions must appear in the sequence portion of sequence proc[external_danger] ... produces pure ... end inside an FFI worker actor behavior.
 ```
 
 Required parser failure:
 
 ```text
 ExternalDangerRegionEscapeError:
-Memory regions created, modified, or used inside sequence proc[external_danger] cannot move out of the actor behavior function, except when explicitly converted into actor-state-owned region references returned as actor state.
+Memory regions created, modified, or used inside sequence proc[external_danger] cannot move out of the FFI worker behavior function, except when explicitly converted into actor-state-owned region references returned as actor state, or delivered through an FFI result cast under §7.6.
 ```
 
 Required type-check failure:
@@ -1503,7 +1786,7 @@ Required type-check failure:
 
 ```text
 ExternalDangerMessageBoundaryError:
-Memory regions created, modified, or used inside sequence proc[external_danger] cannot appear at any depth in a return value for call or in a payload for cast.
+Memory regions created, modified, or used inside sequence proc[external_danger] cannot appear at any depth in an ordinary call reply or cast payload. Only FFI result casts from an FFI worker actor to the designated receiver are permitted.
 ```
 
 Required type-check failure:
@@ -1513,15 +1796,44 @@ ExternalDangerRestrictedEffectError:
 external-danger-touched data cannot be used inside sequence blocks that declare device_io, network_io, hot_swap, or register_rwr.
 ```
 
-### 15.2 Wrapper-side checks
+### 15.2 Link-time and metadata checks
 
-Wrapper-side checks are enforced by the binding generator, wrapper validator, header checker, build tool, or any compiler phase that verifies the C wrapper ABI before Silica code is accepted.
+Link-time and metadata checks are enforced by the Silica compiler when loading sidecar metadata and by the linker when producing the final binary.
 
-Required wrapper-side hard errors:
+Required hard errors in the initial implementation:
+
+- sidecar file path referenced by `wrapper_meta` or `meta` located outside `dangerous_exposure_source`;
+- module with `foreign c_wrapper` declarations and no reachable sidecar reference;
+- `foreign c_wrapper "symbol"` declaration with no matching sidecar `wrapper` entry in a referenced sidecar file;
+- sidecar entry with no `link_library` declaration for its file;
+- required sidecar field missing for a used wrapper (`result` or `error_domain` when applicable);
+- referenced prebuilt library archive missing from the project layout;
+- wrapper symbol referenced by Silica not defined in the linked prebuilt libraries.
+
+Required link-time failure:
+
+```text
+MissingForeignSymbolError:
+Required C wrapper symbol is not defined in the linked prebuilt libraries.
+```
+
+Required metadata failure:
+
+```text
+MissingWrapperMetaError:
+A module that declares foreign c_wrapper bindings must declare wrapper_meta paths or a meta path on each foreign binding.
+```
+
+```text
+WrapperMetaPathError:
+wrapper_meta and meta paths must be located under dangerous_exposure_source at the root of the Silica project.
+```
+
+The following wrapper-side checks from earlier specification drafts are **deferred** until the toolchain gains C header parsing or wrapper source analysis:
 
 - unsupported C type in wrapper signature;
 - variadic wrapper function;
-- unsupported struct layout;
+- unsupported C struct layout;
 - recursive C struct definition exposed to Silica instead of being flattened, summarized, bounded, or rejected;
 - C array return value not mapped to a Silica buffer with known element type and length;
 - non-array C pointer return value exposed as a pointer instead of being copied or decoded into its pointee type;
@@ -1531,40 +1843,10 @@ Required wrapper-side hard errors:
 - wrapper result struct containing uninitialized fields visible to Silica;
 - wrapper exposing a C string as NUL-terminated only instead of pointer-plus-length or Silica-compatible string data;
 - wrapper retaining actor-stack string or buffer copies after the foreign call ends;
-- wrapper failing to document blocking behavior for a blocking external call;
 - wrapper failing to provide an explicit error result when it cannot determine a returned pointer's element type, pointee type, length, layout, or de-opaqueified contents;
-- wrapper declaration whose C ABI type mapping disagrees with the Silica foreign declaration;
-- C wrapper header file located outside `dangerous_exposure_source` at the root of the Silica project;
-- Silica-specific C preprocessor macro present in a wrapper header or wrapper implementation;
-- required wrapper metadata missing for ownership, lifetime, blocking behavior, result semantics, array length, de-opaqueification, or recursive-struct validation.
+- Silica-specific C preprocessor macro present in a wrapper header or wrapper implementation.
 
-Required wrapper-validation failure:
-
-```text
-UnsupportedExternalAbiError:
-Wrapper declaration uses a C ABI shape that is not supported by the Silica FFI wrapper specification.
-```
-
-Required wrapper-validation failure:
-
-```text
-RecursiveExternalStructError:
-Recursive C struct definitions cannot be exposed to Silica. The wrapper must return a non-recursive Silica-compatible value or an explicit error result.
-```
-
-Required wrapper-validation failure:
-
-```text
-ExternalPointerReturnError:
-C pointer return values must be mapped to Silica buffers, copied pointee values, de-opaqueified contents, or explicit error results.
-```
-
-Required wrapper-validation failure:
-
-```text
-ExternalVoidPointerError:
-void * values must be translated by wrapper code into approved concrete Silica-facing representations before reaching Silica.
-```
+The deferred checks remain design requirements for wrapper authors even when not mechanically enforced in the initial toolchain.
 
 ---
 
@@ -1572,12 +1854,30 @@ void * values must be translated by wrapper code into approved concrete Silica-f
 
 The following questions remain open:
 
-2. Must every `dangerous_*` module function be callable only from actor behavior functions, including pure helper functions in those modules?
-3. Must string lowering be built into the compiler, or must users explicitly pass `{ ptr, len }`-like records once pointer types exist?
-4. What exact macro-free metadata format is required for wrapper ownership, lifetime, blocking behavior, result semantics, and validation contracts?
-5. How are wrappers required to declare and verify de-opaqueification contracts for C structs whose public headers hide their fields?
-6. What metadata is a wrapper required to provide to prove that a de-opaqueified C struct shape is non-recursive?
-7. How are blocking C wrapper calls required to interact with actors?
+1. Exact sidecar `.meta` field syntax details beyond the initial required fields in §13.2.
+2. Standard foreign-call request and FFI result cast message shapes.
+3. How many FFI worker actors a program should spawn by convention (shared vs per-domain workers).
+4. How client actors derive structurally pure actor state from external-danger-touched FFI result casts under strict structural taint.
+5. How region values returned through FFI result casts may be converted into actor-state-owned region references.
+6. When and how the toolchain should add C header parsing and deferred wrapper-side checks from §15.2.
+7. When the build tool should compile C wrapper sources and support dynamic linking (§14.3).
+
+### 16.1 Resolved design decisions
+
+The following decisions are fixed by this specification version:
+
+| Topic | Decision |
+| ----- | -------- |
+| Dangerous-module call scope | Every call to any function in any `dangerous_*` module must appear inside an FFI worker `external_danger` sequence. |
+| Foreign call transport | All outbound foreign calls use cast to an FFI worker actor; results return by FFI result cast. |
+| Client actor shape | Actors that initiate foreign work use cast-only behaviors. |
+| Adapter-wrapper detection | Exported `dangerous_*` functions must have a Silica body; raw `foreign c_wrapper` declarations are never exported. |
+| String declarations | Raw foreign bindings use pointer-plus-length; adapter wrappers accept Silica `string`. |
+| Metadata | Sidecar `.meta` files under `dangerous_exposure_source/`, referenced explicitly by `wrapper_meta` or per-binding `meta` in Silica source. |
+| Toolchain validation | No C parsing initially; Silica declarations + sidecar metadata + link-time symbol resolution. |
+| Build integration | Prebuilt static wrapper libraries under `dangerous_exposure_source/lib/`. |
+| De-taint | Strict structural taint; no validator-based clearing in this version. |
+| Foreign call scheduling | Architecturally non-blocking via cast-only client and FFI worker actors; no `blocking` sidecar field. |
 
 Questions about external languages calling into Silica are intentionally excluded from this specification and belong in a separate inbound-interop specification.
 
@@ -1585,12 +1885,14 @@ Questions about external languages calling into Silica are intentionally exclude
 
 ## 17. Summary
 
-Silica FFI is wrapper-first.
+Silica FFI is wrapper-first and cast-mediated.
 
-External libraries are required to be adapted into a small, explicit, predictable C-compatible ABI subset before Silica calls them. Wrapper functions are required to use fixed-width types, pointer-plus-length strings, explicit result structs, de-opaqueified C object contents, and clear ownership rules.
+External libraries are required to be adapted into a small, explicit, predictable C-compatible ABI subset before Silica calls them. Wrapper functions are required to use fixed-width types, pointer-plus-length strings, explicit result structs, de-opaqueified C object contents, and clear ownership rules. Wrapper object code is supplied initially as prebuilt static libraries; sidecar `.meta` files under `dangerous_exposure_source/` declare link libraries and wrapper facts and are loaded only when named by `wrapper_meta` or `meta` declarations in Silica source.
 
-Ordinary Silica code is required to call Silica adapter functions through `dangerous_*` modules. Every compilation unit that imports or uses a `dangerous_*` module must itself be a `dangerous_*` module; that constraint propagates to the root application module and to the compiled application name whenever the program depends on FFI. Every call to a `dangerous_*` module function must occur inside the sequence portion of a `sequence proc[external_danger] ... produces pure ... end` block, and that block must be used directly within the function spawned for an actor.
+Application actors never call `dangerous_*` module functions directly. They use cast-only behaviors to send foreign-call requests to FFI worker actors. FFI worker actors execute `sequence proc[external_danger] ... produces pure ... end` blocks and deliver outcomes by FFI result cast. Every compilation unit that imports or uses a `dangerous_*` module must itself be a `dangerous_*` module; that constraint propagates to the root application module and to the compiled application name whenever the program depends on FFI.
+
+Raw foreign bindings declare pointer-plus-length arguments for string data; exported adapter wrappers accept Silica `string`. The initial toolchain validates Silica declarations, explicit sidecar references, sidecar metadata contents, and link-time symbol presence. It does not parse C headers.
 
 Any C array return maps to a Silica buffer. Any non-array C pointer must be converted to type before being sent to Silica. Any `void *` from the underlying library must be translated by wrapper code into an approved concrete Silica-facing representation before Silica sees it. Opaque C structs must be de-opaqueified into Silica-compatible contents, not exposed as handles, raw pointers, or opaque external types.
 
-No external-danger-touched data may be retained after an `external_danger` sequence completes unless it has been converted according to this specification. External-danger-touched data must not cross actor `call` or `cast` message boundaries and must not be used in sequence blocks declaring `device_io`, `network_io`, `hot_swap`, or `register_rwr`.
+External-danger-touched data must not appear in the `produces pure` value of an `external_danger` sequence. It may appear only in FFI result casts executed from that sequence. Strict structural taint applies in this specification version. External-danger-touched data must not cross ordinary actor `call` or `cast` boundaries and must not be used in sequence blocks declaring `device_io`, `network_io`, `hot_swap`, or `register_rwr`.

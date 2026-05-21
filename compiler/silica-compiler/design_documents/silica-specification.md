@@ -6,6 +6,8 @@
 |----------|---------|
 | [silica-specification-additional.md](silica-specification-additional.md) | Compiler failure rules: anti-patterns that must fail at compile time |
 | [silica_actor_capabilities_specification.md](silica_actor_capabilities_specification.md) | Actor capabilities, protocol-typed references, and message-order guarantees (draft extension) |
+| [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) | Outbound C/FFI wrapper calls: `dangerous_*` modules, cast-mediated FFI workers, `external_danger`, sidecar metadata, and link-time validation |
+| [ffi_wrapper_implementation_plan.md](ffi_wrapper_implementation_plan.md) | Compiler implementation phases for [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) |
 | [memory-effects-aarch64-implementation-plan.md](memory-effects-aarch64-implementation-plan.md) | Memory `Space` model for OS-free AArch64 and embedded targets (implementation plan) |
 
 ---
@@ -2047,6 +2049,8 @@ module_declaration ::= "module" identifier ";"
 ```
 
 Note: Modules are typically inferred from filenames, but explicit module declarations are also supported.
+
+Modules that declare or use outbound foreign (FFI) wrapper bindings must follow the `dangerous_*` naming and dependency rules in [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §3.
 
 ### 3.5 Patterns
 ```
@@ -4571,6 +4575,7 @@ Silica defines several built-in effects that track different kinds of side effec
 - `network_io` - Network communications of all kinds (sockets, HTTP, etc.)
 - `hot_swap` - Code loading (dynamic loading, JIT, self-modifying code). On AArch64, requires `ISB` barrier to ensure instruction fetch sees code writes.
 - `register_rwr` - Direct device register access via mmap (read and write). On AArch64, requires `DSB SY` before and `ISB` after for device ordering.
+- `external_danger` - Outbound calls to `dangerous_*` FFI wrapper modules inside an FFI worker actor's `external_danger` sequence. Full rules: [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §4.
 
 **Memory effect guarantees (hosting; normative at this time):** The **distinct hardware behaviors** associated with each `mem(Space)` and region `Space` (write-back, write-through, non-cacheable normal, device, and atomic backing rules in **§12.1.1** and following) are **fully supported and guaranteed only on OS-free executions**—for example bare-metal **boards**, firmware, or any environment where the **Silica runtime and linker script control** how memory regions are mapped and which **cacheability / ordering attributes** apply. On **OS-hosted** programs—**macOS**, **Linux**, **Windows**, **Solaris**, and comparable multiprogramming systems—application memory is exposed through the **traditional flat virtual address model** historically rooted in Unix and the **PDP-11** view of a process: ordinary allocations receive **uniform, OS-chosen** attributes, not a portable, per-allocation choice of Silica memory spaces. Because the **operating system controls and shares physical RAM** among processes, that model **cannot be sidestepped** by a portable application runtime to obtain, for all Silica regions, the same per-space **page-table / MAIR-class** distinctions the language describes. On OS-hosted targets, `mem(Space)` and `region(R, Space)` remain in the **type and effect system** for static discipline, documentation, and integration with **non-portable** or **driver-mediated** buffers where available, but **this specification does not guarantee**, at this time, that each memory space maps to **different hardware attributes** on those OSes. See **§12.1.1.0**.
 
@@ -8400,6 +8405,7 @@ Relationship to other sections:
 | §15.1.3 | Supervisor notification stub — expanded here |
 | §16 | Standard `call()` / `cast()` message passing — used by orderly supervision paths |
 | §15.4 (this section) | Crash containment gate, signal handling, supervision protocol |
+| [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) | Outbound FFI wrapper calls, `dangerous_*` modules, cast-mediated workers, sidecar metadata (fault containment at FFI boundary: §15.4.13.5 below) |
 
 ---
 
@@ -9129,6 +9135,8 @@ An implementation **may realize** the **typed** layer **in milestones**: (**a**)
 
 ##### 15.4.13.5 FFI Fault Containment
 
+Outbound FFI call placement, module naming, cast-mediated worker actors, and wrapper metadata are specified in [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md). This subsection covers **fault containment** when foreign code faults during a call.
+
 A fault that occurs inside a foreign (FFI) call is contained using platform hardware rather than the SFT-based unwind path, because foreign frames have no SFT entries and MTE tags are not maintained by foreign code.
 
 **x86-64 — Memory Protection Keys (MPK)**
@@ -9557,6 +9565,8 @@ The message parameter is automatically provided by the actor runtime when a mess
 - Use `call()` for **request-reply** patterns where the caller needs a response before continuing
 - Use `cast()` for **notifications** or **commands** where no reply is expected
 - Both operations provide consistent error handling via `actor_not_found` exception when the target actor is terminated
+
+**Outbound FFI:** Foreign library calls use cast-only client and FFI worker actors; results are delivered by cast. See [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §4.
 
 ### 16.2.6 Compiler Type Checking for Calling Conventions
 
@@ -14876,13 +14886,23 @@ Integration with OS memory facilities:
 
 ### 26.3 Foreign Function Interface
 
-#### 26.3.1 C Interoperability (Future)
-While Silica doesn't target C interop by design, future extensions might include:
+Outbound calls to C-compatible wrapper libraries are specified in [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md). That document covers:
 
-- **Safe Wrappers**: Type-safe C function wrappers
-- **Memory Layout**: Compatible data layout with C
-- **Calling Convention**: AArch64 calling convention compliance
-- **Error Propagation**: C error code to Silica result conversion
+- `dangerous_*` modules and `foreign c_wrapper` declarations
+- Explicit `wrapper_meta` sidecar references and link-time symbol validation
+- Cast-mediated FFI worker actors and the `external_danger` effect
+- Two-layer string marshaling (Silica `string` in adapters; pointer-plus-length at the raw ABI boundary)
+- Prebuilt wrapper static libraries under `dangerous_exposure_source/`
+
+Compiler rollout is tracked in [ffi_wrapper_implementation_plan.md](ffi_wrapper_implementation_plan.md). Inbound interop (C calling into Silica) remains out of scope.
+
+#### 26.3.1 C Interoperability (Future — inbound and dynamic linking)
+
+The following remain future work beyond [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md):
+
+- **Inbound callbacks**: C or other languages calling into Silica
+- **Dynamic linking**: Runtime compilation and loading of wrapper sources (spec §14.3)
+- **Error Propagation**: Additional standardized C error-code to Silica result conventions at the language level
 
 #### 26.3.2 Runtime Linking
 Dynamic loading of Silica modules:
