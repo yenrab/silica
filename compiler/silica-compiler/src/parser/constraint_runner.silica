@@ -599,6 +599,27 @@ fn has_missing_fn_prefix(slots: ListTokenSlot) -> (bool, SourceLocation, string)
     has_missing_fn_prefix_at_depth(slots, 0)
 }
 
+fn has_named_struct_declaration(slots: ListTokenSlot) -> (bool, SourceLocation, string) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots(slots);
+    case trimmed.is_nil of {
+        true -> (false, parser_ast@zero_location(), "");
+        false -> case trimmed.head.token.kind == kinds.struct_keyword of {
+            true -> do
+                after_struct: ListTokenSlot <- skip_leading_whitespace_slots(trimmed.tail);
+                case after_struct.is_nil of {
+                    true -> (true, trimmed.head.token.location, "");
+                    false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, after_struct.head.token.kind) of {
+                        true -> (true, trimmed.head.token.location, after_struct.head.token.lexeme);
+                        false -> (true, trimmed.head.token.location, "")
+                    }
+                }
+            end;
+            false -> has_named_struct_declaration(trimmed.tail)
+        }
+    }
+}
+
 fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
     reversed: ListToken <- reverse_tokens(lexer_runner@empty_token_list(), tokens);
     slots: ListTokenSlot <- tokens_to_slots(reversed);
@@ -620,39 +641,45 @@ fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
                             case missing_fn of {
                                 true -> parser_core@parse_err("E1045", missing_fn_loc, concat(concat("function declaration '", missing_fn_name), "' is missing the 'fn' prefix; write 'fn <name>(...) -> <type> { ... }'"), "sect3.4");
                                 false -> do
-                                    (has_record_bad_tail: bool, record_bad_tail_loc: SourceLocation, record_bad_tail_token: string) <- has_struct_record_invalid_last_item_follower(slots);
-                                    case has_record_bad_tail of {
-                                        true -> parser_core@parse_err("E1046", record_bad_tail_loc, concat(concat("unexpected '", record_bad_tail_token), "' after the last item in a struct/record; close it with '}'"), "sect3");
+                                    (has_named_struct: bool, named_struct_loc: SourceLocation, named_struct_name: string) <- has_named_struct_declaration(slots);
+                                    case has_named_struct of {
+                                        true -> parser_core@parse_err("E1047", named_struct_loc, concat(concat("named struct declaration '", named_struct_name), "' is not allowed; declare records inline where the type is used"), "sect3.4.2");
                                         false -> do
-                                            (has_missing_ret: bool, missing_ret_loc: SourceLocation, missing_ret_fn: string) <- has_missing_function_return_type(propagated);
-                                            case has_missing_ret of {
-                                                true -> parser_core@parse_err("E1042", missing_ret_loc, concat(concat("function '", missing_ret_fn), "' is missing a return type; write '-> <type>' before the function body"), "sect3.4");
+                                            (has_record_bad_tail: bool, record_bad_tail_loc: SourceLocation, record_bad_tail_token: string) <- has_struct_record_invalid_last_item_follower(slots);
+                                            case has_record_bad_tail of {
+                                                true -> parser_core@parse_err("E1046", record_bad_tail_loc, concat(concat("unexpected '", record_bad_tail_token), "' after the last item in a struct/record; close it with '}'"), "sect3");
                                                 false -> do
-                                                    program: Program <- constraint_extract@slots_to_program(propagated);
-                                                    lifted: Program <- constraint_extract@lift_lambda_expressions(program);
-                                                    wrapped_prog: Program <- constraint_extract@wrap_lifted_lambda_hof_calls(lifted);
-                                                    result0: ParseResult <- constraint_extract@validate_required_statement_terminators(wrapped_prog);
-                                                    case result0.is_ok of {
-                                                        true -> do
-                                                            result0b: ParseResult <- constraint_extract@validate_no_illegal_trailing_semicolon(result0.program);
-                                                            case result0b.is_ok of {
+                                                    (has_missing_ret: bool, missing_ret_loc: SourceLocation, missing_ret_fn: string) <- has_missing_function_return_type(propagated);
+                                                    case has_missing_ret of {
+                                                        true -> parser_core@parse_err("E1042", missing_ret_loc, concat(concat("function '", missing_ret_fn), "' is missing a return type; write '-> <type>' before the function body"), "sect3.4");
+                                                        false -> do
+                                                            program: Program <- constraint_extract@slots_to_program(propagated);
+                                                            lifted: Program <- constraint_extract@lift_lambda_expressions(program);
+                                                            wrapped_prog: Program <- constraint_extract@wrap_lifted_lambda_hof_calls(lifted);
+                                                            result0: ParseResult <- constraint_extract@validate_required_statement_terminators(wrapped_prog);
+                                                            case result0.is_ok of {
                                                                 true -> do
-                                                                    result1: ParseResult <- constraint_extract@validate_no_single_element_tuples(result0b.program);
-                                                                    case result1.is_ok of {
+                                                                    result0b: ParseResult <- constraint_extract@validate_no_illegal_trailing_semicolon(result0.program);
+                                                                    case result0b.is_ok of {
                                                                         true -> do
-                                                                            result2: ParseResult <- constraint_extract@validate_max_params(result1.program);
-                                                                            case result2.is_ok of {
-                                                                                true -> constraint_extract@validate_max_tuple_decompose_bindings(result2.program);
-                                                                                false -> result2
+                                                                            result1: ParseResult <- constraint_extract@validate_no_single_element_tuples(result0b.program);
+                                                                            case result1.is_ok of {
+                                                                                true -> do
+                                                                                    result2: ParseResult <- constraint_extract@validate_max_params(result1.program);
+                                                                                    case result2.is_ok of {
+                                                                                        true -> constraint_extract@validate_max_tuple_decompose_bindings(result2.program);
+                                                                                        false -> result2
+                                                                                    }
+                                                                                end;
+                                                                                false -> result1
                                                                             }
                                                                         end;
-                                                                        false -> result1
+                                                                        false -> result0b
                                                                     }
                                                                 end;
-                                                                false -> result0b
+                                                                false -> result0
                                                             }
-                                                        end;
-                                                        false -> result0
+                                                        end
                                                     }
                                                 end
                                             }
