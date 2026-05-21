@@ -21,6 +21,7 @@ def normalized_text(path):
     text = open(path, "r", encoding="utf-8", errors="replace").read()
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"(?m)^(\d+)(\[silica\])", r"\1\n\2", text)
+    text = re.sub(r"(?m)^(done)(\[silica\])", r"\1\n\2", text)
     text = re.sub(r"(?m)^actor_id:\s*0x[0-9a-fA-F]+\s*$", "actor_id:        <PTR>", text)
     text = re.sub(r"(?m)^supervisor_acb:\s*0x[0-9a-fA-F]+\s*$", "supervisor_acb:  <PTR>", text)
     return "\n".join(line.rstrip() for line in text.splitlines())
