@@ -1,6 +1,6 @@
 # Silica External Library Call Wrapper Specification
 
-**Last updated**: May 21, 2026
+**Last updated**: May 22, 2026
 
 ## Related Documents
 
@@ -205,6 +205,23 @@ fn add_raw(left: int64, right: int64) -> int64;
 - Each path must be rooted under the project `dangerous_exposure_source/` directory.
 - The compiler loads **only** sidecar files referenced by `wrapper_meta` or `meta` declarations in the module being compiled. It does not infer paths from header basenames, directory walks, or symbol naming conventions.
 - Each `foreign c_wrapper "symbol"` declaration must have exactly one matching `wrapper symbol { ... }` entry in a sidecar file referenced by that module.
+
+**Compiler warning**:
+
+When the compiler accepts a module that contains one or more `foreign c_wrapper` declarations, it emits warning `W4001` once for each raw foreign binding encountered. This warning is emitted because the module actually declares a callable FFI wrapper boundary; merely running the FFI checker or compiling modules with no `foreign c_wrapper` declarations must not emit `W4001`.
+
+The warning is advisory only. It must never be promoted into an error, must not block compilation, and must not introduce any additional enforcement trial. Existing hard-error rules in this specification remain the only compile-time enforcement for FFI usage.
+
+Required warning text begins:
+
+```text
+FFI_Warning at
+W4001
+
+DANGER DANGER DANGER: this module uses FFI wrapper '<local_name>' for foreign symbol '<symbol_name>'.
+```
+
+The warning message must clearly state that FFI breaks the Silica security model for the app and exposes the entire application to memory insecurity, ABI unsafety, undefined behavior, privilege-boundary collapse, and other security issues from the foreign code and wrapper boundary.
 
 **Compiler failures**:
 
@@ -1725,6 +1742,21 @@ Required Silica-side hard errors:
 - external-danger-touched data used inside a sequence block that declares `device_io`, `network_io`, `hot_swap`, or `register_rwr`;
 - recursive Silica record shape sent to a C wrapper;
 - foreign declaration whose Silica type disagrees with the declared sidecar metadata contract.
+
+Required Silica-side warning:
+
+- `W4001` for each accepted `foreign c_wrapper` declaration encountered in a module.
+
+`W4001` is a warning, not a hard error. It is emitted only for actual FFI wrapper declarations and does not change the compiler exit status. The purpose is to make every FFI boundary visibly dangerous even when the program otherwise satisfies all required FFI rules.
+
+Required compiler warning:
+
+```text
+FFI_Warning at
+W4001
+
+DANGER DANGER DANGER: this module uses FFI wrapper '<local_name>' for foreign symbol '<symbol_name>'. FFI breaks the Silica security model for this app and exposes the entire application to memory insecurity, ABI unsafety, undefined behavior, privilege-boundary collapse, and other security issues from the foreign code and wrapper boundary.
+```
 
 Required parser failure:
 

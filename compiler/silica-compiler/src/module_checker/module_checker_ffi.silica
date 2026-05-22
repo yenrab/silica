@@ -19,9 +19,11 @@
 // export surface for raw foreign bindings and adapter wrappers. Phase 3 — path rules only (no sidecar load).
 
 use parser_ast;
+use diagnostics_core;
 
 export validate_ffi_module_rules/2;
 export validate_export_item_ffi/5;
+export emit_ffi_wrapper_warnings/1;
 
 fn dangerous_prefix() -> string {
     "dangerous_"
@@ -114,6 +116,41 @@ fn first_foreign_binding_location_loop(decls: ListDeclaration) -> SourceLocation
             false -> first_foreign_binding_location_loop(decls.tail)
         }
     }
+}
+
+fn ffi_wrapper_warning_message(decl: Declaration) -> string {
+    c_symbol: string <- strip_string_literal_quotes(decl.body.value);
+    concat(
+        "DANGER DANGER DANGER: this module uses FFI wrapper '",
+        concat(
+            decl.name,
+            concat(
+                "' for foreign symbol '",
+                concat(
+                    c_symbol,
+                    "'. FFI breaks the Silica security model for this app and exposes the entire application to memory insecurity, ABI unsafety, undefined behavior, privilege-boundary collapse, and other security issues from the foreign code and wrapper boundary."
+                )
+            )
+        )
+    )
+}
+
+fn emit_ffi_wrapper_warnings_loop(decls: ListDeclaration) -> int64 proc[DeviceIO] {
+    case decls.is_nil of {
+        true -> 0;
+        false -> case decls.head.tag == 9 of {
+            true -> do
+                msg: string <- ffi_wrapper_warning_message(decls.head);
+                _: int8 <- diagnostics_core@print_compiler_warning("FFI_Warning", "W4001", decls.head.location, msg, "sect3");
+                emit_ffi_wrapper_warnings_loop(decls.tail)
+            end;
+            false -> emit_ffi_wrapper_warnings_loop(decls.tail)
+        }
+    }
+}
+
+fn emit_ffi_wrapper_warnings(program: Program) -> int64 proc[DeviceIO] {
+    emit_ffi_wrapper_warnings_loop(program.declarations)
 }
 
 fn validate_sidecar_path_lexeme(lexeme: string, loc: SourceLocation) -> (int64, string, SourceLocation, string, string) {
