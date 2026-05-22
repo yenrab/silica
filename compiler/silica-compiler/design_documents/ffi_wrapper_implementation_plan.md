@@ -457,8 +457,8 @@ make -C compiler/silica-compiler/trials integrate-ffi   # once wired
 | 3 | `dangerous_*` naming, exports, path rules | ☐ | `make … phase-3` | |
 | 4 | Sidecar loader + entry validation | ☐ | `make … phase-4` | |
 | 5 | Cast/worker placement + cast-only behaviors | ☐ | `make … phase-5` | |
-| 6 | Structural taint + boundaries | ☐ | `make … phase-6` | |
-| 7 | Silica-side ABI checker (two-layer strings) | ☐ | `make … phase-7` | No C parsing |
+| 6 | Structural taint + boundaries | ☑ | `make … phase-6` | |
+| 7 | Silica-side ABI checker (two-layer strings) | ☑ | `make … phase-7` | No C parsing |
 | 8 | Emitter + runtime marshaling | ☐ | `make … phase-8` | Manual link in trial |
 | 9 | Driver link integration | ☐ | `make … phase-9` | |
 | 10 | Full suite + CI + doc lock | ☐ | `make … all` | |

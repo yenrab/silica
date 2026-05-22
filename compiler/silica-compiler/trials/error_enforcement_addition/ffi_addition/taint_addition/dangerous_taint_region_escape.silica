@@ -1,0 +1,33 @@
+module dangerous_taint_region_escape;
+
+use dangerous_legacy_stub;
+
+fn sink_behavior(msg: int64, state: int64) -> (:no_reply, int64) {
+    (:no_reply, state)
+}
+
+fn ffi_worker_behavior(
+    msg: int64,
+    state: { pending: int64, reply_to: actor_ref, peer: actor_ref }
+) -> (:no_reply, { pending: int64, reply_to: actor_ref, peer: actor_ref }) {
+    sequence proc[external_danger, concurrency, mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        myref: ref(L1, normal, int64) <- alloc_ref(r, 0);
+        sum: int64 <- dangerous_legacy_stub@add(msg, state.pending);
+        _: boolean <- cast(state.reply_to, sum impl ActorMessage {});
+        _: boolean <- cast(state.peer, myref impl ActorMessage {})
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency]
+        reply_ref: actor_ref <- spawn(0, sink_behavior);
+        peer_ref: actor_ref <- spawn(0, sink_behavior);
+        worker_ref: actor_ref <- spawn({ pending: 0, reply_to: reply_ref, peer: peer_ref }, ffi_worker_behavior)
+    produces
+        pure 0
+    end
+}

@@ -23,11 +23,13 @@ use atom_table;
 use const_dispatcher;
 use var;
 use call;
+use control;
 use prims;
 use prims_tuple;
 use prims_record;
 use prims_memory;
 use prims_actors;
+use ffi_foreign;
 use prims_list;
 use string_parse;
 use let_dispatcher;
@@ -1270,15 +1272,28 @@ fn call_arg2_tree_for_gpr_reorder_scan(term: SIRTerm) -> SIRTerm {
 
 // Generic user call (non-builtin): args in regs, then BLR or tail BR. use_tail + fn_effects for kind 5 / root tail.
 fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool, use_tail: bool, fn_effects_for_tail: string, blr_effect_value_override: string, line_before_call_asm: string) -> string {
-    sret_n: int64 <- user_call_aggregate_return_alloc_bytes(term.type_name);
-    sret_setup: string <- case reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name) of {
-        true -> case sret_n > 0 of {
-            true -> concat("    SUB SP, SP, #", concat(atom_table@int64_to_decimal_string(sret_n), "\n    MOV X8, SP\n"));
-            false -> ""
-        };
-        false -> ""
-    };
+    (ffi_found: bool, ffi_c_sym: string, ffi_param_types: string, ffi_return_type: string) <- ffi_foreign@lookup_from_outer(outer_reg, term.name);
     a1ty: string <- term.inner.type_name;
+    sret_n: int64 <- case ffi_found of {
+        true -> ffi_foreign@foreign_call_sret_bytes(ffi_return_type);
+        false -> user_call_aggregate_return_alloc_bytes(term.type_name)
+    };
+    sret_setup: string <- case ffi_found of {
+        true -> case sret_n > 0 of {
+            true -> ffi_foreign@emit_foreign_sret_setup(sret_n);
+            false -> case ffi_foreign@needs_string_in_marshal(ffi_param_types, a1ty) of {
+                true -> ffi_foreign@emit_foreign_scratch_setup_string_in_only();
+                false -> ""
+            }
+        };
+        false -> case reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name) of {
+            true -> case sret_n > 0 of {
+                true -> concat("    SUB SP, SP, #", concat(atom_table@int64_to_decimal_string(sret_n), "\n    MOV X8, SP\n"));
+                false -> ""
+            };
+            false -> ""
+        }
+    };
     arg1_reg: string <- user_call_arg_reg_for_type(a1ty, 0, 0);
     gpr_after_a0: int64 <- user_call_next_gpr_slot(a1ty, 0);
     fp_after_a0: int64 <- user_call_next_fp_slot(a1ty, 0);
@@ -1318,8 +1333,17 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         false -> ""
     };
     call_asm: string <- case use_tail of {
-        true -> call@emit_tail_call_body(term, fn_effects_for_tail, outer_reg, indirect_via_x9);
-        false -> call@emit_call_body_effects(term, dest, call_eff_for_blr, outer_reg, indirect_via_x9)
+        true -> case ffi_found and indirect_via_x9 == false of {
+            true -> do
+                frame_rel: string <- control@function_tail_frame_release(fn_effects_for_tail);
+                ffi_foreign@emit_foreign_tail_call(ffi_c_sym, call_eff_for_blr, fn_effects_for_tail, frame_rel)
+            end;
+            false -> call@emit_tail_call_body(term, fn_effects_for_tail, outer_reg, indirect_via_x9)
+        };
+        false -> case ffi_found and indirect_via_x9 == false of {
+            true -> ffi_foreign@emit_foreign_user_call(term, dest, call_eff_for_blr, ffi_c_sym, ffi_param_types, ffi_return_type, a1ty, sret_setup, sret_n, outer_reg);
+            false -> call@emit_call_body_effects(term, dest, call_eff_for_blr, outer_reg, indirect_via_x9)
+        }
     };
     // Two GPR args (X0, X1): if arg1 is evaluated first it may clobber X0 while arg2 is a nested
     // call that still needs the caller's first argument in X0 (e.g. ack(m-1, ack(m, n-1))). Then:

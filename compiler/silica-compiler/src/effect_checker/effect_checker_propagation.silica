@@ -302,6 +302,23 @@ fn resolve_call_effects(fn_name: string, ctx: EffectContext) -> ListEffectName {
     resolve_call_effects_with_binding(fn_name, ctx, parser_ast@dummy_expr(), "", parser_ast@zero_location(), "")
 }
 
+fn dangerous_module_prefix() -> string {
+    "dangerous_"
+}
+
+fn is_dangerous_module_name(name: string) -> bool {
+    pref: string <- dangerous_module_prefix();
+    case len(name) >= len(pref) of {
+        false -> false;
+        true -> substring(name, 0, len(pref)) == pref
+    }
+}
+
+fn external_danger_effect_singleton(location: SourceLocation) -> ListEffectName {
+    ed: EffectName <- EffectName { name: "external_danger", parameter: "", location: location };
+    parser_ast@cons_effect_name(ed, parser_ast@empty_effect_name_list())
+}
+
 fn first_arg_region_type(first_arg: Expr, ctx: EffectContext) -> string {
     case first_arg.kind == 1 of {
         true -> do
@@ -328,6 +345,10 @@ fn resolve_call_effects_with_binding(fn_name: string, ctx: EffectContext, first_
             false -> do
                 case type_checker_core@call_name_is_module_qualified(fn_name) of {
                     true -> do
+                        (qmod: string, _: string) <- type_checker_core@split_module_qualified_call_name(fn_name);
+                        case is_dangerous_module_name(qmod) of {
+                            true -> stamp_effect_locations(external_danger_effect_singleton(location), location);
+                            false -> do
                         base: string <- type_checker_core@user_call_base_function_name(fn_name);
                         (found_mq: bool, mq_effects: ListEffectName) <- effect_checker_core@lookup_fn_effects(ctx.fn_env, base);
                         case found_mq of {
@@ -338,6 +359,8 @@ fn resolve_call_effects_with_binding(fn_name: string, ctx: EffectContext, first_
                                     true -> stamp_effect_locations(builtin_mq_effects, location);
                                     false -> parser_ast@empty_effect_name_list()
                                 }
+                            end
+                        }
                             end
                         }
                     end;

@@ -25,9 +25,11 @@ use type_checker_core;
 use sir_ast;
 use dispatcher;
 use traits;
+use ffi;
 
 export emit_program/2;
 export emit_program_for_unit/3;
+export emit_program_for_unit_with_link_libraries/4;
 
 fn is_actor_runtime_prim(name: string) -> bool {
     name == "spawn" or name == "add_child" or name == "send" or name == "actor_call" or name == "actor_call_registered" or name == "actor_cast" or name == "actor_cast_registered" or name == "self"
@@ -201,6 +203,10 @@ fn sir_string_list_to_csv(list: ListSirString) -> string {
 }
 
 fn emit_program_for_unit(program: Program, context: TypeContext, compilation_unit: string) -> SIRModule proc[mem(normal)] {
+    emit_program_for_unit_with_link_libraries(program, context, compilation_unit, sir_ast@nil_sir_strings())
+}
+
+fn emit_program_for_unit_with_link_libraries(program: Program, context: TypeContext, compilation_unit: string, link_libraries: ListSirString) -> SIRModule proc[mem(normal)] {
     sup_impls: ListSirString <- traits@collect_supervisor_impl_types(program.declarations);
     sup_csv: string <- sir_string_list_to_csv(sup_impls);
     ctx_emit: TypeContext <- type_checker_core@type_context_with_supervisor_types(context, sup_csv);
@@ -213,8 +219,11 @@ fn emit_program_for_unit(program: Program, context: TypeContext, compilation_uni
     fr_impls: ListSirString <- traits@collect_failure_reporter_impl_types(program.declarations);
     req_sigs: ListSIRRequiredMethodSig <- traits@collect_required_trait_method_sigs(program.declarations);
     runtime_deps: ListSirString <- runtime_dependencies_for_sir(fns, sup_impls);
+    wm_paths: ListSirString <- ffi@collect_wrapper_meta_paths(program.declarations);
+    foreign_binds: ListSIRForeignBinding <- ffi@collect_foreign_bindings(program.declarations);
     nm: string <- module_name_for_sir(compilation_unit, program.declarations);
-    SIRModule { module_name: nm, used_modules: uses, exports: exps, export_trait_names: trait_names, marker_impl_types: marker_impls, supervisor_impl_types: sup_impls, supervisor_phase_e: sup_phase_e, failure_reporter_impl_types: fr_impls, required_method_sigs: req_sigs, runtime_dependencies: runtime_deps, functions: fns }
+    is_dangerous: bool <- ffi@module_name_is_dangerous(nm);
+    SIRModule { module_name: nm, used_modules: uses, exports: exps, export_trait_names: trait_names, marker_impl_types: marker_impls, supervisor_impl_types: sup_impls, supervisor_phase_e: sup_phase_e, failure_reporter_impl_types: fr_impls, required_method_sigs: req_sigs, runtime_dependencies: runtime_deps, is_dangerous_module: is_dangerous, wrapper_meta_paths: wm_paths, foreign_bindings: foreign_binds, link_libraries: link_libraries, functions: fns }
 }
 
 // Traverse ListDeclaration; dispatcher delegates per Declaration.tag.

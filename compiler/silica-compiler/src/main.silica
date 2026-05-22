@@ -38,6 +38,10 @@ use module_checker_core;
 use trait_checker_core;
 use trait_specialization;
 use qualified_call_mangler;
+use ffi_sidecar_loader;
+use ffi_placement_checker;
+use ffi_taint_checker;
+use ffi_abi_checker;
 
 fn build_module_world(all: ListParsedFile, exclude_path: string) -> ListNamedProgram {
     case all.is_nil of {
@@ -431,9 +435,22 @@ fn debug_print_expr(expr: Expr, indent: string) -> int64 proc[DeviceIO] {
     debug_compile("~/silica-compiler/trials/int64_addition/print_int64_expression.silica")
     will return true if the filename is "print_int64_expression.silica"
 -}
+fn filename_ends_with(path: string, suffix: string) -> bool {
+    ls: int64 <- len(path);
+    lf: int64 <- len(suffix);
+    case ls < lf of {
+        true -> false;
+        false -> substring(path, ls - lf, ls) == suffix
+    }
+}
+
 fn debug_compile(filename: string) -> bool {
-    case filename of {
-        _: string -> false
+    case filename_ends_with(filename, "dangerous_legacy_math.silica") of {
+        true -> true;
+        false -> case filename_ends_with(filename, "dangerous_legacy_math_meta.silica") of {
+            true -> true;
+            false -> filename_ends_with(filename, "dangerous_net.silica")
+        }
     }
 }
 
@@ -455,72 +472,101 @@ fn compile_to_sir_module(filename: string, program: Program, module_world: ListN
     case mc == 0 of {
         false -> (1, sir_ast@dummy_sir_module());
         true -> do
-            println("  Type checking...");
-            context: TypeContext <- type_checker_core@create_type_context();
-            mod_name: string <- module_checker_core@module_from_path(filename);
-            world_with_self: ListNamedProgram <- parser_ast@cons_named_program(mod_name, program, module_world);
-            tc_out: ModuleTypecheckOutcome <- type_checker_modules@type_check_program_with_modules_outcome(program, mod_name, world_with_self, context);
-            case tc_out.is_ok of {
+            println("  FFI metadata...");
+            ffi_meta: int64 <- ffi_sidecar_loader@validate_program_sidecar_metadata(program);
+            case ffi_meta == 0 of {
+                false -> (1, sir_ast@dummy_sir_module());
                 true -> do
-                    println("  Trait checking...");
-                    tr_code: int64 <- trait_checker_core@trait_checker_check_program(program);
-                    case tr_code != 0 of {
-                        true -> (1, sir_ast@dummy_sir_module());
-                    false -> do
-                        println("  Effect checking...");
-                        effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(program);
-                    case effect_result.is_ok of {
+                    println("  FFI placement...");
+                    placement: int64 <- ffi_placement_checker@validate_program_ffi_placement(program);
+                    case placement == 0 of {
+                        false -> (1, sir_ast@dummy_sir_module());
                         true -> do
-                            _: int64 <- case debug_compile(filename) of {
+                            println("  Type checking...");
+                            context: TypeContext <- type_checker_core@create_type_context();
+                            mod_name: string <- module_checker_core@module_from_path(filename);
+                            world_with_self: ListNamedProgram <- parser_ast@cons_named_program(mod_name, program, module_world);
+                            tc_out: ModuleTypecheckOutcome <- type_checker_modules@type_check_program_with_modules_outcome(program, mod_name, world_with_self, context);
+                            case tc_out.is_ok of {
                                 true -> do
-                                    println("  [DEBUG AST] decl-count walk:");
-                                    debug_walk_decls(program.declarations);
-                                    0
+                                    println("  FFI ABI...");
+                                    abi_st: int64 <- ffi_abi_checker@validate_program_ffi_abi(program);
+                                    case abi_st == 0 of {
+                                        false -> (1, sir_ast@dummy_sir_module());
+                                        true -> do
+                                            println("  FFI taint...");
+                                            taint_st: int64 <- ffi_taint_checker@validate_program_ffi_taint(program);
+                                            case taint_st == 0 of {
+                                                false -> (1, sir_ast@dummy_sir_module());
+                                                true -> do
+                                                    println("  Trait checking...");
+                                                    tr_code: int64 <- trait_checker_core@trait_checker_check_program(program);
+                                                    case tr_code != 0 of {
+                                                        true -> (1, sir_ast@dummy_sir_module());
+                                                        false -> do
+                                                            println("  Effect checking...");
+                                                            effect_result: EffectCheckResult <- effect_checker_capabilities@check_program_effects(program);
+                                                            case effect_result.is_ok of {
+                                                                true -> do
+                                                                    _: int64 <- case debug_compile(filename) of {
+                                                                        true -> do
+                                                                            println("  [DEBUG AST] decl-count walk:");
+                                                                            debug_walk_decls(program.declarations);
+                                                                            0
+                                                                        end;
+                                                                        false -> 0
+                                                                    };
+                                                                    println("  Generating SIR...");
+                                                                    specialized_program: Program <- trait_specialization@specialize_program(program);
+                                                                    specialized_world: ListNamedProgram <- trait_specialization@specialize_named_program_list(world_with_self);
+                                                                    mangled_program: Program <- qualified_call_mangler@mangle_calls_in_program(specialized_program, specialized_world);
+                                                                    link_libs: ListSirString <- ffi_sidecar_loader@collect_program_link_libraries(program);
+                                                                    sir_module: SIRModule <- sir_generator_core@emit_program_for_unit_with_link_libraries(mangled_program, tc_out.context, mod_name, link_libs);
+                                                                    _: int64 <- case debug_compile(filename) of {
+                                                                        true -> do
+                                                                            println("  [DEBUG SIR]:");
+                                                                            println(sir_ast@sir_module_to_text(sir_module));
+                                                                            0
+                                                                        end;
+                                                                        false -> 0
+                                                                    };
+                                                                    (0, sir_module)
+                                                                end;
+                                                                false -> do
+                                                                    effect_error_code: string <- case effect_result.error_code == "" of {
+                                                                        true -> "E3000";
+                                                                        false -> effect_result.error_code
+                                                                    };
+                                                                    effect_spec_section: string <- case effect_result.spec_section == "" of {
+                                                                        true -> "sect9";
+                                                                        false -> effect_result.spec_section
+                                                                    };
+                                                                    diagnostics_core@print_compiler_error("EffectError", effect_error_code, effect_result.error_location, effect_result.error_message, effect_spec_section);
+                                                                    (1, sir_ast@dummy_sir_module())
+                                                                end
+                                                            }
+                                                        end
+                                                    }
+                                                end
+                                            }
+                                        end
+                                    }
                                 end;
-                                false -> 0
-                            };
-                            println("  Generating SIR...");
-                            specialized_program: Program <- trait_specialization@specialize_program(program);
-                            specialized_world: ListNamedProgram <- trait_specialization@specialize_named_program_list(world_with_self);
-                            mangled_program: Program <- qualified_call_mangler@mangle_calls_in_program(specialized_program, specialized_world);
-                            sir_module: SIRModule <- sir_generator_core@emit_program_for_unit(mangled_program, tc_out.context, mod_name);
-                            _: int64 <- case debug_compile(filename) of {
-                                true -> do
-                                    println("  [DEBUG SIR]:");
-                                    println(sir_ast@sir_module_to_text(sir_module));
-                                    0
-                                end;
-                                false -> 0
-                            };
-                            (0, sir_module)
-                        end;
-                        false -> do
-                            effect_error_code: string <- case effect_result.error_code == "" of {
-                                true -> "E3000";
-                                false -> effect_result.error_code
-                            };
-                            effect_spec_section: string <- case effect_result.spec_section == "" of {
-                                true -> "sect9";
-                                false -> effect_result.spec_section
-                            };
-                            diagnostics_core@print_compiler_error("EffectError", effect_error_code, effect_result.error_location, effect_result.error_message, effect_spec_section);
-                            (1, sir_ast@dummy_sir_module())
+                                false -> do
+                                    error_code: string <- case tc_out.error_code == "" of {
+                                        true -> "E2000";
+                                        false -> tc_out.error_code
+                                    };
+                                    spec_section: string <- case tc_out.spec_section == "" of {
+                                        true -> "sect6";
+                                        false -> tc_out.spec_section
+                                    };
+                                    diagnostics_core@print_compiler_error("TypeError", error_code, tc_out.error_location, tc_out.error_message, spec_section);
+                                    (1, sir_ast@dummy_sir_module())
+                                end
+                            }
                         end
                     }
-                        end
-                    }
-                end;
-                false -> do
-                    error_code: string <- case tc_out.error_code == "" of {
-                        true -> "E2000";
-                        false -> tc_out.error_code
-                    };
-                    spec_section: string <- case tc_out.spec_section == "" of {
-                        true -> "sect6";
-                        false -> tc_out.spec_section
-                    };
-                    diagnostics_core@print_compiler_error("TypeError", error_code, tc_out.error_location, tc_out.error_message, spec_section);
-                    (1, sir_ast@dummy_sir_module())
                 end
             }
         end

@@ -55,6 +55,7 @@ use prims_actors_runtime_asm;
 use recursion_support;
 use module_linkage;
 use var;
+use ffi_foreign;
 
 export emit_module/1;
 export emit_module_debug/2;
@@ -155,7 +156,7 @@ fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: Ato
     float64_literal_table: Float64LiteralTable <- float64_literal_pool@build_float64_literal_table(sir_module);
     float32_literal_table: Float32LiteralTable <- float32_literal_pool@build_float32_literal_table(sir_module);
     string_literal_table: StringLiteralTable <- string_literal_pool@build_string_literal_table(sir_module);
-    funcs: string <- emit_functions(sir_module.functions, sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, emitter_debug, sir_module.module_name);
+    funcs: string <- emit_functions(sir_module.functions, sir_module.functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, emitter_debug, sir_module.module_name, sir_module.foreign_bindings);
     needs_region_overflow_helper: bool <- prims_memory@module_uses_region_allocation(sir_module);
     region_overflow_helper: string <- case needs_region_overflow_helper of {
         true -> concat("\n", prims_memory@emit_region_overflow_helper());
@@ -243,6 +244,11 @@ fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: Ato
         true -> concat("\n", string_eq_mmap_nomte@emit_string_eq_helper());
         false -> ""
     };
+    needs_ffi_helpers: bool <- ffi_foreign@module_uses_foreign_calls(sir_module.foreign_bindings);
+    ffi_helpers: string <- case needs_ffi_helpers of {
+        true -> concat("\n", ffi_foreign@emit_foreign_runtime_helpers());
+        false -> ""
+    };
     needs_list_helpers: bool <- prims_list@module_uses_list_prims(sir_module);
     list_helpers_asm: string <- case needs_list_helpers of {
         true -> concat("\n", prims_list@emit_list_helpers());
@@ -286,7 +292,8 @@ fn emit_module_with_atom_and_debug(sir_module: SIRModule, shared_atom_table: Ato
     fwh_9: string <- concat(fwh_8, length_bytes_helper);
     fwh_10: string <- concat(fwh_9, length_chars_helper);
     fwh_11: string <- concat(fwh_10, string_eq_helper);
-    fwh_11b: string <- concat(fwh_11, list_helpers_asm);
+    fwh_11a: string <- concat(fwh_11, ffi_helpers);
+    fwh_11b: string <- concat(fwh_11a, list_helpers_asm);
     fwh_11c: string <- concat(fwh_11b, actor_rt_helper_asm);
     fwh_11d: string <- concat(fwh_11c, region_alloc_stub_asm);
     funcs_with_helper: string <- concat(fwh_11d, region_overflow_helper);
@@ -386,6 +393,11 @@ fn emit_module_asm_prelude(sir_module: SIRModule) -> string {
     text: string <- ".text\n";
     use_line: string <- module_linkage@format_used_modules_comment(sir_module.used_modules);
     exp: string <- module_linkage@emit_export_global_directives(sir_module.exports, sir_module.functions, sir_module.module_name);
+    ffi_ext: string <- ffi_foreign@emit_extern_directives(sir_module.foreign_bindings);
+    ffi_free_ext: string <- case ffi_foreign@module_uses_foreign_calls(sir_module.foreign_bindings) of {
+        true -> ".extern _free\n.extern _malloc\n";
+        false -> ""
+    };
     trait_meta: string <- module_linkage@format_trait_metadata_comments(sir_module);
     phase_g_marker: string <- case prims_actors@module_uses_link_monitor_prims(sir_module) of {
         true -> "    ; supervisors Phase G: link / monitor / demonitor (silica-specification §15.4.8.4–§15.4.8.7) — BL _silica_rt_actor_link|_silica_rt_actor_monitor|_silica_rt_actor_demonitor; link child exit to supervision ingress; DOWN to standard mailbox only; cascading link exit §15.4.8.4\n";
@@ -396,16 +408,16 @@ fn emit_module_asm_prelude(sir_module: SIRModule) -> string {
         true -> ".global main\n";
         false -> ""
     };
-    concat(concat(concat(concat(concat(concat(text, use_line), exp), trait_meta), phase_g_marker), sup_tramps), main_g)
+    concat(concat(concat(concat(concat(concat(concat(concat(text, use_line), exp), ffi_ext), ffi_free_ext), trait_meta), phase_g_marker), sup_tramps), main_g)
 }
 
-fn emit_functions(fns: ListSIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool, module_name: string) -> string proc[DeviceIO] {
+fn emit_functions(fns: ListSIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool, module_name: string, foreign_bindings: ListSIRForeignBinding) -> string proc[DeviceIO] {
     do
     case fns.is_nil of {
         true -> "";
         false -> do
-            fn_asm: string <- emit_sir_function(fns.head, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug, module_name);
-            rest_asm: string <- emit_functions(fns.tail, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug, module_name);
+            fn_asm: string <- emit_sir_function(fns.head, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug, module_name, foreign_bindings);
+            rest_asm: string <- emit_functions(fns.tail, all_functions, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, debug, module_name, foreign_bindings);
             case rest_asm == "" of {
                 true -> fn_asm;
                 false -> concat(concat(fn_asm, "\n"), rest_asm)
@@ -1187,7 +1199,7 @@ fn function_needs_callee_saved_x19_x20_frame(fn_val: SIRFunction) -> bool {
     }
 }
 
-fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool, module_name: string) -> string proc[DeviceIO] {
+fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, debug: bool, module_name: string, foreign_bindings: ListSIRForeignBinding) -> string proc[DeviceIO] {
     do
     entry_label: string <- module_linkage@asm_symbol_for_definition(module_name, fn_val.name);
     eff_comment: string <- emitter_effects@fn_effect_annotation(fn_val.effects);
@@ -1245,6 +1257,12 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
         true -> concat(param_outer_emit, concat("|_lm=", module_name));
         false -> concat("X0|_lm=", module_name)
     };
+    ffi_enc: string <- ffi_foreign@encode_bindings_for_outer(foreign_bindings);
+    param_outer_emit_ffi: string <- case len(ffi_enc) > 0 of {
+        true -> concat(param_outer_emit_lm, concat("|_ffi=", ffi_enc));
+        false -> param_outer_emit_lm
+    };
+    param_outer_emit_fnret: string <- concat(param_outer_emit_ffi, concat("|_fnret=", fn_val.return_type));
     shadow_prologue: string <- case string_shadow of {
         true -> case second_param_shadow of {
             true -> "    STP X19, X20, [SP, #-16]!\n    MOV X19, X0\n    MOV X20, X1\n";
@@ -1310,18 +1328,18 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
     // in term_emitter; do not tag X8 here so epilogue/dealloc paths stay consistent.
     body_outer_root: string <- case fn_val.body.kind == 6 and (fn_val.body.name == "tuple_make" or fn_val.body.name == "record_make") and reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type) of {
         true -> case use_actor_reply_sret_buffer(fn_val) of {
-            true -> param_outer_emit_lm;
+            true -> param_outer_emit_fnret;
             false -> case fn_val.body.name == "tuple_make" of {
-                true -> concat(param_outer_emit_lm, "|_tuple_sret=X8");
-                false -> param_outer_emit_lm
+                true -> concat(param_outer_emit_fnret, "|_tuple_sret=X8");
+                false -> param_outer_emit_fnret
             }
         };
-        false -> param_outer_emit_lm
+        false -> param_outer_emit_fnret
     };
     body: string <- case fn_val.body.kind == 5 of {
         true -> case main_kind5_no_tail of {
-            true -> term_emitter@emit_function_non_tail_user_call_root(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer_emit_lm, fn_val.effects, debug, main_k5_asm_line_before_call);
-            false -> term_emitter@emit_function_tail_user_call_root(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer_emit_lm, fn_val.effects, debug)
+            true -> term_emitter@emit_function_non_tail_user_call_root(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer_emit_fnret, fn_val.effects, debug, main_k5_asm_line_before_call);
+            false -> term_emitter@emit_function_tail_user_call_root(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, param_outer_emit_fnret, fn_val.effects, debug)
         };
         false -> term_emitter@term_to_asm_debug_with_outer(fn_val.body, dest_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, body_outer_root, debug)
     };

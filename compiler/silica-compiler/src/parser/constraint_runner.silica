@@ -42,6 +42,7 @@ use capability_list;
 use capability_recursion_implementation;
 use capability_supervisor_phases;
 use capability_actors;
+use capability_foreign;
 
 export parse_program/1;
 
@@ -53,7 +54,8 @@ fn all_constraints() -> ListConstraint {
     with_float32: ListConstraint <- append_constraints(with_ops, capability_expr_float32@constraints());
     with_effect_decl: ListConstraint <- append_constraints(with_float32, capability_effect_decl@constraints());
     with_module: ListConstraint <- append_constraints(with_effect_decl, capability_module@constraints());
-    with_trait: ListConstraint <- append_constraints(with_module, capability_trait@constraints());
+    with_foreign: ListConstraint <- append_constraints(with_module, capability_foreign@constraints());
+    with_trait: ListConstraint <- append_constraints(with_foreign, capability_trait@constraints());
     with_bind: ListConstraint <- append_constraints(with_trait, capability_bind@constraints());
     with_td: ListConstraint <- append_constraints(with_bind, capability_tuple_decompose@constraints());
     with_mem: ListConstraint <- append_constraints(with_td, capability_memory_region@constraints());
@@ -86,6 +88,7 @@ fn initial_roles_for_token(token_kind: int64) -> ListInt {
     f32_ops: ListInt <- capability_expr_float32@initial_roles(token_kind);
     eff_decl: ListInt <- capability_effect_decl@initial_roles(token_kind);
     mod_r: ListInt <- capability_module@initial_roles(token_kind);
+    foreign_r: ListInt <- capability_foreign@initial_roles(token_kind);
     trait_r: ListInt <- capability_trait@initial_roles(token_kind);
     bind: ListInt <- capability_bind@initial_roles(token_kind);
     td: ListInt <- capability_tuple_decompose@initial_roles(token_kind);
@@ -106,7 +109,7 @@ fn initial_roles_for_token(token_kind: int64) -> ListInt {
     m8: ListInt <- merge_roles(td, m9);
     m7b: ListInt <- merge_roles(trait_r, m8);
     m7: ListInt <- merge_roles(bind, m7b);
-    m6: ListInt <- merge_roles(mod_r, m7);
+    m6: ListInt <- merge_roles(foreign_r, merge_roles(mod_r, m7));
     m5: ListInt <- merge_roles(eff_decl, m6);
     m4: ListInt <- merge_roles(f32_ops, m5);
     m3: ListInt <- merge_roles(ops, m4);
@@ -772,6 +775,10 @@ fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
     slots: ListTokenSlot <- tokens_to_slots(reversed);
     all_c: ListConstraint <- all_constraints();
     propagated: ListTokenSlot <- constraint_core@propagate_until_fixed(slots, all_c);
+    (has_ffi_err: bool, ffi_err_loc: SourceLocation, ffi_err_msg: string) <- constraint_extract@find_malformed_ffi_surface(propagated);
+    case has_ffi_err of {
+        true -> parser_core@parse_err("E1080", ffi_err_loc, ffi_err_msg, "sect3");
+        false -> do
     (has_proc_error: bool, err_loc: SourceLocation) <- has_proc_after_return_type(propagated);
     case has_proc_error of {
         true -> parser_core@parse_err("E3009", err_loc, "proc[...] is only allowed on sequence clauses directly after the sequence keyword, not on function return types", "sect9.3.1");
@@ -858,6 +865,8 @@ fn parse_program(tokens: ListToken) -> ParseResult proc[DeviceIO] {
                     }
                 end
             }
+        end
+    }
         end
     }
 }

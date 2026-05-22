@@ -2658,11 +2658,47 @@ fn check_user_call_result_user_call(expr: Expr, expected_type: string, return_ty
         true -> type_checker_core@type_check_ok();
         false -> case type_checker_lists@types_equal_strip(expected_type, return_type) of {
             true -> type_checker_core@type_check_ok();
-            false -> case type_checker_traits@actual_type_satisfies_trait_expectation(return_type, expected_type, world) of {
+            false -> case trim_leading_user_call(expected_type) == "string" and return_type_has_ptr_len_out_fields(return_type) of {
                 true -> type_checker_core@type_check_ok();
-                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat(expr.name, " returns "), return_type), ", expected "), expected_type), "sect6")
+                false -> case type_checker_traits@actual_type_satisfies_trait_expectation(return_type, expected_type, world) of {
+                    true -> type_checker_core@type_check_ok();
+                    false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat(expr.name, " returns "), return_type), ", expected "), expected_type), "sect6")
+                }
             }
         }
+    }
+}
+
+fn return_type_text_contains(s: string, needle: string) -> bool {
+    case len(needle) == 0 of {
+        true -> true;
+        false -> case len(s) < len(needle) of {
+            true -> false;
+            false -> case substring(s, 0, len(needle)) == needle of {
+                true -> true;
+                false -> return_type_text_contains(substring(s, 1, len(s)), needle)
+            }
+        }
+    }
+}
+
+fn return_type_has_ptr_len_out_fields(return_type: string) -> bool {
+    ret: string <- trim_leading_user_call(return_type);
+    case return_type_text_contains(ret, "text_ptr") of {
+        true -> return_type_text_contains(ret, "text_len");
+        false -> case return_type_text_contains(ret, "_ptr") of {
+            true -> return_type_text_contains(ret, "_len");
+            false -> false
+        }
+    }
+}
+
+fn params_inner_is_ptr_len_pair(params_inner: string) -> bool {
+    (first_param: string, rest_params: string) <- get_first_param_type(params_inner);
+    (second_param: string, rest_rest: string) <- get_first_param_type(rest_params);
+    case len(rest_rest) > 0 of {
+        true -> false;
+        false -> trim_leading_user_call(first_param) == "uint8" and trim_leading_user_call(second_param) == "uint64"
     }
 }
 
@@ -2786,8 +2822,16 @@ fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: Ty
     arg_count: int64 <- count_call_args_user_call(expr);
     case callee_type_from_world of {
         true -> check_user_defined_world_call_with_inference(expr, expected_type, context, params_inner, return_type, world);
-        false -> case arg_count != expected_arg_count of {
-        true -> case expected_arg_count == 1 of {
+                false -> case arg_count != expected_arg_count of {
+        true -> case expected_arg_count == 2 and arg_count == 1 and params_inner_is_ptr_len_pair(params_inner) of {
+            true -> do
+                r_str: TypeCheckResult <- check_expr(expr.inner, "string", context, world);
+                case r_str.is_ok of {
+                    false -> r_str;
+                    true -> check_user_call_result_user_call(expr, expected_type, return_type, context, world)
+                }
+            end;
+            false -> case expected_arg_count == 1 of {
             true -> case arg_count == 2 of {
                 true -> case len(params_inner) >= 2 of {
                     true -> case substring(params_inner, 0, 1) == "(" of {
@@ -2810,6 +2854,7 @@ fn check_user_defined_call_parsed(expr: Expr, expected_type: string, context: Ty
                     false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
                 };
                 false -> type_checker_core@type_check_err("E2005", expr.location, concat(expr.name, " argument count mismatch"), "sect6")
+            }
             }
         };
         false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world)

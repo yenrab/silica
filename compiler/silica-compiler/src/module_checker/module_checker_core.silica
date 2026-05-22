@@ -32,6 +32,7 @@ use type_checker_core;
 use type_checker_traits;
 use type_checker_supervisor;
 use diagnostics_core;
+use module_checker_ffi;
 
 struct ListString {
     is_nil: bool,
@@ -978,37 +979,43 @@ fn validate_cross_module_export_surface(program: Program, all_parsed: ListParsed
 // Each export entry must name a function defined in this unit with matching arity (spec §19.2.1). E4010 / E4014.
 // `unit_decls` is the full declaration list for this compilation unit (not a suffix): exports may legally
 // reference functions declared above or below any `export` line in the source order.
-fn validate_export_items_match_declarations(items: ListParam, unit_decls: ListDeclaration) -> (int64, string, SourceLocation, string, string) {
+fn validate_export_items_match_declarations(items: ListParam, unit_decls: ListDeclaration, module_name: string) -> (int64, string, SourceLocation, string, string) {
     case items.is_nil of {
         true -> (0, "", parser_ast@zero_location(), "", "");
         false -> do
             (ok_ar: bool, ar: int64) <- parse_unsigned_decimal_module(items.head.type_name);
             case ok_ar of {
                 false -> (1, "E4014", items.head.location, "export arity must be a non-negative decimal (spec 19.2)", "sect19.2");
-                true -> case module_declares_fn_or_required_trait_method(unit_decls, items.head.name, ar) of {
-                    false -> do
-                        msg: string <- concat(concat(concat(concat("exported function not found or arity mismatch: ", items.head.name), "/"), items.head.type_name), " (spec 19.2.1)");
-                        (1, "E4010", items.head.location, msg, "sect19.2.1")
-                    end;
-                    true -> validate_export_items_match_declarations(items.tail, unit_decls)
-                }
+                true -> do
+                    (ffi_st: int64, ffi_ec: string, ffi_loc: SourceLocation, ffi_msg: string, ffi_spec: string) <- module_checker_ffi@validate_export_item_ffi(unit_decls, items.head.name, ar, items.head.location, module_name);
+                    case ffi_st == 0 of {
+                        false -> (ffi_st, ffi_ec, ffi_loc, ffi_msg, ffi_spec);
+                        true -> case module_declares_fn_or_required_trait_method(unit_decls, items.head.name, ar) of {
+                            false -> do
+                                msg: string <- concat(concat(concat(concat("exported function not found or arity mismatch: ", items.head.name), "/"), items.head.type_name), " (spec 19.2.1)");
+                                (1, "E4010", items.head.location, msg, "sect19.2.1")
+                            end;
+                            true -> validate_export_items_match_declarations(items.tail, unit_decls, module_name)
+                        }
+                    }
+                end
             }
         end
     }
 }
 
-fn validate_exports_match_functions_program(decls: ListDeclaration, unit_decls: ListDeclaration) -> (int64, string, SourceLocation, string, string) {
+fn validate_exports_match_functions_program(decls: ListDeclaration, unit_decls: ListDeclaration, module_name: string) -> (int64, string, SourceLocation, string, string) {
     case decls.is_nil of {
         true -> (0, "", parser_ast@zero_location(), "", "");
         false -> case decls.head.tag == 3 of {
             true -> do
-                (st: int64, ec: string, eloc: SourceLocation, emsg: string, espec: string) <- validate_export_items_match_declarations(decls.head.parameters, unit_decls);
+                (st: int64, ec: string, eloc: SourceLocation, emsg: string, espec: string) <- validate_export_items_match_declarations(decls.head.parameters, unit_decls, module_name);
                 case st == 0 of {
                     false -> (st, ec, eloc, emsg, espec);
-                    true -> validate_exports_match_functions_program(decls.tail, unit_decls)
+                    true -> validate_exports_match_functions_program(decls.tail, unit_decls, module_name)
                 }
             end;
-            false -> validate_exports_match_functions_program(decls.tail, unit_decls)
+            false -> validate_exports_match_functions_program(decls.tail, unit_decls, module_name)
         }
     }
 }
@@ -1032,6 +1039,22 @@ fn module_checker_check_program(program: Program, config_files: ListString, all_
             1
         end;
         true -> do
+            mod_name: string <- module_from_path(current_path);
+            (ffi_st: int64, ffi_ec: string, ffi_loc: SourceLocation, ffi_msg: string, ffi_spec: string) <- module_checker_ffi@validate_ffi_module_rules(program, mod_name);
+            case ffi_st == 0 of {
+                false -> do
+                    ffc: string <- case ffi_ec == "" of {
+                        true -> "E4020";
+                        false -> ffi_ec
+                    };
+                    ffs: string <- case ffi_spec == "" of {
+                        true -> "sect3.1";
+                        false -> ffi_spec
+                    };
+                    _: int8 <- diagnostics_core@print_compiler_error("ModuleError", ffc, ffi_loc, ffi_msg, ffs);
+                    1
+                end;
+                true -> do
             (tr_st: int64, tr_code: string, tr_loc: SourceLocation, tr_msg: string, tr_spec: string) <- validate_export_trait_declarations(program.declarations, current_path);
             case tr_st == 0 of {
                 false -> do
@@ -1079,7 +1102,7 @@ fn module_checker_check_program(program: Program, config_files: ListString, all_
                                                     1
                                                 end;
                                                 true -> do
-                                                    (exm_st: int64, exm_code: string, exm_loc: SourceLocation, exm_msg: string, exm_spec: string) <- validate_exports_match_functions_program(program.declarations, program.declarations);
+                                                    (exm_st: int64, exm_code: string, exm_loc: SourceLocation, exm_msg: string, exm_spec: string) <- validate_exports_match_functions_program(program.declarations, program.declarations, mod_name);
                                                     case exm_st == 0 of {
                                                         false -> do
                                                             exmc: string <- case exm_code == "" of {
@@ -1123,6 +1146,8 @@ fn module_checker_check_program(program: Program, config_files: ListString, all_
                             }
                         end
                     }
+                end
+            }
                 end
             }
         end

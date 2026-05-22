@@ -47,6 +47,11 @@ export dummy_supervisor_phase_e/0;
 export nil_supervisor_phase_e/0;
 export cons_supervisor_phase_e/2;
 export sir_supervisor_phase_e_rows_to_text/2;
+export SIRForeignBinding/0;
+export ListSIRForeignBinding/0;
+export dummy_sir_foreign_binding/0;
+export nil_sir_foreign_bindings/0;
+export cons_sir_foreign_binding/2;
 export dummy_sir_module/0;
 export nil_sir_modules/0;
 export cons_sir_module/2;
@@ -132,6 +137,22 @@ struct ListSIRRequiredMethodSig {
     tail: ListSIRRequiredMethodSig
 }
 
+// FFI wrapper specification: raw foreign c_wrapper bindings (Declaration tag 9).
+struct SIRForeignBinding {
+    local_name: string,
+    c_symbol: string,
+    meta_path: string,
+    return_type: string,
+    param_names: string,
+    param_types: string
+}
+
+struct ListSIRForeignBinding {
+    is_nil: bool,
+    head: SIRForeignBinding,
+    tail: ListSIRForeignBinding
+}
+
 struct SIRModule {
     module_name: string,
     used_modules: ListSirString,
@@ -147,6 +168,11 @@ struct SIRModule {
     required_method_sigs: ListSIRRequiredMethodSig,
     // Runtime dependencies required by this SIR module. The emitter lowers calls to these runtimes, while build output/linking supplies each runtime definition once.
     runtime_dependencies: ListSirString,
+    // FFI: module name prefix dangerous_*, sidecar paths (wrapper_meta + per-binding meta), raw foreign bindings.
+    is_dangerous_module: bool,
+    wrapper_meta_paths: ListSirString,
+    foreign_bindings: ListSIRForeignBinding,
+    link_libraries: ListSirString,
     functions: ListSIRFunction
 }
 
@@ -220,6 +246,19 @@ fn cons_required_method_sig(item: SIRRequiredMethodSig, rest: ListSIRRequiredMet
     ListSIRRequiredMethodSig { is_nil: false, head: item, tail: rest }
 }
 
+fn dummy_sir_foreign_binding() -> SIRForeignBinding {
+    SIRForeignBinding { local_name: "", c_symbol: "", meta_path: "", return_type: "", param_names: "", param_types: "" }
+}
+
+fn nil_sir_foreign_bindings() -> ListSIRForeignBinding {
+    ph: ListSIRForeignBinding <- ListSIRForeignBinding { is_nil: true, head: dummy_sir_foreign_binding(), tail: ph };
+    ph
+}
+
+fn cons_sir_foreign_binding(item: SIRForeignBinding, rest: ListSIRForeignBinding) -> ListSIRForeignBinding {
+    ListSIRForeignBinding { is_nil: false, head: item, tail: rest }
+}
+
 fn dummy_supervisor_phase_e() -> SIRSupervisorPhaseE {
     SIRSupervisorPhaseE { actor_type: "", init_return_sir: "", init_return_type_name: "" }
 }
@@ -245,6 +284,10 @@ fn dummy_sir_module() -> SIRModule {
         failure_reporter_impl_types: nil_sir_strings(),
         required_method_sigs: nil_required_method_sigs(),
         runtime_dependencies: nil_sir_strings(),
+        is_dangerous_module: false,
+        wrapper_meta_paths: nil_sir_strings(),
+        foreign_bindings: nil_sir_foreign_bindings(),
+        link_libraries: nil_sir_strings(),
         functions: nil_sir_functions()
     }
 }
@@ -441,6 +484,48 @@ fn sir_failure_reporter_impls_to_text(types: ListSirString, acc: string) -> stri
     }
 }
 
+fn sir_wrapper_meta_paths_to_text(paths: ListSirString, acc: string) -> string {
+    case paths.is_nil of {
+        true -> acc;
+        false -> do
+            rest: string <- sir_wrapper_meta_paths_to_text(paths.tail, acc);
+            line: string <- concat("  wrapper_meta ", concat(paths.head, "\n"));
+            case len(rest) > 0 of {
+                true -> concat(line, rest);
+                false -> line
+            }
+        end
+    }
+}
+
+fn sir_foreign_bindings_to_text(bindings: ListSIRForeignBinding, acc: string) -> string {
+    case bindings.is_nil of {
+        true -> acc;
+        false -> do
+            b: SIRForeignBinding <- bindings.head;
+            p1: string <- concat("  foreign_binding ", b.local_name);
+            p2: string <- concat(p1, " ");
+            p3: string <- concat(p2, b.c_symbol);
+            p4: string <- concat(p3, " ");
+            p5: string <- concat(p4, b.param_names);
+            p6: string <- concat(p5, " ");
+            p7: string <- concat(p6, b.param_types);
+            p8: string <- concat(p7, " -> ");
+            p9: string <- concat(p8, b.return_type);
+            p10: string <- case len(b.meta_path) > 0 of {
+                true -> concat(p9, concat(" meta=", b.meta_path));
+                false -> p9
+            };
+            one: string <- concat(p10, "\n");
+            rest: string <- sir_foreign_bindings_to_text(bindings.tail, acc);
+            case len(rest) > 0 of {
+                true -> concat(one, rest);
+                false -> one
+            }
+        end
+    }
+}
+
 fn sir_required_sigs_to_text(sigs: ListSIRRequiredMethodSig, acc: string) -> string {
     case sigs.is_nil of {
         true -> acc;
@@ -516,6 +601,22 @@ fn sir_module_to_text(sir_module: SIRModule) -> string {
         true -> "";
         false -> concat(concat("  runtime ", sir_used_modules_to_text(sir_module.runtime_dependencies, "")), "\n")
     };
+    dangerous_line: string <- case sir_module.is_dangerous_module of {
+        true -> "  dangerous_module true\n";
+        false -> ""
+    };
+    wm_line: string <- case sir_module.wrapper_meta_paths.is_nil of {
+        true -> "";
+        false -> sir_wrapper_meta_paths_to_text(sir_module.wrapper_meta_paths, "")
+    };
+    fb_line: string <- case sir_module.foreign_bindings.is_nil of {
+        true -> "";
+        false -> sir_foreign_bindings_to_text(sir_module.foreign_bindings, "")
+    };
+    ll_line: string <- case sir_module.link_libraries.is_nil of {
+        true -> "";
+        false -> concat(concat("  link_library ", sir_used_modules_to_text(sir_module.link_libraries, "")), "\n")
+    };
     funcs: string <- sir_module_to_text_acc(sir_module.functions, "");
     do
         part1: string <- concat(header, uses_line);
@@ -527,6 +628,10 @@ fn sir_module_to_text(sir_module: SIRModule) -> string {
         part4c: string <- concat(part4b2, fr_line);
         part5: string <- concat(part4c, req_line);
         part6: string <- concat(part5, rt_line);
-        concat(part6, funcs)
+        part7: string <- concat(part6, dangerous_line);
+        part8: string <- concat(part7, wm_line);
+        part9: string <- concat(part8, fb_line);
+        part10: string <- concat(part9, ll_line);
+        concat(part10, funcs)
     end
 }
