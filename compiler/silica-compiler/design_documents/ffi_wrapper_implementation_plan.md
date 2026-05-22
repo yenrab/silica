@@ -1,6 +1,6 @@
 # Silica Compiler FFI — Implementation Plan
 
-**Date**: May 21, 2026  
+**Date**: May 22, 2026  
 **Primary specification**: [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md)  
 **Code organization**: [silica-compiler-code-organization.md](silica-compiler-code-organization.md)
 
@@ -12,18 +12,19 @@ This plan adds outbound FFI support to `silica-compiler`. Each phase is **indepe
 
 | Area | Status |
 | ---- | ------ |
-| `foreign c_wrapper` syntax | Not implemented |
-| `wrapper_meta` / per-binding `meta` | Not implemented |
-| `external_danger` effect | Not implemented |
-| `dangerous_*` module naming propagation | Not implemented |
-| Cast-only behavior enforcement | Not implemented |
-| FFI worker placement rules | Not implemented |
-| Structural taint for `dangerous_*` returns | Not implemented |
-| Sidecar `.meta` loader | Not implemented |
-| Foreign call emitter / runtime | Not implemented |
-| Prebuilt wrapper library link step | Not implemented |
+| `foreign c_wrapper` syntax | Implemented (Phases 1–2) |
+| `wrapper_meta` / per-binding `meta` | Implemented (Phases 1–4) |
+| `external_danger` effect | Implemented (Phases 1, 5) |
+| `dangerous_*` module naming propagation | Implemented (Phase 3) |
+| Cast-only behavior enforcement | Implemented (Phase 5) |
+| FFI worker placement rules | Implemented (Phase 5) |
+| Structural taint for `dangerous_*` returns | Implemented (Phase 6) |
+| Sidecar `.meta` loader | Implemented (Phase 4) |
+| Silica-side ABI checker | Implemented (Phase 7) |
+| Foreign call emitter / runtime | Implemented (Phase 8) |
+| Link manifest + Makefile link integration | Implemented (Phase 9) |
 
-**Existing infrastructure to reuse**: actor `spawn` / `cast`, sequence blocks, effect checking (`proc[concurrency]`, `device_io`, …), module import graph, trial harness (`trials/`, `.golden_fail`, `.scout` / `.ascomp`).
+**Existing infrastructure to reuse**: actor `spawn` / `cast`, sequence blocks, effect checking (`proc[concurrency]`, `device_io`, …), module import graph, trial harness (`trials/`, `.golden_fail`, `.scout` / `.ascomp`), and the standard three-stage build in `trials/base/makefile` (`silica-compiler` → `.sams` → `clang` assemble → `rust-lld`/`clang` link).
 
 ---
 
@@ -41,6 +42,7 @@ These decisions are **not** revisited during implementation. See spec §16.1.
 | Strings | Two-layer: raw bindings use ptr+len; adapters use `string` (in and out) |
 | Sidecar discovery | Explicit `wrapper_meta` / `meta` in Silica source (option 5) |
 | Toolchain validation | Silica checks + sidecar load + **link-time symbol check only** (no C parsing) |
+| Assembler / linker | External via Makefiles: `clang` assembles `.sams` → `.o`; `rust-lld` or `clang` links executables. `silica-compiler` writes `.sams` and a link manifest; it does **not** invoke the linker. |
 | Build | Prebuilt static libraries under `dangerous_exposure_source/lib/` |
 | `blocking` metadata | Not used (architecturally non-blocking via cast model) |
 | De-taint | Strict structural taint in v1 |
@@ -53,7 +55,7 @@ These decisions are **not** revisited during implementation. See spec §16.1.
 - C header / wrapper source parsing or compilation in the Silica build.
 - Dynamic linking and `foreign package { … }` manifest (spec §14.3 — future).
 - Validator-based de-taint.
-- Deferred mechanical wrapper-side checks listed in spec §15.2 (until C parsing exists).
+- Deferred mechanical wrapper-side checks listed in spec §15.2 — **skipped**; author guidelines only, no C parsing in the Silica toolchain.
 
 ---
 
@@ -78,14 +80,13 @@ Trial categories:
 
 | Subdirectory | Purpose |
 | ------------ | ------- |
-| `parse_addition/` | Phases 1–2: parse / AST only |
-| `module_addition/` | Phase 3: naming + exports |
-| `metadata_addition/` | Phase 4: sidecar + path errors |
-| `placement_addition/` | Phases 5–6: cast / worker / `external_danger` |
-| `taint_addition/` | Phase 7: taint + boundaries |
-| `abi_addition/` | Phase 8: type matrix failures |
-| `runtime_addition/` | Phases 9–10: link + execute |
-| `error_enforcement_addition/` | Golden failures (may alias existing dir pattern) |
+| `module_addition/` | Phase 3: naming + exports (compile-only) |
+| `app_sidecar_legacy_math_add/` | Phase 4: sidecar metadata + runnable legacy math add |
+| `app_cast_worker_legacy_add/` | Phase 5: cast/worker + `external_danger` runnable app |
+| `app_ffi_result_cast_add/` | Phase 6: FFI result cast runnable app |
+| `app_foreign_abi_valid/` | Phase 7: Silica-side ABI runnable apps |
+| `app_e2e_scalar_string_echo/` | Phase 8–9: e2e scalar/string foreign calls |
+| `error_enforcement_addition/ffi_addition/error_app_*` | Golden compile/link failures |
 
 **Phase test command (convention)**:
 
@@ -234,7 +235,7 @@ Trials in `module_addition/`:
   - missing `wrapper` entry for used symbol,
   - missing `link_library` in sidecar file,
   - missing required fields (`result`, `error_domain` when applicable).
-- Record link libraries for driver (Phase 10).
+- Record link libraries on `SIRModule` for the Phase 9 link manifest.
 
 **Independent test**
 
@@ -366,7 +367,7 @@ Trials in `abi_addition/`:
 - Runtime asm / C helper in `prims_actors_runtime_asm.silica` or companion:
   - stack scratch alloc for call-duration copies,
   - Silica string allocation from byte span.
-- Phase 8 trials link fixture archives **directly in trial Makefile** (not yet via compiler driver).
+- Phase 8 trials link fixture archives via `silica.link` manifest consumption in trial Makefiles (Phase 9).
 
 **Independent test**
 
@@ -385,16 +386,62 @@ Trials in `runtime_addition/`:
 
 ---
 
-### Phase 9 — Compiler Driver Link Integration
+### Phase 9 — Toolchain Link Integration (Link Manifest + Makefile)
 
-**Goal**: Compiler driver links prebuilt libraries named by loaded sidecars; report missing symbols.
+**Goal**: Automatically link prebuilt wrapper libraries named by loaded sidecars for the whole `silica.config` closure; surface `MissingForeignSymbolError` at link time.
 
-**Scope**
+**Build pipeline context**
 
-- Driver collects `link_library` from all referenced sidecars for the compilation unit closure.
-- Link against `dangerous_exposure_source/lib/lib<name>.a`.
-- `MissingForeignSymbolError` when symbol missing from archives.
-- Remove manual `-l` from Phase 8 trial Makefiles once driver supplies libraries.
+Silica uses a **three-stage build** (see `trials/base/makefile`):
+
+1. **`silica-compiler`** — compile to `.sams` (+ `__silica_runtime.sams` when needed)
+2. **`clang`** — assemble `.sams` → `.o`
+3. **`rust-lld` or `clang`** — link `.o` → executable
+
+Phase 9 does **not** embed the linker in `silica-compiler`. The compiler emits link metadata after a successful compile; project/trial Makefiles consume that metadata during Stage 3. This matches the normative spec split: the compiler loads sidecar metadata at compile time; the **linker** resolves wrapper symbols when producing the binary (spec §14.2, §1582, §1833).
+
+**Scope — compiler (Stage 1 output)**
+
+- After successful compile of **all units** listed in `silica.config`, aggregate:
+  - `link_library` names (union across the program closure; dedupe),
+  - every `foreign c_wrapper "symbol"` string referenced by emitted code.
+- **Step 3 (archive validation)**: before writing `silica.link`, verify each resolved archive path exists on disk; emit `E4034` / `MissingArchiveError` if a referenced prebuilt library is absent (spec §14.2, §15.2).
+- Write one link manifest in the build directory, **`silica.link`**, containing at minimum:
+  - one `link_library: "<name>"` line per required archive (deduped),
+  - resolved archive paths: `archive: "dangerous_exposure_source/lib/lib<name>.a"`,
+  - one `symbol: "<c_wrapper_symbol>"` line per required foreign binding.
+- Extend `src/build_output/build_output.silica` to write `silica.link`.
+- Extend `src/main.silica` to aggregate link libraries and foreign symbols program-wide (single-unit and multi-unit `silica.config` paths).
+- Reuse / extend `src/ffi/ffi_sidecar_loader.silica` for program-wide collection if helpful (`collect_program_link_libraries` already exists per unit; Phase 9 needs closure-wide merge).
+
+**Suggested `silica.link` shape** (macro-free, Makefile-friendly):
+
+```text
+link_library: "silica_legacy_math"
+archive: "dangerous_exposure_source/lib/libsilica_legacy_math.a"
+link_library: "silica_text"
+archive: "dangerous_exposure_source/lib/libsilica_text.a"
+symbol: "silica_legacy_math_add_int64"
+symbol: "silica_text_echo"
+```
+
+Makefiles may translate `archive:` lines to direct archive arguments or derive `-L dangerous_exposure_source/lib -l<name>` from `link_library:` lines. Direct archive paths are preferred for deterministic trial builds.
+
+**Scope — Makefiles (Stage 3 link)**
+
+- Extend `trials/base/makefile` to read `silica.link` after Stage 1 and append derived flags to `LDFLAGS_rust-lld` / `LDFLAGS_clang` during Stage 3.
+- Update `trials/ffi_addition/app_e2e_scalar_string_echo/Makefile`: **remove** hardcoded `EXTRA_LIBS`; use the shared manifest-reading pattern from `trials/base/makefile`.
+- Add `phase-9` target to `trials/ffi_addition/Makefile` (same runtime trials as Phase 8, manifest-driven link).
+
+**`MissingForeignSymbolError`**
+
+- **Primary (required)**: linker undefined-symbol failure when a declared `foreign c_wrapper "symbol"` is absent from the archives named in `silica.link`. A link-stage golden trial in `error_enforcement_addition/ffi_addition/` documents this failure.
+- **Optional enhancement**: compile-time `nm` / `llvm-nm` preflight in `silica-compiler` for a structured `MissingForeignSymbolError` diagnostic before Stage 3. Not required for Phase 9 exit (spec §1.1: symbol validation at link time only).
+
+**Non-goals**
+
+- `silica-compiler` invoking `rust-lld`, `clang`, or any linker directly.
+- Compiling C wrapper sources or changing assembler/linker tool choice.
 
 **Independent test**
 
@@ -402,9 +449,16 @@ Trials in `runtime_addition/`:
 make -C compiler/silica-compiler/trials/ffi_addition phase-9
 ```
 
-Same runtime trials as Phase 8, but **no** manual archive flags in Makefile.
+Same runtime trials as Phase 8, but **no** manual `-L` / `-l` archive flags in the trial Makefile.
 
-**Exit criteria**: driver-linked binaries pass; missing-symbol golden fails at link.
+| Trial | Expect |
+| ----- | ------ |
+| `dangerous_scalar_add_e2e` + `.sout` | `40 + 2 → 42` via manifest-driven link |
+| `dangerous_string_echo_e2e` + `.sout` | `"hello"` → `"Echo: hello"` via manifest-driven link |
+| missing foreign symbol link golden | link fails with undefined symbol / `MissingForeignSymbolError` |
+| missing prebuilt archive compile golden | compile fails with `E4034` before `silica.link` is written |
+
+**Exit criteria**: `silica.link` is emitted for FFI programs; `trials/base/makefile` and `app_e2e_scalar_string_echo/` link using manifest flags only; e2e app trials pass without hardcoded `EXTRA_LIBS`; missing-symbol link golden fails at Stage 3; missing-archive golden fails at link-manifest validation (step 3).
 
 ---
 
@@ -412,21 +466,17 @@ Same runtime trials as Phase 8, but **no** manual archive flags in Makefile.
 
 **Goal**: Stable CI lane and spec alignment.
 
-**Scope**
+**Scope** (complete)
 
-- `make -C trials/ffi_addition all` runs full suite.
-- Add top-level `trials/Makefile` integrate target for FFI (mirror `cpu_discovery_and_spawn_pinning`).
-- Update spec §10 examples for symmetric string two-layer raw/adapters (if still inconsistent).
-- Mark deferred §15.2 C-parsing checks in spec with implementation status.
+- ☑ `make -C trials/ffi_addition all` runs the success-path suite (Phase 9 manifest-driven link via app integrates).
+- ☑ `make -C trials integrate-ffi` — same as `make -C ffi_addition integrate` (success-path app goldens only); wired in CI.
+- ☑ Compile/link failure goldens (`link-fail`, `archive-missing`) run via `error_enforcement_addition/ffi_addition integrate` (included in top-level `integrate` through `error_enforcement_addition`).
+- ☑ Top-level `trials/Makefile` `integrate` runs `ffi_addition` via auto-discovered trial subdir.
+- ☑ `silica.link` documented in `trials/ffi_addition/README.md`; Makefile consumption in `trials/base/makefile`.
+- **Skipped:** spec §10 symmetry pass (examples already consistent); tutorial does not document `integrate-ffi` (by choice).
+- **Skipped (out of scope):** mechanical enforcement of §15.2 wrapper-side C checks — author guidelines only (see spec §15.2).
 
-**Independent test**
-
-```bash
-make -C compiler/silica-compiler/trials/ffi_addition all
-make -C compiler/silica-compiler/trials integrate-ffi   # once wired
-```
-
-**Exit criteria**: full FFI suite green; no regressions in actor/effect/error_enforcement trials.
+**Exit criteria**: ☑ FFI success-path suite green via `integrate-ffi`; ☑ failure goldens green via error-enforcement integrate; ☑ CI; no regressions in actor/effect/error_enforcement trials.
 
 ---
 
@@ -458,15 +508,14 @@ This phase extends the already-working Phase 8 runtime FFI path. It does not cha
 make -C compiler/silica-compiler/trials/ffi_addition phase-11
 ```
 
-Trials:
+Trials (`app_legacy_math_add_guarded`, `app_legacy_math_add_twice`):
 
 | Trial | Expect |
 | ----- | ------ |
-| `guarded_scalar_success.silica` | existing Phase 8-style success still works through guarded wrapper |
-| `guarded_reentrant_state_clear.silica` | repeated guarded calls clear per-thread guarded state |
-| `guarded_no_scheduler_lock.silica` | scheduler can continue after successful guarded calls |
+| `dangerous_legacy_math_add_once` | `silica_legacy_math_add_int64` e2e success through guarded enter/exit |
+| `dangerous_legacy_math_add_twice` | two sequential guarded calls in one worker; per-thread depth returns to 0 |
 
-**Exit criteria**: guarded wrapper is on the runtime call path, has no observable behavior change for successful FFI, and leaves no stale guarded-call state after success.
+**Exit criteria**: guarded wrapper is on the runtime call path, has no observable behavior change for successful FFI (same `.scout` outputs), and leaves no stale guarded-call state after success (second call in `app_legacy_math_add_twice`).
 
 ---
 
@@ -652,9 +701,11 @@ Trials:
 | Taint | new `src/type_checker/ffi/type_checker_ffi_taint.silica` |
 | Sidecar loader | `src/ffi/ffi_sidecar_loader.silica` |
 | ABI checker | `src/ffi/ffi_abi_checker.silica` |
-| Lowering / emit | `src/codegen/ffi/codegen_ffi_foreign.silica` |
-| Runtime marshaling | `src/emitter/terms/prims/prims_ffi_runtime.silica` |
-| Driver link | `src/compiler.silica` |
+| Lowering / emit | `src/emitter/apple_silicon/terms/ffi_foreign.silica` |
+| Runtime marshaling | `src/emitter/apple_silicon/terms/ffi_foreign_runtime_asm.silica` |
+| Link manifest writer | `src/build_output/build_output.silica`, `src/main.silica` |
+| Program-wide link/symbol aggregation | `src/ffi/ffi_sidecar_loader.silica` (extend if needed) |
+| Makefile link step (Stage 3) | `trials/base/makefile`, trial-specific Makefiles |
 
 ---
 
@@ -670,10 +721,10 @@ Trials:
 | 5 | Cast/worker placement + cast-only behaviors | ☑ | `make … phase-5` | Valid path in `ffi_addition`; failures moved under `error_enforcement_addition/ffi_addition` |
 | 6 | Structural taint + boundaries | ☑ | `make … phase-6` | Valid path in `ffi_addition`; failures moved under `error_enforcement_addition/ffi_addition` |
 | 7 | Silica-side ABI checker (two-layer strings) | ☑ | `make … phase-7` | No C parsing; failures moved under `error_enforcement_addition/ffi_addition` |
-| 8 | Emitter + runtime marshaling | ☑ | `make … phase-8` | Runtime trials pass with manual link in trial |
-| 9 | Driver link integration | ☐ | `make … phase-9` | No compiler-driver link integration target yet |
-| 10 | Full suite + CI + doc lock | ◐ | `make … all` | Top-level integrate wiring and docs updated; phase-9 remains open |
-| 11 | Guarded FFI runtime boundary model | ☐ | `make … phase-11` | Post-Phase-8 extension |
+| 8 | Emitter + runtime marshaling | ☑ | `make … phase-8` | Runnable apps under `app_e2e_scalar_string_echo/` |
+| 9 | Link manifest + Makefile link integration | ☑ | `make … phase-9` | Steps 1–3: emit `silica.link`, Makefile `archive:` consumption, compile-time archive existence (`E4034`); link-time missing-symbol golden. |
+| 10 | Full suite + CI + doc lock | ☑ | `make … integrate-ffi` | CI wired; `integrate-ffi` = success-path; failures via `error_enforcement_addition/ffi_addition integrate` |
+| 11 | Guarded FFI runtime boundary model | ☑ | `make … phase-11` | Enter/exit wrapper + per-thread TLS; `app_legacy_math_add_guarded`, `app_legacy_math_add_twice` |
 | 12 | Per-actor FFI arena and pointer relocation | ☐ | `make … phase-12` | Move C-facing pointers out of ordinary heap/actor storage before fault handling |
 | 13 | macOS `sigaltstack` / `sigaction` fault bridge | ☐ | `make … phase-13` | macOS-specific |
 | 14 | Actor failure, arena reset, and supervisor restart integration | ☐ | `make … phase-14` | No actor lifecycle work in handler |
@@ -689,7 +740,7 @@ Trials:
 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10
 ```
 
-Safety and metadata phases (3–7) complete before runtime (8). Link driver (9) follows first successful runtime trials (8).
+Safety and metadata phases (3–7) complete before runtime (8). Toolchain link integration (9) follows first successful runtime trials (8) and wires manifest output into the existing Makefile link stage — it does not move linking into `silica-compiler`.
 
 Guarded macOS FFI crash handling is an extension after the Phase 8 runtime path exists:
 
@@ -697,7 +748,7 @@ Guarded macOS FFI crash handling is an extension after the Phase 8 runtime path 
 8 → 11 → 12 → 13 → 14 → 15
 ```
 
-Phase 12 deliberately precedes the macOS fault bridge so signal recovery is built around per-actor arena pointers from the start, avoiding a later rewrite from heap-backed C pointers to arena-backed C pointers. Driver link integration and the original regression gate (9–10) may proceed independently of guarded crash handling, but Phase 15 should be folded into the full regression gate once the macOS guarded path is enabled.
+Phase 12 deliberately precedes the macOS fault bridge so signal recovery is built around per-actor arena pointers from the start, avoiding a later rewrite from heap-backed C pointers to arena-backed C pointers. Toolchain link integration and the original regression gate (9–10) may proceed independently of guarded crash handling, but Phase 15 should be folded into the full regression gate once the macOS guarded path is enabled.
 
 ---
 
@@ -705,12 +756,12 @@ Phase 12 deliberately precedes the macOS fault bridge so signal recovery is buil
 
 FFI support is complete when:
 
-- [ ] All phases 0–10 marked ☑ in §6.
-- [ ] Spec §15.1 Silica-side failures have golden trials (except deferred items).
-- [ ] Spec §15.2 link/metadata failures have golden trials.
-- [ ] At least one scalar and one string in/out end-to-end trial runs via cast/worker model.
-- [ ] `dangerous_*` naming propagates to root module in checker.
-- [ ] No regressions in existing actor, supervisor, and error_enforcement trial lanes.
+- [x] All phases 0–10 marked ☑ in §6.
+- [x] Spec §15.1 Silica-side failures have golden trials.
+- [x] Spec §15.2 link/metadata failures have golden trials (wrapper-side C authoring guidelines in §15.2 are not compiler-enforced).
+- [x] At least one scalar and one string in/out end-to-end trial runs via cast/worker model with manifest-driven link (no manual `EXTRA_LIBS`).
+- [x] `dangerous_*` naming propagates to root module in checker.
+- [x] No regressions in existing actor, supervisor, and error_enforcement trial lanes.
 
 ---
 

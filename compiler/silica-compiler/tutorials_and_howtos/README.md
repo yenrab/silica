@@ -43,3 +43,8 @@ Contrasts **region handles** (`region(L, Space)`) with **region references** (`r
 
 Unifies **`sequence proc[mem(S)]`**, region APIs, and **`List[T, S]`**: why the same memory space `S` appears in types and effects, rule-of-thumb for the effect checker, and canonical code shapes linking to region and list implementation docs.
 
+---
+
+## [ffi_wrappers_and_makefiles.md](./ffi_wrappers_and_makefiles.md)
+
+Hands-on guide for **outbound FFI**: C wrapper functions, `dangerous_exposure_source/` sidecar metadata, `dangerous_*` Silica wrapper modules, `external_danger` FFI worker actors, `W4001` warnings, and Makefile patterns for building archives, compiling Silica, linking, and running trials.

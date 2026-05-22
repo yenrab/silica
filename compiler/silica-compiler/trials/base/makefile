@@ -7,6 +7,7 @@
 # Linker: rust-lld if available, else clang
 
 SILICA_COMPILER := ../../src/silica-compiler
+SILICA_LINK_SH := $(abspath $(dir $(abspath $(lastword $(MAKEFILE_LIST))))../silica_link.sh)
 
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 # Sources: all .silica under this trial directory (same discovery as find in assembly/integrate)
@@ -59,10 +60,11 @@ objects: assembly
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || exit 1; \
 	done
 
-# Stage 3: Link .o -> executable (rust-lld or clang)
+# Stage 3: Link .o -> executable (rust-lld or clang); archives from silica.link when present
 executables: objects
 	@echo "Linking..."
 	@cd "$(THIS_DIR)" && \
+	link_archives=$$("$(SILICA_LINK_SH)" .); \
 	for o in *.o; do \
 		[ -f "$$o" ] || continue; \
 		base=$${o%.o}; \
@@ -70,9 +72,9 @@ executables: objects
 		runtime_obj=""; \
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o "$$base" "$$o" $$runtime_obj $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base (rust-lld)"; \
+			$(RUST_LLD) -flavor darwin -o "$$base" "$$o" $$runtime_obj $$link_archives $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base (rust-lld)"; \
 		else \
-			$(ASSEMBLER) "$$o" $$runtime_obj -o "$$base" $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base (clang)"; \
+			$(ASSEMBLER) "$$o" $$runtime_obj $$link_archives -o "$$base" $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base (clang)"; \
 		fi; \
 	done
 
@@ -113,6 +115,7 @@ integrate: clean silica.config
 		echo "Assembling $$sams..."; \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler $$sams -o $$base.o || { failed=1; break; }; \
 	done; \
+	link_archives=$$("$(SILICA_LINK_SH)" .); \
 	for o in *.o; do \
 		[ -f "$$o" ] || continue; \
 		base=$${o%.o}; \
@@ -121,9 +124,9 @@ integrate: clean silica.config
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 	echo "Linking $$base..."; \
 		if test -x "$(RUST_LLD)"; then \
-			$(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; \
+			$(RUST_LLD) -flavor darwin -o $$base $$o $$runtime_obj $$link_archives $(LDFLAGS_rust-lld) || failed=1; \
 		else \
-			$(ASSEMBLER) $$o $$runtime_obj -o $$base $(LDFLAGS_clang) || failed=1; \
+			$(ASSEMBLER) $$o $$runtime_obj $$link_archives -o $$base $(LDFLAGS_clang) || failed=1; \
 		fi; \
 	done; \
 	for exe in *.sams; do \
@@ -159,6 +162,7 @@ help:
 	@echo "smakefile - Silica assembly build (no Rust code)"
 	@echo "================================================"
 	@echo "Uses: silica-compiler -> .sams -> .o -> executable"
+	@echo "Stage 3: archive paths from silica.link via trials/silica_link.sh when present"
 	@echo ""
 	@echo "Targets:"
 	@echo "  all         - Build executables (default)"

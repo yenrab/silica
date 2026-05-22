@@ -3,22 +3,28 @@
 # checked-in .golden_warn files. Warnings must not make compilation fail.
 
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-SILICA_COMPILER := $(THIS_DIR)../../src/silica-compiler
+SILICA_COMPILER := $(abspath $(THIS_DIR)../../src/silica-compiler)
+FFI_FIXTURES_LIB := $(abspath $(THIS_DIR)../ffi_addition/fixtures/dangerous_exposure_source/lib)
 
 TRIALS := dangerous_legacy_stub
 
 .DEFAULT_GOAL := all
-.PHONY: all integrate clean help
+.PHONY: all integrate fixtures clean help
 
 all: integrate
 
-integrate: clean
+fixtures:
+	@$(MAKE) -C "$(abspath $(THIS_DIR)../ffi_addition)" fixtures
+
+integrate: fixtures clean
+	@test -x "$(SILICA_COMPILER)" || { echo "FAIL: build compiler first (make -C compiler/silica-compiler/src build)"; exit 1; }
 	@failed=0; ok=0; ko=0; rm -f "$(THIS_DIR).integrate_counts"; \
 	for trial in $(TRIALS); do \
 		tmpdir=$$(mktemp -d); \
 		mkdir -p "$$tmpdir/dangerous_exposure_source/legacy"; \
 		ln -s "$(THIS_DIR)$$trial.silica" "$$tmpdir/$$trial.silica"; \
 		ln -s "$(THIS_DIR)dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta" "$$tmpdir/dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta"; \
+		ln -sf "$(FFI_FIXTURES_LIB)" "$$tmpdir/dangerous_exposure_source/lib"; \
 		echo "$$trial.silica" > "$$tmpdir/silica.config"; \
 		out="$$tmpdir/out.txt"; \
 		(cd "$$tmpdir" && "$(SILICA_COMPILER)") > "$$out" 2>&1; status=$$?; \
@@ -51,3 +57,8 @@ help:
 	@echo "====================================="
 	@echo "Runs warning-producing trials and diffs normalized warning output"
 	@echo "against .golden_warn files. Compilation itself must still succeed."
+	@echo ""
+	@echo "Targets:"
+	@echo "  integrate  - Build ffi_addition wrapper archives, compile trials, diff .golden_warn"
+	@echo "  fixtures   - Build libsilica_legacy_math.a via ffi_addition/fixtures.mk"
+	@echo "  clean      - Remove .cur_warn and .integrate_counts"

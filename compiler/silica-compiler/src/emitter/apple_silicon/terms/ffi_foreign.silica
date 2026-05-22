@@ -187,7 +187,8 @@ fn emit_extern_loop(bindings: ListSIRForeignBinding, acc: string) -> string {
 }
 
 fn emit_extern_directives(bindings: ListSIRForeignBinding) -> string {
-    emit_extern_loop(bindings, "")
+    guarded: string <- ".extern _silica_rt_ffi_guarded_enter\n.extern _silica_rt_ffi_guarded_exit\n";
+    concat(guarded, emit_extern_loop(bindings, ""))
 }
 
 fn module_uses_foreign_calls(bindings: ListSIRForeignBinding) -> bool {
@@ -273,6 +274,33 @@ fn emit_foreign_bl_line(c_symbol: string) -> string {
     concat(concat("    BL ", mach_o_c_symbol(c_symbol)), "\n")
 }
 
+fn emit_guarded_preserver_save() -> string {
+    "    SUB SP, SP, #80\n    STP X0, X1, [SP, #0]\n    STP X2, X3, [SP, #16]\n    STP X4, X5, [SP, #32]\n    STP X6, X7, [SP, #48]\n    STR X8, [SP, #64]\n"
+}
+
+fn emit_guarded_preserver_restore_args() -> string {
+    "    LDR X8, [SP, #64]\n    LDP X6, X7, [SP, #48]\n    LDP X4, X5, [SP, #32]\n    LDP X2, X3, [SP, #16]\n    LDP X0, X1, [SP, #0]\n"
+}
+
+fn emit_guarded_preserver_restore_result() -> string {
+    "    LDR X0, [SP, #0]\n    ADD SP, SP, #80\n"
+}
+
+fn emit_guarded_foreign_call_lines(c_symbol: string) -> string {
+    save: string <- emit_guarded_preserver_save();
+    enter_line: string <- "    BL _silica_rt_ffi_guarded_enter\n";
+    restore_args: string <- emit_guarded_preserver_restore_args();
+    call_line: string <- emit_foreign_bl_line(c_symbol);
+    stash_result: string <- "    STR X0, [SP, #0]\n";
+    exit_line: string <- "    BL _silica_rt_ffi_guarded_exit\n";
+    restore_result: string <- emit_guarded_preserver_restore_result();
+    part1: string <- concat(save, enter_line);
+    part2: string <- concat(restore_args, call_line);
+    part3: string <- concat(stash_result, exit_line);
+    part4: string <- concat(part3, restore_result);
+    concat(concat(part1, part2), part4)
+}
+
 fn emit_result_mov(dest: string) -> string {
     case dest == "X0" or dest == "W0" or dest == "D0" or dest == "S0" or dest == "H0" of {
         true -> "";
@@ -349,7 +377,7 @@ fn emit_foreign_user_call(
         true -> "    LDR X8, [SP, #0]\n";
         false -> ""
     };
-    bl: string <- emit_foreign_bl_line(c_symbol);
+    bl: string <- emit_guarded_foreign_call_lines(c_symbol);
     string_out: string <- case expects_string_out of {
         true -> emit_string_out_unmarshal_heap();
         false -> ""
@@ -425,7 +453,7 @@ fn emit_foreign_scratch_setup_string_in_only() -> string {
 fn emit_foreign_tail_call(c_symbol: string, call_effects: string, fn_effects: string, frame_release: string) -> string {
     pre_barrier: string <- emitter_effects@barrier_before_call(call_effects);
     eff_comment: string <- emitter_effects@effect_annotation(call_effects);
-    bl: string <- emit_foreign_bl_line(c_symbol);
+    bl: string <- emit_guarded_foreign_call_lines(c_symbol);
     // BL returns from C; unlike Silica tail BR, we must RET to our caller (kind-5 epilogue is omitted).
     ret_line: string <- "    RET\n";
     with_comment: string <- case len(eff_comment) > 0 of {

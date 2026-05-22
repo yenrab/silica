@@ -1,0 +1,44 @@
+module dangerous_cast_worker_legacy_add;
+
+use dangerous_legacy_stub;
+
+fn result_sink(msg: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        print_int64(msg);
+        println("");
+        println("done")
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn ffi_worker(msg: int64, reply_to: actor_ref) -> (:no_reply, actor_ref) {
+    sequence proc[external_danger, concurrency]
+        sum: int64 <- dangerous_legacy_stub@add(2, msg);
+        _: boolean <- cast(reply_to, sum impl ActorMessage {})
+    produces
+        pure (:no_reply, reply_to)
+    end
+}
+
+fn client_behavior(
+    msg: int64,
+    state: { worker: actor_ref }
+) -> (:no_reply, { worker: actor_ref }) {
+    sequence proc[concurrency]
+        _: boolean <- cast(state.worker, msg impl ActorMessage {})
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sink_ref: actor_ref <- spawn(0, result_sink);
+        worker_ref: actor_ref <- spawn(sink_ref, ffi_worker);
+        _: boolean <- cast(worker_ref, 2 impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

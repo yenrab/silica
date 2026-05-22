@@ -24,10 +24,12 @@ use diagnostics_core;
 
 export validate_program_sidecar_metadata/1;
 export collect_program_link_libraries/1;
+export collect_program_foreign_symbols/1;
 export foreign_symbol_from_decl/1;
 export sidecar_paths_for_foreign_decl/2;
 export collect_module_default_sidecar_lexemes_from_program/1;
 export lookup_sidecar_wrapper_result_kind/2;
+export first_foreign_or_meta_location_from_program/1;
 
 struct SidecarWrapper {
     symbol: string,
@@ -523,6 +525,10 @@ fn validate_symbol_in_one_sidecar_for_file_only(path_lexeme: string, loc: Source
     }
 }
 
+fn first_foreign_or_meta_location_from_program(program: Program) -> SourceLocation {
+    first_foreign_or_meta_location(program.declarations)
+}
+
 fn first_foreign_or_meta_location(decls: ListDeclaration) -> SourceLocation {
     case decls.is_nil of {
         true -> parser_ast@zero_location();
@@ -610,7 +616,19 @@ fn validate_program_sidecar_metadata(program: Program) -> int64 proc[DeviceIO] {
     }
 }
 
-export collect_program_link_libraries/1;
+fn collect_foreign_symbols_loop(decls: ListDeclaration, acc: ListSirString) -> ListSirString {
+    case decls.is_nil of {
+        true -> acc;
+        false -> case decls.head.tag == 9 of {
+            true -> append_sir_strings_unique(acc, foreign_symbol_from_decl(decls.head));
+            false -> collect_foreign_symbols_loop(decls.tail, acc)
+        }
+    }
+}
+
+fn collect_program_foreign_symbols(program: Program) -> ListSirString {
+    collect_foreign_symbols_loop(program.declarations, sir_ast@nil_sir_strings())
+}
 
 fn collect_program_link_libraries(program: Program) -> ListSirString proc[DeviceIO] {
     paths: ListSirString <- collect_referenced_sidecar_lexemes_loop(program.declarations);

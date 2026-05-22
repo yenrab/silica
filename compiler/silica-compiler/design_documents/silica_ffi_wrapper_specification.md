@@ -20,7 +20,7 @@ This specification defines the rules for outbound calls from Silica to external 
 
 This specification applies only to calls from Silica to C libraries and to other language libraries that expose a C-compatible interface. Underlying external libraries may be provided as dynamically linked shared libraries or as statically linked archive/object libraries. Calls from C or other languages into Silica are out of scope and are specified in a separate inbound-interop specification.
 
-Silica does not call arbitrary external APIs directly. Every external operation callable from Silica must be exposed through a Silica-compatible C wrapper function. The wrapper function adapts the original external API into a stable, explicit ABI boundary that the Silica compiler can type-check and effect-check. In the initial implementation, the toolchain validates wrapper symbols at **link time only**; it does not parse C headers.
+Silica does not call arbitrary external APIs directly. Every external operation callable from Silica must be exposed through a Silica-compatible C wrapper function. The wrapper function adapts the original external API into a stable, explicit ABI boundary that the Silica compiler can type-check and effect-check. In the initial implementation, the toolchain validates wrapper **archive presence** when emitting the link manifest at compile time and validates wrapper **symbol presence** at link time only; it does not parse C headers.
 
 ### 1.2 Design Principles
 
@@ -31,12 +31,12 @@ Silica does not call arbitrary external APIs directly. Every external operation 
 - **Worker-Scoped `external_danger`**: Calls to `dangerous_*` modules are required to appear only in the sequence portion of `sequence proc[external_danger] ... produces pure ... end` inside an FFI worker actor behavior.
 - **No Retained Dangerous Data in `produces pure`**: A completed `external_danger` sequence produces only structurally pure Silica values. Foreign results leave the worker through designated FFI result casts, not through a tainted `produces pure` value.
 - **Strict Structural Taint**: Values returned from `dangerous_*` modules remain external-danger-touched at every depth. This specification version does not define validator-based de-taint.
-- **Strong Typing at the Boundary**: Silica foreign declarations, explicit `wrapper_meta` references, and sidecar metadata define the Silica-facing ABI; link time verifies symbol presence only.
+- **Strong Typing at the Boundary**: Silica foreign declarations, explicit `wrapper_meta` references, and sidecar metadata define the Silica-facing ABI; compile time verifies that named prebuilt archives exist; link time verifies that required wrapper symbols are defined in those archives.
 - **Two-Layer String Declarations**: Raw foreign bindings use pointer-plus-length arguments; exported adapter wrappers accept Silica `string` and perform the copy before calling the raw binding.
 - **No Raw Pointer Exposure**: Raw pointers, `void *`, and opaque C structs must not be exposed directly to Silica source types.
 - **Non-Recursive Data Only**: Recursive C struct shapes must not be sent to Silica.
 - **Outbound Only**: This specification does not define callbacks, trampolines, exported Silica functions, or external calls into Silica.
-- **Prebuilt Wrapper Libraries (initial toolchain)**: C wrapper object code is supplied as prebuilt static libraries; the Silica build tool links them but does not compile C wrapper sources in the initial implementation.
+- **Prebuilt Wrapper Libraries (initial toolchain)**: C wrapper object code is supplied as prebuilt static libraries. After compile, `silica-compiler` writes a **`silica.link`** manifest naming required archives and foreign symbols; project Makefiles pass those archives to the external linker. The compiler does not compile C wrapper sources or invoke the linker in the initial implementation.
 
 ### 1.3 Scope
 
@@ -47,7 +47,7 @@ This specification defines:
 3. Cast-mediated foreign calls, cast-only client behaviors, and the `external_danger` effect.
 4. Rules for strings, buffers, pointers, arrays, and de-opaqueified C structs.
 5. Restrictions on dangerous data crossing actor and effect boundaries.
-6. Sidecar wrapper metadata and link-time symbol validation.
+6. Sidecar wrapper metadata, the **`silica.link`** link manifest, compile-time archive validation, and link-time symbol validation.
 7. Compile-time, parser, type-check, and link-time failures.
 
 This specification does not define:
@@ -113,6 +113,10 @@ A **cast-only behavior** is an actor behavior function that handles incoming act
 A **sidecar metadata file** is a macro-free metadata file stored under `dangerous_exposure_source/`. It declares link libraries and per-symbol wrapper facts that cannot be derived from Silica foreign declarations alone.
 
 Sidecar files are **not** discovered automatically from header names or directory layout. A `dangerous_*` module references sidecar files explicitly through `wrapper_meta` declarations in Silica source (§3.2).
+
+### 2.10 Link manifest (`silica.link`)
+
+The **link manifest** is a macro-free text file, **`silica.link`**, written by `silica-compiler` in the build directory after all units in `silica.config` compile successfully. When the program uses foreign bindings, the manifest lists deduped `link_library` / `archive` pairs and required `foreign c_wrapper` symbol names for the whole program closure. Project build scripts read `archive:` lines from this file during the link stage (§14.2).
 
 ---
 
@@ -1560,6 +1564,7 @@ Example layout:
 dangerous_exposure_source/db/silica_db_wrapper.h      # C header (authoring reference; not parsed by toolchain)
 dangerous_exposure_source/db/silica_db_wrapper.meta    # sidecar metadata
 dangerous_exposure_source/lib/libsilica_db.a           # prebuilt archive
+silica.link                                            # link manifest (emitted in build dir after compile)
 ```
 
 ```silica
@@ -1579,7 +1584,7 @@ Rules:
 - Each `foreign c_wrapper "symbol"` declaration must have exactly one matching `wrapper symbol { ... }` entry in a referenced sidecar file.
 - A sidecar file may declare one `link_library` name used at link time for all wrappers listed in that file.
 
-The Silica compiler reads explicitly referenced sidecar metadata during compilation. The linker verifies that each referenced wrapper symbol exists in the prebuilt library named by `link_library`.
+The Silica compiler reads explicitly referenced sidecar metadata during compilation. After all units in `silica.config` compile successfully, the compiler aggregates required `link_library` names and `foreign c_wrapper` symbols for the whole program closure, verifies that each resolved prebuilt archive exists under `dangerous_exposure_source/lib/`, and writes **`silica.link`** in the build directory. Project build scripts (Makefiles in the reference trial harness) read `archive:` lines from `silica.link` during the link stage and pass those static archive paths to the external linker (`rust-lld` or `clang`). The compiler does **not** invoke the linker. The linker verifies that each referenced wrapper symbol is defined in the linked prebuilt libraries.
 
 ### 13.2 Required sidecar fields (initial implementation)
 
@@ -1619,7 +1624,7 @@ Required documented properties include, when applicable:
 
 The initial Silica toolchain does **not** parse C headers or C source. It does not mechanically verify C struct layout, C type spelling, variadic signatures, or wrapper implementation behavior.
 
-Silica-side foreign declarations and sidecar metadata are the source of truth for the Silica-facing ABI. Link time verifies symbol presence in the named prebuilt library only.
+Silica-side foreign declarations and sidecar metadata are the source of truth for the Silica-facing ABI. Compile time verifies that each named prebuilt archive exists before `silica.link` is written. Link time verifies symbol presence in the archives named by that manifest only.
 
 ---
 
@@ -1656,22 +1661,63 @@ WrapperMetaPathError:
 wrapper_meta and meta paths must be located under dangerous_exposure_source at the root of the Silica project.
 ```
 
-### 14.2 Prebuilt wrapper libraries (initial implementation)
+### 14.2 Prebuilt wrapper libraries and link manifest (initial implementation)
 
-In the initial implementation, C wrapper object code is supplied as **prebuilt static libraries**. The Silica build tool links these libraries but does not compile C wrapper sources.
+In the initial implementation, C wrapper object code is supplied as **prebuilt static libraries**. Project Makefiles link these libraries during Stage 3 of the build; `silica-compiler` does not compile C wrapper sources and does not invoke the assembler or linker.
+
+**Three-stage build (reference harness)**
+
+1. **`silica-compiler`** — compile units listed in `silica.config` to `.sams` (and `__silica_runtime.sams` when needed); emit **`silica.link`** when the program uses foreign bindings.
+2. **`clang`** — assemble `.sams` → `.o`.
+3. **`rust-lld` or `clang`** — link `.o` and manifest-named static archives → executable.
 
 Conventions:
 
 - A sidecar file names the library to link: `link_library: "silica_db"`.
 - Prebuilt archives live under `dangerous_exposure_source/lib/`, for example `dangerous_exposure_source/lib/libsilica_db.a`.
-- The linker must resolve every `foreign c_wrapper "symbol"` used by the program against the libraries named by the referenced sidecar files.
+- The resolved archive path for a `link_library` name `<name>` is `dangerous_exposure_source/lib/lib<name>.a`.
+- The linker must resolve every `foreign c_wrapper "symbol"` used by the program against the archives named in `silica.link`.
 
-**Link-time failure**:
+**Link manifest (`silica.link`)**
+
+After a successful compile of **all** units in `silica.config`, and only when the program closure references foreign bindings, the compiler writes one link manifest file, **`silica.link`**, in the build directory. The file lists:
+
+- deduped `link_library: "<name>"` lines;
+- resolved `archive: "dangerous_exposure_source/lib/lib<name>.a"` lines (one per `link_library`);
+- deduped `symbol: "<c_wrapper_symbol>"` lines for every `foreign c_wrapper` binding in the closure.
+
+Example:
+
+```text
+link_library: "silica_legacy_math"
+archive: "dangerous_exposure_source/lib/libsilica_legacy_math.a"
+link_library: "silica_text"
+archive: "dangerous_exposure_source/lib/libsilica_text.a"
+symbol: "silica_legacy_math_add_int64"
+symbol: "silica_text_echo"
+```
+
+The manifest is macro-free and Makefile-friendly. Build scripts may pass `archive:` paths directly to the linker or derive `-L dangerous_exposure_source/lib -l<name>` from `link_library:` lines; direct archive paths are preferred for deterministic builds.
+
+Before writing `silica.link`, the compiler verifies that each resolved archive path exists on disk. If a referenced archive is missing, compilation fails and **`silica.link` is not written**.
+
+**Compile-time failure (missing archive)**:
+
+```text
+MissingArchiveError:
+Referenced prebuilt library archive is missing from the project layout.
+```
+
+Compiler diagnostic: **`E4034`** (spec §15.2).
+
+**Link-time failure (missing symbol)**:
 
 ```text
 MissingForeignSymbolError:
 Required C wrapper symbol is not defined in the linked prebuilt libraries.
 ```
+
+This failure is reported by the external linker when a declared `foreign c_wrapper` symbol is not defined in the archives passed at Stage 3 (for example undefined symbol `_silica_legacy_math_symbol_not_in_archive` on macOS AArch64).
 
 ### 14.3 Package declarations (future)
 
@@ -1830,7 +1876,7 @@ external-danger-touched data cannot be used inside sequence blocks that declare 
 
 ### 15.2 Link-time and metadata checks
 
-Link-time and metadata checks are enforced by the Silica compiler when loading sidecar metadata and by the linker when producing the final binary.
+Link-time and metadata checks are enforced by the Silica compiler when loading sidecar metadata and when writing the link manifest, and by the external linker when producing the final binary.
 
 Required hard errors in the initial implementation:
 
@@ -1839,10 +1885,19 @@ Required hard errors in the initial implementation:
 - `foreign c_wrapper "symbol"` declaration with no matching sidecar `wrapper` entry in a referenced sidecar file;
 - sidecar entry with no `link_library` declaration for its file;
 - required sidecar field missing for a used wrapper (`result` or `error_domain` when applicable);
-- referenced prebuilt library archive missing from the project layout;
-- wrapper symbol referenced by Silica not defined in the linked prebuilt libraries.
+- referenced prebuilt library archive missing from the project layout (checked when emitting `silica.link`; compilation fails before the manifest is written);
+- wrapper symbol referenced by Silica not defined in the linked prebuilt libraries (checked by the external linker at Stage 3 using archives named in `silica.link`).
 
-Required link-time failure:
+Required compile-time failure (missing archive, link-manifest validation):
+
+```text
+MissingArchiveError:
+Referenced prebuilt library archive is missing from the project layout.
+```
+
+Compiler diagnostic: **`E4034`**.
+
+Required link-time failure (missing symbol):
 
 ```text
 MissingForeignSymbolError:
@@ -1861,7 +1916,7 @@ WrapperMetaPathError:
 wrapper_meta and meta paths must be located under dangerous_exposure_source at the root of the Silica project.
 ```
 
-The following wrapper-side checks from earlier specification drafts are **deferred** until the toolchain gains C header parsing or wrapper source analysis:
+The following wrapper-side checks from earlier specification drafts are **not mechanically enforced** by the Silica toolchain. They remain **authoring guidelines** for wrapper implementers. The Silica compiler does not parse C headers or wrapper source; there is no plan to add a C tokenizer or parser for these checks.
 
 - unsupported C type in wrapper signature;
 - variadic wrapper function;
@@ -1878,7 +1933,7 @@ The following wrapper-side checks from earlier specification drafts are **deferr
 - wrapper failing to provide an explicit error result when it cannot determine a returned pointer's element type, pointee type, length, layout, or de-opaqueified contents;
 - Silica-specific C preprocessor macro present in a wrapper header or wrapper implementation.
 
-The deferred checks remain design requirements for wrapper authors even when not mechanically enforced in the initial toolchain.
+The deferred checks remain design requirements for wrapper authors even when not mechanically enforced in the initial toolchain. Mechanical enforcement of this list is **out of scope** for the Silica compiler.
 
 ---
 
@@ -1891,8 +1946,9 @@ The following questions remain open:
 3. How many FFI worker actors a program should spawn by convention (shared vs per-domain workers).
 4. How client actors derive structurally pure actor state from external-danger-touched FFI result casts under strict structural taint.
 5. How region values returned through FFI result casts may be converted into actor-state-owned region references.
-6. When and how the toolchain should add C header parsing and deferred wrapper-side checks from §15.2.
-7. When the build tool should compile C wrapper sources and support dynamic linking (§14.3).
+6. When the build tool should compile C wrapper sources and support dynamic linking (§14.3).
+
+**Removed from open questions:** mechanical wrapper-side checks in §15.2 — out of scope; Silica validates Silica declarations, sidecar metadata, and link manifest only; wrapper authors follow the §15.2 authoring guidelines without compiler C parsing.
 
 ### 16.1 Resolved design decisions
 
@@ -1906,8 +1962,8 @@ The following decisions are fixed by this specification version:
 | Adapter-wrapper detection | Exported `dangerous_*` functions must have a Silica body; raw `foreign c_wrapper` declarations are never exported. |
 | String declarations | Raw foreign bindings use pointer-plus-length; adapter wrappers accept Silica `string`. |
 | Metadata | Sidecar `.meta` files under `dangerous_exposure_source/`, referenced explicitly by `wrapper_meta` or per-binding `meta` in Silica source. |
-| Toolchain validation | No C parsing initially; Silica declarations + sidecar metadata + link-time symbol resolution. |
-| Build integration | Prebuilt static wrapper libraries under `dangerous_exposure_source/lib/`. |
+| Toolchain validation | No C parsing; Silica declarations + sidecar metadata + compile-time archive existence (`E4034`) + link-time symbol resolution. §15.2 wrapper-side C checks are authoring guidelines only. |
+| Build integration | Prebuilt static wrapper libraries under `dangerous_exposure_source/lib/`; compiler emits `silica.link`; project Makefiles pass manifest `archive:` paths to the external linker. |
 | De-taint | Strict structural taint; no validator-based clearing in this version. |
 | Foreign call scheduling | Architecturally non-blocking via cast-only client and FFI worker actors; no `blocking` sidecar field. |
 
@@ -1919,11 +1975,11 @@ Questions about external languages calling into Silica are intentionally exclude
 
 Silica FFI is wrapper-first and cast-mediated.
 
-External libraries are required to be adapted into a small, explicit, predictable C-compatible ABI subset before Silica calls them. Wrapper functions are required to use fixed-width types, pointer-plus-length strings, explicit result structs, de-opaqueified C object contents, and clear ownership rules. Wrapper object code is supplied initially as prebuilt static libraries; sidecar `.meta` files under `dangerous_exposure_source/` declare link libraries and wrapper facts and are loaded only when named by `wrapper_meta` or `meta` declarations in Silica source.
+External libraries are required to be adapted into a small, explicit, predictable C-compatible ABI subset before Silica calls them. Wrapper functions are required to use fixed-width types, pointer-plus-length strings, explicit result structs, de-opaqueified C object contents, and clear ownership rules. Wrapper object code is supplied initially as prebuilt static libraries under `dangerous_exposure_source/lib/`. Sidecar `.meta` files under `dangerous_exposure_source/` declare link libraries and wrapper facts and are loaded only when named by `wrapper_meta` or `meta` declarations in Silica source. After compile, `silica-compiler` writes **`silica.link`** naming required archives and foreign symbols for the `silica.config` closure; project build scripts link using those archive paths.
 
 Application actors never call `dangerous_*` module functions directly. They use cast-only behaviors to send foreign-call requests to FFI worker actors. FFI worker actors execute `sequence proc[external_danger] ... produces pure ... end` blocks and deliver outcomes by FFI result cast. Every compilation unit that imports or uses a `dangerous_*` module must itself be a `dangerous_*` module; that constraint propagates to the root application module and to the compiled application name whenever the program depends on FFI.
 
-Raw foreign bindings declare pointer-plus-length arguments for string data; exported adapter wrappers accept Silica `string`. The initial toolchain validates Silica declarations, explicit sidecar references, sidecar metadata contents, and link-time symbol presence. It does not parse C headers.
+Raw foreign bindings declare pointer-plus-length arguments for string data; exported adapter wrappers accept Silica `string`. The initial toolchain validates Silica declarations, explicit sidecar references, sidecar metadata contents, prebuilt archive presence when emitting `silica.link`, and link-time symbol presence in manifest-named archives. It does not parse C headers.
 
 Any C array return maps to a Silica buffer. Any non-array C pointer must be converted to type before being sent to Silica. Any `void *` from the underlying library must be translated by wrapper code into an approved concrete Silica-facing representation before Silica sees it. Opaque C structs must be de-opaqueified into Silica-compatible contents, not exposed as handles, raw pointers, or opaque external types.
 

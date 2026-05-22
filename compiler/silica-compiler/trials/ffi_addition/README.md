@@ -1,6 +1,6 @@
 # FFI trial harness
 
-Phase 0 provides linkable C wrapper fixtures for outbound FFI compiler work. The Silica compiler is not involved in this phase.
+Phase 0 provides linkable C wrapper fixtures for outbound FFI compiler work.
 
 ## Layout
 
@@ -8,119 +8,88 @@ Phase 0 provides linkable C wrapper fixtures for outbound FFI compiler work. The
 ffi_addition/
   fixtures/
     dangerous_exposure_source/
-      legacy/
-        silica_legacy_math_wrapper.h    # C header (authoring reference)
-        silica_legacy_math_wrapper.meta # sidecar metadata
-      text/
-        silica_text_wrapper.h
-        silica_text_wrapper.meta
-      lib/
-        libsilica_legacy_math.a         # built by Makefile
-        libsilica_text.a
+      legacy/ … text/ … net/ … lib/
     src/                                # C sources (not compiled by Silica)
-      silica_legacy_math.c
-      silica_text.c
+  app_sidecar_legacy_math_add/          # runnable app: sidecar metadata + legacy math add
+  app_cast_worker_legacy_add/           # runnable app: external_danger worker + legacy stub
+  app_ffi_result_cast_add/              # runnable app: FFI result cast with tainted int64
+  app_foreign_abi_valid/                # runnable apps: Silica-side ABI declarations
+  app_e2e_scalar_string_echo/           # runnable apps: scalar add + string echo e2e
+  module_addition/                      # compile-only module naming trial (phase 3)
+  common_app.mk                         # shared integrate recipe for app_* trials
   Makefile
   README.md
 ```
 
-## Wrappers
+Expected-failure FFI cases live under `trials/error_enforcement_addition/ffi_addition/` (`error_app_*` directories).
 
-| Symbol | Library | Purpose |
-| ------ | ------- | ------- |
-| `silica_legacy_math_add_int64` | `libsilica_legacy_math.a` | Scalar int64 add |
-| `silica_text_echo` | `libsilica_text.a` | String in/out via ptr+len C ABI; prefixes input with `Echo: ` |
+## App trials
 
-Sidecar `.meta` files follow the FFI wrapper specification: `link_library`, `wrapper { symbol, result, error_domain }`. No `blocking` field (cast-mediated FFI worker model).
+Each `app_*` directory is a self-contained runnable program (or small set of programs) with:
+
+- `Makefile` `integrate` target — compile, verify `silica.link`, link, run, diff `.sout` vs `.scout`
+- `silica.link.scout` when the app uses foreign bindings
+- `.scout` output goldens and optional `.wait_for_exit` markers
+
+| Directory | What it exercises |
+| --------- | ----------------- |
+| `app_sidecar_legacy_math_add` | Sidecar `wrapper_meta` loads; legacy math foreign call via FFI worker |
+| `app_cast_worker_legacy_add` | `external_danger` in spawn-passed worker; `dangerous_legacy_stub@add` |
+| `app_ffi_result_cast_add` | Tainted int64 delivered by FFI result cast inside worker |
+| `app_foreign_abi_valid` | Scalar and net-port ABI declarations compile and run |
+| `app_e2e_scalar_string_echo` | Full cast/worker e2e: int64 add and string echo through C wrappers |
+| `app_legacy_math_add_guarded` | Phase 11: single `silica_legacy_math_add_int64` call through guarded runtime boundary |
+| `app_legacy_math_add_twice` | Phase 11: two sequential guarded legacy-math calls (reentrant depth reset) |
 
 ## Phase 0
-
-Build fixtures and verify symbol exports:
 
 ```bash
 make -C compiler/silica-compiler/trials/ffi_addition phase-0
 ```
 
-`phase-a` is an alias for `phase-0`.
+## Phase 9: `silica.link` emission, archive validation, and Makefile link integration
 
-## Phase 3
+After a successful compile of all units in `silica.config`, `silica-compiler`:
 
-Module checker enforces `dangerous_*` naming, export rules for raw foreign bindings, and `wrapper_meta` / `meta` path constraints (no sidecar loading yet).
+1. Verifies each `link_library` archive exists under `dangerous_exposure_source/lib/` (step 3 — compile-time `E4034` if missing).
+2. Writes `silica.link` listing deduped `link_library` / `archive` pairs and required `foreign c_wrapper` symbols.
 
-```bash
-make -C compiler/silica-compiler/trials/ffi_addition phase-3
-```
+App trials diff `silica.link` against `silica.link.scout`.
 
-Trials under `module_addition/`:
-
-| Trial | Expect |
-| ----- | ------ |
-| `dangerous_naming_valid.silica` | compile OK through type check |
-
-## Phase 4
-
-Sidecar `.meta` loader: reads referenced sidecar files, validates `link_library` and `wrapper { symbol, result, error_domain }`, associates foreign bindings, and records link libraries on `SIRModule`.
+At Stage 3 link, `trials/silica_link.sh` reads `archive:` lines from `silica.link` and passes those static archives directly to `rust-lld` / `clang`. App trial Makefiles no longer set manual `-L` / `-l` flags.
 
 ```bash
-make -C compiler/silica-compiler/trials/ffi_addition phase-4
+make -C compiler/silica-compiler/trials/ffi_addition phase-9
+make -C compiler/silica-compiler/trials/ffi_addition phase-11
+make -C compiler/silica-compiler/trials integrate-ffi
 ```
 
-Trials under `metadata_addition/` (fixture tree symlinked into each temp compile dir):
+Phase 11 adds `_silica_rt_ffi_guarded_enter` / `_silica_rt_ffi_guarded_exit` around every emitted `foreign c_wrapper` call. Per-thread guarded-call metadata lives in `__silica_runtime.sams` (see `ffi_guarded_runtime_asm.silica`).
 
-| Trial | Expect |
-| ----- | ------ |
-| `dangerous_sidecar_match.silica` | compile OK through metadata pass and type check |
+Compile/link **failure** goldens for Phase 9 live under `error_enforcement_addition/ffi_addition/` and run via that harness's `integrate` target (included in top-level `make integrate` through `error_enforcement_addition`):
 
-The valid trial uses `fixtures/dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta`.
+| Failure | Golden |
+| ------- | ------ |
+| Missing prebuilt archive at compile time | `error_app_sidecar_metadata/dangerous_sidecar_missing_archive` |
+| Missing foreign symbol at link time | `error_app_sidecar_metadata/dangerous_missing_foreign_symbol_at_link` |
 
-## Phase 5
-
-Cast-mediated FFI worker placement: `external_danger` sequences only in spawn-passed worker behaviors, `dangerous_*` calls only inside those sequences, and cast-only client behaviors that initiate foreign work.
+## Running the full success-path suite
 
 ```bash
-make -C compiler/silica-compiler/trials/ffi_addition phase-5
+make -C compiler/silica-compiler/trials/ffi_addition all
 ```
 
-Trials under `placement_addition/` (stub + app modules in each temp compile dir):
+`all` runs `phase-9` (all app integrates with `.scout` / `silica.link.scout` goldens). App `integrate` targets depend on `fixtures`, which compiles C wrapper sources into `fixtures/dangerous_exposure_source/lib/*.a` via `fixtures.mk`.
 
-| Trial | Expect |
-| ----- | ------ |
-| `dangerous_ffi_worker_valid.silica` | compile OK through placement pass and emit |
+`make fixtures` or `make -C compiler/silica-compiler/trials/ffi_addition fixtures` builds the wrapper archives alone.
 
-## Phase 6
-
-Structural taint for `dangerous_*` returns: scalar and region tracking, `produces pure` enforcement, message boundaries (including one FFI result cast per worker `external_danger` sequence), and restricted-effect use.
+## Running all app trials
 
 ```bash
-make -C compiler/silica-compiler/trials/ffi_addition phase-6
+make -C compiler/silica-compiler/trials/ffi_addition integrate
 ```
-
-Trials under `taint_addition/` (stub + app modules in each temp compile dir):
-
-| Trial | Expect |
-| ----- | ------ |
-| `dangerous_taint_worker_valid.silica` | compile OK through taint pass and emit |
-
-## Phase 7
-
-Silica-side ABI validation for foreign `c_wrapper` declarations and adapter/raw string layering (no C header parsing).
-
-```bash
-make -C compiler/silica-compiler/trials/ffi_addition phase-7
-```
-
-Trials under `abi_addition/`:
-
-| Trial | Expect |
-| ----- | ------ |
-| `dangerous_scalar_abi_valid.silica` | compile OK through ABI pass and emit |
-| `dangerous_string_two_layer_valid.silica` | compile OK (adapter `string` over raw ptr+len) |
-
-Expected-failure FFI cases live under `trials/error_enforcement_addition/ffi_addition/`, where they are compared as `.cur_fail` vs `.golden_fail` with the rest of the compiler error-enforcement suite.
 
 ## Rebuilding fixtures
-
-After editing C sources or sidecar files:
 
 ```bash
 make -C compiler/silica-compiler/trials/ffi_addition clean
