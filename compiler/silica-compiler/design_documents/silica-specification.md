@@ -7,8 +7,11 @@
 | [silica-specification-additional.md](silica-specification-additional.md) | Compiler failure rules: anti-patterns that must fail at compile time |
 | [silica_actor_capabilities_specification.md](silica_actor_capabilities_specification.md) | Actor capabilities, protocol-typed references, and message-order guarantees (draft extension) |
 | [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) | Outbound C/FFI wrapper calls: `dangerous_*` modules, cast-mediated FFI workers, `external_danger`, sidecar metadata, and link-time validation |
+| [macos_crash_handling_for_silica.md](macos_crash_handling_for_silica.md) | macOS-specific crash/fault handling notes for guarded FFI, signal/Mach exception boundaries, and actor-supervisor recovery caveats |
 | [ffi_wrapper_implementation_plan.md](ffi_wrapper_implementation_plan.md) | Compiler implementation phases for [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) |
 | [memory-effects-aarch64-implementation-plan.md](memory-effects-aarch64-implementation-plan.md) | Memory `Space` model for OS-free AArch64 and embedded targets (implementation plan) |
+
+Platform-specific runtime notes are added as Silica grows to support each target. The macOS crash-handling document is therefore not a portable guarantee for Linux, Windows, bare-metal targets, or future hosted runtimes; those platforms require their own fault-delivery, signal/exception, and process-isolation notes.
 
 ---
 
@@ -4575,7 +4578,7 @@ Silica defines several built-in effects that track different kinds of side effec
 - `network_io` - Network communications of all kinds (sockets, HTTP, etc.)
 - `hot_swap` - Code loading (dynamic loading, JIT, self-modifying code). On AArch64, requires `ISB` barrier to ensure instruction fetch sees code writes.
 - `register_rwr` - Direct device register access via mmap (read and write). On AArch64, requires `DSB SY` before and `ISB` after for device ordering.
-- `external_danger` - Outbound calls to `dangerous_*` FFI wrapper modules inside an FFI worker actor's `external_danger` sequence. Full rules: [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §4.
+- `external_danger` - Outbound calls to `dangerous_*` FFI wrapper modules inside an FFI worker actor's `external_danger` sequence. Full rules: [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §4. On macOS, same-process guarded-FFI crash handling is best-effort and platform-specific; see [macos_crash_handling_for_silica.md](macos_crash_handling_for_silica.md). Other platform-specific crash-handling notes will be added as Silica expands to support those targets.
 
 **Memory effect guarantees (hosting; normative at this time):** The **distinct hardware behaviors** associated with each `mem(Space)` and region `Space` (write-back, write-through, non-cacheable normal, device, and atomic backing rules in **§12.1.1** and following) are **fully supported and guaranteed only on OS-free executions**—for example bare-metal **boards**, firmware, or any environment where the **Silica runtime and linker script control** how memory regions are mapped and which **cacheability / ordering attributes** apply. On **OS-hosted** programs—**macOS**, **Linux**, **Windows**, **Solaris**, and comparable multiprogramming systems—application memory is exposed through the **traditional flat virtual address model** historically rooted in Unix and the **PDP-11** view of a process: ordinary allocations receive **uniform, OS-chosen** attributes, not a portable, per-allocation choice of Silica memory spaces. Because the **operating system controls and shares physical RAM** among processes, that model **cannot be sidestepped** by a portable application runtime to obtain, for all Silica regions, the same per-space **page-table / MAIR-class** distinctions the language describes. On OS-hosted targets, `mem(Space)` and `region(R, Space)` remain in the **type and effect system** for static discipline, documentation, and integration with **non-portable** or **driver-mediated** buffers where available, but **this specification does not guarantee**, at this time, that each memory space maps to **different hardware attributes** on those OSes. See **§12.1.1.0**.
 
@@ -14664,6 +14667,8 @@ fn failing_actor(msg: unit, state: unit) -> atom proc[concurrency] {
 }
 ```
 
+When an actor executes guarded FFI, a platform runtime may be able to convert a recognized native fault into ordinary actor failure so that monitors and supervisors observe the usual failure/exit path. This is not a general guarantee for arbitrary C corruption. On macOS, the same-process guarded-FFI model, signal/Mach exception caveats, and the rule that signal handlers must not perform actor lifecycle work are described in [macos_crash_handling_for_silica.md](macos_crash_handling_for_silica.md). Other hosted or OS-free platforms need their own documents as support is added.
+
 ### 25.3 Error Recovery
 
 #### 25.3.1 Supervision
@@ -14895,6 +14900,8 @@ Outbound calls to C-compatible wrapper libraries are specified in [silica_ffi_wr
 - Prebuilt wrapper static libraries under `dangerous_exposure_source/`
 
 Compiler rollout is tracked in [ffi_wrapper_implementation_plan.md](ffi_wrapper_implementation_plan.md). Inbound interop (C calling into Silica) remains out of scope.
+
+Crash/fault handling for guarded FFI is platform-specific. For Apple Silicon and other macOS-hosted execution, see [macos_crash_handling_for_silica.md](macos_crash_handling_for_silica.md). That document explains why same-process recovery from arbitrary C faults is not guaranteed, and how a recognized guarded-FFI fault may be converted into actor failure only after control returns to a safe runtime boundary. Equivalent notes for Linux, Windows, bare-metal, and other runtimes will be added as Silica expands to support those platforms.
 
 #### 26.3.1 C Interoperability (Future — inbound and dynamic linking)
 
