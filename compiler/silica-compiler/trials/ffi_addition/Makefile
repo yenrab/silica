@@ -30,6 +30,8 @@ APP_FOREIGN_ABI_DIR := app_foreign_abi_valid
 APP_E2E_DIR := app_e2e_scalar_string_echo
 APP_GUARDED_ONCE_DIR := app_legacy_math_add_guarded
 APP_GUARDED_TWICE_DIR := app_legacy_math_add_twice
+APP_TEXT_ECHO_DIR := app_text_echo_guarded
+APP_TEXT_ECHO_TWICE_DIR := app_text_echo_twice
 
 APP_DIRS := \
 	$(APP_SIDECAR_DIR) \
@@ -38,16 +40,27 @@ APP_DIRS := \
 	$(APP_FOREIGN_ABI_DIR) \
 	$(APP_E2E_DIR) \
 	$(APP_GUARDED_ONCE_DIR) \
-	$(APP_GUARDED_TWICE_DIR)
+	$(APP_GUARDED_TWICE_DIR) \
+	$(APP_TEXT_ECHO_DIR) \
+	$(APP_TEXT_ECHO_TWICE_DIR)
 
 GUARDED_APP_DIRS := \
 	$(APP_GUARDED_ONCE_DIR) \
 	$(APP_GUARDED_TWICE_DIR)
 
+APP_GUARDED_FAULT_DIR := app_guarded_fault_trials
+
+FAULT_APP_DIRS := \
+	$(APP_GUARDED_FAULT_DIR)
+
+ARENA_APP_DIRS := \
+	$(APP_TEXT_ECHO_DIR) \
+	$(APP_TEXT_ECHO_TWICE_DIR)
+
 SILICA_COMPILER := $(abspath $(THIS_DIR)../../src/silica-compiler)
 MODULE_VALID_FILE := module_addition/dangerous_naming_valid.silica
 
-.PHONY: all integrate fixtures phase-0 phase-a phase-3 phase-4 phase-5 phase-6 phase-7 phase-8 phase-9 phase-11 \
+.PHONY: all integrate fixtures phase-0 phase-a phase-3 phase-4 phase-5 phase-6 phase-7 phase-8 phase-9 phase-11 phase-12 phase-13 \
 	ffi-wrapper-archives module-valid verify-symbols clean clean-fixtures clean-apps help
 
 .DEFAULT_GOAL := phase-0
@@ -165,6 +178,21 @@ phase-11: fixtures
 	test "$$failed" -eq 0
 	@echo "✅ ffi_addition phase-11 complete (guarded FFI runtime boundary)"
 
+phase-12: fixtures
+	@test -x "$(SILICA_COMPILER)" || { echo "FAIL: build compiler first (make -C compiler/silica-compiler/src build)"; exit 1; }
+	@failed=0; \
+	for dir in $(ARENA_APP_DIRS); do \
+		echo "=== ffi_addition/$$dir (per-actor FFI arena) ==="; \
+		$(MAKE) -C "$(THIS_DIR)$$dir" integrate || failed=1; \
+	done; \
+	test "$$failed" -eq 0
+	@echo "✅ ffi_addition phase-12 complete (per-actor FFI arena marshaling)"
+
+phase-13: fixtures
+	@test -x "$(SILICA_COMPILER)" || { echo "FAIL: build compiler first (make -C compiler/silica-compiler/src build)"; exit 1; }
+	@$(MAKE) -C "$(THIS_DIR)$(APP_GUARDED_FAULT_DIR)" integrate
+	@echo "✅ ffi_addition phase-13 complete (macOS guarded FFI fault bridge)"
+
 phase-a: phase-0
 
 clean-fixtures:
@@ -197,6 +225,7 @@ help:
 	@echo "  phase-4..8  - One app trial integrate per phase (see app dirs above)"
 	@echo "  phase-9     - All app integrates with silica.link-driven link (.scout goldens)"
 	@echo "  phase-11    - Guarded FFI boundary app trials (legacy math add via enter/exit wrapper)"
+	@echo "  phase-12    - Per-actor FFI arena app trials (string echo in/out via arena bump)"
 	@echo "  (compile/link failure goldens: error_enforcement_addition/ffi_addition integrate)"
 	@echo "  fixtures    - Build libsilica_legacy_math.a, libsilica_text.a, and libsilica_net.a"
 	@echo "  clean       - Remove fixture and app trial build artifacts"

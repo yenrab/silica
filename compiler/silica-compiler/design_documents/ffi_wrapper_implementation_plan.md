@@ -725,8 +725,8 @@ Trials:
 | 9 | Link manifest + Makefile link integration | ☑ | `make … phase-9` | Steps 1–3: emit `silica.link`, Makefile `archive:` consumption, compile-time archive existence (`E4034`); link-time missing-symbol golden. |
 | 10 | Full suite + CI + doc lock | ☑ | `make … integrate-ffi` | CI wired; `integrate-ffi` = success-path; failures via `error_enforcement_addition/ffi_addition integrate` |
 | 11 | Guarded FFI runtime boundary model | ☑ | `make … phase-11` | Enter/exit wrapper + per-thread TLS; `app_legacy_math_add_guarded`, `app_legacy_math_add_twice` |
-| 12 | Per-actor FFI arena and pointer relocation | ☐ | `make … phase-12` | Move C-facing pointers out of ordinary heap/actor storage before fault handling |
-| 13 | macOS `sigaltstack` / `sigaction` fault bridge | ☐ | `make … phase-13` | macOS-specific |
+| 12 | Per-actor FFI arena and pointer relocation | ☑ | `make … phase-12` | Move C-facing pointers out of ordinary heap/actor storage before fault handling |
+| 13 | macOS `sigaltstack` / `sigaction` fault bridge | ☑ | `make … phase-13` | macOS-specific |
 | 14 | Actor failure, arena reset, and supervisor restart integration | ☐ | `make … phase-14` | No actor lifecycle work in handler |
 | 15 | macOS guarded FFI regression gate and platform expansion notes | ☐ | `make … phase-15` | Other platforms documented as support is added |
 

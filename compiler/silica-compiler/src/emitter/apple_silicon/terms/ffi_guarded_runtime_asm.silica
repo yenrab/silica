@@ -16,12 +16,13 @@
 -}
 
 // Guarded FFI boundary helpers (Phase 11). Linked via __silica_runtime.sams.
-// Per-thread state (pthread key -> 32-byte block):
+// Per-thread state (pthread key -> 512-byte block):
 //   [+0]  depth (int64)
 //   [+8]  current actor ACB at outermost enter
 //   [+16] call generation (monotonic, incremented on each depth 0->1)
 //   [+24] inside flag (1 while depth > 0)
-// Reserved slots for later fault-bridge phases: fault_signal/fault_addr reuse +16/+24 policy later.
+//   [+32] fault_signal, [+40] fault_addr, [+48] fault_code, [+56] fault_in_arena
+//   [+64] sigjmp_buf (448 B) for Phase 13 recovery boundary
 
 export emit_guarded_ffi_runtime_asm/0;
 
@@ -88,7 +89,7 @@ _silica_rt_guarded_ffi_state_get_or_create:
 	ldr	x0, [x8]
 	bl	_pthread_getspecific
 	cbnz	x0, L_gffi_state_have
-	mov	x0, #32
+	mov	x0, #512
 	bl	_calloc
 	cbz	x0, L_gffi_state_fail
 	mov	x9, x0
@@ -123,6 +124,10 @@ _silica_rt_ffi_guarded_enter:
 	b.ne	L_gffi_enter_flag
 	bl	_silica_rt_tls_current_actor_get
 	str	x0, [x19, #8]
+	cbz	x0, L_gffi_enter_gen
+	mov	x20, x0
+	bl	_silica_rt_ffi_arena_ensure
+L_gffi_enter_gen:
 	ldr	x10, [x19, #16]
 	add	x10, x10, #1
 	str	x10, [x19, #16]
@@ -134,6 +139,28 @@ L_gffi_enter_flag:
 	ret
 L_gffi_enter_abort:
 	bl	_abort
+	.cfi_endproc
+	.globl	_silica_rt_ffi_guarded_setjmp
+	.p2align	2
+_silica_rt_ffi_guarded_setjmp:
+	.cfi_startproc
+	stp	x29, x30, [sp, #-16]!
+	stp	x19, x20, [sp, #-16]!
+	mov	x29, sp
+	bl	_silica_rt_guarded_ffi_state_get_or_create
+	cbz	x0, L_gffi_sj_zero
+	mov	x19, x0
+	ldr	x9, [x19, #0]
+	cmp	x9, #1
+	b.ne	L_gffi_sj_zero
+	bl	_silica_rt_install_sync_fault_handlers
+	add	x0, x19, #64
+	mov	x1, xzr
+	bl	_sigsetjmp
+L_gffi_sj_zero:
+	ldp	x19, x20, [sp], #16
+	ldp	x29, x30, [sp], #16
+	ret
 	.cfi_endproc
 	.globl	_silica_rt_ffi_guarded_exit
 	.p2align	2
@@ -155,8 +182,11 @@ _silica_rt_ffi_guarded_exit:
 	b.lt	L_gffi_exit_done
 	str	x9, [x19, #0]
 	cbnz	x9, L_gffi_exit_done
+	ldr	x0, [x19, #8]
 	str	xzr, [x19, #8]
 	str	xzr, [x19, #24]
+	cbz	x0, L_gffi_exit_done
+	bl	_silica_rt_ffi_arena_reset
 L_gffi_exit_done:
 	ldp	x19, x20, [sp], #16
 	ldp	x29, x30, [sp], #16

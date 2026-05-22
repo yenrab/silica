@@ -1,0 +1,344 @@
+{-
+
+   Copyright 2026 Lee Scott Barney
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-}
+
+// Phase 13 — macOS sigaltstack / sigaction guarded-FFI fault bridge.
+// Per-thread guarded TLS block layout (512 B, see ffi_guarded_runtime_asm.silica):
+//   +0 depth, +8 actor ACB, +16 call_gen, +24 inside,
+//   +32 fault_signal, +40 fault_addr, +48 fault_code, +56 fault_in_arena,
+//   +64 sigjmp_buf (448 B).
+
+export emit_ffi_fault_runtime_asm/0;
+
+fn emit_ffi_fault_runtime_asm() -> string {
+    bss: string <- "	.section	__DATA,__bss
+	.p2align	3
+_silica_rt_ffi_altstack_mem:
+	.zero	65536
+_silica_rt_sync_fault_handlers_installed:
+	.zero	4
+_silica_rt_ffi_altstack_active:
+	.zero	4
+";
+    text: string <- "	.section	__TEXT,__text,regular,pure_instructions
+	.globl	_silica_rt_install_sync_fault_handlers
+	.p2align	2
+_silica_rt_install_sync_fault_handlers:
+	.cfi_startproc
+	stp	x29, x30, [sp, #-16]!
+	mov	x29, sp
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+Lloh_ifh0:
+	adrp	x8, _silica_rt_sync_fault_handlers_installed@PAGE
+Lloh_ifh1:
+	add	x8, x8, _silica_rt_sync_fault_handlers_installed@PAGEOFF
+	ldr	w9, [x8]
+	cbnz	w9, L_ifh_done
+	mov	w9, #1
+	str	w9, [x8]
+	sub	sp, sp, #64
+Lloh_as0:
+	adrp	x9, _silica_rt_ffi_altstack_mem@PAGE
+Lloh_as1:
+	add	x9, x9, _silica_rt_ffi_altstack_mem@PAGEOFF
+	str	x9, [sp]
+	mov	x9, #65536
+	str	x9, [sp, #8]
+	str	wzr, [sp, #16]
+	mov	x0, sp
+	mov	x1, xzr
+	bl	_sigaltstack
+Lloh_asf0:
+	adrp	x9, _silica_rt_ffi_altstack_active@PAGE
+Lloh_asf1:
+	add	x9, x9, _silica_rt_ffi_altstack_active@PAGEOFF
+	mov	w10, #1
+	str	w10, [x9]
+Lloh_h0:
+	adrp	x8, _silica_rt_sync_fault_handler@PAGE
+Lloh_h1:
+	add	x8, x8, _silica_rt_sync_fault_handler@PAGEOFF
+	str	x8, [sp, #32]
+	str	wzr, [sp, #40]
+	mov	w9, #65
+	str	w9, [sp, #44]
+	mov	w0, #11
+	add	x1, sp, #32
+	mov	x2, xzr
+	bl	_sigaction
+	mov	w0, #10
+	add	x1, sp, #32
+	mov	x2, xzr
+	bl	_sigaction
+	mov	w0, #4
+	add	x1, sp, #32
+	mov	x2, xzr
+	bl	_sigaction
+	mov	w0, #8
+	add	x1, sp, #32
+	mov	x2, xzr
+	bl	_sigaction
+	add	sp, sp, #64
+L_ifh_done:
+	ldp	x29, x30, [sp], #16
+	ret
+	.loh AdrpAdd	Lloh_ifh0, Lloh_ifh1
+	.loh AdrpAdd	Lloh_as0, Lloh_as1
+	.loh AdrpAdd	Lloh_asf0, Lloh_asf1
+	.loh AdrpAdd	Lloh_h0, Lloh_h1
+	.cfi_endproc
+	.globl	_silica_rt_ffi_fault_altstack_probed
+	.p2align	2
+_silica_rt_ffi_fault_altstack_probed:
+	.cfi_startproc
+Lloh_ap0:
+	adrp	x8, _silica_rt_ffi_altstack_active@PAGE
+Lloh_ap1:
+	add	x8, x8, _silica_rt_ffi_altstack_active@PAGEOFF
+	ldr	w0, [x8]
+	ret
+	.loh AdrpAdd	Lloh_ap0, Lloh_ap1
+	.cfi_endproc
+	.globl	_silica_rt_ffi_trial_arena_base
+	.p2align	2
+_silica_rt_ffi_trial_arena_base:
+	.cfi_startproc
+	stp	x29, x30, [sp, #-16]!
+	stp	x19, x20, [sp, #-16]!
+	mov	x29, sp
+	bl	_silica_rt_tls_current_actor_get
+	cbz	x0, L_tab_zero
+	mov	x19, x0
+	bl	_silica_rt_ffi_arena_ensure
+	cbz	x0, L_tab_zero
+	ldr	x0, [x19, #352]
+	ldp	x19, x20, [sp], #16
+	ldp	x29, x30, [sp], #16
+	ret
+L_tab_zero:
+	mov	x0, xzr
+	ldp	x29, x30, [sp], #16
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_sync_fault_handler
+	.p2align	2
+_silica_rt_sync_fault_handler:
+	.cfi_startproc
+	stp	x24, x23, [sp, #-64]!
+	stp	x22, x21, [sp, #16]
+	stp	x20, x19, [sp, #32]
+	stp	x29, x30, [sp, #48]
+	add	x29, sp, #48
+	mov	x22, x0
+	mov	x23, x1
+	mov	x24, x2
+	mov	x0, x22
+	mov	x1, x23
+	bl	_silica_rt_ffi_guarded_fault_handler_try
+	cbnz	w0, L_sfh_done
+	cmp	w22, #11
+	b.ne	L_sfh_crash
+	mov	x19, x23
+	ldr	x19, [x19, #24]
+	bl	_silica_rt_tls_current_actor_get
+	mov	x20, x0
+	cbz	x20, L_sfh_crash
+	ldr	x21, [x20, #160]
+	cbz	x21, L_sfh_crash
+	ldr	x22, [x20, #184]
+	add	x22, x21, x22
+	cmp	x19, x21
+	b.lo	L_sfh_crash
+	cmp	x19, x22
+	b.hs	L_sfh_overflow
+	bic	x0, x19, #0xfff
+	mov	x1, #0x1000
+	mov	w2, #3
+	bl	_mprotect
+	ldr	x8, [x20, #160]
+	bic	x9, x19, #0xfff
+	add	x9, x9, #0x1000
+	sub	x9, x9, x8
+	ldr	x10, [x20, #168]
+	cmp	x9, x10
+	b.ls	L_sfh_stack_done
+	str	x9, [x20, #168]
+L_sfh_stack_done:
+	ldp	x29, x30, [sp, #48]
+	ldp	x20, x19, [sp, #32]
+	ldp	x22, x21, [sp, #16]
+	ldp	x24, x23, [sp], #64
+	ret
+L_sfh_overflow:
+	str	wzr, [x20, #152]
+	add	x0, x20, #80
+	bl	_silica_rt_cv_signal
+	ldp	x29, x30, [sp, #48]
+	ldp	x20, x19, [sp, #32]
+	ldp	x22, x21, [sp, #16]
+	ldp	x24, x23, [sp], #64
+	ret
+L_sfh_crash:
+	mov	w0, w22
+	bl	_signal
+	mov	w0, w22
+	bl	_raise
+L_sfh_done:
+	ldp	x29, x30, [sp, #48]
+	ldp	x20, x19, [sp, #32]
+	ldp	x22, x21, [sp, #16]
+	ldp	x24, x23, [sp], #64
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_ffi_guarded_fault_handler_try
+	.p2align	2
+_silica_rt_ffi_guarded_fault_handler_try:
+	.cfi_startproc
+; X0=signum, X1=siginfo*
+	stp	x21, x20, [sp, #-16]!
+	stp	x19, x30, [sp, #-16]!
+	mov	x21, x0
+	mov	x19, x1
+Lloh_gk0:
+	adrp	x8, _silica_guarded_ffi_pthread_key@PAGE
+Lloh_gk1:
+	add	x8, x8, _silica_guarded_ffi_pthread_key@PAGEOFF
+	ldr	x0, [x8]
+	bl	_pthread_getspecific
+	cbz	x0, L_gft_no
+	mov	x20, x0
+	ldr	x9, [x20, #24]
+	cbz	x9, L_gft_no
+	sxtw	x9, w21
+	str	x9, [x20, #32]
+	ldr	x9, [x19, #24]
+	str	x9, [x20, #40]
+	ldr	w10, [x19, #8]
+	sxtw	x10, w10
+	str	x10, [x20, #48]
+	mov	x10, xzr
+	ldr	x11, [x20, #8]
+	cbz	x11, L_gft_store_arena
+	ldr	x12, [x11, #352]
+	ldr	x13, [x11, #360]
+	cbz	x12, L_gft_store_arena
+	cmp	x9, x12
+	b.lo	L_gft_store_arena
+	cmp	x9, x13
+	b.hs	L_gft_store_arena
+	mov	x10, #1
+L_gft_store_arena:
+	str	x10, [x20, #56]
+	add	x0, x20, #64
+	mov	w1, #1
+	bl	_siglongjmp
+L_gft_no:
+	mov	x0, xzr
+	ldp	x19, x30, [sp], #16
+	ldp	x21, x20, [sp], #16
+	ret
+	.loh AdrpAdd	Lloh_gk0, Lloh_gk1
+	.cfi_endproc
+	.globl	_silica_rt_ffi_guarded_fault_finish
+	.p2align	2
+_silica_rt_ffi_guarded_fault_finish:
+	.cfi_startproc
+	stp	x21, x20, [sp, #-48]!
+	stp	x29, x30, [sp, #16]
+	str	x19, [sp, #32]
+	add	x29, sp, #16
+Lloh_gff0:
+	adrp	x8, _silica_guarded_ffi_pthread_key@PAGE
+Lloh_gff1:
+	add	x8, x8, _silica_guarded_ffi_pthread_key@PAGEOFF
+	ldr	x0, [x8]
+	bl	_pthread_getspecific
+	mov	x20, x0
+	cbz	x20, L_gff_actor
+	str	xzr, [x20, #0]
+	str	xzr, [x20, #8]
+	str	xzr, [x20, #24]
+L_gff_actor:
+	bl	_silica_rt_tls_current_actor_get
+	mov	x19, x0
+	cbnz	x19, L_gff_have_actor
+	b	L_gff_process
+L_gff_have_actor:
+	mov	x0, x19
+	bl	_silica_rt_ffi_arena_reset
+	add	x0, x19, #16
+	bl	_os_unfair_lock_lock
+	mov	x8, #5
+	str	x8, [x19, #336]
+	str	wzr, [x19, #152]
+	add	x0, x19, #80
+	bl	_silica_rt_cv_signal
+	add	x0, x19, #16
+	bl	_os_unfair_lock_unlock
+	ldr	x8, [x19, #272]
+	cbnz	x8, L_gff_report_done
+	mov	x0, x19
+	bl	_silica_rt_actor_deliver_exit
+	mov	x20, x0
+	mov	x0, x19
+	bl	_silica_rt_actor_deliver_unwind_report
+	b	L_gff_after_report
+L_gff_report_done:
+	mov	x20, xzr
+L_gff_after_report:
+	mov	x0, x19
+	bl	_silica_rt_actor_signal_pending_call_deaths
+	ldr	x20, [x19, #208]
+	ldr	x21, [x19, #192]
+	cbz	x21, L_gff_thread_exit
+	mov	x0, x19
+	bl	_silica_rt_ffi_arena_teardown
+	mov	x0, x19
+	bl	_silica_rt_child_table_free
+	mov	x0, x19
+	bl	_silica_rt_actor_dealloc_region
+	mov	x0, x19
+	bl	_free
+	cbz	x20, L_gff_thread_exit
+	mov	x9, #1
+	str	x9, [x20, #56]
+L_gff_thread_exit:
+	mov	x0, xzr
+	bl	_pthread_exit
+	b	L_gff_thread_exit
+L_gff_process:
+	mov	w0, #2
+Lloh_gff_msg0:
+	adrp	x1, L_silica_foreign_fault_msg@PAGE
+Lloh_gff_msg1:
+	add	x1, x1, L_silica_foreign_fault_msg@PAGEOFF
+	mov	w2, #14
+	bl	_write
+	mov	w0, #1
+	bl	_exit
+	b	L_gff_process
+	.loh AdrpAdd	Lloh_gff0, Lloh_gff1
+	.loh AdrpAdd	Lloh_gff_msg0, Lloh_gff_msg1
+	.cfi_endproc
+	.section	__TEXT,__cstring,cstring_literals
+L_silica_foreign_fault_msg:
+	.asciz	\"foreign_fault\\n\"
+	.section	__TEXT,__text,regular,pure_instructions
+";
+    concat(bss, text)
+}

@@ -187,8 +187,9 @@ fn emit_extern_loop(bindings: ListSIRForeignBinding, acc: string) -> string {
 }
 
 fn emit_extern_directives(bindings: ListSIRForeignBinding) -> string {
-    guarded: string <- ".extern _silica_rt_ffi_guarded_enter\n.extern _silica_rt_ffi_guarded_exit\n";
-    concat(guarded, emit_extern_loop(bindings, ""))
+    guarded: string <- ".extern _silica_rt_ffi_guarded_enter\n.extern _silica_rt_ffi_guarded_exit\n.extern _silica_rt_ffi_guarded_setjmp\n.extern _silica_rt_ffi_guarded_fault_finish\n";
+    arena: string <- ".extern _silica_rt_ffi_arena_bump\n";
+    concat(concat(guarded, arena), emit_extern_loop(bindings, ""))
 }
 
 fn module_uses_foreign_calls(bindings: ListSIRForeignBinding) -> bool {
@@ -289,16 +290,20 @@ fn emit_guarded_preserver_restore_result() -> string {
 fn emit_guarded_foreign_call_lines(c_symbol: string) -> string {
     save: string <- emit_guarded_preserver_save();
     enter_line: string <- "    BL _silica_rt_ffi_guarded_enter\n";
+    setjmp_line: string <- "    BL _silica_rt_ffi_guarded_setjmp\n    CBNZ X0, 1f\n";
     restore_args: string <- emit_guarded_preserver_restore_args();
     call_line: string <- emit_foreign_bl_line(c_symbol);
     stash_result: string <- "    STR X0, [SP, #0]\n";
     exit_line: string <- "    BL _silica_rt_ffi_guarded_exit\n";
     restore_result: string <- emit_guarded_preserver_restore_result();
+    skip_fault: string <- "    B 2f\n";
+    fault_line: string <- "1:\n    BL _silica_rt_ffi_guarded_fault_finish\n2:\n";
     part1: string <- concat(save, enter_line);
-    part2: string <- concat(restore_args, call_line);
-    part3: string <- concat(stash_result, exit_line);
-    part4: string <- concat(part3, restore_result);
-    concat(concat(part1, part2), part4)
+    part2: string <- concat(setjmp_line, restore_args);
+    part3: string <- concat(call_line, stash_result);
+    part4: string <- concat(exit_line, restore_result);
+    part5: string <- concat(concat(part4, skip_fault), fault_line);
+    concat(concat(part1, part2), concat(part3, part5))
 }
 
 fn emit_result_mov(dest: string) -> string {
@@ -326,26 +331,21 @@ fn emit_result_mov(dest: string) -> string {
 }
 
 fn emit_string_in_marshal() -> string {
-    // Heap-allocates an input C buffer (X0->malloc'd ptr, X1=len, X2=ptr-to-free).
-    // Stash X2 at scratch[+8] so the post-call cleanup can BL _free it.
-    "    BL _silica_rt_ffi_string_in\n    STR X2, [SP, #8]\n"
+    // Copies Silica string into the per-actor FFI arena (X0=ptr, X1=len, X2=0).
+    "    BL _silica_rt_ffi_string_in\n"
 }
 
 fn emit_string_in_cleanup() -> string {
-    // Heap-allocated input buffer is freed in the post-call cleanup block;
-    // no SP adjustment is needed here.
     ""
 }
 
 fn emit_string_out_unmarshal_heap() -> string {
-    // sret heap ptr at scratch[+0]. Helper decodes the struct, frees the C text_ptr and
-    // the sret heap, returns the malloc'd Silica string handle in X0. We then null out
-    // scratch[+0] so the post-call cleanup does not double-free, and stash the result
-    // string at scratch[+16].
+    // sret struct lives in the FFI arena at scratch[+0]. Helper copies C bytes into a Silica
+    // string handle and leaves arena/sret storage for the next guarded-call reset.
     "    LDR X0, [SP, #0]\n    BL _silica_rt_ffi_string_out_and_free\n    STR X0, [SP, #16]\n    STR XZR, [SP, #0]\n"
 }
 
-// Returns true when this FFI call uses heap-allocated scratch (input-buf and/or sret).
+// Returns true when this FFI call needs the 32-byte scratch frame (string and/or sret).
 fn foreign_call_uses_heap_scratch(param_types: string, return_type: string, arg1_type: string) -> bool {
     needs_string_in_marshal(param_types, arg1_type) or (foreign_call_sret_bytes(return_type) > 0)
 }
@@ -382,16 +382,6 @@ fn emit_foreign_user_call(
         true -> emit_string_out_unmarshal_heap();
         false -> ""
     };
-    // Free heap-alloc'd input buffer (if any) and the sret heap block (if not already
-    // freed by the string-out helper). CBZ with .+8 skips the BL when the slot is null.
-    input_buf_free: string <- case needs_string_in_marshal(param_types, arg1_type) of {
-        true -> "    LDR X0, [SP, #8]\n    CBZ X0, .+8\n    BL _free\n";
-        false -> ""
-    };
-    sret_heap_free: string <- case sret_bytes > 0 of {
-        true -> "    LDR X0, [SP, #0]\n    CBZ X0, .+8\n    BL _free\n";
-        false -> ""
-    };
     // Load result (string handle) back into X0 before the destination move. For non-string
     // returns the C call leaves the result in X0 already.
     load_result: string <- case expects_string_out of {
@@ -414,7 +404,7 @@ fn emit_foreign_user_call(
     // sret_setup was emitted by the caller (emit_generic_user_call_asm_inner) before args_asm,
     // matching the non-FFI path; do not re-emit here.
     _: string <- sret_setup;
-    body: string <- concat(concat(concat(concat(concat(concat(concat(concat(string_in, reload_x8), bl), string_out), input_buf_free), sret_heap_free), load_result), sret_cleanup), result_mov);
+    body: string <- concat(concat(concat(concat(concat(string_in, reload_x8), bl), string_out), load_result), concat(sret_cleanup, result_mov));
     concat(concat(with_pre, body), concat("\n", post_barrier))
 }
 
@@ -431,21 +421,21 @@ fn foreign_call_sret_bytes(return_type: string) -> int64 {
     }
 }
 
-// Pre-call setup: reserves a 32-byte scratch frame and, when sret_bytes > 0, heap-allocates
-// the sret struct via _malloc and stores the pointer at scratch[+0]. Scratch layout:
-//   [SP+0]  = sret heap ptr (0 when no sret)
-//   [SP+8]  = input buffer heap ptr (filled in by string-in marshal, freed in cleanup)
+// Pre-call setup: reserves a 32-byte scratch frame and, when sret_bytes > 0, bumps 32 bytes
+// from the per-actor FFI arena and stores the pointer at scratch[+0].
+// Scratch layout:
+//   [SP+0]  = sret arena ptr (0 when no sret)
+//   [SP+8]  = reserved
 //   [SP+16] = result Silica string handle (filled in by string-out helper)
 //   [SP+24] = padding (reserved for keeping 16-byte alignment)
 fn emit_foreign_sret_setup(sret_bytes: int64) -> string {
     case sret_bytes > 0 of {
-        true -> "    SUB SP, SP, #32\n    STR XZR, [SP, #8]\n    STR XZR, [SP, #16]\n    STR XZR, [SP, #24]\n    MOV X0, #32\n    BL _malloc\n    STR X0, [SP, #0]\n    MOV X8, X0\n";
+        true -> "    SUB SP, SP, #32\n    STR XZR, [SP, #8]\n    STR XZR, [SP, #16]\n    STR XZR, [SP, #24]\n    MOV X0, #32\n    BL _silica_rt_ffi_arena_bump\n    STR X0, [SP, #0]\n    MOV X8, X0\n";
         false -> ""
     }
 }
 
-// Variant for the string-in/scalar-out case (no sret): just reserves the scratch frame
-// so the post-call cleanup can free the heap-alloc'd input buffer.
+// Variant for the string-in/scalar-out case (no sret): reserves the scratch frame.
 fn emit_foreign_scratch_setup_string_in_only() -> string {
     "    SUB SP, SP, #32\n    STR XZR, [SP, #0]\n    STR XZR, [SP, #8]\n    STR XZR, [SP, #16]\n    STR XZR, [SP, #24]\n"
 }

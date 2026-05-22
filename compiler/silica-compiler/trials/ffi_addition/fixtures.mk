@@ -14,6 +14,7 @@ FFI_CFLAGS := -std=c11 -Wall -Wextra -O2 -arch $(FFI_ARCH) -mmacosx-version-min=
 	-I$(FFI_FIXTURES_DIR)/dangerous_exposure_source/net
 
 FFI_LEGACY_OBJ := $(FFI_BUILD_DIR)/silica_legacy_math.o
+FFI_FAULT_OBJ := $(FFI_BUILD_DIR)/silica_ffi_fault.o
 FFI_TEXT_OBJ := $(FFI_BUILD_DIR)/silica_text.o
 FFI_NET_OBJ := $(FFI_BUILD_DIR)/silica_net.o
 
@@ -43,7 +44,10 @@ $(FFI_TEXT_OBJ): $(FFI_SRC_DIR)/silica_text.c | $(FFI_BUILD_DIR)
 $(FFI_NET_OBJ): $(FFI_SRC_DIR)/silica_net.c | $(FFI_BUILD_DIR)
 	$(FFI_CC) $(FFI_CFLAGS) -c $< -o $@
 
-$(FFI_LEGACY_ARCHIVE): $(FFI_LEGACY_OBJ) | $(FFI_LIB_DIR)
+$(FFI_FAULT_OBJ): $(FFI_SRC_DIR)/silica_ffi_fault.c | $(FFI_BUILD_DIR)
+	$(FFI_CC) $(FFI_CFLAGS) -c $< -o $@
+
+$(FFI_LEGACY_ARCHIVE): $(FFI_LEGACY_OBJ) $(FFI_FAULT_OBJ) | $(FFI_LIB_DIR)
 	ar rcs $@ $^
 
 $(FFI_TEXT_ARCHIVE): $(FFI_TEXT_OBJ) | $(FFI_LIB_DIR)

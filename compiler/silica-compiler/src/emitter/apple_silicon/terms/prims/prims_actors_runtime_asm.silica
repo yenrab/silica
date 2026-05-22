@@ -25,7 +25,7 @@
 // pthread_cond_t) — see actor_rt_asm_cv_chunk and supervisors_implementation_development_plan.md.
 // cpu_topology / cache / NUMA helpers (_silica_rt_apple_*, sysctl hw.*): macOS Apple Silicon only (see cpu_topology_implementation_plan Phase G).
 // ABI: spawn(X0,X1,X2)->X0  send(X0,X1)  cast(X0,X1)->W0  call(X0,X1)->X0  self()->X0  recv()->X0
-// X2=optional core_id (0 default) per §15.1.1. Unified actor control block 352 B for spawn and spawn_linked (e3e: +32 B restart frequency fields; e4b: +8 B pending exit reason_tag; call-death active wrapper).
+// X2=optional core_id (0 default) per §15.1.1. Unified actor control block 384 B for spawn and spawn_linked (e3e: +32 B restart frequency fields; e4b: +8 B pending exit reason_tag; call-death active wrapper; Phase 12: +32 B FFI arena base/end/bump at #352).
 // spawn_linked Phase A (supervisors_implementation_development_plan): spawn_linked(X0,X1,X2,X3,X4)->X0
 // X0=init X1=beh X2=agent_type (int64) X3=row/core metadata (0 default), X4=optional supervisor trampoline.
 // Offsets: #192 supervisor actor_ref (0 root), #200 agent_type atom, #208 core_id, #216 first supervised child,
@@ -59,7 +59,9 @@
 
 use prims_actors_child_table_asm;
 use atom_table;
+use ffi_arena_runtime_asm;
 use ffi_guarded_runtime_asm;
+use ffi_fault_runtime_asm;
 
 export emit_actor_runtime_helpers/1;
 
@@ -90,7 +92,7 @@ _silica_rt_actor_spawn:                 ; @silica_rt_actor_spawn
 	mov	x21, x0
 	mov	w22, #1                         ; =0x1
 	mov	w0, #1                          ; =0x1
-	mov	w1, #352
+	mov	w1, #384
 	bl	_calloc
 	mov	x19, x0
 	cbz	x0, LBB0_4
@@ -190,7 +192,7 @@ _silica_rt_actor_spawn_linked:          ; @silica_rt_actor_spawn_linked
 	mov	x20, x1
 	mov	x21, x0
 	mov	w0, #1
-	mov	w1, #352
+	mov	w1, #384
 	bl	_calloc
 	mov	x19, x0
 	cbz	x0, LBBsl_4
@@ -519,9 +521,9 @@ LBB1_exit_skip_legacy_root:
 	mov	x0, x19
 	bl	_silica_rt_child_table_free
 	mov	x0, x19
+	bl	_silica_rt_ffi_arena_teardown
+	mov	x0, x19
 	bl	_silica_rt_actor_dealloc_region
-; Phase E e4f: ACB+16 (os_unfair_lock) and ACB+80 (futex seq word) have no out-of-line state,
-; so freeing the embedding ACB buffer reclaims everything. No destroy call needed.
 	mov	x0, x19
 	bl	_free
 ; Phase E e4f: AFTER full teardown (mutex/cond destroyed, ACB freed) signal the
@@ -627,10 +629,12 @@ LBB2_7:
 	add	x0, x19, #80
 	bl	_silica_rt_cv_signal
 	add	x0, x19, #16
+	bl	_os_unfair_lock_unlock
 	ldp	x29, x30, [sp, #32]             ; 16-byte Folded Reload
 	ldp	x20, x19, [sp, #16]             ; 16-byte Folded Reload
 	ldp	x22, x21, [sp], #48             ; 16-byte Folded Reload
-	b	_os_unfair_lock_unlock
+	mov	x0, #0
+	ret
 	.cfi_endproc
                                         ; -- End function
 	.globl	_silica_rt_actor_cast           ; -- Begin function silica_rt_actor_cast
@@ -2201,7 +2205,7 @@ _silica_rt_tls_actor_set_from_x19:
 _silica_rt_actor_init_region:           ; init growable stack region for actor
 	.cfi_startproc
 ; X0=actor_ptr. Reserves 1GB VA, maps first 8MB, stores region metadata at [160..184]. Supervision fields [192..224] unused here.
-; Also installs SIGSEGV handler on first call.
+; Also installs synchronous fault handlers (Phase 13) on first call.
 	stp	x22, x21, [sp, #-48]!
 	stp	x20, x19, [sp, #16]
 	stp	x29, x30, [sp, #32]
@@ -2215,14 +2219,12 @@ _silica_rt_actor_init_region:           ; init growable stack region for actor
 	.cfi_offset w22, -48
 	mov	x19, x0
 Lloh_ir0:
-	adrp	x8, _silica_rt_fault_handler_installed@PAGE
+	adrp	x8, _silica_rt_sync_fault_handlers_installed@PAGE
 Lloh_ir1:
-	add	x8, x8, _silica_rt_fault_handler_installed@PAGEOFF
+	add	x8, x8, _silica_rt_sync_fault_handlers_installed@PAGEOFF
 	ldr	w9, [x8]
 	cbnz	w9, LBBir_skip_handler
-	mov	w9, #1
-	str	w9, [x8]
-	bl	_silica_rt_install_fault_handler
+	bl	_silica_rt_install_sync_fault_handlers
 LBBir_skip_handler:
 	mov	x0, #0
 	movz	x1, #0x4000, lsl #16
@@ -2352,101 +2354,6 @@ _silica_rt_move_actor:                  ; @silica_rt_move_actor
 	ret
 	.cfi_endproc
                                         ; -- End function
-	.p2align	2
-_silica_rt_install_fault_handler:       ; install SIGSEGV handler (once)
-	.cfi_startproc
-	stp	x29, x30, [sp, #-16]!
-	mov	x29, sp
-	.cfi_def_cfa w29, 16
-	.cfi_offset w30, -8
-	.cfi_offset w29, -16
-	sub	sp, sp, #16
-Lloh_fh0:
-	adrp	x8, _silica_rt_stack_fault_handler@PAGE
-Lloh_fh1:
-	add	x8, x8, _silica_rt_stack_fault_handler@PAGEOFF
-	str	x8, [sp]
-	str	wzr, [sp, #8]
-	mov	w8, #0x40
-	str	w8, [sp, #12]
-	mov	w0, #11
-	mov	x1, sp
-	mov	x2, #0
-	bl	_sigaction
-	add	sp, sp, #16
-	ldp	x29, x30, [sp], #16
-	ret
-	.loh AdrpAdd	Lloh_fh0, Lloh_fh1
-	.cfi_endproc
-                                        ; -- End function
-	.p2align	2
-_silica_rt_stack_fault_handler:         ; SIGSEGV handler for growable actor stacks
-	.cfi_startproc
-; X0=sig X1=siginfo_t* X2=ucontext_t*
-; Checks if fault is in current actor's region and maps the page on demand.
-	stp	x22, x21, [sp, #-48]!
-	stp	x20, x19, [sp, #16]
-	stp	x29, x30, [sp, #32]
-	add	x29, sp, #32
-	.cfi_def_cfa w29, 16
-	.cfi_offset w30, -8
-	.cfi_offset w29, -16
-	.cfi_offset w19, -24
-	.cfi_offset w20, -32
-	.cfi_offset w21, -40
-	.cfi_offset w22, -48
-	ldr	x19, [x1, #24]
-	bl	_silica_rt_tls_current_actor_get
-	mov	x20, x0
-	cbz	x20, LBBfh_crash
-	ldr	x21, [x20, #160]
-	cbz	x21, LBBfh_crash
-	ldr	x22, [x20, #184]
-	add	x22, x21, x22
-	cmp	x19, x21
-	b.lo	LBBfh_crash
-	cmp	x19, x22
-	b.hs	LBBfh_overflow
-	bic	x0, x19, #0xfff
-	mov	x1, #0x1000
-	mov	w2, #3
-	bl	_mprotect
-	ldr	x8, [x20, #160]
-	bic	x9, x19, #0xfff
-	add	x9, x9, #0x1000
-	sub	x9, x9, x8
-	ldr	x10, [x20, #168]
-	cmp	x9, x10
-	b.ls	LBBfh_done
-	str	x9, [x20, #168]
-LBBfh_done:
-	ldp	x29, x30, [sp, #32]
-	ldp	x20, x19, [sp, #16]
-	ldp	x22, x21, [sp], #48
-	ret
-LBBfh_overflow:
-	str	wzr, [x20, #152]
-	add	x0, x20, #80
-	bl	_silica_rt_cv_signal
-	ldp	x29, x30, [sp, #32]
-	ldp	x20, x19, [sp, #16]
-	ldp	x22, x21, [sp], #48
-	ret
-LBBfh_crash:
-	mov	w0, #11
-	bl	_signal
-	mov	w0, #11
-	bl	_raise
-	ldp	x29, x30, [sp, #32]
-	ldp	x20, x19, [sp, #16]
-	ldp	x22, x21, [sp], #48
-	ret
-	.cfi_endproc
-                                        ; -- End function
-	.section	__DATA,__common
-	.p2align	2
-_silica_rt_fault_handler_installed:
-	.long	0
 "
 }
 
@@ -2672,6 +2579,7 @@ fn actor_rt_asm_phase_c_chunk(table: AtomTable) -> string {
     memory_fault_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":memory_fault"));
     explicit_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":explicit"));
     unknown_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":unknown"));
+    foreign_fault_idx: string <- atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, ":foreign_fault"));
     p0: string <- concat("	.section	__TEXT,__text,regular,pure_instructions
 	.globl	_silica_rt_actor_deliver_exit   ; Phase C — §15.4.10 unified delivery
 	.p2align	2
@@ -2842,6 +2750,8 @@ _silica_rt_actor_failure_reason_atom:   ; X0=payload ptr -> X0=atom failure_reas
 	b.eq	Lfra_memory_fault
 	cmp	x8, #4
 	b.eq	Lfra_explicit
+	cmp	x8, #5
+	b.eq	Lfra_foreign_fault
 	b	Lfra_unknown
 Lfra_normal:
 	mov	x0, #", normal_idx);
@@ -2862,9 +2772,14 @@ Lfra_explicit:
     p6: string <- concat(p5, explicit_idx);
     p7: string <- concat(p6, "
 	ret
+Lfra_foreign_fault:
+	mov	x0, #");
+    p7b: string <- concat(p7, foreign_fault_idx);
+    p7c: string <- concat(p7b, "
+	ret
 Lfra_unknown:
 	mov	x0, #");
-    p8: string <- concat(p7, unknown_idx);
+    p8: string <- concat(p7c, unknown_idx);
     p9: string <- concat(p8, "
 	ret
 	.cfi_endproc
@@ -3756,5 +3671,8 @@ L_silica_case_clause_msg:
 }
 
 fn emit_actor_runtime_helpers(table: AtomTable) -> string {
-    concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(actor_rt_asm_chunk_0(), actor_rt_asm_chunk_1()), actor_rt_asm_chunk_2()), actor_rt_asm_chunk_3()), actor_rt_asm_chunk_4()), actor_rt_asm_chunk_5()), actor_rt_topology_phase_g_chunk()), actor_rt_asm_chunk_6()), actor_rt_asm_chunk_7()), actor_rt_asm_chunk_8()), actor_rt_asm_chunk_9()), actor_rt_asm_chunk_10()), actor_rt_asm_chunk_11()), actor_rt_asm_chunk_12()), actor_rt_asm_chunk_13()), actor_rt_asm_cv_chunk()), prims_actors_child_table_asm@emit_child_table_runtime_asm(table)), actor_rt_emit_runtime_tail(table)), actor_rt_asm_badarith_chunk()), concat(actor_rt_asm_case_clause_chunk(), ffi_guarded_runtime_asm@emit_guarded_ffi_runtime_asm()))
+    arena_asm: string <- ffi_arena_runtime_asm@emit_ffi_arena_runtime_asm();
+    guarded_asm: string <- ffi_guarded_runtime_asm@emit_guarded_ffi_runtime_asm();
+    fault_asm: string <- ffi_fault_runtime_asm@emit_ffi_fault_runtime_asm();
+    concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(concat(actor_rt_asm_chunk_0(), actor_rt_asm_chunk_1()), actor_rt_asm_chunk_2()), actor_rt_asm_chunk_3()), actor_rt_asm_chunk_4()), actor_rt_asm_chunk_5()), actor_rt_topology_phase_g_chunk()), actor_rt_asm_chunk_6()), actor_rt_asm_chunk_7()), actor_rt_asm_chunk_8()), actor_rt_asm_chunk_9()), actor_rt_asm_chunk_10()), actor_rt_asm_chunk_11()), actor_rt_asm_chunk_12()), actor_rt_asm_chunk_13()), actor_rt_asm_cv_chunk()), prims_actors_child_table_asm@emit_child_table_runtime_asm(table)), actor_rt_emit_runtime_tail(table)), actor_rt_asm_badarith_chunk()), concat(actor_rt_asm_case_clause_chunk(), concat(arena_asm, concat(guarded_asm, fault_asm))))
 }

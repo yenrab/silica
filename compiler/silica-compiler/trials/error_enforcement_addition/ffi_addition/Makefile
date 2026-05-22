@@ -57,6 +57,8 @@ link-fail:
 		base=$$(basename "$$case"); \
 		golden="$(THIS_DIR)$$case.golden_link_fail"; \
 		cur="$(THIS_DIR)$$case.cur_link_fail"; \
+		cur_norm="$$cur.norm"; \
+		golden_norm="$$golden.norm"; \
 		tmpdir=$$(mktemp -d); \
 		mkdir -p "$$tmpdir/dangerous_exposure_source"; \
 		ln -s "$(FIXTURE_ROOT)/legacy" "$$tmpdir/dangerous_exposure_source/legacy"; \
@@ -94,13 +96,17 @@ link-fail:
 			echo "❌❌ $(MSG_PREFIX)$$case: expected link failure"; cat "$$cur"; ko=$$((ko + 1)); failed=1; \
 		elif [ ! -f "$$golden" ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$case: missing .golden_link_fail"; ko=$$((ko + 1)); failed=1; \
-		elif ! diff -q "$$cur" "$$golden" > /dev/null 2>&1; then \
-			echo "❌❌ $(MSG_PREFIX)$$case: .cur_link_fail differs from .golden_link_fail"; \
-			diff "$$cur" "$$golden" || true; \
-			ko=$$((ko + 1)); failed=1; \
 		else \
-			echo "✅✅ $(MSG_PREFIX)$$case (link failure matches golden)"; \
-			ok=$$((ok + 1)); \
+			sed -E 's/\(symbol ([^)]+)\+0x[0-9A-Fa-f]+\)/(symbol \1+0xADDR)/g' "$$cur" > "$$cur_norm"; \
+			sed -E 's/\(symbol ([^)]+)\+0x[0-9A-Fa-f]+\)/(symbol \1+0xADDR)/g' "$$golden" > "$$golden_norm"; \
+			if ! diff -q "$$cur_norm" "$$golden_norm" > /dev/null 2>&1; then \
+				echo "❌❌ $(MSG_PREFIX)$$case: .cur_link_fail differs from .golden_link_fail"; \
+				diff "$$cur_norm" "$$golden_norm" || true; \
+				ko=$$((ko + 1)); failed=1; \
+			else \
+				echo "✅✅ $(MSG_PREFIX)$$case (link failure matches golden)"; \
+				ok=$$((ok + 1)); \
+			fi; \
 		fi; \
 	done; \
 	printf '%d %d\n' "$$ok" "$$ko" > "$(THIS_DIR).integrate_link_fail_counts"; \
@@ -212,7 +218,7 @@ integrate: clean
 clean:
 	@rm -f "$(THIS_DIR).integrate_counts" "$(THIS_DIR).integrate_compile_fail_counts" \
 		"$(THIS_DIR).integrate_link_fail_counts" "$(THIS_DIR).integrate_archive_missing_counts"
-	@find "$(THIS_DIR)" -name '*.cur_fail' -o -name '*.cur_link_fail' | xargs rm -f 2>/dev/null || true
+	@find "$(THIS_DIR)" -name '*.cur_fail' -o -name '*.cur_link_fail' -o -name '*.norm' | xargs rm -f 2>/dev/null || true
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
