@@ -19,6 +19,7 @@
 // Parsing surface strings; compatibility with legacy List[T]; generic call value "T S" or "T".
 
 use parser_ast;
+use type_checker_core;
 
 export ListEmptyPat/0;
 export ListConsPat/0;
@@ -34,6 +35,7 @@ export infer_list_primitive_return/1;
 export count_call_args_list/1;
 export list_empty_effective_arg_count/1;
 export types_equal_strip/2;
+export validate_list_type_declaration/2;
 
 struct ListEmptyPat {
     ok: bool,
@@ -465,6 +467,98 @@ fn not_list_empty_prefix(t: string) -> bool {
         true -> true;
         false -> substring(t, 0, 2) != "[]"
     }
+}
+
+// List type declarations must use mem(Space) as the second parameter (spec §4.2.4; list_implementation_design.md §3.5).
+fn list_type_space_has_mem_form(space: string) -> bool {
+    t: string <- strip_spaces_list(space);
+    case len(t) < 5 of {
+        true -> false;
+        false -> case substring(t, 0, 4) == "mem(" of {
+            false -> false;
+            true -> substring(t, len(t) - 1, len(t)) == ")"
+        }
+    }
+}
+
+fn find_list_keyword_index(s: string, i: int64) -> int64 {
+    case i + 4 > len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 4) == "List" of {
+            true -> i;
+            false -> find_list_keyword_index(s, i + 1)
+        }
+    }
+}
+
+// s[i] must be '['. Returns index of matching ']' at bracket depth 0, or len(s) if unbalanced.
+fn find_matching_closing_bracket_list(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "[" or c == "(" or c == "{" of {
+                true -> find_matching_closing_bracket_list(s, i + 1, depth + 1);
+                false -> case c == "]" or c == ")" or c == "}" of {
+                    true -> case depth == 1 of {
+                        true -> i;
+                        false -> find_matching_closing_bracket_list(s, i + 1, depth - 1)
+                    };
+                    false -> find_matching_closing_bracket_list(s, i + 1, depth)
+                }
+            }
+        end
+    }
+}
+
+fn validate_one_list_type_surface(list_type: string, location: SourceLocation) -> TypeCheckResult {
+    (ok: bool, elem: string, space: string) <- parse_list_type_params(list_type);
+    case ok of {
+        false -> type_checker_core@type_check_ok();
+        true -> case list_type_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("List type requires an explicit memory space: use List[ElementType, mem(Space)] (got ", list_type), ")"), "sect4.2.4");
+            true -> validate_list_type_declaration(elem, location)
+        }
+    }
+}
+
+fn validate_list_type_declaration_from(s: string, location: SourceLocation, i: int64) -> TypeCheckResult {
+    case i >= len(s) of {
+        true -> type_checker_core@type_check_ok();
+        false -> do
+            pos: int64 <- find_list_keyword_index(s, i);
+            case pos < 0 of {
+                true -> type_checker_core@type_check_ok();
+                false -> do
+                    j: int64 <- skip_spaces_index_list(s, pos + 4);
+                    case j >= len(s) of {
+                        true -> validate_list_type_declaration_from(s, location, pos + 4);
+                        false -> case substring(s, j, j + 1) == "[" of {
+                            false -> validate_list_type_declaration_from(s, location, pos + 4);
+                            true -> do
+                                end_j: int64 <- find_matching_closing_bracket_list(s, j, 0);
+                                case end_j >= len(s) of {
+                                    true -> validate_list_type_declaration_from(s, location, pos + 4);
+                                    false -> do
+                                        list_ty: string <- substring(s, pos, end_j + 1);
+                                        one_r: TypeCheckResult <- validate_one_list_type_surface(list_ty, location);
+                                        case one_r.is_ok of {
+                                            false -> one_r;
+                                            true -> validate_list_type_declaration_from(s, location, end_j + 1)
+                                        }
+                                    end
+                                }
+                            end
+                        }
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn validate_list_type_declaration(type_str: string, location: SourceLocation) -> TypeCheckResult {
+    validate_list_type_declaration_from(type_str, location, 0)
 }
 
 // [h: T, tail: List[...]] — not []: ...

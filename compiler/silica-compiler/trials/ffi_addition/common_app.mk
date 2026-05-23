@@ -70,16 +70,20 @@ define APP_INTEGRATE_BODY
 		fi; \
 		[ "$$failed" -ne 0 ] && break; \
 		if [ -f "$$trial.wait_for_exit" ]; then \
-			marker=$$(awk 'NF { print $$1; found=1; exit } END { if (!found) print "done" }' "$$trial.wait_for_exit"); \
-			marker_count=$$(awk 'NF { print ($$2 == "" ? 1 : $$2); found=1; exit } END { if (!found) print 1 }' "$$trial.wait_for_exit"); \
-			python3 "$(FFI_TRIAL_DIR)/app_e2e_scalar_string_echo/run_integration_exit_after_marker.py" "$(APP_TRIAL_DIR)" "$$trial" "$$trial.sout" "$$marker" "$$marker_count" || failed=1; \
+			marker=$$(awk 'NF { if ($$NF ~ /^[0-9]+$$/) { m=$$0; sub(/[ \t]+[0-9]+$$/, "", m); print m } else print $$0; exit } END { if (!NR) print "done" }' "$$trial.wait_for_exit"); \
+			marker_count=$$(awk 'NF { if ($$NF ~ /^[0-9]+$$/) print $$NF; else print 1; exit } END { if (!NR) print 1 }' "$$trial.wait_for_exit"); \
+			python3 "$(FFI_TRIAL_DIR)/run_integration_exit_after_marker.py" "$(APP_TRIAL_DIR)" "$$trial" "$$trial.sout" "$$marker" "$$marker_count" || failed=1; \
 		else \
 			{ ./"$$trial" 2>&1; echo $$?; } > "$$trial.sout"; \
 		fi; \
 		[ "$$failed" -ne 0 ] && break; \
 		if [ ! -f "$$trial.scout" ]; then \
 			echo "  ❌ $(APP_LABEL)/$$trial: missing .scout"; ko=$$((ko + 1)); failed=1; \
-		elif ! diff -Bw -q "$$trial.sout" "$$trial.scout" > /dev/null 2>&1; then \
+		elif [ -f "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" ] && ! "$(SHELL)" "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" "$$trial.sout" "$$trial.scout" > /dev/null 2>&1; then \
+			echo "  ❌ $(APP_LABEL)/$$trial .sout differs from .scout (normalized compare)"; \
+			"$(SHELL)" "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" "$$trial.sout" "$$trial.scout" || true; \
+			ko=$$((ko + 1)); failed=1; \
+		elif [ ! -f "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" ] && ! diff -Bw -q "$$trial.sout" "$$trial.scout" > /dev/null 2>&1; then \
 			echo "  ❌ $(APP_LABEL)/$$trial .sout differs from .scout"; \
 			diff -Bw "$$trial.sout" "$$trial.scout" || true; \
 			ko=$$((ko + 1)); failed=1; \

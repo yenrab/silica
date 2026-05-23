@@ -24,6 +24,7 @@ use type_checker_core;
 use type_checker_expressions;
 use type_checker_memory_regions;
 use type_checker_recursion;
+use type_checker_lists;
 use type_checker_expressions_actors;
 use type_checker_record_types;
 
@@ -92,16 +93,22 @@ fn validate_params_loop(params: ListParam) -> TypeCheckResult proc[DeviceIO] {
             rec_result: TypeCheckResult <- validate_record_type_string(params.head.type_name, params.head.location);
             case rec_result.is_ok of {
                 false -> rec_result;
-                true -> case type_checker_memory_regions@is_memory_region_type(params.head.type_name) of {
-                    true -> do
-                        mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(params.head.type_name, params.head.location);
-                        case mem_result.is_ok of {
-                            false -> mem_result;
-                            true -> validate_params_loop(params.tail)
+                true -> do
+                    list_result: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(params.head.type_name, params.head.location);
+                    case list_result.is_ok of {
+                        false -> list_result;
+                        true -> case type_checker_memory_regions@is_memory_region_type(params.head.type_name) of {
+                            true -> do
+                                mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(params.head.type_name, params.head.location);
+                                case mem_result.is_ok of {
+                                    false -> mem_result;
+                                    true -> validate_params_loop(params.tail)
+                                }
+                            end;
+                            false -> validate_params_loop(params.tail)
                         }
-                    end;
-                    false -> validate_params_loop(params.tail)
-                }
+                    }
+                end
             }
         end
     }
@@ -134,7 +141,11 @@ fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListN
     ret_rec: TypeCheckResult <- validate_record_type_string(decl.return_type_name, decl.return_type_location);
     case ret_rec.is_ok of {
         false -> ret_rec;
-        true -> case decl.return_type_name == "unit" of {
+        true -> do
+            ret_list: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(decl.return_type_name, decl.return_type_location);
+            case ret_list.is_ok of {
+                false -> ret_list;
+                true -> case decl.return_type_name == "unit" of {
         true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
         false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
             true -> check_body_memory_region_return(decl, body_ctx, world);
@@ -153,6 +164,8 @@ fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListN
             end
         }
         }
+            }
+        end
     }
 }
 

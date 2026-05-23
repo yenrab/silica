@@ -2906,9 +2906,13 @@ fn check_user_call_two_args_as_tuple(expr: Expr, tuple_param: string, expected_t
 // Memory region types (ref, region, buf) are validated before type checking.
 fn check_let(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     bind_type: string <- expr.value;
-    case type_checker_memory_regions@is_memory_region_type(bind_type) of {
-        true -> check_let_memory_region(expr, expected_type, context, bind_type, world);
-        false -> check_let_after_validation(expr, expected_type, context, bind_type, world)
+    list_result: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(bind_type, expr.location);
+    case list_result.is_ok of {
+        false -> list_result;
+        true -> case type_checker_memory_regions@is_memory_region_type(bind_type) of {
+            true -> check_let_memory_region(expr, expected_type, context, bind_type, world);
+            false -> check_let_after_validation(expr, expected_type, context, bind_type, world)
+        }
     }
 }
 
@@ -3357,17 +3361,29 @@ fn check_one_case_branch(branch: Expr, scrutinee_type: string, expected_type: st
             pi: CasePatternInfo <- type_checker_tuple_decompose_helpers@case_parse_pattern(branch.value);
             case pi.is_valid of {
                 false -> type_checker_core@type_check_err("E2005", branch.location, "invalid or unsupported case pattern", "sect3");
-                true -> case type_checker_tuple_decompose_helpers@case_pattern_matches_scrutinee(pi, scrutinee_type) of {
-                    false -> type_checker_core@type_check_err("E2005", branch.location, "case pattern does not match scrutinee type", "sect3");
-                    true -> do
-                        ext_ctx: TypeContext <- type_checker_tuple_decompose_helpers@case_extend_context_for_pattern(context, scrutinee_type, branch.value);
-                        guard_r: TypeCheckResult <- check_case_branch_guard(branch, pi, ext_ctx, scrutinee_type, world);
-                        case guard_r.is_ok of {
-                            false -> guard_r;
-                            true -> check_expr(branch.right_expr, expected_type, ext_ctx, world)
-                        }
-                    end
-                }
+                true -> do
+                    pat_list_r: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(pi.bind_type, branch.location);
+                    case pat_list_r.is_ok of {
+                        false -> pat_list_r;
+                        true -> do
+                            tail_list_r: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(pi.list_tail_type, branch.location);
+                            case tail_list_r.is_ok of {
+                                false -> tail_list_r;
+                                true -> case type_checker_tuple_decompose_helpers@case_pattern_matches_scrutinee(pi, scrutinee_type) of {
+                                    false -> type_checker_core@type_check_err("E2005", branch.location, "case pattern does not match scrutinee type", "sect3");
+                                    true -> do
+                                        ext_ctx: TypeContext <- type_checker_tuple_decompose_helpers@case_extend_context_for_pattern(context, scrutinee_type, branch.value);
+                                        guard_r: TypeCheckResult <- check_case_branch_guard(branch, pi, ext_ctx, scrutinee_type, world);
+                                        case guard_r.is_ok of {
+                                            false -> guard_r;
+                                            true -> check_expr(branch.right_expr, expected_type, ext_ctx, world)
+                                        }
+                                    end
+                                }
+                            }
+                        end
+                    }
+                end
             }
         end
     }
