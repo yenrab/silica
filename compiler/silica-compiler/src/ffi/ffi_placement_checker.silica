@@ -87,6 +87,11 @@ fn is_spawn_behavior_call(name: string) -> bool {
     }
 }
 
+fn is_spawn_dangerous_behavior_call(name: string) -> bool {
+    base: string <- type_checker_core@user_call_base_function_name(name);
+    base == "spawn_dangerous"
+}
+
 fn spawn_behavior_expr(call_expr: Expr) -> Expr {
     call_expr.right_expr.inner
 }
@@ -97,6 +102,43 @@ fn append_unique_sir_string(items: ListSirString, s: string) -> ListSirString {
         false -> case sir_ast@sir_string_list_contains(items, s) of {
             true -> items;
             false -> sir_ast@cons_sir_string(s, items)
+        }
+    }
+}
+
+fn collect_spawn_dangerous_behavior_names_expr(expr: Expr, acc: ListSirString) -> ListSirString {
+    case expr.kind < 0 of {
+        true -> acc;
+        false -> case expr.kind == 4 of {
+            true -> do
+                next: ListSirString <- case is_spawn_dangerous_behavior_call(expr.name) of {
+                    true -> do
+                        beh: Expr <- spawn_behavior_expr(expr);
+                        case beh.kind == 1 of {
+                            true -> append_unique_sir_string(acc, beh.name);
+                            false -> acc
+                        }
+                    end;
+                    false -> acc
+                };
+                collect_spawn_dangerous_behavior_names_pair(expr.inner, expr.right_expr, next)
+            end;
+            false -> collect_spawn_dangerous_behavior_names_pair(expr.inner, expr.right_expr, acc)
+        }
+    }
+}
+
+fn collect_spawn_dangerous_behavior_names_pair(inner: Expr, right: Expr, acc: ListSirString) -> ListSirString {
+    mid: ListSirString <- collect_spawn_dangerous_behavior_names_expr(inner, acc);
+    collect_spawn_dangerous_behavior_names_expr(right, mid)
+}
+
+fn collect_spawn_dangerous_behavior_names_from_decls(decls: ListDeclaration) -> ListSirString {
+    case decls.is_nil of {
+        true -> sir_ast@nil_sir_strings();
+        false -> case decls.head.tag == 0 of {
+            true -> collect_spawn_dangerous_behavior_names_expr(decls.head.body, collect_spawn_dangerous_behavior_names_from_decls(decls.tail));
+            false -> collect_spawn_dangerous_behavior_names_from_decls(decls.tail)
         }
     }
 }
@@ -263,9 +305,9 @@ fn validate_expr_placement(expr: Expr, current_fn: string, lambda_depth: int64, 
                 has_ed: bool <- effect_list_has_external_danger(expr.sequence_effects);
                 placement_st: int64 <- case has_ed of {
                     true -> case is_ffi_worker_fn(current_fn, ffi_worker_names) of {
-                        false -> print_placement_error("E4041", expr.location, "external_danger sequence blocks are only valid directly inside the cast-only behavior function spawned for an FFI worker actor (spec 4.6)");
+                        false -> print_placement_error("E4041", expr.location, "external_danger sequence blocks are only valid directly inside the cast-only behavior function installed by spawn_dangerous for an FFI worker actor (spec 4.6)");
                         true -> case lambda_depth > 0 of {
-                            true -> print_placement_error("E4041", expr.location, "external_danger sequence blocks are only valid directly inside the cast-only behavior function spawned for an FFI worker actor (spec 4.6)");
+                            true -> print_placement_error("E4041", expr.location, "external_danger sequence blocks are only valid directly inside the cast-only behavior function installed by spawn_dangerous for an FFI worker actor (spec 4.6)");
                             false -> 0
                         }
                     };
@@ -385,6 +427,6 @@ fn collect_spawn_behavior_names(program: Program) -> ListSirString {
 }
 
 fn collect_ffi_worker_names(program: Program) -> ListSirString {
-    spawn_names: ListSirString <- collect_spawn_behavior_names_from_decls(program.declarations);
-    build_ffi_worker_names_loop(program.declarations, spawn_names, sir_ast@nil_sir_strings())
+    spawn_dangerous_names: ListSirString <- collect_spawn_dangerous_behavior_names_from_decls(program.declarations);
+    build_ffi_worker_names_loop(program.declarations, spawn_dangerous_names, sir_ast@nil_sir_strings())
 }

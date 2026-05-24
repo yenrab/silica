@@ -1,14 +1,16 @@
 # Silica External Library Call Wrapper Specification
 
-**Last updated**: May 22, 2026
+**Last updated**: May 23, 2026
 
 ## Related Documents
 
-| Document                             | Purpose                                                                  |
-| ------------------------------------ | ------------------------------------------------------------------------ |
-| `silica-specification.md`            | Core language syntax, effects, actors, regions, and compiler diagnostics |
-| `silica-specification-additional.md` | Additional compile-time failure rules                                    |
-| `ffi_wrapper_implementation_plan.md` | Compiler implementation phases for this specification                    |
+| Document                                      | Purpose                                                                  |
+| --------------------------------------------- | ------------------------------------------------------------------------ |
+| `silica-specification.md`                     | Core language syntax, effects, actors, regions, and compiler diagnostics |
+| `silica-specification-additional.md`          | Additional compile-time failure rules                                    |
+| `ffi_wrapper_implementation_plan.md`          | Compiler implementation phases for this specification                    |
+| `atom_actor_registry_direct_index_design.md`  | Atom-keyed direct-index registry representation (shared by both tables)   |
+| `pid_registry_process_global_actor_gate.md`   | Process-global PID registry actor and actor-gated table access           |
 
 ---
 
@@ -28,7 +30,10 @@ Silica does not call arbitrary external APIs directly. Every external operation 
 - **Explicit Danger Boundary**: Every module that declares or exposes foreign functions, or that imports or otherwise uses any module whose name begins with `dangerous_`, must itself use the `dangerous_` module-name prefix. That naming requirement propagates along the module dependency graph to the root application module, so the compiled application name carries `dangerous_` whenever the program depends—directly or transitively—on any `dangerous_*` module. A module that never depends on a `dangerous_*` module is not required to use the prefix.
 - **Cast-Mediated Foreign Calls**: Application actors never call `dangerous_*` module functions directly. Every outbound foreign operation is requested by `cast` to a dedicated **FFI worker actor**; the worker executes the C wrapper call and delivers the outcome by `cast` to a designated receiver actor.
 - **Cast-Only Client Behaviors**: An actor whose behavior initiates foreign work must be a **cast-only behavior** (it handles incoming messages through `cast`, not `call`).
-- **Worker-Scoped `external_danger`**: Calls to `dangerous_*` modules are required to appear only in the sequence portion of `sequence proc[external_danger] ... produces pure ... end` inside an FFI worker actor behavior.
+- **Worker-Scoped `external_danger`**: Calls to `dangerous_*` modules are required to appear only in the sequence portion of `sequence proc[external_danger] ... produces pure ... end` inside an FFI worker actor behavior. The `external_danger` effect authorizes **execution** of foreign calls inside that worker behavior; it does **not** authorize the caller to execute foreign calls.
+- **Install vs Execute Separation**: FFI worker actors are installed with `spawn_dangerous(...)` and referenced by `dangerous_actor_ref`. The spawn site requires only `concurrency` (and any other non-danger effects such as `device_io`); it must **not** declare `external_danger`. Ordinary `spawn(...)` must not start a behavior that contains `external_danger` sequences or `dangerous_*` calls.
+- **Typed Danger Boundary**: `dangerous_actor_ref` is distinct from `actor_ref`. A `dangerous_actor_ref` may be obtained only from `spawn_dangerous(...)` or `spawn_dangerous_registered(...)`; it cannot be coerced from `actor_ref` or obtained from `spawn_registered(...)`.
+- **Split Actor Registries**: Process-global actor registration uses **two** atom-keyed slot tables—one for ordinary `actor_ref` values and one for `dangerous_actor_ref` values. Registration stores the same opaque runtime handle in either table; retrieval is typed by **which table and which lookup primitive** are used (§4.9).
 - **No Retained Dangerous Data in `produces pure`**: A completed `external_danger` sequence produces only structurally pure Silica values. Foreign results leave the worker through designated FFI result casts, not through a tainted `produces pure` value.
 - **Strict Structural Taint**: Values returned from `dangerous_*` modules remain external-danger-touched at every depth. This specification version does not define validator-based de-taint.
 - **Strong Typing at the Boundary**: Silica foreign declarations, explicit `wrapper_meta` references, and sidecar metadata define the Silica-facing ABI; compile time verifies that named prebuilt archives exist; link time verifies that required wrapper symbols are defined in those archives.
@@ -45,10 +50,11 @@ This specification defines:
 1. C wrapper function requirements.
 2. Silica `dangerous_*` module requirements, including naming rules that cascade along module dependencies to the root application module and compiled application name.
 3. Cast-mediated foreign calls, cast-only client behaviors, and the `external_danger` effect.
-4. Rules for strings, buffers, pointers, arrays, and de-opaqueified C structs.
-5. Restrictions on dangerous data crossing actor and effect boundaries.
-6. Sidecar wrapper metadata, the **`silica.link`** link manifest, compile-time archive validation, and link-time symbol validation.
-7. Compile-time, parser, type-check, and link-time failures.
+4. Split ordinary and dangerous actor registries for atom-keyed registration and retrieval (§4.9).
+5. Rules for strings, buffers, pointers, arrays, and de-opaqueified C structs.
+6. Restrictions on dangerous data crossing actor and effect boundaries.
+7. Sidecar wrapper metadata, the **`silica.link`** link manifest, compile-time archive validation, and link-time symbol validation.
+8. Compile-time, parser, type-check, and link-time failures.
 
 This specification does not define:
 
@@ -102,19 +108,23 @@ Silica does not receive the opaque object itself. Silica receives concrete data 
 
 ### 2.7 FFI worker actor
 
-An **FFI worker actor** is a spawned actor whose behavior executes outbound foreign calls. It receives foreign-call request messages by `cast`, invokes `dangerous_*` module functions inside `sequence proc[external_danger] ... produces pure ... end`, and delivers outcomes by `cast` to a designated receiver actor named in the request.
+An **FFI worker actor** is an actor whose behavior executes outbound foreign calls. It is spawned with `spawn_dangerous(...)`, referenced by `dangerous_actor_ref`, receives foreign-call request messages by `cast`, invokes `dangerous_*` module functions inside `sequence proc[external_danger] ... produces pure ... end`, and delivers outcomes by `cast` to a designated receiver actor named in the request.
 
 ### 2.8 Cast-only behavior
 
 A **cast-only behavior** is an actor behavior function that handles incoming actor messages exclusively through `cast`. It must not be written as a `call`-reply behavior. Application actors that initiate foreign work, and FFI worker actors that execute foreign calls, must use cast-only behaviors.
 
-### 2.9 Sidecar metadata file
+### 2.9 `dangerous_actor_ref`
+
+A **`dangerous_actor_ref`** is a primitive reference type for FFI worker actors. It is returned only by `spawn_dangerous(...)` and `spawn_dangerous_registered(...)`. It is not interchangeable with `actor_ref`. Client and result-sink actors continue to use `actor_ref`. At runtime a `dangerous_actor_ref` is the same opaque actor handle as an `actor_ref`; the distinction exists only in Silica typing and registry routing (§4.9).
+
+### 2.10 Sidecar metadata file
 
 A **sidecar metadata file** is a macro-free metadata file stored under `dangerous_exposure_source/`. It declares link libraries and per-symbol wrapper facts that cannot be derived from Silica foreign declarations alone.
 
 Sidecar files are **not** discovered automatically from header names or directory layout. A `dangerous_*` module references sidecar files explicitly through `wrapper_meta` declarations in Silica source (§3.2).
 
-### 2.10 Link manifest (`silica.link`)
+### 2.11 Link manifest (`silica.link`)
 
 The **link manifest** is a macro-free text file, **`silica.link`**, written by `silica-compiler` in the build directory after all units in `silica.config` compile successfully. When the program uses foreign bindings, the manifest lists deduped `link_library` / `archive` pairs and required `foreign c_wrapper` symbol names for the whole program closure. Project build scripts read `archive:` lines from this file during the link stage (§14.2).
 
@@ -317,17 +327,27 @@ Actors that initiate foreign work must use cast-only behaviors.
 
 ### 4.4 FFI worker actor rule
 
-**Rule**: Outbound C wrapper execution occurs only inside an FFI worker actor behavior spawned by `spawn`.
+**Rule**: Outbound C wrapper execution occurs only inside an FFI worker actor behavior installed by `spawn_dangerous`.
 
 An FFI worker actor:
 
-- uses a cast-only behavior;
+- is spawned with `spawn_dangerous(initial_state, behavior_fn [, core_id]) -> dangerous_actor_ref`;
+- uses a cast-only behavior whose body contains one or more `sequence proc[external_danger] ... produces pure ... end` blocks;
 - receives foreign-call request casts;
-- executes `dangerous_*` module calls only inside `sequence proc[external_danger] ... produces pure ... end`;
+- executes `dangerous_*` module calls only inside those `external_danger` sequence blocks;
 - delivers foreign outcomes by `cast` to the receiver named in the request;
 - must not deliver external-danger-touched data through the `produces pure` clause (§7.4).
 
-A program may use one shared FFI worker actor or multiple specialized worker actors. The worker behavior must be the function passed directly to `spawn`.
+A program may use one shared FFI worker actor or multiple specialized worker actors. The worker behavior must be the function passed directly to `spawn_dangerous`.
+
+**Install rule**: `spawn_dangerous(...)` may appear in `main`, supervisors, or any ordinary actor behavior sequence that declares `concurrency` (and other permitted non-danger effects). The spawn site must **not** declare `external_danger`. Installing a worker does not execute foreign calls; it only starts an actor whose behavior will execute them when it receives casts.
+
+**Parser failure**:
+
+```text
+ExternalDangerInSpawnSiteError:
+sequence blocks that call spawn_dangerous must not declare external_danger. The external_danger effect is valid only inside the FFI worker behavior passed to spawn_dangerous.
+```
 
 ### 4.5 Required effect rule
 
@@ -368,30 +388,38 @@ Calls to dangerous_* module functions must appear in the sequence portion of seq
 
 ### 4.6 Worker placement rule
 
-**Rule**: A `sequence proc[external_danger] ... produces pure ... end` block is valid only when it appears directly inside the cast-only behavior function passed to `spawn` for an FFI worker actor.
+**Rule**: A `sequence proc[external_danger] ... produces pure ... end` block is valid only when it appears directly inside the cast-only behavior function passed to `spawn_dangerous` for an FFI worker actor.
 
-The worker behavior may be written as a function literal at the `spawn` call site or as a named top-level function passed directly to `spawn`. In both cases, the function containing the `external_danger` sequence must be the FFI worker behavior function supplied to `spawn`.
+The worker behavior may be written as a function literal at the `spawn_dangerous` call site or as a named top-level function passed directly to `spawn_dangerous`. In both cases, the function containing the `external_danger` sequence must be the FFI worker behavior function supplied to `spawn_dangerous`.
 
 **Parser failure**:
 
 ```text
 ExternalDangerPlacementError:
-external_danger sequence blocks are only valid directly inside the cast-only behavior function spawned for an FFI worker actor.
+external_danger sequence blocks are only valid directly inside the cast-only behavior function installed by spawn_dangerous for an FFI worker actor.
 ```
 
 ### 4.7 Disallowed placements
 
 The parser must reject an `external_danger` sequence block in any of the following positions:
 
+- inside `main` or any application actor behavior;
+- inside the sequence block that calls `spawn_dangerous` (the install site);
 - inside an ordinary top-level function body;
-- inside a helper function that is not the FFI worker behavior passed directly to `spawn`;
+- inside a helper function that is not the FFI worker behavior passed directly to `spawn_dangerous`;
 - inside an application actor behavior;
-- inside a function literal that is not passed directly to `spawn` as an FFI worker behavior;
-- inside a named function that is not passed directly to `spawn` as an FFI worker behavior;
-- inside a nested expression that is not the direct body of the spawned FFI worker behavior function;
+- inside a function literal that is not passed directly to `spawn_dangerous` as an FFI worker behavior;
+- inside a named function that is not passed directly to `spawn_dangerous` as an FFI worker behavior;
+- inside a nested expression that is not the direct body of the installed FFI worker behavior function;
 - inside any non-actor context.
 
 The parser must reject a direct call to any `dangerous_*` module function outside an FFI worker actor `external_danger` sequence.
+
+The parser must reject `spawn(initial_state, behavior_fn)` when `behavior_fn` contains an `external_danger` sequence or calls any `dangerous_*` module function.
+
+The parser must reject `spawn_dangerous(initial_state, behavior_fn)` when `behavior_fn` does not contain a valid FFI worker `external_danger` sequence.
+
+The parser must reject binding the result of `spawn_dangerous(...)` as `actor_ref`, or binding the result of `spawn(...)` as `dangerous_actor_ref`.
 
 ### 4.8 Interaction with other effects
 
@@ -409,6 +437,101 @@ register_rwr
 ```
 
 See §7.3.
+
+### 4.9 Split actor registries
+
+Silica programs that register actors by atom name use **two separate process-global registries**:
+
+1. **Ordinary registry** — stores handles for ordinary actors (`actor_ref`), including those created by `spawn_registered(...)`.
+2. **Dangerous registry** — stores handles for FFI worker actors (`dangerous_actor_ref`), including those created by `spawn_dangerous_registered(...)`.
+
+Both registries use the same direct-index table representation described in `atom_actor_registry_direct_index_design.md` (atom id → opaque handle word, with list overflow for out-of-range keys). Each registry has its own process-global root (for example `_silica_pid_registry_ref` for the ordinary table and `_silica_dangerous_pid_registry_ref` for the dangerous table), its own registry actor bootstrap, and its own fast-path lookup stubs. See `pid_registry_process_global_actor_gate.md` for the actor-gated access model; the dangerous registry follows the same shape.
+
+#### 4.9.1 Compile-time facade, shared runtime word
+
+`dangerous_actor_ref` and `actor_ref` are **distinct Silica types with no subtyping or coercion**, but at execution time both denote the same kind of opaque actor handle (typically a pointer to an actor control block). Registration inserts that word into a slot table; it does **not** attach a runtime “dangerous” tag to the handle itself.
+
+The **typed danger boundary for registered actors is enforced at retrieval**, not by tagging handles:
+
+- Ordinary lookup primitives resolve names only in the ordinary registry and treat results as `actor_ref`.
+- Dangerous lookup primitives resolve names only in the dangerous registry and treat results as `dangerous_actor_ref`.
+
+Using two tables ensures that `cast_registered(...)` cannot accidentally reach an FFI worker registered under the same atom spelling, even if compile-time checks are bypassed.
+
+#### 4.9.2 Surface API
+
+**Ordinary registry** (existing Silica actor registration; see `silica-specification.md` §15–§16):
+
+| Operation | Arity | Returns / effect |
+| --------- | ----- | ---------------- |
+| `spawn_registered(initial_state, behavior_fn, name: atom [, core_id])` | 3 (+ optional 4th) | `actor_ref` |
+| `cast_registered(name: atom, message)` | 2 | `boolean` |
+| `call_registered(name: atom, message)` | 2 | site-specific reply |
+| `get_pid_registry()` | 0 | `actor_ref` (registry actor) |
+
+**Dangerous registry** (FFI worker registration; this specification):
+
+| Operation | Arity | Returns / effect |
+| --------- | ----- | ---------------- |
+| `spawn_dangerous_registered(initial_state, behavior_fn, name: atom [, core_id])` | 3 (+ optional 4th) | `dangerous_actor_ref` |
+| `cast_dangerous_registered(name: atom, message)` | 2 | `boolean` |
+| `get_dangerous_pid_registry()` | 0 | `actor_ref` (dangerous registry actor; table holds `dangerous_actor_ref` targets) |
+
+Rules for `spawn_dangerous_registered`:
+
+- Same install-site rules as `spawn_dangerous` (§4.4): `concurrency` at the call site only; no `external_danger` at the install site.
+- `behavior_fn` must be the FFI worker behavior passed directly to spawn (valid `external_danger` sequence inside).
+- After spawn, the runtime registers the worker handle in the **dangerous** table under `name` (same insertion helper as ordinary registration, different table root).
+
+`spawn_dangerous(...)` without a name remains valid and does not register the worker. Holding a `dangerous_actor_ref` in a variable or actor state is unchanged.
+
+There is no `call_dangerous_registered` in this specification version: FFI workers are cast-only behaviors (§4.3).
+
+#### 4.9.3 Atom namespace policy
+
+Registry keys remain **`atom`** literals in a single process-wide intern table (§2 of `atom_actor_registry_direct_index_design.md`). The two slot tables are **parallel namespaces keyed by the same atom ids**:
+
+- An atom may be registered in **at most one** of the two tables at a time. Inserting into one table must remove or reject a conflicting entry in the other.
+- Keys used with the dangerous registry **must** begin with the `dangerous_` spelling prefix (for example `:dangerous_text_worker`). This is required even when the key is unique across tables, so that source code visibly marks dangerous registry use and the compiler can reject `cast_registered` / `spawn_registered` on those keys.
+
+Ordinary registry keys must **not** use the `dangerous_` prefix.
+
+#### 4.9.4 Prohibited registration paths
+
+The following are hard errors (see §15.1):
+
+- `spawn_registered(...)` when `behavior_fn` is or contains an FFI worker behavior (behavior with `external_danger` or `dangerous_*` calls); use `spawn_dangerous_registered` instead.
+- `spawn_registered(...)` with a registry `name` whose spelling begins with `dangerous_`.
+- `spawn_dangerous_registered(...)` with a registry `name` whose spelling does **not** begin with `dangerous_`.
+- `cast_registered(...)` when `name` is registered in the dangerous table or its spelling begins with `dangerous_`.
+- `cast_dangerous_registered(...)` when `name` is registered in the ordinary table or its spelling does not begin with `dangerous_`.
+- Binding the result of `spawn_dangerous_registered(...)` as `actor_ref`, or the result of `spawn_registered(...)` as `dangerous_actor_ref`.
+
+Lookup helpers such as `actor_ref_of_word` / registry `:lookup` replies that return `actor_ref` must not be used to recover a `dangerous_actor_ref` from the dangerous table; use `cast_dangerous_registered` or a future `dangerous_actor_ref_of_word` that is explicitly tied to the dangerous registry.
+
+#### 4.9.5 Relationship to other FFI rules
+
+Split registries do **not** replace the core FFI boundary:
+
+- Foreign execution still occurs only inside FFI worker behaviors installed by `spawn_dangerous` / `spawn_dangerous_registered`.
+- Application actors still never call `dangerous_*` module functions directly.
+- `external_danger` remains valid only inside the worker behavior, not at the spawn or register site.
+
+Registries only solve **name → ref typing** for long-lived or cross-module worker lookup. They do not grant `external_danger` to callers that cast by name.
+
+**Parser / type-check failure (dangerous registry key)**:
+
+```text
+DangerousRegistryKeyError:
+spawn_dangerous_registered: registry name must be an atom whose spelling begins with 'dangerous_'.
+```
+
+**Parser / type-check failure (ordinary registry misuse)**:
+
+```text
+DangerousRegistryMisuseError:
+spawn_registered: actors whose behavior uses dangerous code must be registered with spawn_dangerous_registered and an atom whose spelling begins with 'dangerous_'.
+```
 
 ---
 
@@ -1121,7 +1244,7 @@ fn client_behavior(
 
 fn main() -> int64 {
     sequence proc[concurrency]
-        worker_ref: actor_ref <- spawn({ pending: 0 }, ffi_worker_behavior);
+        worker_ref: dangerous_actor_ref <- spawn_dangerous({ pending: 0 }, ffi_worker_behavior);
         client_ref: actor_ref <- spawn(
             { value: 0, worker: worker_ref, self_ref: client_ref },
             client_behavior
@@ -1139,7 +1262,7 @@ This example is valid because:
 - the call appears inside the sequence portion of `sequence proc[external_danger] ... produces pure ... end` in an FFI worker cast-only behavior;
 - the client actor requests foreign work by `cast` and receives the outcome by FFI result cast;
 - the worker's `produces pure` value contains only structurally pure actor state; the foreign result leaves through an FFI result cast;
-- `main` only performs actor spawns and does not contain an `external_danger` sequence.
+- `main` installs the FFI worker with `spawn_dangerous` using only `concurrency` and does not contain an `external_danger` sequence or call any `dangerous_*` module function directly.
 
 ### 10.2 Fallible parser wrapper returning pure data
 
@@ -1259,7 +1382,7 @@ fn client_behavior(
 
 fn main() -> int64 {
     sequence proc[concurrency]
-        worker_ref: actor_ref <- spawn({ pending: 0 }, ffi_worker_behavior);
+        worker_ref: dangerous_actor_ref <- spawn_dangerous({ pending: 0 }, ffi_worker_behavior);
         parser_ref: actor_ref <- spawn(
             { last_port: 0, worker: worker_ref, self_ref: parser_ref },
             client_behavior
@@ -1354,7 +1477,7 @@ fn main() -> int64 {
 }
 ```
 
-This example is valid only if the importing compilation unit is a `dangerous_*` module (here `dangerous_values_app`), `values_actor_behavior` is the function passed to `spawn`, `count_value` is a pure Silica value, and the returned buffer itself does not escape the `external_danger` sequence.
+This example is valid only if the importing compilation unit is a `dangerous_*` module (here `dangerous_values_app`), `values_actor_behavior` is the function passed to `spawn_dangerous`, `count_value` is a pure Silica value, and the returned buffer itself does not escape the `external_danger` sequence.
 
 ### 10.4 Non-array pointer return decoded to pointee data
 
@@ -1772,12 +1895,22 @@ Required Silica-side hard errors:
 - `dangerous_*` module call outside the sequence portion of a sequence block that declares `external_danger`;
 - `dangerous_*` module call inside a sequence block that does not declare `external_danger`;
 - actor that initiates foreign work spawned with a behavior that is not cast-only;
-- `external_danger` sequence block outside the cast-only behavior function passed directly to `spawn` for an FFI worker actor;
+- `spawn(...)` starting a behavior that contains an `external_danger` sequence or calls any `dangerous_*` module function;
+- `spawn_dangerous(...)` starting a behavior that does not contain a valid FFI worker `external_danger` sequence;
+- `spawn_dangerous(...)` result bound as `actor_ref`, or `spawn(...)` result bound as `dangerous_actor_ref`;
+- `spawn_dangerous_registered(...)` result bound as `actor_ref`, or `spawn_registered(...)` result bound as `dangerous_actor_ref`;
+- `spawn_registered(...)` when the behavior is an FFI worker behavior or uses `external_danger` / `dangerous_*` calls; use `spawn_dangerous_registered` instead;
+- `spawn_registered(...)` with a registry `name` whose atom spelling begins with `dangerous_`;
+- `spawn_dangerous_registered(...)` with a registry `name` whose atom spelling does not begin with `dangerous_`;
+- `cast_registered(...)` when the name is registered in the dangerous registry or its spelling begins with `dangerous_`;
+- `cast_dangerous_registered(...)` when the name is registered in the ordinary registry or its spelling does not begin with `dangerous_`;
+- `external_danger` declared on a sequence block that installs an FFI worker with `spawn_dangerous`;
+- `external_danger` sequence block outside the cast-only behavior function passed directly to `spawn_dangerous` for an FFI worker actor;
 - `external_danger` sequence block inside an ordinary top-level function body;
-- `external_danger` sequence block inside a helper function that is not the FFI worker behavior passed directly to `spawn`;
-- `external_danger` sequence block inside an application actor behavior;
-- `external_danger` sequence block inside a function literal that is not passed directly as an FFI worker behavior to `spawn`;
-- `external_danger` sequence block in a nested expression position that is not the direct body of the spawned FFI worker behavior function;
+- `external_danger` sequence block inside a helper function that is not the FFI worker behavior passed directly to `spawn_dangerous`;
+- `external_danger` sequence block inside an application actor behavior or inside `main`;
+- `external_danger` sequence block inside a function literal that is not passed directly as an FFI worker behavior to `spawn_dangerous`;
+- `external_danger` sequence block in a nested expression position that is not the direct body of the installed FFI worker behavior function;
 - raw foreign binding declaration using Silica `string` instead of pointer-plus-length arguments;
 - more than eight Silica-level arguments after lowering;
 - raw pointers in Silica-facing declarations;
@@ -1829,7 +1962,28 @@ Required parser failure:
 
 ```text
 ExternalDangerPlacementError:
-external_danger sequence blocks are only valid directly inside the cast-only behavior function spawned for an FFI worker actor.
+external_danger sequence blocks are only valid directly inside the cast-only behavior function installed by spawn_dangerous for an FFI worker actor.
+```
+
+Required parser failure:
+
+```text
+DangerousSpawnMismatchError:
+spawn cannot start a behavior that uses external_danger or dangerous_* code; use spawn_dangerous and bind the result as dangerous_actor_ref.
+```
+
+Required parser failure:
+
+```text
+SpawnDangerousBehaviorError:
+spawn_dangerous requires a behavior whose body uses sequence proc[external_danger] or dangerous_* code.
+```
+
+Required parser failure:
+
+```text
+ExternalDangerInSpawnSiteError:
+sequence blocks that call spawn_dangerous must not declare external_danger. The external_danger effect is valid only inside the FFI worker behavior passed to spawn_dangerous.
 ```
 
 Required parser failure:
@@ -1957,6 +2111,9 @@ The following decisions are fixed by this specification version:
 | Topic | Decision |
 | ----- | -------- |
 | Dangerous-module call scope | Every call to any function in any `dangerous_*` module must appear inside an FFI worker `external_danger` sequence. |
+| Install vs execute | `spawn_dangerous` installs an FFI worker and requires only `concurrency` at the spawn site. `external_danger` authorizes foreign-call execution inside the worker behavior only. |
+| FFI worker spawn | FFI worker actors are installed with `spawn_dangerous(...)` or `spawn_dangerous_registered(...)` and referenced by `dangerous_actor_ref`. Ordinary `spawn(...)` and `spawn_registered(...)` must not start dangerous behaviors. |
+| Actor registries | Two process-global atom-keyed slot tables: ordinary (`actor_ref`, `cast_registered`) and dangerous (`dangerous_actor_ref`, `cast_dangerous_registered`). Same opaque handle at runtime; retrieval typed by table and lookup primitive (§4.9). Dangerous registry keys must use the `dangerous_` atom spelling prefix. |
 | Foreign call transport | All outbound foreign calls use cast to an FFI worker actor; results return by FFI result cast. |
 | Client actor shape | Actors that initiate foreign work use cast-only behaviors. |
 | Adapter-wrapper detection | Exported `dangerous_*` functions must have a Silica body; raw `foreign c_wrapper` declarations are never exported. |
@@ -1977,7 +2134,7 @@ Silica FFI is wrapper-first and cast-mediated.
 
 External libraries are required to be adapted into a small, explicit, predictable C-compatible ABI subset before Silica calls them. Wrapper functions are required to use fixed-width types, pointer-plus-length strings, explicit result structs, de-opaqueified C object contents, and clear ownership rules. Wrapper object code is supplied initially as prebuilt static libraries under `dangerous_exposure_source/lib/`. Sidecar `.meta` files under `dangerous_exposure_source/` declare link libraries and wrapper facts and are loaded only when named by `wrapper_meta` or `meta` declarations in Silica source. After compile, `silica-compiler` writes **`silica.link`** naming required archives and foreign symbols for the `silica.config` closure; project build scripts link using those archive paths.
 
-Application actors never call `dangerous_*` module functions directly. They use cast-only behaviors to send foreign-call requests to FFI worker actors. FFI worker actors execute `sequence proc[external_danger] ... produces pure ... end` blocks and deliver outcomes by FFI result cast. Every compilation unit that imports or uses a `dangerous_*` module must itself be a `dangerous_*` module; that constraint propagates to the root application module and to the compiled application name whenever the program depends on FFI.
+Application actors never call `dangerous_*` module functions directly. They use cast-only behaviors to send foreign-call requests to FFI worker actors. FFI worker actors are installed with `spawn_dangerous(...)` or `spawn_dangerous_registered(...)`, referenced by `dangerous_actor_ref`, and execute `sequence proc[external_danger] ... produces pure ... end` blocks inside their behavior functions. Install sites (`main`, supervisors, and ordinary client actors) call `spawn_dangerous` / `spawn_dangerous_registered` with `concurrency` only and must not declare `external_danger`. Atom-keyed worker lookup uses the **dangerous registry** and `cast_dangerous_registered`; the ordinary registry and `cast_registered` must not resolve FFI workers (§4.9). Every compilation unit that imports or uses a `dangerous_*` module must itself be a `dangerous_*` module; that constraint propagates to the root application module and to the compiled application name whenever the program depends on FFI.
 
 Raw foreign bindings declare pointer-plus-length arguments for string data; exported adapter wrappers accept Silica `string`. The initial toolchain validates Silica declarations, explicit sidecar references, sidecar metadata contents, prebuilt archive presence when emitting `silica.link`, and link-time symbol presence in manifest-named archives. It does not parse C headers.
 

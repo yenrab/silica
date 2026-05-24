@@ -36,7 +36,9 @@ These decisions are **not** revisited during implementation. See spec §16.1.
 | ----- | -------- |
 | Call transport | Cast-mediated: client actor → FFI worker actor → FFI result cast |
 | Client / worker behaviors | Cast-only (no `call`-reply shape) |
-| `external_danger` placement | Only inside FFI worker behavior passed directly to `spawn` |
+| `external_danger` placement | Only inside FFI worker behavior passed directly to `spawn_dangerous` |
+| `spawn_dangerous` install site | Requires `concurrency` only; must not declare `external_danger` |
+| FFI worker spawn pairing | `spawn_dangerous` → `dangerous_actor_ref`; ordinary `spawn` must not start dangerous behaviors |
 | Dangerous call scope | Every call to any `dangerous_*` module function |
 | Adapter exports | Must have a Silica body; raw `foreign c_wrapper` never exported |
 | Strings | Two-layer: raw bindings use ptr+len; adapters use `string` (in and out) |
@@ -262,7 +264,7 @@ Trials in `metadata_addition/` using fixture sidecars:
 
 **Scope**
 
-- Identify FFI worker behaviors: function passed directly to `spawn` containing `external_danger` sequence.
+- Identify FFI worker behaviors: function passed directly to `spawn_dangerous` containing `external_danger` sequence.
 - Identify cast-only behaviors: behavior fn must not use `call`-reply return shape (extend actor behavior validation).
 - Errors:
   - `ExternalDangerClientBehaviorError` — client initiating foreign work without cast-only shape,

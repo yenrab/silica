@@ -96,7 +96,7 @@ fn collect_expr_effects_outside_sequence_blocks_with_binding(expr: Expr, ctx: Ef
         true -> parser_ast@empty_effect_name_list();
         false -> case expr.kind == 4 of {
             true -> do
-                callee_effects: ListEffectName <- resolve_call_effects_with_binding(expr.name, ctx, expr.inner, binding_type, expr.location, expr.value);
+                callee_effects: ListEffectName <- resolve_call_effects_with_binding(expr.name, ctx, expr.inner, binding_type, expr.location, expr.value, false);
                 arg_effects: ListEffectName <- collect_expr_effects_outside_sequence_blocks_with_binding(expr.inner, ctx, "");
                 union_effect_lists(callee_effects, arg_effects)
             end;
@@ -160,7 +160,7 @@ fn collect_expr_effects_outside_sequence_blocks_with_binding(expr: Expr, ctx: Ef
 fn collect_expr_effects_with_binding(expr: Expr, ctx: EffectContext, binding_type: string) -> ListEffectName {
     case expr.kind == 4 of {
         true -> do
-            callee_effects: ListEffectName <- resolve_call_effects_with_binding(expr.name, ctx, expr.inner, binding_type, expr.location, expr.value);
+            callee_effects: ListEffectName <- resolve_call_effects_with_binding(expr.name, ctx, expr.inner, binding_type, expr.location, expr.value, true);
             binding_list_effects: ListEffectName <- case type_checker_core@user_call_base_function_name(expr.name) == "call_supervisor" of {
                 true -> parser_ast@empty_effect_name_list();
                 false -> effect_checker_lists@mem_effects_for_list_literal(binding_type, expr.location)
@@ -299,7 +299,7 @@ fn collect_struct_literal_chain_effects_outside(expr: Expr, ctx: EffectContext, 
    Lookup order: region builtins (alloc_region, alloc_ref, etc.), user-defined, then other builtins.
    Unknown functions are treated as pure (empty effects). -}
 fn resolve_call_effects(fn_name: string, ctx: EffectContext) -> ListEffectName {
-    resolve_call_effects_with_binding(fn_name, ctx, parser_ast@dummy_expr(), "", parser_ast@zero_location(), "")
+    resolve_call_effects_with_binding(fn_name, ctx, parser_ast@dummy_expr(), "", parser_ast@zero_location(), "", true)
 }
 
 fn dangerous_module_prefix() -> string {
@@ -329,8 +329,10 @@ fn first_arg_region_type(first_arg: Expr, ctx: EffectContext) -> string {
     }
 }
 
-{- generic_value: kind-4 call value field (generic instantiation text), empty if none. -}
-fn resolve_call_effects_with_binding(fn_name: string, ctx: EffectContext, first_arg: Expr, binding_type: string, location: SourceLocation, generic_value: string) -> ListEffectName {
+{- generic_value: kind-4 call value field (generic instantiation text), empty if none.
+   include_foreign_c_wrapper_effects: when false, raw foreign c_wrapper calls are treated as pure
+   (adapter stubs may call them outside sequence blocks; dangerous_* module calls still carry external_danger). -}
+fn resolve_call_effects_with_binding(fn_name: string, ctx: EffectContext, first_arg: Expr, binding_type: string, location: SourceLocation, generic_value: string, include_foreign_c_wrapper_effects: bool) -> ListEffectName {
     case effect_checker_lists@is_list_primitive_fn(fn_name) of {
         true -> stamp_effect_locations(effect_checker_lists@mem_effects_for_list_call(fn_name, generic_value, location), location);
         false -> case effect_checker_memory_regions@is_region_builtin_fn(fn_name) of {
@@ -369,10 +371,27 @@ fn resolve_call_effects_with_binding(fn_name: string, ctx: EffectContext, first_
                         case found_user of {
                             true -> stamp_effect_locations(expand_effect_list(user_effects, ctx.alias_env), location);
                             false -> do
-                                (found_builtin: bool, builtin_effects: ListEffectName) <- effect_checker_core@builtin_fn_effects(fn_name);
-                                case found_builtin of {
-                                    true -> stamp_effect_locations(builtin_effects, location);
-                                    false -> parser_ast@empty_effect_name_list()
+                                case include_foreign_c_wrapper_effects of {
+                                    true -> do
+                                        (found_foreign: bool, _: ListEffectName) <- effect_checker_core@lookup_fn_effects(ctx.foreign_c_wrapper_env, fn_name);
+                                        case found_foreign of {
+                                            true -> stamp_effect_locations(external_danger_effect_singleton(location), location);
+                                            false -> do
+                                                (found_builtin: bool, builtin_effects: ListEffectName) <- effect_checker_core@builtin_fn_effects(fn_name);
+                                                case found_builtin of {
+                                                    true -> stamp_effect_locations(builtin_effects, location);
+                                                    false -> parser_ast@empty_effect_name_list()
+                                                }
+                                            end
+                                        }
+                                    end;
+                                    false -> do
+                                        (found_builtin: bool, builtin_effects: ListEffectName) <- effect_checker_core@builtin_fn_effects(fn_name);
+                                        case found_builtin of {
+                                            true -> stamp_effect_locations(builtin_effects, location);
+                                            false -> parser_ast@empty_effect_name_list()
+                                        }
+                                    end
                                 }
                             end
                         }

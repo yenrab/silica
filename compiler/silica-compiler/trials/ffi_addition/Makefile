@@ -212,7 +212,7 @@ help:
 	@echo ""
 	@echo "App trials (runnable programs with .scout goldens):"
 	@echo "  $(APP_SIDECAR_DIR)      - sidecar metadata + legacy math add via FFI worker"
-	@echo "  $(APP_CAST_WORKER_DIR)  - cast-only client and external_danger FFI worker"
+	@echo "  $(APP_CAST_WORKER_DIR)  - spawn_dangerous worker with external_danger behavior"
 	@echo "  $(APP_FFI_RESULT_CAST_DIR) - FFI result cast delivers external-danger-touched int64"
 	@echo "  $(APP_FOREIGN_ABI_DIR)  - Silica-side ABI declarations compile and run"
 	@echo "  $(APP_E2E_DIR) - scalar add and string echo end-to-end foreign calls"

@@ -5,17 +5,29 @@ wrapper_meta "dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta";
 foreign c_wrapper "silica_ffi_null_deref"
 fn null_deref_raw() -> int64;
 
-fn fault_worker(msg: int64, state: int64) -> (:no_reply, int64) {
-    sequence proc[]
-        _: int64 <- null_deref_raw()
+fn result_sink(msg: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        print_int64(msg);
+        println("");
+        println("done")
     produces
         pure (:no_reply, state)
     end
 }
 
+fn ffi_worker(msg: int64, reply_to: actor_ref) -> (:no_reply, actor_ref) {
+    sequence proc[external_danger, concurrency]
+        _: int64 <- null_deref_raw();
+        _: boolean <- cast(reply_to, 0 impl ActorMessage {})
+    produces
+        pure (:no_reply, reply_to)
+    end
+}
+
 fn main() -> int64 {
     sequence proc[concurrency, device_io]
-        worker_ref: actor_ref <- spawn(0, fault_worker);
+        sink_ref: actor_ref <- spawn(0, result_sink);
+        worker_ref: dangerous_actor_ref <- spawn_dangerous(sink_ref, ffi_worker);
         _: boolean <- cast(worker_ref, 0 impl ActorMessage {});
         _: int64 <- wait_for_exit()
     produces

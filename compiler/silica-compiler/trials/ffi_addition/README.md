@@ -11,7 +11,7 @@ ffi_addition/
       legacy/ … text/ … net/ … lib/
     src/                                # C sources (not compiled by Silica)
   app_sidecar_legacy_math_add/          # runnable app: sidecar metadata + legacy math add
-  app_cast_worker_legacy_add/           # runnable app: external_danger worker + legacy stub
+  app_cast_worker_legacy_add/           # runnable app: spawn_dangerous worker + external_danger behavior
   app_ffi_result_cast_add/              # runnable app: FFI result cast with tainted int64
   app_foreign_abi_valid/                # runnable apps: Silica-side ABI declarations
   app_e2e_scalar_string_echo/           # runnable apps: scalar add + string echo e2e
@@ -34,7 +34,7 @@ Each `app_*` directory is a self-contained runnable program (or small set of pro
 | Directory | What it exercises |
 | --------- | ----------------- |
 | `app_sidecar_legacy_math_add` | Sidecar `wrapper_meta` loads; legacy math foreign call via FFI worker |
-| `app_cast_worker_legacy_add` | `external_danger` in spawn-passed worker; `dangerous_legacy_stub@add` |
+| `app_cast_worker_legacy_add` | `spawn_dangerous` + `external_danger` worker behavior; `dangerous_legacy_stub@add` |
 | `app_ffi_result_cast_add` | Tainted int64 delivered by FFI result cast inside worker |
 | `app_foreign_abi_valid` | Scalar and net-port ABI declarations compile and run |
 | `app_e2e_scalar_string_echo` | Full cast/worker e2e: int64 add and string echo through C wrappers |

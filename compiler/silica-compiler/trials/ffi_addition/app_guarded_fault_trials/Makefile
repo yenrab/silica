@@ -5,6 +5,7 @@ APP_EXECUTABLES := \
 	dangerous_guarded_null_deref_fault \
 	dangerous_guarded_arena_bounds_fault \
 	dangerous_guarded_sigbus_fault \
+	dangerous_guarded_sigill_fault \
 	dangerous_handler_altstack_stack_overflow_smoke \
 	dangerous_unguarded_null_deref_abort
 
@@ -60,7 +61,7 @@ integrate: fixtures unguarded_probe
 		echo "Assembling $$sams..."; \
 		clang $(ASFLAGS) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
 	done; \
-	for trial in dangerous_guarded_null_deref_fault dangerous_guarded_arena_bounds_fault dangerous_guarded_sigbus_fault dangerous_handler_altstack_stack_overflow_smoke; do \
+	for trial in dangerous_guarded_null_deref_fault dangerous_guarded_arena_bounds_fault dangerous_guarded_sigbus_fault dangerous_guarded_sigill_fault dangerous_handler_altstack_stack_overflow_smoke; do \
 		[ "$$failed" -ne 0 ] && break; \
 		runtime_obj=""; [ -f __silica_runtime.o ] && runtime_obj=__silica_runtime.o; \
 		if test -x "$(RUST_LLD)"; then \
@@ -69,13 +70,27 @@ integrate: fixtures unguarded_probe
 			clang "$$trial.o" $$runtime_obj $$link_archives -o "$$trial" $(LDFLAGS_clang) || failed=1; \
 		fi; \
 		[ "$$failed" -ne 0 ] && break; \
-		{ ./"$$trial" 2>&1; echo $$?; } > "$$trial.sout" || failed=1; \
+		if [ -f "$$trial.wait_for_exit" ]; then \
+			marker=$$(awk 'NF { if ($$NF ~ /^[0-9]+$$/) { m=$$0; sub(/[ \t]+[0-9]+$$/, "", m); print m } else print $$0; exit } END { if (!NR) print "done" }' "$$trial.wait_for_exit"); \
+			marker_count=$$(awk 'NF { if ($$NF ~ /^[0-9]+$$/) print $$NF; else print 1; exit } END { if (!NR) print 1 }' "$$trial.wait_for_exit"); \
+			python3 "$(FFI_TRIAL_DIR)/run_integration_exit_after_marker.py" "$(APP_TRIAL_DIR)" "$$trial" "$$trial.sout" "$$marker" "$$marker_count" || failed=1; \
+		else \
+			{ ./"$$trial" 2>&1; echo $$?; } > "$$trial.sout" || failed=1; \
+		fi; \
 		[ "$$failed" -ne 0 ] && break; \
-		if ! diff -Bw -q "$$trial.sout" "$$trial.scout" > /dev/null 2>&1; then \
-			echo "  ❌ $(APP_LABEL)/$$trial .sout differs from .scout"; diff -Bw "$$trial.sout" "$$trial.scout" || true; \
+		if [ ! -f "$$trial.scout" ]; then \
+			echo "  ❌ $(APP_LABEL)/$$trial: missing .scout"; ko=$$((ko + 1)); failed=1; \
+		elif [ -f "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" ] && ! "$(SHELL)" "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" "$$trial.sout" "$$trial.scout" > /dev/null 2>&1; then \
+			echo "  ❌ $(APP_LABEL)/$$trial .sout differs from .scout (normalized compare)"; \
+			"$(SHELL)" "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" "$$trial.sout" "$$trial.scout" || true; \
+			ko=$$((ko + 1)); failed=1; \
+		elif [ ! -f "$(FFI_TRIAL_DIR)/compare_scout_normalized.sh" ] && ! diff -Bw -q "$$trial.sout" "$$trial.scout" > /dev/null 2>&1; then \
+			echo "  ❌ $(APP_LABEL)/$$trial .sout differs from .scout"; \
+			diff -Bw "$$trial.sout" "$$trial.scout" || true; \
 			ko=$$((ko + 1)); failed=1; \
 		else \
-			echo "  ✅✅ $(APP_LABEL)/$$trial output matches .scout"; ok=$$((ok + 1)); \
+			echo "  ✅✅ $(APP_LABEL)/$$trial output matches .scout"; \
+			ok=$$((ok + 1)); \
 		fi; \
 	done; \
 	[ "$$failed" -eq 0 ] && $(MAKE) -C "$(APP_TRIAL_DIR)" altstack_check || failed=1; \
@@ -84,4 +99,4 @@ integrate: fixtures unguarded_probe
 	exit $$failed
 
 clean:
-	@cd "$(THIS_DIR)" && rm -f *.sams *.o $(APP_EXECUTABLES) silica.config silica.link .integrate_counts *.sout dangerous_exposure_source $(UNGUARDED_PROBE) silica_ffi_fault.o
+	@cd "$(THIS_DIR)" && rm -f *.sams *.o $(APP_EXECUTABLES) silica.config silica.link .integrate_counts *.sout dangerous_exposure_source $(UNGUARDED_PROBE) silica_ffi_fault.o unguarded_sigill_probe

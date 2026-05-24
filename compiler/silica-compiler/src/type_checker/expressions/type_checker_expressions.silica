@@ -534,7 +534,7 @@ fn is_actor_runtime_helper_name(name: string) -> bool {
 // §4.5 actor_ref, §15 spawn, §16 call/cast/send, self; recv forbidden §15.1.2.
 // §15.4.8.5–§15.4.8.7: link, monitor, demonitor (Phase G: behavior-only for link/monitor/demonitor; E2091).
 fn is_actor_concurrency_builtin(name: string) -> bool {
-    name == "spawn" or name == "spawn_registered" or name == "spawn_registered_supervisor" or name == "spawn_linked" or name == "call_supervisor" or name == "add_child" or name == "link" or name == "monitor" or name == "demonitor" or name == "send" or name == "cast" or name == "cast_registered" or name == "call" or name == "call_registered" or name == "self" or name == "recv" or name == "supervision_ingress_enqueue" or name == "supervision_wait_and_drain_one" or name == "failure_reason_tag" or name == "failure_reason_atom" or name == "failure_agent_type" or name == "failure_release" or name == "start_child" or name == "child_table_first_ref" or name == "child_table_row_ref" or name == "kill_abnormal" or name == "wait_for_exit" or is_actor_runtime_helper_name(name)
+    name == "spawn" or name == "spawn_dangerous" or name == "spawn_registered" or name == "spawn_registered_supervisor" or name == "spawn_linked" or name == "call_supervisor" or name == "add_child" or name == "link" or name == "monitor" or name == "demonitor" or name == "send" or name == "cast" or name == "cast_registered" or name == "call" or name == "call_registered" or name == "self" or name == "recv" or name == "supervision_ingress_enqueue" or name == "supervision_wait_and_drain_one" or name == "failure_reason_tag" or name == "failure_reason_atom" or name == "failure_agent_type" or name == "failure_release" or name == "start_child" or name == "child_table_first_ref" or name == "child_table_row_ref" or name == "kill_abnormal" or name == "wait_for_exit" or is_actor_runtime_helper_name(name)
 }
 
 fn check_runtime_builtin_return(expr: Expr, inferred: string, expected_type: string) -> TypeCheckResult {
@@ -825,29 +825,39 @@ fn check_spawn_core_id_placement(place_e: Expr, context: TypeContext, world: Lis
     }
 }
 
-fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+fn check_actor_spawn_result_type(expr: Expr, expected_type: string, builtin_label: string, spawn_result_type: string) -> TypeCheckResult {
+    case expected_type == spawn_result_type of {
+        true -> type_checker_core@type_check_ok();
+        false -> case expected_type == "discard" of {
+            true -> type_checker_core@type_check_ok();
+            false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(builtin_label, " returns "), spawn_result_type), concat(", expected ", expected_type)), "sect15")
+        }
+    }
+}
+
+fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram, builtin_label: string, spawn_result_type: string) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 or ac == 3 of {
-        false -> type_checker_core@type_check_err("E2005", expr.location, "spawn expects 2 or 3 arguments: (initial_state, behavior_fn [, core_id]) §15.1.1", "sect15");
+        false -> type_checker_core@type_check_err("E2005", expr.location, concat(concat(builtin_label, " expects 2 or 3 arguments: (initial_state, behavior_fn [, core_id]) §15.1.1"), ""), "sect15");
         true -> do
             init_e: Expr <- type_checker_expressions_actors@spawn_init_expr(expr);
             beh_e: Expr <- type_checker_expressions_actors@spawn_behavior_expr(expr);
             case beh_e.kind == 1 of {
-                false -> type_checker_core@type_check_err("E2005", expr.location, "spawn: behavior must be a function identifier", "sect15");
+                false -> type_checker_core@type_check_err("E2005", expr.location, concat(builtin_label, ": behavior must be a function identifier"), "sect15");
                 true -> do
                     (beh_found: bool, beh_type: string) <- type_checker_core@lookup_symbol_found(context.env, beh_e.name);
                     case beh_found of {
-                        false -> type_checker_core@type_check_err("E2005", expr.location, concat("spawn: unknown behavior function: ", beh_e.name), "sect15");
+                        false -> type_checker_core@type_check_err("E2005", expr.location, concat(concat(builtin_label, ": unknown behavior function: "), beh_e.name), "sect15");
                         true -> case is_function_type_user_call(beh_type) of {
-                            false -> type_checker_core@type_check_err("E2005", expr.location, "spawn: behavior must be a function", "sect15");
+                            false -> type_checker_core@type_check_err("E2005", expr.location, concat(builtin_label, ": behavior must be a function"), "sect15");
                             true -> do
-                                sig_ok: TypeCheckResult <- type_checker_expressions_actors@validate_spawn_behavior_function_type("spawn", beh_type, expr.location);
+                                sig_ok: TypeCheckResult <- type_checker_expressions_actors@validate_spawn_behavior_function_type(builtin_label, beh_type, expr.location);
                                     case sig_ok.is_ok of {
                                     false -> sig_ok;
                                     true -> do
                                         state_t: string <- type_checker_expressions_actors@parse_behavior_state_param_type(beh_type);
                                         case len(state_t) == 0 of {
-                                            true -> type_checker_core@type_check_err("E2005", expr.location, "spawn: could not parse behavior state parameter type", "sect15");
+                                            true -> type_checker_core@type_check_err("E2005", expr.location, concat(builtin_label, ": could not parse behavior state parameter type"), "sect15");
                                             false -> do
                                                 r_init: TypeCheckResult <- check_expr(init_e, state_t, context, world);
                                                 case r_init.is_ok of {
@@ -855,13 +865,13 @@ fn check_actor_spawn_call(expr: Expr, expected_type: string, context: TypeContex
                                                     true -> case ac == 3 of {
                                                         true -> do
                                                             place_e: Expr <- type_checker_expressions_actors@spawn_placement_expr(expr);
-                                                            r_pl: TypeCheckResult <- check_spawn_core_id_placement(place_e, context, world, "spawn", "third argument");
+                                                            r_pl: TypeCheckResult <- check_spawn_core_id_placement(place_e, context, world, builtin_label, "third argument");
                                                             case r_pl.is_ok of {
                                                                 false -> r_pl;
-                                                                true -> check_actor_spawn_result_type(expr, expected_type, "spawn")
+                                                                true -> check_actor_spawn_result_type(expr, expected_type, builtin_label, spawn_result_type)
                                                             }
                                                         end;
-                                                        false -> check_actor_spawn_result_type(expr, expected_type, "spawn")
+                                                        false -> check_actor_spawn_result_type(expr, expected_type, builtin_label, spawn_result_type)
                                                     }
                                                 }
                                             end
@@ -923,15 +933,6 @@ fn check_spawn_affinity_constructor_call(expr: Expr, expected_type: string, cont
     }
 }
 
-fn check_actor_spawn_result_type(expr: Expr, expected_type: string, builtin_label: string) -> TypeCheckResult {
-    case expected_type == "actor_ref" of {
-        true -> type_checker_core@type_check_ok();
-        false -> case expected_type == "discard" of {
-            true -> type_checker_core@type_check_ok();
-            false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(builtin_label, " returns actor_ref, expected "), expected_type), "sect15")
-        }
-    }
-}
 
 fn check_supervisor_spawn_result_type(expr: Expr, expected_type: string, builtin_label: string) -> TypeCheckResult {
     case expected_type == "supervisor_ref" of {
@@ -975,7 +976,7 @@ fn check_actor_spawn_registered_call(expr: Expr, expected_type: string, context:
                                                         r_name: TypeCheckResult <- check_expr(name_e, "atom", context, world);
                                                         case r_name.is_ok of {
                                                             false -> r_name;
-                                                            true -> check_actor_spawn_result_type(expr, expected_type, "spawn_registered")
+                                                            true -> check_actor_spawn_result_type(expr, expected_type, "spawn_registered", "actor_ref")
                                                         }
                                                     end
                                                 }
@@ -1109,10 +1110,10 @@ fn check_actor_spawn_linked_call_removed_old(expr: Expr, expected_type: string, 
                                                                     r_pl: TypeCheckResult <- check_spawn_core_id_placement(place_e, context, world, "spawn_linked", "fourth argument");
                                                                     case r_pl.is_ok of {
                                                                         false -> r_pl;
-                                                                        true -> check_actor_spawn_result_type(expr, expected_type, "spawn_linked")
+                                                                        true -> check_actor_spawn_result_type(expr, expected_type, "spawn_linked", "actor_ref")
                                                                     }
                                                                 end;
-                                                                false -> check_actor_spawn_result_type(expr, expected_type, "spawn_linked")
+                                                                false -> check_actor_spawn_result_type(expr, expected_type, "spawn_linked", "actor_ref")
                                                             }
                                                         }
                                                     end
@@ -1511,12 +1512,21 @@ fn check_actor_message_satisfies_am(expr: Expr, msg_e: Expr, context: TypeContex
     }
 }
 
+// cast/send/call accept actor_ref or dangerous_actor_ref as the target (same runtime handle; distinct types at bind sites).
+fn check_actor_message_target(ref_e: Expr, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    ref_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(ref_e, context);
+    case ref_type == "actor_ref" or ref_type == "dangerous_actor_ref" of {
+        true -> type_checker_core@type_check_ok();
+        false -> check_expr(ref_e, "actor_ref", context, world)
+    }
+}
+
 fn check_actor_call_builtin(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     ac: int64 <- type_checker_expressions_actors@count_chain_args(expr);
     case ac == 2 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "call expects 2 arguments: (actor_ref, message) §16.1.1", "sect16");
         true -> do
-            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
+            r0: TypeCheckResult <- check_actor_message_target(expr.inner, context, world);
             case r0.is_ok of {
                 false -> r0;
                 true -> do
@@ -1581,7 +1591,7 @@ fn check_actor_cast_builtin(expr: Expr, expected_type: string, context: TypeCont
     case ac == 2 of {
         false -> type_checker_core@type_check_err("E2005", expr.location, "cast expects 2 arguments: (actor_ref, message) §16.1.2", "sect16");
         true -> do
-            r0: TypeCheckResult <- check_expr(expr.inner, "actor_ref", context, world);
+            r0: TypeCheckResult <- check_actor_message_target(expr.inner, context, world);
             case r0.is_ok of {
                 false -> r0;
                 true -> do
@@ -1685,8 +1695,10 @@ fn check_actor_concurrency_call(expr: Expr, expected_type: string, context: Type
             false -> case eff == "self" of {
                 true -> check_actor_self_call(expr, expected_type, context);
                 false -> case eff == "spawn" of {
-                    true -> check_actor_spawn_call(expr, expected_type, context, world);
-                    false -> case eff == "spawn_registered" of {
+                    true -> check_actor_spawn_call(expr, expected_type, context, world, "spawn", "actor_ref");
+                    false -> case eff == "spawn_dangerous" of {
+                        true -> check_actor_spawn_call(expr, expected_type, context, world, "spawn_dangerous", "dangerous_actor_ref");
+                        false -> case eff == "spawn_registered" of {
                         true -> check_actor_spawn_registered_call(expr, expected_type, context, world);
                         false -> case eff == "spawn_registered_supervisor" of {
                             true -> check_spawn_registered_supervisor_call(expr, expected_type, context, world);
@@ -1752,6 +1764,7 @@ fn check_actor_concurrency_call(expr: Expr, expected_type: string, context: Type
                             }}
                                 }
                             }
+                        }
                         }
                     }
                 }
@@ -2059,7 +2072,7 @@ fn check_call(expr: Expr, expected_type: string, context: TypeContext, world: Li
     case first_at_in_expr_call_name(expr.name, 0) >= 0 of {
         true -> do
             base: string <- type_checker_core@user_call_base_function_name(expr.name);
-            case base == "spawn" or base == "spawn_registered" or base == "spawn_registered_supervisor" or base == "spawn_linked" or base == "call_supervisor" or base == "add_child" or base == "link" or base == "monitor" or base == "demonitor" or base == "supervision_ingress_enqueue" or base == "supervision_wait_and_drain_one" or base == "failure_reason_tag" or base == "failure_reason_atom" or base == "failure_agent_type" or base == "failure_release" or base == "start_child" or base == "child_table_first_ref" or base == "child_table_row_ref" or base == "kill_abnormal" or base == "wait_for_exit" or base == "get_registry_actor" or base == "get_pid_registry" or base == "call_registered" or base == "cast_registered" of {
+            case base == "spawn" or base == "spawn_dangerous" or base == "spawn_registered" or base == "spawn_registered_supervisor" or base == "spawn_linked" or base == "call_supervisor" or base == "add_child" or base == "link" or base == "monitor" or base == "demonitor" or base == "supervision_ingress_enqueue" or base == "supervision_wait_and_drain_one" or base == "failure_reason_tag" or base == "failure_reason_atom" or base == "failure_agent_type" or base == "failure_release" or base == "start_child" or base == "child_table_first_ref" or base == "child_table_row_ref" or base == "kill_abnormal" or base == "wait_for_exit" or base == "get_registry_actor" or base == "get_pid_registry" or base == "call_registered" or base == "cast_registered" of {
                 true -> check_actor_concurrency_call(expr, expected_type, context, world);
                 false -> check_user_defined_call(expr, expected_type, context, world)
             }
@@ -2924,12 +2937,15 @@ fn check_let_memory_region(expr: Expr, expected_type: string, context: TypeConte
     }
 }
 
-// When a let-binding creates an actor_ref from spawn, record the behavior function type
-// and enforce region move semantics (§12.1.5): if initial_state is a region variable,
-// shadow it with "moved_region" so subsequent use is a compile error.
+// When a let-binding creates an actor_ref from spawn (or dangerous_actor_ref from spawn_dangerous),
+// record the behavior function type and enforce region move semantics (§12.1.5).
 fn enrich_env_for_actor_spawn(env: ListSymbolEntry, var_name: string, bind_type: string, rhs: Expr, context: TypeContext) -> ListSymbolEntry {
     rhs_base: string <- type_checker_core@user_call_base_function_name(rhs.name);
-    case bind_type == "actor_ref" and rhs.kind == 4 and rhs_base == "spawn" of {
+    spawn_pair_ok: bool <- case bind_type == "actor_ref" and rhs_base == "spawn" of {
+        true -> true;
+        false -> bind_type == "dangerous_actor_ref" and rhs_base == "spawn_dangerous"
+    };
+    case rhs.kind == 4 and spawn_pair_ok of {
         true -> do
             beh_e: Expr <- type_checker_expressions_actors@spawn_behavior_expr(rhs);
             env1: ListSymbolEntry <- case beh_e.kind == 1 of {

@@ -214,12 +214,12 @@ The following identifiers are reserved keywords:
 
 ```
 actor      actor_ref  atom      atomic    boolean      buf       case
-call_supervisor cast   char      concurrency core_id    core_set device_io effect
+call_supervisor cast   char      concurrency core_id    core_set dangerous_actor_ref device_io effect
 efficiency_cores else end        enum      export    false     float16   float32
 float64    fn         for        from      hot_swap   if        impl      import    int8
 int16      int32      int64      lifetime  mailbox  mem       module    network_io normal    not
 of         performance_cores proc      produces  provided pub       pure      recv      ref       region    register_rwr required return
-sequence   spawn     spawn_registered spawn_registered_supervisor string    struct    supervisor_ref trait     true      type
+sequence   spawn     spawn_dangerous spawn_registered spawn_registered_supervisor string    struct    supervisor_ref trait     true      type
 uint8      uint16     uint32     uint64    underscore unit       use        where
 ```
 
@@ -3280,10 +3280,13 @@ Actor references are a primitive type (like `int` or `boolean`):
 
 ```
 actor_ref                            // actor reference (primitive type)
+dangerous_actor_ref                  // FFI worker actor reference (primitive type)
 supervisor_ref                       // supervisor reference (primitive type)
 ```
 
-The `actor_ref` type is not parameterized by message type. It is a primitive type that represents a reference to an actor, created by the `spawn()` function.
+The `actor_ref` type is not parameterized by message type. It is a primitive type that represents a reference to an ordinary actor, created by the `spawn()` function.
+
+The `dangerous_actor_ref` type is distinct from `actor_ref`. It represents a reference to an FFI worker actor that executes outbound foreign calls inside `external_danger` sequences in its behavior. It is created only by `spawn_dangerous(...)`. There is no subtyping or coercion between `actor_ref` and `dangerous_actor_ref`.
 
 The `supervisor_ref` type is distinct from `actor_ref`. It represents a runtime-managed supervisor created by `spawn_registered_supervisor(...)`. It is not accepted by ordinary `call()` or `cast()`; supervisor maintenance uses `call_supervisor(...)`.
 
@@ -4578,7 +4581,7 @@ Silica defines several built-in effects that track different kinds of side effec
 - `network_io` - Network communications of all kinds (sockets, HTTP, etc.)
 - `hot_swap` - Code loading (dynamic loading, JIT, self-modifying code). On AArch64, requires `ISB` barrier to ensure instruction fetch sees code writes.
 - `register_rwr` - Direct device register access via mmap (read and write). On AArch64, requires `DSB SY` before and `ISB` after for device ordering.
-- `external_danger` - Outbound calls to `dangerous_*` FFI wrapper modules inside an FFI worker actor's `external_danger` sequence. Full rules: [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §4. On macOS, same-process guarded-FFI crash handling is best-effort and platform-specific; see [macos_crash_handling_for_silica.md](macos_crash_handling_for_silica.md). Other platform-specific crash-handling notes will be added as Silica expands to support those targets.
+- `external_danger` - Outbound calls to `dangerous_*` FFI wrapper modules inside an FFI worker actor's `external_danger` sequence. This effect authorizes **execution** of foreign calls inside the worker behavior installed by `spawn_dangerous`; it does **not** authorize callers at the `spawn_dangerous` install site. Full rules: [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §4. On macOS, same-process guarded-FFI crash handling is best-effort and platform-specific; see [macos_crash_handling_for_silica.md](macos_crash_handling_for_silica.md). Other platform-specific crash-handling notes will be added as Silica expands to support those targets.
 
 **Memory effect guarantees (hosting; normative at this time):** The **distinct hardware behaviors** associated with each `mem(Space)` and region `Space` (write-back, write-through, non-cacheable normal, device, and atomic backing rules in **§12.1.1** and following) are **fully supported and guaranteed only on OS-free executions**—for example bare-metal **boards**, firmware, or any environment where the **Silica runtime and linker script control** how memory regions are mapped and which **cacheability / ordering attributes** apply. On **OS-hosted** programs—**macOS**, **Linux**, **Windows**, **Solaris**, and comparable multiprogramming systems—application memory is exposed through the **traditional flat virtual address model** historically rooted in Unix and the **PDP-11** view of a process: ordinary allocations receive **uniform, OS-chosen** attributes, not a portable, per-allocation choice of Silica memory spaces. Because the **operating system controls and shares physical RAM** among processes, that model **cannot be sidestepped** by a portable application runtime to obtain, for all Silica regions, the same per-space **page-table / MAIR-class** distinctions the language describes. On OS-hosted targets, `mem(Space)` and `region(R, Space)` remain in the **type and effect system** for static discipline, documentation, and integration with **non-portable** or **driver-mediated** buffers where available, but **this specification does not guarantee**, at this time, that each memory space maps to **different hardware attributes** on those OSes. See **§12.1.1.0**.
 
@@ -7287,7 +7290,7 @@ alloc_ref(r, 42)    // Runtime error: capability violation
 
 ## 15. Actor Model Semantics
 
-**Intrinsic Functions**: Actors, supervisors, and their related functions defined in this specification (`spawn()`, `spawn_registered()`, `spawn_registered_supervisor()`, `call()`, `call_supervisor()`, `cast()`, `self()`, `recv()`, etc.) are intrinsic to the Silica compiler. They are implemented directly in the compiler and runtime, similar to how basic arithmetic operators (`+`, `-`, `*`, `/`) are implemented. These functions are not defined in user code or standard libraries but are built-in language primitives.
+**Intrinsic Functions**: Actors, supervisors, and their related functions defined in this specification (`spawn()`, `spawn_dangerous()`, `spawn_registered()`, `spawn_registered_supervisor()`, `call()`, `call_supervisor()`, `cast()`, `self()`, `recv()`, etc.) are intrinsic to the Silica compiler. They are implemented directly in the compiler and runtime, similar to how basic arithmetic operators (`+`, `-`, `*`, `/`) are implemented. These functions are not defined in user code or standard libraries but are built-in language primitives.
 
 ### 15.1 Actor Lifecycle
 
@@ -7296,6 +7299,7 @@ Actors are created with initial state and behavior function:
 
 ```
 spawn(initial_state, behavior_fn [, core_id]) -> actor_ref
+spawn_dangerous(initial_state, behavior_fn [, core_id]) -> dangerous_actor_ref proc[concurrency]
 spawn_registered(initial_state, behavior_fn, name: atom [, core_id]) -> actor_ref proc[concurrency]
 spawn_registered_supervisor(supervisor_impl_type, initial_state, name: atom [, core_id]) -> supervisor_ref proc[concurrency]
 link(target: actor_ref) -> :ok  proc[concurrency]
@@ -7303,7 +7307,11 @@ monitor(target: actor_ref) -> monitor_ref  proc[concurrency]
 demonitor(ref: monitor_ref) -> :ok  proc[concurrency]
 ```
 
-`spawn` creates an ordinary anonymous actor. `spawn_registered` creates an ordinary actor and registers it under an atom name; it does not create a supervisor and does not imply a supervision link. `spawn_registered_supervisor` creates a runtime-managed supervisor, registers it under an atom name, calls the required `Supervisor.init/1` implementation for the named supervisor implementation type, and returns a `supervisor_ref`; see **§15.4.8** and **§15.4.13**. `link`, `monitor`, and `demonitor` operate on already-running ordinary actors; see **§15.4.8.5–§15.4.8.7**.
+`spawn` creates an ordinary anonymous actor. Its behavior function must not contain `external_danger` sequences or call `dangerous_*` module functions; use `spawn_dangerous` for FFI worker actors (see [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) §4).
+
+`spawn_dangerous` creates an FFI worker actor whose behavior executes outbound foreign calls inside `sequence proc[external_danger] ... produces pure ... end`. It returns `dangerous_actor_ref`, requires `concurrency` at the call site, and must **not** be used from a sequence block that declares `external_danger`. Installing a worker with `spawn_dangerous` does not execute foreign calls; the worker executes them when it receives casts.
+
+`spawn_registered` creates an ordinary actor and registers it under an atom name; it does not create a supervisor and does not imply a supervision link. `spawn_registered_supervisor` creates a runtime-managed supervisor, registers it under an atom name, calls the required `Supervisor.init/1` implementation for the named supervisor implementation type, and returns a `supervisor_ref`; see **§15.4.8** and **§15.4.13**. `link`, `monitor`, and `demonitor` operate on already-running ordinary actors; see **§15.4.8.5–§15.4.8.7**.
 
 When `initial_state` contains a region handle, the handle is moved from `spawn` to the actor. The actor receives exclusive ownership of the region.
 
@@ -14895,7 +14903,7 @@ Outbound calls to C-compatible wrapper libraries are specified in [silica_ffi_wr
 
 - `dangerous_*` modules and `foreign c_wrapper` declarations
 - Explicit `wrapper_meta` sidecar references and link-time symbol validation
-- Cast-mediated FFI worker actors and the `external_danger` effect
+- Cast-mediated FFI worker actors, `spawn_dangerous`, `dangerous_actor_ref`, and the `external_danger` effect (install vs execute separation)
 - Two-layer string marshaling (Silica `string` in adapters; pointer-plus-length at the raw ABI boundary)
 - Prebuilt wrapper static libraries under `dangerous_exposure_source/`
 

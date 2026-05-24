@@ -31,6 +31,16 @@ void silica_ffi_arena_past_end(void) {
     base[262144] = 1;
 }
 
+void silica_ffi_sigill_probe(void) {
+#if defined(__aarch64__)
+    __asm__ volatile("udf #0" ::: "memory");
+#elif defined(__x86_64__)
+    __asm__ volatile("ud2" ::: "memory");
+#else
+    silica_ffi_null_deref();
+#endif
+}
+
 void silica_ffi_sigbus_probe(void) {
     char path[] = "/tmp/silica_sigbus_XXXXXX";
     int fd = mkstemp(path);
