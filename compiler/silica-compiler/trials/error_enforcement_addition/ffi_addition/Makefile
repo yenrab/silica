@@ -26,6 +26,7 @@ FAIL_CASES := \
 	module_addition/dangerous_missing_wrapper_meta \
 	module_addition/dangerous_wrapper_meta_outside_tree \
 	module_addition/dangerous_dependency_naming_fail_trial/app_uses_dangerous \
+	module_addition/app_spawn_dangerous_naming_fail \
 	error_app_sidecar_metadata/dangerous_sidecar_missing_file \
 	error_app_sidecar_metadata/dangerous_sidecar_missing_entry \
 	error_app_sidecar_metadata/dangerous_sidecar_missing_link_library \
@@ -50,7 +51,7 @@ LINK_FAIL_CASES := \
 ARCHIVE_MISSING_CASE := error_app_sidecar_metadata/dangerous_sidecar_missing_archive
 
 .DEFAULT_GOAL := integrate
-.PHONY: all integrate compile-fail-goldens link-fail archive-missing clean help
+.PHONY: all integrate compile-fail-goldens diff-fail-goldens link-fail archive-missing clean help
 
 all: integrate
 
@@ -150,6 +151,7 @@ archive-missing:
 
 compile-fail-goldens:
 	@$(MAKE) -C "$(FFI_SUCCESS_DIR)" fixtures
+	@echo "=== $(MSG_PREFIX)compile-fail-goldens: compile each case, write .cur_fail, diff .golden_fail ==="
 	@failed=0; ok=0; ko=0; \
 	for case in $(FAIL_CASES); do \
 		base=$$(basename "$$case"); \
@@ -202,10 +204,36 @@ compile-fail-goldens:
 		fi; \
 	done; \
 	printf '%d %d\n' "$$ok" "$$ko" > "$(THIS_DIR).integrate_compile_fail_counts"; \
+	echo "$(MSG_PREFIX)compile-fail-goldens: $$ok passed, $$ko failed (.cur_fail vs .golden_fail)"; \
+	exit $$failed
+
+diff-fail-goldens:
+	@echo "=== $(MSG_PREFIX)diff-fail-goldens: diff existing .cur_fail vs .golden_fail (no recompile) ==="
+	@failed=0; ok=0; ko=0; \
+	for case in $(FAIL_CASES); do \
+		golden="$(THIS_DIR)$$case.golden_fail"; \
+		cur="$(THIS_DIR)$$case.cur_fail"; \
+		if [ ! -f "$$golden" ]; then \
+			echo "❌❌ $(MSG_PREFIX)$$case: missing .golden_fail"; \
+			ko=$$((ko + 1)); failed=1; \
+		elif [ ! -f "$$cur" ]; then \
+			echo "❌❌ $(MSG_PREFIX)$$case: missing .cur_fail (run compile-fail-goldens or integrate first)"; \
+			ko=$$((ko + 1)); failed=1; \
+		elif diff -q "$$cur" "$$golden" > /dev/null 2>&1; then \
+			echo "✅✅ $(MSG_PREFIX)$$case (.cur_fail matches .golden_fail)"; \
+			ok=$$((ok + 1)); \
+		else \
+			echo "❌❌ $(MSG_PREFIX)$$case: .cur_fail differs from .golden_fail"; \
+			diff "$$cur" "$$golden" || true; \
+			ko=$$((ko + 1)); failed=1; \
+		fi; \
+	done; \
+	echo "$(MSG_PREFIX)diff-fail-goldens: $$ok passed, $$ko failed"; \
 	exit $$failed
 
 integrate: clean
 	@failed=0; \
+	echo "=== $(MSG_PREFIX)integrate: compile-fail goldens, link-fail, archive-missing ==="; \
 	$(MAKE) compile-fail-goldens || failed=1; \
 	$(MAKE) link-fail || failed=1; \
 	$(MAKE) archive-missing || failed=1; \
@@ -217,6 +245,7 @@ integrate: clean
 		fi; \
 	done; \
 	printf '%d %d\n' "$$ok" "$$ko" > "$(THIS_DIR).integrate_counts"; \
+	echo "$(MSG_PREFIX)integrate complete: $$ok passed, $$ko failed (.cur_fail/.golden_fail and link goldens)"; \
 	exit $$failed
 
 clean:
@@ -226,8 +255,16 @@ clean:
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
-	@echo "FFI error-enforcement trials"
-	@echo "============================"
+	@echo "FFI error-enforcement trials ($(THIS_DIR))"
+	@echo "================================================"
 	@echo "integrate runs compile-fail goldens, link-fail, and archive-missing cases."
+	@echo "  - Starts with clean (removes existing .cur_fail), recompiles each case,"
+	@echo "    writes fresh .cur_fail output, then diffs against .golden_fail."
+	@echo "  - Prints a final passed/failed summary line."
+	@echo "compile-fail-goldens recompiles FAIL_CASES and diffs .cur_fail vs .golden_fail."
+	@echo "diff-fail-goldens diffs existing .cur_fail vs .golden_fail without recompiling."
 	@echo "link-fail runs compile-then-link cases that must fail at Stage 3."
 	@echo "archive-missing runs compile failure when a referenced prebuilt archive is absent."
+	@echo ""
+	@echo "Note: trials/ffi_addition (parent) is the success-path harness (.scout goldens)."
+	@echo "      This directory is the error-path harness (.golden_fail goldens)."

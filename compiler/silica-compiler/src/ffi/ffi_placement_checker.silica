@@ -83,13 +83,19 @@ fn is_spawn_behavior_call(name: string) -> bool {
     base: string <- type_checker_core@user_call_base_function_name(name);
     case base == "spawn" of {
         true -> true;
-        false -> base == "spawn_linked"
+        false -> case base == "spawn_linked" of {
+            true -> true;
+            false -> base == "spawn_registered"
+        }
     }
 }
 
 fn is_spawn_dangerous_behavior_call(name: string) -> bool {
     base: string <- type_checker_core@user_call_base_function_name(name);
-    base == "spawn_dangerous"
+    case base == "spawn_dangerous" of {
+        true -> true;
+        false -> base == "spawn_dangerous_registered"
+    }
 }
 
 fn spawn_behavior_expr(call_expr: Expr) -> Expr {
@@ -426,7 +432,16 @@ fn collect_spawn_behavior_names(program: Program) -> ListSirString {
     collect_spawn_behavior_names_from_decls(program.declarations)
 }
 
+fn merge_sir_string_lists(acc: ListSirString, items: ListSirString) -> ListSirString {
+    case items.is_nil of {
+        true -> acc;
+        false -> merge_sir_string_lists(append_unique_sir_string(acc, items.head), items.tail)
+    }
+}
+
 fn collect_ffi_worker_names(program: Program) -> ListSirString {
     spawn_dangerous_names: ListSirString <- collect_spawn_dangerous_behavior_names_from_decls(program.declarations);
-    build_ffi_worker_names_loop(program.declarations, spawn_dangerous_names, sir_ast@nil_sir_strings())
+    spawn_behavior_names: ListSirString <- collect_spawn_behavior_names_from_decls(program.declarations);
+    merged_spawn_names: ListSirString <- merge_sir_string_lists(spawn_dangerous_names, spawn_behavior_names);
+    build_ffi_worker_names_loop(program.declarations, merged_spawn_names, sir_ast@nil_sir_strings())
 }

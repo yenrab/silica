@@ -48,3 +48,9 @@ Unifies **`sequence proc[mem(S)]`**, region APIs, and **`List[T, S]`**: why the 
 ## [ffi_wrappers_and_makefiles.md](./ffi_wrappers_and_makefiles.md)
 
 Hands-on guide for **outbound FFI**: C wrapper functions, `dangerous_exposure_source/` sidecar metadata, `dangerous_*` Silica wrapper modules, `external_danger` FFI worker actors, `W4001` warnings, and Makefile patterns for building archives, compiling Silica, linking, and running trials.
+
+---
+
+## [designing_apps_with_foreign_functions.md](./designing_apps_with_foreign_functions.md)
+
+App-design tutorial for engineers new to Silica who must use **foreign functions**: keep dangerous code concentrated in a few `dangerous_*` adapter and worker modules, route requests through cast-only FFI worker actors, supervise dangerous workers, and avoid spreading wrapper calls through business logic.

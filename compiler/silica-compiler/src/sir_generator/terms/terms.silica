@@ -342,6 +342,38 @@ fn supervisor_type_name_from_spawn_expr(context: TypeContext, expr: Expr) -> str
     }
 }
 
+fn lower_spawn_registered_expr(context: TypeContext, expr: Expr, in_body: bool, bound_name: string, bound_type: string, prim_name: string) -> SIRTerm {
+    ac_sr: int64 <- type_checker_expressions_actors@count_chain_args(expr);
+    case ac_sr == 3 of {
+        false -> sir_ast@dummy_sir_term();
+        true -> do
+            init_sr_e: Expr <- type_checker_expressions_actors@spawn_init_expr(expr);
+            beh_sr_e: Expr <- type_checker_expressions_actors@spawn_behavior_expr(expr);
+            name_sr_e: Expr <- spawn_call_third_arg_expr(expr);
+            case beh_sr_e.kind == 1 of {
+                false -> sir_ast@dummy_sir_term();
+                true -> do
+                    (beh_sr_found: bool, beh_sr_type: string) <- type_checker_core@lookup_symbol_found(context.env, beh_sr_e.name);
+                    case beh_sr_found of {
+                        false -> sir_ast@dummy_sir_term();
+                        true -> do
+                            state_sr: string <- type_checker_expressions_actors@parse_behavior_state_param_type(beh_sr_type);
+                            init_sr_sir: SIRTerm <- sir_subexpr_for_actor(context, init_sr_e, state_sr, in_body, bound_name, bound_type);
+                            beh_sr_label: string <- user_calls@qual_name(beh_sr_e.name);
+                            beh_sr_sir: SIRTerm <- SIRTerm { kind: 0, type_name: "fn_ptr", value: beh_sr_label, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+                            name_sr_sir: SIRTerm <- sir_subexpr_for_actor(context, name_sr_e, "atom", in_body, bound_name, bound_type);
+                            case prim_name == "spawn_dangerous_registered" of {
+                                true -> actor_calls@build_spawn_dangerous_registered_prim(init_sr_sir, beh_sr_sir, name_sr_sir);
+                                false -> actor_calls@build_spawn_registered_prim(init_sr_sir, beh_sr_sir, name_sr_sir)
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
 fn lower_spawn_registered_supervisor_expr(context: TypeContext, expr: Expr, in_body: bool, bound_name: string, bound_type: string) -> SIRTerm {
     init_srs_e: Expr <- actor_calls@actor_call_second_arg(expr);
     name_srs_e: Expr <- spawn_call_third_arg_expr(expr);
@@ -526,6 +558,10 @@ fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: str
                     end
                 }
             end;
+            false -> case ab == "spawn_registered" of {
+            true -> lower_spawn_registered_expr(context, expr, in_body, bound_name, bound_type, "spawn_registered");
+            false -> case ab == "spawn_dangerous_registered" of {
+            true -> lower_spawn_registered_expr(context, expr, in_body, bound_name, bound_type, "spawn_dangerous_registered");
             false -> case ab == "spawn_registered_supervisor" of {
             true -> lower_spawn_registered_supervisor_expr(context, expr, in_body, bound_name, bound_type);
         false -> case ab == "spawn_linked" of {
@@ -752,6 +788,8 @@ fn lower_actor_builtin_expr(context: TypeContext, expr: Expr, expected_type: str
                 }
                 }
             }
+        }
+        }
         }
         }
         }

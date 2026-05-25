@@ -143,7 +143,7 @@ fn module_uses_link_monitor_prims(sir_module: SIRModule) -> bool {
 }
 
 fn is_actor_prim(name: string) -> bool {
-    name == "spawn" or name == "spawn_dangerous" or name == "spawn_registered_supervisor" or name == "add_child" or name == "send" or name == "actor_call" or name == "actor_call_registered" or name == "actor_cast" or name == "actor_cast_registered" or name == "self"
+    name == "spawn" or name == "spawn_dangerous" or name == "spawn_registered" or name == "spawn_dangerous_registered" or name == "spawn_registered_supervisor" or name == "add_child" or name == "send" or name == "actor_call" or name == "actor_call_registered" or name == "actor_cast" or name == "actor_cast_registered" or name == "self"
         or name == "recv"
         or name == "link" or name == "monitor" or name == "demonitor" or name == "supervision_ingress_enqueue"
         or name == "supervision_wait_and_drain_one" or name == "child_table_first_ref"
@@ -371,6 +371,15 @@ fn emit_spawn(dest: string, term: SIRTerm) -> string {
     }
 }
 
+fn emit_spawn_registered(dest: string, term: SIRTerm, register_label: string) -> string {
+    save_name: string <- "    SUB SP, SP, #16\n    LDR X12, [X10, #8]\n    STR X12, [SP, #8]\n";
+    spawn_asm: string <- concat("    MOV X0, X11\n    LDR X1, [X10]\n    MOV W2, WZR\n", asm_bl("_silica_rt_actor_spawn"));
+    save_actor: string <- "    STR X0, [SP, #0]\n";
+    reg_tail: string <- concat(register_label, "\n    LDR X0, [SP, #0]\n    ADD SP, SP, #16\n");
+    reg: string <- concat("    LDR X1, [SP, #8]\n    BL ", reg_tail);
+    concat(concat(concat(concat(save_name, spawn_asm), save_actor), reg), mov_dest_from_x0_for_type(dest, term.type_name))
+}
+
 // Phase C runtime supervisor startup. The actor is created with a compiler-owned first-schedule
 // trampoline in X3 and no user behavior function. The trampoline calls init/1 exactly once and
 // materializes the returned child specs before _silica_rt_actor_spawn returns to user code.
@@ -501,6 +510,8 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     case term.name of {
         "spawn" -> emit_spawn(dest, term);
         "spawn_dangerous" -> emit_spawn(dest, term);
+        "spawn_registered" -> emit_spawn_registered(dest, term, "_silica_rt_register_actor_named");
+        "spawn_dangerous_registered" -> emit_spawn_registered(dest, term, "_silica_rt_register_dangerous_actor_named");
         "spawn_registered_supervisor" -> emit_spawn_registered_supervisor(dest, term);
         "spawn_linked" -> emit_spawn_linked(dest, term);
         "send" -> emit_send(dest, term);
