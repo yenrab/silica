@@ -3,6 +3,7 @@
 
 import subprocess
 import sys
+import os
 
 
 def main() -> int:
@@ -10,8 +11,9 @@ def main() -> int:
         print("usage: run_integration_expect_crash.py EXECUTABLE", file=sys.stderr)
         return 2
     exe = sys.argv[1]
+    cmd = exe if os.path.isabs(exe) else f"./{exe}"
     try:
-        result = subprocess.run([f"./{exe}"], capture_output=True, text=True, timeout=10)
+        result = subprocess.run([cmd], capture_output=True, text=True, timeout=10)
     except subprocess.TimeoutExpired:
         print(f"FAIL: {exe} timed out (expected crash)")
         return 1

@@ -6,6 +6,7 @@ APP_EXECUTABLES := \
 	dangerous_guarded_arena_bounds_fault \
 	dangerous_guarded_sigbus_fault \
 	dangerous_guarded_sigill_fault \
+	dangerous_guarded_sigfpe_fault \
 	dangerous_handler_altstack_stack_overflow_smoke \
 	dangerous_unguarded_null_deref_abort
 
@@ -61,7 +62,7 @@ integrate: fixtures unguarded_probe
 		echo "Assembling $$sams..."; \
 		clang $(ASFLAGS) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
 	done; \
-	for trial in dangerous_guarded_null_deref_fault dangerous_guarded_arena_bounds_fault dangerous_guarded_sigbus_fault dangerous_guarded_sigill_fault dangerous_handler_altstack_stack_overflow_smoke; do \
+	for trial in dangerous_guarded_null_deref_fault dangerous_guarded_arena_bounds_fault dangerous_guarded_sigbus_fault dangerous_guarded_sigill_fault dangerous_guarded_sigfpe_fault dangerous_handler_altstack_stack_overflow_smoke; do \
 		[ "$$failed" -ne 0 ] && break; \
 		runtime_obj=""; [ -f __silica_runtime.o ] && runtime_obj=__silica_runtime.o; \
 		if test -x "$(RUST_LLD)"; then \

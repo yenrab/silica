@@ -21,6 +21,9 @@ MACOS_SDK := $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
 LDFLAGS_rust-lld := -arch $(ARCH) -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
+# Link-fail stderr shape differs between rust-lld and Apple ld (via clang); match other trials' linker choice.
+LINK_FAIL_GOLDEN_SUFFIX := $(shell test -x "$(RUST_LLD)" && echo .rust-lld || echo .clang)
+
 FAIL_CASES := \
 	module_addition/dangerous_export_raw \
 	module_addition/dangerous_missing_wrapper_meta \
@@ -63,7 +66,7 @@ link-fail:
 	@failed=0; ok=0; ko=0; \
 	for case in $(LINK_FAIL_CASES); do \
 		base=$$(basename "$$case"); \
-		golden="$(THIS_DIR)$$case.golden_link_fail"; \
+		golden="$(THIS_DIR)$$case.golden_link_fail$(LINK_FAIL_GOLDEN_SUFFIX)"; \
 		cur="$(THIS_DIR)$$case.cur_link_fail"; \
 		cur_norm="$$cur.norm"; \
 		golden_norm="$$golden.norm"; \
@@ -103,12 +106,12 @@ link-fail:
 		if [ "$$link_st" -eq 0 ]; then \
 			echo "❌❌ $(MSG_PREFIX)$$case: expected link failure"; cat "$$cur"; ko=$$((ko + 1)); failed=1; \
 		elif [ ! -f "$$golden" ]; then \
-			echo "❌❌ $(MSG_PREFIX)$$case: missing .golden_link_fail"; ko=$$((ko + 1)); failed=1; \
+			echo "❌❌ $(MSG_PREFIX)$$case: missing link golden $$(basename "$$golden")"; ko=$$((ko + 1)); failed=1; \
 		else \
 			sed -E 's/\(symbol ([^)]+)\+0x[0-9A-Fa-f]+\)/(symbol \1+0xADDR)/g' "$$cur" > "$$cur_norm"; \
 			sed -E 's/\(symbol ([^)]+)\+0x[0-9A-Fa-f]+\)/(symbol \1+0xADDR)/g' "$$golden" > "$$golden_norm"; \
 			if ! diff -q "$$cur_norm" "$$golden_norm" > /dev/null 2>&1; then \
-				echo "❌❌ $(MSG_PREFIX)$$case: .cur_link_fail differs from .golden_link_fail"; \
+				echo "❌❌ $(MSG_PREFIX)$$case: .cur_link_fail differs from $$(basename "$$golden")"; \
 				diff "$$cur_norm" "$$golden_norm" || true; \
 				ko=$$((ko + 1)); failed=1; \
 			else \
@@ -267,6 +270,7 @@ help:
 	@echo "compile-fail-goldens recompiles FAIL_CASES and diffs .cur_fail vs .golden_fail."
 	@echo "diff-fail-goldens diffs existing .cur_fail vs .golden_fail without recompiling."
 	@echo "link-fail runs compile-then-link cases that must fail at Stage 3."
+	@echo "  Link stderr is matched per linker: .golden_link_fail.clang or .golden_link_fail.rust-lld."
 	@echo "archive-missing runs compile failure when a referenced prebuilt archive is absent."
 	@echo ""
 	@echo "Note: trials/ffi_addition (parent) is the success-path harness (.scout goldens)."

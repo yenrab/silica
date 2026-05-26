@@ -77,7 +77,7 @@ Compile/link **failure** goldens for Phase 9 live under `error_enforcement_addit
 | Failure | Golden |
 | ------- | ------ |
 | Missing prebuilt archive at compile time | `error_app_sidecar_metadata/dangerous_sidecar_missing_archive` |
-| Missing foreign symbol at link time | `error_app_sidecar_metadata/dangerous_missing_foreign_symbol_at_link` |
+| Missing foreign symbol at link time | `error_app_sidecar_metadata/dangerous_missing_foreign_symbol_at_link` (paired goldens: `.golden_link_fail.clang` vs `.golden_link_fail.rust-lld`, chosen like other trials when `rust-lld` exists) |
 
 ## Running the full success-path suite
 

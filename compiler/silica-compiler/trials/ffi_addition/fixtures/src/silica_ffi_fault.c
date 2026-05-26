@@ -1,5 +1,6 @@
 #include <fcntl.h>
 #include <stdint.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,10 @@ void silica_ffi_sigill_probe(void) {
 #else
     silica_ffi_null_deref();
 #endif
+}
+
+void silica_ffi_sigfpe_probe(void) {
+    raise(SIGFPE);
 }
 
 void silica_ffi_sigbus_probe(void) {
