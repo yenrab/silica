@@ -32,8 +32,12 @@ header for that file type (see the appendix in `LICENSE`).
 4. **Continuous Integration** — Execution of all CI trials without regression are required before submition.
    Specifically, before a pull request is submitted, `make integrate` (run from
    `compiler/silica-compiler/trials/`) must pass without updating the golden
-   files for any trial other than the one being added. The only exception to
-   this rule requires explicit approval of the community leaders.
+   files for any trial other than the one being added. 
+   If the addition or bug fix you are suggesting doesn't change any golden .scout files but does change existing .ascomp golden files, you are required to indicate that:
+   1. the assembly in the .sams files are better than that in the .ascomp files, or
+   2. the change found in the .sams files are a required change caused by the addition you are suggesting and what other approaches that leave the assembly untouched you have evaluated and why they are worse.
+   The only exception to
+   this .ascomp change rule requires explicit approval of the community leaders.
 
 ## Development workflow (summary)
 

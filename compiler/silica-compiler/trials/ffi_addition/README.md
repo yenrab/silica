@@ -13,7 +13,9 @@ ffi_addition/
   app_sidecar_legacy_math_add/          # runnable app: sidecar metadata + legacy math add
   app_cast_worker_legacy_add/           # runnable app: spawn_dangerous worker + external_danger behavior
   app_ffi_result_cast_add/              # runnable app: FFI result cast with tainted int64
-  app_foreign_abi_valid/                # runnable apps: Silica-side ABI declarations
+  app_foreign_abi_valid/                # runnable apps: legacy Silica-side ABI smoke tests
+  app_foreign_abi_types_e2e/            # runtime link + guarded worker for libsilica_abi_types.a
+  abi_addition/                         # compile-only ABI success trials (spec §5–§9 data shapes)
   app_e2e_scalar_string_echo/           # runnable apps: scalar add + string echo e2e
   module_addition/                      # compile-only module naming trial (phase 3)
   common_app.mk                         # shared integrate recipe for app_* trials
@@ -37,6 +39,8 @@ Each `app_*` directory is a self-contained runnable program (or small set of pro
 | `app_cast_worker_legacy_add` | `spawn_dangerous` + `external_danger` worker behavior; `dangerous_legacy_stub@add` |
 | `app_ffi_result_cast_add` | Tainted int64 delivered by FFI result cast inside worker |
 | `app_foreign_abi_valid` | Scalar and net-port ABI declarations compile and run |
+| `app_foreign_abi_types_e2e` | Runtime link + cast/worker for `libsilica_abi_types.a` (int64/boolean/record/tagged_result decls; guarded `:foreign_fault` golden) |
+| `abi_addition/` | Compile-success matrix for documented C ABI data shapes (§5.4–§9): integers, floats, boolean, inline records, tagged results, string ptr+len and two-layer adapters |
 | `app_e2e_scalar_string_echo` | Full cast/worker e2e: int64 add and string echo through C wrappers |
 | `app_legacy_math_add_guarded` | Phase 11: single `silica_legacy_math_add_int64` call through guarded runtime boundary |
 | `app_legacy_math_add_twice` | Phase 11: two sequential guarded legacy-math calls (reentrant depth reset) |

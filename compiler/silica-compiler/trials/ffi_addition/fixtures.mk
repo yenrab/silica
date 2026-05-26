@@ -17,17 +17,19 @@ FFI_LEGACY_OBJ := $(FFI_BUILD_DIR)/silica_legacy_math.o
 FFI_FAULT_OBJ := $(FFI_BUILD_DIR)/silica_ffi_fault.o
 FFI_TEXT_OBJ := $(FFI_BUILD_DIR)/silica_text.o
 FFI_NET_OBJ := $(FFI_BUILD_DIR)/silica_net.o
+FFI_ABI_TYPES_OBJ := $(FFI_BUILD_DIR)/silica_abi_types.o
 
 FFI_LEGACY_ARCHIVE := $(FFI_LIB_DIR)/libsilica_legacy_math.a
 FFI_TEXT_ARCHIVE := $(FFI_LIB_DIR)/libsilica_text.a
 FFI_NET_ARCHIVE := $(FFI_LIB_DIR)/libsilica_net.a
+FFI_ABI_TYPES_ARCHIVE := $(FFI_LIB_DIR)/libsilica_abi_types.a
 
-FFI_WRAPPER_ARCHIVES := $(FFI_LEGACY_ARCHIVE) $(FFI_TEXT_ARCHIVE) $(FFI_NET_ARCHIVE)
+FFI_WRAPPER_ARCHIVES := $(FFI_LEGACY_ARCHIVE) $(FFI_TEXT_ARCHIVE) $(FFI_NET_ARCHIVE) $(FFI_ABI_TYPES_ARCHIVE)
 
 .PHONY: ffi-wrapper-archives
 
 ffi-wrapper-archives: $(FFI_WRAPPER_ARCHIVES)
-	@test -f "$(FFI_LEGACY_ARCHIVE)" && test -f "$(FFI_TEXT_ARCHIVE)" && test -f "$(FFI_NET_ARCHIVE)"
+	@test -f "$(FFI_LEGACY_ARCHIVE)" && test -f "$(FFI_TEXT_ARCHIVE)" && test -f "$(FFI_NET_ARCHIVE)" && test -f "$(FFI_ABI_TYPES_ARCHIVE)"
 
 $(FFI_BUILD_DIR):
 	@mkdir -p $(FFI_BUILD_DIR)
@@ -44,6 +46,9 @@ $(FFI_TEXT_OBJ): $(FFI_SRC_DIR)/silica_text.c | $(FFI_BUILD_DIR)
 $(FFI_NET_OBJ): $(FFI_SRC_DIR)/silica_net.c | $(FFI_BUILD_DIR)
 	$(FFI_CC) $(FFI_CFLAGS) -c $< -o $@
 
+$(FFI_ABI_TYPES_OBJ): $(FFI_SRC_DIR)/silica_abi_types.c | $(FFI_BUILD_DIR)
+	$(FFI_CC) $(FFI_CFLAGS) -c $< -o $@
+
 $(FFI_FAULT_OBJ): $(FFI_SRC_DIR)/silica_ffi_fault.c | $(FFI_BUILD_DIR)
 	$(FFI_CC) $(FFI_CFLAGS) -c $< -o $@
 
@@ -54,4 +59,7 @@ $(FFI_TEXT_ARCHIVE): $(FFI_TEXT_OBJ) | $(FFI_LIB_DIR)
 	ar rcs $@ $^
 
 $(FFI_NET_ARCHIVE): $(FFI_NET_OBJ) | $(FFI_LIB_DIR)
+	ar rcs $@ $^
+
+$(FFI_ABI_TYPES_ARCHIVE): $(FFI_ABI_TYPES_OBJ) | $(FFI_LIB_DIR)
 	ar rcs $@ $^

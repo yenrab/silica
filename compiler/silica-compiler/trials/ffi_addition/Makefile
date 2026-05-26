@@ -27,6 +27,7 @@ APP_SIDECAR_DIR := app_sidecar_legacy_math_add
 APP_CAST_WORKER_DIR := app_cast_worker_legacy_add
 APP_FFI_RESULT_CAST_DIR := app_ffi_result_cast_add
 APP_FOREIGN_ABI_DIR := app_foreign_abi_valid
+APP_FOREIGN_ABI_TYPES_E2E_DIR := app_foreign_abi_types_e2e
 APP_E2E_DIR := app_e2e_scalar_string_echo
 APP_GUARDED_ONCE_DIR := app_legacy_math_add_guarded
 APP_GUARDED_TWICE_DIR := app_legacy_math_add_twice
@@ -38,6 +39,7 @@ APP_DIRS := \
 	$(APP_CAST_WORKER_DIR) \
 	$(APP_FFI_RESULT_CAST_DIR) \
 	$(APP_FOREIGN_ABI_DIR) \
+	$(APP_FOREIGN_ABI_TYPES_E2E_DIR) \
 	$(APP_E2E_DIR) \
 	$(APP_GUARDED_ONCE_DIR) \
 	$(APP_GUARDED_TWICE_DIR) \
@@ -61,7 +63,7 @@ SILICA_COMPILER := $(abspath $(THIS_DIR)../../src/silica-compiler)
 MODULE_VALID_FILE := module_addition/dangerous_naming_valid.silica
 
 .PHONY: all integrate fixtures phase-0 phase-a phase-3 phase-4 phase-5 phase-6 phase-7 phase-8 phase-9 phase-11 phase-12 phase-13 \
-	ffi-wrapper-archives module-valid verify-symbols clean clean-fixtures clean-apps help
+	ffi-wrapper-archives module-valid abi-valid verify-symbols clean clean-fixtures clean-apps help
 
 .DEFAULT_GOAL := phase-0
 
@@ -89,7 +91,7 @@ fixtures: ffi-wrapper-archives
 verify-symbols: fixtures
 	@test -n "$(NM)" || { echo "FAIL: neither llvm-nm nor nm found"; exit 1; }
 	@failed=0; \
-	for archive in "$(LEGACY_ARCHIVE)" "$(TEXT_ARCHIVE)" "$(NET_ARCHIVE)"; do \
+	for archive in "$(LEGACY_ARCHIVE)" "$(TEXT_ARCHIVE)" "$(NET_ARCHIVE)" "$(FFI_ABI_TYPES_ARCHIVE)"; do \
 		echo "Checking symbols in $$archive..."; \
 		syms=$$($(NM) -g "$$archive" 2>/dev/null || $(NM) "$$archive"); \
 		case "$$archive" in \
@@ -110,6 +112,12 @@ verify-symbols: fixtures
 					echo "  ✅ silica_net_parse_port"; \
 				else \
 					echo "  ❌ missing silica_net_parse_port"; failed=1; \
+				fi ;; \
+			*libsilica_abi_types.a) \
+				if echo "$$syms" | grep -Eq '(_?)silica_abi_i64_identity($$|[[:space:]])'; then \
+					echo "  ✅ silica_abi_i64_identity"; \
+				else \
+					echo "  ❌ missing silica_abi_i64_identity"; failed=1; \
 				fi ;; \
 		esac; \
 	done; \
@@ -142,6 +150,10 @@ module-valid: $(SILICA_COMPILER)
 phase-3: module-valid
 	@echo "✅ ffi_addition phase-3 complete"
 
+abi-valid: $(SILICA_COMPILER)
+	@$(MAKE) -C "$(THIS_DIR)abi_addition" integrate
+	@echo "✅ ffi_addition abi-valid complete (abi_addition/)"
+
 phase-4: phase-3
 	@$(MAKE) -C "$(THIS_DIR)$(APP_SIDECAR_DIR)" integrate
 	@echo "✅ ffi_addition phase-4 complete ($(APP_SIDECAR_DIR))"
@@ -156,7 +168,9 @@ phase-6: phase-5
 
 phase-7: phase-6
 	@$(MAKE) -C "$(THIS_DIR)$(APP_FOREIGN_ABI_DIR)" integrate
-	@echo "✅ ffi_addition phase-7 complete ($(APP_FOREIGN_ABI_DIR))"
+	@$(MAKE) abi-valid
+	@$(MAKE) -C "$(THIS_DIR)$(APP_FOREIGN_ABI_TYPES_E2E_DIR)" integrate
+	@echo "✅ ffi_addition phase-7 complete ($(APP_FOREIGN_ABI_DIR), abi_addition/, $(APP_FOREIGN_ABI_TYPES_E2E_DIR))"
 
 phase-8: phase-7 fixtures
 	@test -x "$(SILICA_COMPILER)" || { echo "FAIL: build compiler first (make -C compiler/silica-compiler/src build)"; exit 1; }
@@ -197,10 +211,12 @@ phase-a: phase-0
 
 clean-fixtures:
 	@rm -rf "$(BUILD_DIR)"
-	@rm -f "$(LEGACY_ARCHIVE)" "$(TEXT_ARCHIVE)" "$(NET_ARCHIVE)"
+	@rm -f "$(LEGACY_ARCHIVE)" "$(TEXT_ARCHIVE)" "$(NET_ARCHIVE)" "$(FFI_ABI_TYPES_ARCHIVE)"
 
 clean-apps:
 	@for dir in $(APP_DIRS); do $(MAKE) -C "$(THIS_DIR)$$dir" clean; done
+	@$(MAKE) -C "$(THIS_DIR)abi_addition" clean
+	@$(MAKE) -C "$(THIS_DIR)$(APP_FOREIGN_ABI_TYPES_E2E_DIR)" clean
 
 clean: clean-fixtures clean-apps
 	@rm -f .integrate_counts
@@ -215,6 +231,8 @@ help:
 	@echo "  $(APP_CAST_WORKER_DIR)  - spawn_dangerous worker with external_danger behavior"
 	@echo "  $(APP_FFI_RESULT_CAST_DIR) - FFI result cast delivers external-danger-touched int64"
 	@echo "  $(APP_FOREIGN_ABI_DIR)  - Silica-side ABI declarations compile and run"
+	@echo "  abi_addition/           - compile-success trials for documented C ABI data shapes"
+	@echo "  $(APP_FOREIGN_ABI_TYPES_E2E_DIR) - int64/boolean/record-by-value runtime ABI e2e"
 	@echo "  $(APP_E2E_DIR) - scalar add and string echo end-to-end foreign calls"
 	@echo ""
 	@echo "Targets:"
@@ -227,5 +245,5 @@ help:
 	@echo "  phase-11    - Guarded FFI boundary app trials (legacy math add via enter/exit wrapper)"
 	@echo "  phase-12    - Per-actor FFI arena app trials (string echo in/out via arena bump)"
 	@echo "  (compile/link failure goldens: error_enforcement_addition/ffi_addition integrate)"
-	@echo "  fixtures    - Build libsilica_legacy_math.a, libsilica_text.a, and libsilica_net.a"
+	@echo "  fixtures    - Build libsilica_legacy_math.a, libsilica_text.a, libsilica_net.a, libsilica_abi_types.a"
 	@echo "  clean       - Remove fixture and app trial build artifacts"

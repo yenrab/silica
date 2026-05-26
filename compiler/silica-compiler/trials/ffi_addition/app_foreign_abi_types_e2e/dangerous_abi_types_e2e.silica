@@ -1,0 +1,46 @@
+module dangerous_abi_types_e2e;
+
+wrapper_meta "dangerous_exposure_source/abi/silica_abi_types_wrapper.meta";
+
+foreign c_wrapper "silica_abi_i64_identity"
+fn i64_identity(value: int64) -> int64;
+
+foreign c_wrapper "silica_abi_bool_identity"
+fn bool_identity(value: boolean) -> boolean;
+
+foreign c_wrapper "silica_abi_i64_pair_sum"
+fn pair_sum(pair: { left: int64, right: int64 }) -> int64;
+
+foreign c_wrapper "silica_abi_i64_result_ok"
+fn result_ok(input: int64) -> { tag: int64, value: int64, error_code: int64 };
+
+fn result_sink(msg: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        print_int64(msg);
+        println("");
+        println("done")
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn ffi_worker(msg: int64, reply_to: actor_ref) -> (:no_reply, actor_ref) {
+    sequence proc[external_danger, concurrency]
+        sum: int64 <- 10 + 32;
+        echoed: int64 <- i64_identity(sum);
+        _: boolean <- cast(reply_to, echoed impl ActorMessage {})
+    produces
+        pure (:no_reply, reply_to)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        sink_ref: actor_ref <- spawn(0, result_sink);
+        worker_ref: dangerous_actor_ref <- spawn_dangerous(sink_ref, ffi_worker);
+        _: boolean <- cast(worker_ref, 0 impl ActorMessage {});
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}
