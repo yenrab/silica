@@ -20,12 +20,18 @@
 // #272 sync_failure_reported (0/1; root cap-breach reports synchronously, later thread exit skips duplicate).
 // Node size 88 B: payload 80 B (same row layout as e3a) then next ptr @ +80 (0 = end).
 // Offsets in row payload: +0 child_ref, +8 id atom, +16 agent_type, +24 start.0, +32 start.1, +40 restart atom,
-// +48 shutdown i64, +56 exit_done / sync, +64 window_start_t, +72 supervisor_start_trampoline (0 for worker).
+// +48 shutdown i64, +56 exit_done / sync, +64 flavor atom (:plain | :dangerous), +72 supervisor_start_trampoline (0 for worker).
 // Phase E e3f tombstone: child_ref==0 means inactive; len stays high-water for :rest_for_one ordering.
 
 use atom_table;
+use prims_list;
 
 export emit_child_table_runtime_asm/1;
+
+// Spine link offset for init/1 static List[child_spec] chunks; must match prims_list chunk_data_bytes.
+fn child_spec_init_list_chunk_data_bytes() -> int64 {
+    prims_list@chunk_data_bytes("{ id: atom, agent_type: atom, initial_state: int64, behavior: fn, restart: atom, shutdown: int64, flavor: atom }")
+}
 
 // Atoms are int64 indices (§4.1.7); strcmp on row/ACB atom fields was never valid.
 // e4b: row.restart dispatch over (perm, trans). x0 = restart atom, x28 = reason_tag (0=:normal, !=0=abnormal).
@@ -167,18 +173,109 @@ Lct_ens_fail:
 "
 }
 
+fn child_table_rt_spawn_child_row_by_flavor_asm(danger_idx: int64) -> string {
+    case danger_idx < 0 of {
+        true -> "	.globl	_silica_rt_supervisor_spawn_child_row_by_flavor
+	.p2align	2
+_silica_rt_supervisor_spawn_child_row_by_flavor:
+	.cfi_startproc
+	stp	x22, x21, [sp, #-64]!
+	stp	x20, x19, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	add	x29, sp, #32
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x0, [x19, #24]
+	ldr	x1, [x19, #32]
+	ldr	x2, [x19, #16]
+	mov	x3, x19
+	ldr	x4, [x19, #72]
+	bl	_silica_rt_actor_spawn_linked
+	mov	x21, x0
+	str	x20, [x21, #192]
+	str	x21, [x19]
+	str	xzr, [x19, #56]
+	mov	x0, x21
+	ldr	x1, [x19, #8]
+	bl	_silica_rt_register_actor_named
+	mov	x0, x21
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #64
+	ret
+	.cfi_endproc
+";
+        false -> do
+            danger_atom: string <- atom_table@int64_to_decimal_string(danger_idx);
+            concat(concat(concat(concat("	.globl	_silica_rt_supervisor_spawn_child_row_by_flavor
+	.p2align	2
+_silica_rt_supervisor_spawn_child_row_by_flavor:
+	.cfi_startproc
+	stp	x22, x21, [sp, #-64]!
+	stp	x20, x19, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	add	x29, sp, #32
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x9, [x19, #64]
+	cmp	x9, #", danger_atom), "
+	b.eq	Lsscr_spawn_dangerous
+	ldr	x0, [x19, #24]
+	ldr	x1, [x19, #32]
+	ldr	x2, [x19, #16]
+	mov	x3, x19
+	ldr	x4, [x19, #72]
+	bl	_silica_rt_actor_spawn_linked
+	b	Lsscr_spawn_done
+Lsscr_spawn_dangerous:
+	ldr	x0, [x19, #24]
+	ldr	x1, [x19, #32]
+	ldr	x2, [x19, #16]
+	mov	x3, x19
+	ldr	x4, [x19, #72]
+	bl	_silica_rt_actor_spawn_dangerous_linked
+Lsscr_spawn_done:
+	mov	x21, x0
+	str	x20, [x21, #192]
+	str	x21, [x19]
+	str	xzr, [x19, #56]
+	mov	x0, x21
+	ldr	x1, [x19, #8]
+	ldr	x9, [x19, #64]
+	cmp	x9, #"), danger_atom), "
+	b.eq	Lsscr_register_dangerous
+	bl	_silica_rt_register_actor_named
+	b	Lsscr_register_done
+Lsscr_register_dangerous:
+	bl	_silica_rt_register_dangerous_actor_named
+	mov	x0, x21
+	ldr	x1, [x19, #8]
+	bl	_silica_rt_register_actor_named
+Lsscr_register_done:
+	mov	x0, x21
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #64
+	ret
+	.cfi_endproc
+")
+        end;
+    }
+}
+
 // Phase E e3b: _silica_rt_supervisor_materialize_init_children
 // X0=ACB*, X1=tuple_ptr (init return: flags record at +0..+23, children list head at +24).
-// Walks the list-literal handle of child_spec records (visible payload 48 B plus hidden
-// supervisor_start_trampoline at +48 in each child_spec element).
-// Payload layout matches emitter value-flat record: id@0, agent@8, start@(16,24), restart@32, shutdown@40.
+// Walks the list-literal handle of child_spec records (visible payload 56 B plus hidden
+// supervisor_start_trampoline at +56 in each child_spec element).
+// Payload layout matches emitter value-flat record: id@0, agent@8, start@(16,24), restart@32, shutdown@40, flavor@48.
 // For each child_spec: spawn_linked(start.0, start.1, agent_type, row_ptr), append a linked row node (88 B; 80 B payload).
 // Stores strategy atom, allowed_restart_count, and restarts_time_frame at ACB#296/#304/#312 for
 // restart strategy dispatch (e3d) and frequency cap (e3e). Current record emission returns a pointer
 // to the supervisor_flags record in tuple slot 0 and the child list in slot 24; keep a flat fallback
 // for older generated tuple shapes where slot 0 is the strategy atom directly.
-fn child_table_rt_asm_chunk_1() -> string {
-    "	.globl	_silica_rt_supervisor_materialize_init_children
+fn child_table_rt_asm_chunk_1(danger_idx: int64, list_chunk_bytes: int64) -> string {
+    do
+    pre: string <- "	.globl	_silica_rt_supervisor_materialize_init_children
 	.p2align	2
 _silica_rt_supervisor_materialize_init_children:
 	.cfi_startproc
@@ -252,31 +349,17 @@ Lmat_walk_row:
 	sub	x10, x10, #1
 	b	Lmat_walk_row
 Lmat_walk_row_done:
-	mov	x0, x22
-	mov	x1, x23
-	mov	x2, x24
-	mov	x3, x28
-	ldr	x4, [x15, #48]
-	bl	_silica_rt_actor_spawn_linked
-	str	x19, [x0, #192]
-	str	x0, [x28]
-	str	x25, [x28, #8]
-	str	x24, [x28, #16]
-	str	x22, [x28, #24]
-	str	x23, [x28, #32]
-	str	x26, [x28, #40]
-	str	x27, [x28, #48]
-	str	xzr, [x28, #56]
-	str	xzr, [x28, #64]
-	ldr	x9, [x15, #48]
-	str	x9, [x28, #72]
-	ldr	x0, [x28]
-	ldr	x1, [x28, #8]
-	bl	_silica_rt_register_actor_named
-	ldr	x9, [x19, #264]
+";
+    post: string <- concat("    str xzr, [x28]\n    str x25, [x28, #8]\n    str x24, [x28, #16]\n    str x22, [x28, #24]\n    str x23, [x28, #32]\n    str x26, [x28, #40]\n    str x27, [x28, #48]\n    str xzr, [x28, #56]\n    ldr x9, [x15, #48]\n    str x9, [x28, #64]\n    ldr x9, [x15, #56]\n    str x9, [x28, #72]\n", case danger_idx < 0 of {
+        true -> "    mov x0, x22\n    mov x1, x23\n    mov x2, x24\n    mov x3, x28\n    ldr x4, [x28, #72]\n    bl _silica_rt_actor_spawn_linked\n    str x19, [x0, #192]\n    str x0, [x28]\n    str xzr, [x28, #56]\n    ldr x0, [x28]\n    ldr x1, [x28, #8]\n    bl _silica_rt_register_actor_named\n";
+        false -> concat(concat("    ldr x9, [x28, #64]\n    cmp x9, #", atom_table@int64_to_decimal_string(danger_idx)), "\n    b.eq Lmat_row_spawn_dangerous\n    mov x0, x22\n    mov x1, x23\n    mov x2, x24\n    mov x3, x28\n    ldr x4, [x28, #72]\n    bl _silica_rt_actor_spawn_linked\n    str x19, [x0, #192]\n    str x0, [x28]\n    str xzr, [x28, #56]\n    ldr x0, [x28]\n    ldr x1, [x28, #8]\n    bl _silica_rt_register_actor_named\n    b Lmat_row_spawn_done\nLmat_row_spawn_dangerous:\n    mov x0, x28\n    mov x1, x19\n    bl _silica_rt_supervisor_spawn_child_row_by_flavor\nLmat_row_spawn_done:\n")
+    });
+    list_chunk_s: string <- atom_table@int64_to_decimal_string(list_chunk_bytes);
+    tail_pre: string <- "	ldr	x9, [x19, #264]
 	add	x9, x9, #1
 	str	x9, [x19, #264]
-	ldr	x21, [x21, #56]
+	ldr	x21, [x21, #";
+    tail_post: string <- "]
 	mov	x14, #0
 	sub	x20, x20, #1
 	b	Lmat_loop
@@ -289,20 +372,24 @@ Lmat_done:
 	ldp	x28, x27, [sp], #96
 	ret
 	.cfi_endproc
-"
+";
+    tail: string <- concat(concat(tail_pre, list_chunk_s), tail_post);
+    concat(concat(pre, post), tail)
+    end
 }
 
 // Phase E e3b2: _silica_rt_supervisor_start_child
-// X0 = child_spec record pointer (value-flat 48 B: id@+0, agent_type@+8, start.0@+16, start.1@+24, restart@+32, shutdown@+40;
-// hidden supervisor_start_trampoline@+48).
+// X0 = child_spec record pointer (value-flat 56 B: id@+0, agent_type@+8, start.0@+16, start.1@+24, restart@+32, shutdown@+40,
+// flavor@+48; hidden supervisor_start_trampoline@+56).
 // Layout matches `_silica_rt_supervisor_materialize_init_children` (cons payload) so the compiler can build a single
 // stack record and pass it to either path. (Earlier comment claimed +40/+48 — that 72 B layout never matched the
 // emitter's value-flat record_make output; e4b corrects this to the canonical +32/+40 used elsewhere.)
 // Reads current-actor TLS for supervisor ACB. spawn_linked(start.0, start.1, agent_type, row_ptr).
 // Reuses the first e3f tombstone row (child_ref==0) or appends a linked row node (88 B) to the child table.
 // Returns actor_ref (new child) in X0.
-fn child_table_rt_asm_chunk_2() -> string {
-    "	.globl	_silica_rt_supervisor_start_child
+fn child_table_rt_asm_chunk_2(danger_idx: int64) -> string {
+    do
+    pre: string <- "	.globl	_silica_rt_supervisor_start_child
 	.p2align	2
 _silica_rt_supervisor_start_child:
 	.cfi_startproc
@@ -376,28 +463,14 @@ Lsc_append_at_row:
 Lsc_use_reuse_row:
 	mov	x28, xzr
 Lsc_post_row:
-	mov	x0, x23
-	mov	x1, x24
-	mov	x2, x22
-	mov	x3, x27
-	ldr	x4, [x20, #48]
+	ldr	x4, [x20, #56]
 	str	x4, [x27, #72]
-	bl	_silica_rt_actor_spawn_linked
-	str	x19, [x0, #192]
-	mov	x20, x0
-	str	x20, [x27]
-	str	x21, [x27, #8]
-	str	x22, [x27, #16]
-	str	x23, [x27, #24]
-	str	x24, [x27, #32]
-	str	x25, [x27, #40]
-	str	x26, [x27, #48]
-	str	xzr, [x27, #56]
-	str	xzr, [x27, #64]
-	ldr	x0, [x27]
-	ldr	x1, [x27, #8]
-	bl	_silica_rt_register_actor_named
-	cbz	x28, Lsc_done
+";
+    post: string <- concat("    ldr x9, [x20, #48]\n    str xzr, [x27]\n    str x21, [x27, #8]\n    str x22, [x27, #16]\n    str x23, [x27, #24]\n    str x24, [x27, #32]\n    str x25, [x27, #40]\n    str x26, [x27, #48]\n    str xzr, [x27, #56]\n    str x9, [x27, #64]\n", case danger_idx < 0 of {
+        true -> "    mov x0, x23\n    mov x1, x24\n    mov x2, x22\n    mov x3, x27\n    ldr x4, [x27, #72]\n    bl _silica_rt_actor_spawn_linked\n    str x19, [x0, #192]\n    mov x20, x0\n    str x20, [x27]\n    str xzr, [x27, #56]\n    ldr x0, [x27]\n    ldr x1, [x27, #8]\n    bl _silica_rt_register_actor_named\n";
+        false -> concat(concat("    ldr x9, [x27, #64]\n    cmp x9, #", atom_table@int64_to_decimal_string(danger_idx)), "\n    b.eq Lsc_row_spawn_dangerous\n    mov x0, x23\n    mov x1, x24\n    mov x2, x22\n    mov x3, x27\n    ldr x4, [x27, #72]\n    bl _silica_rt_actor_spawn_linked\n    str x19, [x0, #192]\n    mov x20, x0\n    str x20, [x27]\n    str xzr, [x27, #56]\n    ldr x0, [x27]\n    ldr x1, [x27, #8]\n    bl _silica_rt_register_actor_named\n    b Lsc_row_spawn_done\nLsc_row_spawn_dangerous:\n    mov x0, x27\n    mov x1, x19\n    bl _silica_rt_supervisor_spawn_child_row_by_flavor\n    mov x20, x0\nLsc_row_spawn_done:\n")
+    });
+    tail: string <- "	cbz	x28, Lsc_done
 	ldr	x9, [x19, #264]
 	add	x9, x9, #1
 	str	x9, [x19, #264]
@@ -411,7 +484,9 @@ Lsc_done:
 	ldp	x28, x27, [sp], #96
 	ret
 	.cfi_endproc
-"
+";
+    concat(concat(pre, post), tail)
+    end
 }
 
 // Phase D: call_supervisor(..., { op: :add_child, child: spec }) uses the same row allocation
@@ -699,18 +774,9 @@ Lmr_freq_ok:
         mr_tail: string <- "Lmr_ofo:
 ; Phase E e4f: pass row_ptr (x24) as X3 so the new child's actor_thread_main can flag
 ; this row's exit_done on its own teardown; clear stale exit_done from prior incarnation.
-	ldr	x0, [x24, #24]
-	ldr	x1, [x24, #32]
-	ldr	x2, [x24, #16]
-	mov	x3, x24
-	ldr	x4, [x24, #72]
-	bl	_silica_rt_actor_spawn_linked
-	str	x20, [x0, #192]
-	str	x0, [x24]
-	str	xzr, [x24, #56]
-	ldr	x0, [x24]
-	ldr	x1, [x24, #8]
-	bl	_silica_rt_register_actor_named
+	mov	x0, x24
+	mov	x1, x20
+	bl	_silica_rt_supervisor_spawn_child_row_by_flavor
 	b	Lmr_done
 Lmr_ofa_kill:
 	mov	x25, #0
@@ -766,18 +832,9 @@ Lmr_ofa_spawn_walk_idx:
 Lmr_ofa_spawn_at_idx:
 	ldr	x8, [x26]
 	cbz	x8, Lmr_ofa_spawn_next
-	ldr	x0, [x26, #24]
-	ldr	x1, [x26, #32]
-	ldr	x2, [x26, #16]
-	mov	x3, x26
-	ldr	x4, [x26, #72]
-	bl	_silica_rt_actor_spawn_linked
-	str	x20, [x0, #192]
-	str	x0, [x26]
-	str	xzr, [x26, #56]
-	ldr	x0, [x26]
-	ldr	x1, [x26, #8]
-	bl	_silica_rt_register_actor_named
+	mov	x0, x26
+	mov	x1, x20
+	bl	_silica_rt_supervisor_spawn_child_row_by_flavor
 Lmr_ofa_spawn_next:
 	add	x25, x25, #1
 	b	Lmr_ofa_spawn_loop
@@ -835,18 +892,9 @@ Lmr_rfo_spawn_walk_idx:
 	sub	x10, x10, #1
 	b	Lmr_rfo_spawn_walk_idx
 Lmr_rfo_spawn_at_idx:
-	ldr	x0, [x26, #24]
-	ldr	x1, [x26, #32]
-	ldr	x2, [x26, #16]
-	mov	x3, x26
-	ldr	x4, [x26, #72]
-	bl	_silica_rt_actor_spawn_linked
-	str	x20, [x0, #192]
-	str	x0, [x26]
-	str	xzr, [x26, #56]
-	ldr	x0, [x26]
-	ldr	x1, [x26, #8]
-	bl	_silica_rt_register_actor_named
+	mov	x0, x26
+	mov	x1, x20
+	bl	_silica_rt_supervisor_spawn_child_row_by_flavor
 Lmr_rfo_spawn_next:
 	add	x25, x25, #1
 	b	Lmr_rfo_spawn_loop
@@ -1354,19 +1402,9 @@ Lsrestart_wait:
 	bl	_silica_rt_supervisor_drop_pending_exit
 	str	xzr, [x23]
 Lsrestart_spawn:
-	ldr	x0, [x23, #24]
-	ldr	x1, [x23, #32]
-	ldr	x2, [x23, #16]
-	mov	x3, x23
-	ldr	x4, [x23, #72]
-	bl	_silica_rt_actor_spawn_linked
-	str	x19, [x0, #192]
-	str	x0, [x23]
-	str	xzr, [x23, #56]
-	str	xzr, [x23, #64]
-	ldr	x0, [x23]
-	ldr	x1, [x23, #8]
-	bl	_silica_rt_register_actor_named
+	mov	x0, x23
+	mov	x1, x19
+	bl	_silica_rt_supervisor_spawn_child_row_by_flavor
 	ldr	x0, [x23]
 	b	Lsrestart_done
 Lsrestart_ofa:
@@ -1399,19 +1437,9 @@ Lsrestart_ofa_spawn_begin:
 	ldr	x24, [x19, #256]
 Lsrestart_ofa_spawn_loop:
 	cbz	x24, Lsrestart_ofa_done
-	ldr	x0, [x24, #24]
-	ldr	x1, [x24, #32]
-	ldr	x2, [x24, #16]
-	mov	x3, x24
-	ldr	x4, [x24, #72]
-	bl	_silica_rt_actor_spawn_linked
-	str	x19, [x0, #192]
-	str	x0, [x24]
-	str	xzr, [x24, #56]
-	str	xzr, [x24, #64]
-	ldr	x0, [x24]
-	ldr	x1, [x24, #8]
-	bl	_silica_rt_register_actor_named
+	mov	x0, x24
+	mov	x1, x19
+	bl	_silica_rt_supervisor_spawn_child_row_by_flavor
 	ldr	x8, [x24, #8]
 	cmp	x8, x20
 	b.ne	Lsrestart_ofa_spawn_next
@@ -1446,6 +1474,8 @@ fn emit_child_table_runtime_asm(table: AtomTable) -> string {
         t: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":transient");
         o: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":one_for_all");
         r: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":rest_for_one");
-        concat(concat(concat(concat(concat(concat(concat(child_table_rt_asm_chunk_0(), child_table_rt_asm_chunk_1()), child_table_rt_asm_chunk_2()), child_table_rt_asm_chunk_2b()), child_table_rt_asm_chunk_3(p, t, o, r)), child_table_rt_asm_chunk_4()), child_table_rt_asm_chunk_5()), child_table_rt_asm_chunk_6(o))
+        d: int64 <- atom_table@lexeme_to_index_first_added_order(table, ":dangerous");
+        list_chunk: int64 <- child_spec_init_list_chunk_data_bytes();
+        concat(concat(concat(concat(concat(concat(concat(concat(child_table_rt_asm_chunk_0(), child_table_rt_spawn_child_row_by_flavor_asm(d)), child_table_rt_asm_chunk_1(d, list_chunk)), child_table_rt_asm_chunk_2(d)), child_table_rt_asm_chunk_2b()), child_table_rt_asm_chunk_3(p, t, o, r)), child_table_rt_asm_chunk_4()), child_table_rt_asm_chunk_5()), child_table_rt_asm_chunk_6(o))
     end
 }

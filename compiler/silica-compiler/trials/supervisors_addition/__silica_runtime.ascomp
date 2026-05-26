@@ -206,6 +206,10 @@ LBBsl_4:
 	.loh AdrpAdd	Lslp_tm0, Lslp_tm1
 	.cfi_endproc
                                         ; -- End function
+	.globl	_silica_rt_actor_spawn_dangerous_linked
+	.p2align	2
+_silica_rt_actor_spawn_dangerous_linked:
+	b	_silica_rt_actor_spawn_linked
 	.p2align	2                               ; -- Begin function actor_thread_main
 _actor_thread_main:                     ; @actor_thread_main
 	.cfi_startproc
@@ -1318,6 +1322,41 @@ _silica_rt_register_actor_named:        ; @silica_rt_register_actor_named
 	add	x9, x9, #1920
 	str	x19, [x9, x20, lsl #3]
 Lreg_named_done:
+	mov	x0, #0
+	ldp	x29, x30, [sp, #16]
+	ldp	x20, x19, [sp], #32
+	ret
+	.cfi_endproc
+                                        ; -- End function
+	.globl	_silica_rt_register_dangerous_actor_named ; -- Begin function silica_rt_register_dangerous_actor_named
+	.p2align	2
+_silica_rt_register_dangerous_actor_named:        ; @silica_rt_register_dangerous_actor_named
+	.cfi_startproc
+; X0=actor_ref, X1=atom registry key. Insert directly into the dangerous PID registry table.
+	stp	x20, x19, [sp, #-32]!
+	stp	x29, x30, [sp, #16]
+	add	x29, sp, #16
+	.cfi_def_cfa w29, 16
+	.cfi_offset w30, -8
+	.cfi_offset w29, -16
+	.cfi_offset w19, -24
+	.cfi_offset w20, -32
+	mov	x19, x0
+	mov	x20, x1
+	adrp	x8, _silica_dangerous_pid_registry_ref@PAGE
+	ldr	x8, [x8, _silica_dangerous_pid_registry_ref@PAGEOFF]
+	cbz	x8, Lreg_danger_named_done
+	ldr	x9, [x8]
+	cbz	x9, Lreg_danger_named_done
+	cmp	x20, #0
+	b.lt	Lreg_danger_named_done
+	cmp	x20, #240
+	b.ge	Lreg_danger_named_done
+	mov	x10, #1
+	str	x10, [x9, x20, lsl #3]
+	add	x9, x9, #1920
+	str	x19, [x9, x20, lsl #3]
+Lreg_danger_named_done:
 	mov	x0, #0
 	ldp	x29, x30, [sp, #16]
 	ldp	x20, x19, [sp], #32
@@ -2596,6 +2635,35 @@ Lct_ens_fail:
 	ldp	x26, x25, [sp], #80
 	ret
 	.cfi_endproc
+	.globl	_silica_rt_supervisor_spawn_child_row_by_flavor
+	.p2align	2
+_silica_rt_supervisor_spawn_child_row_by_flavor:
+	.cfi_startproc
+	stp	x22, x21, [sp, #-64]!
+	stp	x20, x19, [sp, #16]
+	stp	x29, x30, [sp, #32]
+	add	x29, sp, #32
+	mov	x19, x0
+	mov	x20, x1
+	ldr	x0, [x19, #24]
+	ldr	x1, [x19, #32]
+	ldr	x2, [x19, #16]
+	mov	x3, x19
+	ldr	x4, [x19, #72]
+	bl	_silica_rt_actor_spawn_linked
+	mov	x21, x0
+	str	x20, [x21, #192]
+	str	x21, [x19]
+	str	xzr, [x19, #56]
+	mov	x0, x21
+	ldr	x1, [x19, #8]
+	bl	_silica_rt_register_actor_named
+	mov	x0, x21
+	ldp	x29, x30, [sp, #32]
+	ldp	x20, x19, [sp, #16]
+	ldp	x22, x21, [sp], #64
+	ret
+	.cfi_endproc
 	.globl	_silica_rt_supervisor_materialize_init_children
 	.p2align	2
 _silica_rt_supervisor_materialize_init_children:
@@ -2670,31 +2738,34 @@ Lmat_walk_row:
 	sub	x10, x10, #1
 	b	Lmat_walk_row
 Lmat_walk_row_done:
-	mov	x0, x22
-	mov	x1, x23
-	mov	x2, x24
-	mov	x3, x28
-	ldr	x4, [x15, #48]
-	bl	_silica_rt_actor_spawn_linked
-	str	x19, [x0, #192]
-	str	x0, [x28]
-	str	x25, [x28, #8]
-	str	x24, [x28, #16]
-	str	x22, [x28, #24]
-	str	x23, [x28, #32]
-	str	x26, [x28, #40]
-	str	x27, [x28, #48]
-	str	xzr, [x28, #56]
-	str	xzr, [x28, #64]
-	ldr	x9, [x15, #48]
-	str	x9, [x28, #72]
-	ldr	x0, [x28]
-	ldr	x1, [x28, #8]
-	bl	_silica_rt_register_actor_named
+    str xzr, [x28]
+    str x25, [x28, #8]
+    str x24, [x28, #16]
+    str x22, [x28, #24]
+    str x23, [x28, #32]
+    str x26, [x28, #40]
+    str x27, [x28, #48]
+    str xzr, [x28, #56]
+    ldr x9, [x15, #48]
+    str x9, [x28, #64]
+    ldr x9, [x15, #56]
+    str x9, [x28, #72]
+    mov x0, x22
+    mov x1, x23
+    mov x2, x24
+    mov x3, x28
+    ldr x4, [x28, #72]
+    bl _silica_rt_actor_spawn_linked
+    str x19, [x0, #192]
+    str x0, [x28]
+    str xzr, [x28, #56]
+    ldr x0, [x28]
+    ldr x1, [x28, #8]
+    bl _silica_rt_register_actor_named
 	ldr	x9, [x19, #264]
 	add	x9, x9, #1
 	str	x9, [x19, #264]
-	ldr	x21, [x21, #56]
+	ldr	x21, [x21, #64]
 	mov	x14, #0
 	sub	x20, x20, #1
 	b	Lmat_loop
@@ -2781,27 +2852,31 @@ Lsc_append_at_row:
 Lsc_use_reuse_row:
 	mov	x28, xzr
 Lsc_post_row:
-	mov	x0, x23
-	mov	x1, x24
-	mov	x2, x22
-	mov	x3, x27
-	ldr	x4, [x20, #48]
+	ldr	x4, [x20, #56]
 	str	x4, [x27, #72]
-	bl	_silica_rt_actor_spawn_linked
-	str	x19, [x0, #192]
-	mov	x20, x0
-	str	x20, [x27]
-	str	x21, [x27, #8]
-	str	x22, [x27, #16]
-	str	x23, [x27, #24]
-	str	x24, [x27, #32]
-	str	x25, [x27, #40]
-	str	x26, [x27, #48]
-	str	xzr, [x27, #56]
-	str	xzr, [x27, #64]
-	ldr	x0, [x27]
-	ldr	x1, [x27, #8]
-	bl	_silica_rt_register_actor_named
+    ldr x9, [x20, #48]
+    str xzr, [x27]
+    str x21, [x27, #8]
+    str x22, [x27, #16]
+    str x23, [x27, #24]
+    str x24, [x27, #32]
+    str x25, [x27, #40]
+    str x26, [x27, #48]
+    str xzr, [x27, #56]
+    str x9, [x27, #64]
+    mov x0, x23
+    mov x1, x24
+    mov x2, x22
+    mov x3, x27
+    ldr x4, [x27, #72]
+    bl _silica_rt_actor_spawn_linked
+    str x19, [x0, #192]
+    mov x20, x0
+    str x20, [x27]
+    str xzr, [x27, #56]
+    ldr x0, [x27]
+    ldr x1, [x27, #8]
+    bl _silica_rt_register_actor_named
 	cbz	x28, Lsc_done
 	ldr	x9, [x19, #264]
 	add	x9, x9, #1
@@ -3085,18 +3160,9 @@ Lmr_freq_ok:
 Lmr_ofo:
 ; Phase E e4f: pass row_ptr (x24) as X3 so the new child's actor_thread_main can flag
 ; this row's exit_done on its own teardown; clear stale exit_done from prior incarnation.
-	ldr	x0, [x24, #24]
-	ldr	x1, [x24, #32]
-	ldr	x2, [x24, #16]
-	mov	x3, x24
-	ldr	x4, [x24, #72]
-	bl	_silica_rt_actor_spawn_linked
-	str	x20, [x0, #192]
-	str	x0, [x24]
-	str	xzr, [x24, #56]
-	ldr	x0, [x24]
-	ldr	x1, [x24, #8]
-	bl	_silica_rt_register_actor_named
+	mov	x0, x24
+	mov	x1, x20
+	bl	_silica_rt_supervisor_spawn_child_row_by_flavor
 	b	Lmr_done
 Lmr_ofa_kill:
 	mov	x25, #0
@@ -3152,18 +3218,9 @@ Lmr_ofa_spawn_walk_idx:
 Lmr_ofa_spawn_at_idx:
 	ldr	x8, [x26]
 	cbz	x8, Lmr_ofa_spawn_next
-	ldr	x0, [x26, #24]
-	ldr	x1, [x26, #32]
-	ldr	x2, [x26, #16]
-	mov	x3, x26
-	ldr	x4, [x26, #72]
-	bl	_silica_rt_actor_spawn_linked
-	str	x20, [x0, #192]
-	str	x0, [x26]
-	str	xzr, [x26, #56]
-	ldr	x0, [x26]
-	ldr	x1, [x26, #8]
-	bl	_silica_rt_register_actor_named
+	mov	x0, x26
+	mov	x1, x20
+	bl	_silica_rt_supervisor_spawn_child_row_by_flavor
 Lmr_ofa_spawn_next:
 	add	x25, x25, #1
 	b	Lmr_ofa_spawn_loop
@@ -3221,18 +3278,9 @@ Lmr_rfo_spawn_walk_idx:
 	sub	x10, x10, #1
 	b	Lmr_rfo_spawn_walk_idx
 Lmr_rfo_spawn_at_idx:
-	ldr	x0, [x26, #24]
-	ldr	x1, [x26, #32]
-	ldr	x2, [x26, #16]
-	mov	x3, x26
-	ldr	x4, [x26, #72]
-	bl	_silica_rt_actor_spawn_linked
-	str	x20, [x0, #192]
-	str	x0, [x26]
-	str	xzr, [x26, #56]
-	ldr	x0, [x26]
-	ldr	x1, [x26, #8]
-	bl	_silica_rt_register_actor_named
+	mov	x0, x26
+	mov	x1, x20
+	bl	_silica_rt_supervisor_spawn_child_row_by_flavor
 Lmr_rfo_spawn_next:
 	add	x25, x25, #1
 	b	Lmr_rfo_spawn_loop
@@ -3714,19 +3762,9 @@ Lsrestart_wait:
 	bl	_silica_rt_supervisor_drop_pending_exit
 	str	xzr, [x23]
 Lsrestart_spawn:
-	ldr	x0, [x23, #24]
-	ldr	x1, [x23, #32]
-	ldr	x2, [x23, #16]
-	mov	x3, x23
-	ldr	x4, [x23, #72]
-	bl	_silica_rt_actor_spawn_linked
-	str	x19, [x0, #192]
-	str	x0, [x23]
-	str	xzr, [x23, #56]
-	str	xzr, [x23, #64]
-	ldr	x0, [x23]
-	ldr	x1, [x23, #8]
-	bl	_silica_rt_register_actor_named
+	mov	x0, x23
+	mov	x1, x19
+	bl	_silica_rt_supervisor_spawn_child_row_by_flavor
 	ldr	x0, [x23]
 	b	Lsrestart_done
 Lsrestart_ofa:
@@ -3759,19 +3797,9 @@ Lsrestart_ofa_spawn_begin:
 	ldr	x24, [x19, #256]
 Lsrestart_ofa_spawn_loop:
 	cbz	x24, Lsrestart_ofa_done
-	ldr	x0, [x24, #24]
-	ldr	x1, [x24, #32]
-	ldr	x2, [x24, #16]
-	mov	x3, x24
-	ldr	x4, [x24, #72]
-	bl	_silica_rt_actor_spawn_linked
-	str	x19, [x0, #192]
-	str	x0, [x24]
-	str	xzr, [x24, #56]
-	str	xzr, [x24, #64]
-	ldr	x0, [x24]
-	ldr	x1, [x24, #8]
-	bl	_silica_rt_register_actor_named
+	mov	x0, x24
+	mov	x1, x19
+	bl	_silica_rt_supervisor_spawn_child_row_by_flavor
 	ldr	x8, [x24, #8]
 	cmp	x8, x20
 	b.ne	Lsrestart_ofa_spawn_next
@@ -3802,6 +3830,9 @@ Lsrestart_done:
 ; Global slot for the PID registry actor_ref (written by _silica_rt_register_actor / read by _silica_rt_get_registry_actor).
 .globl	_silica_pid_registry_ref
 .comm	_silica_pid_registry_ref,8,3
+; Global slot for the dangerous PID registry actor_ref (written by _silica_rt_register_dangerous_actor_named).
+.globl	_silica_dangerous_pid_registry_ref
+.comm	_silica_dangerous_pid_registry_ref,8,3
 	.section	__TEXT,__text,regular,pure_instructions
 
 ; PID registry primitive actor.
@@ -4955,20 +4986,16 @@ _silica_rt_ffi_guarded_setjmp:
 	stp	x19, x20, [sp, #-16]!
 	mov	x29, sp
 	bl	_silica_rt_guarded_ffi_state_get_or_create
-	cbz	x0, L_gffi_sj_return_zero
+	cbz	x0, L_gffi_sj_zero
 	mov	x19, x0
 	ldr	x9, [x19, #0]
 	cmp	x9, #1
-	b.ne	L_gffi_sj_return_zero
+	b.ne	L_gffi_sj_zero
 	bl	_silica_rt_install_sync_fault_handlers
 	add	x0, x19, #64
 	mov	x1, xzr
 	bl	_sigsetjmp
-	uxtw	x0, w0
-	b	L_gffi_sj_done
-L_gffi_sj_return_zero:
-	mov	x0, xzr
-L_gffi_sj_done:
+L_gffi_sj_zero:
 	ldp	x19, x20, [sp], #16
 	ldp	x29, x30, [sp], #16
 	ret

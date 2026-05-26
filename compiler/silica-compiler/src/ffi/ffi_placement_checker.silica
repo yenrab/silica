@@ -457,6 +457,60 @@ fn collect_spawn_behavior_names(program: Program) -> ListSirString {
     collect_spawn_behavior_names_from_decls(program.declarations)
 }
 
+fn find_atom_field_in_record_chain(field_chain: Expr, field_name: string) -> string {
+    case field_chain.kind == 21 of {
+        false -> "";
+        true -> case field_chain.name == field_name of {
+            true -> case field_chain.inner.kind == 5 of {
+                true -> field_chain.inner.value;
+                false -> ""
+            };
+            false -> find_atom_field_in_record_chain(field_chain.right_expr, field_name)
+        }
+    }
+}
+
+fn find_fn_ref_name_in_record_chain(field_chain: Expr, field_name: string) -> string {
+    case field_chain.kind == 21 of {
+        false -> "";
+        true -> case field_chain.name == field_name of {
+            true -> case field_chain.inner.kind == 1 of {
+                true -> field_chain.inner.name;
+                false -> ""
+            };
+            false -> find_fn_ref_name_in_record_chain(field_chain.right_expr, field_name)
+        }
+    }
+}
+
+fn collect_static_dangerous_child_behavior_names_expr(expr: Expr, acc: ListSirString) -> ListSirString {
+    case expr.kind < 0 of {
+        true -> acc;
+        false -> do
+            next: ListSirString <- case expr.kind == 21 and find_atom_field_in_record_chain(expr, "flavor") == ":dangerous" of {
+                true -> append_unique_sir_string(acc, find_fn_ref_name_in_record_chain(expr, "behavior"));
+                false -> acc
+            };
+            collect_static_dangerous_child_behavior_names_pair(expr.inner, expr.right_expr, next)
+        end
+    }
+}
+
+fn collect_static_dangerous_child_behavior_names_pair(inner: Expr, right: Expr, acc: ListSirString) -> ListSirString {
+    mid: ListSirString <- collect_static_dangerous_child_behavior_names_expr(inner, acc);
+    collect_static_dangerous_child_behavior_names_expr(right, mid)
+}
+
+fn collect_static_dangerous_child_behavior_names_from_decls(decls: ListDeclaration) -> ListSirString {
+    case decls.is_nil of {
+        true -> sir_ast@nil_sir_strings();
+        false -> case decls.head.tag == 0 of {
+            true -> collect_static_dangerous_child_behavior_names_expr(decls.head.body, collect_static_dangerous_child_behavior_names_from_decls(decls.tail));
+            false -> collect_static_dangerous_child_behavior_names_from_decls(decls.tail)
+        }
+    }
+}
+
 fn merge_sir_string_lists(acc: ListSirString, items: ListSirString) -> ListSirString {
     case items.is_nil of {
         true -> acc;
@@ -467,6 +521,8 @@ fn merge_sir_string_lists(acc: ListSirString, items: ListSirString) -> ListSirSt
 fn collect_ffi_worker_names(program: Program) -> ListSirString {
     spawn_dangerous_names: ListSirString <- collect_spawn_dangerous_behavior_names_from_decls(program.declarations);
     spawn_behavior_names: ListSirString <- collect_spawn_behavior_names_from_decls(program.declarations);
-    merged_spawn_names: ListSirString <- merge_sir_string_lists(spawn_dangerous_names, spawn_behavior_names);
+    static_dangerous_child_names: ListSirString <- collect_static_dangerous_child_behavior_names_from_decls(program.declarations);
+    merged_dangerous_names: ListSirString <- merge_sir_string_lists(spawn_dangerous_names, static_dangerous_child_names);
+    merged_spawn_names: ListSirString <- merge_sir_string_lists(merged_dangerous_names, spawn_behavior_names);
     build_ffi_worker_names_loop(program.declarations, merged_spawn_names, sir_ast@nil_sir_strings())
 }

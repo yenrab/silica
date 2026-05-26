@@ -34,6 +34,9 @@ APP_GUARDED_ONCE_DIR := app_legacy_math_add_guarded
 APP_GUARDED_TWICE_DIR := app_legacy_math_add_twice
 APP_TEXT_ECHO_DIR := app_text_echo_guarded
 APP_TEXT_ECHO_TWICE_DIR := app_text_echo_twice
+APP_SUPERVISOR_DANGEROUS_DIR := app_supervisor_dangerous_guarded_restart
+APP_SUPERVISOR_DANGEROUS_REGISTERED_DIR := app_supervisor_dangerous_guarded_cast_registered
+APP_SUPERVISOR_DANGEROUS_FAULT_DIR := app_supervisor_dangerous_guarded_fault_trials
 
 APP_DIRS := \
 	$(APP_SIDECAR_DIR) \
@@ -46,7 +49,9 @@ APP_DIRS := \
 	$(APP_GUARDED_ONCE_DIR) \
 	$(APP_GUARDED_TWICE_DIR) \
 	$(APP_TEXT_ECHO_DIR) \
-	$(APP_TEXT_ECHO_TWICE_DIR)
+	$(APP_TEXT_ECHO_TWICE_DIR) \
+	$(APP_SUPERVISOR_DANGEROUS_DIR) \
+	$(APP_SUPERVISOR_DANGEROUS_REGISTERED_DIR)
 
 GUARDED_APP_DIRS := \
 	$(APP_GUARDED_ONCE_DIR) \
@@ -64,7 +69,7 @@ ARENA_APP_DIRS := \
 SILICA_COMPILER := $(abspath $(THIS_DIR)../../src/silica-compiler)
 MODULE_VALID_FILE := module_addition/dangerous_naming_valid.silica
 
-.PHONY: all integrate fixtures phase-0 phase-a phase-3 phase-4 phase-5 phase-6 phase-7 phase-8 phase-9 phase-11 phase-12 phase-13 \
+.PHONY: all integrate fixtures phase-0 phase-a phase-3 phase-4 phase-5 phase-6 phase-7 phase-8 phase-9 phase-11 phase-12 phase-13 phase-14 \
 	ffi-wrapper-archives module-valid abi-valid verify-symbols clean clean-fixtures clean-apps help
 
 .DEFAULT_GOAL := phase-0
@@ -209,6 +214,13 @@ phase-13: fixtures
 	@test -x "$(SILICA_COMPILER)" || { echo "FAIL: build compiler first (make -C compiler/silica-compiler/src build)"; exit 1; }
 	@$(MAKE) -C "$(THIS_DIR)$(APP_GUARDED_FAULT_DIR)" integrate
 	@echo "✅ ffi_addition phase-13 complete (macOS guarded FFI fault bridge)"
+
+phase-14: fixtures
+	@test -x "$(SILICA_COMPILER)" || { echo "FAIL: build compiler first (make -C compiler/silica-compiler/src build)"; exit 1; }
+	@$(MAKE) -C "$(THIS_DIR)$(APP_SUPERVISOR_DANGEROUS_DIR)" integrate
+	@$(MAKE) -C "$(THIS_DIR)$(APP_SUPERVISOR_DANGEROUS_REGISTERED_DIR)" integrate
+	@$(MAKE) -C "$(THIS_DIR)$(APP_SUPERVISOR_DANGEROUS_FAULT_DIR)" integrate
+	@echo "✅ ffi_addition phase-14 complete (supervisor + dangerous guarded FFI restart)"
 
 phase-a: phase-0
 

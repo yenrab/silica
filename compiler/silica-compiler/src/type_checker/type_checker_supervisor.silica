@@ -23,6 +23,7 @@
 use parser_ast;
 use type_checker_core;
 use type_checker_traits;
+use type_checker_expressions_actors;
 
 export supervisor_init_return_tuple_has_flags_and_children/1;
 export supervisor_init_return_has_phase_e_declarative_fields/1;
@@ -31,7 +32,11 @@ export collect_supervisor_impl_types_csv/1;
 export check_init_if_supervisor_impl_phase_e/2;
 export check_supervisor_impl_has_init_phase_b/1;
 export supervisor_walk_validate_child_spec_agent_type_atoms/1;
+export supervisor_walk_validate_child_spec_flavor_atoms/1;
+export supervisor_walk_validate_dangerous_flavor_constraints/2;
 export validate_supervisor_init_body_literal_agent_types_if_needed/2;
+export validate_supervisor_init_body_literal_flavor_if_needed/2;
+export validate_supervisor_init_body_dangerous_flavor_constraints_if_needed/3;
 
 fn supervisor_string_contains_from(h: string, needle: string, i: int64, nh: int64) -> bool {
     case i + nh > len(h) of {
@@ -126,7 +131,10 @@ fn supervisor_init_return_has_phase_e_declarative_fields(ret: string) -> bool {
                                         false -> false;
                                         true -> case supervisor_string_contains(t, "restart :") of {
                                             false -> false;
-                                            true -> supervisor_string_contains(t, "shutdown :")
+                                            true -> case supervisor_string_contains(t, "shutdown :") of {
+                                                false -> false;
+                                                true -> supervisor_string_contains(t, "flavor :")
+                                            }
                                         }
                                     }
                                 }
@@ -264,7 +272,7 @@ fn check_supervisor_init_return_type_phase_e_shape(decl: Declaration) -> TypeChe
         true -> case supervisor_init_return_tuple_has_flags_and_children(decl.return_type_name) of {
             false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init must return a tuple (supervisor_flags, static child list) per spec §15.4.13.1 (supervisors plan Phase E)", "sect15.4.13.1");
             true -> case supervisor_init_return_has_phase_e_declarative_fields(decl.return_type_name) of {
-                false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init return type must include supervisor_flags (strategy, allowed_restart_count, restarts_time_frame) and child_spec fields (id, agent_type: :worker | :supervisor, initial_state, behavior, restart, shutdown) in List[..., mem(ρ) | …] or List[..., normal] for automatic restart (supervisors plan Phase B; spec §15.4.13.2)", "sect15.4.13.2");
+                false -> type_checker_core@type_check_err("E2092", decl.return_type_location, "Supervisor init return type must include supervisor_flags (strategy, allowed_restart_count, restarts_time_frame) and child_spec fields (id, agent_type: :worker | :supervisor, initial_state, behavior, restart, shutdown, flavor: :plain | :dangerous) in List[..., mem(ρ) | …] or List[..., normal] for automatic restart (supervisors plan Phase B; spec §15.4.13.2)", "sect15.4.13.2");
                 true -> type_checker_core@type_check_ok()
             }
         }
@@ -352,6 +360,221 @@ fn validate_supervisor_init_body_literal_agent_types_if_needed(decl: Declaration
             true -> case init_decl_has_one_parameter(decl) of {
                 false -> type_checker_core@type_check_ok();
                 true -> supervisor_walk_validate_child_spec_agent_type_atoms(decl.body)
+            }
+        }
+    }
+}
+
+fn supervisor_child_spec_flavor_initializer_ok(init_e: Expr) -> bool {
+    case init_e.kind == 5 of {
+        false -> false;
+        true -> init_e.value == ":plain" or init_e.value == ":dangerous"
+    }
+}
+
+fn supervisor_validate_record_field_flavor(field_e: Expr) -> TypeCheckResult {
+    case field_e.name == "flavor" of {
+        false -> type_checker_core@type_check_ok();
+        true -> case field_e.inner.kind == 5 of {
+            false -> type_checker_core@type_check_err(
+                "E2094",
+                field_e.location,
+                "child_spec flavor must be a literal :plain or :dangerous (§15.4.13.2 / supervisor child table)",
+                "sect15.4.13.2"
+            );
+            true -> case supervisor_child_spec_flavor_initializer_ok(field_e.inner) of {
+                true -> type_checker_core@type_check_ok();
+                false -> type_checker_core@type_check_err(
+                    "E2094",
+                    field_e.inner.location,
+                    concat(concat("invalid child_spec flavor ", field_e.inner.value), "; only :plain or :dangerous are allowed"),
+                    "sect15.4.13.2"
+                )
+            }
+        }
+    }
+}
+
+fn supervisor_walk_validate_child_spec_flavor_atoms(expr: Expr) -> TypeCheckResult {
+    case expr.kind < 0 of {
+        true -> type_checker_core@type_check_ok();
+        false -> do
+            fld: TypeCheckResult <- case expr.kind == 21 of {
+                true -> supervisor_validate_record_field_flavor(expr);
+                false -> type_checker_core@type_check_ok()
+            };
+            case fld.is_ok of {
+                false -> fld;
+                true -> case expr.kind == 991 of {
+                    true -> supervisor_walk_validate_child_spec_flavor_atoms(expr.inner);
+                    false -> case expr.kind == 992 of {
+                        true -> type_checker_core@type_check_ok();
+                        false -> do
+                            rin: TypeCheckResult <- supervisor_walk_validate_child_spec_flavor_atoms(expr.inner);
+                            case rin.is_ok of {
+                                false -> rin;
+                                true -> supervisor_walk_validate_child_spec_flavor_atoms(expr.right_expr)
+                            }
+                        end
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn validate_supervisor_init_body_literal_flavor_if_needed(decl: Declaration, all_decls: ListDeclaration) -> TypeCheckResult {
+    case program_has_impl_for_supervisor(all_decls) of {
+        false -> type_checker_core@type_check_ok();
+        true -> case decl.name == "init" of {
+            false -> type_checker_core@type_check_ok();
+            true -> case init_decl_has_one_parameter(decl) of {
+                false -> type_checker_core@type_check_ok();
+                true -> supervisor_walk_validate_child_spec_flavor_atoms(decl.body)
+            }
+        }
+    }
+}
+
+fn find_atom_field_in_record_chain(field_chain: Expr, field_name: string) -> string {
+    case field_chain.kind == 21 of {
+        false -> "";
+        true -> case field_chain.name == field_name of {
+            true -> case field_chain.inner.kind == 5 of {
+                true -> field_chain.inner.value;
+                false -> ""
+            };
+            false -> find_atom_field_in_record_chain(field_chain.right_expr, field_name)
+        }
+    }
+}
+
+fn find_fn_ref_name_in_record_chain(field_chain: Expr, field_name: string) -> string {
+    case field_chain.kind == 21 of {
+        false -> "";
+        true -> case field_chain.name == field_name of {
+            true -> case field_chain.inner.kind == 1 of {
+                true -> field_chain.inner.name;
+                false -> ""
+            };
+            false -> find_fn_ref_name_in_record_chain(field_chain.right_expr, field_name)
+        }
+    }
+}
+
+fn find_field_location_in_record_chain(field_chain: Expr, field_name: string) -> SourceLocation {
+    case field_chain.kind == 21 of {
+        false -> parser_ast@zero_location();
+        true -> case field_chain.name == field_name of {
+            true -> field_chain.location;
+            false -> find_field_location_in_record_chain(field_chain.right_expr, field_name)
+        }
+    }
+}
+
+fn find_fn_return_type_in_decls(decls: ListDeclaration, fn_name: string) -> string {
+    case decls.is_nil of {
+        true -> "";
+        false -> case decls.head.tag == 0 and decls.head.name == fn_name of {
+            true -> decls.head.return_type_name;
+            false -> find_fn_return_type_in_decls(decls.tail, fn_name)
+        }
+    }
+}
+
+fn starts_with_dangerous_prefix(s: string) -> bool {
+    len(s) >= 11 and substring(s, 0, 11) == ":dangerous_"
+}
+
+fn validate_dangerous_child_spec_record(field_chain: Expr, decls: ListDeclaration) -> TypeCheckResult {
+    flavor: string <- find_atom_field_in_record_chain(field_chain, "flavor");
+    case flavor == ":dangerous" of {
+        false -> type_checker_core@type_check_ok();
+        true -> do
+            id_val: string <- find_atom_field_in_record_chain(field_chain, "id");
+            case starts_with_dangerous_prefix(id_val) of {
+                false -> do
+                    id_loc: SourceLocation <- find_field_location_in_record_chain(field_chain, "id");
+                    type_checker_core@type_check_err(
+                        "E2094",
+                        id_loc,
+                        concat(concat("child_spec with flavor :dangerous requires id starting with :dangerous_; got ", id_val), " (§15.4.13.2)"),
+                        "sect15.4.13.2"
+                    )
+                end;
+                true -> do
+                    beh_fn_name: string <- find_fn_ref_name_in_record_chain(field_chain, "behavior");
+                    case len(beh_fn_name) == 0 of {
+                        true -> type_checker_core@type_check_ok();
+                        false -> do
+                            ret_type: string <- find_fn_return_type_in_decls(decls, beh_fn_name);
+                            case len(ret_type) == 0 of {
+                                true -> type_checker_core@type_check_ok();
+                                false -> case type_checker_expressions_actors@behavior_return_is_cast_only(ret_type) of {
+                                    true -> type_checker_core@type_check_ok();
+                                    false -> do
+                                        beh_loc: SourceLocation <- find_field_location_in_record_chain(field_chain, "behavior");
+                                        type_checker_core@type_check_err(
+                                            "E2095",
+                                            beh_loc,
+                                            "child_spec with flavor :dangerous requires a cast-type behavior returning (:no_reply, State); reply-type behaviors are not allowed for dangerous children (§15.4.13.2)",
+                                            "sect15.4.13.2"
+                                        )
+                                    end
+                                }
+                            }
+                        end
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn is_child_spec_record_chain(field_chain: Expr) -> bool {
+    len(find_atom_field_in_record_chain(field_chain, "agent_type")) > 0
+        and len(find_atom_field_in_record_chain(field_chain, "flavor")) > 0
+}
+
+fn supervisor_walk_validate_dangerous_flavor_constraints(expr: Expr, decls: ListDeclaration) -> TypeCheckResult {
+    case expr.kind < 0 of {
+        true -> type_checker_core@type_check_ok();
+        false -> do
+            cross: TypeCheckResult <- case expr.kind == 21 and expr.name == "id" of {
+                true -> case is_child_spec_record_chain(expr) of {
+                    true -> validate_dangerous_child_spec_record(expr, decls);
+                    false -> type_checker_core@type_check_ok()
+                };
+                false -> type_checker_core@type_check_ok()
+            };
+            case cross.is_ok of {
+                false -> cross;
+                true -> case expr.kind == 991 of {
+                    true -> supervisor_walk_validate_dangerous_flavor_constraints(expr.inner, decls);
+                    false -> case expr.kind == 992 of {
+                        true -> type_checker_core@type_check_ok();
+                        false -> do
+                            rin: TypeCheckResult <- supervisor_walk_validate_dangerous_flavor_constraints(expr.inner, decls);
+                            case rin.is_ok of {
+                                false -> rin;
+                                true -> supervisor_walk_validate_dangerous_flavor_constraints(expr.right_expr, decls)
+                            }
+                        end
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn validate_supervisor_init_body_dangerous_flavor_constraints_if_needed(decl: Declaration, all_decls: ListDeclaration, decls_for_lookup: ListDeclaration) -> TypeCheckResult {
+    case program_has_impl_for_supervisor(all_decls) of {
+        false -> type_checker_core@type_check_ok();
+        true -> case decl.name == "init" of {
+            false -> type_checker_core@type_check_ok();
+            true -> case init_decl_has_one_parameter(decl) of {
+                false -> type_checker_core@type_check_ok();
+                true -> supervisor_walk_validate_dangerous_flavor_constraints(decl.body, decls_for_lookup)
             }
         }
     }

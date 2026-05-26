@@ -39,6 +39,12 @@ Actor memory architecture: **growable per-actor stacks**, lazy page migration, i
 
 ---
 
+## [silica_actor_capabilities_specification.md](./silica_actor_capabilities_specification.md)
+
+Draft extension for **mode- and protocol-typed actor capabilities**: `actor_ref call`, `actor_ref cast`, `dangerous_actor_ref cast`, protocol ordering, capability splitting, and how Silica's existing call-only/cast-only actors become reference-level authority.
+
+---
+
 ## [supervisors_implementation_development_plan.md](./supervisors_implementation_development_plan.md)
 
 **Supervision roadmap** aligned with [silica-specification.md](./silica-specification.md) §15.4: `Supervisor` trait, `supervisor_ref`, `spawn_registered_supervisor`, `call_supervisor`, runtime-owned child tables, restart strategies, `FailureReporter`, and `link` / `monitor` interactions—phased after the core actor runtime.

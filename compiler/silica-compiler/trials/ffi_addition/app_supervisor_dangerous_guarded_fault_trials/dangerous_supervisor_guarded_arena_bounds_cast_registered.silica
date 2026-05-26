@@ -1,0 +1,127 @@
+// Supervisor + guarded FFI arena bounds trial (cast_registered variant):
+// Two static :dangerous children; main uses cast_registered on each child id.
+// Integrate compares presorted .scout lines (banner details covered elsewhere).
+
+module dangerous_supervisor_guarded_arena_bounds_cast_registered;
+
+use Supervisor;
+
+wrapper_meta "dangerous_exposure_source/legacy/silica_legacy_math_wrapper.meta";
+
+foreign c_wrapper "silica_ffi_arena_past_end"
+fn arena_past_end_raw() -> int64;
+
+impl DangerousSupervisorGuardedArenaBoundsCastRegisteredSup for Supervisor;
+
+fn result_sink(msg: int64, state: int64) -> (:no_reply, int64) {
+    sequence proc[device_io]
+        print_int64(msg);
+        println("");
+        println("done")
+    produces
+        pure (:no_reply, state)
+    end
+}
+
+fn dangerous_ffi_arena_bounds_fault_worker(_msg: int64, reply_to: actor_ref) -> (:no_reply, actor_ref) {
+    sequence proc[external_danger]
+        _: int64 <- case true of {
+            true -> {
+                sequence proc[external_danger]
+                produces
+                    pure arena_past_end_raw()
+                end
+            };
+            false -> 0
+        }
+    produces
+        pure (:no_reply, reply_to)
+    end
+}
+
+fn dangerous_ffi_arena_bounds_add_worker(_msg: int64, reply_to: actor_ref) -> (:no_reply, actor_ref) {
+    sequence proc[concurrency]
+        _: boolean <- cast_registered(:dangerous_sup_result_sink, 42 impl ActorMessage {})
+    produces
+        pure (:no_reply, reply_to)
+    end
+}
+
+fn init(_initial_state: int64) -> (
+    {
+        strategy: :one_for_one | :one_for_all | :rest_for_one,
+        allowed_restart_count: int64,
+        restarts_time_frame: int64
+    },
+    List[
+        {
+            id: atom,
+            agent_type: :worker | :supervisor,
+            initial_state: int64,
+            behavior: fn(msg: int64, reply_to: actor_ref) -> (:no_reply, actor_ref),
+            restart: :permanent | :temporary | :transient,
+            shutdown: int64,
+            flavor: :plain | :dangerous
+        },
+        mem(normal)
+    ]
+) {
+    sequence proc[mem(normal)]
+        flags: {
+            strategy: :one_for_one | :one_for_all | :rest_for_one,
+            allowed_restart_count: int64,
+            restarts_time_frame: int64
+        } <- { strategy: :one_for_one, allowed_restart_count: 5, restarts_time_frame: 60 };
+        children: List[
+            {
+                id: atom,
+                agent_type: :worker | :supervisor,
+                initial_state: int64,
+                behavior: fn(msg: int64, reply_to: actor_ref) -> (:no_reply, actor_ref),
+                restart: :permanent | :temporary | :transient,
+                shutdown: int64,
+                flavor: :plain | :dangerous
+            },
+            mem(normal)
+        ] <- [
+            {
+                id: :dangerous_guarded_ffi_arena_bounds_fault_worker,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: dangerous_ffi_arena_bounds_fault_worker,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :dangerous
+            },
+            {
+                id: :dangerous_guarded_ffi_arena_bounds_add_worker,
+                agent_type: :worker,
+                initial_state: 0,
+                behavior: dangerous_ffi_arena_bounds_add_worker,
+                restart: :permanent,
+                shutdown: 0,
+                flavor: :dangerous
+            }
+        ]
+    produces
+        pure (flags, children)
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[concurrency, device_io]
+        _: actor_ref <- spawn_registered(0, result_sink, :dangerous_sup_result_sink);
+        _: supervisor_ref <- spawn_registered_supervisor(
+            DangerousSupervisorGuardedArenaBoundsCastRegisteredSup,
+            0,
+            :dangerous_sup_guarded_arena_bounds_cast_registered
+        );
+
+        _: boolean <- cast_registered(:dangerous_guarded_ffi_arena_bounds_add_worker, 0 impl ActorMessage {});
+        _: boolean <- cast_registered(:dangerous_guarded_ffi_arena_bounds_fault_worker, 0 impl ActorMessage {});
+
+        _: int64 <- wait_for_exit()
+    produces
+        pure 0
+    end
+}

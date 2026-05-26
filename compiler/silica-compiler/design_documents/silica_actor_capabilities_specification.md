@@ -1,6 +1,6 @@
 # Silica Actor Capabilities and Message Ordering Specification
 
-**Status:** Draft extension. Adds protocol-typed actor references, capability splitting, and formal message-order guarantees.
+**Status:** Draft extension. Adds mode- and protocol-typed actor references, dangerous actor capabilities, capability splitting, and formal message-order guarantees.
 
 **Related Documents**
 
@@ -9,6 +9,7 @@
 | [silica-specification.md](silica-specification.md) | Core language specification |
 | [silica-formal-verification-specification.md](silica-formal-verification-specification.md) | Formal verification framework |
 | [silica-specification-additional.md](silica-specification-additional.md) | Compiler failure rules |
+| [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) | FFI worker actors, `dangerous_actor_ref`, and dangerous registry rules |
 
 **Research Basis**
 
@@ -21,7 +22,7 @@ This extension is informed in part by Colin S. Gordon's work on actor capabiliti
 ## 1. Introduction
 
 ### 1.1 Overview
-This document extends Silica's actor model with **actor capabilities**: protocol-typed actor references that restrict not only which message shapes may be sent, but also the **order** in which messages may be sent through a particular reference.
+This document extends Silica's actor model with **actor capabilities**: mode- and protocol-typed actor references that restrict which operation may be used (`call` or `cast`), which message shapes may be sent, and the **order** in which messages may be sent through a particular reference.
 
 The goal is to statically prevent a class of actor bugs where messages arrive at a valid actor in an invalid lifecycle phase. Examples include sending `commit` before `begin`, `close` before `open`, or sending a one-shot control message twice.
 
@@ -30,6 +31,8 @@ The goal is to statically prevent a class of actor bugs where messages arrive at
 - Reuse Silica's explicit effect system rather than introducing a wholly separate checking framework
 - Support local reasoning: correctness should be checkable from the actor behavior and the capability type carried by the actor reference
 - Integrate with existing FIFO mailbox semantics without changing runtime message ordering
+- Lift Silica's existing call-only/cast-only behavior split into the actor reference type itself
+- Apply the same capability discipline to ordinary `actor_ref` values and FFI worker `dangerous_actor_ref` values
 - Fit Silica's no-generics, explicit-type, LLM-friendly design philosophy
 - Keep opting out of ordering restrictions explicit rather than implicit
 
@@ -39,52 +42,58 @@ This document does not:
 - Require changes to Silica's region-based memory model
 - Change the runtime mailbox ordering semantics already defined by Silica
 - Replace Silica's existing call/cast distinction with a new runtime messaging model
+- Make FFI execution less dangerous or relax the FFI wrapper security model
 
 ---
 
 ## 2. Summary of the Extension
 
 ### 2.1 New Surface Concept
-Silica actor references are uniformly protocol-typed:
+Silica actor references are uniformly capability-typed:
 
 ```silica
-actor_ref with Protocol end
+actor_ref call with Protocol end
+actor_ref cast with Protocol end
+dangerous_actor_ref cast with Protocol end
 ```
 
-where `Protocol` is a compile-time protocol expression describing the allowed sequence of messages sent through that reference.
+where `call` or `cast` is the communication mode authorized by the reference, and `Protocol` is a compile-time protocol expression describing the allowed sequence of messages sent through that reference.
 
 Examples:
 
 ```silica
-actor_ref with :dynamic end
-actor_ref with :open then :write repeat then :close end
-actor_ref with :begin then :commit end
-actor_ref with :heartbeat repeat end
-actor_ref with :request then :reply_port_handoff end
+actor_ref call with :dynamic end
+actor_ref cast with :open then :write repeat then :close end
+actor_ref call with :begin then :commit end
+actor_ref cast with :heartbeat repeat end
+actor_ref cast with :request then :reply_port_handoff end
+dangerous_actor_ref cast with :ffi_request repeat end
 ```
 
 ### 2.2 Mandatory Protocol Typing
 This extension adopts a **uniform mandatory protocol model**:
-- every actor reference has the form `actor_ref with Protocol end`
+- every actor reference has an explicit mode and protocol capability
 - every spawned actor declares a protocol
 - opting out of ordering restrictions is still explicit
 
 The distinguished built-in protocol:
 
 ```silica
-actor_ref with :dynamic end
+actor_ref call with :dynamic end
+actor_ref cast with :dynamic end
+dangerous_actor_ref cast with :dynamic end
 ```
 
 means:
 
 ```text
-no static ordering restriction beyond ordinary actor message typing and call/cast mode checks
+no static ordering restriction beyond ordinary actor message typing and actor-reference mode checks
 ```
 
 ### 2.3 Key Semantic Idea
-A value of type `actor_ref with P end` is both:
+A value of type `actor_ref call with P end`, `actor_ref cast with P end`, or `dangerous_actor_ref cast with P end` is both:
 1. a handle to an actor, and
-2. a static capability that permits only message sequences described by `P`
+2. a static capability that permits only the selected communication mode and message sequences described by `P`
 
 Sending a message through such a reference **consumes** part of the protocol, except for the unrestricted built-in protocol `:dynamic`. Therefore, protocol actor references are **flow-sensitive**.
 
@@ -155,13 +164,32 @@ Exact record-shape matching through `message({ ... })` is not used for protocol 
 ## 4. New Types and Type Forms
 
 ### 4.1 Actor Reference Types
-Silica uses a single actor reference form:
+Silica uses explicit capability-carrying actor reference forms:
 
 ```silica
-actor_ref with Protocol end
+actor_ref call with Protocol end
+actor_ref cast with Protocol end
+dangerous_actor_ref cast with Protocol end
 ```
 
-There is no unparameterized `actor_ref` in this extension.
+There is no unparameterized `actor_ref` or `dangerous_actor_ref` in this extension.
+
+The mode component is part of the type:
+- `actor_ref call with P end` authorizes `call()` only.
+- `actor_ref cast with P end` authorizes `cast()` only.
+- `dangerous_actor_ref cast with P end` authorizes `cast()` only to an FFI worker actor installed by `spawn_dangerous(...)` or `spawn_dangerous_registered(...)`.
+
+There is intentionally no `dangerous_actor_ref call with P end` form. FFI worker actors remain cast-only under the FFI wrapper security model.
+
+### 4.1.1 Legacy Dynamic Reference Compatibility
+During migration, existing unparameterized references may be treated as explicit dynamic capabilities:
+
+```silica
+actor_ref             == actor_ref call with :dynamic end | actor_ref cast with :dynamic end
+dangerous_actor_ref   == dangerous_actor_ref cast with :dynamic end
+```
+
+The union-like legacy reading of `actor_ref` is a compatibility rule only. New code should use explicit `call` or `cast` capability types when this extension is enabled.
 
 ### 4.2 Built-In Protocol Constants
 The language defines the following distinguished protocol constants:
@@ -171,9 +199,9 @@ The language defines the following distinguished protocol constants:
 epsilon    exhausted protocol
 ```
 
-`actor_ref with :dynamic end` may be used wherever the programmer wishes to opt out of static ordering restrictions.
+`actor_ref call with :dynamic end`, `actor_ref cast with :dynamic end`, and `dangerous_actor_ref cast with :dynamic end` may be used wherever the programmer wishes to opt out of static ordering restrictions while still preserving communication-mode and danger-boundary checks.
 
-`actor_ref with epsilon end` denotes a capability that cannot be used with `call()` or `cast()`.
+Any actor capability ending in `with epsilon end` denotes a capability that cannot be used with `call()` or `cast()`.
 
 ### 4.3 Behavior Capability Types
 This document introduces an internal behavior type form used by the compiler and formal specification:
@@ -194,41 +222,51 @@ This internal form need not appear in user syntax.
 Inside a protocol actor, `self()` has a protocol type:
 
 ```silica
-self() -> actor_ref with SelfProtocol end
+self() -> actor_ref call with SelfProtocol end
+self() -> actor_ref cast with SelfProtocol end
 ```
 
-The exact `SelfProtocol` is tracked flow-sensitively by the compiler and may evolve between message-handling phases.
+The exact mode and `SelfProtocol` are derived from the current actor behavior and tracked flow-sensitively by the compiler. `self()` inside an FFI worker behavior is not a path for fabricating ordinary authority over that worker; FFI workers expose dangerous cast capabilities through `spawn_dangerous(...)` or `spawn_dangerous_registered(...)`.
 
 ## 5. Actor Declaration and Spawn
 
 ### 5.1 Protocol-Governed Spawn
-The surface language uses a protocol-delimited spawn form:
+The surface language uses mode- and protocol-delimited spawn forms:
 
 ```silica
-spawn with Protocol end (initial_state, behavior_fn) -> actor_ref with Protocol end
+spawn call with Protocol end (initial_state, behavior_fn) -> actor_ref call with Protocol end
+spawn cast with Protocol end (initial_state, behavior_fn) -> actor_ref cast with Protocol end
+spawn_dangerous cast with Protocol end (initial_state, behavior_fn) -> dangerous_actor_ref cast with Protocol end
+spawn_dangerous_registered cast with Protocol end (initial_state, behavior_fn, name: atom) -> dangerous_actor_ref cast with Protocol end
 ```
 
 Example:
 
 ```silica
-file_actor: actor_ref with :open then (:write repeat) then :close end <-
-    spawn with :open then (:write repeat) then :close end (initial_state, file_behavior)
+file_actor: actor_ref cast with :open then (:write repeat) then :close end <-
+    spawn cast with :open then (:write repeat) then :close end (initial_state, file_behavior)
 ```
 
 ### 5.2 Mandatory Spawn Annotation
 Every spawned actor must declare a protocol explicitly:
 
 ```silica
-spawn with :dynamic end (initial_state, behavior_fn) -> actor_ref with :dynamic end
-spawn with :open then (:write repeat) then :close end (initial_state, behavior_fn)
-    -> actor_ref with :open then (:write repeat) then :close end
+spawn call with :dynamic end (initial_state, behavior_fn) -> actor_ref call with :dynamic end
+spawn cast with :dynamic end (initial_state, behavior_fn) -> actor_ref cast with :dynamic end
+spawn cast with :open then (:write repeat) then :close end (initial_state, behavior_fn)
+    -> actor_ref cast with :open then (:write repeat) then :close end
+spawn_dangerous cast with :ffi_request repeat end (initial_state, ffi_worker_behavior)
+    -> dangerous_actor_ref cast with :ffi_request repeat end
 ```
 
 ### 5.3 Spawn Typing Rule
-If the result type is `actor_ref with P end`, then the compiler must verify that:
+If the result type is `actor_ref M with P end` or `dangerous_actor_ref cast with P end`, then the compiler must verify that:
+- the actor's behavior return convention matches the reference mode (`:reply` for `call`, `:no_reply` for `cast`)
 - the actor's behavior is protocol-compatible with `P`
 - the actor's mailbox handling remains safe for every sequence allowed by `P`
 - the actor's future behavior transitions do not invalidate already-issued capabilities
+
+For `dangerous_actor_ref cast with P end`, the compiler must also enforce the FFI wrapper placement rules: the behavior must be a cast-only FFI worker behavior passed directly to `spawn_dangerous(...)` or `spawn_dangerous_registered(...)`, and any `external_danger` sequence must occur directly inside that behavior.
 
 ### 5.4 Required Implementation Rule
 All protocol features described in this document are part of the required implementation surface.
@@ -241,17 +279,21 @@ No staged rollout, reduced subset, or partial protocol checker is assumed by thi
 Silica actor operations are interpreted over protocol-typed actor references:
 
 ```silica
-call(actor: actor_ref with P end, message: ActorMessage) -> Reply proc[concurrency]
-cast(actor: actor_ref with P end, message: ActorMessage) -> unit proc[concurrency]
+call(actor: actor_ref call with P end, message: ActorMessage) -> Reply proc[concurrency]
+cast(actor: actor_ref cast with P end, message: ActorMessage) -> unit proc[concurrency]
+cast(actor: dangerous_actor_ref cast with P end, message: ActorMessage) -> unit proc[concurrency]
 ```
 
-provided the sent message matches the next allowed protocol step and the actor mode is compatible.
+provided the sent message matches the next allowed protocol step.
+
+`call()` is never valid for `actor_ref cast with P end` or `dangerous_actor_ref cast with P end`. `cast()` is never valid for `actor_ref call with P end`.
 
 ### 6.2 Flow-Sensitive Consumption Rule
-After sending a message with protocol label `L` through `actor_ref with P end`, the reference is updated to:
+After sending a message with protocol label `L` through `actor_ref M with P end` or `dangerous_actor_ref cast with P end`, the reference is updated to:
 
 ```text
-actor_ref with derive(P, L) end
+actor_ref M with derive(P, L) end
+dangerous_actor_ref cast with derive(P, L) end
 ```
 
 where `derive(P, L)` is the protocol derivative: the remaining protocol after consuming one `L` step.
@@ -260,24 +302,24 @@ where `derive(P, L)` is the protocol derivative: the remaining protocol after co
 
 ```silica
 sequence proc[concurrency]
-    f: actor_ref with :open then (:write repeat) then :close end <- open_file_actor
+    f: actor_ref cast with :open then (:write repeat) then :close end <- open_file_actor
     cast(f, { command: :open, path: "/tmp/x" } impl ActorMessage {})
-    // f is now actor_ref with (:write repeat) then :close end
+    // f is now actor_ref cast with (:write repeat) then :close end
 
     cast(f, { command: :write, bytes: chunk } impl ActorMessage {})
-    // f is still actor_ref with (:write repeat) then :close end
+    // f is still actor_ref cast with (:write repeat) then :close end
 
     cast(f, { command: :close } impl ActorMessage {})
-    // f is now actor_ref with epsilon end
+    // f is now actor_ref cast with epsilon end
 produces
     pure ()
 end
 ```
 
 ### 6.4 Terminal Capability Rule
-`actor_ref with epsilon end` is a valid value but cannot be used with `call()` or `cast()`.
+Any actor capability whose protocol is `epsilon` is a valid value but cannot be used with `call()` or `cast()`.
 
-Any attempt to send through `actor_ref with epsilon end` is a compile-time error.
+Any attempt to send through an actor capability whose protocol is `epsilon` is a compile-time error.
 
 ### 6.5 Unrestricted Capability Rule
 For the built-in unrestricted protocol:
@@ -286,10 +328,10 @@ For the built-in unrestricted protocol:
 derive(:dynamic, label) = :dynamic
 ```
 
-A value of type `actor_ref with :dynamic end` therefore remains `actor_ref with :dynamic end` after any well-typed `call()` or `cast()`.
+A value whose protocol is `:dynamic` therefore keeps the same mode and danger boundary after any well-typed `call()` or `cast()`.
 
 ### 6.6 Protocols Govern Outgoing Messages Only
-Protocols do not govern replies from actors. The protocol `P` in `actor_ref with P end` constrains only the sequence of outgoing messages that may be sent through the reference. When a `call()` receives a reply, the reply type is determined by the actor's declared reply type, not by protocol rules.
+Protocols do not govern replies from actors. The protocol `P` in an actor capability constrains only the sequence of outgoing messages that may be sent through the reference. When a `call()` receives a reply, the reply type is determined by the actor's declared reply type, not by protocol rules.
 
 Reply protocols are not modeled explicitly in the surface language.
 
@@ -312,7 +354,7 @@ interleave(P1, P2) is contained in P
 ```
 
 ### 7.3 User-Level Rule
-A value of type `actor_ref with P end` may be:
+A value of type `actor_ref call with P end`, `actor_ref cast with P end`, or `dangerous_actor_ref cast with P end` may be:
 - moved freely
 - copied freely
 
@@ -321,7 +363,7 @@ Each copy of a reference maintains its own independent protocol state.
 ### 7.4 Independent Protocol State Tracking
 When a reference is copied, each copy tracks its own protocol state independently. The implementation details of how independent states are reconciled at the actor's mailbox are deferred to runtime and compiler design, but the requirement is:
 
-**Each outstanding copy of `actor_ref with P end` maintains its own flow-sensitive protocol position, independently of other copies of the same underlying actor reference.**
+**Each outstanding copy of a capability-typed actor reference maintains its own flow-sensitive protocol position, independently of other copies of the same underlying actor reference.**
 
 ### 7.5 Capability Splitting
 Splitting, as defined in section 7.2, remains a valid operation for cases where a protocol should be deliberately partitioned across multiple references with complementary protocol obligations.
@@ -333,8 +375,8 @@ Silica already distinguishes actors whose behaviors are call-only or cast-only.
 
 ### 8.2 Protocol Consistency Rule
 A protocol actor must also be mode-consistent:
-- `call()` may only be used with call-compatible protocol actors
-- `cast()` may only be used with cast-compatible protocol actors
+- `call()` may only be used with `actor_ref call with P end`
+- `cast()` may only be used with `actor_ref cast with P end` or `dangerous_actor_ref cast with P end`
 
 Mode also affects the interpretation of protocol ordering:
 - for `call()` actors, protocol conformance is checked against the order of messages actually received by the actor across all outstanding capabilities together
@@ -356,6 +398,41 @@ protocol cast actor
 ```
 
 Mixed-mode protocol actors are not permitted by this specification.
+
+### 8.5 Dangerous Actor Capabilities and FFI Workers
+FFI worker actors use the same protocol machinery, but with a narrower reference family:
+
+```silica
+dangerous_actor_ref cast with P end
+```
+
+This capability means:
+- the handle refers to an FFI worker actor in the dangerous actor family
+- only `cast()` may be used through the reference
+- outgoing messages must follow protocol `P`
+- the reference does not authorize direct foreign calls by the holder
+
+The actual authority to execute foreign code remains confined to the FFI worker behavior installed by `spawn_dangerous(...)` or `spawn_dangerous_registered(...)`. Capability typing controls message authority to that worker; it does not move `external_danger` authority to the sender.
+
+The ordinary/dangerous boundary remains explicit:
+- `actor_ref cast with P end` is not coercible to `dangerous_actor_ref cast with P end`
+- `dangerous_actor_ref cast with P end` is not coercible to `actor_ref cast with P end`
+- ordinary actor registries return ordinary actor capabilities
+- dangerous actor registries return dangerous cast capabilities
+- dangerous registry names retain the spelling and lookup restrictions from the FFI wrapper specification
+
+There is no `dangerous_actor_ref call with P end` because FFI workers are cast-only. Request/reply FFI workflows should be modeled by sending a cast message that contains an ordinary reply actor capability, for example:
+
+```silica
+{
+    command: :add,
+    lhs: int64,
+    rhs: int64,
+    reply_to: actor_ref cast with :ffi_result end
+}
+```
+
+In that pattern, the client holds a dangerous cast capability to the FFI worker, and the FFI worker holds an ordinary cast capability back to the result sink. The result sink may then print, forward, or call another ordinary actor according to its own capability type.
 
 ---
 
@@ -429,7 +506,7 @@ where `Ω` is a protocol obligation environment.
 ### 10.4 Local Soundness Goal
 The system must guarantee:
 
-> If a program type-checks, then every message sent through a well-typed `actor_ref with P end` is accepted by the target actor in a mailbox state consistent with the remaining protocol of that capability.
+> If a program type-checks, then every message sent through a well-typed actor capability is accepted by the target actor in a mailbox state consistent with the remaining protocol of that capability.
 
 For `call()` actors, this guarantee is strengthened to the actor-global level: the actor's actual received message order across all outstanding capabilities must remain consistent with the protocol obligations justified by the type system.
 
@@ -455,7 +532,7 @@ Suggested layering:
 The formal system adds:
 
 ```text
-T ::= ... | ActorRef(P) | Beh(P, M, S, R)
+T ::= ... | ActorRef(M, P) | DangerousActorRef(P) | Beh(P, M, S, R)
 ```
 
 where:
@@ -491,10 +568,10 @@ Add a send rule of the form:
 
 ```text
 Γ ⊢ e_msg : MsgType(label = l)
-Γ(x) = ActorRef(P)
+Γ(x) = ActorRef(M, P) or Γ(x) = DangerousActorRef(P)
 derive(P, l) ≠ ∅
 ────────────────────────────────
-Γ ⊢ send(x, e_msg) : unit ⊣ Γ[x ↦ ActorRef(derive(P, l))]
+Γ ⊢ send(x, e_msg) : unit ⊣ Γ[x ↦ update_protocol(Γ(x), derive(P, l))]
 ```
 
 ### 11.6 Capability Split Rule
@@ -503,8 +580,11 @@ Add a split rule of the form:
 ```text
 shuffle(P1, P2) ⊆ P
 ────────────────────────────────
-Γ, x : ActorRef(P) ⊢ split x as x1, x2
-      ⊣ Γ, x1 : ActorRef(P1), x2 : ActorRef(P2)
+Γ, x : ActorRef(M, P) ⊢ split x as x1, x2
+      ⊣ Γ, x1 : ActorRef(M, P1), x2 : ActorRef(M, P2)
+
+Γ, x : DangerousActorRef(P) ⊢ split x as x1, x2
+      ⊣ Γ, x1 : DangerousActorRef(P1), x2 : DangerousActorRef(P2)
 ```
 
 ### 11.7 Behavior Soundness Rule
@@ -520,12 +600,19 @@ This is the central proof obligation of the extension.
 Extend the type grammar with:
 
 ```ebnf
-type ::= ... | "actor_ref" "with" protocol_expression "end"
+actor_mode ::= "call" | "cast"
+type ::= ... | "actor_ref" actor_mode "with" protocol_expression "end"
+             | "dangerous_actor_ref" "cast" "with" protocol_expression "end"
 ```
 
 ### 12.2 Spawn Grammar Additions
 ```ebnf
-spawn_expression ::= "spawn" "with" protocol_expression "end" "(" expression "," expression ["," expression] ")"
+spawn_expression ::= "spawn" actor_mode "with" protocol_expression "end"
+                     "(" expression "," expression ["," expression] ")"
+                   | "spawn_dangerous" "cast" "with" protocol_expression "end"
+                     "(" expression "," expression ["," expression] ")"
+                   | "spawn_dangerous_registered" "cast" "with" protocol_expression "end"
+                     "(" expression "," expression "," atom_expression ["," expression] ")"
 ```
 
 ### 12.3 No Change to Existing Message Syntax
@@ -545,11 +632,11 @@ A message label is not permitted by the current protocol state of the actor refe
 
 Example:
 ```text
-cannot send message commanded :close through actor_ref with :open then (:write repeat) then :close end before sending :open
+cannot send message commanded :close through actor_ref cast with :open then (:write repeat) then :close end before sending :open
 ```
 
 #### E3501 — ProtocolExhausted
-A send or call attempts to use `actor_ref with epsilon end`.
+A send or call attempts to use an actor capability whose protocol is `epsilon`.
 
 #### E3502 — IllegalCapabilityCopy
 The program duplicates a non-copyable protocol actor reference.
@@ -563,6 +650,9 @@ A protocol actor is declared or used inconsistently with `call()` vs `cast()` mo
 #### E3505 — ProtocolMatchIndeterminate
 The compiler cannot determine a unique protocol label for the sent message.
 
+#### E3506 — DangerousCapabilityMode
+The program attempts to declare, construct, or use `dangerous_actor_ref call with P end`. Dangerous actor capabilities are cast-only.
+
 ---
 
 ## 14. Implementation Requirements
@@ -570,8 +660,8 @@ The compiler cannot determine a unique protocol label for the sent message.
 A conforming implementation must implement this specification as a complete feature set.
 
 Required components include:
-- parsing `actor_ref with P end`
-- parsing `spawn with P end (...)`
+- parsing `actor_ref call with P end`, `actor_ref cast with P end`, and `dangerous_actor_ref cast with P end`
+- parsing `spawn call with P end (...)`, `spawn cast with P end (...)`, and dangerous cast spawn forms
 - parsing and typing the full protocol language
 - support for both atom-tag labels and `message({ ... })` protocol atoms
 - protocol derivatives
@@ -587,7 +677,7 @@ This specification does not define staged milestones, reduced compliance profile
 ## 15. Design Constraints for Silica
 
 ### 15.1 No Generics
-Because Silica avoids generics, protocol typing must remain explicit and concrete. This document therefore uses explicit `actor_ref with P end` syntax rather than generic actor API abstractions.
+Because Silica avoids generics, protocol typing must remain explicit and concrete. This document therefore uses explicit `actor_ref call with P end`, `actor_ref cast with P end`, and `dangerous_actor_ref cast with P end` syntax rather than generic actor API abstractions.
 
 ### 15.2 Explicit Types
 No inference is required for user-visible protocols.
@@ -618,8 +708,12 @@ This preserves uniformity in the type system while still allowing programmers to
 A conforming Silica implementation must support all of the following:
 
 1. **Explicit unrestricted actors**
-   - `actor_ref with :dynamic end`
-   - `spawn with :dynamic end (...)`
+   - `actor_ref call with :dynamic end`
+   - `actor_ref cast with :dynamic end`
+   - `dangerous_actor_ref cast with :dynamic end`
+   - `spawn call with :dynamic end (...)`
+   - `spawn cast with :dynamic end (...)`
+   - `spawn_dangerous cast with :dynamic end (...)`
 
 2. **One-shot capabilities**
    - `:grant_once`
@@ -644,18 +738,24 @@ A conforming Silica implementation must support all of the following:
 8. **Mode-consistent protocol actors**
    - `call()` and `cast()` compatibility enforced together with protocol checking
 
+9. **Dangerous actor capabilities**
+   - `dangerous_actor_ref cast with P end`
+   - no dangerous call capability
+   - no coercion between ordinary and dangerous actor capabilities
+
 ## 17. Conformance
 
 An implementation conforms to this specification if it:
-- uses `actor_ref with P end` as the sole actor reference type form
+- uses explicit mode- and protocol-typed actor reference forms
 - requires explicit protocol annotation at actor creation points
-- correctly parses and type-checks `actor_ref with P end` and `spawn with P end (...)`
+- correctly parses and type-checks ordinary and dangerous capability type forms and their spawn forms
 - treats `:dynamic` as the unrestricted built-in protocol (as a surface literal)
 - treats `epsilon` as the exhausted protocol
 - enforces atom-commanded message labels as the sole protocol labeling mechanism
 - rejects protocol-invalid sends
 - allows references to be freely copied, with each copy tracking independent protocol state
 - enforces mode consistency with existing `call()`/`cast()` rules
+- rejects `dangerous_actor_ref call with P end` and rejects all ordinary/dangerous actor-reference coercions
 - interprets protocol ordering for `call()` actors against actual received message order across all outstanding capabilities together
 - interprets protocol ordering for `cast()` actors as a static capability discipline without runtime mailbox deferral or reordering
 - ensures hot-swapped behaviors preserve the protocol declared at spawn time
@@ -672,7 +772,7 @@ The following design questions were resolved during specification development:
 **Rationale:** Atom commands provide clear, unambiguous protocol labeling while maintaining consistency with Silica's explicit-type philosophy.
 
 ### 18.2 Reference Copyability
-**Decision:** References of type `actor_ref with P end` are freely copyable. Each copy maintains its own independent protocol state.
+**Decision:** Capability-typed actor references are freely copyable. Each copy maintains its own independent protocol state.
 
 **Rationale:** Copyability provides flexibility in reference management while allowing independent tracking of protocol consumption across multiple handles to the same actor.
 
@@ -691,6 +791,16 @@ The following design questions were resolved during specification development:
 
 **Rationale:** Consistency with Silica's explicit, literal-based design philosophy. Unrestricted protocol behavior is an explicit choice, not implicit or hidden.
 
+### 18.6 Mode in Reference Types
+**Decision:** The actor reference type includes communication mode directly: `actor_ref call ...`, `actor_ref cast ...`, and `dangerous_actor_ref cast ...`.
+
+**Rationale:** Silica already requires every behavior to be call-only or cast-only. Placing that distinction on the reference turns the existing behavior-side rule into an explicit capability held by callers.
+
+### 18.7 Dangerous Actor Capabilities
+**Decision:** Dangerous actor references participate in protocol typing only as `dangerous_actor_ref cast with P end`.
+
+**Rationale:** FFI worker actors are intentionally cast-mediated. A dangerous call capability would blur the FFI security model and encourage request/reply FFI flows that bypass explicit reply actors.
+
 ## 19. References
 
 1. Gordon, Colin S. *Actor Capabilities for Message Ordering*.
@@ -702,4 +812,3 @@ After this document stabilizes, the following companion updates should be drafte
 1. An amendment to **silica-specification.md** referencing this extension in the actor and concurrency sections
 2. An amendment to **silica-formal-verification-specification.md** adding Layer 3 protocol rules
 3. A compiler-internal design note defining the protocol AST, derivative algorithm, and copy-checking rules
-
