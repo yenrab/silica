@@ -98,6 +98,28 @@ fn is_spawn_dangerous_behavior_call(name: string) -> bool {
     }
 }
 
+fn expr_contains_spawn_dangerous_call(expr: Expr) -> bool {
+    case expr.kind < 0 of {
+        true -> false;
+        false -> case expr.kind == 4 of {
+            true -> do
+                case is_spawn_dangerous_behavior_call(expr.name) of {
+                    true -> true;
+                    false -> expr_contains_spawn_dangerous_pair(expr.inner, expr.right_expr)
+                }
+            end;
+            false -> expr_contains_spawn_dangerous_pair(expr.inner, expr.right_expr)
+        }
+    }
+}
+
+fn expr_contains_spawn_dangerous_pair(inner: Expr, right: Expr) -> bool {
+    case expr_contains_spawn_dangerous_call(inner) of {
+        true -> true;
+        false -> expr_contains_spawn_dangerous_call(right)
+    }
+}
+
 fn spawn_behavior_expr(call_expr: Expr) -> Expr {
     call_expr.right_expr.inner
 }
@@ -311,7 +333,10 @@ fn validate_expr_placement(expr: Expr, current_fn: string, lambda_depth: int64, 
                 has_ed: bool <- effect_list_has_external_danger(expr.sequence_effects);
                 placement_st: int64 <- case has_ed of {
                     true -> case is_ffi_worker_fn(current_fn, ffi_worker_names) of {
-                        false -> print_placement_error("E4041", expr.location, "external_danger sequence blocks are only valid directly inside the cast-only behavior function installed by spawn_dangerous for an FFI worker actor (spec 4.6)");
+                        false -> case expr_contains_spawn_dangerous_pair(expr.inner, expr.right_expr) of {
+                            true -> print_placement_error("E4047", expr.location, "sequence blocks that call spawn_dangerous must not declare external_danger. The external_danger effect is valid only inside the FFI worker behavior passed to spawn_dangerous (spec 4.4)");
+                            false -> print_placement_error("E4041", expr.location, "external_danger sequence blocks are only valid directly inside the cast-only behavior function installed by spawn_dangerous for an FFI worker actor (spec 4.6)")
+                        };
                         true -> case lambda_depth > 0 of {
                             true -> print_placement_error("E4041", expr.location, "external_danger sequence blocks are only valid directly inside the cast-only behavior function installed by spawn_dangerous for an FFI worker actor (spec 4.6)");
                             false -> 0

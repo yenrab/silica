@@ -25,6 +25,7 @@ NM := $(shell command -v llvm-nm 2>/dev/null || command -v nm)
 
 APP_SIDECAR_DIR := app_sidecar_legacy_math_add
 APP_CAST_WORKER_DIR := app_cast_worker_legacy_add
+APP_CAST_WORKER_REGISTERED_DIR := app_cast_worker_registered_legacy_add
 APP_FFI_RESULT_CAST_DIR := app_ffi_result_cast_add
 APP_FOREIGN_ABI_DIR := app_foreign_abi_valid
 APP_FOREIGN_ABI_TYPES_E2E_DIR := app_foreign_abi_types_e2e
@@ -37,6 +38,7 @@ APP_TEXT_ECHO_TWICE_DIR := app_text_echo_twice
 APP_DIRS := \
 	$(APP_SIDECAR_DIR) \
 	$(APP_CAST_WORKER_DIR) \
+	$(APP_CAST_WORKER_REGISTERED_DIR) \
 	$(APP_FFI_RESULT_CAST_DIR) \
 	$(APP_FOREIGN_ABI_DIR) \
 	$(APP_FOREIGN_ABI_TYPES_E2E_DIR) \
@@ -160,7 +162,8 @@ phase-4: phase-3
 
 phase-5: phase-4
 	@$(MAKE) -C "$(THIS_DIR)$(APP_CAST_WORKER_DIR)" integrate
-	@echo "✅ ffi_addition phase-5 complete ($(APP_CAST_WORKER_DIR))"
+	@$(MAKE) -C "$(THIS_DIR)$(APP_CAST_WORKER_REGISTERED_DIR)" integrate
+	@echo "✅ ffi_addition phase-5 complete ($(APP_CAST_WORKER_DIR), $(APP_CAST_WORKER_REGISTERED_DIR))"
 
 phase-6: phase-5
 	@$(MAKE) -C "$(THIS_DIR)$(APP_FFI_RESULT_CAST_DIR)" integrate

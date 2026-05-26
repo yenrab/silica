@@ -12,6 +12,7 @@ ffi_addition/
     src/                                # C sources (not compiled by Silica)
   app_sidecar_legacy_math_add/          # runnable app: sidecar metadata + legacy math add
   app_cast_worker_legacy_add/           # runnable app: spawn_dangerous worker + external_danger behavior
+  app_cast_worker_registered_legacy_add/  # runnable app: spawn_dangerous_registered + cast/worker e2e
   app_ffi_result_cast_add/              # runnable app: FFI result cast with tainted int64
   app_foreign_abi_valid/                # runnable apps: legacy Silica-side ABI smoke tests
   app_foreign_abi_types_e2e/            # runtime link + guarded worker for libsilica_abi_types.a
@@ -37,6 +38,7 @@ Each `app_*` directory is a self-contained runnable program (or small set of pro
 | --------- | ----------------- |
 | `app_sidecar_legacy_math_add` | Sidecar `wrapper_meta` loads; legacy math foreign call via FFI worker |
 | `app_cast_worker_legacy_add` | `spawn_dangerous` + `external_danger` worker behavior; `dangerous_legacy_stub@add` |
+| `app_cast_worker_registered_legacy_add` | `spawn_dangerous_registered(:dangerous_legacy_worker)` + cast/worker e2e (same 4/done golden as unregistered) |
 | `app_ffi_result_cast_add` | Tainted int64 delivered by FFI result cast inside worker |
 | `app_foreign_abi_valid` | Scalar and net-port ABI declarations compile and run |
 | `app_foreign_abi_types_e2e` | Runtime link + cast/worker for `libsilica_abi_types.a` (int64/boolean/record/tagged_result decls; guarded `:foreign_fault` golden) |

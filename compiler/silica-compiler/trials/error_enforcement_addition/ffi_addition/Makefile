@@ -32,15 +32,17 @@ FAIL_CASES := \
 	error_app_sidecar_metadata/dangerous_sidecar_missing_link_library \
 	error_app_sidecar_metadata/dangerous_sidecar_missing_archive \
 	error_app_cast_worker/dangerous_external_danger_in_main \
+	error_app_cast_worker/dangerous_external_danger_at_spawn_site \
 	error_app_cast_worker/dangerous_direct_call_fail \
 	error_app_cast_worker/dangerous_spawn_plain_bad \
 	error_app_cast_worker/dangerous_spawn_dangerous_requires_external \
 	error_app_cast_worker/dangerous_spawn_dangerous_wrong_type \
+	error_app_cast_worker/dangerous_spawn_registered_wrong_type \
 	error_app_cast_worker/dangerous_spawn_registered_bad_atom \
 	error_app_cast_worker/dangerous_spawn_registered_dangerous_behavior \
 	error_app_cast_worker/dangerous_client_not_cast_only \
 	error_app_ffi_result_cast/dangerous_taint_in_produces \
-	error_app_ffi_result_cast/dangerous_taint_ordinary_cast \
+	error_app_ffi_result_cast/dangerous_external_danger_message_boundary \
 	error_app_ffi_result_cast/dangerous_taint_device_io \
 	error_app_ffi_result_cast/dangerous_taint_region_escape \
 	error_app_foreign_abi/dangerous_raw_string_param_fail \
