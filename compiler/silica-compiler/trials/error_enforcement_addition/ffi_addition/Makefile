@@ -42,6 +42,8 @@ FAIL_CASES := \
 	error_app_cast_worker/dangerous_spawn_dangerous_wrong_type \
 	error_app_cast_worker/dangerous_spawn_registered_wrong_type \
 	error_app_cast_worker/dangerous_spawn_registered_bad_atom \
+	error_app_cast_worker/dangerous_cast_registered_bad_atom \
+	error_app_cast_worker/dangerous_cast_registered_on_dangerous_atom \
 	error_app_cast_worker/dangerous_spawn_registered_dangerous_behavior \
 	error_app_cast_worker/dangerous_client_not_cast_only \
 	error_app_ffi_result_cast/dangerous_taint_in_produces \
