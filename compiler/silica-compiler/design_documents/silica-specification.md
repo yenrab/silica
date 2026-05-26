@@ -278,7 +278,7 @@ character_literal ::= "'" character "'"
 
 Escape sequences:
 ```
-escape_sequence ::= "\\" | "\'" | "\"" | "\n" | "\t" | "\r"
+escape_sequence ::= "\\" | "\'" | "\"" | "\n" | "\t" | "\r" | "\e" | "\x" hex_digit hex_digit
 ```
 
 ##### String Literals

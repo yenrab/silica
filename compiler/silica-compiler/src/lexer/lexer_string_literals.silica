@@ -16,7 +16,7 @@
 -}
 
 // String and character literal parsing for Silica lexer
-// Supports string literals with Unicode and escape sequences: \\, \', \", \n, \t, \r, \xNN
+// Supports string literals with Unicode and escape sequences: \\, \', \", \n, \t, \r, \e, \xNN
 // Per language spec §2.2: string_literal ::= "\"" {character | escape_sequence} "\""
 // Character literals use same escape sequences per character_literal grammar
 // UTF-8: advance_utf8_char advances by full character length (1-4 bytes) for multi-byte sequences
@@ -26,6 +26,7 @@ use lexer_token_kind;
 
 // Import lexer core types
 use lexer_core;
+use lexer_integer_literals;
 
 // Export entry points
 export read_string_literal/1;
@@ -62,6 +63,44 @@ fn advance_utf8_char(lexer: Lexer) -> Lexer {
     case n of {
         1 -> lexer_core@advance(lexer);
         _: int64 -> lexer_core@advance_by(lexer, n)
+    }
+}
+
+fn is_simple_string_escape(next: string) -> bool {
+    case next of {
+        "n" -> true;
+        "t" -> true;
+        "r" -> true;
+        "e" -> true;
+        "\\" -> true;
+        "\"" -> true;
+        "'" -> true;
+        _: string -> false
+    }
+}
+
+// Lexer positioned at 'x' (char after '\\' in \\xNN). Validates the two hex digits after x.
+fn is_valid_hex_escape_at(lexer: Lexer) -> bool {
+    hi: string <- lexer_core@peek_next_char(lexer);
+    lo: string <- substring(lexer.source, lexer.position + 2, lexer.position + 3);
+    case lexer_integer_literals@is_hex_digit_char(hi) of {
+        false -> false;
+        true -> lexer_integer_literals@is_hex_digit_char(lo)
+    }
+}
+
+// Advance past a validated escape sequence (lexer positioned at char after '\\').
+fn advance_past_string_escape(lexer: Lexer) -> (Lexer, bool) {
+    next: string <- lexer_core@peek_char(lexer);
+    case next of {
+        "x" -> case is_valid_hex_escape_at(lexer) of {
+            false -> (lexer, false);
+            true -> (lexer_core@advance_by(lexer, 3), true)
+        };
+        _: string -> case is_simple_string_escape(next) of {
+            false -> (lexer, false);
+            true -> (lexer_core@advance(lexer), true)
+        }
     }
 }
 
@@ -118,23 +157,11 @@ fn read_string_content(lexer: Lexer, start_pos: int64, kinds: TokenKinds, start_
             (after_close, true)
         end;
         "\\" -> do
-            // Escape sequence - advance past backslash, check next char
+            // Escape sequence - advance past backslash, then past the escape body.
             after_backslash: Lexer <- lexer_core@advance(lexer);
-            next: string <- lexer_core@peek_char(after_backslash);
-            is_valid_escape: bool <- case next of {
-                "n" -> true;
-                "t" -> true;
-                "r" -> true;
-                "\\" -> true;
-                "\"" -> true;
-                "'" -> true;
-                _: string -> false
-            };
-            case is_valid_escape of {
-                true -> do
-                    after_escape: Lexer <- lexer_core@advance(after_backslash);
-                    read_string_content(after_escape, start_pos, kinds, start_location)
-                end;
+            (after_escape: Lexer, ok_escape: bool) <- advance_past_string_escape(after_backslash);
+            case ok_escape of {
+                true -> read_string_content(after_escape, start_pos, kinds, start_location);
                 false -> (after_backslash, false)
             }
         end;
@@ -179,19 +206,9 @@ fn read_char_literal(lexer: Lexer) -> (Token, Lexer) {
         "\\" -> do
             // Escape sequence
             after_backslash: Lexer <- lexer_core@advance(after_open);
-            next: string <- lexer_core@peek_char(after_backslash);
-            is_valid_escape: bool <- case next of {
-                "n" -> true;
-                "t" -> true;
-                "r" -> true;
-                "\\" -> true;
-                "\"" -> true;
-                "'" -> true;
-                _: string -> false
-            };
-            case is_valid_escape of {
+            (after_escape: Lexer, ok_escape: bool) <- advance_past_string_escape(after_backslash);
+            case ok_escape of {
                 true -> do
-                    after_escape: Lexer <- lexer_core@advance(after_backslash);
                     closing: string <- lexer_core@peek_char(after_escape);
                     case closing of {
                         "'" -> do

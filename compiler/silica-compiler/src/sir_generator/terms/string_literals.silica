@@ -20,12 +20,12 @@
 // Lexer produces string_literal token; parser builds Expr { kind: 8, value: lexeme }
 // SIR: const(string, content) — content is lexeme with quotes stripped and escapes resolved
 // Strings are UTF-8 (Unicode) per spec §2.1
-// Self-contained: escape resolution inlined (no data_structures dependency)
 
 use parser_ast;
 use type_checker_core;
 use sir_ast;
 use types;
+use string_escapes;
 
 export expr_to_sir/2;
 
@@ -37,55 +37,10 @@ fn string_content(lexeme: string) -> string {
     }
 }
 
-// Resolve one escape sequence at position; returns (resolved_char, new_pos)
-// Escapes: \\, \', \", \n, \t, \r per language spec §2.2
-fn resolve_one_escape(s: string, pos: int64) -> (string, int64) {
-    case pos >= len(s) of {
-        true -> ("", pos);
-        false -> do
-            c: string <- substring(s, pos, pos + 1);
-            case c of {
-                "\\" -> case pos + 1 >= len(s) of {
-                    true -> ("\\", pos + 1);
-                    false -> do
-                        next: string <- substring(s, pos + 1, pos + 2);
-                        case next of {
-                            "\\" -> ("\\", pos + 2);
-                            "'" -> ("'", pos + 2);
-                            "\"" -> ("\"", pos + 2);
-                            "n" -> ("\n", pos + 2);
-                            "t" -> ("\t", pos + 2);
-                            "r" -> ("\r", pos + 2);
-                            _: string -> (concat("\\", next), pos + 2)
-                        }
-                    end
-                };
-                _: string -> (c, pos + 1)
-            }
-        end
-    }
-}
-
-// Accumulate resolved string
-fn resolve_escapes_acc(s: string, pos: int64, acc: string) -> string {
-    case pos >= len(s) of {
-        true -> acc;
-        false -> do
-            (resolved: string, new_pos: int64) <- resolve_one_escape(s, pos);
-            resolve_escapes_acc(s, new_pos, concat(acc, resolved))
-        end
-    }
-}
-
-// Resolve escape sequences in string content
-fn resolve_string_escapes(content: string) -> string {
-    resolve_escapes_acc(content, 0, "")
-}
-
 // Build SIR const term for string literal (Expr kind 8)
 fn expr_to_sir(context: TypeContext, expr: Expr) -> SIRTerm {
     raw_content: string <- string_content(expr.value);
-    content: string <- resolve_string_escapes(raw_content);
+    content: string <- string_escapes@resolve_string_escapes(raw_content);
     sir_type: string <- types@type_name_to_sir("string");
     SIRTerm { kind: 0, type_name: sir_type, value: content, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
 }
