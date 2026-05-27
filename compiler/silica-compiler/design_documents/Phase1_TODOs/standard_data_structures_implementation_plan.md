@@ -96,6 +96,12 @@ Exit criteria:
 
 - The trial harness can run empty placeholder suites for each data-structure family.
 
+**Phase 0 completed (trial layout):**
+
+- `trials/standard_data_structures_addition/` — type-string snapshot (`.scout` / `.ascomp`)
+- `trials/graph_addition/`, `btree_set_addition/`, `balanced_tree_addition/`, `heap_addition/` — empty integrate via `trials/base/placeholder_makefile`
+- `trials/error_enforcement_addition/generated_data_structures/` — validation-failure naming and subdirs (`graph/`, `btree_set/`, `balanced_tree/`, `heap/`); goldens added when `validate` exists
+
 ## Phase 1 - Graph Foundation: NodeIdAdjacencyGraph
 
 ### Step 1.1 - Generate Unweighted Directed Adjacency Type And Empty Constructor
@@ -791,11 +797,11 @@ Exit criteria:
 
 | Area | Status | Notes |
 |------|--------|-------|
-| Shared generator foundation | Not started | Phase 0 |
-| NodeIdAdjacencyGraph | Not started | Phase 1 |
-| CompressedSparseRowGraph | Not started | Phase 2 |
-| DenseMatrixGraph | Not started | Phase 3 |
-| DenseBitsetGraph | Not started | Phase 3, conditional on bit operations per graph design |
+| Shared generator foundation | Complete | Phase 0 — `src/standard_data_structures/`; `trials/standard_data_structures_addition/`; placeholder `*_addition/`; `error_enforcement_addition/generated_data_structures/` |
+| NodeIdAdjacencyGraph | Complete | Phase 1 — directed unweighted normal-memory graph is list-backed for node ids 0..2 and `trials/graph_addition/graph_adj_directed_unweighted.silica` now covers empty validation, checked add, direct add, validation after add, invalid endpoint rejection, directed `has_edge`, and `out_degree`; `graph_adj_undirected_unweighted.silica` and `graph_adj_directed_weighted_int64.silica` retain bootstrap coverage; invalid endpoint runtime trial under `error_enforcement_addition/generated_data_structures/graph/` |
+| CompressedSparseRowGraph | Complete (bootstrap) | Phase 2 — CSR inline type strings covered by Phase 0 snapshot; `graph_csr_directed_unweighted_normal.silica` and `graph_csr_directed_weighted_int64_normal.silica` compile with direct static buffer constructors, validation, out-degree, edge lookup, and weighted lookup helpers; `trials/graph_addition/graph_csr_directed_unweighted.silica` and `graph_csr_directed_weighted_int64.silica` provide integration/golden coverage. Runtime trials are no-op because current emitter hangs when region-owned CSR buffer records are constructed or returned in graph trial executables. |
+| DenseMatrixGraph | Complete (bootstrap) | Phase 3 — dense matrix inline type strings covered by Phase 0 snapshot; `graph_dense_directed_unweighted_normal.silica` and `graph_dense_directed_weighted_int64_normal.silica` compile with fixed 3-node capacity, empty constructors, checked edge setting, `has_edge`, `out_degree`, weighted lookup, and validation helpers; `trials/graph_addition/graph_dense_directed_unweighted.silica` and `graph_dense_directed_weighted_int64.silica` provide integration/golden coverage. Runtime trials are no-op for the same region-owned buffer record emitter limitation documented for Phase 2. |
+| DenseBitsetGraph | Deferred with documented fallback | Phase 3 — graph design §6.4 says to generate DenseBitset only when bitwise `|`, `&`, and shift are supported in the current compiler path. This bootstrap path uses `DenseMatrixGraphDirectedUnweighted` as the documented fallback. |
 | Graph algorithms | Not started | Phase 4 |
 | NodeIDBTreeSet | Not started | Phase 5 |
 | CsrBTreeSet | Not started | Phase 6 |

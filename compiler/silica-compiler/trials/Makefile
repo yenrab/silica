@@ -35,6 +35,10 @@ integrate: $(SILICA_COMPILER)
 			echo "SKIP: cpu_discovery_and_spawn_pinning (INTEGRATE_PENDING — see cpu_discovery_and_spawn_pinning/README.md)"; \
 			continue; \
 		fi; \
+		if [ -f "$$dir/INTEGRATE_PENDING" ]; then \
+			echo "SKIP: $$dir (INTEGRATE_PENDING — see $$dir/README.md)"; \
+			continue; \
+		fi; \
 		if $(MAKE) -C $$dir integrate; then st=0; else st=1; failed=1; fi; \
 		cf="$$dir/.integrate_counts"; \
 		if [ -f "$$cf" ]; then \

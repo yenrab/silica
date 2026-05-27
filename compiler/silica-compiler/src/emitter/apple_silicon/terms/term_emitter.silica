@@ -174,6 +174,20 @@ fn type_name_is_list_like(type_name: string) -> bool {
     }
 }
 
+fn type_name_is_memory_handle_like(type_name: string) -> bool {
+    t: string <- prims_record@strip_spaces_rt(type_name);
+    case len(t) >= 7 and substring(t, 0, 7) == "region(" of {
+        true -> true;
+        false -> case len(t) >= 4 and substring(t, 0, 4) == "buf(" of {
+            true -> true;
+            false -> case len(t) >= 4 and substring(t, 0, 4) == "ref(" of {
+                true -> true;
+                false -> len(t) >= 11 and substring(t, 0, 11) == "atomic_ref("
+            }
+        }
+    }
+}
+
 // Let tail `name` after binding aggregate tuple/record to `name`; caller passes X8 = sret (|_callee_sret=X8 on outer).
 fn id_ret_aggregate_let(term: SIRTerm) -> bool {
     term.right_expr.kind == 1 and term.right_expr.name == term.name and reg_conventions@is_aggregate_struct_or_tuple_return_type(term.inner.type_name)
@@ -216,7 +230,7 @@ fn let_rhs_type_spills_across_io(type_name: string) -> bool {
                 true -> true;
                 false -> case len(type_name) >= 1 and substring(type_name, 0, 1) == "{" of {
                     true -> true;
-                    false -> false
+                    false -> type_name_is_memory_handle_like(type_name)
                 }
             }
         }
@@ -958,12 +972,42 @@ fn list_cons_tail_ptr_reg(ext_for_alloc: string, scrut_reg: string) -> string {
 // scrut_reg holds the handle.  Result goes to tr (via X0).
 // tr must not be X0 or X1 (list_cons_tail_ptr_reg blocks them).
 fn list_cons_emit_tail_call(scrut_reg: string, elem_slot_s: string, cdata_s: string, tr: string) -> string {
-    save: string <- "    STP X0, X1, [SP, #-16]!\n    STP X2, X3, [SP, #-16]!\n";
+    save: string <- "    STP X0, X1, [SP, #-16]!\n    STP X2, X3, [SP, #-16]!\n    STP X4, X5, [SP, #-16]!\n";
     setup: string <- concat(concat("    MOV X0, ", scrut_reg), concat("\n    MOV X1, #", concat(elem_slot_s, concat("\n    MOV X2, #", concat(cdata_s, "\n")))));
     bl: string <- "    BL L_list_tail_helper\n";
     mov_r: string <- concat(concat("    MOV ", tr), ", X0\n");
-    restore: string <- "    LDP X2, X3, [SP], #16\n    LDP X0, X1, [SP], #16\n";
+    restore: string <- "    LDP X4, X5, [SP], #16\n    LDP X2, X3, [SP], #16\n    LDP X0, X1, [SP], #16\n";
     concat(concat(save, setup), concat(bl, concat(mov_r, restore)))
+}
+
+fn list_cons_scalar_head_blocked(ext_for_alloc: string, scrut_reg: string) -> string {
+    base: string <- concat(ext_for_alloc, "|__silica_hd0=X0|__silica_hd10=X10|__silica_hd11=X11");
+    case len(scrut_reg) > 0 of {
+        true -> concat(base, concat("|__silica_scr=", scrut_reg));
+        false -> base
+    }
+}
+
+// Scalar list heads must not land in X0: cons-branch bodies often MOV tail into X0 for the first
+// BL arg (e.g. sum_int64_list(t, acc + h)) and clobber a head loaded there (structs_addition/07).
+fn list_cons_head_ptr_reg(head_t: string, ext_for_alloc: string, scrut_reg: string) -> string {
+    case reg_conventions@is_aggregate_struct_or_tuple_return_type(head_t) of {
+        true -> do
+            cs: string <- spill_reg_chain_from_outer(ext_for_alloc);
+            case len(cs) > 0 of {
+                true -> cs;
+                false -> var@next_free_int_reg(concat(ext_for_alloc, "|__silica_hd0=X0|__silica_hd1=X1|__silica_hd2=X2|__silica_hd3=X3|__silica_hd10=X10|__silica_hd11=X11"))
+            }
+        end;
+        false -> do
+            blocked: string <- list_cons_scalar_head_blocked(ext_for_alloc, scrut_reg);
+            picked: string <- var@next_free_int_reg(blocked);
+            case picked == "X0" of {
+                true -> "X1";
+                false -> picked
+            }
+        end
+    }
 }
 
 // Chunk-based head load: handle → chunk_ptr (+8) → cursor (+16) → element at [chunk + cursor].
@@ -1031,7 +1075,7 @@ fn emit_list_cons_pattern_loads(branch: SIRTerm, scrut_reg: string, outer_reg: s
                 };
                 false -> case right_pat == "_" of {
                     true -> do
-                        hr_h: string <- var@next_free_int_reg(ext0);
+                        hr_h: string <- list_cons_head_ptr_reg(head_t, ext0, scrut_reg);
                         h_ld_h: string <- list_cons_emit_head_ldr(scrut_reg, head_t, hr_h);
                         nb_hh: string <- var@reg_binding(left_pat, hr_h);
                         (h_ld_h, concat(ext0, nb_hh))
@@ -1041,7 +1085,7 @@ fn emit_list_cons_pattern_loads(branch: SIRTerm, scrut_reg: string, outer_reg: s
                         nb_tb: string <- var@reg_binding(right_pat, tr_b);
                         t_ld_b: string <- list_cons_emit_tail_call(scrut_reg, es_s, cd_s, tr_b);
                         ext_tb: string <- concat(ext0, nb_tb);
-                        hr_b: string <- var@next_free_int_reg(concat(ext_tb, "|__silica_hdblk=X0"));
+                        hr_b: string <- list_cons_head_ptr_reg(head_t, ext_tb, scrut_reg);
                         h_ld_b: string <- list_cons_emit_head_ldr(scrut_reg, head_t, hr_b);
                         nb_hb: string <- var@reg_binding(left_pat, hr_b);
                         (concat(t_ld_b, h_ld_b), concat(ext_tb, nb_hb))

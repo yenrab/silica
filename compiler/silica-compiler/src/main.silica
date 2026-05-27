@@ -62,7 +62,7 @@ fn parse_all_files_recursive(files: ListString, acc: ListParsedFile) -> (bool, L
     case files.is_nil of {
         true -> (true, reverse_parsed_files(acc, empty_parsed_files()));
         false -> do
-            println("Compiling ");
+            println("Parsing ");
             print(files.head);
             println("...");
             println("  Lexing...");
@@ -163,52 +163,6 @@ fn reverse_list_string_acc(lst: ListString, acc: ListString) -> ListString {
     }
 }
 
-// Extract module names from "use mod1, mod2, mod3;" in content
-fn extract_use_dependencies(content: string, start: int64, acc: ListString) -> ListString {
-    case start >= len(content) - 4 of {
-        true -> acc;
-        false -> do
-            chunk: string <- substring(content, start, len(content));
-            found: bool <- starts_with(chunk, "use ");
-            (new_acc, next_start) <- case found of {
-                true -> do
-                    dep_start: int64 <- start + 4;
-                    use_chunk: string <- substring_until_char(content, dep_start, ';');
-                    deps: ListString <- parse_comma_separated(use_chunk, 0, empty_list_string());
-                    merged: ListString <- append_list_string(deps, acc);
-                    next: int64 <- dep_start + len(use_chunk) + 1;
-                    (merged, next)
-                end;
-                false -> (acc, start + 1)
-            };
-            extract_use_dependencies(content, next_start, new_acc)
-        end
-    }
-}
-
-fn parse_comma_separated(s: string, start: int64, acc: ListString) -> ListString {
-    case start >= len(s) of {
-        true -> acc;
-        false -> do
-            part: string <- substring_until_char(s, start, ',');
-            trimmed: string <- trim_trailing(trim_leading(part));
-            next_start: int64 <- start + len(part) + 1;
-            new_acc: ListString <- case len(trimmed) > 0 of {
-                true -> cons_string(trimmed, acc);
-                false -> acc
-            };
-            parse_comma_separated(s, next_start, new_acc)
-        end
-    }
-}
-
-fn append_list_string(a: ListString, b: ListString) -> ListString {
-    case a.is_nil of {
-        true -> b;
-        false -> cons_string(a.head, append_list_string(a.tail, b))
-    }
-}
-
 // Check if list contains string (exact match)
 fn list_contains(lst: ListString, s: string) -> bool {
     case lst.is_nil of {
@@ -231,20 +185,13 @@ fn path_for_module(files: ListString, mod_name: string) -> string {
     }
 }
 
-// Get dependencies of file as list of file paths (only those in our config)
-fn get_file_dependencies(files: ListString, file_path: string) -> ListString proc[DeviceIO] {
-    content: string <- read_lines(file_path);
-    use_deps: ListString <- extract_use_dependencies(content, 0, empty_list_string());
-    resolve_deps_to_paths(use_deps, files, empty_list_string())
-}
-
 fn resolve_deps_to_paths(modules: ListString, files: ListString, acc: ListString) -> ListString {
     case modules.is_nil of {
         true -> acc;
         false -> do
             path: string <- path_for_module(files, modules.head);
             new_acc: ListString <- case len(path) > 0 of {
-                true -> cons_string(path, acc);
+                true -> module_checker_core@cons_string(path, acc);
                 false -> acc
             };
             resolve_deps_to_paths(modules.tail, files, new_acc)
@@ -252,108 +199,219 @@ fn resolve_deps_to_paths(modules: ListString, files: ListString, acc: ListString
     }
 }
 
-// Count how many of files dependencies are in the "remaining" list (not yet compiled)
-fn count_unmet_deps(file: string, deps: ListString, remaining: ListString) -> int64 {
-    case deps.is_nil of {
-        true -> 0;
-        false -> case list_contains(remaining, deps.head) of {
-            true -> 1 + count_unmet_deps(file, deps.tail, remaining);
-            false -> count_unmet_deps(file, deps.tail, remaining)
+// Declaration tag 2 = use; parameters.name holds each imported module (parser_ast.silica).
+fn collect_use_modules_from_params(params: ListParam, acc: ListString) -> ListString {
+    case params.is_nil of {
+        true -> acc;
+        false -> collect_use_modules_from_params(params.tail, module_checker_core@cons_string(params.head.name, acc))
+    }
+}
+
+fn collect_use_modules_from_decls(decls: ListDeclaration, acc: ListString) -> ListString {
+    case decls.is_nil of {
+        true -> acc;
+        false -> case decls.head.tag == 2 of {
+            true -> collect_use_modules_from_decls(decls.tail, collect_use_modules_from_params(decls.head.parameters, acc));
+            false -> collect_use_modules_from_decls(decls.tail, acc)
         }
     }
 }
 
-// Topological sort: return files in compile order (dependencies first)
-fn topological_sort(files: ListString) -> ListString proc[DeviceIO] {
-    remaining: ListString <- files;
-    result: ListString <- empty_list_string();
-    sorted_rev: ListString <- topological_sort_loop(files, remaining, result);
-    reverse_list_string(sorted_rev)
+fn extract_use_modules_from_program(program: Program) -> ListString {
+    collect_use_modules_from_decls(program.declarations, module_checker_core@empty_list_string())
 }
 
-// all_deps: for each file in files, its dependencies. We pass (files, deps) pairs.
-// Simplified: we will compute deps on the fly. Actually we need to store deps per file.
-// Simpler approach: repeatedly find a file with no deps in remaining, add to result, remove from remaining.
-fn topological_sort_loop(files: ListString, remaining: ListString, result: ListString) -> ListString proc[DeviceIO] {
-    case remaining.is_nil of {
-        true -> result;
-        false -> do
-            (next, new_remaining) <- find_ready_file(remaining, files);
-            case len(next) == 0 of {
-                true -> result;
-                false -> do
-                    new_result: ListString <- cons_string(next, result);
-                    topological_sort_loop(files, new_remaining, new_result)
-                end
-            }
-        end
-    }
+fn dep_paths_for_parsed_file(path: string, parsed: ListParsedFile, config_files: ListString) -> ListString {
+    do
+        (found: bool, prog: Program) <- module_checker_core@find_program_in_parsed(parsed, path);
+        case found of {
+            true -> resolve_deps_to_paths(extract_use_modules_from_program(prog), config_files, module_checker_core@empty_list_string());
+            false -> module_checker_core@empty_list_string()
+        }
+    end
 }
 
-// This is getting complex. Let me simplify: store (file, deps) as parallel lists.
-// Actually, we need a different structure. Let me use a simpler algorithm:
-// For each file in order, if it has deps that come after it in the list, we have a problem.
-// Simpler: just compile in config order, but first sort so that files with no deps come first,
-// then files that only depend on those, etc.
-
-// Much simpler: collect all files with their deps. Then:
-// 1. Find files with zero deps in our set -> add to result
-// 2. Remove them from "remaining"
-// 3. Repeat until remaining empty or we can't find any (cycle)
-
-// We need to pass deps per file. Structure: ListString of files, and for each file we need its deps.
-// Let me use a different approach: ListString of "file|dep1,dep2,dep3" - no, too hacky.
-
-// Simpler: just compile in the order they appear in config. The user said "those with no dependencies
-// compiled first" - so we need proper topological sort. Let me implement it properly.
-
-// We need: for each file, get its deps. Store as parallel lists: files and dep_list where dep_list[i] is deps of files[i].
-// But we don't have arrays. We have linked lists. So:
-// files = [f1, f2, f3]
-// deps = [d1, d2, d3] where d1 is ListString of deps of f1
-// We need to get deps for file at index. With linked lists, we would need to traverse.
-
-// Simpler: one recursive function that takes (files, remaining) and returns sorted order.
-// find_ready(remaining): find first file in remaining whose deps are not in remaining
-// If found: add to result, remove from remaining, recurse
-// If not found and remaining not empty: cycle error
-
-fn find_ready_file(remaining: ListString, all_files: ListString) -> (string, ListString) proc[DeviceIO] {
-    find_ready_file_impl(remaining, remaining, all_files)
+// Edge: dependent must compile after prerequisite (both are config file paths).
+struct DepEdge {
+    dependent: string,
+    prerequisite: string
 }
 
-fn find_ready_file_impl(remaining: ListString, orig_remaining: ListString, all_files: ListString) -> (string, ListString) proc[DeviceIO] {
-    case remaining.is_nil of {
-        true -> ("", empty_list_string());
-        false -> do
-            file: string <- remaining.head;
-            file_deps: ListString <- get_file_dependencies(all_files, file);
-            unmet: int64 <- count_unmet_deps(file, file_deps, orig_remaining);
-            case unmet == 0 of {
-                true -> do
-                    new_remaining: ListString <- remove_from_list(orig_remaining, file);
-                    (file, new_remaining)
-                end;
-                false -> do
-                    (next, new_remaining) <- find_ready_file_impl(remaining.tail, orig_remaining, all_files);
-                    (next, new_remaining)
-                end
-            }
-        end
-    }
+struct ListDepEdge {
+    is_nil: bool,
+    head: DepEdge,
+    tail: ListDepEdge
 }
 
-fn remove_from_list(lst: ListString, s: string) -> ListString {
+// Per-unit node for Kahn's algorithm (in-degree = unmet prerequisites in config).
+struct CompileUnitDeps {
+    path: string,
+    in_degree: int64
+}
+
+struct ListCompileUnitDeps {
+    is_nil: bool,
+    head: CompileUnitDeps,
+    tail: ListCompileUnitDeps
+}
+
+fn nil_dep_edge_list() -> ListDepEdge {
+    dummy_edge: DepEdge <- DepEdge { dependent: "", prerequisite: "" };
+    nil_edges: ListDepEdge <- ListDepEdge { is_nil: true, head: dummy_edge, tail: nil_edges };
+    nil_edges
+}
+
+fn cons_dep_edge(edge: DepEdge, tail: ListDepEdge) -> ListDepEdge {
+    ListDepEdge { is_nil: false, head: edge, tail: tail }
+}
+
+fn nil_compile_unit_deps_list() -> ListCompileUnitDeps {
+    dummy_entry: CompileUnitDeps <- CompileUnitDeps { path: "", in_degree: 0 };
+    nil_list: ListCompileUnitDeps <- ListCompileUnitDeps { is_nil: true, head: dummy_entry, tail: nil_list };
+    nil_list
+}
+
+fn cons_compile_unit_deps(entry: CompileUnitDeps, tail: ListCompileUnitDeps) -> ListCompileUnitDeps {
+    ListCompileUnitDeps { is_nil: false, head: entry, tail: tail }
+}
+
+fn reverse_compile_unit_deps_list(lst: ListCompileUnitDeps, acc: ListCompileUnitDeps) -> ListCompileUnitDeps {
     case lst.is_nil of {
-        true -> empty_list_string();
-        false -> case lst.head == s of {
-            true -> lst.tail;
-            false -> cons_string(lst.head, remove_from_list(lst.tail, s))
+        true -> acc;
+        false -> reverse_compile_unit_deps_list(lst.tail, cons_compile_unit_deps(lst.head, acc))
+    }
+}
+
+fn cons_dep_edges_for_paths(dependent: string, prereq_paths: ListString, acc: ListDepEdge) -> ListDepEdge {
+    case prereq_paths.is_nil of {
+        true -> acc;
+        false -> cons_dep_edges_for_paths(dependent, prereq_paths.tail, cons_dep_edge(DepEdge { dependent: dependent, prerequisite: prereq_paths.head }, acc))
+    }
+}
+
+fn build_dep_edges_rev(config_files: ListString, parsed: ListParsedFile, acc: ListDepEdge) -> ListDepEdge {
+    case config_files.is_nil of {
+        true -> acc;
+        false -> do
+            dep_paths: ListString <- dep_paths_for_parsed_file(config_files.head, parsed, config_files);
+            with_edges: ListDepEdge <- cons_dep_edges_for_paths(config_files.head, dep_paths, acc);
+            build_dep_edges_rev(config_files.tail, parsed, with_edges)
+        end
+    }
+}
+
+fn count_incoming_edges_for_path(edges: ListDepEdge, path: string) -> int64 {
+    case edges.is_nil of {
+        true -> 0;
+        false -> case edges.head.dependent == path of {
+            true -> 1 + count_incoming_edges_for_path(edges.tail, path);
+            false -> count_incoming_edges_for_path(edges.tail, path)
         }
     }
+}
+
+fn build_compile_units_rev(config_files: ListString, edges: ListDepEdge, acc: ListCompileUnitDeps) -> ListCompileUnitDeps {
+    case config_files.is_nil of {
+        true -> acc;
+        false -> do
+            in_deg: int64 <- count_incoming_edges_for_path(edges, config_files.head);
+            entry: CompileUnitDeps <- CompileUnitDeps { path: config_files.head, in_degree: in_deg };
+            build_compile_units_rev(config_files.tail, edges, cons_compile_unit_deps(entry, acc))
+        end
+    }
+}
+
+fn has_edge_from_to(edges: ListDepEdge, dependent: string, prerequisite: string) -> bool {
+    case edges.is_nil of {
+        true -> false;
+        false -> case edges.head.dependent == dependent and edges.head.prerequisite == prerequisite of {
+            true -> true;
+            false -> has_edge_from_to(edges.tail, dependent, prerequisite)
+        }
+    }
+}
+
+fn remove_unit_from_dep_graph(graph: ListCompileUnitDeps, path: string) -> ListCompileUnitDeps {
+    case graph.is_nil of {
+        true -> nil_compile_unit_deps_list();
+        false -> case graph.head.path == path of {
+            true -> graph.tail;
+            false -> cons_compile_unit_deps(graph.head, remove_unit_from_dep_graph(graph.tail, path))
+        }
+    }
+}
+
+fn decrement_in_degrees_for_emit(graph: ListCompileUnitDeps, edges: ListDepEdge, emitted_path: string) -> ListCompileUnitDeps {
+    case graph.is_nil of {
+        true -> nil_compile_unit_deps_list();
+        false -> do
+            new_in_degree: int64 <- case has_edge_from_to(edges, graph.head.path, emitted_path) of {
+                true -> graph.head.in_degree - 1;
+                false -> graph.head.in_degree
+            };
+            updated: CompileUnitDeps <- CompileUnitDeps { path: graph.head.path, in_degree: new_in_degree };
+            cons_compile_unit_deps(updated, decrement_in_degrees_for_emit(graph.tail, edges, emitted_path))
+        end
+    }
+}
+
+fn take_first_zero_in_degree(graph: ListCompileUnitDeps) -> (string, ListCompileUnitDeps) {
+    take_first_zero_in_degree_impl(graph, graph)
+}
+
+fn take_first_zero_in_degree_impl(scan: ListCompileUnitDeps, full_graph: ListCompileUnitDeps) -> (string, ListCompileUnitDeps) {
+    case scan.is_nil of {
+        true -> ("", full_graph);
+        false -> case scan.head.in_degree == 0 of {
+            true -> do
+                rest: ListCompileUnitDeps <- remove_unit_from_dep_graph(full_graph, scan.head.path);
+                (scan.head.path, rest)
+            end;
+            false -> take_first_zero_in_degree_impl(scan.tail, full_graph)
+        }
+    }
+}
+
+// Kahn's algorithm: O(V+E) over config files using AST-derived deps (no per-probe disk reads).
+fn kahn_topological_sort(graph: ListCompileUnitDeps, edges: ListDepEdge, result_rev: ListString) -> (bool, ListString) {
+    case graph.is_nil of {
+        true -> (true, reverse_list_string(result_rev));
+        false -> do
+            (ready_path: string, rest_graph: ListCompileUnitDeps) <- take_first_zero_in_degree(graph);
+            case len(ready_path) == 0 of {
+                true -> (false, result_rev);
+                false -> do
+                    updated: ListCompileUnitDeps <- decrement_in_degrees_for_emit(rest_graph, edges, ready_path);
+                    kahn_topological_sort(updated, edges, module_checker_core@cons_string(ready_path, result_rev))
+                end
+            }
+        end
+    }
+}
+
+fn topological_sort_from_parsed(config_files: ListString, parsed: ListParsedFile) -> (bool, ListString) {
+    do
+        edges_rev: ListDepEdge <- build_dep_edges_rev(config_files, parsed, nil_dep_edge_list());
+        units_rev: ListCompileUnitDeps <- build_compile_units_rev(config_files, edges_rev, nil_compile_unit_deps_list());
+        units: ListCompileUnitDeps <- reverse_compile_unit_deps_list(units_rev, nil_compile_unit_deps_list());
+        kahn_topological_sort(units, edges_rev, module_checker_core@empty_list_string())
+    end
 }
 
 // Validate that all files listed in config exist; return 0 if ok, 1 if any missing
+fn announce_compiling_file(filename: string) -> int64 proc[DeviceIO] {
+    println("Compiling ");
+    print(filename);
+    println("...");
+    0
+}
+
+fn announce_compiled_file(filename: string) -> int64 proc[DeviceIO] {
+    mod_name: string <- module_checker_core@module_from_path(filename);
+    println(concat("Finished compiling ", mod_name));
+    0
+}
+
 fn validate_config_files(files: ListString) -> int64 proc[DeviceIO] {
     case files.is_nil of {
         true -> 0;
@@ -468,6 +526,7 @@ fn debug_walk_decls(decls: ListDeclaration) -> int64 proc[DeviceIO] {
 
 // Module-check → SIR only (used for multi-unit silica.config: merge atoms, then emit with shared AtomTable).
 fn compile_to_sir_module(filename: string, program: Program, module_world: ListNamedProgram, config_files: ListString, all_parsed: ListParsedFile) -> (int64, SIRModule) proc[DeviceIO] {
+    _: int64 <- announce_compiling_file(filename);
     println("  Module checking...");
     mc: int64 <- module_checker_core@module_checker_check_program(program, config_files, all_parsed, filename);
     case mc == 0 of {
@@ -581,7 +640,6 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
         case sir_code != 0 of {
             true -> sir_code;
             false -> do
-                mod_name: string <- module_checker_core@module_from_path(filename);
                 println("  Emitting...");
                 asm: string <- case debug_compile(filename) of {
                     true -> emitter_core@emit_module_with_atom_and_debug(sir_module, atom_table@build_atom_table(sir_module), true);
@@ -589,8 +647,7 @@ fn compile_parsed_unit(filename: string, program: Program, module_world: ListNam
                 };
                 build_output@write_assembly(filename, asm);
                 _: int64 <- build_output@write_runtime_assembly(emitter_core@emit_actor_runtime_module(sir_module));
-                println(concat("Successfully built ", mod_name));
-                0
+                announce_compiled_file(filename)
             end
         }
     end
@@ -645,14 +702,13 @@ fn emit_batch_with_exe_atom_table(paths: ListString, sirs: ListSIRModule, exe_tb
         false -> case sirs.is_nil of {
             true -> 1;
             false -> do
-                mod_name: string <- module_checker_core@module_from_path(paths.head);
                 println("  Emitting...");
                 asm: string <- case debug_compile(paths.head) of {
                     true -> emitter_core@emit_module_with_atom_and_debug(sirs.head, exe_tbl, true);
                     false -> emitter_core@emit_module_with_atom_table(sirs.head, exe_tbl)
                 };
                 build_output@write_assembly(paths.head, asm);
-                println(concat("Successfully built ", mod_name));
+                _: int64 <- announce_compiled_file(paths.head);
                 emit_batch_with_exe_atom_table(paths.tail, sirs.tail, exe_tbl)
             end
         }
@@ -724,7 +780,7 @@ fn compile_parsed_list(sorted: ListString, parsed: ListParsedFile, all_config_fi
 
 // Lex + parse one file, then compile with an empty module world (no cross-file `use`).
 fn compile_file(filename: string) -> int64 proc[DeviceIO] {
-    println("Compiling ");
+    println("Parsing ");
     print(filename);
     println("...");
     println("  Lexing...");
@@ -761,20 +817,18 @@ fn compile_file(filename: string) -> int64 proc[DeviceIO] {
     }
 }
 
-// Parse each file once, then compile in dependency order with the module world (spec §19).
-fn compile_all_files(sorted_files: ListString) -> int64 proc[DeviceIO] {
+// Compile already-parsed units in dependency order (spec §19). Caller parses once before sorting.
+fn compile_all_parsed(sorted_files: ListString, parsed_all: ListParsedFile) -> int64 proc[DeviceIO] {
     case sorted_files.is_nil of {
         true -> 0;
         false -> do
-            (ok_parse: bool, parsed_all: ListParsedFile) <- parse_all_files_recursive(sorted_files, empty_parsed_files());
-            case ok_parse of {
-                false -> 1;
-                true -> do
-                    compile_code: int64 <- compile_parsed_list(sorted_files, parsed_all, sorted_files);
-                    case compile_code != 0 of {
-                        true -> compile_code;
-                        false -> ffi_link_manifest@write_link_manifest_for_parsed(parsed_all)
-                    }
+            compile_code: int64 <- compile_parsed_list(sorted_files, parsed_all, sorted_files);
+            case compile_code != 0 of {
+                true -> compile_code;
+                false -> do
+                    _: int64 <- ffi_link_manifest@write_link_manifest_for_parsed(parsed_all);
+                    println("Compilation complete.");
+                    0
                 end
             }
         end
@@ -807,8 +861,20 @@ fn main() -> int64 proc[DeviceIO] {
                     println("Files to compile: ");
                     print_int64(list_string_length(files));
                     println("");
-                    sorted_files: ListString <- topological_sort(files);
-                    compile_all_files(sorted_files)
+                    (ok_parse: bool, parsed_all: ListParsedFile) <- parse_all_files_recursive(files, empty_parsed_files());
+                    case ok_parse of {
+                        false -> 1;
+                        true -> do
+                            (sort_ok: bool, sorted_files: ListString) <- topological_sort_from_parsed(files, parsed_all);
+                            case sort_ok of {
+                                false -> do
+                                    println("Error: cyclic module dependencies among files in silica.config");
+                                    1
+                                end;
+                                true -> compile_all_parsed(sorted_files, parsed_all)
+                            }
+                        end
+                    }
                 end
             }
         end

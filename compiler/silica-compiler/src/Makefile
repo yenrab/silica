@@ -12,7 +12,7 @@ TARGET ?= apple_silicon
 
 SILICA_COMPILER := ../../silica-bootstrap-compiler/target/release/silica-boot
 RUNTIME_LIB := ../../silica-bootstrap-compiler/target/release/libsilica_compiler.a
-SEARCH_PATHS := -I lexer -I parser -I parser/capabilities -I parser/declarations -I parser/expressions -I parser/patterns -I parser/types -I parser/effects -I type_checker -I type_checker/declarations -I type_checker/expressions -I type_checker/traits -I module_checker -I trait_checker -I effect_checker -I ffi -I sir_generator -I sir_generator/declarations -I sir_generator/terms -I sir_generator/types -I sir_generator/patterns -I sir_generator/effects -I emitter -I emitter/$(TARGET) -I emitter/$(TARGET)/atoms -I emitter/$(TARGET)/constraints -I emitter/$(TARGET)/terms -I emitter/$(TARGET)/terms/prims -I emitter/$(TARGET)/terms/const -I emitter/$(TARGET)/terms/let -I emitter/$(TARGET)/terms/call -I emitter/$(TARGET)/shared -I emitter/$(TARGET)/control -I emitter/$(TARGET)/effects -I emitter/$(TARGET)/recursion -I data_structures -I build_output -I diagnostics -I ../stdlib
+SEARCH_PATHS := -I lexer -I parser -I parser/capabilities -I parser/declarations -I parser/expressions -I parser/patterns -I parser/types -I parser/effects -I type_checker -I type_checker/declarations -I type_checker/expressions -I type_checker/traits -I module_checker -I trait_checker -I effect_checker -I ffi -I sir_generator -I sir_generator/declarations -I sir_generator/terms -I sir_generator/types -I sir_generator/patterns -I sir_generator/effects -I emitter -I emitter/$(TARGET) -I emitter/$(TARGET)/atoms -I emitter/$(TARGET)/constraints -I emitter/$(TARGET)/terms -I emitter/$(TARGET)/terms/prims -I emitter/$(TARGET)/terms/const -I emitter/$(TARGET)/terms/let -I emitter/$(TARGET)/terms/call -I emitter/$(TARGET)/shared -I emitter/$(TARGET)/control -I emitter/$(TARGET)/effects -I emitter/$(TARGET)/recursion -I data_structures -I standard_data_structures -I build_output -I diagnostics -I ../stdlib
 
 # LLVM toolchain (for .ll -> .o and linking)
 LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "llvm-as"))
@@ -61,7 +61,7 @@ TRAIT_CHECKER_LL := $(addsuffix .ll, $(TRAIT_CHECKER_MODULES))
 EFFECT_CHECKER_LL := $(addsuffix .ll, $(EFFECT_CHECKER_MODULES))
 
 # Subdirectories with Makefiles (build order respects dependencies)
-SUBDIRS := lexer parser type_checker module_checker ffi effect_checker sir_generator emitter
+SUBDIRS := lexer parser type_checker module_checker ffi effect_checker sir_generator standard_data_structures emitter
 
 # Trials: immediate subdirs of ../trials that contain Makefile or makefile (each defines its own integrate)
 TRIALS_ROOT := ../trials
