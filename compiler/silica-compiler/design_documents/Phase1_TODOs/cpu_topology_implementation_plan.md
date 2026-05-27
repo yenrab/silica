@@ -6,10 +6,9 @@
 **Status**: Phases A–C complete; **Phase G (emitter) complete on Apple Silicon + macOS** for `_silica_rt_get_cpu_topology` and `_silica_rt_get_core_capabilities` (see §Runtime contract). Phases D–F and H remain (typing/SIR/effects parity and verification). Non–Apple-Silicon targets are **not** implemented in this path (ignored for now; no Makefile churn).  
 **References**:
 
-- [silica-specification.md](silica-specification.md) — §4.6 core affinity types, §22 actor builtins, CPU affinity appendix (`cpu_topology`, `core_info`, `get_cpu_topology`, `get_efficiency_cores`, `get_performance_cores`, `get_core_capabilities`)
-- [actor_implementation_plan.md](actor_implementation_plan.md) — prior actor / affinity work and deferred `get_cpu_topology` note
-- [silica-compiler-code-organization.md](silica-compiler-code-organization.md) — where lexer/parser/checkers/SIR/emitter modules live
-- Machine-readable companion: [cpu_topology_implementation_plan.jsonld](./cpu_topology_implementation_plan.jsonld) (maps phases to AALang tools under `../compiler-building-tools/`)
+- [silica-specification.md](../silica-specification.md) — §4.6 core affinity types, §22 actor builtins, CPU affinity appendix (`cpu_topology`, `core_info`, `get_cpu_topology`, `get_efficiency_cores`, `get_performance_cores`, `get_core_capabilities`)
+- [actor_implementation_plan.md](actor_implementation_plan.md) — actor / affinity status and remaining migration caveats
+- [silica-compiler-code-organization.md](../silica-compiler-code-organization.md) — where lexer/parser/checkers/SIR/emitter modules live
 
 ---
 
@@ -36,17 +35,17 @@ Deliver **end-to-end compiler and runtime support** for **structured CPU topolog
 
 ## Phase A — ABI and type layout freeze
 
-**Status**: **Complete** — `silica-specification.md` §22.10 and `compiler:implementationContract` in [cpu_topology_implementation_plan.jsonld](./cpu_topology_implementation_plan.jsonld) are frozen.
+**Status**: **Complete** — `silica-specification.md` §22.10 and the implementation contract in this document are frozen for the Apple Silicon + macOS path.
 
 **Goal**: Fix the **canonical layout** of `cpu_topology`, `core_info`, `core_type`, and any nested lists so later phases do not churn.
 
 **Tasks**
 
-1. Reconcile [silica-specification.md](silica-specification.md) appendix structs with the **actual** Silica representations used in the type checker (`cpu_topology` as a named type with field accessors or tuple decomposition).
+1. Reconcile [silica-specification.md](../silica-specification.md) appendix structs with the **actual** Silica representations used in the type checker (`cpu_topology` as a named type with field accessors or tuple decomposition).
 2. Document **field order**, **list representation** (`List[...]`), and **integer width** for core ids and frequencies.
 3. Decide whether `get_cpu_topology` is **pure** at the language level vs. requires effects; align effect checker and spec in one pass.
 
-**Primary artifact**: Spec sections + a short “topology ABI” note in this plan’s JSON-LD `implementationContract` (see companion file).
+**Primary artifact**: Spec sections + the Runtime contract section in this plan.
 
 **AALang tool**: Use the phase-planning and specification-driven workflow; no single codegen tool owns this—**human + spec**.
 
@@ -84,7 +83,7 @@ The following is implemented in `src/emitter/apple_silicon/terms/prims/prims_act
 
 **Files (typical)**: `src/lexer/lexer_keywords.silica`, `src/lexer/lexer_token_kind.silica`
 
-**AALang tool**: [`../compiler-building-tools/silica-lexer-code-generator.jsonld`](../compiler-building-tools/silica-lexer-code-generator.jsonld)
+**AALang tool**: [`../../compiler-building-tools/silica-lexer-code-generator.jsonld`](../../compiler-building-tools/silica-lexer-code-generator.jsonld)
 
 ---
 
@@ -99,7 +98,7 @@ The following is implemented in `src/emitter/apple_silicon/terms/prims/prims_act
 
 **Files (typical)**: `src/parser/capabilities/capability_actors.silica`, constraint extractors if placement forms carry attributes
 
-**AALang tool**: [`../compiler-building-tools/silica-parser-code-generator.jsonld`](../compiler-building-tools/silica-parser-code-generator.jsonld)
+**AALang tool**: [`../../compiler-building-tools/silica-parser-code-generator.jsonld`](../../compiler-building-tools/silica-parser-code-generator.jsonld)
 
 ---
 
@@ -115,7 +114,7 @@ The following is implemented in `src/emitter/apple_silicon/terms/prims/prims_act
 
 **Files (typical)**: `src/type_checker/expressions/type_checker_expressions.silica`, `type_checker_tuple_decompose_helpers.silica`, `type_checker_expressions_actors.silica`
 
-**AALang tool**: [`../compiler-building-tools/silica-typechecker-code-generator.jsonld`](../compiler-building-tools/silica-typechecker-code-generator.jsonld)
+**AALang tool**: [`../../compiler-building-tools/silica-typechecker-code-generator.jsonld`](../../compiler-building-tools/silica-typechecker-code-generator.jsonld)
 
 ---
 
@@ -130,7 +129,7 @@ The following is implemented in `src/emitter/apple_silicon/terms/prims/prims_act
 
 **Files (typical)**: `src/effect_checker/effect_checker_core.silica`, `src/effect_checker/effect_checker_capabilities.silica`
 
-**AALang tool**: [`../compiler-building-tools/silica-effect-code-generator.jsonld`](../compiler-building-tools/silica-effect-code-generator.jsonld)
+**AALang tool**: [`../../compiler-building-tools/silica-effect-code-generator.jsonld`](../../compiler-building-tools/silica-effect-code-generator.jsonld)
 
 ---
 
@@ -145,7 +144,7 @@ The following is implemented in `src/emitter/apple_silicon/terms/prims/prims_act
 
 **Files (typical)**: `src/sir_generator/terms/actor_calls.silica`, `src/sir_generator/terms/terms.silica`
 
-**AALang tool**: [`../compiler-building-tools/silica-sir_generator_builder.jsonld`](../compiler-building-tools/silica-sir_generator_builder.jsonld)
+**AALang tool**: [`../../compiler-building-tools/silica-sir_generator_builder.jsonld`](../../compiler-building-tools/silica-sir_generator_builder.jsonld)
 
 ---
 
@@ -165,7 +164,7 @@ The following is implemented in `src/emitter/apple_silicon/terms/prims/prims_act
 
 **Files (typical)**: `src/emitter/apple_silicon/terms/prims/prims_actors_runtime_asm.silica`, `prims_actors.silica`, `src/emitter/apple_silicon/atoms/atom_table.silica`
 
-**AALang tool**: [`../compiler-building-tools/silica-emitter_builder.jsonld`](../compiler-building-tools/silica-emitter_builder.jsonld)
+**AALang tool**: [`../../compiler-building-tools/silica-emitter_builder.jsonld`](../../compiler-building-tools/silica-emitter_builder.jsonld)
 
 ---
 
@@ -177,8 +176,8 @@ The following is implemented in `src/emitter/apple_silicon/terms/prims/prims_act
 
 **Tasks**
 
-1. **Static verification** — `trials/cpu_discovery/phase_h_static.sh` greps `prims_actors_runtime_asm.silica` for `_silica_rt_get_cpu_topology`, `_silica_rt_get_core_capabilities`, `_silica_rt_apple_hw_optional_caps_list`, cache builder, **`L_cap_emit_sentinel`**, and representative sysctl strings. Run: `make -C trials/cpu_discovery phase-h` (from `compiler/silica-compiler`).
-2. **Trials source** — `cpu_topology_runtime_queries.silica` and spawn affinity trials remain **compile** checks only until sequence lowering lands; keep **`INTEGRATE_PENDING`** until `.ascomp` goldens are refreshed for a lowering-complete compiler (see `trials/cpu_discovery/README.md`).
+1. **Static verification** — `trials/cpu_discovery_and_spawn_pinning/phase_h_static.sh` greps `prims_actors_runtime_asm.silica` for `_silica_rt_get_cpu_topology`, `_silica_rt_get_core_capabilities`, `_silica_rt_apple_hw_optional_caps_list`, cache builder, **`L_cap_emit_sentinel`**, and representative sysctl strings. Run: `make -C trials/cpu_discovery_and_spawn_pinning phase-h` (from `compiler/silica-compiler`).
+2. **Trials source** — `cpu_topology_runtime_queries.silica` and spawn affinity trials remain guarded by **`INTEGRATE_PENDING`** until the project intentionally treats these host-specific runtime values as normal golden output (see `trials/cpu_discovery_and_spawn_pinning/README.md`).
 3. **Bootstrap parity** — deferred: compare against `silica-bootstrap-compiler` topology when both pipelines emit real `main` for actor topology calls.
 
 ---

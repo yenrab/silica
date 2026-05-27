@@ -1026,5 +1026,5 @@ fn use_graph(g: { node_count: int64, edge_count: int64, ... }) -> int64 {
 - [silica-specification.md](silica-specification.md) - inline structural types, lists, regions, effects.
 - [list_implementation_design.md](list_implementation_design.md) - `List[T, S]` as region-backed storage and bundle model.
 - [recursive_tuple_specification.md](recursive_tuple_specification.md) - why recursive pointer-shaped data uses inline `rec` and regions instead of named recursive types.
-- [region_memory_safety_todo.md](region_memory_safety_todo.md) - current region safety implementation gaps.
+- [region_memory_safety_todo.md](Phase1_TODOs/region_memory_safety_todo.md) - current region safety implementation gaps.
 - [atom_actor_registry_direct_index_design.md](atom_actor_registry_direct_index_design.md) - example of preferring direct buffers over a surface `Map`.

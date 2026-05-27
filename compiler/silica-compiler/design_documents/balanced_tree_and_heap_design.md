@@ -1208,4 +1208,4 @@ Recommended staging:
 - [graph_representation_design.md](graph_representation_design.md) - graph families that these tree representations specialize (includes §2.4 `Storable` for graph operands).
 - [silica-specification.md](silica-specification.md) - inline structural types, effects, lists, regions, buffers.
 - [list_implementation_design.md](list_implementation_design.md) - list storage and memory-space alignment.
-- [region_memory_safety_todo.md](region_memory_safety_todo.md) - region lifetime implementation gaps relevant to returned buffers.
+- [region_memory_safety_todo.md](Phase1_TODOs/region_memory_safety_todo.md) - region lifetime implementation gaps relevant to returned buffers.

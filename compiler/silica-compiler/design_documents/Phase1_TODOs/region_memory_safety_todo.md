@@ -1,20 +1,19 @@
-# Region Memory Safety — Implementation TODO
+# Region Memory Safety — Phase 1 TODO
 
-This document describes what remains to be done to make Silica's region-based memory model memory-safe as specified. The specification (silica-specification.md §12) defines comprehensive safety guarantees; the current implementation provides only partial support.
+This document describes what remains to be done to make Silica's region-based memory model memory-safe as specified. The specification (../silica-specification.md §12) defines comprehensive safety guarantees; the current implementation provides only partial support.
 
 ## Related Documents
 
 | Document | Purpose |
 |----------|---------|
-| [silica-specification.md](silica-specification.md) | Core language specification, §12 Memory Model |
-| [build-plan.md](build-plan.md) | Phase 6: Region Analysis Phase (Tasks 6.1–6.5) |
-| [specification-analysis-state.md](../specification-analysis-state.md) | Region analyzer component requirements |
+| [silica-specification.md](../silica-specification.md) | Core language specification, §12 Memory Model |
+| [specification-analysis-state.md](../../specification-analysis-state.md) | Region analyzer component requirements |
 
 ---
 
 ## Terminology: memory region vs arena
 
-In Silica, **memory region** (often **region**) is a typed allocation unit: `region(L, Space)` with a lifetime identifier `L`, a memory space `Space` (`normal`, `atomic`, `device`, …), and static region lifetime analysis (see [silica-specification.md](silica-specification.md) §12).
+In Silica, **memory region** (often **region**) is a typed allocation unit: `region(L, Space)` with a lifetime identifier `L`, a memory space `Space` (`normal`, `atomic`, `device`, ...), and static region lifetime analysis (see [silica-specification.md](../silica-specification.md) §12).
 
 In many other languages, **arena** names an allocator *pattern*, not a full type-system feature: a pool of memory from which objects are suballocated in bump or stack order and typically reclaimed together when the arena is reset or destroyed. Examples include C/C++ per-request or per-object arena allocators, Rust crates such as `typed-arena` or `bumpalo`, and JVM thread-local allocation buffers (sometimes called arenas). Some garbage collectors also use **arena** for age-based or nursery subspaces.
 
@@ -28,11 +27,11 @@ In many other languages, **arena** names an allocator *pattern*, not a full type
 
 | Component | Location | Status |
 |-----------|----------|--------|
-| Region type syntax validation | `type_checker/type_checker_memory_regions.silica` | ✓ Validates `ref(R, Space, T)`, `region(R, Space)`, `buf(R, Space, T, N)` (legacy `atomic_ref` may still parse; **`alloc_atomic`** is checked against **`ref(R, atomic, T)`**) |
+| Region type syntax validation | `type_checker/type_checker_memory_regions.silica` | ✓ Validates `ref(R, Space, T)`, `region(R, Space)`, `buf(R, Space, T, N)`; `atomic` is accepted as a memory space. Legacy `atomic_ref` may still parse. |
 | Memory space validation | Same | ✓ Validates `normal`, `normal_writeback`, `normal_writethrough`, `normal_noncacheable`, `atomic`, `device` |
 | Effect tracking for region ops | `effect_checker/effect_checker_memory_regions.silica` | ✓ Requires `mem(Space)` for `alloc_region`, `alloc_ref`, `read_ref`, `write_ref`, etc. |
-| SIR prim generation | `sir_generator/terms/memory_region_calls.silica` | ✓ Maps region built-ins to SIR prim terms |
-| Code emission | `emitter/terms/prims/prims_memory.silica` | ✓ Emits AArch64 for alloc/read/write (heap bump; see §1.2) |
+| SIR prim generation | `sir_generator/terms/memory_region_calls.silica` | ✓ Maps current region built-ins to SIR prim terms; `alloc_atomic` is not implemented as a SIR prim |
+| Code emission | `emitter/terms/prims/prims_memory.silica` | ✓ Emits AArch64 for alloc/read/write (heap bump; see §1.2); atomic-space refs still lower through ordinary memory prims |
 
 ### 1.2 Current Allocation Strategy
 
@@ -83,7 +82,7 @@ Terminology: [memory region vs arena](#terminology-memory-region-vs-arena) (abov
 - Function Parameter Lifetime Extension: Regions passed as parameters extend to return scope
 - Function Return Lifetime Constraint: Returning `ref(R, Space, T)` requires region outlives call
 
-**Build-plan reference**: Phase 6 (Tasks 6.1.1–6.5.2) in build-plan.md
+**Planning reference**: The region analyzer work has historically been tracked as Phase 6, tasks 6.1.1–6.5.2. There is no `build-plan.md` file currently present on disk, so this TODO is the active Phase 1 tracking location for these gaps.
 
 ---
 
@@ -175,13 +174,15 @@ The spec describes "implicit deallocation when r goes out of scope" — the impl
 
 **Specification**: §4.4.5 Atomic memory space and `ref`, §17 Atomic Operations
 
-**Status**: ⚠️ `alloc_atomic` is type-checked against `ref(R, atomic, T)`; emission may be incomplete
+**Status**: ⚠️ `ref(R, atomic, T)` is type-checked and participates in `mem(atomic)` effect handling, but full atomic lowering is not complete. `alloc_atomic` is specified in the documentation but is not implemented in the compiler source as a region built-in, SIR prim, or Apple Silicon memory prim.
 
-**Required**: Verify that **`ref(R, atomic, T)`** (and **`alloc_atomic`**) is fully supported:
+**Required**: Implement and verify complete support for **`ref(R, atomic, T)`** and **`alloc_atomic`**:
 
 - Type checker accepts **`ref`** with **`atomic`** space ✓
-- Effect checker handles `mem(atomic)` ✓
-- SIR generation and code emission for atomic load/store/compare-exchange
+- Effect checker handles `mem(atomic)` and emits function/call barriers where currently wired ✓
+- `alloc_atomic(region, initial)` is recognized by the type checker and effect checker
+- SIR generation includes an `alloc_atomic` prim or a clearly documented lowering to atomic-capable `alloc_ref`
+- Code emission uses correct atomic load/store/compare-exchange operations where required, not only plain `LDR`/`STR`
 - Memory ordering semantics per §17.2
 
 **Note:** The redundant **`atomic_ref(R, Space, T)`** type constructor is **not** used for new code; **`ref(R, atomic, T)`** carries the same enforcement via the memory space parameter.
@@ -196,6 +197,7 @@ Recommended order of work:
 2. **Region isolation enforcement** (§2.3) — Extends existing type checker; prevents obvious misuse.
 3. **Static region lifetime analysis** (§2.1) — Core safety; blocks use-after-free. Depends on build-plan Phase 6.
 4. **Allocation strategy** (§2.4) — May follow from lifetime analysis; consider heap-based regions if stack proves insufficient.
+5. **Atomic references and `alloc_atomic`** (§2.5) — Complete the specified atomic allocation and operation lowering once region identity and bounds plumbing are stable.
 
 ---
 
@@ -208,6 +210,8 @@ When implementation is complete, the following should hold:
 - [ ] No `buf_load` or `buf_store` executes without a prior bounds check (bounds checking)
 - [ ] No `ref(R1, ...)` is used with `region(R2, ...)` when R1 ≠ R2 (region isolation)
 - [ ] Cross-module region usage is validated (cross-module lifetime tracking)
+- [ ] `alloc_atomic` is implemented end to end or removed from the specification until it is implemented
+- [ ] Atomic-space refs use correct atomic load/store/RMW lowering and documented ordering semantics
 - [ ] Error messages reference specification sections (e.g., spec:§12.1.4)
 
 ---
@@ -218,3 +222,4 @@ When implementation is complete, the following should hold:
 |---------|------|---------|
 | 1.0 | 2025-03-10 | Initial document; gaps identified from implementation analysis |
 | 1.1 | 2026-03-27 | Terminology: memory region vs arena; §1.2/§2.4 aligned with heap bump emitter |
+| 1.2 | 2026-05-26 | Moved into `Phase1_TODOs`; aligned atomic status with source-code audit |

@@ -2,7 +2,7 @@
 
 ## High-level picture
 
-In Silica, **`spawn`** may carry an optional third argument: a **`uint64` logical core id** or **`core_id(n)`** with **`n: uint64`** (see [actor_implementation_plan.md](actor_implementation_plan.md) §1d). At runtime, that intent must be lowered to whatever the host OS exposes: thread affinity, processor binding, CPU sets, and so on. **Lists, ranges, `core_set`, `performance_cores`, and `efficiency_cores` are not supported** for this parameter; pick one id (for example from topology helpers) and pass it as `uint64`.
+In Silica, **`spawn`** may carry an optional third argument: a **`uint64` logical core id** or **`core_id(n)`** with **`n: uint64`** (see [actor_implementation_plan.md](Phase1_TODOs/actor_implementation_plan.md) §Implemented Surface). At runtime, that intent must be lowered to whatever the host OS exposes: thread affinity, processor binding, CPU sets, and so on. **Lists, ranges, `core_set`, `performance_cores`, and `efficiency_cores` are not supported** for this parameter; pick one id (for example from topology helpers) and pass it as `uint64`.
 
 **Important separation:**
 
@@ -55,7 +55,7 @@ The following sections name the **typical** APIs and **semantic class** (hard ma
 
 **Contrast with typical “CPU mask” OSes:** macOS’s tag / affinity **policy** is closer to **placement bias** than to **exclusive CPU ownership**.
 
-**Silica compiler context:** The [cpu_topology_implementation_plan.md](cpu_topology_implementation_plan.md) documents the **sysctl-backed** topology and **`core_info`** path for **Apple Silicon + macOS** in the current emitter. Mapping Silica **`core_id`** values to `THREAD_AFFINITY_POLICY` (or any future API) should be treated as **best-effort affinity**, not strict pinning, unless Apple documents a stronger contract for a specific API in use.
+**Silica compiler context:** The [cpu_topology_implementation_plan.md](Phase1_TODOs/cpu_topology_implementation_plan.md) documents the **sysctl-backed** topology and **`core_info`** path for **Apple Silicon + macOS** in the current emitter. Mapping Silica **`core_id`** values to `THREAD_AFFINITY_POLICY` (or any future API) should be treated as **best-effort affinity**, not strict pinning, unless Apple documents a stronger contract for a specific API in use.
 
 **Practical summary for users:** On macOS, treat **`spawn(..., core)`** as **influencing** where carrier threads run, with **no guarantee** of immovable binding to one LP or one physical core.
 
@@ -128,8 +128,8 @@ Two different concepts should not be conflated:
 ## References (internal)
 
 - [silica-specification.md](silica-specification.md) — §4.6 core affinity types, §22 actor builtins, spawn placement
-- [cpu_topology_implementation_plan.md](cpu_topology_implementation_plan.md) — Apple Silicon sysctl topology, runtime contract
-- [actor_implementation_plan.md](actor_implementation_plan.md) — spawn typing, phased actor work
+- [cpu_topology_implementation_plan.md](Phase1_TODOs/cpu_topology_implementation_plan.md) — Apple Silicon sysctl topology, runtime contract
+- [actor_implementation_plan.md](Phase1_TODOs/actor_implementation_plan.md) — spawn typing, phased actor work
 - [actor_growable_stack_design.md](actor_growable_stack_design.md) — per-actor stacks and NUMA-oriented behavior
 - Trials: [../trials/cpu_discovery_and_spawn_pinning/README.md](../trials/cpu_discovery_and_spawn_pinning/README.md)
 

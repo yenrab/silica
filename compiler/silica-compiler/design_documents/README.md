@@ -33,7 +33,7 @@ Actor memory architecture: **growable per-actor stacks**, lazy page migration, i
 
 ---
 
-## [actor_implementation_plan.md](./actor_implementation_plan.md)
+## [Phase1_TODOs/actor_implementation_plan.md](./Phase1_TODOs/actor_implementation_plan.md)
 
 **Actor implementation roadmap** aligned with the language spec: closing gaps (e.g. `ActorMessage`, behaviors, runtime loop), phased status, and pointers to related specs and the growable-stack design.
 
@@ -54,6 +54,12 @@ Draft extension for **mode- and protocol-typed actor capabilities**: `actor_ref 
 ## [actor_spawn_core_affinity_os_semantics.md](./actor_spawn_core_affinity_os_semantics.md)
 
 **OS semantics** for **`spawn`** with a **single core id** (`uint64`): how macOS, Linux, FreeBSD, Solaris/illumos, and Windows interpret affinity vs. hints, carrier threads vs. actors, and pointers to topology and emitter plans.
+
+---
+
+## [Phase1_TODOs/cpu_topology_implementation_plan.md](./Phase1_TODOs/cpu_topology_implementation_plan.md)
+
+Apple Silicon + macOS **CPU topology implementation record**: sysctl-backed `get_cpu_topology`, `get_core_capabilities`, core lists, cache/NUMA layout caveats, and remaining portability/frequency-reporting work.
 
 ---
 
@@ -93,9 +99,9 @@ How **immutable, Erlang-style lists** are represented and lowered in the **Phase
 
 ---
 
-## [list_implementation_development_plan.md](./list_implementation_development_plan.md)
+## [Phase1_TODOs/list_map_filter_reduce_and_hardening_todo.md](./Phase1_TODOs/list_map_filter_reduce_and_hardening_todo.md)
 
-**Phased development plan** that tracks [list_implementation_design.md](./list_implementation_design.md): prerequisites, trials under `trials/list_addition/`, and incremental deliverables for the list pipeline.
+**Remaining TODOs** for the list pipeline after core representation, literals, and list patterns: `map` / `filter` / `reduce`, explicit non-primitive element coverage, Collectable/region-authority checks, and final spec-alignment cleanup.
 
 ---
 
@@ -108,6 +114,10 @@ How **immutable, Erlang-style lists** are represented and lowered in the **Phase
 ## [graph_representation_design.md](./graph_representation_design.md)
 
 Graph representation designs for code generation without custom types: named design families for adjacency-list, compressed sparse row, dense matrix, and dense bitset graphs, with inline Silica shapes, construction/traversal operations, invariants, and when to use each family.
+
+## [standard_data_structures_implementation_plan.md](./standard_data_structures_implementation_plan.md)
+
+Step-by-step implementation plan for the standard generated data structures described by the graph, balanced tree/heap, and B-tree set design documents. It starts with graph representations and keeps those design documents as the source of truth.
 
 ---
 
@@ -153,7 +163,7 @@ Implementation strategy for **general recursion**: explicit frame stacks, tail a
 
 ---
 
-## [region_memory_safety_todo.md](./region_memory_safety_todo.md)
+## [Phase1_TODOs/region_memory_safety_todo.md](./Phase1_TODOs/region_memory_safety_todo.md)
 
 **Implementation gaps** for the region memory model vs. the full specification: lifetime analysis phases, what is already implemented in the compiler, and what remains for sound region safety.
 

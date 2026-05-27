@@ -1269,4 +1269,4 @@ Recommended project staging:
 - [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) - B-tree and heap design this set document specializes.
 - [silica-specification.md](silica-specification.md) - inline structural types, lists, regions, effects.
 - [list_implementation_design.md](list_implementation_design.md) - `List[T, S]` storage and memory-space alignment.
-- [region_memory_safety_todo.md](region_memory_safety_todo.md) - region lifetime implementation gaps relevant to returned buffers.
+- [region_memory_safety_todo.md](Phase1_TODOs/region_memory_safety_todo.md) - region lifetime implementation gaps relevant to returned buffers.
