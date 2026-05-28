@@ -49,6 +49,9 @@ silica.config: lib-sources
 		echo 'graph_csr_directed_weighted_int64.silica'; \
 		echo 'graph_dense_directed_unweighted.silica'; \
 		echo 'graph_dense_directed_weighted_int64.silica'; \
+		echo 'graph_reachability_csr_directed_unweighted.silica'; \
+		echo 'graph_reachability_adj_directed_unweighted.silica'; \
+		echo 'graph_degree_summary_csr_directed_unweighted.silica'; \
 	} > silica.config
 
 all: executables
@@ -166,7 +169,7 @@ integrate: silica.config
 
 clean:
 	@cd "$(THIS_DIR)" && \
-	rm -f *.sout lib/*.sams lib/*.o lib/graph_adj_*.o lib/graph_csr_*.o lib/graph_dense_*.o *.sams __silica_runtime.o graph_adj_directed_unweighted graph_adj_undirected_unweighted graph_adj_directed_weighted_int64 graph_csr_directed_unweighted graph_csr_directed_weighted_int64 graph_dense_directed_unweighted graph_dense_directed_weighted_int64 graph_adj_directed_unweighted.o graph_adj_undirected_unweighted.o graph_adj_directed_weighted_int64.o graph_csr_directed_unweighted.o graph_csr_directed_weighted_int64.o graph_dense_directed_unweighted.o graph_dense_directed_weighted_int64.o silica.config .integrate_counts
+	rm -f *.sout lib/*.sams lib/*.o lib/graph_adj_*.o lib/graph_csr_*.o lib/graph_dense_*.o *.sams __silica_runtime.o graph_adj_directed_unweighted graph_adj_undirected_unweighted graph_adj_directed_weighted_int64 graph_csr_directed_unweighted graph_csr_directed_weighted_int64 graph_dense_directed_unweighted graph_dense_directed_weighted_int64 graph_reachability_csr_directed_unweighted graph_reachability_adj_directed_unweighted graph_degree_summary_csr_directed_unweighted graph_adj_directed_unweighted.o graph_adj_undirected_unweighted.o graph_adj_directed_weighted_int64.o graph_csr_directed_unweighted.o graph_csr_directed_weighted_int64.o graph_dense_directed_unweighted.o graph_dense_directed_weighted_int64.o graph_reachability_csr_directed_unweighted.o graph_reachability_adj_directed_unweighted.o graph_degree_summary_csr_directed_unweighted.o silica.config .integrate_counts
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:

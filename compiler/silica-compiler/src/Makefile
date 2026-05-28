@@ -60,15 +60,16 @@ FFI_LL := $(addsuffix .ll, $(FFI_MODULES))
 TRAIT_CHECKER_LL := $(addsuffix .ll, $(TRAIT_CHECKER_MODULES))
 EFFECT_CHECKER_LL := $(addsuffix .ll, $(EFFECT_CHECKER_MODULES))
 
-# Subdirectories with Makefiles (build order respects dependencies)
-SUBDIRS := lexer parser type_checker module_checker ffi effect_checker sir_generator standard_data_structures emitter
+# Subdirectories built with silica-boot (.silica -> .ll). standard_data_structures is separate (silica-compiler).
+SUBDIRS := lexer parser type_checker module_checker ffi effect_checker sir_generator emitter
+STANDARD_DATA_STRUCTURES := standard_data_structures
 
 # Trials: immediate subdirs of ../trials that contain Makefile or makefile (each defines its own integrate)
 TRIALS_ROOT := ../trials
 TRIAL_MAKEFILES := $(wildcard $(TRIALS_ROOT)/*/Makefile $(TRIALS_ROOT)/*/makefile)
 TRIAL_SUBDIRS := $(sort $(foreach mf,$(TRIAL_MAKEFILES),$(notdir $(patsubst %/,%,$(dir $(mf))))))
 
-.PHONY: all clean build executables modules subdirs help integrate $(SUBDIRS)
+.PHONY: all clean build executables modules subdirs help integrate $(SUBDIRS) $(STANDARD_DATA_STRUCTURES)
 
 .DEFAULT_GOAL := all
 
@@ -78,7 +79,7 @@ all: clean build
 
 # Real build target - ensure bootstrap compiler exists, then compile subdirs, modules, and main
 
-build: $(SILICA_COMPILER) subdirs modules executables
+build: $(SILICA_COMPILER) subdirs modules executables $(STANDARD_DATA_STRUCTURES)
 
 # Build all subdirectories with Makefiles (before compiling main.silica)
 # subdirs requires bootstrap compiler to exist first
@@ -87,6 +88,11 @@ subdirs: $(SILICA_COMPILER) $(SUBDIRS)
 $(SUBDIRS):
 	@echo "Building $@..."
 	@$(MAKE) -C $@ QUIET=1 TARGET=$(TARGET)
+
+# Graph/registry modules need full silica-compiler (built above); not silica-boot.
+$(STANDARD_DATA_STRUCTURES): $(EXECUTABLE)
+	@echo "Building $(STANDARD_DATA_STRUCTURES)..."
+	@$(MAKE) -C $(STANDARD_DATA_STRUCTURES) QUIET=$(QUIET)
 
 # Compile lexer, parser, type_checker, and effect_checker modules
 modules: $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(MODULE_CHECKER_LL) $(FFI_LL) $(TRAIT_CHECKER_LL) $(EFFECT_CHECKER_LL)
@@ -153,6 +159,7 @@ integrate: $(EXECUTABLE)
 clean:
 	@echo "Cleaning generated files..."
 	@for d in $(SUBDIRS); do $(MAKE) -C $$d clean TARGET=$(TARGET) 2>/dev/null || true; done
+	@$(MAKE) -C $(STANDARD_DATA_STRUCTURES) clean 2>/dev/null || true
 	rm -f *.ll *.bc *.o $(EXECUTABLE)
 	rm -f lexer/*.ll
 	rm -f parser/*.ll parser/*/*.ll

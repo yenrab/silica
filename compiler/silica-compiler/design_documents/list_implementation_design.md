@@ -68,6 +68,7 @@ The **authoritative** surface syntax and typing rules remain in [silica-specific
 ### 4.2 Packed scalars
 
 - When **more than one** element of type `T` fits in a chunk **according to** `sizeof` and **alignment** rules, **pack** them in a **deterministic** order consistent with **§9.5** (exact **slot** **indices** **from** **back** **forward** **per** **chunk** must be **fixed** for vectorized access and codegen).
+- **Scalar `T`** includes all primitive **`Collectable`** types in silica-spec §8.2.4, including **`uint8`–`uint64`** as well as signed integers and floats.
 
 ### 4.3 Empty list
 

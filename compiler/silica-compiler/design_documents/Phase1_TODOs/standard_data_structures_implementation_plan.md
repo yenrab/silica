@@ -2,9 +2,11 @@
 
 This plan organizes implementation work for Silica's standard generated data structures. It is an execution plan only. The design authority remains:
 
-- [graph_representation_design.md](graph_representation_design.md)
-- [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md)
-- [btree_set_design.md](btree_set_design.md)
+- [graph_representation_design.md](../graph_representation_design.md)
+- [balanced_tree_and_heap_design.md](../balanced_tree_and_heap_design.md)
+- [btree_set_design.md](../btree_set_design.md)
+
+**Design conventions (shared model):** stored payload uses language **`Collectable`** (not a separate `Storable` trait). Graphs, trees, heaps, and sets are **immutable values** with **uniform inline record types** at every boundary (graph design §2.7–§2.8). CSR/dense topology buffers remain **`int64`**; **`NodeData`** / **`EdgeData`** / keys / values live in list slots or parallel **`Collectable`** buffers (graph §2.5–§2.6).
 
 This document does not introduce new representations, naming rules, memory-space rules, error shapes, generated API shapes, or source-level syntax. When a detail is needed, use the relevant design document section named in the step.
 
@@ -27,12 +29,14 @@ Every implementation step must obey these rules:
 1. Treat design names as generator names only.
 2. Emit full inline structural types everywhere a Silica type is required.
 3. Use the memory-space rules from the relevant design document.
-4. Use `Storable` exactly as described by the relevant design document.
+4. Use **`Collectable`** payload and operand rules exactly as described by the relevant design document (graph §2.4; balanced tree §2.4; btree set §4.0).
 5. Keep generated naming consistent with the relevant design document.
 6. Add positive trials before relying on a generated helper in later phases.
 7. Add negative or validation trials for every documented invariant that can be checked.
 8. Do not implement a faster packed form until the clear list-oriented form has validation coverage, unless the design document specifically allows direct packed construction.
 9. Do not add unplanned APIs. If a helper is needed only internally, name and scope it as a generator helper and keep it aligned with the design document's helper requirements.
+10. Emit **immutable** APIs by default: mutating operations return new structure values; use `_builder_` / `_mutable_` suffixes only when the design document allows (graph §2.7).
+11. Enforce **uniform inline types** for each structure value flow (graph §2.7; list spec §4.2.4 analogy).
 
 ## Phase 0 - Shared Generator Foundation
 
@@ -40,7 +44,7 @@ Every implementation step must obey these rules:
 
 Authority:
 
-- `graph_representation_design.md` sections 2.1 through 2.6 and 8
+- `graph_representation_design.md` sections 2.1 through 2.10 and 8
 - `balanced_tree_and_heap_design.md` sections 2 and 3
 - `btree_set_design.md` sections 4 and 8 through 9
 
@@ -50,7 +54,7 @@ Actions:
 2. Register the graph families named in the graph design.
 3. Register the B-tree and heap families named in the balanced tree and heap design.
 4. Register the B-tree set families named in the B-tree set design.
-5. For each family, record only design-document fields: representation name, memory space, weightedness when applicable, directedness when applicable, key type when applicable, and capacity constants when applicable.
+5. For each family, record only design-document fields: representation name, memory space, weightedness when applicable, directedness when applicable, **`node_data_type`** / **`edge_data_type`** / **`key_type`** when applicable (concrete **`Collectable`** inline spelling or `none`), and capacity constants when applicable.
 
 Exit criteria:
 
@@ -164,7 +168,7 @@ Exit criteria:
 
 Authority:
 
-- `graph_representation_design.md` sections 2.6, 3.4, 3.6, 8.2, and 8.3
+- `graph_representation_design.md` sections 2.10, 3.4, 3.6, 8.2, and 8.3
 
 Actions:
 
@@ -376,13 +380,19 @@ Exit criteria:
 
 - Either dense bitset trials pass, or the fallback is documented without changing the graph design.
 
+**Phase 3 completed:**
+
+- Steps 3.1–3.2: `graph_dense_directed_unweighted_normal.silica`, `graph_dense_directed_weighted_int64_normal.silica`; trials `graph_dense_directed_unweighted.silica`, `graph_dense_directed_weighted_int64.silica` (silica-compiler integrate).
+- Step 3.3: DenseBitset deferred per graph design §6.4; fallback to `DenseMatrixGraphDirectedUnweighted` documented in completion tracking.
+- `src/standard_data_structures/` builds graph modules via `silica-compiler` + `silica.config` (not silica-boot).
+
 ## Phase 4 - Graph Algorithms Over Stable Traversal APIs
 
 ### Step 4.1 - Generate Reachability
 
 Authority:
 
-- `graph_representation_design.md` sections 2.6, 3.6, 4.7, 5.6, and 7
+- `graph_representation_design.md` sections 2.10, 3.6, 4.7, 5.6, and 7
 
 Actions:
 
@@ -399,7 +409,7 @@ Exit criteria:
 
 Authority:
 
-- `graph_representation_design.md` sections 2.6, 3.6, 4.7, and 5.6
+- `graph_representation_design.md` sections 2.10, 3.6, 4.7, and 5.6
 
 Actions:
 
@@ -410,6 +420,11 @@ Actions:
 Exit criteria:
 
 - Trials verify summaries against small graphs with known answers.
+
+**Phase 4 started:**
+
+- Step 4.1: `reachable/3` on adjacency (flat slots) and CSR static graph; trials `graph_reachability_adj_directed_unweighted.silica`, `graph_reachability_csr_directed_unweighted.silica`.
+- Step 4.2: `max_out_degree/1`, `total_out_degree_sum/1` on CSR; trial `graph_degree_summary_csr_directed_unweighted.silica`.
 
 ## Phase 5 - B-tree Set: NodeIDBTreeSet
 
@@ -723,7 +738,7 @@ Exit criteria:
 
 ## Phase 10 - Cross-Structure Integration
 
-### Step 10.1 - Shared Storable Coverage
+### Step 10.1 - Shared Collectable Payload Coverage
 
 Authority:
 
@@ -733,19 +748,37 @@ Authority:
 
 Actions:
 
-1. Verify all generated APIs use `Storable` exactly where the design documents require it.
-2. Verify structural metadata remains plain structural data, not `Storable`.
-3. Add compile-level checks or trials for the first monomorphic `int64` families.
+1. Verify all generated APIs use concrete **`Collectable`** payload types exactly where the design documents require them.
+2. Verify structural metadata and topology indices remain plain **`int64`** or buffer types, not user **`Collectable`** payload.
+3. Add compile-level checks or trials for the first monomorphic `int64` families and for at least one **`uint32`** (or other unsigned) **`Collectable`** list or buffer payload shape per silica-spec §8.2.4.
 
 Exit criteria:
 
-- All generated public APIs follow the documented `Storable` rule.
+- All generated public APIs follow the documented **`Collectable`** payload rule.
 
-### Step 10.2 - Region Ownership Audit
+### Step 10.2 - Immutability And Type Invariance
 
 Authority:
 
-- `graph_representation_design.md` sections 2.5, 4.8, and 9
+- `graph_representation_design.md` sections 2.7 and 2.8
+- `balanced_tree_and_heap_design.md` section 2.5
+
+Actions:
+
+1. Verify mutating generated helpers return new structure values (`produces pure …`) unless the module name includes `_builder_` or `_mutable_`.
+2. Verify CSR/dense public query paths do not mutate frozen buffers in place.
+3. Add error-enforcement trials for mixed inline graph/tree types on the same value flow where the compiler should reject the mismatch.
+4. Verify constructor return types embed payload spellings used by subsequent get/set helpers (schema pinning, graph §2.8).
+
+Exit criteria:
+
+- Immutability and uniform-type rules are covered by trials or documented compiler checks.
+
+### Step 10.3 - Region Ownership Audit
+
+Authority:
+
+- `graph_representation_design.md` sections 2.9, 4.8, and 9
 - `balanced_tree_and_heap_design.md` section 2.2
 - `btree_set_design.md` sections 2 and 6
 
@@ -759,7 +792,7 @@ Exit criteria:
 
 - Region ownership is documented in generated-family status notes and covered by type-level trials where possible.
 
-### Step 10.3 - Naming And Emission Order Audit
+### Step 10.4 - Naming And Emission Order Audit
 
 Authority:
 
@@ -777,7 +810,7 @@ Exit criteria:
 
 - Snapshot tests cover representative generated names and emission order.
 
-### Step 10.4 - Documentation Status Update
+### Step 10.5 - Documentation Status Update
 
 Authority:
 
@@ -786,7 +819,7 @@ Authority:
 Actions:
 
 1. Add implementation-status notes to this plan as families are completed.
-2. Do not change the design documents unless implementation reveals an actual design/document mismatch.
+2. Do not change the design documents unless implementation reveals an actual design/document mismatch (Collectable payload model and invariance rules in graph §2.4–§2.8 are current authority).
 3. Link completed trial names from this plan.
 
 Exit criteria:
@@ -798,15 +831,15 @@ Exit criteria:
 | Area | Status | Notes |
 |------|--------|-------|
 | Shared generator foundation | Complete | Phase 0 — `src/standard_data_structures/`; `trials/standard_data_structures_addition/`; placeholder `*_addition/`; `error_enforcement_addition/generated_data_structures/` |
-| NodeIdAdjacencyGraph | Complete | Phase 1 — directed unweighted normal-memory graph is list-backed for node ids 0..2 and `trials/graph_addition/graph_adj_directed_unweighted.silica` now covers empty validation, checked add, direct add, validation after add, invalid endpoint rejection, directed `has_edge`, and `out_degree`; `graph_adj_undirected_unweighted.silica` and `graph_adj_directed_weighted_int64.silica` retain bootstrap coverage; invalid endpoint runtime trial under `error_enforcement_addition/generated_data_structures/graph/` |
-| CompressedSparseRowGraph | Complete (bootstrap) | Phase 2 — CSR inline type strings covered by Phase 0 snapshot; `graph_csr_directed_unweighted_normal.silica` and `graph_csr_directed_weighted_int64_normal.silica` compile with direct static buffer constructors, validation, out-degree, edge lookup, and weighted lookup helpers; `trials/graph_addition/graph_csr_directed_unweighted.silica` and `graph_csr_directed_weighted_int64.silica` provide integration/golden coverage. Runtime trials are no-op because current emitter hangs when region-owned CSR buffer records are constructed or returned in graph trial executables. |
-| DenseMatrixGraph | Complete (bootstrap) | Phase 3 — dense matrix inline type strings covered by Phase 0 snapshot; `graph_dense_directed_unweighted_normal.silica` and `graph_dense_directed_weighted_int64_normal.silica` compile with fixed 3-node capacity, empty constructors, checked edge setting, `has_edge`, `out_degree`, weighted lookup, and validation helpers; `trials/graph_addition/graph_dense_directed_unweighted.silica` and `graph_dense_directed_weighted_int64.silica` provide integration/golden coverage. Runtime trials are no-op for the same region-owned buffer record emitter limitation documented for Phase 2. |
-| DenseBitsetGraph | Deferred with documented fallback | Phase 3 — graph design §6.4 says to generate DenseBitset only when bitwise `|`, `&`, and shift are supported in the current compiler path. This bootstrap path uses `DenseMatrixGraphDirectedUnweighted` as the documented fallback. |
-| Graph algorithms | Not started | Phase 4 |
+| NodeIdAdjacencyGraph | Complete | Phase 1 — directed unweighted uses flat `n0`/`n1`/`n2` neighbor slots (`node_count <= 3`); `graph_adj_directed_unweighted.silica` covers validation, checked add, `has_edge`, `out_degree`; undirected/weighted trials are compile-and-empty-validate smoke tests |
+| CompressedSparseRowGraph | Complete | Phase 2 — CSR inline type strings covered by Phase 0 snapshot; `graph_csr_directed_unweighted_normal.silica` and `graph_csr_directed_weighted_int64_normal.silica` compile with direct static buffer constructors, validation, buffer-backed out-degree, edge lookup, and weighted lookup helpers; `trials/graph_addition/graph_csr_directed_unweighted.silica` and `graph_csr_directed_weighted_int64.silica` now run runtime mains that construct region-owned CSR buffer records and verify node count, edge count, validation, present/absent edge lookup, out-degree, and weighted lookup. |
+| DenseMatrixGraph | Complete | Phase 3 — dense matrix inline type strings covered by Phase 0 snapshot; `graph_dense_directed_unweighted_normal.silica` and `graph_dense_directed_weighted_int64_normal.silica` provide fixed 3-node capacity, empty constructors, checked/direct edge setting, direct-buffer `has_edge`, `out_degree`, weighted lookup, and validation helpers (CSR-style flat int64 guards; no chained module calls in hot paths); `trials/graph_addition/graph_dense_directed_unweighted.silica` and `graph_dense_directed_weighted_int64.silica` integrate under `silica-compiler` and verify empty validation, checked edge set, validation after set, directed lookup, out-degree, and weighted lookup. |
+| DenseBitsetGraph | Deferred with documented fallback | Phase 3 — graph design §6.4 says to generate DenseBitset only when bitwise `|`, `&`, and shift are supported in the current compiler path. The current `silica-compiler` path documents the fallback to `DenseMatrixGraphDirectedUnweighted`. |
+| Graph algorithms | In progress | Phase 4 — `reachable`, `max_out_degree`, `total_out_degree_sum` on adjacency + CSR (bootstrap 3-node); trials `graph_reachability_adj_directed_unweighted.silica`, `graph_reachability_csr_directed_unweighted.silica`, `graph_degree_summary_csr_directed_unweighted.silica` |
 | NodeIDBTreeSet | Not started | Phase 5 |
 | CsrBTreeSet | Not started | Phase 6 |
 | NodeIDBTree | Not started | Phase 7 |
 | CsrBTree | Not started | Phase 8 |
 | RegionBinaryHeap | Not started | Phase 9 |
 | RegionDaryHeap | Not started | Phase 9 |
-| Cross-structure audit | Not started | Phase 10 |
+| Cross-structure audit | Not started | Phase 10 — Collectable payload, immutability, type invariance (Steps 10.1–10.2) |

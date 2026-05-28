@@ -1,10 +1,8 @@
-# Makefile for standard_data_structures generator foundation (Phase 0)
+# Makefile for standard_data_structures (Phase 0 registry + graph generated modules).
+# Compiled with the self-hosted silica-compiler (silica.config batch mode), not silica-boot.
+# Runtime validation lives in trials/graph_addition/.
 
-SILICA_COMPILER := ../../../silica-bootstrap-compiler/target/release/silica-boot
-SEARCH_PATHS := -I .
-
-LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "llvm-as"))
-LLC := $(or $(LLVM_LLC), $(shell command -v llc 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llc && echo "/opt/homebrew/opt/llvm/bin/llc") || echo "llc"))
+SILICA_COMPILER := ../silica-compiler
 
 ifdef QUIET
   ECHO := @true
@@ -12,34 +10,42 @@ else
   ECHO := @echo
 endif
 
-SILICA_FILES := $(wildcard *.silica)
-LL_FILES := $(SILICA_FILES:.silica=.ll)
-BC_FILES := $(SILICA_FILES:.silica=.bc)
-OBJ_FILES := $(SILICA_FILES:.silica=.o)
+# Dependency order: helpers and registry first, then graph families.
+SILICA_CONFIG_FILES := \
+	graph_adj_list_helpers.silica \
+	structure_registry.silica \
+	inline_type_expansion.silica \
+	graph_adj_directed_unweighted_normal.silica \
+	graph_adj_undirected_unweighted_normal.silica \
+	graph_adj_directed_weighted_int64_normal.silica \
+	graph_csr_directed_unweighted_normal.silica \
+	graph_csr_directed_weighted_int64_normal.silica \
+	graph_dense_directed_unweighted_normal.silica \
+	graph_dense_directed_weighted_int64_normal.silica
 
-.SECONDARY: $(LL_FILES) $(BC_FILES)
+SAMS_FILES := $(SILICA_CONFIG_FILES:.silica=.sams)
 
 .DEFAULT_GOAL := all
-.PHONY: all clean help
+.PHONY: all clean help silica.config
 
-all: $(OBJ_FILES)
-	@echo "✅ standard_data_structures modules compiled to object files"
+all: $(SILICA_COMPILER) silica.config
+	$(ECHO) "Compiling standard_data_structures with silica-compiler..."
+	@cd "$(CURDIR)" && "$(abspath $(SILICA_COMPILER))"
+	@echo "✅ standard_data_structures compiled with silica-compiler"
 
-%.ll: %.silica
-	$(ECHO) "Compiling: $< -> $@"
-	@-$(SILICA_COMPILER) $< $@ $(SEARCH_PATHS)
+$(SILICA_COMPILER):
+	@echo "Error: $(SILICA_COMPILER) not found. Run 'make -C .. executables' (or 'make -C .. build') first."
+	@exit 1
 
-%.bc: %.ll
-	$(ECHO) "Assembling: $< -> $@"
-	@-$(LLVM_AS) $< -o $@
-
-%.o: %.bc
-	$(ECHO) "Linking: $< -> $@"
-	@-$(LLC) -filetype=obj $< -o $@
+silica.config:
+	@printf '%s\n' $(SILICA_CONFIG_FILES) > $@
 
 clean:
+	@rm -f silica.config $(SAMS_FILES) __silica_runtime.sams
 	@rm -f *.ll *.bc *.o
 	@echo "✅ standard_data_structures clean complete"
 
 help:
-	@echo "Silica standard_data_structures Makefile — Phase 0 registry and type expansion"
+	@echo "standard_data_structures — compile via silica-compiler + silica.config"
+	@echo "  Requires ../silica-compiler (build parent src/ first)"
+	@echo "  Trials: ../trials/graph_addition/ (make integrate)"

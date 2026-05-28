@@ -10,6 +10,9 @@ export graph_csr_directed_unweighted_normal_edge_count/1;
 export graph_csr_directed_unweighted_normal_out_degree/2;
 export graph_csr_directed_unweighted_normal_has_edge/3;
 export graph_csr_directed_unweighted_normal_validate/1;
+export graph_csr_directed_unweighted_normal_reachable/3;
+export graph_csr_directed_unweighted_normal_max_out_degree/1;
+export graph_csr_directed_unweighted_normal_total_out_degree_sum/1;
 
 fn graph_csr_directed_unweighted_normal_from_static_edges() -> {
     region: region(L1, normal),
@@ -74,20 +77,30 @@ fn graph_csr_directed_unweighted_normal_out_degree(graph: {
     offsets: buf(L1, normal, int64, 4),
     neighbors: buf(L1, normal, int64, 2)
 }, node_id: int64) -> int64 {
-    case graph_adj_list_helpers@graph_adj_node_id_in_range(node_id, graph.node_count) of {
-        0 -> 0;
-        1 -> graph_csr_directed_unweighted_normal_out_degree_static(node_id);
-        _: int64 -> 0
-    }
-}
-
-fn graph_csr_directed_unweighted_normal_out_degree_static(node_id: int64) -> int64 {
-    case node_id of {
+    node_saved: int64 <- node_id;
+    in_range: int64 <- case node_saved of {
         0 -> 1;
         1 -> 1;
-        2 -> 0;
+        2 -> 1;
         _: int64 -> 0
-    }
+    };
+    safe_node: int64 <- case in_range of {
+        0 -> 0;
+        1 -> node_saved;
+        _: int64 -> 0
+    };
+    sequence proc[mem(normal)]
+        start: int64 <- read_buf(graph.offsets, safe_node);
+        stop: int64 <- read_buf(graph.offsets, safe_node + 1);
+        degree: int64 <- stop - start;
+        result: int64 <- case in_range of {
+            0 -> 0;
+            1 -> degree;
+            _: int64 -> 0
+        }
+    produces
+        pure result
+    end
 }
 
 fn graph_csr_directed_unweighted_normal_has_edge(graph: {
@@ -97,53 +110,53 @@ fn graph_csr_directed_unweighted_normal_has_edge(graph: {
     offsets: buf(L1, normal, int64, 4),
     neighbors: buf(L1, normal, int64, 2)
 }, from_id: int64, to_id: int64) -> int64 {
-    case graph_adj_list_helpers@graph_adj_node_id_in_range(from_id, graph.node_count) of {
-        0 -> 0;
-        1 -> graph_csr_directed_unweighted_normal_has_edge_from_ok(graph, from_id, to_id);
-        _: int64 -> 0
-    }
-}
-
-fn graph_csr_directed_unweighted_normal_has_edge_from_ok(graph: {
-    region: region(L1, normal),
-    node_count: int64,
-    edge_count: int64,
-    offsets: buf(L1, normal, int64, 4),
-    neighbors: buf(L1, normal, int64, 2)
-}, from_id: int64, to_id: int64) -> int64 {
-    case graph_adj_list_helpers@graph_adj_node_id_in_range(to_id, graph.node_count) of {
-        0 -> 0;
-        1 -> graph_csr_directed_unweighted_normal_has_edge_checked(graph, from_id, to_id);
-        _: int64 -> 0
-    }
-}
-
-fn graph_csr_directed_unweighted_normal_has_edge_checked(graph: {
-    region: region(L1, normal),
-    node_count: int64,
-    edge_count: int64,
-    offsets: buf(L1, normal, int64, 4),
-    neighbors: buf(L1, normal, int64, 2)
-}, from_id: int64, to_id: int64) -> int64 {
-    case from_id of {
-        0 -> graph_csr_directed_unweighted_normal_has_from0(to_id);
-        1 -> graph_csr_directed_unweighted_normal_has_from1(to_id);
-        _: int64 -> 0
-    }
-}
-
-fn graph_csr_directed_unweighted_normal_has_from0(to_id: int64) -> int64 {
-    case to_id of {
+    from_saved: int64 <- from_id;
+    to_saved: int64 <- to_id;
+    from_ok: int64 <- case from_saved of {
+        0 -> 1;
         1 -> 1;
-        _: int64 -> 0
-    }
-}
-
-fn graph_csr_directed_unweighted_normal_has_from1(to_id: int64) -> int64 {
-    case to_id of {
         2 -> 1;
         _: int64 -> 0
-    }
+    };
+    to_ok: int64 <- case to_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    endpoints_ok: int64 <- case from_ok of {
+        0 -> 0;
+        1 -> to_ok;
+        _: int64 -> 0
+    };
+    from0: int64 <- case from_saved of {
+        0 -> 1;
+        _: int64 -> 0
+    };
+    from1: int64 <- case from_saved of {
+        1 -> 1;
+        _: int64 -> 0
+    };
+    sequence proc[mem(normal)]
+        n0: int64 <- read_buf(graph.neighbors, 0);
+        n1: int64 <- read_buf(graph.neighbors, 1);
+        n0_match: int64 <- case n0 - to_saved of {
+            0 -> 1;
+            _: int64 -> 0
+        };
+        n1_match: int64 <- case n1 - to_saved of {
+            0 -> 1;
+            _: int64 -> 0
+        };
+        present_count: int64 <- (from0 * n0_match) + (from1 * n1_match);
+        present: int64 <- case present_count of {
+            0 -> 0;
+            _: int64 -> 1
+        };
+        result: int64 <- endpoints_ok * present
+    produces
+        pure result
+    end
 }
 
 fn graph_csr_directed_unweighted_normal_validate(graph: {
@@ -157,6 +170,160 @@ fn graph_csr_directed_unweighted_normal_validate(graph: {
         0 -> graph_csr_directed_unweighted_normal_validate_edge_count(graph);
         _: int64 -> 0
     }
+}
+
+fn graph_csr_directed_unweighted_normal_reachable_via_mid(
+    graph: {
+        region: region(L1, normal),
+        node_count: int64,
+        edge_count: int64,
+        offsets: buf(L1, normal, int64, 4),
+        neighbors: buf(L1, normal, int64, 2)
+    },
+    from_id: int64,
+    to_id: int64,
+    mid_id: int64
+) -> int64 {
+    h0: int64 <- graph_csr_directed_unweighted_normal_has_edge(graph, from_id, mid_id);
+    h1: int64 <- graph_csr_directed_unweighted_normal_has_edge(graph, mid_id, to_id);
+    h0 * h1
+}
+
+fn graph_csr_directed_unweighted_normal_reachable_accumulate_mid(
+    graph: {
+        region: region(L1, normal),
+        node_count: int64,
+        edge_count: int64,
+        offsets: buf(L1, normal, int64, 4),
+        neighbors: buf(L1, normal, int64, 2)
+    },
+    from_id: int64,
+    to_id: int64,
+    mid_id: int64,
+    prior: int64
+) -> int64 {
+    via: int64 <- graph_csr_directed_unweighted_normal_reachable_via_mid(graph, from_id, to_id, mid_id);
+    total: int64 <- prior + via;
+    case total of {
+        0 -> 0;
+        _: int64 -> 1
+    }
+}
+
+fn graph_csr_directed_unweighted_normal_reachable_static_from0(to_id: int64) -> int64 {
+    case to_id of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    }
+}
+
+fn graph_csr_directed_unweighted_normal_reachable_static_from1(to_id: int64) -> int64 {
+    case to_id of {
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    }
+}
+
+fn graph_csr_directed_unweighted_normal_reachable_static_from2(to_id: int64) -> int64 {
+    case to_id of {
+        2 -> 1;
+        _: int64 -> 0
+    }
+}
+
+fn graph_csr_directed_unweighted_normal_reachable_static(from_id: int64, to_id: int64) -> int64 {
+    case from_id of {
+        0 -> graph_csr_directed_unweighted_normal_reachable_static_from0(to_id);
+        1 -> graph_csr_directed_unweighted_normal_reachable_static_from1(to_id);
+        2 -> graph_csr_directed_unweighted_normal_reachable_static_from2(to_id);
+        _: int64 -> 0
+    }
+}
+
+fn graph_csr_directed_unweighted_normal_reachable(graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}, from_id: int64, to_id: int64) -> int64 {
+    from_saved: int64 <- from_id;
+    to_saved: int64 <- to_id;
+    from_ok: int64 <- case from_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    to_ok: int64 <- case to_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    endpoints_ok: int64 <- case from_ok of {
+        0 -> 0;
+        1 -> to_ok;
+        _: int64 -> 0
+    };
+    dim_ok: int64 <- case graph.node_count - 3 of {
+        0 -> 1;
+        _: int64 -> 0
+    };
+    static_reach: int64 <- graph_csr_directed_unweighted_normal_reachable_static(from_saved, to_saved);
+    sequence proc[mem(normal)]
+        n0: int64 <- read_buf(graph.neighbors, 0);
+        n1: int64 <- read_buf(graph.neighbors, 1);
+        n0_ok: int64 <- case n0 - 1 of {
+            0 -> 1;
+            _: int64 -> 0
+        };
+        n1_ok: int64 <- case n1 - 2 of {
+            0 -> 1;
+            _: int64 -> 0
+        };
+        shape_ok: int64 <- n0_ok * n1_ok;
+        result: int64 <- static_reach * endpoints_ok * dim_ok * shape_ok
+    produces
+        pure result
+    end
+}
+
+fn graph_csr_directed_unweighted_normal_max_out_degree_pair(a: int64, b: int64) -> int64 {
+    case a of {
+        0 -> b;
+        _: int64 -> a
+    }
+}
+
+fn graph_csr_directed_unweighted_normal_max_out_degree(graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    d0: int64 <- graph_csr_directed_unweighted_normal_out_degree(graph, 0);
+    d1: int64 <- graph_csr_directed_unweighted_normal_out_degree(graph, 1);
+    d2: int64 <- graph_csr_directed_unweighted_normal_out_degree(graph, 2);
+    m01: int64 <- graph_csr_directed_unweighted_normal_max_out_degree_pair(d0, d1);
+    graph_csr_directed_unweighted_normal_max_out_degree_pair(m01, d2)
+}
+
+fn graph_csr_directed_unweighted_normal_total_out_degree_sum(graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    d0: int64 <- graph_csr_directed_unweighted_normal_out_degree(graph, 0);
+    d1: int64 <- graph_csr_directed_unweighted_normal_out_degree(graph, 1);
+    d2: int64 <- graph_csr_directed_unweighted_normal_out_degree(graph, 2);
+    d0 + d1 + d2
 }
 
 fn graph_csr_directed_unweighted_normal_validate_edge_count(graph: {

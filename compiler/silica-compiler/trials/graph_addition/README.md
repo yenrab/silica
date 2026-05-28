@@ -28,7 +28,7 @@ Validation failures: `trials/error_enforcement_addition/generated_data_structure
 
 `CompressedSparseRowGraph` has bootstrap generated modules for directed unweighted and directed weighted int64 CSR graphs in `src/standard_data_structures/`.
 
-The modules compile direct static constructors, validation helpers, out-degree, edge lookup, and weighted lookup. The graph integration trials currently use no-op runtime mains because the current emitter hangs when region-owned CSR buffer records are constructed, returned, or passed through graph trial executables. Assembly and executable goldens still verify that the generated modules compile, assemble, link, and remain stable.
+The modules compile direct static constructors, validation helpers, buffer-backed out-degree, edge lookup, and weighted lookup. The graph integration trials now run runtime mains that construct region-owned CSR buffer records, pass them through inspection helpers, and verify node count, edge count, validation, present edges, absent edges, out-degree, and weighted lookup.
 
 Success trials:
 
@@ -37,13 +37,23 @@ Success trials:
 
 ## Phase 3
 
-`DenseMatrixGraph` has bootstrap generated modules for directed unweighted and directed weighted int64 dense matrix graphs in `src/standard_data_structures/`.
+`DenseMatrixGraph` has generated modules for directed unweighted and directed weighted int64 dense matrix graphs in `src/standard_data_structures/`.
 
-The modules compile fixed 3-node capacity matrix constructors, checked edge setters, edge lookup, out-degree, weighted lookup, and validation helpers. Like the CSR trials, runtime mains are currently no-op because region-owned buffer records are emitter-sensitive in graph trial executables. Assembly and executable goldens verify compile, assemble, link, and output stability.
+The modules provide fixed 3-node capacity matrix constructors, checked edge setters, direct-buffer edge lookup, out-degree, weighted lookup, and validation helpers using flat int64 guards (same emitter-safe style as CSR trials). Integration runs under `silica-compiler` via `make integrate` in this directory.
 
-`DenseBitsetGraph` is deferred per `graph_representation_design.md` §6.4. The current bootstrap path documents the fallback to `DenseMatrixGraphDirectedUnweighted` until bitwise `|`, `&`, and shift are available in this compiler path.
+`DenseBitsetGraph` is deferred per `graph_representation_design.md` §6.4. The current path documents the fallback to `DenseMatrixGraphDirectedUnweighted` until bitwise `|`, `&`, and shift are available.
 
 Success trials:
 
 - `graph_dense_directed_unweighted.silica`
 - `graph_dense_directed_weighted_int64.silica`
+
+## Phase 4
+
+Reachability and degree-summary helpers reuse `has_edge` / `out_degree` traversal APIs (bootstrap `node_count <= 3`).
+
+Success trials:
+
+- `graph_reachability_adj_directed_unweighted.silica`
+- `graph_reachability_csr_directed_unweighted.silica`
+- `graph_degree_summary_csr_directed_unweighted.silica`

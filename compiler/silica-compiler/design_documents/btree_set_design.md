@@ -2,7 +2,7 @@
 
 ## 1. Purpose and scope
 
-This document specifies generated B-tree set representations for Silica code. It specializes [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) and reuses the storage vocabulary from [graph_representation_design.md](graph_representation_design.md): node ids, inline structural records, `List[T, S]`, region handles, and region buffers. **Set membership, insertion, deletion, and range queries use the `Storable` marker (§4.0) for key operands.**
+This document specifies generated B-tree set representations for Silica code. It specializes [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) and reuses the storage vocabulary from [graph_representation_design.md](graph_representation_design.md): node ids, inline structural records, `List[T, S]`, region handles, and region buffers. **Set keys use types that implement the language `Collectable` trait** (§4.0). **Immutability and uniform inline types** follow [graph_representation_design.md](graph_representation_design.md) §2.7–§2.8.
 
 The names `NodeIDBTreeSet` and `CsrBTreeSet` are **design/generator names**, not Silica type aliases. Generated Silica must use inline structural record types everywhere a type is required.
 
@@ -24,6 +24,7 @@ This document avoids repeating the graph-level model. Use [graph_representation_
 - The requirement that generated structures with buffers carry their owning region.
 - The naming convention idea of deterministic generated function prefixes.
 - The preference for node ids and packed buffers instead of recursive custom node objects.
+- **`Collectable`** payload rules, buffer encoding, immutability, and uniform inline types (§2.4–§2.8).
 
 Use [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) for:
 
@@ -115,17 +116,17 @@ dense bitset buffer may be better than a B-tree set
 
 ## 4. Shared B-tree set model
 
-### 4.0 `Storable` marker trait
+### 4.0 `Collectable` set keys
 
-```silica
-export trait Storable;
-```
+For B-tree **sets**, any API parameter that carries **stored key data** — insert, `from_list` elements, `contains`, range endpoints, `delete` — uses a concrete **`Key: Collectable`** type in emitted signatures (design-level placeholder **`Key`** in abstract descriptions).
 
-`Storable` is a **marker trait** (no methods). For B-tree **sets**, any API parameter that carries **data to add** (insert, `from_list` elements), **data to find** (`contains`, range endpoints), or **data to remove** (`delete`) SHALL use **`Storable`** as the type of that operand in abstract signatures.
+The **first** monomorphic generators use **`int64`** keys. Storage layouts (`List[int64, S]`, `buf(R, S, int64, ...)`) remain concrete inline types. Buffer encoding follows [graph_representation_design.md](graph_representation_design.md) §2.6.
 
-The **first** monomorphic generators use **`int64`** keys with a registered **`impl int64;` for `Storable`** (or stdlib equivalent). Storage layouts (`List[int64, S]`, `buf(R, S, int64, ...)`) remain concrete; the **surface** for insert/lookup/delete operands is **`Storable`** at the design level.
+Structural **`int64` node ids** inside tree nodes are not set keys and are not typed as **`Collectable`**.
 
-See also [graph_representation_design.md](graph_representation_design.md) §2.4 and [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) §2.4.
+There is no separate storage marker trait beyond language **`Collectable`**.
+
+See also [graph_representation_design.md](graph_representation_design.md) §2.4 and [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) §2.4–§2.5.
 
 ### 4.1 Key rules
 
@@ -304,8 +305,8 @@ fn btree_set_nodeid_int64_normal_empty() -> {
 Abstract API (design level):
 
 ```text
-btree_set_nodeid_int64_<space>_contains(tree: <NodeIDBTreeSet type>, key: Storable) -> bool
-btree_set_csr_int64_<space>_contains(tree: <CsrBTreeSet type>, key: Storable) -> bool
+btree_set_nodeid_int64_<space>_contains(tree: <NodeIDBTreeSet type>, key: Collectable) -> bool
+btree_set_csr_int64_<space>_contains(tree: <CsrBTreeSet type>, key: Collectable) -> bool
 ```
 
 Generated function:
@@ -323,7 +324,7 @@ bool
 Algorithm:
 
 ```text
-contains(tree, key: Storable):
+contains(tree, key: Collectable):
     if tree.root_id == -1:
         false
     else:
@@ -333,7 +334,7 @@ contains(tree, key: Storable):
 Node search:
 
 ```text
-contains_node(tree, node_id, key: Storable):
+contains_node(tree, node_id, key: Collectable):
     node_result = find_node(tree.nodes, node_id)
     if node_result.found == false:
         false
@@ -361,7 +362,7 @@ The returned `index` is the child slot where the key should be found or inserted
 Abstract API (design level):
 
 ```text
-btree_set_nodeid_int64_<space>_insert(tree, key: Storable) -> { tree: <NodeIDBTreeSet type>, inserted: bool }
+btree_set_nodeid_int64_<space>_insert(tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, inserted: bool }
 ```
 
 Generated function:
@@ -388,10 +389,10 @@ if key already exists:
 
 Recommended algorithm: top-down B-tree insertion.
 
-High-level steps (`key` is **`Storable`**):
+High-level steps (`key` is **`Collectable`**):
 
 ```text
-insert(tree, key: Storable):
+insert(tree, key: Collectable):
     if tree.root_id == -1:
         create root leaf with key
         return inserted = true
@@ -409,7 +410,7 @@ insert(tree, key: Storable):
         insert_nonfull(root_id, key)
 ```
 
-`insert_nonfull(tree, node_id, key: Storable)`:
+`insert_nonfull(tree, node_id, key: Collectable)`:
 
 ```text
 node = find_node(node_id)
@@ -480,13 +481,13 @@ Deletion is optional for the first generated set.
 Abstract API when generated:
 
 ```text
-btree_set_nodeid_int64_<space>_delete(tree, key: Storable) -> { tree: <NodeIDBTreeSet type>, removed: bool }
+btree_set_nodeid_int64_<space>_delete(tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, removed: bool }
 ```
 
 If generated, use B-tree top-down deletion:
 
 ```text
-delete(tree, key: Storable) -> { tree, removed: bool }
+delete(tree, key: Collectable) -> { tree, removed: bool }
 ```
 
 Rules:
@@ -811,7 +812,7 @@ bool
 Algorithm:
 
 ```text
-contains(tree, key: Storable):
+contains(tree, key: Collectable):
     if tree.root_id == -1:
         false
     else:
@@ -821,7 +822,7 @@ contains(tree, key: Storable):
 CSR node search:
 
 ```text
-contains_node(tree, node_id, key: Storable):
+contains_node(tree, node_id, key: Collectable):
     key_start = read_buf(tree.node_key_start, node_id)
     key_count = read_buf(tree.node_key_count, node_id)
     pos = search_key_range(tree.keys, key_start, key_count, key)
@@ -935,15 +936,15 @@ In practice, linear scan inside a small B-tree node is often better because the 
 
 ## 7. Common set operations
 
-All operations that take a **lookup or mutation key** use **`key: Storable`** (§4.0) in abstract signatures.
+All operations that take a **lookup or mutation key** use **`key: Collectable`** (§4.0) in abstract signatures.
 
 ### 7.1 `contains`
 
 Abstract signatures:
 
 ```text
-btree_set_nodeid_int64_<space>_contains(tree, key: Storable) -> bool
-btree_set_csr_int64_<space>_contains(tree, key: Storable) -> bool
+btree_set_nodeid_int64_<space>_contains(tree, key: Collectable) -> bool
+btree_set_csr_int64_<space>_contains(tree, key: Collectable) -> bool
 ```
 
 Both representations must generate:
@@ -964,7 +965,7 @@ bool
 Abstract signature:
 
 ```text
-btree_set_nodeid_int64_<space>_insert(tree, key: Storable) -> { tree: <NodeIDBTreeSet type>, inserted: bool }
+btree_set_nodeid_int64_<space>_insert(tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, inserted: bool }
 ```
 
 Only `NodeIDBTreeSet` should generate insert in the first pass:
@@ -984,10 +985,10 @@ Return:
 
 ### 7.3 `delete`
 
-Optional later (operands **`Storable`**):
+Optional later (operands **`Collectable`**):
 
 ```text
-btree_set_nodeid_int64_<space>_delete(tree, key: Storable) -> { tree: <NodeIDBTreeSet type>, removed: bool }
+btree_set_nodeid_int64_<space>_delete(tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, removed: bool }
 ```
 
 Do not generate CSR deletion in the first pass.
@@ -1004,7 +1005,7 @@ Algorithm:
 
 ```text
 start with empty NodeIDBTreeSet
-for each key (`Storable`) in input List[int64, S]:
+for each key (`Collectable`) in input List[int64, S]:
     insert key
 return final tree
 ```
@@ -1033,16 +1034,16 @@ btree_set_csr_int64_<space>_range
 Abstract signatures:
 
 ```text
-btree_set_nodeid_int64_<space>_range(tree, low: Storable, high: Storable) -> List[int64, S]
-btree_set_csr_int64_<space>_range(tree, low: Storable, high: Storable) -> List[int64, S]
+btree_set_nodeid_int64_<space>_range(tree, low: Collectable, high: Collectable) -> List[int64, S]
+btree_set_csr_int64_<space>_range(tree, low: Collectable, high: Collectable) -> List[int64, S]
 ```
 
 Result should be a `List[int64, S]` of keys in ascending order.
 
-Range query (`low` and `high` are **`Storable`** bounds):
+Range query (`low` and `high` are **`Collectable`** bounds):
 
 ```text
-range(tree, low: Storable, high: Storable):
+range(tree, low: Collectable, high: Collectable):
     include keys k where low <= k and k <= high
 ```
 
@@ -1096,7 +1097,7 @@ Set generator inputs:
 
 ```text
 representation: nodeid_btree_set | csr_btree_set
-key_type: int64       // monomorphic specialization; must implement Storable (§4.0)
+key_type: int64       // monomorphic specialization; must implement Collectable (§4.0)
 memory_space: normal | normal_writethrough | normal_noncacheable | atomic
 order: int64
 generate_insert: bool
@@ -1264,7 +1265,8 @@ Recommended project staging:
 
 ## 12. References
 
-- **`Storable`** — marker trait for set keys in add / find / remove APIs (§4.0); see also [graph_representation_design.md](graph_representation_design.md) §2.4 and [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) §2.4.
+- **`Collectable`** — language trait for set keys (§4.0; silica-spec §8.2.4).
+- **Immutability and type invariance** — [graph_representation_design.md](graph_representation_design.md) §2.7–§2.8; [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) §2.5.
 - [graph_representation_design.md](graph_representation_design.md) - graph storage families and generator conventions reused here.
 - [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) - B-tree and heap design this set document specializes.
 - [silica-specification.md](silica-specification.md) - inline structural types, lists, regions, effects.

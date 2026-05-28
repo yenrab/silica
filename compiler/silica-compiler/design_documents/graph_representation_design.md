@@ -12,6 +12,8 @@ This document specifies graph representations that can be generated for Silica c
 
 Silica has no user-defined custom type names. The graph names in this document are therefore **design/generator names**, not Silica type aliases. A generator may use these names for emitted module names and function prefixes, but emitted Silica type positions must repeat the full inline structural type.
 
+**Payload model:** topology uses **`int64` node ids**; optional vertex and edge attributes use concrete **`Collectable`** types in list slots or parallel buffers (§2.3–§2.6). Generated graphs are **immutable values** with **uniform inline types** (§2.7–§2.8).
+
 This document covers three primary families:
 
 1. `NodeIdAdjacencyGraph` - adjacency lists keyed by integer node ids.
@@ -65,32 +67,96 @@ graph_dense_directed_
 graph_dense_undirected_
 ```
 
-### 2.3 Weightedness
+### 2.3 Edge and node payload
 
-Use separate representation names for weighted and unweighted graphs. This avoids nullable or variant edge payloads in tight traversal code.
+Topology always uses **`int64` node ids** (§2.1). **User payload** on nodes and edges uses types that implement the language **`Collectable`** trait ([silica-specification.md](silica-specification.md) §8.2.4). There is no separate graph storage marker trait.
 
-Recommended weight type for first implementation: `int64`.
+Use separate representation names when edge payload shape differs. This avoids nullable or variant edge payloads in tight traversal code.
 
-| Name suffix | Edge payload |
-|-------------|--------------|
-| `Unweighted` | Neighbor id only. |
-| `WeightedInt64` | Neighbor id plus `int64` weight. |
+| Name suffix | Edge topology | Edge payload (`EdgeData`) |
+|-------------|---------------|---------------------------|
+| `Unweighted` | Neighbor id only. | None (no parallel payload buffer). |
+| `WeightedInt64` | Neighbor id in `neighbors`. | `int64` in parallel `edge_data` (or list slot). |
 
-### 2.4 `Storable` marker trait
+Generators may emit other **`EdgeData`** and **`NodeData`** specializations (any concrete **`Collectable`** inline type). **`WeightedInt64`** is the first edge-payload family; **`int64`** weights are one **`Collectable`** specialization.
 
-Silica data structures that pack keys, edge endpoints, weights, or other **stored element** data into generated graphs should treat those operands uniformly via a **marker trait** (no methods, compile-time only):
+Optional **`NodeData: Collectable`** on each vertex is stored in adjacency node records and, for CSR/dense families, in a parallel **`node_data`** buffer indexed by node id.
 
-```silica
-export trait Storable;
-```
+### 2.4 `Collectable` payloads and API operands
 
-**Convention for generated APIs:** Any function parameter that supplies **data to add** (insert an edge, push a neighbor, set a cell), **data to find** (lookup or query by a stored element, e.g. `has_edge` destination, `neighbors` center node id when that id is the lookup key), or **data to remove** (delete an edge or clear a stored value) shall use **`Storable`** as the type of that datum in abstract signatures.
+Generated graph APIs use **`Collectable`** only for **stored user payload** — node attributes, edge weights/labels, and dense cell values — not for structural metadata.
 
-Structural metadata such as `node_count`, buffer capacities, generator constants, and region handles remain plain types (typically `int64` or buffer types), not `Storable`.
+**`Collectable` operands (abstract generator signatures):**
 
-**Monomorphic generators** (e.g. `int64` node ids only) emit the concrete element type in emitted Silica; they must assume a matching **`impl int64;` for `Storable`** (or equivalent stdlib registration) so call sites remain valid. Design-level examples in this document use **`Storable`** for those operands unless illustrating a concrete specialization.
+- **`NodeData`** — `set_node_data`, `get_node_data`, node record **`data`** fields.
+- **`EdgeData`** — `add_edge` edge payload, `edge_data_at`, weighted neighbor records, dense **`cell_data`**.
 
-### 2.5 Memory space
+**Plain types (not `Collectable`):**
+
+- **`int64` node ids** — endpoints, lookup keys, matrix indices (`from_id`, `to_id`, `id`).
+- **`node_count`**, **`edge_count`**, buffer capacities, generator constants, region handles.
+
+**Monomorphic generators** emit the **concrete** inline payload type in Silica (for example `int64` or a fixed tuple). Design-level examples use placeholder names **`NodeData`** / **`EdgeData`** unless illustrating a concrete specialization. At compile time the checker sees concrete types embedded in the graph record, not bare **`Collectable`**.
+
+Lists and buffers that hold payload values require **`T: Collectable`**, matching [list_implementation_design.md](list_implementation_design.md) §4 and [silica-specification.md](silica-specification.md) §8.2.4 (including **`uint8`–`uint64`**).
+
+### 2.5 Topology vs payload storage
+
+| Layer | CSR / dense | Adjacency |
+|-------|-------------|-----------|
+| **Topology** | `offsets`, `neighbors`, `present` / bitset — **`int64` only** | `neighbors: List[int64, S]` or `List[{ to: int64, ... }, S]` |
+| **Node payload** | `node_data: buf(R, S, NodeData, N)` | `data: NodeData` on each node record |
+| **Edge payload** | `edge_data: buf(R, S, EdgeData, M)` parallel to `neighbors` | `{ to: int64, data: EdgeData }` or weight field in neighbor record |
+
+Unweighted graphs omit **`edge_data`**. Graphs without vertex attributes omit **`node_data`** or use a generator **`none`** node-data mode.
+
+Construction may build from **`List[{ from: int64, to: int64, data: EdgeData }, S]`** (or unweighted edge lists), then **freeze** into CSR/dense buffers (§4.5, §2.7).
+
+### 2.6 Collectable buffer encoding
+
+**`buf(R, S, T, N)`** where **`T: Collectable`** uses the **same per-element encoding as `List[T, S]`** ([list_implementation_design.md](list_implementation_design.md) §4.1–§4.2, §9.2):
+
+- Scalars and fixed packed compounds → **inline** in the buffer cell.
+- Non-primitive **`Collectable`** values (strings, nested lists, structs with indirect fields) → **region indirection** inside the cell, with payload objects allocated under the graph's **owning region**.
+
+Every graph value that contains buffers must carry the owning **`region(R, S)`** (§4.8). Payload and topology buffers share one region bundle.
+
+### 2.7 Immutability and type invariance
+
+Generated graphs are **immutable values**, analogous to **`List[T, S]`** ([silica-specification.md](silica-specification.md) §4.2.4).
+
+**Value immutability:**
+
+- **Adjacency:** every mutating operation (`add_edge`, `set_node_data`, …) returns a **new graph record** with `produces pure … end`. No in-place mutation of a graph value held by the caller.
+- **CSR / dense:** immutable **after construction or `freeze`**. Public query APIs do not mutate topology or payload buffers.
+- **Construction:** allocation and buffer writes occur only inside **`sequence proc[mem(S)]`**; the exported constructor returns a **pure** graph value.
+- **Mutable builders:** only in modules whose names include **`_builder_`** or **`_mutable_`**. Default generated families are immutable.
+
+**Type invariance (uniform graph types):**
+
+The **same inline graph record type** must appear at formal parameters, arguments, locals, return types, and **`case`** patterns for one graph data flow — parallel to **uniform list types** (silica-spec §4.2.4). Mixing different inline graph shapes for the same value is ill-formed.
+
+**Schema pinning:**
+
+The graph type returned by **`empty`**, **`from_static_edges`**, or **`from_edges`** embeds concrete **`NodeData`**, **`EdgeData`**, and topology fields. That constructor return type is the schema anchor for subsequent **`add_edge`**, **`get_node_data`**, and inspection calls (see §2.8).
+
+**Structural invariants** (id ranges, offset monotonicity, edge counts) are checked by optional **`validate`** helpers (§3.4, §8.2) at build or debug time, not by the type checker alone.
+
+### 2.8 Type checking
+
+Type safety for graph payload **reads and writes** is enforced through **structural typing** on the graph record ([silica-specification.md](silica-specification.md) §8.2.2), not through a separate graph marker trait.
+
+| Direction | Call site | Checked against |
+|-----------|-----------|-----------------|
+| **Write payload** | `add_edge(g, …, data)`, `set_node_data(g, id, data)` | **`EdgeData`** / **`NodeData`** fields embedded in **`g`**'s inline type |
+| **Read payload** | `get_node_data(g, id).value`, `edge_data_at(g, slot).value` | Return **`value`** type extracted from the **`graph`** parameter type of the generated helper |
+| **Topology** | `has_edge(g, from_id, to_id)`, `neighbors(g, id)` | **`from_id`**, **`to_id`**, **`id`** are **`int64`**; graph argument matches the helper's full inline graph parameter |
+
+Generated helpers take the **full inline graph type** as their first parameter. The compiler verifies that the **`graph`** argument is structurally identical to that parameter and that payload bindings match the **`NodeData`** / **`EdgeData`** slots declared in the graph record (for example `node_data: buf(R, S, NodeData, N)`).
+
+Optional **`graphpayload.silica`** registry entries (`impl { … full graph record … };`) may reuse a large inline graph shape without repeating it at every call site, following the same identity rules as **`actormessage.silica`** (silica-spec §16.3.2).
+
+### 2.9 Memory space
 
 Every generated graph representation that allocates storage must carry a concrete memory space `S`.
 
@@ -105,7 +171,7 @@ Recommended spaces:
 
 Graph construction or mutation must occur in `sequence proc[mem(S)]`. The same `S` must appear in `List[..., S]`, `region(R, S)`, `ref(R, S, T)`, and `buf(R, S, T, N)`.
 
-### 2.6 Generated operation categories
+### 2.10 Generated operation categories
 
 Each graph family should expose operations in three groups.
 
@@ -114,6 +180,7 @@ Construction:
 ```text
 empty / allocate
 add_edge or fill_edge
+set_node_data, when NodeData is present
 freeze or finalize, if the representation has a mutable build stage
 ```
 
@@ -125,6 +192,7 @@ edge_count
 has_edge
 out_degree
 neighbors traversal
+get_node_data / edge_data_at, when payload buffers or fields are present
 ```
 
 Algorithms:
@@ -155,7 +223,7 @@ Use it when:
 Avoid it when:
 
 - Graph traversal is performance critical.
-- Random `has_edge(u: Storable, v: Storable)` needs to be fast.
+- Random `has_edge(u: int64, v: int64)` needs to be fast.
 - The graph is very large.
 - Node ids are dense and the graph will be traversed many times. Use CSR instead.
 
@@ -167,7 +235,7 @@ Design name:
 NodeIdAdjacencyGraphDirectedUnweighted[S]
 ```
 
-Silica inline shape:
+Silica inline shape (no vertex attributes):
 
 ```silica
 {
@@ -176,6 +244,23 @@ Silica inline shape:
     nodes: List[
         {
             id: int64,
+            neighbors: List[int64, S]
+        },
+        S
+    ]
+}
+```
+
+With optional **`NodeData: Collectable`** vertex attributes:
+
+```silica
+{
+    node_count: int64,
+    edge_count: int64,
+    nodes: List[
+        {
+            id: int64,
+            data: NodeData,
             neighbors: List[int64, S]
         },
         S
@@ -277,7 +362,7 @@ fn graph_adj_directed_unweighted_normal_empty(
 }
 ```
 
-Add edge (endpoints are stored data; use `Storable`):
+Add edge (topology endpoints are **`int64`**; optional edge payload is **`EdgeData: Collectable`**):
 
 ```silica
 fn graph_adj_directed_unweighted_normal_add_edge(
@@ -286,8 +371,8 @@ fn graph_adj_directed_unweighted_normal_add_edge(
         edge_count: int64,
         nodes: List[{ id: int64, neighbors: List[int64, normal] }, normal]
     },
-    from_id: Storable,
-    to_id: Storable
+    from_id: int64,
+    to_id: int64
 ) -> {
     node_count: int64,
     edge_count: int64,
@@ -301,20 +386,21 @@ fn graph_adj_directed_unweighted_normal_add_edge(
 }
 ```
 
-Weighted add edge adds `weight: Storable` and prepends `{ to: to_id, weight: weight }` (neighbor id `to_id: Storable` alongside `from_id: Storable`).
+Weighted or attributed add edge prepends `{ to: to_id, data: edge_data }` (or `{ to: to_id, weight: weight }` when **`EdgeData`** is **`int64`**) and returns a **new** graph value (§2.7).
 
 ### 3.6 Traversal strategy
 
-Generated traversal should expose neighbor lists directly. The **node id** operand that selects whose neighbors to return is stored topology keyed by id; type it as **`Storable`** in abstract APIs:
+Generated traversal should expose neighbor lists directly. The **node id** operand that selects whose neighbors to return is an **`int64`** topology index:
 
 ```text
-neighbors(graph, id: Storable) -> List[int64, S]
-weighted_neighbors(graph, id: Storable) -> List[{ to: Storable, weight: Storable }, S]
+neighbors(graph, id: int64) -> List[int64, S]
+weighted_neighbors(graph, id: int64) -> List[{ to: int64, data: EdgeData }, S]
+get_node_data(graph, id: int64) -> { ok: bool, value: NodeData }
 ```
 
 Implementation scans `graph.nodes` until it finds `node.id == id`.
 
-`has_edge(graph, from_id: Storable, to_id: Storable)`:
+`has_edge(graph, from_id: int64, to_id: int64)`:
 
 1. `neighbors(graph, from_id)`
 2. scan list for `to_id`
@@ -385,7 +471,7 @@ Design name:
 CompressedSparseRowGraphDirectedUnweighted[R, S, N_PLUS_ONE, M]
 ```
 
-Silica inline shape:
+Silica inline shape (topology only):
 
 ```silica
 {
@@ -396,6 +482,22 @@ Silica inline shape:
     neighbors: buf(R, S, int64, M)
 }
 ```
+
+With optional **`NodeData`** and **`EdgeData`** payload buffers (§2.5):
+
+```silica
+{
+    region: region(R, S),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(R, S, int64, N_PLUS_ONE),
+    neighbors: buf(R, S, int64, M),
+    node_data: buf(R, S, NodeData, N),
+    edge_data: buf(R, S, EdgeData, M)
+}
+```
+
+Omit **`node_data`** / **`edge_data`** when the generator specialization has no vertex or edge payload.
 
 `N_PLUS_ONE` must be `node_count + 1`.
 
@@ -421,7 +523,7 @@ Design name:
 CompressedSparseRowGraphDirectedWeightedInt64[R, S, N_PLUS_ONE, M]
 ```
 
-Silica inline shape:
+Silica inline shape (`EdgeData = int64`; **`weights`** is the **`edge_data`** buffer for this family):
 
 ```silica
 {
@@ -434,10 +536,12 @@ Silica inline shape:
 }
 ```
 
+General **`EdgeData: Collectable`** uses field name **`edge_data`** instead of **`weights`** (§2.5).
+
 Invariant:
 
 ```text
-weights[i] is the weight for edge to neighbors[i]
+weights[i] (or edge_data[i]) is the payload for the edge to neighbors[i]
 ```
 
 ### 4.4 Invariants
@@ -470,13 +574,13 @@ Input:
 
 ```text
 node_count: int64
-edges: List[{ from: Storable, to: Storable }, S]
+edges: List[{ from: int64, to: int64 }, S]
 ```
 
-For weighted:
+For edge payload **`EdgeData: Collectable`**:
 
 ```text
-edges: List[{ from: Storable, to: Storable, weight: Storable }, S]
+edges: List[{ from: int64, to: int64, data: EdgeData }, S]
 ```
 
 Build steps:
@@ -587,7 +691,7 @@ Generated recursive traversal helper shape:
 walk_neighbors(g, u, i, end, acc)
 ```
 
-`has_edge(g, u: Storable, v: Storable)` scans `neighbors[start..end)`. If sorted adjacency is guaranteed, generate binary search; otherwise generate linear scan.
+`has_edge(g, u: int64, v: int64)` scans `neighbors[start..end)`. If sorted adjacency is guaranteed, generate binary search; otherwise generate linear scan.
 
 Cost:
 
@@ -617,7 +721,7 @@ graph_csr_undirected_weighted_int64_normal_weight_at
 
 The graph record must contain the owning region. Returning buffers without the region handle is invalid because the buffers would outlive their region.
 
-CSR graph values are best treated as immutable after construction. If generated code mutates CSR buffers later, the function name should include `mutable` or `builder` so callers do not assume persistent immutable topology.
+CSR graph values are **immutable after construction or `freeze`** (§2.7). Public query APIs must not mutate topology or payload buffers in place. If generated code mutates CSR buffers after freeze, the module must use **`_builder_`** or **`_mutable_`** in its name so callers do not assume persistent immutable topology.
 
 ## 5. `DenseMatrixGraph`
 
@@ -632,7 +736,7 @@ index = from * node_count + to
 Use it when:
 
 - The graph is dense.
-- `has_edge(u: Storable, v: Storable)` must be O(1).
+- `has_edge(u: int64, v: int64)` must be O(1).
 - `node_count` is small enough that `node_count * node_count` storage is acceptable.
 - You need simple generated code and predictable indexing.
 
@@ -711,9 +815,9 @@ Static generation:
 
 1. Allocate `cells` or `present`/`weights`.
 2. Initialize all cells to `0`.
-3. For each edge, compute `index = from * node_count + to` (`from` and `to` are endpoints with type **`Storable`** in abstract APIs; monomorphic generators fix them to `int64`).
+3. For each edge, compute `index = from * node_count + to` (`from` and `to` are **`int64`** endpoints).
 4. Write `1` to presence.
-5. For weighted graphs, write the weight ( **`Storable`** operand in weighted APIs ).
+5. For weighted or attributed graphs, write **`EdgeData`** to **`cell_data`** or **`weights`** ( **`Collectable`** payload ).
 6. For undirected graphs, also write the mirror edge when `from != to`.
 
 Generated constructor shape:
@@ -745,14 +849,14 @@ For dynamic `node_count`, code generation must either:
 
 ### 5.6 Traversal strategy
 
-`has_edge(g, from_id: Storable, to_id: Storable)`:
+`has_edge(g, from_id: int64, to_id: int64)`:
 
 ```text
 idx = from_id * g.node_count + to_id
 read cells[idx] == 1
 ```
 
-`out_degree(g, from_id: Storable)`:
+`out_degree(g, from_id: int64)`:
 
 ```text
 scan to_id from 0 to node_count - 1
@@ -763,7 +867,7 @@ Neighbors traversal scans an entire matrix row:
 
 ```text
 for to_id in 0..node_count:
-    if has_edge(g, from_id, to_id):   // from_id, to_id: Storable where specialized
+    if has_edge(g, from_id, to_id):
         visit(to_id)
 ```
 
@@ -832,9 +936,9 @@ mask = 1 << bit_offset
 
 ### 6.3 Operations
 
-Operands `from` and `to` are stored edge endpoints; in abstract APIs use **`Storable`**.
+Operands `from` and `to` are **`int64`** topology indices.
 
-`set_edge(g, from: Storable, to: Storable)`:
+`set_edge(g, from: int64, to: int64)`:
 
 ```text
 word = read_buf(words, word_index)
@@ -842,7 +946,7 @@ new_word = word | mask
 write_buf(words, word_index, new_word)
 ```
 
-`has_edge(g, from: Storable, to: Storable)`:
+`has_edge(g, from: int64, to: int64)`:
 
 ```text
 (read_buf(words, word_index) & mask) != 0
@@ -890,7 +994,10 @@ A graph code generator should take:
 ```text
 representation: adjacency | csr | dense_matrix | dense_bitset
 directedness: directed | undirected
-weightedness: unweighted | weighted_int64
+weightedness: unweighted | weighted_int64 | edge_data_collectable
+node_data_type: none | Collectable inline spelling
+edge_data_type: none | Collectable inline spelling
+cell_data_type: none | Collectable inline spelling   // dense only
 memory_space: normal | normal_writethrough | normal_noncacheable | atomic
 node_count_known: bool
 node_count: int64, when known
@@ -898,6 +1005,8 @@ edge_count: int64, when known
 sorted_neighbors: bool
 module_prefix: string
 ```
+
+**`Collectable` inline spelling:** the full concrete inline type for **`NodeData`**, **`EdgeData`**, or **`CellData`** (for example `int64` or `(int8, string, atom, { x: int64 })`). Generators emit monomorphic modules per spelling (§2.4, §2.8).
 
 CSR and dense buffer generators also require concrete buffer capacities:
 
@@ -915,6 +1024,7 @@ Every generated graph module should emit:
 ```text
 empty or allocate
 from_static_edges, when source edges are known
+freeze, when a list or builder stage precedes CSR/dense (§2.7)
 node_count
 edge_count
 has_edge
@@ -923,18 +1033,24 @@ neighbors traversal helper
 validate, optional but recommended
 ```
 
-Weighted graph modules should also emit:
+When **`NodeData`** is present:
 
 ```text
-weight_at, returning an explicit found flag plus weight
+get_node_data / set_node_data (set returns new graph — §2.7)
 ```
 
-For **`weight_at`**, **`has_edge`**, **`neighbors`**, and any **add/remove-edge** helpers, operands that denote **stored node ids or edge weights** use **`Storable`** in abstract signatures (§2.4). Monomorphic `int64` generators rely on `impl int64` for `Storable`.
+Weighted or attributed edge modules should also emit:
 
-Recommended return shape for `weight_at`:
+```text
+edge_data_at (or weight_at for EdgeData = int64), returning an explicit found flag plus payload
+```
+
+For **`edge_data_at`**, **`get_node_data`**, **`add_edge`**, and **`set_node_data`**, payload operands and return **`value`** fields use the concrete **`EdgeData`** / **`NodeData`** embedded in the graph parameter type (§2.4, §2.8). Topology operands (**`from_id`**, **`to_id`**, **`id`**) are **`int64`**.
+
+Recommended return shape for **`edge_data_at`** / **`weight_at`**:
 
 ```silica
-{ found: bool, weight: Storable }
+{ found: bool, value: EdgeData }
 ```
 
 ### 8.3 Error handling
@@ -995,6 +1111,7 @@ Because Silica has no custom type names, the generator must:
 3. Keep field order stable for record types.
 4. Use the same memory space everywhere in a graph family.
 5. Include the owning region in every returned value that contains buffers or references.
+6. Enforce **uniform graph types** (§2.7): the same inline graph spelling at every boundary for one graph value flow.
 
 Do not emit:
 
@@ -1019,10 +1136,12 @@ fn use_graph(g: { node_count: int64, edge_count: int64, ... }) -> int64 {
 3. Map support: if Silica gains a map/dictionary representation, adjacency lookup can become faster without CSR conversion.
 4. Region lifetime ergonomics: graph records with buffers must carry the owning region. Future region-bundle ergonomics may reduce the amount of repeated inline type text.
 5. Sorting support: sorted CSR adjacency enables binary search for `has_edge`; unsorted CSR preserves insertion order and simpler construction.
+6. **`graphpayload.silica` registry:** optional type-level registrations for large inline graph shapes (§2.8).
 
 ## 10. References
 
-- **Storable** — marker trait for stored operands in add / find / remove APIs (§2.4).
+- **`Collectable`** — language trait for list/buffer elements and graph payload types (§2.4; [silica-specification.md](silica-specification.md) §8.2.4).
+- **Immutability and type invariance** — §2.7; **type checking** — §2.8.
 - [silica-specification.md](silica-specification.md) - inline structural types, lists, regions, effects.
 - [list_implementation_design.md](list_implementation_design.md) - `List[T, S]` as region-backed storage and bundle model.
 - [recursive_tuple_specification.md](recursive_tuple_specification.md) - why recursive pointer-shaped data uses inline `rec` and regions instead of named recursive types.

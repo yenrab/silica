@@ -2,7 +2,7 @@
 
 ## 1. Purpose and scope
 
-This document specifies balanced tree and heap representations that can be generated as Silica code without custom type declarations. It extends [graph_representation_design.md](graph_representation_design.md): trees and heaps are treated as constrained graph-like structures over integer node ids and region-backed storage. **`Storable`** is defined in [graph_representation_design.md](graph_representation_design.md) §2.4 and again in §2.4 here; **keys, values, and heap elements in add/find/remove APIs use `Storable`** in abstract signatures.
+This document specifies balanced tree and heap representations that can be generated as Silica code without custom type declarations. It extends [graph_representation_design.md](graph_representation_design.md): trees and heaps are treated as constrained graph-like structures over integer node ids and region-backed storage. **Stored keys, map values, and heap elements use types that implement the language `Collectable` trait** ([silica-specification.md](silica-specification.md) §8.2.4), following [graph_representation_design.md](graph_representation_design.md) §2.4. **Immutability and uniform inline types** follow graph §2.7–§2.8.
 
 The names in this document are **design/generator names**, not Silica type aliases. Generated Silica must still use inline structural record types in every parameter, return type, local binding, and pattern annotation.
 
@@ -105,19 +105,28 @@ RegionBinaryMinHeapUint32
 
 The first pass should not attempt generic B-trees.
 
-### 2.4 `Storable` marker trait
+### 2.4 `Collectable` keys, values, and heap elements
 
-```silica
-export trait Storable;
-```
+Generated balanced-tree and heap APIs use **`Collectable`** for **stored user data** in add/find/remove operations:
 
-`Storable` is a **marker trait** (no methods). Generated balanced-tree and heap APIs use it for any parameter that supplies **data to add** (insert, push), **data to find** (contains, get, search, lower/upper bound keys), or **data to remove** (delete, pop by key when generated).
+- Tree **keys** and map **values** (`insert`, `contains`, `get`, `delete`, search bounds).
+- Heap **elements** (`push`, peek, pop).
 
-- Tree **keys** and map **values** in those operations are typed with **`Storable`** in abstract signatures (same pattern as using a trait name as a type bound for actor messages).
-- Structural parameters (`order`, `node_count`, capacities, region handles, indices that are not stored user keys) stay plain `int64` or buffer types.
-- **Monomorphic** generators that emit `int64` keys/values rely on **`impl int64;` for `Storable`** (or stdlib registration) for the concrete specialization.
+**Plain types (not `Collectable`):** structural **`int64` node ids**, `order`, `node_count`, capacities, region handles, and internal indices that are not user keys.
 
-Inline shapes may still show `List[int64, S]` or `buf(..., int64, ...)` for the *storage representation*; the **API surface** for insert/lookup/delete operands uses **`Storable`** in design-level signatures.
+**Monomorphic generators** emit the concrete inline key/value/element type (for example `int64`). Design-level signatures may use placeholders **`Key`**, **`Value`**, or **`Element`** where the concrete type is **`Collectable`**. Buffer and list storage use the same **`Collectable` buffer encoding** as graphs ([graph_representation_design.md](graph_representation_design.md) §2.6; [list_implementation_design.md](list_implementation_design.md) §4).
+
+There is no separate storage marker trait beyond language **`Collectable`**.
+
+### 2.5 Immutability and type invariance
+
+Generated trees and heaps are **immutable values** ([graph_representation_design.md](graph_representation_design.md) §2.7):
+
+- **`insert`**, **`delete`**, and **`push`** return a **new** tree or heap record with `produces pure … end`.
+- Packed **CSR** tree/set forms are immutable after **`freeze`** or static construction.
+- **Mutable builders** use **`_builder_`** or **`_mutable_`** name suffixes.
+
+The **same inline tree or heap record type** must appear at every boundary for one value flow (uniform types, graph §2.7). Constructor return types pin the concrete **`Key`** / **`Value`** / **`Element`** spellings for later operations (graph §2.8).
 
 ## 3. B-tree terminology
 
@@ -292,10 +301,10 @@ This is intentionally not the final high-performance form. It is for clarity and
 
 ### 4.5 Search algorithm
 
-Generated search over one node (`key` is **`Storable`**):
+Generated search over one node (`key` is **`Collectable`**):
 
 ```text
-node_search_position(keys, key: Storable, index):
+node_search_position(keys, key: Collectable, index):
     if index == key_count:
         return { found: false, index: index }
     current = keys[index]
@@ -309,7 +318,7 @@ node_search_position(keys, key: Storable, index):
 Tree search:
 
 ```text
-search_node(tree, node_id, key: Storable):
+search_node(tree, node_id, key: Collectable):
     node = find_node(tree, node_id)
     pos = node_search_position(node.keys, key, 0)
     if pos.found:
@@ -328,7 +337,7 @@ btree_nodeid_map_int64_int64_<space>_get
 btree_nodeid_int64_<space>_find_node
 ```
 
-Abstract operand types: **`contains(..., key: Storable)`**; **`get(..., key: Storable)`** returns map values typed **`Storable`** when present (`find_node` uses internal **`int64` node ids**, not `Storable`, because those are structural graph ids, not user keys).
+Abstract operand types: **`contains(..., key: Collectable)`**; **`get(..., key: Collectable)`** returns map values typed **`Collectable`** when present (`find_node` uses internal **`int64` node ids**, not `Collectable`, because those are structural graph ids, not user keys).
 
 ### 4.6 Insertion strategy
 
@@ -354,12 +363,12 @@ Recommended generated result shape:
 
 For set-only trees, `replaced` can always be `false`.
 
-Internal helper shapes (key/value operands **`Storable`**):
+Internal helper shapes (key/value operands **`Collectable`**):
 
 ```text
-btree_nodeid_int64_<space>_split_child(tree, parent_id, child_index) -> { tree, promoted_key: Storable }
-btree_nodeid_int64_<space>_insert_nonfull(tree, node_id, key: Storable) -> { tree, inserted: bool, replaced: bool }
-btree_nodeid_map_int64_int64_<space>_insert_nonfull(tree, node_id, key: Storable, value: Storable) -> { tree, inserted: bool, replaced: bool }
+btree_nodeid_int64_<space>_split_child(tree, parent_id, child_index) -> { tree, promoted_key: Collectable }
+btree_nodeid_int64_<space>_insert_nonfull(tree, node_id, key: Collectable) -> { tree, inserted: bool, replaced: bool }
+btree_nodeid_map_int64_int64_<space>_insert_nonfull(tree, node_id, key: Collectable, value: Collectable) -> { tree, inserted: bool, replaced: bool }
 ```
 
 ### 4.7 Deletion strategy
@@ -379,7 +388,7 @@ When deletion is generated, use the standard top-down B-tree deletion algorithm:
 Abstract public signature when deletion is emitted:
 
 ```text
-delete(tree, key: Storable) -> { tree, removed: bool }
+delete(tree, key: Collectable) -> { tree, removed: bool }
 ```
 
 Recommended initial generator stance:
@@ -575,10 +584,10 @@ btree_nodeid_map_int64_int64_<space>_to_csr
 
 ### 5.7 Search algorithm
 
-Search in a CSR node (`key` is **`Storable`**):
+Search in a CSR node (`key` is **`Collectable`**):
 
 ```text
-search_csr_node(tree, node_id, key: Storable):
+search_csr_node(tree, node_id, key: Collectable):
     key_start = read_buf(node_key_start, node_id)
     key_count = read_buf(node_key_count, node_id)
     pos = search_key_range(keys, key_start, key_count, key)
@@ -742,7 +751,7 @@ for every index i > 0:
 
 ### 6.3 Key/value heap shape
 
-For priority queues where payload differs from priority (both operand types **`Storable`** in abstract push/pop APIs):
+For priority queues where payload differs from priority (both operand types **`Collectable`** in abstract push/pop APIs):
 
 
 Design name:
@@ -803,7 +812,7 @@ Heapify is O(n). Repeated push is O(n log n). Prefer heapify for known static in
 
 ### 6.5 Push
 
-The pushed element is **stored data**; the abstract API is **`push(heap, value: Storable)`** (monomorphic generators emit `int64` and rely on `impl int64` for `Storable`).
+The pushed element is **stored data**; the abstract API is **`push(heap, value: Collectable)`** (monomorphic generators emit `int64` and rely on `impl int64` for `Collectable`).
 
 Generated `push` should return a result record:
 
@@ -819,7 +828,7 @@ Algorithm:
 ```text
 if heap.len == heap.capacity:
     return { heap: heap, ok: false }
-write value (type Storable) at index heap.len
+write value (type Collectable) at index heap.len
 new_len = heap.len + 1
 sift_up(index = heap.len)
 return updated heap with len = new_len, ok = true
@@ -839,10 +848,10 @@ sift_up(p)
 
 ### 6.6 Peek and pop
 
-Peek result (stored element typed **`Storable`** in the abstract API):
+Peek result (stored element typed **`Collectable`** in the abstract API):
 
 ```silica
-{ ok: bool, value: Storable }
+{ ok: bool, value: Collectable }
 ```
 
 `peek_min`:
@@ -860,7 +869,7 @@ Pop result:
 {
     heap: <full inline heap type>,
     ok: bool,
-    value: Storable
+    value: Collectable
 }
 ```
 
@@ -1141,10 +1150,10 @@ clear
 
 Use records rather than exceptions for ordinary capacity or lookup failure.
 
-Lookup (map **`get`** and similar; the retrieved payload is **`Storable`**):
+Lookup (map **`get`** and similar; the retrieved payload is **`Collectable`**):
 
 ```silica
-{ found: bool, value: Storable }
+{ found: bool, value: Collectable }
 ```
 
 Insert:
@@ -1166,13 +1175,13 @@ Heap push:
 }
 ```
 
-Heap pop (popped element **`Storable`**):
+Heap pop (popped element **`Collectable`**):
 
 ```silica
 {
     heap: <full inline heap type>,
     ok: bool,
-    value: Storable
+    value: Collectable
 }
 ```
 
@@ -1187,7 +1196,7 @@ The generator must:
 5. Use exact concrete buffer capacities in type positions.
 6. Keep `List` and `buf` memory spaces aligned with the enclosing `sequence proc[mem(S)]`.
 7. Generate monomorphic comparison logic for the key type.
-8. Declare **add / find / remove** operands (`key`, `value`, heap `value`, priority-queue priority and value where applicable) with the **`Storable`** marker in abstract APIs (see §2.4).
+8. Declare **add / find / remove** operands (`key`, `value`, heap `value`, priority-queue priority and value where applicable) using concrete **`Collectable`** payload types in emitted signatures (see §2.4).
 
 ## 10. Implementation staging
 
@@ -1204,8 +1213,9 @@ Recommended staging:
 
 ## 11. References
 
-- **`Storable`** — marker trait for keys/values and heap elements in add/find/remove APIs (§2.4).
-- [graph_representation_design.md](graph_representation_design.md) - graph families that these tree representations specialize (includes §2.4 `Storable` for graph operands).
+- **`Collectable`** — language trait for keys/values and heap elements (§2.4; silica-spec §8.2.4).
+- **Immutability and type invariance** — §2.5; graph §2.7–§2.8.
+- [graph_representation_design.md](graph_representation_design.md) - graph families that these tree representations specialize (includes §2.4 `Collectable` for graph operands).
 - [silica-specification.md](silica-specification.md) - inline structural types, effects, lists, regions, buffers.
 - [list_implementation_design.md](list_implementation_design.md) - list storage and memory-space alignment.
 - [region_memory_safety_todo.md](Phase1_TODOs/region_memory_safety_todo.md) - region lifetime implementation gaps relevant to returned buffers.

@@ -3171,7 +3171,8 @@ Lists are immutable - all operations return new lists rather than modifying exis
 
 Examples:
 - `List[string]` / `List[string, normal]` - list of strings (full form when space is explicit)
-- `List[int64]` / `List[int64, normal]` - list of integers
+- `List[int64]` / `List[int64, normal]` - list of signed integers
+- `List[uint32]` / `List[uint32, normal]` - list of unsigned integers
 - `List[(int64 -> int64)]` - list of functions
 - `List[List[int64, normal], normal]` - nested list (inner and outer list types each carry `Space` where required)
 
@@ -4072,12 +4073,15 @@ fn collect_items(items: List[Collectable]) -> int64 {
 The following types automatically implement `Collectable` without requiring explicit `impl` declarations. These automatic implementations are language rules, not explicit code. The compiler treats these types as `Collectable` by default. No explicit `impl Collectable for ...` declarations are needed or allowed for these built-in cases.
 
 **Primitive Types (Automatic Collectable):**
+
+All built-in scalar types below implement **`Collectable`** by language rule. **Signed and unsigned integer types of each width are treated symmetrically** (for example `int32` and `uint32` are both **`Collectable`**).
+
 - `unit`
 - `boolean`
-- `int8`
-- `int16`
-- `int32`
-- `int64`
+- `int8`, `uint8`
+- `int16`, `uint16`
+- `int32`, `uint32`
+- `int64`, `uint64`
 - `float16`
 - `float32`
 - `float64`
@@ -4094,6 +4098,7 @@ All function types of the form `(T1 -> T2)` where `T1` and `T2` are concrete typ
 **Tuple Types (Automatic Collectable):**
 All tuple types of the form `(T1, T2, ...)` where all `Ti` are concrete types automatically implement `Collectable`. This includes:
 - `(int64, string)`
+- `(uint8, int64, string)`
 - `(boolean, int64, string)`
 - `((int64 -> int64), string)` (tuples containing functions)
 - Any combination of concrete types

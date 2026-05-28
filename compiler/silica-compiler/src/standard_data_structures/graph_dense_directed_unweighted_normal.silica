@@ -7,6 +7,7 @@ use graph_adj_list_helpers;
 export graph_dense_directed_unweighted_normal_empty/1;
 export graph_dense_directed_unweighted_normal_node_count/1;
 export graph_dense_directed_unweighted_normal_edge_count/1;
+export graph_dense_directed_unweighted_normal_set_edge/3;
 export graph_dense_directed_unweighted_normal_set_edge_checked/3;
 export graph_dense_directed_unweighted_normal_has_edge/3;
 export graph_dense_directed_unweighted_normal_out_degree/2;
@@ -74,6 +75,66 @@ fn graph_dense_directed_unweighted_normal_index(graph: {
     from_id * graph.node_count + to_id
 }
 
+fn graph_dense_directed_unweighted_normal_set_edge(graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    cells: buf(L1, normal, int64, 9)
+}, from_id: int64, to_id: int64) -> {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    cells: buf(L1, normal, int64, 9)
+} {
+    from_saved: int64 <- from_id;
+    to_saved: int64 <- to_id;
+    from_ok: int64 <- graph_adj_list_helpers@graph_adj_node_id_in_range(from_saved, graph.node_count);
+    to_ok: int64 <- graph_adj_list_helpers@graph_adj_node_id_in_range(to_saved, graph.node_count);
+    endpoints_ok: int64 <- case from_ok of {
+        0 -> 0;
+        1 -> to_ok;
+        _: int64 -> 0
+    };
+    safe_from: int64 <- case endpoints_ok of {
+        0 -> 0;
+        1 -> from_saved;
+        _: int64 -> 0
+    };
+    safe_to: int64 <- case endpoints_ok of {
+        0 -> 0;
+        1 -> to_saved;
+        _: int64 -> 0
+    };
+    sequence proc[mem(normal)]
+        index: int64 <- graph_dense_directed_unweighted_normal_index(graph, safe_from, safe_to);
+        previous: int64 <- read_buf(graph.cells, index);
+        next_value: int64 <- case endpoints_ok of {
+            0 -> previous;
+            1 -> 1;
+            _: int64 -> previous
+        };
+        _: atom <- write_buf(graph.cells, index, next_value);
+        next_edge_count: int64 <- case endpoints_ok of {
+            0 -> graph.edge_count;
+            1 -> graph.edge_count + 1;
+            _: int64 -> graph.edge_count
+        };
+        updated: {
+            region: region(L1, normal),
+            node_count: int64,
+            edge_count: int64,
+            cells: buf(L1, normal, int64, 9)
+        } <- {
+            region: graph.region,
+            node_count: graph.node_count,
+            edge_count: next_edge_count,
+            cells: graph.cells
+        }
+    produces
+        pure updated
+    end
+}
+
 fn graph_dense_directed_unweighted_normal_set_edge_checked(graph: {
     region: region(L1, normal),
     node_count: int64,
@@ -85,58 +146,33 @@ fn graph_dense_directed_unweighted_normal_set_edge_checked(graph: {
     edge_count: int64,
     cells: buf(L1, normal, int64, 9)
 } } {
-    case graph_adj_list_helpers@graph_adj_node_id_in_range(from_id, graph.node_count) of {
-        0 -> { ok: 0, graph: graph };
-        1 -> graph_dense_directed_unweighted_normal_set_edge_from_ok(graph, from_id, to_id);
-        _: int64 -> { ok: 0, graph: graph }
-    }
-}
-
-fn graph_dense_directed_unweighted_normal_set_edge_from_ok(graph: {
-    region: region(L1, normal),
-    node_count: int64,
-    edge_count: int64,
-    cells: buf(L1, normal, int64, 9)
-}, from_id: int64, to_id: int64) -> { ok: int64, graph: {
-    region: region(L1, normal),
-    node_count: int64,
-    edge_count: int64,
-    cells: buf(L1, normal, int64, 9)
-} } {
-    case graph_adj_list_helpers@graph_adj_node_id_in_range(to_id, graph.node_count) of {
-        0 -> { ok: 0, graph: graph };
-        1 -> graph_dense_directed_unweighted_normal_set_edge_valid(graph, from_id, to_id);
-        _: int64 -> { ok: 0, graph: graph }
-    }
-}
-
-fn graph_dense_directed_unweighted_normal_set_edge_valid(graph: {
-    region: region(L1, normal),
-    node_count: int64,
-    edge_count: int64,
-    cells: buf(L1, normal, int64, 9)
-}, from_id: int64, to_id: int64) -> { ok: int64, graph: {
-    region: region(L1, normal),
-    node_count: int64,
-    edge_count: int64,
-    cells: buf(L1, normal, int64, 9)
-} } {
-    sequence proc[mem(normal)]
-        index: int64 <- graph_dense_directed_unweighted_normal_index(graph, from_id, to_id);
-        _: atom <- write_buf(graph.cells, index, 1);
-        updated: {
+    from_saved: int64 <- from_id;
+    to_saved: int64 <- to_id;
+    from_ok: int64 <- graph_adj_list_helpers@graph_adj_node_id_in_range(from_saved, graph.node_count);
+    to_ok: int64 <- graph_adj_list_helpers@graph_adj_node_id_in_range(to_saved, graph.node_count);
+    endpoints_ok: int64 <- case from_ok of {
+        0 -> 0;
+        1 -> to_ok;
+        _: int64 -> 0
+    };
+    sequence proc[]
+        updated_graph: {
             region: region(L1, normal),
             node_count: int64,
             edge_count: int64,
             cells: buf(L1, normal, int64, 9)
-        } <- {
-            region: graph.region,
-            node_count: graph.node_count,
-            edge_count: graph.edge_count + 1,
-            cells: graph.cells
+        } <- graph_dense_directed_unweighted_normal_set_edge(graph, from_saved, to_saved);
+        out: { ok: int64, graph: {
+            region: region(L1, normal),
+            node_count: int64,
+            edge_count: int64,
+            cells: buf(L1, normal, int64, 9)
+        } } <- {
+            ok: endpoints_ok,
+            graph: updated_graph
         }
     produces
-        pure { ok: 1, graph: updated }
+        pure out
     end
 }
 
@@ -146,37 +182,35 @@ fn graph_dense_directed_unweighted_normal_has_edge(graph: {
     edge_count: int64,
     cells: buf(L1, normal, int64, 9)
 }, from_id: int64, to_id: int64) -> int64 {
-    case graph_adj_list_helpers@graph_adj_node_id_in_range(from_id, graph.node_count) of {
-        0 -> 0;
-        1 -> graph_dense_directed_unweighted_normal_has_edge_from_ok(graph, from_id, to_id);
+    from_saved: int64 <- from_id;
+    to_saved: int64 <- to_id;
+    from_ok: int64 <- case from_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
         _: int64 -> 0
-    }
-}
-
-fn graph_dense_directed_unweighted_normal_has_edge_from_ok(graph: {
-    region: region(L1, normal),
-    node_count: int64,
-    edge_count: int64,
-    cells: buf(L1, normal, int64, 9)
-}, from_id: int64, to_id: int64) -> int64 {
-    case graph_adj_list_helpers@graph_adj_node_id_in_range(to_id, graph.node_count) of {
-        0 -> 0;
-        1 -> graph_dense_directed_unweighted_normal_has_edge_valid(graph, from_id, to_id);
+    };
+    to_ok: int64 <- case to_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
         _: int64 -> 0
-    }
-}
-
-fn graph_dense_directed_unweighted_normal_has_edge_valid(graph: {
-    region: region(L1, normal),
-    node_count: int64,
-    edge_count: int64,
-    cells: buf(L1, normal, int64, 9)
-}, from_id: int64, to_id: int64) -> int64 {
+    };
+    endpoints_ok: int64 <- case from_ok of {
+        0 -> 0;
+        1 -> to_ok;
+        _: int64 -> 0
+    };
+    dim_ok: int64 <- case graph.node_count - 3 of {
+        0 -> 1;
+        _: int64 -> 0
+    };
     sequence proc[mem(normal)]
-        index: int64 <- graph_dense_directed_unweighted_normal_index(graph, from_id, to_id);
-        value: int64 <- read_buf(graph.cells, index)
+        index: int64 <- graph_dense_directed_unweighted_normal_index(graph, from_saved, to_saved);
+        value: int64 <- read_buf(graph.cells, index);
+        result: int64 <- endpoints_ok * dim_ok * value
     produces
-        pure value
+        pure result
     end
 }
 
@@ -186,9 +220,29 @@ fn graph_dense_directed_unweighted_normal_out_degree(graph: {
     edge_count: int64,
     cells: buf(L1, normal, int64, 9)
 }, from_id: int64) -> int64 {
-    graph_dense_directed_unweighted_normal_has_edge(graph, from_id, 0)
-    + graph_dense_directed_unweighted_normal_has_edge(graph, from_id, 1)
-    + graph_dense_directed_unweighted_normal_has_edge(graph, from_id, 2)
+    from_saved: int64 <- from_id;
+    from_ok: int64 <- case from_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    dim_ok: int64 <- case graph.node_count - 3 of {
+        0 -> 1;
+        _: int64 -> 0
+    };
+    sequence proc[mem(normal)]
+        i0: int64 <- graph_dense_directed_unweighted_normal_index(graph, from_saved, 0);
+        i1: int64 <- graph_dense_directed_unweighted_normal_index(graph, from_saved, 1);
+        i2: int64 <- graph_dense_directed_unweighted_normal_index(graph, from_saved, 2);
+        c0: int64 <- read_buf(graph.cells, i0);
+        c1: int64 <- read_buf(graph.cells, i1);
+        c2: int64 <- read_buf(graph.cells, i2);
+        degree: int64 <- c0 + c1 + c2;
+        result: int64 <- from_ok * dim_ok * degree
+    produces
+        pure result
+    end
 }
 
 fn graph_dense_directed_unweighted_normal_cell_ok(value: int64) -> int64 {
@@ -227,28 +281,24 @@ fn graph_dense_directed_unweighted_normal_validate_cells(graph: {
         c6: int64 <- read_buf(graph.cells, 6);
         c7: int64 <- read_buf(graph.cells, 7);
         c8: int64 <- read_buf(graph.cells, 8);
-        bool_ok: int64 <-
-            graph_dense_directed_unweighted_normal_cell_ok(c0)
-            * graph_dense_directed_unweighted_normal_cell_ok(c1)
-            * graph_dense_directed_unweighted_normal_cell_ok(c2)
-            * graph_dense_directed_unweighted_normal_cell_ok(c3)
-            * graph_dense_directed_unweighted_normal_cell_ok(c4)
-            * graph_dense_directed_unweighted_normal_cell_ok(c5)
-            * graph_dense_directed_unweighted_normal_cell_ok(c6)
-            * graph_dense_directed_unweighted_normal_cell_ok(c7)
-            * graph_dense_directed_unweighted_normal_cell_ok(c8);
-        count: int64 <- c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8
+        b0: int64 <- case c0 of { 0 -> 0; 1 -> 0; _: int64 -> 1 };
+        b1: int64 <- case c1 of { 0 -> 0; 1 -> 0; _: int64 -> 1 };
+        b2: int64 <- case c2 of { 0 -> 0; 1 -> 0; _: int64 -> 1 };
+        b3: int64 <- case c3 of { 0 -> 0; 1 -> 0; _: int64 -> 1 };
+        b4: int64 <- case c4 of { 0 -> 0; 1 -> 0; _: int64 -> 1 };
+        b5: int64 <- case c5 of { 0 -> 0; 1 -> 0; _: int64 -> 1 };
+        b6: int64 <- case c6 of { 0 -> 0; 1 -> 0; _: int64 -> 1 };
+        b7: int64 <- case c7 of { 0 -> 0; 1 -> 0; _: int64 -> 1 };
+        b8: int64 <- case c8 of { 0 -> 0; 1 -> 0; _: int64 -> 1 };
+        bad_count: int64 <- b0 + b1 + b2 + b3 + b4 + b5 + b6 + b7 + b8;
+        count: int64 <- c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8;
+        valid: int64 <- case bad_count of {
+            0 -> graph_dense_directed_unweighted_normal_validate_edge_count(graph.edge_count, count);
+            _: int64 -> 0
+        }
     produces
-        pure graph_dense_directed_unweighted_normal_validate_count(bool_ok, graph.edge_count, count)
+        pure valid
     end
-}
-
-fn graph_dense_directed_unweighted_normal_validate_count(bool_ok: int64, edge_count: int64, count: int64) -> int64 {
-    case bool_ok of {
-        0 -> 0;
-        1 -> graph_dense_directed_unweighted_normal_validate_edge_count(edge_count, count);
-        _: int64 -> 0
-    }
 }
 
 fn graph_dense_directed_unweighted_normal_validate_edge_count(edge_count: int64, count: int64) -> int64 {
