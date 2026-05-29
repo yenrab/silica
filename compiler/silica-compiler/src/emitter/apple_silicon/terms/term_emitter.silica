@@ -465,10 +465,7 @@ fn record_make_stack_alloc_size(R: string) -> int64 {
         true -> 80;
         false -> case is_supervisor_reply_record_type(R) of {
             true -> 80;
-            false -> case prims_record@record_type_has_only_scalar_fields(R) of {
-                true -> stack_alloc_round16(prims_record@record_type_value_flat_byte_size(R));
-                false -> prims_tuple@flat_alloc_size(prims_record@count_record_fields(R))
-            }
+            false -> stack_alloc_round16(prims_record@record_type_value_flat_byte_size(R))
         }
     }
 }
@@ -1133,9 +1130,17 @@ fn emit_case_one_branch_inner(branch: SIRTerm, scrut_t: string, scrut_reg: strin
         end
     };
     body_asm: string <- term_to_asm_opt_bound(branch.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, br_bn, br_br, outer_body, false);
+    branch_stack_n: int64 <- aggregate_callee_return_stack_bytes(branch.right_expr);
+    branch_cleanup: string <- case dest == "X0" of {
+        true -> case branch_stack_n > 0 of {
+            true -> concat(aggregate_return_heap_promote_x0(branch_stack_n), concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(branch_stack_n), "\n")));
+            false -> ""
+        };
+        false -> ""
+    };
     h0: string <- concat(entry_l, ":\n");
     h1: string <- concat(concat(h0, pat_full), guard_asm);
-    h2: string <- concat(concat(h1, body_asm), "\n");
+    h2: string <- concat(concat(concat(h1, body_asm), "\n"), branch_cleanup);
     br: string <- concat(concat("    B ", done_l), "\n");
     concat(h2, br)
 }
@@ -2390,7 +2395,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 };
                 root_rec_ty: string <- record_proj_root_record_type(term);
                 root_rec_stripped: string <- prims_record@strip_spaces_rt(root_rec_ty);
-                use_add_for_embedded_substruct: bool <- len(root_rec_stripped) > 0 and prims_record@record_type_starts(root_rec_stripped) and reg_conventions@is_inline_struct_type(term.type_name) and prims_record@record_type_has_only_scalar_fields(root_rec_stripped);
+                use_add_for_embedded_substruct: bool <- len(root_rec_stripped) > 0 and prims_record@record_type_starts(root_rec_stripped) and reg_conventions@is_inline_struct_type(term.type_name);
                 // Supervisor reply get_child path stores the live child_ref in top-level `child`.
                 // Accesses written as `reply.child_info.child` should resolve to that same live ref.
                 supervisor_child_info_child_chain: bool <- term.inner.kind == 6 and term.inner.name == "record_proj"
@@ -3606,7 +3611,10 @@ fn flat_record_sum_nested_inners(term: SIRTerm) -> int64 {
                 // 2-element tuple fields are emitted inline in emit_flat_record_stores (no nested SUB).
                 here: int64 <- case term.inner.kind == 6 and term.inner.name == "tuple_make" and prims_tuple@count_flat_elements(term.inner) == 2 of {
                     true -> 0;
-                    false -> agg_alloc_inner(term.inner)
+                    false -> case term.inner.kind == 4 or term.inner.kind == 5 of {
+                        true -> user_call_aggregate_return_alloc_bytes(term.inner.type_name);
+                        false -> agg_alloc_inner(term.inner)
+                    }
                 };
                 rest: int64 <- case term.right_expr.kind < 0 of {
                     true -> 0;
@@ -3614,6 +3622,33 @@ fn flat_record_sum_nested_inners(term: SIRTerm) -> int64 {
                 };
                 here + rest
             end
+        }
+    }
+}
+
+fn record_field_user_call_inline_return(elem: SIRTerm, fty: string) -> bool {
+    reg_conventions@is_inline_struct_type(fty) and (elem.kind == 4 or elem.kind == 5)
+}
+
+fn record_field_inline_pointer_value(elem: SIRTerm, fty: string) -> bool {
+    case reg_conventions@is_inline_struct_type(fty) of {
+        false -> false;
+        true -> case elem.kind == 1 of {
+            true -> true;
+            false -> case elem.kind == 4 or elem.kind == 5 of {
+                true -> true;
+                false -> elem.kind == 6 and elem.name == "record_proj"
+            }
+        }
+    }
+}
+
+fn record_field_nested_return_bytes(elem: SIRTerm, fty: string, elem_is_agg: bool) -> int64 {
+    case elem_is_agg of {
+        true -> agg_alloc_inner(elem);
+        false -> case record_field_user_call_inline_return(elem, fty) of {
+            true -> user_call_aggregate_return_alloc_bytes(fty);
+            false -> 0
         }
     }
 }
@@ -3689,13 +3724,14 @@ fn emit_flat_record_stores(term: SIRTerm, R: string, sp_adjust: int64, field_pre
                                 true -> do term_to_asm_opt_bound_debug(elem, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                 false -> term_to_asm_opt_bound(elem, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                             };
-                            nested_bytes: int64 <- case elem_is_agg of {
-                                true -> agg_alloc_inner(elem);
-                                false -> 0
-                            };
+                            nested_bytes: int64 <- record_field_nested_return_bytes(elem, fty, elem_is_agg);
                             new_adjust: int64 <- sp_adjust + nested_bytes;
                             store_offset: int64 <- record_store_offset_for_field(R, fname, field_prefix, base_off, new_adjust);
-                            store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))));
+                            copy_inline_struct_field: bool <- record_field_inline_pointer_value(elem, fty);
+                            store_asm: string <- case copy_inline_struct_field of {
+                                true -> emit_inline_record_field_copy_words(temp_reg, store_base, store_offset, 0, prims_record@record_type_value_flat_byte_size(fty) / 8);
+                                false -> concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))))
+                            };
                             concat(elem_asm, concat("\n", store_asm))
                         end
                     }
@@ -3752,13 +3788,14 @@ fn emit_flat_record_stores(term: SIRTerm, R: string, sp_adjust: int64, field_pre
                                 true -> do term_to_asm_opt_bound_debug(elem, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                 false -> term_to_asm_opt_bound(elem, temp_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                             };
-                            nested_bytes: int64 <- case elem_is_agg of {
-                                true -> agg_alloc_inner(elem);
-                                false -> 0
-                            };
+                            nested_bytes: int64 <- record_field_nested_return_bytes(elem, fty, elem_is_agg);
                             new_adjust: int64 <- sp_adjust + nested_bytes;
                             store_offset: int64 <- record_store_offset_for_field(R, fname, field_prefix, base_off, new_adjust);
-                            store_asm: string <- concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))));
+                            copy_inline_struct_field: bool <- record_field_inline_pointer_value(elem, fty);
+                            store_asm: string <- case copy_inline_struct_field of {
+                                true -> emit_inline_record_field_copy_words(temp_reg, store_base, store_offset, 0, prims_record@record_type_value_flat_byte_size(fty) / 8);
+                                false -> concat("    STR ", concat(temp_reg, concat(", ", tuple_flat_memref(store_base, store_offset))))
+                            };
                             rest_asm: string <- emit_flat_record_stores(term.right_expr, R, new_adjust, field_prefix, store_base, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
                             concat(concat(elem_asm, concat("\n", store_asm)), concat("\n", rest_asm))
                         end
@@ -3920,6 +3957,18 @@ fn aggregate_heap_copy_words_unrolled(word_idx: int64, words: int64) -> string {
             off: int64 <- word_idx * 8;
             pair: string <- concat(concat(concat(concat("    LDR X3, [X1, #", atom_table@int64_to_decimal_string(off)), "]\n    STR X3, [X4, #"), atom_table@int64_to_decimal_string(off)), "]\n");
             concat(pair, aggregate_heap_copy_words_unrolled(word_idx + 1, words))
+        end
+    }
+}
+
+fn emit_inline_record_field_copy_words(src_reg: string, store_base: string, dest_off: int64, word_idx: int64, words: int64) -> string {
+    case word_idx >= words of {
+        true -> "";
+        false -> do
+            off: int64 <- word_idx * 8;
+            dst: string <- tuple_flat_memref(store_base, dest_off + off);
+            one: string <- concat(concat(concat(concat("    LDR X10, [", src_reg), concat(", #", atom_table@int64_to_decimal_string(off))), "]\n    STR X10, "), concat(dst, "\n"));
+            concat(one, emit_inline_record_field_copy_words(src_reg, store_base, dest_off, word_idx + 1, words))
         end
     }
 }

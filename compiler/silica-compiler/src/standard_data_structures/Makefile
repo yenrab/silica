@@ -21,7 +21,8 @@ SILICA_CONFIG_FILES := \
 	graph_csr_directed_unweighted_normal.silica \
 	graph_csr_directed_weighted_int64_normal.silica \
 	graph_dense_directed_unweighted_normal.silica \
-	graph_dense_directed_weighted_int64_normal.silica
+	graph_dense_directed_weighted_int64_normal.silica \
+	btree_set_nodeid_int64_normal.silica
 
 SAMS_FILES := $(SILICA_CONFIG_FILES:.silica=.sams)
 

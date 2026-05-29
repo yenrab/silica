@@ -3031,9 +3031,11 @@ fn extract_case_rhs_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[
             unary_minus: Expr <- Expr { kind: 12, value: "", name: "", location: first.token.location, inner: operand, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
             (unary_minus, rest_after)
         end;
-        false -> case parser_tuples@slots_start_fn_type(slots) of {
-            true -> expr_fn_type_opaque_from_slots(slots);
-            false -> case first_kind == kinds.left_brace or first.token.lexeme == "{" or constraint_core@slot_role(first) == capability_case@role_case_branch_lbrace() of {
+        false -> case constraint_core@slot_role(first) == capability_case@role_case_keyword() or first_kind == kinds.case_keyword of {
+            true -> extract_case_expression(slots);
+            false -> case parser_tuples@slots_start_fn_type(slots) of {
+                true -> expr_fn_type_opaque_from_slots(slots);
+                false -> case first_kind == kinds.left_brace or first.token.lexeme == "{" or constraint_core@slot_role(first) == capability_case@role_case_branch_lbrace() of {
             true -> case is_struct_literal_lbrace_fallback(slots, kinds) of {
                 true -> extract_struct_literal(slots);
                 false -> do
@@ -3076,6 +3078,7 @@ fn extract_case_rhs_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[
                     }
                 }
             }
+            }
         }
         }
     }
@@ -3117,19 +3120,33 @@ fn extract_case_rhs_call(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[Dev
     (type_args: string, at_lparen: ListTokenSlot) <- extract_optional_generic_type_args_after_name(rest_after_name);
     case slots_is_nil(at_lparen) of {
         true -> (parser_ast@dummy_expr(), slots);
-        false -> case slots_head(at_lparen).token.kind == kinds.left_paren of {
-            true -> do
-                arg_slots: ListTokenSlot <- slots_tail(at_lparen);
-                (arg1: Expr, rest_after_arg1: ListTokenSlot) <- extract_case_rhs_with_precedence(arg_slots, 0);
-                (rest_after_arg1_skipped: ListTokenSlot, _has_am_arg1: bool) <- skip_impl_annotation(rest_after_arg1);
-                (right_expr: Expr, rest_after_rparen: ListTokenSlot) <- extract_case_call_rest(rest_after_arg1_skipped, first.token.location);
-                call_name: string <- first.token.lexeme;
-                call_loc: SourceLocation <- first.token.location;
-                call_expr: Expr <- Expr { kind: 4, value: type_args, name: call_name, location: call_loc, inner: arg1, right_expr: right_expr, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
-                (call_expr, rest_after_rparen)
-            end;
-            false -> (parser_ast@dummy_expr(), slots)
-        }
+            false -> case slots_head(at_lparen).token.kind == kinds.left_paren of {
+                true -> do
+                    arg_slots: ListTokenSlot <- slots_tail(at_lparen);
+                    arg_start: ListTokenSlot <- skip_leading_whitespace_slots(arg_slots);
+                    call_name: string <- first.token.lexeme;
+                    call_loc: SourceLocation <- first.token.location;
+                    case slots_is_nil(arg_start) of {
+                        true -> (parser_ast@dummy_expr(), slots);
+                        false -> case slots_head(arg_start).token.kind == kinds.right_paren of {
+                            true -> do
+                                dummy_arg: Expr <- parser_ast@dummy_expr();
+                                dummy_rest: Expr <- parser_ast@dummy_expr();
+                                call0: Expr <- Expr { kind: 4, value: type_args, name: call_name, location: call_loc, inner: dummy_arg, right_expr: dummy_rest, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+                                (call0, slots_tail(arg_start))
+                            end;
+                            false -> do
+                                (arg1: Expr, rest_after_arg1: ListTokenSlot) <- extract_case_rhs_with_precedence(arg_start, 0);
+                                (rest_after_arg1_skipped: ListTokenSlot, _has_am_arg1: bool) <- skip_impl_annotation(rest_after_arg1);
+                                (right_expr: Expr, rest_after_rparen: ListTokenSlot) <- extract_case_call_rest(rest_after_arg1_skipped, first.token.location);
+                                call_expr: Expr <- Expr { kind: 4, value: type_args, name: call_name, location: call_loc, inner: arg1, right_expr: right_expr, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+                                (call_expr, rest_after_rparen)
+                            end
+                        }
+                    }
+                end;
+                false -> (parser_ast@dummy_expr(), slots)
+            }
     }
 }
 
@@ -3678,11 +3695,25 @@ fn extract_case_rhs_module_qualified_call(slots: ListTokenSlot) -> (Expr, ListTo
                                     true -> do
                                         call_loc: SourceLocation <- mod_slot.token.location;
                                         arg_slots: ListTokenSlot <- slots_tail(at_lparen);
-                                        (arg1: Expr, rest_after_arg1: ListTokenSlot) <- extract_case_rhs_with_precedence(arg_slots, 0);
-                                        (right_expr: Expr, rest_after_rparen: ListTokenSlot) <- extract_case_call_rest(rest_after_arg1, call_loc);
                                         mq_case_name: string <- concat(concat(mod_slot.token.lexeme, "@"), fn_slot.token.lexeme);
-                                        call_expr: Expr <- Expr { kind: 4, value: type_args, name: mq_case_name, location: call_loc, inner: arg1, right_expr: right_expr, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
-                                        (call_expr, rest_after_rparen)
+                                        arg_start: ListTokenSlot <- skip_leading_whitespace_slots(arg_slots);
+                                        case slots_is_nil(arg_start) of {
+                                            true -> (parser_ast@dummy_expr(), slots);
+                                            false -> case slots_head(arg_start).token.kind == kinds.right_paren of {
+                                                true -> do
+                                                    dummy_arg: Expr <- parser_ast@dummy_expr();
+                                                    dummy_rest: Expr <- parser_ast@dummy_expr();
+                                                    call0: Expr <- Expr { kind: 4, value: type_args, name: mq_case_name, location: call_loc, inner: dummy_arg, right_expr: dummy_rest, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+                                                    (call0, slots_tail(arg_start))
+                                                end;
+                                                false -> do
+                                                    (arg1: Expr, rest_after_arg1: ListTokenSlot) <- extract_case_rhs_with_precedence(arg_start, 0);
+                                                    (right_expr: Expr, rest_after_rparen: ListTokenSlot) <- extract_case_call_rest(rest_after_arg1, call_loc);
+                                                    call_expr: Expr <- Expr { kind: 4, value: type_args, name: mq_case_name, location: call_loc, inner: arg1, right_expr: right_expr, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+                                                    (call_expr, rest_after_rparen)
+                                                end
+                                            }
+                                        }
                                     end;
                                     false -> (parser_ast@dummy_expr(), slots)
                                 }

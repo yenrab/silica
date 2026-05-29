@@ -421,7 +421,7 @@ Exit criteria:
 
 - Trials verify summaries against small graphs with known answers.
 
-**Phase 4 started:**
+**Phase 4 completed:**
 
 - Step 4.1: `reachable/3` on adjacency (flat slots) and CSR static graph; trials `graph_reachability_adj_directed_unweighted.silica`, `graph_reachability_csr_directed_unweighted.silica`.
 - Step 4.2: `max_out_degree/1`, `total_out_degree_sum/1` on CSR; trial `graph_degree_summary_csr_directed_unweighted.silica`.
@@ -520,6 +520,14 @@ Actions:
 Exit criteria:
 
 - Either delete trials pass, or delete is explicitly listed as deferred according to the design.
+
+**Phase 5 bootstrap completed:**
+
+- Added `src/standard_data_structures/btree_set_nodeid_int64_normal.silica` for order-8 immutable list-backed `NodeIDBTreeSetInt64Normal`.
+- Public bootstrap surface: `empty/0`, `contains/2`, `insert/2`, and `validate/1`.
+- Delete remains deferred per `btree_set_design.md` sections 5.6 and 7.3.
+- Current compiler-path representation uses `int64` status flags for `is_leaf`, `inserted`, and `ok` rather than source-level booleans, matching the stable generated-code path used by the graph modules.
+- `trials/btree_set_addition` now wires empty-set smoke coverage, non-empty hand-built membership, stable insert/duplicate status, and invalid-validation coverage into `integrate` with per-executable timeout guards.
 
 ## Phase 6 - B-tree Set: CsrBTreeSet
 
@@ -835,8 +843,8 @@ Exit criteria:
 | CompressedSparseRowGraph | Complete | Phase 2 — CSR inline type strings covered by Phase 0 snapshot; `graph_csr_directed_unweighted_normal.silica` and `graph_csr_directed_weighted_int64_normal.silica` compile with direct static buffer constructors, validation, buffer-backed out-degree, edge lookup, and weighted lookup helpers; `trials/graph_addition/graph_csr_directed_unweighted.silica` and `graph_csr_directed_weighted_int64.silica` now run runtime mains that construct region-owned CSR buffer records and verify node count, edge count, validation, present/absent edge lookup, out-degree, and weighted lookup. |
 | DenseMatrixGraph | Complete | Phase 3 — dense matrix inline type strings covered by Phase 0 snapshot; `graph_dense_directed_unweighted_normal.silica` and `graph_dense_directed_weighted_int64_normal.silica` provide fixed 3-node capacity, empty constructors, checked/direct edge setting, direct-buffer `has_edge`, `out_degree`, weighted lookup, and validation helpers (CSR-style flat int64 guards; no chained module calls in hot paths); `trials/graph_addition/graph_dense_directed_unweighted.silica` and `graph_dense_directed_weighted_int64.silica` integrate under `silica-compiler` and verify empty validation, checked edge set, validation after set, directed lookup, out-degree, and weighted lookup. |
 | DenseBitsetGraph | Deferred with documented fallback | Phase 3 — graph design §6.4 says to generate DenseBitset only when bitwise `|`, `&`, and shift are supported in the current compiler path. The current `silica-compiler` path documents the fallback to `DenseMatrixGraphDirectedUnweighted`. |
-| Graph algorithms | In progress | Phase 4 — `reachable`, `max_out_degree`, `total_out_degree_sum` on adjacency + CSR (bootstrap 3-node); trials `graph_reachability_adj_directed_unweighted.silica`, `graph_reachability_csr_directed_unweighted.silica`, `graph_degree_summary_csr_directed_unweighted.silica` |
-| NodeIDBTreeSet | Not started | Phase 5 |
+| Graph algorithms | Complete | Phase 4 — `reachable`, `max_out_degree`, `total_out_degree_sum` on adjacency + CSR (bootstrap 3-node); trials `graph_reachability_adj_directed_unweighted.silica`, `graph_reachability_csr_directed_unweighted.silica`, `graph_degree_summary_csr_directed_unweighted.silica` |
+| NodeIDBTreeSet | Complete | Phase 5 — order-8 list-backed `NodeIDBTreeSetInt64Normal` compiles in `standard_data_structures`; `btree_set_addition` integrates empty-set smoke coverage, non-empty hand-built membership, stable insert/duplicate status, and invalid-validation coverage under `silica-compiler` with timeout guards. |
 | CsrBTreeSet | Not started | Phase 6 |
 | NodeIDBTree | Not started | Phase 7 |
 | CsrBTree | Not started | Phase 8 |

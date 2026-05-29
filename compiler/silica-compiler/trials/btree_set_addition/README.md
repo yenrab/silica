@@ -1,7 +1,5 @@
 # B-tree set generated-structure trials (Phase 5+)
 
-Reserved for `NodeIDBTreeSet` and `CsrBTreeSet` generated code. See `btree_set_design.md`.
+Phase 5 adds the bootstrap `NodeIDBTreeSetInt64Normal` source module and runtime trials for empty construction, non-empty membership on a hand-built tree, stable insert/duplicate status, and invalid validation.
 
-## Phase 0
-
-Empty suite: `make integrate` succeeds with no sources. Validation failures: `error_enforcement_addition/generated_data_structures/btree_set/` (future).
+The `integrate` target wires all Phase 5 B-tree set trial sources through the local compiler and uses a per-executable timeout so recursive runtime regressions fail quickly instead of hanging the suite.
