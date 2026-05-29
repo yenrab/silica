@@ -2,17 +2,24 @@
 
 Reserved for `NodeIdAdjacencyGraph`, `CompressedSparseRowGraph`, `DenseMatrixGraph`, and `DenseBitsetGraph` generated code.
 
+Design/registry names and operation instantiation follow **`List`-aligned bracket syntax** ([graph_representation_design.md](../../design_documents/graph_representation_design.md) §2.11): payload type(s) then **`mem(normal)`** — for example `NodeIdAdjacencyGraphDirected[mem(normal)]`, `NodeIdAdjacencyGraphDirected[int64, mem(normal)]`.
+
 Separate from `list_addition` (compiler `List[T,S]` runtime).
+
+## Layout
+
+- **`lib/`** — trial-local generated support modules (bracket-named registry keys). Operations use explicit instantiation, e.g. `graph_adj_directed_empty[mem(normal)]()`.
+- **Trial drivers** — `graph_<repr>_<directedness>_<bracket-slug>_trial.silica` where `<bracket-slug>` is `mem_normal` (unweighted) or `int64_mem_normal` (edge payload `int64`). Drivers must not share a module basename with `lib/` (symlinked `src/standard_data_structures/` modules).
 
 ## Phase 1
 
-`NodeIdAdjacencyGraph` now exercises the directed unweighted normal-memory path with list-backed node records (`node_count <= 3`). The undirected and weighted adjacency trials remain bootstrap coverage for the generated Phase 1 families.
+`NodeIdAdjacencyGraphDirected[mem(normal)]` exercises the directed unweighted path with list-backed node records (`node_count <= 3`). Undirected and weighted adjacency trials cover the other Phase 1 families.
 
 Success trials:
 
-- `graph_adj_directed_unweighted.silica`
-- `graph_adj_undirected_unweighted.silica`
-- `graph_adj_directed_weighted_int64.silica`
+- `graph_adj_directed_mem_normal.silica` — `NodeIdAdjacencyGraphDirected[mem(normal)]`
+- `graph_adj_undirected_mem_normal.silica` — `NodeIdAdjacencyGraphUndirected[mem(normal)]`
+- `graph_adj_directed_int64_mem_normal.silica` — `NodeIdAdjacencyGraphDirected[int64, mem(normal)]`
 
 Validation/runtime enforcement trial:
 
@@ -26,27 +33,23 @@ Validation failures: `trials/error_enforcement_addition/generated_data_structure
 
 ## Phase 2
 
-`CompressedSparseRowGraph` has bootstrap generated modules for directed unweighted and directed weighted int64 CSR graphs in `src/standard_data_structures/`.
-
-The modules compile direct static constructors, validation helpers, buffer-backed out-degree, edge lookup, and weighted lookup. The graph integration trials now run runtime mains that construct region-owned CSR buffer records, pass them through inspection helpers, and verify node count, edge count, validation, present edges, absent edges, out-degree, and weighted lookup.
+`CompressedSparseRowGraphDirected[mem(normal)]` and `CompressedSparseRowGraphDirected[int64, mem(normal)]` bootstrap modules live in `lib/`.
 
 Success trials:
 
-- `graph_csr_directed_unweighted.silica`
-- `graph_csr_directed_weighted_int64.silica`
+- `graph_csr_directed_mem_normal.silica`
+- `graph_csr_directed_int64_mem_normal.silica`
 
 ## Phase 3
 
-`DenseMatrixGraph` has generated modules for directed unweighted and directed weighted int64 dense matrix graphs in `src/standard_data_structures/`.
+`DenseMatrixGraphDirected[mem(normal)]` and `DenseMatrixGraphDirected[int64, mem(normal)]` bootstrap modules live in `lib/`.
 
-The modules provide fixed 3-node capacity matrix constructors, checked edge setters, direct-buffer edge lookup, out-degree, weighted lookup, and validation helpers using flat int64 guards (same emitter-safe style as CSR trials). Integration runs under `silica-compiler` via `make integrate` in this directory.
-
-`DenseBitsetGraph` is deferred per `graph_representation_design.md` §6.4. The current path documents the fallback to `DenseMatrixGraphDirectedUnweighted` until bitwise `|`, `&`, and shift are available.
+`DenseBitsetGraph` is deferred per `graph_representation_design.md` §6.4. The current path documents the fallback to `DenseMatrixGraphDirected[mem(S)]` until bitwise `|`, `&`, and shift are available.
 
 Success trials:
 
-- `graph_dense_directed_unweighted.silica`
-- `graph_dense_directed_weighted_int64.silica`
+- `graph_dense_directed_mem_normal.silica`
+- `graph_dense_directed_int64_mem_normal.silica`
 
 ## Phase 4
 
@@ -54,6 +57,6 @@ Reachability and degree-summary helpers reuse `has_edge` / `out_degree` traversa
 
 Success trials:
 
-- `graph_reachability_adj_directed_unweighted.silica`
-- `graph_reachability_csr_directed_unweighted.silica`
-- `graph_degree_summary_csr_directed_unweighted.silica`
+- `graph_reachability_adj_directed_mem_normal.silica`
+- `graph_reachability_csr_directed_mem_normal.silica`
+- `graph_degree_summary_csr_directed_mem_normal.silica`

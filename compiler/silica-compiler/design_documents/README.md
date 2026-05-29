@@ -113,7 +113,7 @@ How **immutable, Erlang-style lists** are represented and lowered in the **Phase
 
 ## [graph_representation_design.md](./graph_representation_design.md)
 
-Graph representation designs for code generation without custom types: named design families for adjacency-list, compressed sparse row, dense matrix, and dense bitset graphs, with inline Silica shapes, construction/traversal operations, invariants, and when to use each family.
+Graph representation designs for code generation without custom types: named design families for adjacency-list, compressed sparse row, dense matrix, and dense bitset graphs, with **`List`-aligned bracket registry keys** (§2.11), inline Silica shapes, construction/traversal operations, invariants, and when to use each family.
 
 ## [standard_data_structures_implementation_plan.md](./standard_data_structures_implementation_plan.md)
 
@@ -123,13 +123,13 @@ Step-by-step implementation plan for the standard generated data structures desc
 
 ## [balanced_tree_and_heap_design.md](./balanced_tree_and_heap_design.md)
 
-Balanced tree and heap representations for code generation without custom types: `NodeIDBTree` vs. `CsrBTree` guidance, inline B-tree and heap shapes, construction/search/update algorithms, invariants, naming rules, and generator requirements.
+Balanced tree and heap representations for code generation without custom types: `NodeIDBTree` vs. `CsrBTree` guidance, inline B-tree and heap shapes, **`List`-aligned bracket design names** (§2.6), construction/search/update algorithms, invariants, naming rules, and generator requirements.
 
 ---
 
 ## [btree_set_design.md](./btree_set_design.md)
 
-Generated B-tree set designs using the exact families `NodeIDBTreeSet` and `CsrBTreeSet`: when to use each, inline set shapes, construction/finalization paths, membership/insert/delete/range operations, invariants, naming rules, and generator requirements.
+Generated B-tree set designs using the exact families `NodeIDBTreeSet` and `CsrBTreeSet` with **`List`-aligned bracket registry keys** (§4.1): when to use each, inline set shapes, construction/finalization paths, membership/insert/delete/range operations, invariants, naming rules, and generator requirements.
 
 ---
 

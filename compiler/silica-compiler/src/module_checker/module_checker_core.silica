@@ -29,6 +29,7 @@
 
 use parser_ast;
 use type_checker_core;
+use instantiated_fn_name;
 use type_checker_traits;
 use type_checker_supervisor;
 use diagnostics_core;
@@ -747,7 +748,7 @@ fn find_program_by_module_name(parsed: ListParsedFile, mod_name: string) -> (boo
 fn export_params_match_fn_arity(params: ListParam, fn_name: string, arity: int64) -> bool {
     case params.is_nil of {
         true -> false;
-        false -> case params.head.name == fn_name of {
+        false -> case instantiated_fn_name@decl_name_matches(params.head.name, fn_name) of {
             true -> do
                 (ok_ar: bool, ar: int64) <- parse_unsigned_decimal_module(params.head.type_name);
                 case ok_ar of {
@@ -780,7 +781,7 @@ fn module_defines_fn_with_arity(decls: ListDeclaration, fn_name: string, arity: 
     case decls.is_nil of {
         true -> false;
         false -> case decls.head.tag == 0 of {
-            true -> case decls.head.name == fn_name of {
+            true -> case instantiated_fn_name@decl_name_matches(decls.head.name, fn_name) of {
                 true -> case list_param_length_decl(decls.head.parameters) == arity of {
                     true -> true;
                     false -> module_defines_fn_with_arity(decls.tail, fn_name, arity)
@@ -797,7 +798,7 @@ fn module_declares_fn_or_required_trait_method(decls: ListDeclaration, fn_name: 
     case decls.is_nil of {
         true -> false;
         false -> case decls.head.tag == 0 of {
-            true -> case decls.head.name == fn_name of {
+            true -> case instantiated_fn_name@decl_name_matches(decls.head.name, fn_name) of {
                 true -> case list_param_length_decl(decls.head.parameters) == arity of {
                     true -> true;
                     false -> module_declares_fn_or_required_trait_method(decls.tail, fn_name, arity)
@@ -805,7 +806,7 @@ fn module_declares_fn_or_required_trait_method(decls: ListDeclaration, fn_name: 
                 false -> module_declares_fn_or_required_trait_method(decls.tail, fn_name, arity)
             };
             false -> case decls.head.tag == 7 of {
-                true -> case decls.head.name == fn_name of {
+                true -> case instantiated_fn_name@decl_name_matches(decls.head.name, fn_name) of {
                     true -> case list_param_length_decl(decls.head.parameters) == arity of {
                         true -> true;
                         false -> module_declares_fn_or_required_trait_method(decls.tail, fn_name, arity)
@@ -916,7 +917,7 @@ fn validate_kind4_call_export_surface(expr: Expr, all_decls: ListDeclaration, al
         false -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
         true -> do
             (qmod: string, qfn_raw: string) <- type_checker_core@split_module_qualified_call_name(expr.name);
-            qfn: string <- qual_callee_name_for_export_check(qfn_raw);
+            qfn: string <- qual_callee_name_for_export_check(instantiated_fn_name@resolve_call_fn_name(qfn_raw, expr.value));
             case is_actor_spawn_intrinsic_for_export_surface(qfn) of {
                 true -> validate_expr_pair_export_surface(expr.inner, expr.right_expr, all_decls, all_parsed);
                 false -> case len(qmod) > 0 of {

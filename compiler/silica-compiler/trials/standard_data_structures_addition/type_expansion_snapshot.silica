@@ -4,24 +4,27 @@
 use structure_registry;
 use inline_type_expansion;
 
-fn snapshot_line_fail(name: string, got: string) -> int64 {
+fn registry_line_fail(name: string) -> int64 {
     case structure_registry@structure_family_is_registered(name) of {
         false -> 1;
-        true -> case got == "" of {
+        true -> case structure_registry@structure_family_design_doc(name) == "" of {
             true -> 1;
-            false -> case structure_registry@structure_family_design_doc(name) == "" of {
-                true -> 1;
-                _: string -> 0
-            }
+            false -> 0
         }
     }
 }
 
 // Tail-recursive walk (same shape as recursive_function_addition/recursive_string_count_a.silica).
+// Registry checks run before expand: expand may clobber callee-saved registers holding name.
 fn snapshot_failures_at_step(index: int64, failures: int64) -> int64 {
     name: string <- structure_registry@structure_family_name_at(index);
+    reg_fail: int64 <- registry_line_fail(name);
     got: string <- inline_type_expansion@expand_structure_inline_type_normal(name);
-    snapshot_failures_at(index + 1, failures + snapshot_line_fail(name, got))
+    expand_fail: int64 <- case got == "" of {
+        true -> 1;
+        false -> 0
+    };
+    snapshot_failures_at(index + 1, failures + reg_fail + expand_fail)
 }
 
 fn snapshot_failures_at(index: int64, failures: int64) -> int64 {

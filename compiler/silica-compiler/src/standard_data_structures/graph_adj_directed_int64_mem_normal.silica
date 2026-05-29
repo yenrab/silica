@@ -1,0 +1,392 @@
+// Copyright 2026 Lee Scott Barney — Apache License 2.0
+// NodeIdAdjacencyGraphDirected[int64, mem(normal)] (graph_representation_design.md §2.11).
+// Bootstrap layout: fixed weighted-neighbor slots for node ids 0..2.
+
+use graph_adj_list_helpers;
+
+export graph_adj_directed_empty[int64, mem(normal)]/1;
+export graph_adj_directed_node_count[int64, mem(normal)]/1;
+export graph_adj_directed_edge_count[int64, mem(normal)]/1;
+export graph_adj_directed_add_edge[int64, mem(normal)]/4;
+export graph_adj_directed_add_edge_checked[int64, mem(normal)]/4;
+export graph_adj_directed_neighbors[int64, mem(normal)]/2;
+export graph_adj_directed_neighbors_checked[int64, mem(normal)]/2;
+export graph_adj_directed_out_degree[int64, mem(normal)]/2;
+export graph_adj_directed_out_degree_checked[int64, mem(normal)]/2;
+export graph_adj_directed_has_edge[int64, mem(normal)]/3;
+export graph_adj_directed_has_edge_checked[int64, mem(normal)]/3;
+export graph_adj_directed_weight_at[int64, mem(normal)]/3;
+export graph_adj_directed_weight_at_checked[int64, mem(normal)]/3;
+export graph_adj_directed_validate[int64, mem(normal)]/1;
+
+fn graph_adj_directed_empty[int64, mem(normal)](initial_node_count: int64) -> {
+    node_count: int64,
+    edge_count: int64,
+    n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+} {
+    sequence proc[mem(normal)]
+        n0_empty: List[{ to: int64, weight: int64 }, mem(normal)] <- empty[{ to: int64, weight: int64 }, mem(normal)]();
+        n1_empty: List[{ to: int64, weight: int64 }, mem(normal)] <- empty[{ to: int64, weight: int64 }, mem(normal)]();
+        n2_empty: List[{ to: int64, weight: int64 }, mem(normal)] <- empty[{ to: int64, weight: int64 }, mem(normal)]();
+        graph: {
+            node_count: int64,
+            edge_count: int64,
+            n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+            n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+            n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+        } <- {
+            node_count: initial_node_count,
+            edge_count: 0,
+            n0_neighbors: n0_empty,
+            n1_neighbors: n1_empty,
+            n2_neighbors: n2_empty
+        }
+    produces
+        pure graph
+    end
+}
+
+fn graph_adj_directed_node_count[int64, mem(normal)](graph: {
+    node_count: int64,
+    edge_count: int64,
+    n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+}) -> int64 {
+    graph.node_count
+}
+
+fn graph_adj_directed_edge_count[int64, mem(normal)](graph: {
+    node_count: int64,
+    edge_count: int64,
+    n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+}) -> int64 {
+    graph.edge_count
+}
+
+fn graph_adj_directed_int64_mem_normal_prepend_slot(
+    old_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    to_id: int64,
+    weight: int64
+) -> List[{ to: int64, weight: int64 }, mem(normal)] {
+    sequence proc[mem(normal)]
+        updated: List[{ to: int64, weight: int64 }, mem(normal)] <- prepend[{ to: int64, weight: int64 }, mem(normal)]({ to: to_id, weight: weight }, old_neighbors)
+    produces
+        pure updated
+    end
+}
+
+fn graph_adj_directed_int64_mem_normal_neighbors_list(
+    graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    },
+    node_id: int64,
+    empty_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+) -> List[{ to: int64, weight: int64 }, mem(normal)] {
+    case node_id of {
+        0 -> graph.n0_neighbors;
+        1 -> graph.n1_neighbors;
+        2 -> graph.n2_neighbors;
+        _: int64 -> empty_neighbors
+    }
+}
+
+fn graph_adj_directed_int64_mem_normal_add_edge_when_ok(
+    graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    },
+    from_id: int64,
+    to_id: int64,
+    weight: int64
+) -> { ok: int64, graph: {
+    node_count: int64,
+    edge_count: int64,
+    n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+} } {
+    case from_id of {
+        0 -> {
+            ok: 1,
+            graph: {
+                node_count: graph.node_count,
+                edge_count: graph.edge_count + 1,
+                n0_neighbors: graph_adj_directed_int64_mem_normal_prepend_slot(graph.n0_neighbors, to_id, weight),
+                n1_neighbors: graph.n1_neighbors,
+                n2_neighbors: graph.n2_neighbors
+            }
+        };
+        1 -> {
+            ok: 1,
+            graph: {
+                node_count: graph.node_count,
+                edge_count: graph.edge_count + 1,
+                n0_neighbors: graph.n0_neighbors,
+                n1_neighbors: graph_adj_directed_int64_mem_normal_prepend_slot(graph.n1_neighbors, to_id, weight),
+                n2_neighbors: graph.n2_neighbors
+            }
+        };
+        2 -> {
+            ok: 1,
+            graph: {
+                node_count: graph.node_count,
+                edge_count: graph.edge_count + 1,
+                n0_neighbors: graph.n0_neighbors,
+                n1_neighbors: graph.n1_neighbors,
+                n2_neighbors: graph_adj_directed_int64_mem_normal_prepend_slot(graph.n2_neighbors, to_id, weight)
+            }
+        };
+        _: int64 -> { ok: 0, graph: graph }
+    }
+}
+
+fn graph_adj_directed_add_edge_checked[int64, mem(normal)](
+    graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    },
+    from_id: int64,
+    to_id: int64,
+    weight: int64
+) -> { ok: int64, graph: {
+    node_count: int64,
+    edge_count: int64,
+    n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+} } {
+    from_saved: int64 <- from_id;
+    to_saved: int64 <- to_id;
+    weight_saved: int64 <- weight;
+    from_ok: int64 <- graph_adj_list_helpers@graph_adj_node_id_in_range(from_saved, graph.node_count);
+    to_ok: int64 <- graph_adj_list_helpers@graph_adj_node_id_in_range(to_saved, graph.node_count);
+    endpoints_ok: int64 <- case from_ok of {
+        0 -> 0;
+        1 -> to_ok;
+        _: int64 -> 0
+    };
+    case endpoints_ok of {
+        0 -> { ok: 0, graph: graph };
+        1 -> graph_adj_directed_int64_mem_normal_add_edge_when_ok(graph, from_saved, to_saved, weight_saved);
+        _: int64 -> { ok: 0, graph: graph }
+    }
+}
+
+fn graph_adj_directed_add_edge[int64, mem(normal)](
+    graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    },
+    from_id: int64,
+    to_id: int64,
+    weight: int64
+) -> {
+    node_count: int64,
+    edge_count: int64,
+    n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+} {
+    checked: { ok: int64, graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    } } <- graph_adj_directed_add_edge_checked[int64, mem(normal)](graph, from_id, to_id, weight);
+    checked.graph
+}
+
+fn graph_adj_directed_neighbors[int64, mem(normal)](
+    graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    },
+    node_id: int64
+) -> List[{ to: int64, weight: int64 }, mem(normal)] {
+    result: { ok: int64, value: List[{ to: int64, weight: int64 }, mem(normal)] } <- graph_adj_directed_neighbors_checked[int64, mem(normal)](graph, node_id);
+    result.value
+}
+
+fn graph_adj_directed_neighbors_checked[int64, mem(normal)](
+    graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    },
+    node_id: int64
+) -> { ok: int64, value: List[{ to: int64, weight: int64 }, mem(normal)] } {
+    sequence proc[mem(normal)]
+        empty_neighbors: List[{ to: int64, weight: int64 }, mem(normal)] <- empty[{ to: int64, weight: int64 }, mem(normal)]();
+        in_range: int64 <- graph_adj_list_helpers@graph_adj_node_id_in_range(node_id, graph.node_count);
+        neighbors: List[{ to: int64, weight: int64 }, mem(normal)] <- graph_adj_directed_int64_mem_normal_neighbors_list(graph, node_id, empty_neighbors);
+        out: { ok: int64, value: List[{ to: int64, weight: int64 }, mem(normal)] } <- case in_range of {
+            0 -> { ok: 0, value: empty_neighbors };
+            1 -> { ok: 1, value: neighbors };
+            _: int64 -> { ok: 0, value: empty_neighbors }
+        }
+    produces
+        pure out
+    end
+}
+
+fn graph_adj_directed_int64_mem_normal_weight_list(
+    neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+    to_id: int64
+) -> { found: int64, weight: int64 } {
+    case neighbors of {
+        []: List[{ to: int64, weight: int64 }, mem(normal)] -> { found: 0, weight: 0 };
+        [h: { to: int64, weight: int64 }, _: List[{ to: int64, weight: int64 }, mem(normal)]] -> case h.to - to_id of {
+            0 -> { found: 1, weight: h.weight };
+            _: int64 -> { found: 0, weight: 0 }
+        }
+    }
+}
+
+fn graph_adj_directed_weight_at_checked[int64, mem(normal)](
+    graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    },
+    from_id: int64,
+    to_id: int64
+) -> { ok: int64, value: int64 } {
+    neighbors_result: { ok: int64, value: List[{ to: int64, weight: int64 }, mem(normal)] } <- graph_adj_directed_neighbors_checked[int64, mem(normal)](graph, from_id);
+    case neighbors_result.ok of {
+        0 -> { ok: 0, value: 0 };
+        1 -> {
+            found_weight: { found: int64, weight: int64 } <- graph_adj_directed_int64_mem_normal_weight_list(neighbors_result.value, to_id);
+            case found_weight.found of {
+                0 -> { ok: 0, value: 0 };
+                1 -> { ok: 1, value: found_weight.weight };
+                _: int64 -> { ok: 0, value: 0 }
+            }
+        };
+        _: int64 -> { ok: 0, value: 0 }
+    }
+}
+
+fn graph_adj_directed_weight_at[int64, mem(normal)](
+    graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    },
+    from_id: int64,
+    to_id: int64
+) -> int64 {
+    result: { ok: int64, value: int64 } <- graph_adj_directed_weight_at_checked[int64, mem(normal)](graph, from_id, to_id);
+    result.value
+}
+
+fn graph_adj_directed_has_edge_checked[int64, mem(normal)](
+    graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    },
+    from_id: int64,
+    to_id: int64
+) -> { ok: int64, value: int64 } {
+    weight_result: { ok: int64, value: int64 } <- graph_adj_directed_weight_at_checked[int64, mem(normal)](graph, from_id, to_id);
+    case weight_result.ok of {
+        0 -> { ok: 0, value: 0 };
+        1 -> { ok: 1, value: 1 };
+        _: int64 -> { ok: 0, value: 0 }
+    }
+}
+
+fn graph_adj_directed_has_edge[int64, mem(normal)](
+    graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    },
+    from_id: int64,
+    to_id: int64
+) -> int64 {
+    result: { ok: int64, value: int64 } <- graph_adj_directed_has_edge_checked[int64, mem(normal)](graph, from_id, to_id);
+    result.value
+}
+
+fn graph_adj_directed_out_degree_checked[int64, mem(normal)](
+    graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    },
+    node_id: int64
+) -> { ok: int64, value: int64 } {
+    neighbors_result: { ok: int64, value: List[{ to: int64, weight: int64 }, mem(normal)] } <- graph_adj_directed_neighbors_checked[int64, mem(normal)](graph, node_id);
+    case neighbors_result.ok of {
+        0 -> { ok: 0, value: 0 };
+        1 -> { ok: 1, value: graph_adj_list_helpers@graph_adj_list_weighted_length(neighbors_result.value) };
+        _: int64 -> { ok: 0, value: 0 }
+    }
+}
+
+fn graph_adj_directed_out_degree[int64, mem(normal)](
+    graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    },
+    node_id: int64
+) -> int64 {
+    result: { ok: int64, value: int64 } <- graph_adj_directed_out_degree_checked[int64, mem(normal)](graph, node_id);
+    result.value
+}
+
+fn graph_adj_directed_validate[int64, mem(normal)](
+    graph: {
+        node_count: int64,
+        edge_count: int64,
+        n0_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n1_neighbors: List[{ to: int64, weight: int64 }, mem(normal)],
+        n2_neighbors: List[{ to: int64, weight: int64 }, mem(normal)]
+    }
+) -> int64 {
+    case graph.node_count of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        3 -> 1;
+        _: int64 -> 0
+    }
+}

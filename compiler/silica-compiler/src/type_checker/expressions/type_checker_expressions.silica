@@ -31,6 +31,7 @@ use type_checker_supervisor;
 use type_checker_tuple_decompose_helpers;
 use type_checker_memory_regions;
 use type_checker_lists;
+use instantiated_fn_name;
 use type_checker_expressions_actors;
 use type_checker_record_types;
 use type_checker_traits;
@@ -2291,7 +2292,7 @@ fn first_at_in_expr_call_name(s: string, i: int64) -> int64 {
 fn lookup_fn_type_by_name_and_module_local(env: ListSymbolEntry, fn_name: string, required_module: string) -> string {
     case env.is_nil of {
         true -> "";
-        false -> case env.head.name == fn_name and env.head.is_effect_alias == false of {
+        false -> case instantiated_fn_name@decl_name_matches(env.head.name, fn_name) and env.head.is_effect_alias == false of {
             true -> case len(required_module) == 0 of {
                 true -> case env.head.source_module == "" of {
                     true -> env.head.type_name;
@@ -2517,7 +2518,7 @@ fn find_function_decl_by_name_arity_call(decls: ListDeclaration, fn_name: string
     case decls.is_nil of {
         true -> (false, parser_ast@dummy_decl());
         false -> case decls.head.tag == 0 of {
-            true -> case decls.head.name == fn_name and list_param_length_call(decls.head.parameters) == arity of {
+            true -> case instantiated_fn_name@decl_name_matches(decls.head.name, fn_name) and list_param_length_call(decls.head.parameters) == arity of {
                 true -> (true, decls.head);
                 false -> find_function_decl_by_name_arity_call(decls.tail, fn_name, arity)
             };
@@ -2544,7 +2545,7 @@ fn find_tag0_decl_for_qualified_call(decls: ListDeclaration, fn_name: string, ar
     case decls.is_nil of {
         true -> (false, parser_ast@dummy_decl());
         false -> case decls.head.tag == 0 of {
-            true -> case decls.head.name == fn_name and list_param_length_call(decls.head.parameters) == arity of {
+            true -> case instantiated_fn_name@decl_name_matches(decls.head.name, fn_name) and list_param_length_call(decls.head.parameters) == arity of {
                 true -> case len(recv_ty) == 0 of {
                     true -> (true, decls.head);
                     false -> case qualified_call_first_arg_matches_decl(recv_ty, decls.head, world) of {
@@ -2563,7 +2564,7 @@ fn find_tag7_decl_for_qualified_call(decls: ListDeclaration, fn_name: string, ar
     case decls.is_nil of {
         true -> (false, parser_ast@dummy_decl());
         false -> case decls.head.tag == 7 of {
-            true -> case decls.head.name == fn_name and list_param_length_call(decls.head.parameters) == arity of {
+            true -> case instantiated_fn_name@decl_name_matches(decls.head.name, fn_name) and list_param_length_call(decls.head.parameters) == arity of {
                 true -> case len(recv_ty) == 0 of {
                     true -> (true, decls.head);
                     false -> case qualified_call_first_arg_matches_decl(recv_ty, decls.head, world) of {
@@ -2732,15 +2733,16 @@ fn resolve_site_bucket_type_for_param(inferred: string, formal_ty: string, calle
     }
 }
 
-fn find_qualified_call_resolved_declaration(pprog: Program, fn_id: string, ac: int64, recv_ty: string, world: ListNamedProgram) -> (bool, Declaration) {
-    (df0: bool, d0: Declaration) <- find_tag0_decl_for_qualified_call(pprog.declarations, fn_id, ac, recv_ty, world);
+fn find_qualified_call_resolved_declaration(pprog: Program, fn_id: string, generic_value: string, ac: int64, recv_ty: string, world: ListNamedProgram) -> (bool, Declaration) {
+    resolved_fn: string <- instantiated_fn_name@resolve_call_fn_name(fn_id, generic_value);
+    (df0: bool, d0: Declaration) <- find_tag0_decl_for_qualified_call(pprog.declarations, resolved_fn, ac, recv_ty, world);
     case df0 of {
         true -> (true, d0);
         false -> do
-            (df7: bool, d7: Declaration) <- find_tag7_decl_for_qualified_call(pprog.declarations, fn_id, ac, recv_ty, world);
+            (df7: bool, d7: Declaration) <- find_tag7_decl_for_qualified_call(pprog.declarations, resolved_fn, ac, recv_ty, world);
             case df7 of {
                 true -> (true, d7);
-                false -> find_function_decl_by_name_arity_call(pprog.declarations, fn_id, ac)
+                false -> find_function_decl_by_name_arity_call(pprog.declarations, resolved_fn, ac)
             }
         end
     }
@@ -2875,6 +2877,7 @@ fn try_resolve_qualified_call_func_type(expr: Expr, world: ListNamedProgram, con
         false -> do
             mod_id: string <- substring(expr.name, 0, at);
             fn_id: string <- substring(expr.name, at + 1, len(expr.name));
+            resolved_fn: string <- instantiated_fn_name@resolve_call_fn_name(fn_id, expr.value);
             ac: int64 <- count_call_args_user_call(expr);
             (pf: bool, pprog: Program) <- parser_ast@find_named_program(mod_id, world);
             case pf of {
@@ -2884,20 +2887,20 @@ fn try_resolve_qualified_call_func_type(expr: Expr, world: ListNamedProgram, con
                         true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                         false -> ""
                     };
-                    (df0: bool, d0: Declaration) <- find_tag0_decl_for_qualified_call(pprog.declarations, fn_id, ac, recv_ty, world);
+                    (df0: bool, d0: Declaration) <- find_tag0_decl_for_qualified_call(pprog.declarations, resolved_fn, ac, recv_ty, world);
                     case df0 of {
                         true -> (true, build_function_type_for_decl_call(d0));
                         false -> do
-                            (df7: bool, d7: Declaration) <- find_tag7_decl_for_qualified_call(pprog.declarations, fn_id, ac, recv_ty, world);
+                            (df7: bool, d7: Declaration) <- find_tag7_decl_for_qualified_call(pprog.declarations, resolved_fn, ac, recv_ty, world);
                             case df7 of {
                                 true -> (true, build_function_type_for_decl_call(d7));
                                 false -> do
-                                    (df: bool, ddecl: Declaration) <- find_function_decl_by_name_arity_call(pprog.declarations, fn_id, ac);
+                                    (df: bool, ddecl: Declaration) <- find_function_decl_by_name_arity_call(pprog.declarations, resolved_fn, ac);
                                     case df of {
                                         true -> (true, build_function_type_for_decl_call(ddecl));
                                         false -> case ac == 0 of {
                                             true -> do
-                                                (df1: bool, d1: Declaration) <- find_function_decl_by_name_arity_call(pprog.declarations, fn_id, 1);
+                                                (df1: bool, d1: Declaration) <- find_function_decl_by_name_arity_call(pprog.declarations, resolved_fn, 1);
                                                 case df1 of {
                                                     true -> (true, build_function_type_for_decl_call(d1));
                                                     false -> (false, "")
@@ -3027,7 +3030,7 @@ fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: strin
                         true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                         false -> ""
                     };
-                    (pfd: bool, callee_decl: Declaration) <- find_qualified_call_resolved_declaration(pprog, fn_id, ac, recv_ty, world);
+                    (pfd: bool, callee_decl: Declaration) <- find_qualified_call_resolved_declaration(pprog, fn_id, expr.value, ac, recv_ty, world);
                     case pfd of {
                         false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world);
                         true -> case callee_decl.tag == 0 of {
@@ -3064,9 +3067,10 @@ fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: strin
 
 fn check_user_defined_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     (rw: bool, ft_world: string) <- try_resolve_qualified_call_func_type(expr, world, context);
+    local_name: string <- instantiated_fn_name@resolve_call_fn_name(expr.name, expr.value);
     resolved_type: string <- case rw of {
         true -> ft_world;
-        false -> lookup_function_type_for_call_local(context.env, expr.name)
+        false -> lookup_function_type_for_call_local(context.env, local_name)
     };
     case len(resolved_type) == 0 of {
         true -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown or unsupported function: ", expr.name), "sect6");

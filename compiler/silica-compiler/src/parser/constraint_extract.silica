@@ -31,6 +31,7 @@ use capability_case;
 use capability_list;
 use constraint_core;
 use atom_table;
+use instantiated_fn_name;
 
 export slots_to_program/1;
 export validate_no_single_element_tuples/1;
@@ -63,9 +64,11 @@ fn role_call_rparen() -> int64 { 16 }
 
 fn extract_function(slots: ListTokenSlot) -> (Declaration, ListTokenSlot) proc[DeviceIO] {
     r1: ListTokenSlot <- slots.tail;
-    fn_name: string <- r1.head.token.lexeme;
+    fn_base: string <- r1.head.token.lexeme;
     fn_loc: SourceLocation <- r1.head.token.location;
-    (params: ListParam, ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- collect_params_and_find_type_and_body(r1.tail);
+    (bracket_suffix: string, after_brackets: ListTokenSlot) <- extract_optional_bracket_suffix_after_name(r1.tail);
+    fn_name: string <- concat(fn_base, bracket_suffix);
+    (params: ListParam, ret_type: string, ret_type_loc: SourceLocation, effects: ListEffectName, body_slots: ListTokenSlot) <- collect_params_and_find_type_and_body(after_brackets);
     (body: Expr, rest_after_body: ListTokenSlot) <- extract_function_body(body_slots);
     td_bindings: ListTupleDecomposeBinding <- extract_td_bindings_from_params(r1.tail);
     (final_params: ListParam, final_body: Expr) <- case td_bindings.is_nil of {
@@ -196,6 +199,24 @@ fn extract_use_declaration(slots: ListTokenSlot) -> (Declaration, ListTokenSlot)
     }
 }
 
+// After an identifier in fn/export position: optional `[T, mem(S)]` suffix (not a generic call).
+fn extract_optional_bracket_suffix_after_name(rest_after_name: ListTokenSlot) -> (string, ListTokenSlot) proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots_is_nil(rest_after_name) of {
+        true -> ("", rest_after_name);
+        false -> case slots_head(rest_after_name).token.kind == kinds.left_bracket of {
+            true -> do
+                (type_join: string, rest_after_brackets: ListTokenSlot) <- skip_square_bracket_group_depth_join(slots_tail(rest_after_name), kinds, 1, "");
+                inner_raw: string <- strip_trailing_rbracket_type_arg_join(type_join);
+                inner: string <- instantiated_fn_name@strip_all_spaces_inst(inner_raw);
+                suffix: string <- concat("[", concat(inner, "]"));
+                (suffix, rest_after_brackets)
+            end;
+            false -> ("", rest_after_name)
+        }
+    }
+}
+
 // export f/1, g/2; — Param.name = function, Param.type_name = arity lexeme (spec §19.2).
 fn collect_export_decl_parameters(slots: ListTokenSlot) -> (ListParam, ListTokenSlot) proc[DeviceIO] {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
@@ -207,7 +228,9 @@ fn collect_export_decl_parameters(slots: ListTokenSlot) -> (ListParam, ListToken
             true -> do
                 fn_slot: TokenSlot <- trimmed.head;
                 after_fn: ListTokenSlot <- trimmed.tail;
-                ws1: ListTokenSlot <- skip_leading_whitespace_slots(after_fn);
+                (bracket_suffix: string, after_brackets: ListTokenSlot) <- extract_optional_bracket_suffix_after_name(after_fn);
+                fn_full: string <- concat(fn_slot.token.lexeme, bracket_suffix);
+                ws1: ListTokenSlot <- skip_leading_whitespace_slots(after_brackets);
                 case ws1.is_nil of {
                     true -> (parser_ast@nil_list_param(), ws1);
                     false -> case ws1.head.token.kind == kinds.slash of {
@@ -221,7 +244,7 @@ fn collect_export_decl_parameters(slots: ListTokenSlot) -> (ListParam, ListToken
                                     false -> (parser_ast@nil_list_param(), ws2);
                                     true -> do
                                         ar_slot: TokenSlot <- ws2.head;
-                                        p: Param <- Param { name: fn_slot.token.lexeme, type_name: ar_slot.token.lexeme, location: fn_slot.token.location };
+                                        p: Param <- Param { name: fn_full, type_name: ar_slot.token.lexeme, location: fn_slot.token.location };
                                         after_ar: ListTokenSlot <- ws2.tail;
                                         ws3: ListTokenSlot <- skip_leading_whitespace_slots(after_ar);
                                         case ws3.is_nil of {

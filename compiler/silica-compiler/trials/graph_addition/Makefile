@@ -1,4 +1,4 @@
-# Phase 1 — NodeIdAdjacencyGraph generated modules (directed/undirected, unweighted/weighted int64).
+# Phase 1 — NodeIdAdjacencyGraph generated modules (List-aligned bracket naming, graph_representation_design.md §2.11).
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 SILICA_COMPILER := $(THIS_DIR)../../src/silica-compiler
 TRIAL_DIR := $(notdir $(patsubst %/,%,$(THIS_DIR)))
@@ -24,34 +24,34 @@ LIB_SRC := ../../src/standard_data_structures
 lib-sources:
 	@mkdir -p "$(THIS_DIR)lib"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_list_helpers.silica)" "$(THIS_DIR)lib/graph_adj_list_helpers.silica"
-	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_directed_unweighted_normal.silica)" "$(THIS_DIR)lib/graph_adj_directed_unweighted_normal.silica"
-	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_undirected_unweighted_normal.silica)" "$(THIS_DIR)lib/graph_adj_undirected_unweighted_normal.silica"
-	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_directed_weighted_int64_normal.silica)" "$(THIS_DIR)lib/graph_adj_directed_weighted_int64_normal.silica"
-	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_csr_directed_unweighted_normal.silica)" "$(THIS_DIR)lib/graph_csr_directed_unweighted_normal.silica"
-	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_csr_directed_weighted_int64_normal.silica)" "$(THIS_DIR)lib/graph_csr_directed_weighted_int64_normal.silica"
-	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_dense_directed_unweighted_normal.silica)" "$(THIS_DIR)lib/graph_dense_directed_unweighted_normal.silica"
-	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_dense_directed_weighted_int64_normal.silica)" "$(THIS_DIR)lib/graph_dense_directed_weighted_int64_normal.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_directed_mem_normal.silica)" "$(THIS_DIR)lib/graph_adj_directed_mem_normal.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_undirected_mem_normal.silica)" "$(THIS_DIR)lib/graph_adj_undirected_mem_normal.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_directed_int64_mem_normal.silica)" "$(THIS_DIR)lib/graph_adj_directed_int64_mem_normal.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_csr_directed_mem_normal.silica)" "$(THIS_DIR)lib/graph_csr_directed_mem_normal.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_csr_directed_int64_mem_normal.silica)" "$(THIS_DIR)lib/graph_csr_directed_int64_mem_normal.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_dense_directed_mem_normal.silica)" "$(THIS_DIR)lib/graph_dense_directed_mem_normal.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_dense_directed_int64_mem_normal.silica)" "$(THIS_DIR)lib/graph_dense_directed_int64_mem_normal.silica"
 
 silica.config: lib-sources
 	@cd "$(THIS_DIR)" && { \
 		echo 'lib/graph_adj_list_helpers.silica'; \
-		echo 'lib/graph_adj_directed_unweighted_normal.silica'; \
-		echo 'lib/graph_adj_undirected_unweighted_normal.silica'; \
-		echo 'lib/graph_adj_directed_weighted_int64_normal.silica'; \
-		echo 'lib/graph_csr_directed_unweighted_normal.silica'; \
-		echo 'lib/graph_csr_directed_weighted_int64_normal.silica'; \
-		echo 'lib/graph_dense_directed_unweighted_normal.silica'; \
-		echo 'lib/graph_dense_directed_weighted_int64_normal.silica'; \
-		echo 'graph_adj_directed_unweighted.silica'; \
-		echo 'graph_adj_undirected_unweighted.silica'; \
-		echo 'graph_adj_directed_weighted_int64.silica'; \
-		echo 'graph_csr_directed_unweighted.silica'; \
-		echo 'graph_csr_directed_weighted_int64.silica'; \
-		echo 'graph_dense_directed_unweighted.silica'; \
-		echo 'graph_dense_directed_weighted_int64.silica'; \
-		echo 'graph_reachability_csr_directed_unweighted.silica'; \
-		echo 'graph_reachability_adj_directed_unweighted.silica'; \
-		echo 'graph_degree_summary_csr_directed_unweighted.silica'; \
+		echo 'lib/graph_adj_directed_mem_normal.silica'; \
+		echo 'lib/graph_adj_undirected_mem_normal.silica'; \
+		echo 'lib/graph_adj_directed_int64_mem_normal.silica'; \
+		echo 'lib/graph_csr_directed_mem_normal.silica'; \
+		echo 'lib/graph_csr_directed_int64_mem_normal.silica'; \
+		echo 'lib/graph_dense_directed_mem_normal.silica'; \
+		echo 'lib/graph_dense_directed_int64_mem_normal.silica'; \
+		echo 'graph_adj_directed_mem_normal_trial.silica'; \
+		echo 'graph_adj_undirected_mem_normal_trial.silica'; \
+		echo 'graph_adj_directed_int64_mem_normal_trial.silica'; \
+		echo 'graph_csr_directed_mem_normal_trial.silica'; \
+		echo 'graph_csr_directed_int64_mem_normal_trial.silica'; \
+		echo 'graph_dense_directed_mem_normal_trial.silica'; \
+		echo 'graph_dense_directed_int64_mem_normal_trial.silica'; \
+		echo 'graph_reachability_csr_directed_mem_normal_trial.silica'; \
+		echo 'graph_reachability_adj_directed_mem_normal_trial.silica'; \
+		echo 'graph_degree_summary_csr_directed_mem_normal_trial.silica'; \
 	} > silica.config
 
 all: executables
@@ -169,8 +169,18 @@ integrate: silica.config
 
 clean:
 	@cd "$(THIS_DIR)" && \
-	rm -f *.sout lib/*.sams lib/*.o lib/graph_adj_*.o lib/graph_csr_*.o lib/graph_dense_*.o *.sams __silica_runtime.o graph_adj_directed_unweighted graph_adj_undirected_unweighted graph_adj_directed_weighted_int64 graph_csr_directed_unweighted graph_csr_directed_weighted_int64 graph_dense_directed_unweighted graph_dense_directed_weighted_int64 graph_reachability_csr_directed_unweighted graph_reachability_adj_directed_unweighted graph_degree_summary_csr_directed_unweighted graph_adj_directed_unweighted.o graph_adj_undirected_unweighted.o graph_adj_directed_weighted_int64.o graph_csr_directed_unweighted.o graph_csr_directed_weighted_int64.o graph_dense_directed_unweighted.o graph_dense_directed_weighted_int64.o graph_reachability_csr_directed_unweighted.o graph_reachability_adj_directed_unweighted.o graph_degree_summary_csr_directed_unweighted.o silica.config .integrate_counts
+	rm -f *.sout lib/*.sams lib/*.o lib/graph_adj_*.o lib/graph_csr_*.o lib/graph_dense_*.o *.sams __silica_runtime.o \
+		graph_adj_directed_mem_normal_trial graph_adj_undirected_mem_normal_trial graph_adj_directed_int64_mem_normal_trial \
+		graph_csr_directed_mem_normal_trial graph_csr_directed_int64_mem_normal_trial \
+		graph_dense_directed_mem_normal_trial graph_dense_directed_int64_mem_normal_trial \
+		graph_reachability_csr_directed_mem_normal_trial graph_reachability_adj_directed_mem_normal_trial \
+		graph_degree_summary_csr_directed_mem_normal_trial \
+		graph_adj_directed_mem_normal_trial.o graph_adj_undirected_mem_normal_trial.o graph_adj_directed_int64_mem_normal_trial.o \
+		graph_csr_directed_mem_normal_trial.o graph_csr_directed_int64_mem_normal_trial.o \
+		graph_dense_directed_mem_normal_trial.o graph_dense_directed_int64_mem_normal_trial.o \
+		graph_reachability_csr_directed_mem_normal_trial.o graph_reachability_adj_directed_mem_normal_trial.o \
+		graph_degree_summary_csr_directed_mem_normal_trial.o silica.config .integrate_counts
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
-	@echo "graph_addition — Graph generated-structure trials"
+	@echo "graph_addition — Graph generated-structure trials (bracket naming per graph_representation_design.md §2.11)"

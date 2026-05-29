@@ -1330,6 +1330,15 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         true -> ffi_foreign@foreign_call_sret_bytes(ffi_return_type);
         false -> user_call_aggregate_return_alloc_bytes(term.type_name)
     };
+    callee_sret_bind: string <- var@find_sp_binding(outer_reg, "_callee_sret");
+    // Enclosing fn aggregate return: caller already passed X8 = sret buffer — do not SUB/MOV (record_make still uses stack).
+    use_pass_through_sret: bool <- len(callee_sret_bind) > 0
+        and ffi_found == false
+        and sret_n > 0
+        and reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name)
+        and (len(bound_name) == 0 or use_tail);
+    // Aggregate sret stack is balanced at let-end / fn epilogue — not immediately after BLR (double ADD SP corrupts stack).
+    sret_stack_bytes: int64 <- 0;
     sret_setup: string <- case ffi_found of {
         true -> case sret_n > 0 of {
             true -> ffi_foreign@emit_foreign_sret_setup(sret_n);
@@ -1339,8 +1348,8 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
             }
         };
         false -> case reg_conventions@is_aggregate_struct_or_tuple_return_type(term.type_name) of {
-            true -> case sret_n > 0 of {
-                true -> concat("    SUB SP, SP, #", concat(atom_table@int64_to_decimal_string(sret_n), "\n    MOV X8, SP\n"));
+            true -> case sret_stack_bytes > 0 of {
+                true -> concat("    SUB SP, SP, #", concat(atom_table@int64_to_decimal_string(sret_stack_bytes), "\n    MOV X8, SP\n"));
                 false -> ""
             };
             false -> ""
@@ -1532,7 +1541,8 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         false -> concat(arg1_asm, "\n")
     };
     dealloc_bytes_call: int64 <- call_tuple_args_dealloc_bytes(term.inner)
-        + call_tuple_args_dealloc_bytes(term.right_expr);
+        + call_tuple_args_dealloc_bytes(term.right_expr)
+        + sret_stack_bytes;
     dealloc_asm_call: string <- case dealloc_bytes_call > 0 of {
         true -> concat("\n    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(dealloc_bytes_call), ""));
         false -> ""

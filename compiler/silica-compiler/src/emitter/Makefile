@@ -16,7 +16,7 @@ ifeq ($(wildcard $(TARGET)/),)
 endif
 
 SILICA_COMPILER := ../../../silica-bootstrap-compiler/target/release/silica-boot
-SEARCH_PATHS := -I . -I .. -I ../sir_generator -I ../data_structures -I $(TARGET) -I $(TARGET)/terms -I $(TARGET)/terms/prims -I $(TARGET)/terms/const -I $(TARGET)/terms/let -I $(TARGET)/terms/call -I $(TARGET)/recursion -I $(TARGET)/control -I $(TARGET)/effects -I $(TARGET)/atoms -I $(TARGET)/shared -I $(TARGET)/constraints -I ../../stdlib
+SEARCH_PATHS := -I . -I .. -I ../parser -I ../sir_generator -I ../data_structures -I $(TARGET) -I $(TARGET)/terms -I $(TARGET)/terms/prims -I $(TARGET)/terms/const -I $(TARGET)/terms/let -I $(TARGET)/terms/call -I $(TARGET)/recursion -I $(TARGET)/control -I $(TARGET)/effects -I $(TARGET)/atoms -I $(TARGET)/shared -I $(TARGET)/constraints -I ../../stdlib
 
 # Find LLVM tools
 LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "llvm-as"))

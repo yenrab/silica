@@ -182,6 +182,23 @@ fn skip_function_parameter_list(slots: ListTokenSlot, depth: int64) -> ListToken
     }
 }
 
+fn skip_optional_bracket_suffix_slots(slots: ListTokenSlot, depth: int64) -> ListTokenSlot {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case slots.is_nil of {
+        true -> slots;
+        false -> case slots.head.token.kind == kinds.left_bracket of {
+            true -> skip_optional_bracket_suffix_slots(slots.tail, depth + 1);
+            false -> case slots.head.token.kind == kinds.right_bracket of {
+                true -> case depth <= 1 of {
+                    true -> slots.tail;
+                    false -> skip_optional_bracket_suffix_slots(slots.tail, depth - 1)
+                };
+                false -> skip_optional_bracket_suffix_slots(slots.tail, depth)
+            }
+        }
+    }
+}
+
 fn scan_function_after_params_for_return_arrow(slots: ListTokenSlot) -> (bool, SourceLocation) {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     case slots.is_nil of {
@@ -211,11 +228,18 @@ fn has_missing_function_return_type(slots: ListTokenSlot) -> (bool, SourceLocati
                     true -> do
                         fn_name: string <- slots.tail.head.token.lexeme;
                         after_name: ListTokenSlot <- slots.tail.tail;
-                        scan_from: ListTokenSlot <- case after_name.is_nil of {
+                        after_brackets: ListTokenSlot <- case after_name.is_nil of {
                             true -> after_name;
-                            false -> case after_name.head.token.kind == kinds.left_paren of {
-                                true -> skip_function_parameter_list(after_name, 0);
+                            false -> case after_name.head.token.kind == kinds.left_bracket of {
+                                true -> skip_optional_bracket_suffix_slots(after_name.tail, 1);
                                 false -> after_name
+                            }
+                        };
+                        scan_from: ListTokenSlot <- case after_brackets.is_nil of {
+                            true -> after_brackets;
+                            false -> case after_brackets.head.token.kind == kinds.left_paren of {
+                                true -> skip_function_parameter_list(after_brackets, 0);
+                                false -> after_brackets
                             }
                         };
                         (missing: bool, loc: SourceLocation) <- scan_function_after_params_for_return_arrow(scan_from);

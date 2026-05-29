@@ -1,4 +1,4 @@
-# Phase 5 — NodeIDBTreeSet generated module trials.
+# Phase 5–6 — NodeIDBTreeSet and CsrBTreeSet trials (bracket naming per btree_set_design.md §4.1).
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 SILICA_COMPILER := $(THIS_DIR)../../src/silica-compiler
 TRIAL_DIR := $(notdir $(patsubst %/,%,$(THIS_DIR)))
@@ -16,23 +16,29 @@ ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
-LIB_SRC := ../../src/standard_data_structures
 TRIAL_SOURCES := \
-	btree_set_nodeid_int64_empty_contains.silica \
-	btree_set_nodeid_int64_contains_handbuilt.silica \
-	btree_set_nodeid_int64_insert.silica \
-	btree_set_nodeid_int64_validate_invalid.silica
+	btree_set_nodeid_mem_normal_empty_contains.silica \
+	btree_set_nodeid_mem_normal_contains_handbuilt.silica \
+	btree_set_nodeid_mem_normal_insert.silica \
+	btree_set_nodeid_mem_normal_validate_invalid.silica \
+	btree_set_csr_mem_normal_contains_static.silica \
+	btree_set_csr_mem_normal_validate_invalid.silica \
+	btree_set_nodeid_mem_normal_to_csr.silica
+
+LIB_SRC := ../../src/standard_data_structures
 
 .DEFAULT_GOAL := all
 .PHONY: all clean assembly objects executables integrate help silica.config lib-sources
 
 lib-sources:
 	@mkdir -p "$(THIS_DIR)lib"
-	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_nodeid_int64_normal.silica)" "$(THIS_DIR)lib/btree_set_nodeid_int64_normal.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_csr_mem_normal.silica)" "$(THIS_DIR)lib/btree_set_csr_mem_normal.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_nodeid_mem_normal.silica)" "$(THIS_DIR)lib/btree_set_nodeid_mem_normal.silica"
 
 silica.config: lib-sources
 	@cd "$(THIS_DIR)" && { \
-		echo 'lib/btree_set_nodeid_int64_normal.silica'; \
+		echo 'lib/btree_set_csr_mem_normal.silica'; \
+		echo 'lib/btree_set_nodeid_mem_normal.silica'; \
 		for src in $(TRIAL_SOURCES); do echo "$$src"; done; \
 	} > silica.config
 
@@ -147,13 +153,16 @@ integrate: silica.config
 clean:
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sout *.sams *.o __silica_runtime.o __silica_runtime.sams \
-		btree_set_nodeid_int64_empty_contains \
-		btree_set_nodeid_int64_contains_handbuilt \
-		btree_set_nodeid_int64_insert \
-		btree_set_nodeid_int64_validate_invalid \
+		btree_set_nodeid_mem_normal_empty_contains \
+		btree_set_nodeid_mem_normal_contains_handbuilt \
+		btree_set_nodeid_mem_normal_insert \
+		btree_set_nodeid_mem_normal_validate_invalid \
+		btree_set_csr_mem_normal_contains_static \
+		btree_set_csr_mem_normal_validate_invalid \
+		btree_set_nodeid_mem_normal_to_csr \
 		silica.config .integrate_counts; \
 	rm -f lib/*.sams lib/*.o
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
-	@echo "btree_set_addition — NodeIDBTreeSet generated-structure trials"
+	@echo "btree_set_addition — B-tree set trials (bracket naming per btree_set_design.md §4.1)"

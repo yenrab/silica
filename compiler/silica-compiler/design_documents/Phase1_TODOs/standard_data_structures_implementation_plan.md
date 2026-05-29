@@ -6,9 +6,9 @@ This plan organizes implementation work for Silica's standard generated data str
 - [balanced_tree_and_heap_design.md](../balanced_tree_and_heap_design.md)
 - [btree_set_design.md](../btree_set_design.md)
 
-**Design conventions (shared model):** stored payload uses language **`Collectable`** (not a separate `Storable` trait). Graphs, trees, heaps, and sets are **immutable values** with **uniform inline record types** at every boundary (graph design §2.7–§2.8). CSR/dense topology buffers remain **`int64`**; **`NodeData`** / **`EdgeData`** / keys / values live in list slots or parallel **`Collectable`** buffers (graph §2.5–§2.6).
+**Design conventions (shared model):** stored payload uses language **`Collectable`** (not a separate `Storable` trait). Graphs, trees, heaps, and sets are **immutable values** with **uniform inline record types** at every boundary (graph design §2.7–§2.8). CSR/dense topology buffers remain **`int64`**; **`NodeData`** / **`EdgeData`** / keys / values live in list slots or parallel **`Collectable`** buffers (graph §2.5–§2.6). **Design/registry names** use **`List`-aligned bracket syntax** — payload type(s) then **`mem(Space)`** (graph §2.11; balanced tree §2.6; btree set §4.1); emitted Silica still repeats full inline record types unless a compiler-known shorthand expands to them.
 
-This document does not introduce new representations, naming rules, memory-space rules, error shapes, generated API shapes, or source-level syntax. When a detail is needed, use the relevant design document section named in the step.
+This document does not introduce new representations, memory-space rules, error shapes, or source-level syntax beyond what the design documents specify. **Naming** (bracket design names and operation instantiation) is defined in those design documents (graph §2.11, §8.4; balanced tree §2.6, §8; btree set §4.1, §8). When a detail is needed, use the relevant design document section named in the step.
 
 This document intentionally contains no Silica source code. It is written as fine-grained work items that an LLM can follow when generating Silica code from the design documents.
 
@@ -30,7 +30,7 @@ Every implementation step must obey these rules:
 2. Emit full inline structural types everywhere a Silica type is required.
 3. Use the memory-space rules from the relevant design document.
 4. Use **`Collectable`** payload and operand rules exactly as described by the relevant design document (graph §2.4; balanced tree §2.4; btree set §4.0).
-5. Keep generated naming consistent with the relevant design document.
+5. Keep generated naming consistent with the relevant design document (bracket registry keys and **`List`-style operation instantiation).
 6. Add positive trials before relying on a generated helper in later phases.
 7. Add negative or validation trials for every documented invariant that can be checked.
 8. Do not implement a faster packed form until the clear list-oriented form has validation coverage, unless the design document specifically allows direct packed construction.
@@ -383,7 +383,7 @@ Exit criteria:
 **Phase 3 completed:**
 
 - Steps 3.1–3.2: `graph_dense_directed_unweighted_normal.silica`, `graph_dense_directed_weighted_int64_normal.silica`; trials `graph_dense_directed_unweighted.silica`, `graph_dense_directed_weighted_int64.silica` (silica-compiler integrate).
-- Step 3.3: DenseBitset deferred per graph design §6.4; fallback to `DenseMatrixGraphDirectedUnweighted` documented in completion tracking.
+- Step 3.3: DenseBitset deferred per graph design §6.4; fallback to `DenseMatrixGraphDirected[mem(S)]` documented in completion tracking.
 - `src/standard_data_structures/` builds graph modules via `silica-compiler` + `silica.config` (not silica-boot).
 
 ## Phase 4 - Graph Algorithms Over Stable Traversal APIs
@@ -523,7 +523,7 @@ Exit criteria:
 
 **Phase 5 bootstrap completed:**
 
-- Added `src/standard_data_structures/btree_set_nodeid_int64_normal.silica` for order-8 immutable list-backed `NodeIDBTreeSetInt64Normal`.
+- Added `src/standard_data_structures/btree_set_nodeid_int64_normal.silica` for order-8 immutable list-backed `NodeIDBTreeSet[int64, mem(normal)]` (legacy module filename; registry key per btree set design §4.1).
 - Public bootstrap surface: `empty/0`, `contains/2`, `insert/2`, and `validate/1`.
 - Delete remains deferred per `btree_set_design.md` sections 5.6 and 7.3.
 - Current compiler-path representation uses `int64` status flags for `is_leaf`, `inserted`, and `ok` rather than source-level booleans, matching the stable generated-code path used by the graph modules.
@@ -842,9 +842,9 @@ Exit criteria:
 | NodeIdAdjacencyGraph | Complete | Phase 1 — directed unweighted uses flat `n0`/`n1`/`n2` neighbor slots (`node_count <= 3`); `graph_adj_directed_unweighted.silica` covers validation, checked add, `has_edge`, `out_degree`; undirected/weighted trials are compile-and-empty-validate smoke tests |
 | CompressedSparseRowGraph | Complete | Phase 2 — CSR inline type strings covered by Phase 0 snapshot; `graph_csr_directed_unweighted_normal.silica` and `graph_csr_directed_weighted_int64_normal.silica` compile with direct static buffer constructors, validation, buffer-backed out-degree, edge lookup, and weighted lookup helpers; `trials/graph_addition/graph_csr_directed_unweighted.silica` and `graph_csr_directed_weighted_int64.silica` now run runtime mains that construct region-owned CSR buffer records and verify node count, edge count, validation, present/absent edge lookup, out-degree, and weighted lookup. |
 | DenseMatrixGraph | Complete | Phase 3 — dense matrix inline type strings covered by Phase 0 snapshot; `graph_dense_directed_unweighted_normal.silica` and `graph_dense_directed_weighted_int64_normal.silica` provide fixed 3-node capacity, empty constructors, checked/direct edge setting, direct-buffer `has_edge`, `out_degree`, weighted lookup, and validation helpers (CSR-style flat int64 guards; no chained module calls in hot paths); `trials/graph_addition/graph_dense_directed_unweighted.silica` and `graph_dense_directed_weighted_int64.silica` integrate under `silica-compiler` and verify empty validation, checked edge set, validation after set, directed lookup, out-degree, and weighted lookup. |
-| DenseBitsetGraph | Deferred with documented fallback | Phase 3 — graph design §6.4 says to generate DenseBitset only when bitwise `|`, `&`, and shift are supported in the current compiler path. The current `silica-compiler` path documents the fallback to `DenseMatrixGraphDirectedUnweighted`. |
+| DenseBitsetGraph | Deferred with documented fallback | Phase 3 — graph design §6.4 says to generate DenseBitset only when bitwise `|`, `&`, and shift are supported in the current compiler path. The current `silica-compiler` path documents the fallback to `DenseMatrixGraphDirected[mem(S)]`. |
 | Graph algorithms | Complete | Phase 4 — `reachable`, `max_out_degree`, `total_out_degree_sum` on adjacency + CSR (bootstrap 3-node); trials `graph_reachability_adj_directed_unweighted.silica`, `graph_reachability_csr_directed_unweighted.silica`, `graph_degree_summary_csr_directed_unweighted.silica` |
-| NodeIDBTreeSet | Complete | Phase 5 — order-8 list-backed `NodeIDBTreeSetInt64Normal` compiles in `standard_data_structures`; `btree_set_addition` integrates empty-set smoke coverage, non-empty hand-built membership, stable insert/duplicate status, and invalid-validation coverage under `silica-compiler` with timeout guards. |
+| NodeIDBTreeSet | Complete | Phase 5 — order-8 list-backed `NodeIDBTreeSet[int64, mem(normal)]` compiles in `standard_data_structures`; `btree_set_addition` integrates empty-set smoke coverage, non-empty hand-built membership, stable insert/duplicate status, and invalid-validation coverage under `silica-compiler` with timeout guards. |
 | CsrBTreeSet | Not started | Phase 6 |
 | NodeIDBTree | Not started | Phase 7 |
 | CsrBTree | Not started | Phase 8 |

@@ -10,7 +10,7 @@ This document specifies graph representations that can be generated for Silica c
 - Region handles, region references, and buffers: `region(R, Space)`, `ref(R, Space, T)`, `buf(R, Space, T, N)`
 - `sequence proc[mem(Space)] ... produces pure ... end` for graph allocation and mutation during construction
 
-Silica has no user-defined custom type names. The graph names in this document are therefore **design/generator names**, not Silica type aliases. A generator may use these names for emitted module names and function prefixes, but emitted Silica type positions must repeat the full inline structural type.
+Silica has no user-defined custom type names. Graph names in this document are therefore **design/generator names** using **`List`-aligned bracket syntax** (§2.11), not Silica type aliases. A generator may use these names for emitted module names and registry keys, but emitted Silica type positions must repeat the full inline structural type (or expand a compiler-known shorthand to that inline type).
 
 **Payload model:** topology uses **`int64` node ids**; optional vertex and edge attributes use concrete **`Collectable`** types in list slots or parallel buffers (§2.3–§2.6). Generated graphs are **immutable values** with **uniform inline types** (§2.7–§2.8).
 
@@ -76,9 +76,9 @@ Use separate representation names when edge payload shape differs. This avoids n
 | Name suffix | Edge topology | Edge payload (`EdgeData`) |
 |-------------|---------------|---------------------------|
 | `Unweighted` | Neighbor id only. | None (no parallel payload buffer). |
-| `WeightedInt64` | Neighbor id in `neighbors`. | `int64` in parallel `edge_data` (or list slot). |
+| `int64` edge payload | Neighbor id in `neighbors`. | `int64` in parallel `edge_data` (or list slot). Design name: `…[int64, mem(S)]`. |
 
-Generators may emit other **`EdgeData`** and **`NodeData`** specializations (any concrete **`Collectable`** inline type). **`WeightedInt64`** is the first edge-payload family; **`int64`** weights are one **`Collectable`** specialization.
+Generators may emit other **`EdgeData`** and **`NodeData`** specializations (any concrete **`Collectable`** inline type). The first edge-payload family uses **`EdgeData = int64`**, written **`NodeIdAdjacencyGraphDirected[int64, mem(S)]`** (§2.11) rather than a separate weightedness suffix.
 
 Optional **`NodeData: Collectable`** on each vertex is stored in adjacency node records and, for CSR/dense families, in a parallel **`node_data`** buffer indexed by node id.
 
@@ -206,6 +206,35 @@ degree summaries
 
 For the first generated code pass, prioritize construction plus inspection. Algorithms can then be generated over a stable traversal API.
 
+### 2.11 Design-name bracket syntax (`List`-aligned)
+
+Standard generated graph families use **bracket parameters** aligned with **`List[ElementType, mem(Space)]`** ([list_implementation_design.md](list_implementation_design.md) §3.5):
+
+- Bracket parameters list concrete **`Collectable`** payload types in a fixed order, then **`mem(Space)`** as the **final** parameter.
+- The **representation family name** (for example `NodeIdAdjacencyGraphDirected`, `CompressedSparseRowGraphUndirected`) stays **outside** the brackets. **Directedness** (`Directed` / `Undirected`) is part of the family name, not a bracket slot.
+- Bracket forms are **design/generator names** and optional **compiler-known shorthands**; emitted Silica still uses **full inline structural record types** at every type position unless the compiler expands the shorthand (§2.7, §8.5).
+- **Monomorphic generators** instantiate every bracket slot with a concrete inline type (for example `int64`); there is no user-defined generic polymorphism (silica-spec §1.2).
+
+| Graph payload | Bracket form | Example |
+|---------------|--------------|---------|
+| Unweighted, no vertex attributes | `[mem(S)]` | `NodeIdAdjacencyGraphDirected[mem(normal)]` |
+| Edge payload only | `[EdgeData, mem(S)]` | `NodeIdAdjacencyGraphDirected[int64, mem(normal)]` |
+| Vertex and edge payload | `[NodeData, EdgeData, mem(S)]` | when both are present in the specialization |
+
+**Not in brackets:** region id **`R`**, CSR/dense **buffer capacities** (`N_PLUS_ONE`, `M`, `N_TIMES_N`, `WORD_COUNT`), and runtime topology flags. Those remain separate generator inputs (§8.1).
+
+The first edge-payload family uses **`EdgeData = int64`**, written as **`NodeIdAdjacencyGraphDirected[int64, mem(S)]`** instead of a `WeightedInt64` name suffix.
+
+**Generated operation names** follow **`List`** explicit instantiation: a stable prefix identifies the operation; bracket parameters appear at **call sites**:
+
+```text
+graph_adj_directed_empty[mem(normal)]()
+graph_adj_directed_add_edge[mem(normal)](g, from_id, to_id)
+graph_adj_directed_add_edge[int64, mem(normal)](g, from_id, to_id, weight)
+graph_csr_directed_has_edge[mem(normal)](g, from_id, to_id)
+graph_csr_directed_weight_at[int64, mem(normal)](g, slot)
+```
+
 ## 3. `NodeIdAdjacencyGraph`
 
 ### 3.1 Summary
@@ -232,7 +261,7 @@ Avoid it when:
 Design name:
 
 ```text
-NodeIdAdjacencyGraphDirectedUnweighted[S]
+NodeIdAdjacencyGraphDirected[mem(S)]
 ```
 
 Silica inline shape (no vertex attributes):
@@ -289,7 +318,7 @@ Example concrete shape for `normal`:
 Design name:
 
 ```text
-NodeIdAdjacencyGraphDirectedWeightedInt64[S]
+NodeIdAdjacencyGraphDirected[int64, mem(S)]
 ```
 
 Silica inline shape:
@@ -347,12 +376,12 @@ This construction is simple but O(node_count * edge_count) because updating one 
 Generated function signatures should be monomorphic. For `normal` unweighted directed graphs:
 
 ```silica
-fn graph_adj_directed_unweighted_normal_empty(
+fn graph_adj_directed_empty[mem(normal)](
     node_count: int64
 ) -> {
     node_count: int64,
     edge_count: int64,
-    nodes: List[{ id: int64, neighbors: List[int64, normal] }, normal]
+    nodes: List[{ id: int64, neighbors: List[int64, mem(normal)] }, mem(normal)]
 } {
     sequence proc[mem(normal)]
         ...
@@ -365,18 +394,18 @@ fn graph_adj_directed_unweighted_normal_empty(
 Add edge (topology endpoints are **`int64`**; optional edge payload is **`EdgeData: Collectable`**):
 
 ```silica
-fn graph_adj_directed_unweighted_normal_add_edge(
+fn graph_adj_directed_add_edge[mem(normal)](
     graph: {
         node_count: int64,
         edge_count: int64,
-        nodes: List[{ id: int64, neighbors: List[int64, normal] }, normal]
+        nodes: List[{ id: int64, neighbors: List[int64, mem(normal)] }, mem(normal)]
     },
     from_id: int64,
     to_id: int64
 ) -> {
     node_count: int64,
     edge_count: int64,
-    nodes: List[{ id: int64, neighbors: List[int64, normal] }, normal]
+    nodes: List[{ id: int64, neighbors: List[int64, mem(normal)] }, mem(normal)]
 } {
     sequence proc[mem(normal)]
         ...
@@ -429,10 +458,10 @@ graph_adj_<directedness>_<weightedness>_<space>_
 Examples:
 
 ```text
-graph_adj_directed_unweighted_normal_empty
-graph_adj_directed_unweighted_normal_add_edge
-graph_adj_directed_unweighted_normal_neighbors
-graph_adj_undirected_weighted_int64_normal_add_edge
+graph_adj_directed_empty[mem(normal)]()
+graph_adj_directed_add_edge[mem(normal)](g, from_id, to_id)
+graph_adj_directed_neighbors[mem(normal)](g, id)
+graph_adj_undirected_add_edge[int64, mem(normal)](g, from_id, to_id, weight)
 ```
 
 Do not generate a type alias. Repeat the inline structural type in each signature.
@@ -468,8 +497,10 @@ Avoid it when:
 Design name:
 
 ```text
-CompressedSparseRowGraphDirectedUnweighted[R, S, N_PLUS_ONE, M]
+CompressedSparseRowGraphDirected[mem(S)]
 ```
+
+Generator constants (not bracket parameters): region id **`R`**, **`N_PLUS_ONE`**, **`M`**.
 
 Silica inline shape (topology only):
 
@@ -520,7 +551,10 @@ Concrete `normal` shape:
 Design name:
 
 ```text
-CompressedSparseRowGraphDirectedWeightedInt64[R, S, N_PLUS_ONE, M]
+CompressedSparseRowGraphDirected[int64, mem(S)]
+```
+
+Generator constants (not bracket parameters): region id **`R`**, **`N_PLUS_ONE`**, **`M`**.
 ```
 
 Silica inline shape (`EdgeData = int64`; **`weights`** is the **`edge_data`** buffer for this family):
@@ -626,7 +660,7 @@ This is preferred when the graph is generated from compile-time data because it 
 Generated constructor shape:
 
 ```silica
-fn graph_csr_directed_unweighted_normal_from_static_edges() -> {
+fn graph_csr_directed_from_static_edges[mem(normal)]() -> {
     region: region(R, normal),
     node_count: int64,
     edge_count: int64,
@@ -707,16 +741,16 @@ has_edge sorted: O(log out_degree(u))
 Function prefix format:
 
 ```text
-graph_csr_<directedness>_<weightedness>_<space>_
+graph_csr_<directedness>_<operation>
 ```
 
-Examples:
+Examples (bracket instantiation at call sites — §2.11):
 
 ```text
-graph_csr_directed_unweighted_normal_from_static_edges
-graph_csr_directed_unweighted_normal_out_degree
-graph_csr_directed_unweighted_normal_has_edge
-graph_csr_undirected_weighted_int64_normal_weight_at
+graph_csr_directed_from_static_edges[mem(normal)](...)
+graph_csr_directed_out_degree[mem(normal)](g, id)
+graph_csr_directed_has_edge[mem(normal)](g, from_id, to_id)
+graph_csr_undirected_weight_at[int64, mem(normal)](g, slot)
 ```
 
 The graph record must contain the owning region. Returning buffers without the region handle is invalid because the buffers would outlive their region.
@@ -751,7 +785,10 @@ Avoid it when:
 Design name:
 
 ```text
-DenseMatrixGraphDirectedUnweighted[R, S, N_TIMES_N]
+DenseMatrixGraphDirected[mem(S)]
+```
+
+Generator constant (not a bracket parameter): **`N_TIMES_N`**.
 ```
 
 Silica inline shape:
@@ -777,7 +814,10 @@ Cell convention:
 Design name:
 
 ```text
-DenseMatrixGraphDirectedWeightedInt64[R, S, N_TIMES_N]
+DenseMatrixGraphDirected[int64, mem(S)]
+```
+
+Generator constant (not a bracket parameter): **`N_TIMES_N`**.
 ```
 
 Silica inline shape:
@@ -823,7 +863,7 @@ Static generation:
 Generated constructor shape:
 
 ```silica
-fn graph_dense_directed_unweighted_normal_empty(
+fn graph_dense_directed_empty[mem(normal)](
     node_count: int64
 ) -> {
     region: region(R, normal),
@@ -904,7 +944,10 @@ Avoid it when:
 Design name:
 
 ```text
-DenseBitsetGraphDirectedUnweighted[R, S, WORD_COUNT]
+DenseBitsetGraphDirected[mem(S)]
+```
+
+Generator constant (not a bracket parameter): **`WORD_COUNT`**.
 ```
 
 Silica inline shape:
@@ -956,7 +999,7 @@ Undirected insertion sets both bits.
 
 ### 6.4 Code-generation note
 
-Only generate `DenseBitsetGraph` when the current compiler path supports the required bitwise operators (`|`, `&`, shift). If those are not available for the target stage, generate `DenseMatrixGraphDirectedUnweighted` instead. The matrix form has worse storage use but simpler generated code.
+Only generate `DenseBitsetGraph` when the current compiler path supports the required bitwise operators (`|`, `&`, shift). If those are not available for the target stage, generate `DenseMatrixGraphDirected[mem(S)]` instead. The matrix form has worse storage use but simpler generated code.
 
 ## 7. Choosing a graph representation
 
@@ -1007,6 +1050,8 @@ module_prefix: string
 ```
 
 **`Collectable` inline spelling:** the full concrete inline type for **`NodeData`**, **`EdgeData`**, or **`CellData`** (for example `int64` or `(int8, string, atom, { x: int64 })`). Generators emit monomorphic modules per spelling (§2.4, §2.8).
+
+**Registry key (bracket form, §2.11):** combine representation family, directedness, and bracket payload slots — for example `NodeIdAdjacencyGraphDirected[mem(normal)]` (unweighted, no vertex attributes), `NodeIdAdjacencyGraphDirected[int64, mem(normal)]` (`EdgeData = int64`), `CompressedSparseRowGraphUndirected[NodeData, EdgeData, mem(normal)]` when both payload buffers are present.
 
 CSR and dense buffer generators also require concrete buffer capacities:
 
@@ -1072,16 +1117,18 @@ For boolean queries:
 For traversal helpers where invalid ids are programmer errors, a generator may emit unchecked internal helpers and checked public wrappers:
 
 ```text
-graph_csr_directed_unweighted_normal_has_edge
-graph_csr_directed_unweighted_normal_has_edge_unchecked
+graph_csr_directed_has_edge[mem(normal)]
+graph_csr_directed_has_edge_unchecked[mem(normal)]
 ```
 
 ### 8.4 Naming rules
 
-Generated names should be deterministic:
+Generated names should be deterministic. **Design/registry names** use bracket syntax (§2.11). **Operation names** use a stable prefix plus **`List`-style explicit instantiation** at call sites.
+
+Operation prefix:
 
 ```text
-graph_<repr>_<directedness>_<weightedness>_<space>_<operation>
+graph_<repr>_<directedness>_<operation>
 ```
 
 Where:
@@ -1089,18 +1136,27 @@ Where:
 ```text
 repr = adj | csr | dense | bitset
 directedness = directed | undirected
-weightedness = unweighted | weighted_int64
-space = normal | normal_writethrough | normal_noncacheable | atomic
+```
+
+Bracket parameters at call sites (final slot is always **`mem(Space)`**):
+
+```text
+unweighted, no vertex attributes: [mem(Space)]
+edge payload only: [EdgeData, mem(Space)]
+vertex and edge payload: [NodeData, EdgeData, mem(Space)]
 ```
 
 Examples:
 
 ```text
-graph_adj_directed_unweighted_normal_neighbors
-graph_csr_directed_weighted_int64_normal_weight_at
-graph_dense_undirected_unweighted_normal_has_edge
-graph_bitset_directed_unweighted_normal_set_edge
+graph_adj_directed_empty[mem(normal)]()
+graph_adj_directed_neighbors[mem(normal)](g, id)
+graph_csr_directed_weight_at[int64, mem(normal)](g, slot)
+graph_dense_undirected_has_edge[mem(normal)](g, from_id, to_id)
+graph_bitset_directed_set_edge[mem(normal)](g, from_id, to_id)
 ```
+
+Internal monomorphic modules may still use one bracket instantiation per emitted file; exported APIs must document the bracket form above.
 
 ### 8.5 Structural type emission
 

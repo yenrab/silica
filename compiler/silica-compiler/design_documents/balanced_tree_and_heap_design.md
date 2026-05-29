@@ -16,12 +16,12 @@ Primary families:
 First implementation target:
 
 ```text
-NodeIDBTreeInt64
-CsrBTreeInt64
-RegionBinaryMinHeapInt64
+NodeIDBTree[int64, mem(normal)]
+CsrBTree[int64, mem(normal)]
+RegionBinaryMinHeap[int64, mem(normal)]
 ```
 
-Later variants can add weights/payloads, max-heaps, d-ary heaps, and non-`int64` key/value element types once the generator has stable templates.
+Later variants can add weights/payloads, max-heaps, d-ary heaps, and non-`int64` key/value element types once the generator has stable templates. Design-name bracket rules are in §2.6 (graphs: [graph_representation_design.md](graph_representation_design.md) §2.11).
 
 ## 2. Shared constraints
 
@@ -38,7 +38,7 @@ enum HeapKind { ... }
 Instead emit function signatures that repeat the inline shape:
 
 ```silica
-fn btree_nodeid_int64_normal_root_key_count(
+fn btree_nodeid_root_key_count[int64, mem(normal)](
     tree: {
         root_id: int64,
         node_count: int64,
@@ -59,7 +59,7 @@ fn btree_nodeid_int64_normal_root_key_count(
 }
 ```
 
-The generator may use `NodeIDBTreeInt64Normal` internally as a template name, but emitted Silica type positions must contain the full record shape.
+The generator may use `NodeIDBTree[int64, mem(normal)]` internally as a registry key, but emitted Silica type positions must contain the full record shape.
 
 ### 2.2 Memory spaces
 
@@ -95,12 +95,12 @@ key type: int64
 value type: int64, when values are stored
 ```
 
-This avoids needing generic type parameters or polymorphic comparison. Later generator variants can suffix the design name with the concrete type:
+This avoids needing generic type parameters or polymorphic comparison. Later generator variants instantiate other concrete **`Collectable`** types in bracket slots (§2.6):
 
 ```text
-NodeIDBTreeUint64
-CsrBTreeStringKeyInt64Value
-RegionBinaryMinHeapUint32
+NodeIDBTree[uint64, mem(normal)]
+CsrBTreeMap[string, int64, mem(normal)]
+RegionBinaryMinHeap[uint32, mem(normal)]
 ```
 
 The first pass should not attempt generic B-trees.
@@ -127,6 +127,23 @@ Generated trees and heaps are **immutable values** ([graph_representation_design
 - **Mutable builders** use **`_builder_`** or **`_mutable_`** name suffixes.
 
 The **same inline tree or heap record type** must appear at every boundary for one value flow (uniform types, graph §2.7). Constructor return types pin the concrete **`Key`** / **`Value`** / **`Element`** spellings for later operations (graph §2.8).
+
+### 2.6 Design-name bracket syntax (`List`-aligned)
+
+Tree and heap families use the same bracket convention as graphs and lists ([graph_representation_design.md](graph_representation_design.md) §2.11; [list_implementation_design.md](list_implementation_design.md) §3.5):
+
+- Bracket parameters list concrete **`Collectable`** payload types, then **`mem(Space)`** as the **final** parameter.
+- The **representation family name** (`NodeIDBTree`, `CsrBTreeMap`, `RegionBinaryMinHeap`, …) stays outside the brackets. Min/max (`Min` / `Max`), B-tree **`order`**, d-ary **`D`**, and CSR **buffer capacities** are separate generator inputs, not bracket slots.
+
+| Family | Bracket form | Example |
+|--------|--------------|---------|
+| B-tree (keys only) | `[Key, mem(S)]` | `NodeIDBTree[int64, mem(normal)]` |
+| B-tree map | `[Key, Value, mem(S)]` | `NodeIDBTreeMap[int64, int64, mem(normal)]` |
+| Binary heap (element only) | `[Element, mem(S)]` | `RegionBinaryMinHeap[int64, mem(normal)]` |
+| Priority heap | `[Priority, Value, mem(S)]` | `RegionBinaryMinHeap[int64, int64, mem(normal)]` |
+| D-ary heap | `[Element, mem(S)]` | `RegionDaryMinHeap[int64, mem(normal)]` with **`D`** as a generator constant |
+
+**Generated operation names** use stable prefixes plus explicit bracket instantiation at call sites, for example `btree_nodeid_empty[int64, mem(normal)]()`, `btree_nodeid_insert[int64, mem(normal)](tree, key)`, `heap_binary_min_push[int64, mem(normal)](heap, value)`.
 
 ## 3. B-tree terminology
 
@@ -211,7 +228,7 @@ Avoid `NodeIDBTree` when:
 Design name:
 
 ```text
-NodeIDBTreeInt64[S]
+NodeIDBTree[int64, mem(S)]
 ```
 
 Silica inline shape:
@@ -247,7 +264,7 @@ nodes = empty list
 Design name:
 
 ```text
-NodeIDBTreeMapInt64ToInt64[S]
+NodeIDBTreeMap[int64, int64, mem(S)]
 ```
 
 Silica inline shape:
@@ -332,9 +349,9 @@ search_node(tree, node_id, key: Collectable):
 Generated function names:
 
 ```text
-btree_nodeid_int64_<space>_contains
-btree_nodeid_map_int64_int64_<space>_get
-btree_nodeid_int64_<space>_find_node
+btree_nodeid_contains[Key, mem(Space)]
+btree_nodeid_map_get[Key, Value, mem(Space)]
+btree_nodeid_find_node[Key, mem(Space)]
 ```
 
 Abstract operand types: **`contains(..., key: Collectable)`**; **`get(..., key: Collectable)`** returns map values typed **`Collectable`** when present (`find_node` uses internal **`int64` node ids**, not `Collectable`, because those are structural graph ids, not user keys).
@@ -366,9 +383,9 @@ For set-only trees, `replaced` can always be `false`.
 Internal helper shapes (key/value operands **`Collectable`**):
 
 ```text
-btree_nodeid_int64_<space>_split_child(tree, parent_id, child_index) -> { tree, promoted_key: Collectable }
-btree_nodeid_int64_<space>_insert_nonfull(tree, node_id, key: Collectable) -> { tree, inserted: bool, replaced: bool }
-btree_nodeid_map_int64_int64_<space>_insert_nonfull(tree, node_id, key: Collectable, value: Collectable) -> { tree, inserted: bool, replaced: bool }
+btree_nodeid_split_child[Key, mem(Space)](tree, parent_id, child_index) -> { tree, promoted_key: Collectable }
+btree_nodeid_insert_nonfull[Key, mem(Space)](tree, node_id, key: Collectable) -> { tree, inserted: bool, replaced: bool }
+btree_nodeid_map_insert_nonfull[Key, Value, mem(Space)](tree, node_id, key: Collectable, value: Collectable) -> { tree, inserted: bool, replaced: bool }
 ```
 
 ### 4.7 Deletion strategy
@@ -449,7 +466,10 @@ Avoid `CsrBTree` when:
 Design name:
 
 ```text
-CsrBTreeInt64[R, S, NODE_CAP, KEY_CAP, CHILD_CAP]
+CsrBTree[int64, mem(S)]
+```
+
+Generator constants (not bracket parameters): region id **`R`**, **`NODE_CAP`**, **`KEY_CAP`**, **`CHILD_CAP`**.
 ```
 
 Silica inline shape:
@@ -493,7 +513,10 @@ children for node:
 Design name:
 
 ```text
-CsrBTreeMapInt64ToInt64[R, S, NODE_CAP, KEY_CAP, CHILD_CAP]
+CsrBTreeMap[int64, int64, mem(S)]
+```
+
+Generator constants (not bracket parameters): region id **`R`**, **`NODE_CAP`**, **`KEY_CAP`**, **`CHILD_CAP`**.
 ```
 
 Silica inline shape:
@@ -578,8 +601,8 @@ This split keeps insertion logic readable and produces a compact search represen
 Recommended generated function:
 
 ```text
-btree_nodeid_int64_<space>_to_csr
-btree_nodeid_map_int64_int64_<space>_to_csr
+btree_nodeid_to_csr[Key, mem(Space)]
+btree_nodeid_map_to_csr[Key, Value, mem(Space)]
 ```
 
 ### 5.7 Search algorithm
@@ -720,7 +743,10 @@ Avoid it when:
 Design name:
 
 ```text
-RegionBinaryMinHeapInt64[R, S, CAP]
+RegionBinaryMinHeap[int64, mem(S)]
+```
+
+Generator constant (not a bracket parameter): **`CAP`**.
 ```
 
 Silica inline shape:
@@ -744,7 +770,10 @@ for every index i > 0:
 Max-heap variant:
 
 ```text
-RegionBinaryMaxHeapInt64[R, S, CAP]
+RegionBinaryMaxHeap[int64, mem(S)]
+```
+
+Generator constant (not a bracket parameter): **`CAP`**.
 for every index i > 0:
     values[parent(i)] >= values[i]
 ```
@@ -757,7 +786,10 @@ For priority queues where payload differs from priority (both operand types **`C
 Design name:
 
 ```text
-RegionBinaryMinHeapPriorityInt64ValueInt64[R, S, CAP]
+RegionBinaryMinHeap[int64, int64, mem(S)]
+```
+
+Generator constant (not a bracket parameter): **`CAP`**.
 ```
 
 Silica inline shape:
@@ -786,7 +818,7 @@ This shape is the recommended first priority-queue variant for generated graph a
 Empty heap:
 
 ```silica
-fn heap_binary_min_int64_normal_empty() -> {
+fn heap_binary_min_empty[int64, mem(normal)]() -> {
     region: region(R, normal),
     len: int64,
     capacity: int64,
@@ -951,7 +983,7 @@ Avoid it when:
 Recommended first d-ary specialization:
 
 ```text
-RegionFourAryMinHeapInt64
+RegionDaryMinHeap[int64, mem(normal)] with generator constant **`D = 4`**
 ```
 
 `D = 4` is a good practical default: shallower than binary, still cheap to scan children.
@@ -961,7 +993,10 @@ RegionFourAryMinHeapInt64
 Design name:
 
 ```text
-RegionDaryMinHeapInt64[R, S, CAP, D]
+RegionDaryMinHeap[int64, mem(S)]
+```
+
+Generator constants (not bracket parameters): **`CAP`**, d-ary **`D`**.
 ```
 
 Silica inline shape:
@@ -1006,36 +1041,45 @@ Generated code should unroll child checks when `D` is a small constant, especial
 
 ## 8. Naming rules
 
-Generated names should be deterministic:
+Generated names should be deterministic. **Design/registry names** use bracket syntax (§2.6). **Operation names** use stable prefixes plus **`List`-style explicit instantiation** at call sites.
+
+Operation prefixes:
 
 ```text
-btree_nodeid_<shape>_<space>_<operation>
-btree_csr_<shape>_<space>_<operation>
-heap_binary_<kind>_<shape>_<space>_<operation>
-heap_dary_<arity>_<kind>_<shape>_<space>_<operation>
+btree_nodeid_<operation>
+btree_csr_<operation>
+btree_nodeid_map_<operation>
+btree_csr_map_<operation>
+heap_binary_<kind>_<operation>
+heap_dary_<kind>_<operation>
 ```
 
 Where:
 
 ```text
-shape = int64 | map_int64_int64 | priority_int64_value_int64
 kind = min | max
-space = normal | normal_writethrough | normal_noncacheable | atomic
-arity = 4 | 8 | ...
+```
+
+Bracket parameters at call sites (final slot is always **`mem(Space)`**):
+
+```text
+B-tree keys only: [Key, mem(Space)]
+B-tree map: [Key, Value, mem(Space)]
+Heap element only: [Element, mem(Space)]
+Priority heap: [Priority, Value, mem(Space)]
 ```
 
 Examples:
 
 ```text
-btree_nodeid_int64_normal_empty
-btree_nodeid_int64_normal_insert
-btree_nodeid_map_int64_int64_normal_get
-btree_csr_int64_normal_contains
-btree_csr_map_int64_int64_normal_get
-heap_binary_min_int64_normal_empty
-heap_binary_min_int64_normal_push
-heap_binary_min_int64_normal_pop
-heap_dary_4_min_int64_normal_pop
+btree_nodeid_empty[int64, mem(normal)]()
+btree_nodeid_insert[int64, mem(normal)](tree, key)
+btree_nodeid_map_get[int64, int64, mem(normal)](tree, key)
+btree_csr_contains[int64, mem(normal)](tree, key)
+btree_csr_map_get[int64, int64, mem(normal)](tree, key)
+heap_binary_min_empty[int64, mem(normal)]()
+heap_binary_min_push[int64, mem(normal)](heap, value)
+heap_dary_min_pop[int64, mem(normal)](heap)
 ```
 
 ## 9. Generator requirements
@@ -1046,7 +1090,8 @@ B-tree generator inputs:
 
 ```text
 representation: nodeid_btree | csr_btree
-shape: set_int64 | map_int64_int64
+key_type: int64       // concrete Collectable inline type for bracket slot Key
+value_type: int64     // map only; concrete Collectable inline type for bracket slot Value
 memory_space: normal | normal_writethrough | normal_noncacheable | atomic
 order: int64
 duplicate_policy: reject_duplicates | replace_value | allow_duplicates_right
@@ -1057,12 +1102,16 @@ static_sorted_input: bool
 generate_delete: bool
 ```
 
+**Registry keys (bracket form, §2.6):** `NodeIDBTree[<key_type>, mem(<memory_space>)]`, `NodeIDBTreeMap[<key_type>, <value_type>, mem(<memory_space>)]`, `CsrBTree[...]`, `CsrBTreeMap[...]`, `RegionBinaryMinHeap[<element_type>, mem(<memory_space>)]`, `RegionBinaryMinHeap[<priority_type>, <value_type>, mem(<memory_space>)]` (priority shape), `RegionDaryMinHeap[<element_type>, mem(<memory_space>)]`.
+
 Heap generator inputs:
 
 ```text
 representation: binary_heap | dary_heap
 kind: min | max
-shape: int64 | priority_int64_value_int64
+element_type: int64   // concrete Collectable inline type for bracket slot Element
+priority_type: int64  // priority heap only
+value_type: int64     // priority heap only
 memory_space: normal | normal_writethrough | normal_noncacheable | atomic
 capacity: int64
 arity: int64, for dary_heap
@@ -1202,11 +1251,11 @@ The generator must:
 
 Recommended staging:
 
-1. Generate `RegionBinaryMinHeapInt64` first. It is compact and easy to validate.
-2. Generate `NodeIDBTreeInt64` search and validation.
-3. Generate `NodeIDBTreeInt64` insertion with top-down splitting.
-4. Generate `NodeIDBTreeMapInt64ToInt64` by moving values with keys.
-5. Generate `CsrBTreeInt64` from static sorted input.
+1. Generate `RegionBinaryMinHeap[int64, mem(normal)]` first. It is compact and easy to validate.
+2. Generate `NodeIDBTree[int64, mem(normal)]` search and validation.
+3. Generate `NodeIDBTree[int64, mem(normal)]` insertion with top-down splitting.
+4. Generate `NodeIDBTreeMap[int64, int64, mem(normal)]` by moving values with keys.
+5. Generate `CsrBTree[int64, mem(normal)]` from static sorted input.
 6. Generate `NodeIDBTree -> CsrBTree` finalization.
 7. Add `RegionDaryHeap`, starting with `D = 4`.
 8. Add B-tree deletion only after split, merge, borrow, and validation helpers are stable.

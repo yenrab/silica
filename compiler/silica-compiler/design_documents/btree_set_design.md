@@ -4,13 +4,13 @@
 
 This document specifies generated B-tree set representations for Silica code. It specializes [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) and reuses the storage vocabulary from [graph_representation_design.md](graph_representation_design.md): node ids, inline structural records, `List[T, S]`, region handles, and region buffers. **Set keys use types that implement the language `Collectable` trait** (§4.0). **Immutability and uniform inline types** follow [graph_representation_design.md](graph_representation_design.md) §2.7–§2.8.
 
-The names `NodeIDBTreeSet` and `CsrBTreeSet` are **design/generator names**, not Silica type aliases. Generated Silica must use inline structural record types everywhere a type is required.
+The names `NodeIDBTreeSet` and `CsrBTreeSet` are **design/generator names** using **`List`-aligned bracket syntax** (§4.1; [graph_representation_design.md](graph_representation_design.md) §2.11), not Silica type aliases. Generated Silica must use inline structural record types everywhere a type is required (or expand a compiler-known shorthand to that inline type).
 
 Primary first target:
 
 ```text
-NodeIDBTreeSetInt64
-CsrBTreeSetInt64
+NodeIDBTreeSet[int64, mem(normal)]
+CsrBTreeSet[int64, mem(normal)]
 ```
 
 Later target variants can use other concrete key types, but this document assumes `int64` keys so the generator can emit monomorphic comparison code.
@@ -126,9 +126,19 @@ Structural **`int64` node ids** inside tree nodes are not set keys and are not t
 
 There is no separate storage marker trait beyond language **`Collectable`**.
 
-See also [graph_representation_design.md](graph_representation_design.md) §2.4 and [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) §2.4–§2.5.
+### 4.1 Design-name bracket syntax (`List`-aligned)
 
-### 4.1 Key rules
+B-tree set families use the same bracket convention as lists and graphs ([list_implementation_design.md](list_implementation_design.md) §3.5; [graph_representation_design.md](graph_representation_design.md) §2.11):
+
+- **Sets:** `[Key, mem(Space)]` — for example `NodeIDBTreeSet[int64, mem(normal)]`, `CsrBTreeSet[int64, mem(atomic)]`.
+- Bracket forms are **design/generator names**; emitted Silica still uses **full inline structural record types** at every type position unless the compiler expands the shorthand.
+- B-tree **`order`** and CSR **buffer capacities** are separate generator inputs, not bracket parameters.
+
+**Generated operation names** use stable prefixes plus explicit bracket instantiation at call sites, for example `btree_set_nodeid_empty[int64, mem(normal)]()`, `btree_set_nodeid_contains[int64, mem(normal)](tree, key)`.
+
+See also [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) §2.6 for map and general B-tree bracket arity (`[Key, Value, mem(Space)]`).
+
+### 4.2 Key rules
 
 First generated implementation:
 
@@ -146,7 +156,7 @@ set semantics: inserting an existing key returns inserted = false
 
 A set does not replace values because it has none.
 
-### 4.2 Order and occupancy
+### 4.3 Order and occupancy
 
 The generator must choose a concrete `order`.
 
@@ -166,7 +176,7 @@ min_keys_non_root = ceil(order / 2) - 1
 min_children_non_root = ceil(order / 2)
 ```
 
-### 4.3 Invariants
+### 4.4 Invariants
 
 Every generated set must preserve:
 
@@ -199,14 +209,14 @@ key_count_total = 0, for CSR
 Design name:
 
 ```text
-NodeIDBTreeSetInt64[S]
+NodeIDBTreeSet[int64, mem(S)]
 ```
 
 Concrete generator family examples:
 
 ```text
-NodeIDBTreeSetInt64Normal
-NodeIDBTreeSetInt64Atomic
+NodeIDBTreeSet[int64, mem(normal)]
+NodeIDBTreeSet[int64, mem(atomic)]
 ```
 
 ### 5.2 Inline Silica shape
@@ -258,13 +268,13 @@ The generator must repeat the concrete shape in every generated function signatu
 Generated function name:
 
 ```text
-btree_set_nodeid_int64_<space>_empty
+btree_set_nodeid_empty[Key, mem(Space)]
 ```
 
 Example:
 
 ```text
-btree_set_nodeid_int64_normal_empty
+btree_set_nodeid_empty[int64, mem(normal)]
 ```
 
 Behavior:
@@ -278,7 +288,7 @@ Because lists allocate storage, construction must occur under `sequence proc[mem
 Pseudo-shape:
 
 ```silica
-fn btree_set_nodeid_int64_normal_empty() -> {
+fn btree_set_nodeid_empty[int64, mem(normal)]() -> {
     root_id: int64,
     node_count: int64,
     order: int64,
@@ -305,14 +315,14 @@ fn btree_set_nodeid_int64_normal_empty() -> {
 Abstract API (design level):
 
 ```text
-btree_set_nodeid_int64_<space>_contains(tree: <NodeIDBTreeSet type>, key: Collectable) -> bool
-btree_set_csr_int64_<space>_contains(tree: <CsrBTreeSet type>, key: Collectable) -> bool
+btree_set_nodeid_contains[Key, mem(Space)](tree: <NodeIDBTreeSet type>, key: Collectable) -> bool
+btree_set_csr_contains[Key, mem(Space)](tree: <CsrBTreeSet type>, key: Collectable) -> bool
 ```
 
 Generated function:
 
 ```text
-btree_set_nodeid_int64_<space>_contains
+btree_set_nodeid_contains[Key, mem(Space)]
 ```
 
 Return type:
@@ -362,13 +372,13 @@ The returned `index` is the child slot where the key should be found or inserted
 Abstract API (design level):
 
 ```text
-btree_set_nodeid_int64_<space>_insert(tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, inserted: bool }
+btree_set_nodeid_insert[Key, mem(Space)](tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, inserted: bool }
 ```
 
 Generated function:
 
 ```text
-btree_set_nodeid_int64_<space>_insert
+btree_set_nodeid_insert[Key, mem(Space)]
 ```
 
 Return shape:
@@ -481,7 +491,7 @@ Deletion is optional for the first generated set.
 Abstract API when generated:
 
 ```text
-btree_set_nodeid_int64_<space>_delete(tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, removed: bool }
+btree_set_nodeid_delete[Key, mem(Space)](tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, removed: bool }
 ```
 
 If generated, use B-tree top-down deletion:
@@ -511,7 +521,7 @@ do not generate delete until insert, split, validation, and CsrBTreeSet finaliza
 Generated function:
 
 ```text
-btree_set_nodeid_int64_<space>_validate
+btree_set_nodeid_validate[Key, mem(Space)]
 ```
 
 Return shape:
@@ -578,7 +588,10 @@ This cost model is the main reason to finalize to `CsrBTreeSet` for large search
 Design name:
 
 ```text
-CsrBTreeSetInt64[R, S, NODE_CAP, KEY_CAP, CHILD_CAP]
+CsrBTreeSet[int64, mem(S)]
+```
+
+Generator constants (not bracket parameters): region id **`R`**, **`NODE_CAP`**, **`KEY_CAP`**, **`CHILD_CAP`**.
 ```
 
 This is the recommended query representation for generated sets.
@@ -669,7 +682,7 @@ child_count = key_count + 1
 Generated function:
 
 ```text
-btree_set_csr_int64_<space>_from_static_sorted
+btree_set_csr_from_static_sorted[Key, mem(Space)]
 ```
 
 Use this when the generator already knows all set keys.
@@ -697,7 +710,7 @@ then next level left-to-right
 Generated Silica body shape:
 
 ```silica
-fn btree_set_csr_int64_normal_from_static_sorted() -> {
+fn btree_set_csr_from_static_sorted[int64, mem(normal)]() -> {
     region: region(R, normal),
     root_id: int64,
     node_count: int64,
@@ -749,19 +762,22 @@ All uppercase identifiers are generator constants that must be emitted as concre
 Generated function:
 
 ```text
-btree_set_nodeid_int64_<space>_to_csr
+btree_set_nodeid_to_csr[Key, mem(Space)]
 ```
 
 Input:
 
 ```text
-NodeIDBTreeSetInt64[S]
+NodeIDBTreeSet[int64, mem(S)]
 ```
 
 Output:
 
 ```text
-CsrBTreeSetInt64[R, S, NODE_CAP, KEY_CAP, CHILD_CAP]
+CsrBTreeSet[int64, mem(S)]
+```
+
+Generator constants (not bracket parameters): region id **`R`**, **`NODE_CAP`**, **`KEY_CAP`**, **`CHILD_CAP`**.
 ```
 
 Finalization algorithm:
@@ -800,7 +816,7 @@ If the compiler lacks a convenient temporary map, the generator can make finaliz
 Generated function:
 
 ```text
-btree_set_csr_int64_<space>_contains
+btree_set_csr_contains[Key, mem(Space)]
 ```
 
 Return:
@@ -878,7 +894,7 @@ That future form would use fixed per-node pages rather than compressed ranges.
 Generated function:
 
 ```text
-btree_set_csr_int64_<space>_validate
+btree_set_csr_validate[Key, mem(Space)]
 ```
 
 Return shape:
@@ -943,15 +959,15 @@ All operations that take a **lookup or mutation key** use **`key: Collectable`**
 Abstract signatures:
 
 ```text
-btree_set_nodeid_int64_<space>_contains(tree, key: Collectable) -> bool
-btree_set_csr_int64_<space>_contains(tree, key: Collectable) -> bool
+btree_set_nodeid_contains[Key, mem(Space)](tree, key: Collectable) -> bool
+btree_set_csr_contains[Key, mem(Space)](tree, key: Collectable) -> bool
 ```
 
 Both representations must generate:
 
 ```text
-btree_set_nodeid_int64_<space>_contains
-btree_set_csr_int64_<space>_contains
+btree_set_nodeid_contains[Key, mem(Space)]
+btree_set_csr_contains[Key, mem(Space)]
 ```
 
 Return:
@@ -965,13 +981,13 @@ bool
 Abstract signature:
 
 ```text
-btree_set_nodeid_int64_<space>_insert(tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, inserted: bool }
+btree_set_nodeid_insert[Key, mem(Space)](tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, inserted: bool }
 ```
 
 Only `NodeIDBTreeSet` should generate insert in the first pass:
 
 ```text
-btree_set_nodeid_int64_<space>_insert
+btree_set_nodeid_insert[Key, mem(Space)]
 ```
 
 Return:
@@ -988,7 +1004,7 @@ Return:
 Optional later (operands **`Collectable`**):
 
 ```text
-btree_set_nodeid_int64_<space>_delete(tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, removed: bool }
+btree_set_nodeid_delete[Key, mem(Space)](tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, removed: bool }
 ```
 
 Do not generate CSR deletion in the first pass.
@@ -998,7 +1014,7 @@ Do not generate CSR deletion in the first pass.
 Generated helper:
 
 ```text
-btree_set_nodeid_int64_<space>_from_list
+btree_set_nodeid_from_list[Key, mem(Space)]
 ```
 
 Algorithm:
@@ -1017,7 +1033,7 @@ Duplicate keys naturally return `inserted = false` and do not change set content
 Generated helper:
 
 ```text
-btree_set_nodeid_int64_<space>_to_csr
+btree_set_nodeid_to_csr[Key, mem(Space)]
 ```
 
 Use after dynamic construction when query performance matters.
@@ -1027,15 +1043,15 @@ Use after dynamic construction when query performance matters.
 Optional later:
 
 ```text
-btree_set_nodeid_int64_<space>_range
-btree_set_csr_int64_<space>_range
+btree_set_nodeid_range[Key, mem(Space)]
+btree_set_csr_range[Key, mem(Space)]
 ```
 
 Abstract signatures:
 
 ```text
-btree_set_nodeid_int64_<space>_range(tree, low: Collectable, high: Collectable) -> List[int64, S]
-btree_set_csr_int64_<space>_range(tree, low: Collectable, high: Collectable) -> List[int64, S]
+btree_set_nodeid_range[Key, mem(Space)](tree, low: Collectable, high: Collectable) -> List[int64, S]
+btree_set_csr_range[Key, mem(Space)](tree, low: Collectable, high: Collectable) -> List[int64, S]
 ```
 
 Result should be a `List[int64, S]` of keys in ascending order.
@@ -1051,42 +1067,43 @@ This is useful for compiler interval-like structures, but it requires careful in
 
 ## 8. Generated naming rules
 
-Function names:
+**Design/registry names** use bracket syntax (§4.1). **Operation names** use stable prefixes plus **`List`-style explicit instantiation** at call sites.
+
+Operation prefixes:
 
 ```text
-btree_set_nodeid_<key_shape>_<space>_<operation>
-btree_set_csr_<key_shape>_<space>_<operation>
+btree_set_nodeid_<operation>
+btree_set_csr_<operation>
 ```
 
-For first implementation:
+Bracket parameters at call sites (final slot is always **`mem(Space)`**):
 
 ```text
-key_shape = int64
-space = normal | normal_writethrough | normal_noncacheable | atomic
+[Key, mem(Space)]
 ```
 
 Examples:
 
 ```text
-btree_set_nodeid_int64_normal_empty
-btree_set_nodeid_int64_normal_contains
-btree_set_nodeid_int64_normal_insert
-btree_set_nodeid_int64_normal_validate
-btree_set_nodeid_int64_normal_to_csr
+btree_set_nodeid_empty[int64, mem(normal)]()
+btree_set_nodeid_contains[int64, mem(normal)](tree, key)
+btree_set_nodeid_insert[int64, mem(normal)](tree, key)
+btree_set_nodeid_validate[int64, mem(normal)](tree)
+btree_set_nodeid_to_csr[int64, mem(normal)](tree)
 
-btree_set_csr_int64_normal_from_static_sorted
-btree_set_csr_int64_normal_contains
-btree_set_csr_int64_normal_validate
+btree_set_csr_from_static_sorted[int64, mem(normal)](...)
+btree_set_csr_contains[int64, mem(normal)](tree, key)
+btree_set_csr_validate[int64, mem(normal)](tree)
 ```
 
 Internal helper names should include representation:
 
 ```text
-btree_set_nodeid_int64_normal_find_node
-btree_set_nodeid_int64_normal_split_child
-btree_set_nodeid_int64_normal_insert_nonfull
-btree_set_csr_int64_normal_search_key_range
-btree_set_csr_int64_normal_contains_node
+btree_set_nodeid_find_node[int64, mem(normal)]
+btree_set_nodeid_split_child[int64, mem(normal)]
+btree_set_nodeid_insert_nonfull[int64, mem(normal)]
+btree_set_csr_search_key_range[int64, mem(normal)]
+btree_set_csr_contains_node[int64, mem(normal)]
 ```
 
 ## 9. Generator requirements
@@ -1097,7 +1114,7 @@ Set generator inputs:
 
 ```text
 representation: nodeid_btree_set | csr_btree_set
-key_type: int64       // monomorphic specialization; must implement Collectable (§4.0)
+key_type: int64       // monomorphic specialization; must implement Collectable (§4.0); bracket slot Key
 memory_space: normal | normal_writethrough | normal_noncacheable | atomic
 order: int64
 generate_insert: bool
@@ -1105,6 +1122,8 @@ generate_delete: bool
 generate_range: bool
 generate_validate: bool
 ```
+
+**Registry key (bracket form, §4.1):** `NodeIDBTreeSet[<key_type>, mem(<memory_space>)]`, `CsrBTreeSet[<key_type>, mem(<memory_space>)]` — for example `NodeIDBTreeSet[int64, mem(normal)]`.
 
 Additional CSR inputs:
 
@@ -1119,7 +1138,7 @@ static_sorted_keys: optional list of int64
 
 The generator must produce canonical inline type strings.
 
-For `NodeIDBTreeSetInt64Normal`, define internally:
+For `NodeIDBTreeSet[int64, mem(normal)]`, define internally:
 
 ```text
 NODE_TYPE =
@@ -1131,7 +1150,7 @@ TREE_TYPE =
 
 For emitted Silica, expand `NODE_TYPE` inside `TREE_TYPE`; do not emit aliases.
 
-For `CsrBTreeSetInt64Normal`, define internally:
+For `CsrBTreeSet[int64, mem(normal)]`, define internally:
 
 ```text
 CSR_TREE_TYPE =
@@ -1245,12 +1264,12 @@ This order keeps helper dependencies mostly top-down.
 
 Recommended project staging:
 
-1. Generate `NodeIDBTreeSetInt64` empty and contains over hand-built trees.
-2. Generate `NodeIDBTreeSetInt64` validation.
-3. Generate `NodeIDBTreeSetInt64` insert with top-down split.
+1. Generate `NodeIDBTreeSet[int64, mem(normal)]` empty and contains over hand-built trees.
+2. Generate `NodeIDBTreeSet[int64, mem(normal)]` validation.
+3. Generate `NodeIDBTreeSet[int64, mem(normal)]` insert with top-down split.
 4. Generate `from_list` by repeated insert.
-5. Generate `CsrBTreeSetInt64` from static sorted keys.
-6. Generate `CsrBTreeSetInt64` contains and validation.
+5. Generate `CsrBTreeSet[int64, mem(normal)]` from static sorted keys.
+6. Generate `CsrBTreeSet[int64, mem(normal)]` contains and validation.
 7. Generate `NodeIDBTreeSet -> CsrBTreeSet` finalization.
 8. Add range scan.
 9. Add deletion only after the previous stages are stable.
