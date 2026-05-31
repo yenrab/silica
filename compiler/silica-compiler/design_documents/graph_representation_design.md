@@ -10,7 +10,7 @@ This document specifies graph representations that can be generated for Silica c
 - Region handles, region references, and buffers: `region(R, Space)`, `ref(R, Space, T)`, `buf(R, Space, T, N)`
 - `sequence proc[mem(Space)] ... produces pure ... end` for graph allocation and mutation during construction
 
-Silica has no user-defined custom type names. Graph names in this document are therefore **design/generator names** using **`List`-aligned bracket syntax** (§2.11), not Silica type aliases. A generator may use these names for emitted module names and registry keys, but emitted Silica type positions must repeat the full inline structural type (or expand a compiler-known shorthand to that inline type).
+Silica has no user-defined custom type names. Graph names in this document are therefore **design/generator names** using **`List`-aligned bracket syntax** (§2.11), not Silica type aliases. Bracket forms identify **registry keys** and **function-call instantiation** (like **`empty[int64, normal]()`** for lists). **Emitted module filenames** use **representation + directedness only** (§2.2, §8.4) — for example `graph_adj_directed.silica`, not `graph_adj_directed_int64_mem_normal.silica`. Payload types and **`mem(Space)`** appear on **function calls**, not in module names. Emitted Silica type positions must repeat the full inline structural type (or expand a compiler-known shorthand to that inline type).
 
 **Payload model:** topology uses **`int64` node ids**; optional vertex and edge attributes use concrete **`Collectable`** types in list slots or parallel buffers (§2.3–§2.6). Generated graphs are **immutable values** with **uniform inline types** (§2.7–§2.8).
 
@@ -56,16 +56,20 @@ Generator names:
 | `Directed` | `u -> v` is stored once. |
 | `Undirected` | Each logical edge `{u, v}` is stored as both `u -> v` and `v -> u`, unless `u == v`. |
 
-Example generated module prefixes:
+Example generated **module names** (Silica filename without `.silica`):
 
 ```text
-graph_adj_directed_
-graph_adj_undirected_
-graph_csr_directed_
-graph_csr_undirected_
-graph_dense_directed_
-graph_dense_undirected_
+graph_adj_directed
+graph_adj_undirected
+graph_csr_directed
+graph_csr_undirected
+graph_dense_directed
+graph_dense_undirected
+graph_bitset_directed
+graph_bitset_undirected
 ```
+
+Do **not** encode payload type, weightedness, or memory space in the module name. Those are **bracket parameters on function calls** (§2.11), aligned with **`List`**: one module per representation family; callers write `graph_adj_directed@empty[mem(normal)]()` or `graph_adj_directed@add_edge[int64, mem(normal)](...)`.
 
 ### 2.3 Edge and node payload
 
@@ -225,15 +229,17 @@ Standard generated graph families use **bracket parameters** aligned with **`Lis
 
 The first edge-payload family uses **`EdgeData = int64`**, written as **`NodeIdAdjacencyGraphDirected[int64, mem(S)]`** instead of a `WeightedInt64` name suffix.
 
-**Generated operation names** follow **`List`** explicit instantiation: a stable prefix identifies the operation; bracket parameters appear at **call sites**:
+**Generated operation calls** follow **`List`** explicit instantiation: the **module** supplies representation context; the **exported function name** is a short operation verb (no module-prefix duplication); bracket parameters appear at **call sites**:
 
 ```text
-graph_adj_directed_empty[mem(normal)]()
-graph_adj_directed_add_edge[mem(normal)](g, from_id, to_id)
-graph_adj_directed_add_edge[int64, mem(normal)](g, from_id, to_id, weight)
-graph_csr_directed_has_edge[mem(normal)](g, from_id, to_id)
-graph_csr_directed_weight_at[int64, mem(normal)](g, slot)
+graph_adj_directed@empty[mem(normal)]()
+graph_adj_directed@add_edge[mem(normal)](g, from_id, to_id)
+graph_adj_directed@add_edge[int64, mem(normal)](g, from_id, to_id, weight)
+graph_csr_directed@has_edge[mem(normal)](g, from_id, to_id)
+graph_csr_directed@weight_at[int64, mem(normal)](g, slot)
 ```
+
+The **module** name (`graph_adj_directed`, `graph_csr_directed`, …) identifies the representation family (§2.2). **Do not** repeat the module name in the function identifier after `@`. Bracket slots carry **`Collectable`** payload types and **`mem(Space)`** exactly as **`List[T, S]`** carries element type and space at **`empty[T, S]()`** call sites.
 
 ## 3. `NodeIdAdjacencyGraph`
 
@@ -376,7 +382,7 @@ This construction is simple but O(node_count * edge_count) because updating one 
 Generated function signatures should be monomorphic. For `normal` unweighted directed graphs:
 
 ```silica
-fn graph_adj_directed_empty[mem(normal)](
+fn empty[mem(normal)](
     node_count: int64
 ) -> {
     node_count: int64,
@@ -394,7 +400,7 @@ fn graph_adj_directed_empty[mem(normal)](
 Add edge (topology endpoints are **`int64`**; optional edge payload is **`EdgeData: Collectable`**):
 
 ```silica
-fn graph_adj_directed_add_edge[mem(normal)](
+fn add_edge[mem(normal)](
     graph: {
         node_count: int64,
         edge_count: int64,
@@ -458,9 +464,9 @@ graph_adj_<directedness>_<weightedness>_<space>_
 Examples:
 
 ```text
-graph_adj_directed_empty[mem(normal)]()
-graph_adj_directed_add_edge[mem(normal)](g, from_id, to_id)
-graph_adj_directed_neighbors[mem(normal)](g, id)
+graph_adj_directed@empty[mem(normal)]()
+graph_adj_directed@add_edge[mem(normal)](g, from_id, to_id)
+graph_adj_directed@neighbors[mem(normal)](g, id)
 graph_adj_undirected_add_edge[int64, mem(normal)](g, from_id, to_id, weight)
 ```
 
@@ -660,7 +666,7 @@ This is preferred when the graph is generated from compile-time data because it 
 Generated constructor shape:
 
 ```silica
-fn graph_csr_directed_from_static_edges[mem(normal)]() -> {
+fn from_static_edges[mem(normal)]() -> {
     region: region(R, normal),
     node_count: int64,
     edge_count: int64,
@@ -747,9 +753,9 @@ graph_csr_<directedness>_<operation>
 Examples (bracket instantiation at call sites — §2.11):
 
 ```text
-graph_csr_directed_from_static_edges[mem(normal)](...)
-graph_csr_directed_out_degree[mem(normal)](g, id)
-graph_csr_directed_has_edge[mem(normal)](g, from_id, to_id)
+graph_csr_directed@from_static_edges[mem(normal)](...)
+graph_csr_directed@out_degree[mem(normal)](g, id)
+graph_csr_directed@has_edge[mem(normal)](g, from_id, to_id)
 graph_csr_undirected_weight_at[int64, mem(normal)](g, slot)
 ```
 
@@ -1046,10 +1052,12 @@ node_count_known: bool
 node_count: int64, when known
 edge_count: int64, when known
 sorted_neighbors: bool
-module_prefix: string
+module_name: string   // Silica module / filename stem: graph_<repr>_<directedness> (§8.4); no payload or mem suffix
 ```
 
-**`Collectable` inline spelling:** the full concrete inline type for **`NodeData`**, **`EdgeData`**, or **`CellData`** (for example `int64` or `(int8, string, atom, { x: int64 })`). Generators emit monomorphic modules per spelling (§2.4, §2.8).
+**`module_name`:** the representation family module stem — for example `graph_adj_directed`, `graph_csr_undirected`. Bracket payload and **`mem(Space)`** are **not** part of this string; they appear on exported function calls.
+
+**`Collectable` inline spelling:** the full concrete inline type for **`NodeData`**, **`EdgeData`**, or **`CellData`** (for example `int64` or `(int8, string, atom, { x: int64 })`). Generators emit **one module per representation family** (§2.2, §8.4); each concrete spelling is a **bracket instantiation on exported functions**, not a separate module filename (§2.4, §2.8).
 
 **Registry key (bracket form, §2.11):** combine representation family, directedness, and bracket payload slots — for example `NodeIdAdjacencyGraphDirected[mem(normal)]` (unweighted, no vertex attributes), `NodeIdAdjacencyGraphDirected[int64, mem(normal)]` (`EdgeData = int64`), `CompressedSparseRowGraphUndirected[NodeData, EdgeData, mem(normal)]` when both payload buffers are present.
 
@@ -1117,18 +1125,20 @@ For boolean queries:
 For traversal helpers where invalid ids are programmer errors, a generator may emit unchecked internal helpers and checked public wrappers:
 
 ```text
-graph_csr_directed_has_edge[mem(normal)]
-graph_csr_directed_has_edge_unchecked[mem(normal)]
+has_edge[mem(normal)]
+has_edge_unchecked[mem(normal)]
 ```
 
 ### 8.4 Naming rules
 
-Generated names should be deterministic. **Design/registry names** use bracket syntax (§2.11). **Operation names** use a stable prefix plus **`List`-style explicit instantiation** at call sites.
+Generated names should be deterministic. **Design/registry names** use bracket syntax (§2.11). **Module names** and **operation names** follow **`List`** conventions: the module identifies the representation family; payload type and memory space are **bracket parameters on function calls**.
 
-Operation prefix:
+#### Module names
+
+One Silica module per **representation + directedness** family (§2.2). The filename (without `.silica`) is the module name:
 
 ```text
-graph_<repr>_<directedness>_<operation>
+graph_<repr>_<directedness>
 ```
 
 Where:
@@ -1136,6 +1146,30 @@ Where:
 ```text
 repr = adj | csr | dense | bitset
 directedness = directed | undirected
+```
+
+Examples: `graph_adj_directed.silica`, `graph_csr_undirected.silica`, `graph_dense_directed.silica`.
+
+**Do not** suffix module names with payload type, weightedness, or memory space (for example `graph_adj_directed_int64_mem_normal` is **incorrect**). Mutable builder modules append **`_builder_`** or **`_mutable_`** only (§2.7).
+
+Import and call (short operation name after `@`; do not repeat the module name):
+
+```text
+use graph_adj_directed;
+graph_adj_directed@empty[mem(normal)]()
+graph_adj_directed@add_edge[int64, mem(normal)](g, from_id, to_id, weight)
+```
+
+**Single-file `use` rule:** do not `use` two generated graph modules in one source file when both export the same `operation[brackets]` (E4011). Link only the `lib/` objects each trial imports; trials that call one representation family import one graph module.
+
+#### Operation names
+
+**Exported function names** are short operation verbs inside the module file — for example `empty`, `add_edge`, `has_edge`, `validate`. They **do not** repeat the module name.
+
+**Module-qualified call syntax:**
+
+```text
+<module>@<operation>[<bracket-params>](<args>)
 ```
 
 Bracket parameters at call sites (final slot is always **`mem(Space)`**):
@@ -1149,14 +1183,16 @@ vertex and edge payload: [NodeData, EdgeData, mem(Space)]
 Examples:
 
 ```text
-graph_adj_directed_empty[mem(normal)]()
-graph_adj_directed_neighbors[mem(normal)](g, id)
-graph_csr_directed_weight_at[int64, mem(normal)](g, slot)
-graph_dense_undirected_has_edge[mem(normal)](g, from_id, to_id)
-graph_bitset_directed_set_edge[mem(normal)](g, from_id, to_id)
+graph_adj_directed@empty[mem(normal)]()
+graph_adj_directed@neighbors[mem(normal)](g, id)
+graph_csr_directed@weight_at[int64, mem(normal)](g, slot)
+graph_dense_undirected@has_edge[mem(normal)](g, from_id, to_id)
+graph_bitset_directed@set_edge[mem(normal)](g, from_id, to_id)
 ```
 
-Internal monomorphic modules may still use one bracket instantiation per emitted file; exported APIs must document the bracket form above.
+A single module may export multiple bracket instantiations of the same operation (unweighted `[mem(S)]` and edge-payload `[EdgeData, mem(S)]` forms). **Internal** helpers stay module-local and may use longer local names (for example `prepend_slot`, `validate_edge_delta`); they are not called as `module@helper` from outside the module.
+
+**Linker symbols:** the compiler prefixes assembly labels with the module name (for example `graph_adj_directed_empty_mem_normal__`) so short export names can link together in one executable.
 
 ### 8.5 Structural type emission
 

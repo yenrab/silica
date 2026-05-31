@@ -10,20 +10,18 @@ else
   ECHO := @echo
 endif
 
-# Dependency order: helpers and registry first, then graph/btree families (bracket naming).
+# Dependency order: helpers and registry first, then graph/btree families (module = repr + directedness).
 SILICA_CONFIG_FILES := \
 	graph_adj_list_helpers.silica \
 	structure_registry.silica \
 	inline_type_expansion.silica \
-	graph_adj_directed_mem_normal.silica \
-	graph_adj_undirected_mem_normal.silica \
-	graph_adj_directed_int64_mem_normal.silica \
-	graph_csr_directed_mem_normal.silica \
-	graph_csr_directed_int64_mem_normal.silica \
-	graph_dense_directed_mem_normal.silica \
-	graph_dense_directed_int64_mem_normal.silica \
-	btree_set_csr_mem_normal.silica \
-	btree_set_nodeid_mem_normal.silica
+	graph_adj_directed.silica \
+	graph_adj_undirected.silica \
+	graph_csr_directed.silica \
+	graph_dense_directed.silica \
+	btree_set_csr.silica \
+	btree_set_nodeid.silica \
+	btree_nodeid.silica
 
 SAMS_FILES := $(SILICA_CONFIG_FILES:.silica=.sams)
 

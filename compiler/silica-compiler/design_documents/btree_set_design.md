@@ -4,7 +4,7 @@
 
 This document specifies generated B-tree set representations for Silica code. It specializes [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) and reuses the storage vocabulary from [graph_representation_design.md](graph_representation_design.md): node ids, inline structural records, `List[T, S]`, region handles, and region buffers. **Set keys use types that implement the language `Collectable` trait** (§4.0). **Immutability and uniform inline types** follow [graph_representation_design.md](graph_representation_design.md) §2.7–§2.8.
 
-The names `NodeIDBTreeSet` and `CsrBTreeSet` are **design/generator names** using **`List`-aligned bracket syntax** (§4.1; [graph_representation_design.md](graph_representation_design.md) §2.11), not Silica type aliases. Generated Silica must use inline structural record types everywhere a type is required (or expand a compiler-known shorthand to that inline type).
+The names `NodeIDBTreeSet` and `CsrBTreeSet` are **design/generator names** using **`List`-aligned bracket syntax** (§4.1; [graph_representation_design.md](graph_representation_design.md) §2.11), not Silica type aliases. Bracket forms identify **registry keys** and **function-call instantiation**. **Emitted module filenames** use **representation only** (§8) — for example `btree_set_nodeid.silica`, not `btree_set_nodeid_int64_mem_normal.silica`. Key type and **`mem(Space)`** appear on **function calls**, not in module names. Generated Silica must use inline structural record types everywhere a type is required (or expand a compiler-known shorthand to that inline type).
 
 Primary first target:
 
@@ -83,23 +83,31 @@ Tradeoffs:
 
 ```text
 requires concrete buffer capacities
-not the first choice for frequent insertion/deletion
-less readable than NodeIDBTreeSet
-construction/finalization is more involved
+pack layout is less readable than NodeIDBTreeSet
+functional insert allocates a new region per call
+bootstrap capacity is fixed at compile time
 ```
 
 ### 3.3 Recommended pipeline
 
-For dynamic input:
+`CsrBTreeSet` is a **first-class, directly insertable** data structure. Both representations support the same functional immutable insert API; choose based on query and layout characteristics.
+
+For direct construction via sequential insert (either representation):
 
 ```text
-NodeIDBTreeSet -> validate -> CsrBTreeSet -> contains/range queries
+empty -> insert -> insert -> ... -> contains/range queries
 ```
 
-For static sorted input:
+For static sorted input (CSR only, no insert overhead):
 
 ```text
-CsrBTreeSet directly
+CsrBTreeSet directly via from_static_sorted
+```
+
+For sets that will be converted to CSR after batch construction (future Phase 6):
+
+```text
+NodeIDBTreeSet -> validate -> to_csr -> CsrBTreeSet -> contains/range queries
 ```
 
 For tiny sets:
@@ -134,7 +142,16 @@ B-tree set families use the same bracket convention as lists and graphs ([list_i
 - Bracket forms are **design/generator names**; emitted Silica still uses **full inline structural record types** at every type position unless the compiler expands the shorthand.
 - B-tree **`order`** and CSR **buffer capacities** are separate generator inputs, not bracket parameters.
 
-**Generated operation names** use stable prefixes plus explicit bracket instantiation at call sites, for example `btree_set_nodeid_empty[int64, mem(normal)]()`, `btree_set_nodeid_contains[int64, mem(normal)](tree, key)`.
+**Emitted module names** (one per representation family):
+
+```text
+btree_set_nodeid
+btree_set_csr
+```
+
+Do **not** encode key type or memory space in the module name. Callers write `btree_set_nodeid@empty[int64, mem(normal)]()` — aligned with **`List`** (`empty[int64, normal]()`).
+
+**Generated operation calls** use **`module@operation`** with explicit bracket instantiation — for example `btree_set_nodeid@empty[int64, mem(normal)]()`, `btree_set_csr@contains[int64, mem(normal)](tree, key)`.
 
 See also [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) §2.6 for map and general B-tree bracket arity (`[Key, Value, mem(Space)]`).
 
@@ -219,6 +236,8 @@ NodeIDBTreeSet[int64, mem(normal)]
 NodeIDBTreeSet[int64, mem(atomic)]
 ```
 
+**Naming in §5–§7:** subsection headings use `{module}_{operation}` labels for readability in this design spec. Emitted Silica uses **short export names** and **`module@operation[brackets]`** call syntax (§8).
+
 ### 5.2 Inline Silica shape
 
 Generic shape using design placeholder `S`:
@@ -288,7 +307,7 @@ Because lists allocate storage, construction must occur under `sequence proc[mem
 Pseudo-shape:
 
 ```silica
-fn btree_set_nodeid_empty[int64, mem(normal)]() -> {
+fn empty[int64, mem(normal)]() -> {
     root_id: int64,
     node_count: int64,
     order: int64,
@@ -710,7 +729,7 @@ then next level left-to-right
 Generated Silica body shape:
 
 ```silica
-fn btree_set_csr_from_static_sorted[int64, mem(normal)]() -> {
+fn from_static_sorted[int64, mem(normal)]() -> {
     region: region(R, normal),
     root_id: int64,
     node_count: int64,
@@ -871,23 +890,25 @@ else:
 
 ### 6.7 Insert and delete policy
 
-First generated `CsrBTreeSet` should be immutable after construction. Do not generate ordinary insert/delete directly against compressed buffers.
+`CsrBTreeSet` uses a **functional-programming design**: `insert` returns a new `CsrBTreeSet` value without modifying the caller's existing value. The old value remains valid and is not copied — its region is a separate allocation that the caller can continue to use. This follows the same immutability and structural-sharing principle as `NodeIDBTreeSet` and Silica's `List`.
 
-For updates:
-
-```text
-CsrBTreeSet -> optional unpack to NodeIDBTreeSet -> insert/delete -> validate -> CsrBTreeSet
-```
-
-Or require callers to keep the `NodeIDBTreeSet` build form until all updates are complete.
-
-Future mutable representation should be named separately, for example:
+Generated function:
 
 ```text
-PagedBTreeSet
+btree_set_csr_insert[Key, mem(Space)](tree, key) -> { tree, inserted }
 ```
 
-That future form would use fixed per-node pages rather than compressed ranges.
+Behavior:
+
+```text
+key not present and capacity available  → new tree with key inserted; inserted = 1
+key already present (set semantics)     → original tree returned unchanged; inserted = 0
+bootstrap KEY_CAP exhausted             → original tree returned unchanged; inserted = 0
+```
+
+The bootstrap implementation (NODE_CAP=1, KEY_CAP=7) supports single-leaf sets of up to seven keys. Each insert allocates a fresh region containing updated metadata and key buffers; keys not carried forward are not referenced (bootstrap nodes do not structurally share buffers). The full multi-node implementation with path-level structural sharing (only modified-path nodes are reallocated; unmodified subtrees are referenced from the new root) is deferred to Phase 6.
+
+Delete is not generated in the first pass. When delete is needed, use `NodeIDBTreeSet` or implement the CSR delete by rebuilding the affected region.
 
 ### 6.8 Validation
 
@@ -978,26 +999,32 @@ bool
 
 ### 7.2 `insert`
 
-Abstract signature:
+Both representations generate `insert`. Both are **functional and immutable**: the returned tree is a new value; the caller's original tree is unchanged.
+
+Abstract signatures:
 
 ```text
 btree_set_nodeid_insert[Key, mem(Space)](tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, inserted: bool }
+btree_set_csr_insert[Key, mem(Space)](tree, key: Collectable) -> { tree: <CsrBTreeSet type>, inserted: bool }
 ```
 
-Only `NodeIDBTreeSet` should generate insert in the first pass:
+Generated functions:
 
 ```text
 btree_set_nodeid_insert[Key, mem(Space)]
+btree_set_csr_insert[Key, mem(Space)]
 ```
 
-Return:
+Return shape (both representations):
 
 ```silica
 {
-    tree: <full inline NodeIDBTreeSet type>,
+    tree: <full inline tree type>,
     inserted: bool
 }
 ```
+
+`inserted = true` (1) means the key was newly added; `inserted = false` (0) means the key was already present. Bootstrap `CsrBTreeSet` also returns `inserted = 0` when `KEY_CAP` is exhausted.
 
 ### 7.3 `delete`
 
@@ -1067,14 +1094,36 @@ This is useful for compiler interval-like structures, but it requires careful in
 
 ## 8. Generated naming rules
 
-**Design/registry names** use bracket syntax (§4.1). **Operation names** use stable prefixes plus **`List`-style explicit instantiation** at call sites.
+**Design/registry names** use bracket syntax (§4.1). **Module names** and **operation names** follow **`List`** conventions: the module identifies the representation family; key type and memory space are **bracket parameters on function calls**.
 
-Operation prefixes:
+### Module names
+
+One Silica module per set representation family:
 
 ```text
-btree_set_nodeid_<operation>
-btree_set_csr_<operation>
+btree_set_nodeid
+btree_set_csr
 ```
+
+Examples: `btree_set_nodeid.silica`, `btree_set_csr.silica`.
+
+**Do not** suffix module names with key type or memory space (for example `btree_set_nodeid_int64_mem_normal` is **incorrect**).
+
+Import and call (short operation name after `@`; do not repeat the module name):
+
+```text
+use btree_set_nodeid;
+btree_set_nodeid@empty[int64, mem(normal)]()
+btree_set_nodeid@contains[int64, mem(normal)](tree, key)
+```
+
+**Single-file `use` rule:** do not `use` two generated modules in one source file when both export the same `operation[brackets]` (for example both export `empty[int64, mem(normal)]` — E4011). Cross-representation trials should call through one module (for example `btree_set_nodeid@validate_csr`, `btree_set_nodeid@contains_csr` re-export CSR helpers) or split into separate compilation units.
+
+### Operation names
+
+**Exported function names** are short operation verbs — for example `empty`, `contains`, `insert`, `validate`, `to_csr`, `from_static_sorted`. They **do not** repeat the module name.
+
+**Module-qualified call syntax:** `btree_set_csr@contains[int64, mem(normal)](tree, key)`
 
 Bracket parameters at call sites (final slot is always **`mem(Space)`**):
 
@@ -1085,26 +1134,20 @@ Bracket parameters at call sites (final slot is always **`mem(Space)`**):
 Examples:
 
 ```text
-btree_set_nodeid_empty[int64, mem(normal)]()
-btree_set_nodeid_contains[int64, mem(normal)](tree, key)
-btree_set_nodeid_insert[int64, mem(normal)](tree, key)
-btree_set_nodeid_validate[int64, mem(normal)](tree)
-btree_set_nodeid_to_csr[int64, mem(normal)](tree)
+btree_set_nodeid@empty[int64, mem(normal)]()
+btree_set_nodeid@contains[int64, mem(normal)](tree, key)
+btree_set_nodeid@insert[int64, mem(normal)](tree, key)
+btree_set_nodeid@validate[int64, mem(normal)](tree)
+btree_set_nodeid@to_csr[int64, mem(normal)](tree)
 
-btree_set_csr_from_static_sorted[int64, mem(normal)](...)
-btree_set_csr_contains[int64, mem(normal)](tree, key)
-btree_set_csr_validate[int64, mem(normal)](tree)
+btree_set_csr@from_static_sorted[int64, mem(normal)](...)
+btree_set_csr@contains[int64, mem(normal)](tree, key)
+btree_set_csr@validate[int64, mem(normal)](tree)
 ```
 
-Internal helper names should include representation:
+**Linker symbols:** the compiler prefixes assembly labels with the module name (for example `btree_set_csr_contains_int64_mem_normal__`) so short export names can link together in one executable.
 
-```text
-btree_set_nodeid_find_node[int64, mem(normal)]
-btree_set_nodeid_split_child[int64, mem(normal)]
-btree_set_nodeid_insert_nonfull[int64, mem(normal)]
-btree_set_csr_search_key_range[int64, mem(normal)]
-btree_set_csr_contains_node[int64, mem(normal)]
-```
+Internal helpers are module-local (not exported for `module@` calls). Examples: `find_node`, `split_child`, `insert_nonfull`, `search_key_range`, `contains_node`.
 
 ## 9. Generator requirements
 
@@ -1257,6 +1300,8 @@ Recommended order in generated module:
 10. CSR conversion or CSR static constructor.
 11. CSR contains.
 12. CSR validation.
+13. CSR insert helpers (csr_insert_pos_from, csr_out_key, build_leaf_csr, insert_nonempty_csr).
+14. CSR insert.
 
 This order keeps helper dependencies mostly top-down.
 

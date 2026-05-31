@@ -1,0 +1,140 @@
+// Phase 6 step 6.4 — direct functional insert into CsrBTreeSet[int64, mem(normal)].
+// Inserts {3, 1, 5} one at a time; checks deduplication, sorted contains, and
+// that the original empty tree is not mutated (immutability contract).
+use btree_set_csr;
+
+fn fail_unless_one(value: int64) -> int64 {
+    case value of {
+        1 -> 0;
+        _: int64 -> 1
+    }
+}
+
+fn check_contains(tree: {
+    region: region(L1, normal),
+    root_id: int64,
+    node_count: int64,
+    key_count_total: int64,
+    order: int64,
+    node_key_start: buf(L1, normal, int64, 1),
+    node_key_count: buf(L1, normal, int64, 1),
+    node_child_start: buf(L1, normal, int64, 1),
+    node_child_count: buf(L1, normal, int64, 1),
+    node_is_leaf: buf(L1, normal, int64, 1),
+    keys: buf(L1, normal, int64, 7),
+    children: buf(L1, normal, int64, 8)
+}) -> int64 {
+    sequence proc[]
+        has1: int64 <- btree_set_csr@contains[int64, mem(normal)](tree, 1);
+        has3: int64 <- btree_set_csr@contains[int64, mem(normal)](tree, 3);
+        has5: int64 <- btree_set_csr@contains[int64, mem(normal)](tree, 5);
+        has4: int64 <- btree_set_csr@contains[int64, mem(normal)](tree, 4);
+        failures: int64 <-
+            (fail_unless_one(has1) * 32) +
+            (fail_unless_one(has3) * 64) +
+            (fail_unless_one(has5) * 128) +
+            (has4 * 256)
+    produces
+        pure failures
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[]
+        tree0: {
+            region: region(L1, normal),
+            root_id: int64,
+            node_count: int64,
+            key_count_total: int64,
+            order: int64,
+            node_key_start: buf(L1, normal, int64, 1),
+            node_key_count: buf(L1, normal, int64, 1),
+            node_child_start: buf(L1, normal, int64, 1),
+            node_child_count: buf(L1, normal, int64, 1),
+            node_is_leaf: buf(L1, normal, int64, 1),
+            keys: buf(L1, normal, int64, 7),
+            children: buf(L1, normal, int64, 8)
+        } <- btree_set_csr@empty[int64, mem(normal)]();
+        r1: {
+            tree: {
+                region: region(L1, normal),
+                root_id: int64,
+                node_count: int64,
+                key_count_total: int64,
+                order: int64,
+                node_key_start: buf(L1, normal, int64, 1),
+                node_key_count: buf(L1, normal, int64, 1),
+                node_child_start: buf(L1, normal, int64, 1),
+                node_child_count: buf(L1, normal, int64, 1),
+                node_is_leaf: buf(L1, normal, int64, 1),
+                keys: buf(L1, normal, int64, 7),
+                children: buf(L1, normal, int64, 8)
+            },
+            inserted: int64
+        } <- btree_set_csr@insert[int64, mem(normal)](tree0, 3);
+        r2: {
+            tree: {
+                region: region(L1, normal),
+                root_id: int64,
+                node_count: int64,
+                key_count_total: int64,
+                order: int64,
+                node_key_start: buf(L1, normal, int64, 1),
+                node_key_count: buf(L1, normal, int64, 1),
+                node_child_start: buf(L1, normal, int64, 1),
+                node_child_count: buf(L1, normal, int64, 1),
+                node_is_leaf: buf(L1, normal, int64, 1),
+                keys: buf(L1, normal, int64, 7),
+                children: buf(L1, normal, int64, 8)
+            },
+            inserted: int64
+        } <- btree_set_csr@insert[int64, mem(normal)](r1.tree, 1);
+        r3: {
+            tree: {
+                region: region(L1, normal),
+                root_id: int64,
+                node_count: int64,
+                key_count_total: int64,
+                order: int64,
+                node_key_start: buf(L1, normal, int64, 1),
+                node_key_count: buf(L1, normal, int64, 1),
+                node_child_start: buf(L1, normal, int64, 1),
+                node_child_count: buf(L1, normal, int64, 1),
+                node_is_leaf: buf(L1, normal, int64, 1),
+                keys: buf(L1, normal, int64, 7),
+                children: buf(L1, normal, int64, 8)
+            },
+            inserted: int64
+        } <- btree_set_csr@insert[int64, mem(normal)](r2.tree, 5);
+        r4: {
+            tree: {
+                region: region(L1, normal),
+                root_id: int64,
+                node_count: int64,
+                key_count_total: int64,
+                order: int64,
+                node_key_start: buf(L1, normal, int64, 1),
+                node_key_count: buf(L1, normal, int64, 1),
+                node_child_start: buf(L1, normal, int64, 1),
+                node_child_count: buf(L1, normal, int64, 1),
+                node_is_leaf: buf(L1, normal, int64, 1),
+                keys: buf(L1, normal, int64, 7),
+                children: buf(L1, normal, int64, 8)
+            },
+            inserted: int64
+        } <- btree_set_csr@insert[int64, mem(normal)](r3.tree, 3);
+        validation: { ok: int64, error_code: int64 } <- btree_set_csr@validate[int64, mem(normal)](r3.tree);
+        contains_failures: int64 <- check_contains(r3.tree);
+        tree0_unchanged: int64 <- case tree0.root_id of { -1 -> 0; _: int64 -> 1 };
+        failures: int64 <-
+            (fail_unless_one(r1.inserted) * 1) +
+            (fail_unless_one(r2.inserted) * 2) +
+            (fail_unless_one(r3.inserted) * 4) +
+            (r4.inserted * 8) +
+            ((1 - validation.ok) * 16) +
+            contains_failures +
+            (tree0_unchanged * 512)
+    produces
+        pure failures
+    end
+}

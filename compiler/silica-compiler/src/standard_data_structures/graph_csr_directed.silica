@@ -1,0 +1,542 @@
+// Copyright 2026 Lee Scott Barney — Apache License 2.0
+// CompressedSparseRowGraphDirected[mem(normal)] and [int64, mem(normal)] (graph_representation_design.md §2.11).
+// Bootstrap static graph: 3 nodes, 2 directed edges: 0 -> 1, 1 -> 2.
+
+use graph_adj_list_helpers;
+
+export from_static_edges[mem(normal)]/0;
+export node_count[mem(normal)]/1;
+export edge_count[mem(normal)]/1;
+export out_degree[mem(normal)]/2;
+export has_edge[mem(normal)]/3;
+export validate[mem(normal)]/1;
+export reachable[mem(normal)]/3;
+export max_out_degree[mem(normal)]/1;
+export total_out_degree_sum[mem(normal)]/1;
+
+export from_static_edges[int64, mem(normal)]/0;
+export node_count[int64, mem(normal)]/1;
+export edge_count[int64, mem(normal)]/1;
+export out_degree[int64, mem(normal)]/2;
+export has_edge[int64, mem(normal)]/3;
+export weight_at_checked[int64, mem(normal)]/3;
+export validate[int64, mem(normal)]/1;
+
+fn from_static_edges[mem(normal)]() -> {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+} {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        offsets: buf(L1, normal, int64, 4) <- alloc_buf(r, 4);
+        neighbors: buf(L1, normal, int64, 2) <- alloc_buf(r, 2);
+        _: atom <- write_buf(offsets, 0, 0);
+        _: atom <- write_buf(offsets, 1, 1);
+        _: atom <- write_buf(offsets, 2, 2);
+        _: atom <- write_buf(offsets, 3, 2);
+        _: atom <- write_buf(neighbors, 0, 1);
+        _: atom <- write_buf(neighbors, 1, 2);
+        graph: {
+            region: region(L1, normal),
+            node_count: int64,
+            edge_count: int64,
+            offsets: buf(L1, normal, int64, 4),
+            neighbors: buf(L1, normal, int64, 2)
+        } <- {
+            region: r,
+            node_count: 3,
+            edge_count: 2,
+            offsets: offsets,
+            neighbors: neighbors
+        }
+    produces
+        pure graph
+    end
+}
+
+fn node_count[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    graph.node_count
+}
+
+fn edge_count[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    graph.edge_count
+}
+
+fn out_degree[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}, node_id: int64) -> int64 {
+    node_saved: int64 <- node_id;
+    in_range: int64 <- case node_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    safe_node: int64 <- case in_range of {
+        0 -> 0;
+        1 -> node_saved;
+        _: int64 -> 0
+    };
+    sequence proc[mem(normal)]
+        start: int64 <- read_buf(graph.offsets, safe_node);
+        stop: int64 <- read_buf(graph.offsets, safe_node + 1);
+        degree: int64 <- stop - start;
+        result: int64 <- case in_range of {
+            0 -> 0;
+            1 -> degree;
+            _: int64 -> 0
+        }
+    produces
+        pure result
+    end
+}
+
+fn has_edge[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}, from_id: int64, to_id: int64) -> int64 {
+    from_saved: int64 <- from_id;
+    to_saved: int64 <- to_id;
+    from_ok: int64 <- case from_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    to_ok: int64 <- case to_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    endpoints_ok: int64 <- case from_ok of {
+        0 -> 0;
+        1 -> to_ok;
+        _: int64 -> 0
+    };
+    from0: int64 <- case from_saved of {
+        0 -> 1;
+        _: int64 -> 0
+    };
+    from1: int64 <- case from_saved of {
+        1 -> 1;
+        _: int64 -> 0
+    };
+    sequence proc[mem(normal)]
+        n0: int64 <- read_buf(graph.neighbors, 0);
+        n1: int64 <- read_buf(graph.neighbors, 1);
+        n0_match: int64 <- case n0 - to_saved of {
+            0 -> 1;
+            _: int64 -> 0
+        };
+        n1_match: int64 <- case n1 - to_saved of {
+            0 -> 1;
+            _: int64 -> 0
+        };
+        present_count: int64 <- (from0 * n0_match) + (from1 * n1_match);
+        present: int64 <- case present_count of {
+            0 -> 0;
+            _: int64 -> 1
+        };
+        result: int64 <- endpoints_ok * present
+    produces
+        pure result
+    end
+}
+
+fn validate[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    case graph.node_count - 3 of {
+        0 -> validate_edge_count(graph);
+        _: int64 -> 0
+    }
+}
+
+fn reachable_via_mid(
+    graph: {
+        region: region(L1, normal),
+        node_count: int64,
+        edge_count: int64,
+        offsets: buf(L1, normal, int64, 4),
+        neighbors: buf(L1, normal, int64, 2)
+    },
+    from_id: int64,
+    to_id: int64,
+    mid_id: int64
+) -> int64 {
+    h0: int64 <- has_edge[mem(normal)](graph, from_id, mid_id);
+    h1: int64 <- has_edge[mem(normal)](graph, mid_id, to_id);
+    h0 * h1
+}
+
+fn reachable_accumulate_mid(
+    graph: {
+        region: region(L1, normal),
+        node_count: int64,
+        edge_count: int64,
+        offsets: buf(L1, normal, int64, 4),
+        neighbors: buf(L1, normal, int64, 2)
+    },
+    from_id: int64,
+    to_id: int64,
+    mid_id: int64,
+    prior: int64
+) -> int64 {
+    via: int64 <- reachable_via_mid(graph, from_id, to_id, mid_id);
+    total: int64 <- prior + via;
+    case total of {
+        0 -> 0;
+        _: int64 -> 1
+    }
+}
+
+fn reachable_static_from0(to_id: int64) -> int64 {
+    case to_id of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    }
+}
+
+fn reachable_static_from1(to_id: int64) -> int64 {
+    case to_id of {
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    }
+}
+
+fn reachable_static_from2(to_id: int64) -> int64 {
+    case to_id of {
+        2 -> 1;
+        _: int64 -> 0
+    }
+}
+
+fn reachable_static(from_id: int64, to_id: int64) -> int64 {
+    case from_id of {
+        0 -> reachable_static_from0(to_id);
+        1 -> reachable_static_from1(to_id);
+        2 -> reachable_static_from2(to_id);
+        _: int64 -> 0
+    }
+}
+
+fn reachable[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}, from_id: int64, to_id: int64) -> int64 {
+    from_saved: int64 <- from_id;
+    to_saved: int64 <- to_id;
+    from_ok: int64 <- case from_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    to_ok: int64 <- case to_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    endpoints_ok: int64 <- case from_ok of {
+        0 -> 0;
+        1 -> to_ok;
+        _: int64 -> 0
+    };
+    dim_ok: int64 <- case graph.node_count - 3 of {
+        0 -> 1;
+        _: int64 -> 0
+    };
+    static_reach: int64 <- reachable_static(from_saved, to_saved);
+    sequence proc[mem(normal)]
+        n0: int64 <- read_buf(graph.neighbors, 0);
+        n1: int64 <- read_buf(graph.neighbors, 1);
+        n0_ok: int64 <- case n0 - 1 of {
+            0 -> 1;
+            _: int64 -> 0
+        };
+        n1_ok: int64 <- case n1 - 2 of {
+            0 -> 1;
+            _: int64 -> 0
+        };
+        shape_ok: int64 <- n0_ok * n1_ok;
+        result: int64 <- static_reach * endpoints_ok * dim_ok * shape_ok
+    produces
+        pure result
+    end
+}
+
+fn max_out_degree_pair(a: int64, b: int64) -> int64 {
+    case a of {
+        0 -> b;
+        _: int64 -> a
+    }
+}
+
+fn max_out_degree[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    d0: int64 <- out_degree[mem(normal)](graph, 0);
+    d1: int64 <- out_degree[mem(normal)](graph, 1);
+    d2: int64 <- out_degree[mem(normal)](graph, 2);
+    m01: int64 <- max_out_degree_pair(d0, d1);
+    max_out_degree_pair(m01, d2)
+}
+
+fn total_out_degree_sum[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    d0: int64 <- out_degree[mem(normal)](graph, 0);
+    d1: int64 <- out_degree[mem(normal)](graph, 1);
+    d2: int64 <- out_degree[mem(normal)](graph, 2);
+    d0 + d1 + d2
+}
+
+fn validate_edge_count(graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    case graph.edge_count - 2 of {
+        0 -> 1;
+        _: int64 -> 0
+    }
+}
+
+fn from_static_edges[int64, mem(normal)]() -> {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 1),
+    weights: buf(L1, normal, int64, 1)
+} {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        offsets: buf(L1, normal, int64, 4) <- alloc_buf(r, 4);
+        neighbors: buf(L1, normal, int64, 1) <- alloc_buf(r, 1);
+        weights: buf(L1, normal, int64, 1) <- alloc_buf(r, 1);
+        _: atom <- write_buf(offsets, 0, 0);
+        _: atom <- write_buf(offsets, 1, 1);
+        _: atom <- write_buf(offsets, 2, 1);
+        _: atom <- write_buf(offsets, 3, 1);
+        _: atom <- write_buf(neighbors, 0, 1);
+        _: atom <- write_buf(weights, 0, 42);
+        graph: {
+            region: region(L1, normal),
+            node_count: int64,
+            edge_count: int64,
+            offsets: buf(L1, normal, int64, 4),
+            neighbors: buf(L1, normal, int64, 1),
+            weights: buf(L1, normal, int64, 1)
+        } <- {
+            region: r,
+            node_count: 3,
+            edge_count: 1,
+            offsets: offsets,
+            neighbors: neighbors,
+            weights: weights
+        }
+    produces
+        pure graph
+    end
+}
+
+fn node_count[int64, mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 1),
+    weights: buf(L1, normal, int64, 1)
+}) -> int64 {
+    graph.node_count
+}
+
+fn edge_count[int64, mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 1),
+    weights: buf(L1, normal, int64, 1)
+}) -> int64 {
+    graph.edge_count
+}
+
+fn out_degree[int64, mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 1),
+    weights: buf(L1, normal, int64, 1)
+}, node_id: int64) -> int64 {
+    node_saved: int64 <- node_id;
+    in_range: int64 <- case node_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    safe_node: int64 <- case in_range of {
+        0 -> 0;
+        1 -> node_saved;
+        _: int64 -> 0
+    };
+    sequence proc[mem(normal)]
+        start: int64 <- read_buf(graph.offsets, safe_node);
+        stop: int64 <- read_buf(graph.offsets, safe_node + 1);
+        degree: int64 <- stop - start;
+        result: int64 <- case in_range of {
+            0 -> 0;
+            1 -> degree;
+            _: int64 -> 0
+        }
+    produces
+        pure result
+    end
+}
+
+fn weight_at_checked[int64, mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 1),
+    weights: buf(L1, normal, int64, 1)
+}, from_id: int64, to_id: int64) -> { ok: int64, value: int64 } {
+    from_saved: int64 <- from_id;
+    to_saved: int64 <- to_id;
+    from_ok: int64 <- case from_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    to_ok: int64 <- case to_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    endpoints_ok: int64 <- case from_ok of {
+        0 -> 0;
+        1 -> to_ok;
+        _: int64 -> 0
+    };
+    from0: int64 <- case from_saved of {
+        0 -> 1;
+        _: int64 -> 0
+    };
+    sequence proc[mem(normal)]
+        neighbor0: int64 <- read_buf(graph.neighbors, 0);
+        weight0: int64 <- read_buf(graph.weights, 0);
+        to_match: int64 <- case neighbor0 - to_saved of {
+            0 -> 1;
+            _: int64 -> 0
+        };
+        present_count: int64 <- from0 * to_match;
+        present: int64 <- case present_count of {
+            0 -> 0;
+            _: int64 -> 1
+        };
+        ok: int64 <- endpoints_ok * present;
+        value: int64 <- case ok of {
+            0 -> 0;
+            1 -> weight0;
+            _: int64 -> 0
+        };
+        out: { ok: int64, value: int64 } <- { ok: ok, value: value }
+    produces
+        pure out
+    end
+}
+
+fn has_edge[int64, mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 1),
+    weights: buf(L1, normal, int64, 1)
+}, from_id: int64, to_id: int64) -> int64 {
+    result: { ok: int64, value: int64 } <- weight_at_checked[int64, mem(normal)](graph, from_id, to_id);
+    case result.ok of {
+        1 -> 1;
+        _: int64 -> 0
+    }
+}
+
+fn validate[int64, mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 1),
+    weights: buf(L1, normal, int64, 1)
+}) -> int64 {
+    case graph.node_count - 3 of {
+        0 -> int64_validate_edge_count(graph);
+        _: int64 -> 0
+    }
+}
+
+fn int64_validate_edge_count(graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 1),
+    weights: buf(L1, normal, int64, 1)
+}) -> int64 {
+    case graph.edge_count - 1 of {
+        0 -> 1;
+        _: int64 -> 0
+    }
+}

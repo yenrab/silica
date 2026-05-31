@@ -4,7 +4,7 @@
 
 This document specifies balanced tree and heap representations that can be generated as Silica code without custom type declarations. It extends [graph_representation_design.md](graph_representation_design.md): trees and heaps are treated as constrained graph-like structures over integer node ids and region-backed storage. **Stored keys, map values, and heap elements use types that implement the language `Collectable` trait** ([silica-specification.md](silica-specification.md) §8.2.4), following [graph_representation_design.md](graph_representation_design.md) §2.4. **Immutability and uniform inline types** follow graph §2.7–§2.8.
 
-The names in this document are **design/generator names**, not Silica type aliases. Generated Silica must still use inline structural record types in every parameter, return type, local binding, and pattern annotation.
+The names in this document are **design/generator names**, not Silica type aliases. Bracket forms identify **registry keys** and **function-call instantiation** (§2.6). **Emitted module filenames** use **representation (+ kind for heaps) only** (§8) — for example `btree_nodeid.silica`, `heap_binary_min.silica`, not filenames that embed key type or memory space. Payload types and **`mem(Space)`** appear on **function calls**, not in module names. Generated Silica must still use inline structural record types in every parameter, return type, local binding, and pattern annotation.
 
 Primary families:
 
@@ -143,7 +143,22 @@ Tree and heap families use the same bracket convention as graphs and lists ([gra
 | Priority heap | `[Priority, Value, mem(S)]` | `RegionBinaryMinHeap[int64, int64, mem(normal)]` |
 | D-ary heap | `[Element, mem(S)]` | `RegionDaryMinHeap[int64, mem(normal)]` with **`D`** as a generator constant |
 
-**Generated operation names** use stable prefixes plus explicit bracket instantiation at call sites, for example `btree_nodeid_empty[int64, mem(normal)]()`, `btree_nodeid_insert[int64, mem(normal)](tree, key)`, `heap_binary_min_push[int64, mem(normal)](heap, value)`.
+**Emitted module names** (one per representation family; heaps include min/max kind):
+
+```text
+btree_nodeid
+btree_csr
+btree_nodeid_map
+btree_csr_map
+heap_binary_min
+heap_binary_max
+heap_dary_min
+heap_dary_max
+```
+
+Do **not** encode key/value/element type or memory space in the module name. Callers write `btree_nodeid@empty[int64, mem(normal)]()` — aligned with **`List`**.
+
+**Generated operation calls** use **`module@operation`** with explicit bracket instantiation — for example `btree_nodeid@insert[int64, mem(normal)](tree, key)`, `heap_binary_min@push[int64, mem(normal)](heap, value)`.
 
 ## 3. B-tree terminology
 
@@ -645,7 +660,21 @@ binary node search for order > 16
 
 ### 5.8 Updates
 
-Packed `CsrBTree` should be treated as immutable after construction in the first implementation. In-place insertion and deletion require shifting packed key and child ranges or using spare capacity per node, which complicates invariants.
+**Functional insert (implemented for `CsrBTreeMap` in Phase 8):**
+
+`CsrBTreeMap` uses a **functional-programming design**: `insert` returns a new map value without modifying the caller's existing value. Each insert call allocates a fresh region with updated key and value buffers; the caller's map is structurally independent and remains fully valid. This mirrors `CsrBTreeSet` (Phase 6) and Silica's `List`.
+
+Duplicate-key policy defaults to **`replace_value`**: if the key already exists the returned map contains the updated value; `inserted=0, replaced=1` is signalled in the result record. Result shape:
+
+```silica
+{ tree: <full CsrBTreeMap inline type>, inserted: int64, replaced: int64 }
+```
+
+Bootstrap capacity is fixed at compile time (`KEY_CAP=7`). When the capacity is full and the key is absent, insert returns the original map unchanged with `inserted=0, replaced=0`.
+
+**In-place / mutable CSR (future):**
+
+In-place insertion and deletion require shifting packed key and child ranges or using spare capacity per node, which complicates invariants. If mutable CSR B-trees are later generated, use a different design name:
 
 If mutable CSR B-trees are later generated, use a different design name:
 
@@ -1041,24 +1070,38 @@ Generated code should unroll child checks when `D` is a small constant, especial
 
 ## 8. Naming rules
 
-Generated names should be deterministic. **Design/registry names** use bracket syntax (§2.6). **Operation names** use stable prefixes plus **`List`-style explicit instantiation** at call sites.
+Generated names should be deterministic. **Design/registry names** use bracket syntax (§2.6). **Module names** and **operation names** follow **`List`** conventions: the module identifies the representation family; payload types and memory space are **bracket parameters on function calls**.
 
-Operation prefixes:
+### Module names
 
-```text
-btree_nodeid_<operation>
-btree_csr_<operation>
-btree_nodeid_map_<operation>
-btree_csr_map_<operation>
-heap_binary_<kind>_<operation>
-heap_dary_<kind>_<operation>
-```
-
-Where:
+One Silica module per representation family (heaps include min/max kind):
 
 ```text
-kind = min | max
+btree_nodeid
+btree_csr
+btree_nodeid_map
+btree_csr_map
+heap_binary_min | heap_binary_max
+heap_dary_min | heap_dary_max
 ```
+
+Examples: `btree_nodeid.silica`, `btree_csr_map.silica`, `heap_binary_min.silica`.
+
+**Do not** suffix module names with key/value/element type or memory space.
+
+Import and call:
+
+```text
+use btree_nodeid;
+btree_nodeid@empty[int64, mem(normal)]()
+heap_binary_min@push[int64, mem(normal)](heap, value)
+```
+
+### Operation names
+
+**Exported function names** are short operation verbs inside each module — for example `empty`, `insert`, `get`, `contains`, `push`, `pop`. They **do not** repeat the module name.
+
+**Module-qualified call syntax:** `<module>@<operation>[<bracket-params>](<args>)`
 
 Bracket parameters at call sites (final slot is always **`mem(Space)`**):
 
@@ -1072,14 +1115,14 @@ Priority heap: [Priority, Value, mem(Space)]
 Examples:
 
 ```text
-btree_nodeid_empty[int64, mem(normal)]()
-btree_nodeid_insert[int64, mem(normal)](tree, key)
-btree_nodeid_map_get[int64, int64, mem(normal)](tree, key)
-btree_csr_contains[int64, mem(normal)](tree, key)
-btree_csr_map_get[int64, int64, mem(normal)](tree, key)
-heap_binary_min_empty[int64, mem(normal)]()
-heap_binary_min_push[int64, mem(normal)](heap, value)
-heap_dary_min_pop[int64, mem(normal)](heap)
+btree_nodeid@empty[int64, mem(normal)]()
+btree_nodeid@insert[int64, mem(normal)](tree, key)
+btree_nodeid_map@get[int64, int64, mem(normal)](tree, key)
+btree_csr@contains[int64, mem(normal)](tree, key)
+btree_csr_map@get[int64, int64, mem(normal)](tree, key)
+heap_binary_min@empty[int64, mem(normal)]()
+heap_binary_min@push[int64, mem(normal)](heap, value)
+heap_dary_min@pop[int64, mem(normal)](heap)
 ```
 
 ## 9. Generator requirements

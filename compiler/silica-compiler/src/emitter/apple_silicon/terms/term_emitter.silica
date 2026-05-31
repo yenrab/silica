@@ -1613,7 +1613,28 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 case term.name == bound_norm of {
                     true -> case len(bound_reg) > 0 and substring(bound_reg, 0, 1) == "[" of {
                         true -> var@emit_var_sp_load(dest, bound_reg);
-                        false -> var@emit_var_reg_outer(term, dest, bound_reg, outer_reg)
+                        false -> case reg_conventions@is_inline_struct_type(term.type_name) and bound_reg == "X0" and dest != "X0" of {
+                            // When a record_make is bound to X0 (MOV X0, SP) but is passed as a non-first
+                            // arg (dest != X0), the first-arg computation may have clobbered X0 before this
+                            // arg is computed. Use the _va.name SP offset instead to get the struct pointer.
+                            true -> do
+                                va_fix: string <- var@find_sp_binding(outer_reg, concat("_va.", bound_name));
+                                adj_fix: string <- var@find_sp_binding(outer_reg, "_adj");
+                                va_int_fix: int64 <- case len(va_fix) > 0 of { true -> string_parse@string_to_int64(va_fix); false -> -1 };
+                                adj_int_fix: int64 <- case len(adj_fix) > 0 of { true -> string_parse@string_to_int64(adj_fix); false -> 0 };
+                                case va_int_fix >= 0 of {
+                                    true -> do
+                                        off_fix: int64 <- va_int_fix + adj_int_fix;
+                                        case off_fix == 0 of {
+                                            true -> concat(concat("    MOV ", dest), ", SP\n");
+                                            false -> concat("    ADD ", concat(dest, concat(", SP, #", concat(atom_table@int64_to_decimal_string(off_fix), "\n"))))
+                                        }
+                                    end;
+                                    false -> var@emit_var_reg_outer(term, dest, bound_reg, outer_reg)
+                                }
+                            end;
+                            false -> var@emit_var_reg_outer(term, dest, bound_reg, outer_reg)
+                        }
                     };
                     false -> var@emit_var_with_sp_check(term, dest, outer_reg)
                 }
@@ -3848,16 +3869,15 @@ fn flat_tuple_dealloc_size(term: SIRTerm) -> int64 {
     }
 }
 
-// Stack bytes for let dealloc: tuple_make/record_make use flat layout; user calls use return type size only.
+// Stack bytes for let dealloc: tuple_make/record_make use flat layout on caller SP.
+// User calls returning aggregates pass a heap pointer in X0 (callee region_alloc); emit_generic_user_call_asm_inner
+// sets sret_stack_bytes=0 so the caller never SUB SP — do not emit let-end ADD SP for those callees.
 fn aggregate_callee_return_stack_bytes(rhs: SIRTerm) -> int64 {
     case reg_conventions@is_aggregate_struct_or_tuple_return_type(rhs.type_name) of {
         false -> 0;
         true -> case rhs.kind == 6 and (rhs.name == "tuple_make" or rhs.name == "record_make") of {
             true -> flat_tuple_dealloc_size(rhs);
-            false -> case rhs.kind == 4 or rhs.kind == 5 of {
-                true -> user_call_aggregate_return_alloc_bytes(rhs.type_name);
-                false -> 0
-            }
+            false -> 0
         }
     }
 }

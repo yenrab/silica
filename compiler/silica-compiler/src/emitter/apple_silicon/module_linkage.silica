@@ -36,6 +36,7 @@ export format_used_modules_comment/1;
 export emit_export_global_directives/3;
 export format_trait_metadata_comments/1;
 export emit_supervisor_start_trampolines/1;
+export emit_module_stack_prefix_record/1;
 
 fn starts_with_main_dot(s: string) -> bool {
     len(s) >= 5 and substring(s, 0, 5) == "main."
@@ -70,15 +71,30 @@ fn qual_fn_name_for_linkage(name: string) -> string {
     instantiated_fn_name@link_name_to_asm_symbol(mapped)
 }
 
+// Mach-O integrated assembler treats labels beginning with 'L' as file-local; prefix '_' so
+// modules like Labeled (Labeled_code_of) remain linkable globals.
+fn macho_escape_global_asm_symbol(raw: string) -> string {
+    case raw == "main" of {
+        true -> raw;
+        false -> case len(raw) > 0 and substring(raw, 0, 1) == "L" of {
+            true -> concat("_", raw);
+            false -> raw
+        }
+    }
+}
+
 // Program entry label is always `main` (spec 19.1, linker convention).
+// Non-main symbols are module-prefixed so short export names (e.g. `contains`) can coexist
+// when multiple generated modules link into one executable (§19.3.2 module@fn call sites).
 fn asm_symbol_for_definition(module_name: string, sir_fn_name: string) -> string {
-    case sir_fn_name == "main" or sir_fn_name == "main.main" or sir_fn_name == "main.m" of {
+    raw: string <- case sir_fn_name == "main" or sir_fn_name == "main.main" or sir_fn_name == "main.m" of {
         true -> "main";
         false -> case starts_with_main_dot(sir_fn_name) of {
             true -> concat(module_name, concat(".", substring(sir_fn_name, 5, len(sir_fn_name))));
-            false -> instantiated_fn_name@link_name_to_asm_symbol(sir_fn_name)
+            false -> concat(module_name, concat("_", instantiated_fn_name@link_name_to_asm_symbol(sir_fn_name)))
         }
-    }
+    };
+    macho_escape_global_asm_symbol(raw)
 }
 
 // Map SIR callee string to assembly symbol. outer_reg may carry |_lm=mod from emitter_core
@@ -104,6 +120,21 @@ fn sir_name_from_export_fn_name(fn_name: string) -> string {
     case fn_name of {
         "m" -> "main";
         _: string -> fn_name
+    }
+}
+
+// One record per compiled module: module-prefixed linker symbols (module_fn) are stripped back to
+// the Silica fn name (fn) when formatting actor failure call stacks (dladdr dli_sname).
+fn emit_module_stack_prefix_record(module_name: string) -> string {
+    case module_name == "__silica_runtime" of {
+        true -> "";
+        false -> do
+            prefix: string <- concat(module_name, "_");
+            label: string <- concat("_silica_modpfx_", module_name);
+            hdr: string <- concat("\n.section __DATA,__silica_modpfx,cstring_literals\n.p2align 3\n.globl ", label);
+            body: string <- concat(hdr, concat("\n", concat(label, concat(":\n    .asciz \"", concat(prefix, "\"\n")))));
+            body
+        end
     }
 }
 

@@ -17,11 +17,12 @@
 
 // Trait-based polymorphism (silica-specification §3.4.8, §8.2.3): concrete types used where a trait
 // type is expected when the trait module lists a matching `impl` or marker `impl Type;`, or for
-// built-in Collectable coverage (§CollectableTrait in language spec).
+// built-in Collectable and ActorMessage coverage (§CollectableTrait, §16.3.2 in language spec).
 
 use parser_ast;
 
 export actual_type_satisfies_trait_expectation/3;
+export is_builtin_actor_message_instance/1;
 export check_trait/0;
 export trim_type_text/1;
 export find_program_declaring_trait/2;
@@ -230,6 +231,12 @@ fn is_builtin_collectable_instance(concrete: string) -> bool {
     collectable_inline_sum_or_shape(concrete)
 }
 
+// Built-in ActorMessage instances (silica-specification §16.3.2): marker trait, compile-time only.
+// Same inline shapes as Collectable — no runtime wrapper / link symbol.
+fn is_builtin_actor_message_instance(concrete: string) -> bool {
+    is_builtin_collectable_instance(concrete)
+}
+
 fn find_arrow_in_type(s: string, i: int64) -> int64 {
     case i + 4 > len(s) of {
         true -> -1;
@@ -240,19 +247,22 @@ fn find_arrow_in_type(s: string, i: int64) -> int64 {
     }
 }
 
-// If `actual` can stand in for `expected` where `expected` names a trait (or Collectable), return true.
+// If `actual` can stand in for `expected` where `expected` names a trait (or Collectable / ActorMessage), return true.
 fn actual_type_satisfies_trait_expectation(actual: string, expected: string, world: ListNamedProgram) -> bool {
     case actual == expected of {
         true -> true;
         false -> case expected == "Collectable" of {
             true -> is_builtin_collectable_instance(actual);
-            false -> do
-                (found: bool, prog: Program) <- find_program_declaring_trait(world, expected);
-                case found of {
-                    false -> false;
-                    true -> trait_program_accepts_concrete(prog, actual)
-                }
-            end
+            false -> case expected == "ActorMessage" of {
+                true -> is_builtin_actor_message_instance(actual);
+                false -> do
+                    (found: bool, prog: Program) <- find_program_declaring_trait(world, expected);
+                    case found of {
+                        false -> false;
+                        true -> trait_program_accepts_concrete(prog, actual)
+                    }
+                end
+            }
         }
     }
 }

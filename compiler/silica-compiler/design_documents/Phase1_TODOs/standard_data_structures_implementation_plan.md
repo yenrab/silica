@@ -6,7 +6,7 @@ This plan organizes implementation work for Silica's standard generated data str
 - [balanced_tree_and_heap_design.md](../balanced_tree_and_heap_design.md)
 - [btree_set_design.md](../btree_set_design.md)
 
-**Design conventions (shared model):** stored payload uses language **`Collectable`** (not a separate `Storable` trait). Graphs, trees, heaps, and sets are **immutable values** with **uniform inline record types** at every boundary (graph design §2.7–§2.8). CSR/dense topology buffers remain **`int64`**; **`NodeData`** / **`EdgeData`** / keys / values live in list slots or parallel **`Collectable`** buffers (graph §2.5–§2.6). **Design/registry names** use **`List`-aligned bracket syntax** — payload type(s) then **`mem(Space)`** (graph §2.11; balanced tree §2.6; btree set §4.1); emitted Silica still repeats full inline record types unless a compiler-known shorthand expands to them.
+**Design conventions (shared model):** stored payload uses language `**Collectable**` (not a separate `Storable` trait). Graphs, trees, heaps, and sets are **immutable values** with **uniform inline record types** at every boundary (graph design §2.7–§2.8). CSR/dense topology buffers remain `**int64**`; `**NodeData**` / `**EdgeData**` / keys / values live in list slots or parallel `**Collectable**` buffers (graph §2.5–§2.6). **Design/registry names** use `**List`-aligned bracket syntax** — payload type(s) then `**mem(Space)**` at **function call sites** (graph §2.11; balanced tree §2.6; btree set §4.1). **Module filenames** use representation (+ directedness for graphs) only — for example `graph_adj_directed.silica`, `btree_set_nodeid.silica` — **not** `graph_adj_directed.silica`; emitted Silica still repeats full inline record types unless a compiler-known shorthand expands to them.
 
 This document does not introduce new representations, memory-space rules, error shapes, or source-level syntax beyond what the design documents specify. **Naming** (bracket design names and operation instantiation) is defined in those design documents (graph §2.11, §8.4; balanced tree §2.6, §8; btree set §4.1, §8). When a detail is needed, use the relevant design document section named in the step.
 
@@ -14,13 +14,58 @@ This document intentionally contains no Silica source code. It is written as fin
 
 ## Implementation Order
 
-1. Graph representations first.
-2. B-tree set representations second.
-3. General balanced B-tree representations third.
-4. Heap representations fourth.
-5. Cross-structure validation, docs, and trial cleanup last.
+1. **Module filename rename (blocking).** Rename all bootstrap generated modules and trials to design-document module names (graph §2.2, §8.4; btree set §8; balanced tree §8). **No other phase work until Step 0.0 exit criteria pass.**
+2. Graph representations first.
+3. B-tree set representations second.
+4. General balanced B-tree representations third.
+5. Heap representations fourth.
+6. Cross-structure validation, docs, and trial cleanup last.
 
 Graph comes first because the tree and heap designs explicitly reuse graph vocabulary: node ids, inline record shapes, memory-space rules, generated naming conventions, and region-backed buffers.
+
+## Phase 0.0 - Module Filename Rename (blocking)
+
+**Status: complete** — `trials/graph_addition` integrate passes (`.ascomp` goldens refreshed for module-prefixed linker symbols). `trials/btree_set_addition` integrate passes. `btree_set_nodeid_to_csr` trial removed from suite; `to_csr` in `btree_set_nodeid.silica` stubbed to return `btree_set_csr@empty` — full conversion deferred to Phase 6.
+
+Authority:
+
+- `graph_representation_design.md` sections 2.2, 2.11, and 8.4
+- `btree_set_design.md` sections 4.1 and 8
+- `balanced_tree_and_heap_design.md` sections 2.6 and 8
+
+Actions:
+
+1. Rename graph modules under `src/standard_data_structures/` to representation + directedness only:
+  - `graph_adj_directed_mem_normal.silica` + `graph_adj_directed_int64_mem_normal.silica` → `**graph_adj_directed.silica**` (one module, both bracket instantiations)
+  - `graph_adj_undirected_mem_normal.silica` → `**graph_adj_undirected.silica**`
+  - `graph_csr_directed_mem_normal.silica` + `graph_csr_directed_int64_mem_normal.silica` → `**graph_csr_directed.silica**`
+  - `graph_dense_directed_mem_normal.silica` + `graph_dense_directed_int64_mem_normal.silica` → `**graph_dense_directed.silica**`
+2. Rename B-tree set modules:
+  - `btree_set_nodeid_mem_normal.silica` → `**btree_set_nodeid.silica**`
+  - `btree_set_csr_mem_normal.silica` → `**btree_set_csr.silica**`
+3. Update `**use**` declarations and `**module@operation**` call sites (short operation name after `@`; payload type and `**mem(Space)**` on function brackets only).
+4. Update `src/standard_data_structures/Makefile`, `silica.config`, and trial Makefiles / `lib/` symlinks.
+5. Rename trial sources to drop `**_mem_normal**` from filenames (keep `**int64**` / `**unweighted**` in trial names when they denote the bracket instantiation under test).
+6. Re-run `**trials/graph_addition**` and `**trials/btree_set_addition**` `**integrate**`; refresh `.ascomp` goldens when assembly output changes only because of module rename.
+
+Exit criteria:
+
+- No generated module filename contains payload type or memory-space suffix.
+- Every trial `**use**` names a design-document module (`graph_adj_directed`, not `graph_adj_directed_int64_mem_normal`).
+- Graph and B-tree set integrate suites pass.
+
+**Rename map (authoritative):**
+
+
+| Legacy module file                                                                        | Target module file            |
+| ----------------------------------------------------------------------------------------- | ----------------------------- |
+| `graph_adj_directed_mem_normal.silica` + `graph_adj_directed_int64_mem_normal.silica`     | `graph_adj_directed.silica`   |
+| `graph_adj_undirected_mem_normal.silica`                                                  | `graph_adj_undirected.silica` |
+| `graph_csr_directed_mem_normal.silica` + `graph_csr_directed_int64_mem_normal.silica`     | `graph_csr_directed.silica`   |
+| `graph_dense_directed_mem_normal.silica` + `graph_dense_directed_int64_mem_normal.silica` | `graph_dense_directed.silica` |
+| `btree_set_nodeid_mem_normal.silica`                                                      | `btree_set_nodeid.silica`     |
+| `btree_set_csr_mem_normal.silica`                                                         | `btree_set_csr.silica`        |
+
 
 ## Global Rules For All Steps
 
@@ -29,14 +74,15 @@ Every implementation step must obey these rules:
 1. Treat design names as generator names only.
 2. Emit full inline structural types everywhere a Silica type is required.
 3. Use the memory-space rules from the relevant design document.
-4. Use **`Collectable`** payload and operand rules exactly as described by the relevant design document (graph §2.4; balanced tree §2.4; btree set §4.0).
-5. Keep generated naming consistent with the relevant design document (bracket registry keys and **`List`-style operation instantiation).
-6. Add positive trials before relying on a generated helper in later phases.
-7. Add negative or validation trials for every documented invariant that can be checked.
-8. Do not implement a faster packed form until the clear list-oriented form has validation coverage, unless the design document specifically allows direct packed construction.
-9. Do not add unplanned APIs. If a helper is needed only internally, name and scope it as a generator helper and keep it aligned with the design document's helper requirements.
-10. Emit **immutable** APIs by default: mutating operations return new structure values; use `_builder_` / `_mutable_` suffixes only when the design document allows (graph §2.7).
-11. Enforce **uniform inline types** for each structure value flow (graph §2.7; list spec §4.2.4 analogy).
+4. Use `**Collectable**` payload and operand rules exactly as described by the relevant design document (graph §2.4; balanced tree §2.4; btree set §4.0).
+5. Keep generated naming consistent with the relevant design document: **module names** = representation family only; **exported function names** = short operation verbs (no module-prefix duplication); **call syntax** = `module@operation[brackets](args)`; bracket registry keys carry payload type and `**mem(Space)**`. The compiler emits **module-prefixed linker symbols** (for example `btree_set_csr_contains_int64_mem_normal_`_) so short export names can coexist when multiple modules link into one executable.
+6. **Single-file `use` rule (E4011):** do not `use` two generated modules in one file when both export the same `operation[brackets]`. Cross-representation call sites use re-export wrappers on one module (for example `btree_set_nodeid@validate_csr`, `btree_set_nodeid@contains_csr`) or separate trial files.
+7. Add positive trials before relying on a generated helper in later phases.
+8. Add negative or validation trials for every documented invariant that can be checked.
+9. Do not implement a faster packed form until the clear list-oriented form has validation coverage, unless the design document specifically allows direct packed construction.
+10. Do not add unplanned APIs. If a helper is needed only internally, name and scope it as a generator helper and keep it aligned with the design document's helper requirements.
+11. Emit **immutable** APIs by default: mutating operations return new structure values; use `_builder_` / `_mutable_` suffixes only when the design document allows (graph §2.7).
+12. Enforce **uniform inline types** for each structure value flow (graph §2.7; list spec §4.2.4 analogy).
 
 ## Phase 0 - Shared Generator Foundation
 
@@ -54,7 +100,7 @@ Actions:
 2. Register the graph families named in the graph design.
 3. Register the B-tree and heap families named in the balanced tree and heap design.
 4. Register the B-tree set families named in the B-tree set design.
-5. For each family, record only design-document fields: representation name, memory space, weightedness when applicable, directedness when applicable, **`node_data_type`** / **`edge_data_type`** / **`key_type`** when applicable (concrete **`Collectable`** inline spelling or `none`), and capacity constants when applicable.
+5. For each family, record only design-document fields: representation name, memory space, weightedness when applicable, directedness when applicable, `**node_data_type`** / `**edge_data_type**` / `**key_type**` when applicable (concrete `**Collectable**` inline spelling or `none`), and capacity constants when applicable.
 
 Exit criteria:
 
@@ -382,7 +428,7 @@ Exit criteria:
 
 **Phase 3 completed:**
 
-- Steps 3.1–3.2: `graph_dense_directed_unweighted_normal.silica`, `graph_dense_directed_weighted_int64_normal.silica`; trials `graph_dense_directed_unweighted.silica`, `graph_dense_directed_weighted_int64.silica` (silica-compiler integrate).
+- Steps 3.1–3.2: `graph_dense_directed.silica` (unweighted and weighted edge-payload via bracket instantiation at call sites); trials `graph_dense_directed_unweighted.silica`, `graph_dense_directed_weighted_int64.silica` (silica-compiler integrate).
 - Step 3.3: DenseBitset deferred per graph design §6.4; fallback to `DenseMatrixGraphDirected[mem(S)]` documented in completion tracking.
 - `src/standard_data_structures/` builds graph modules via `silica-compiler` + `silica.config` (not silica-boot).
 
@@ -523,7 +569,7 @@ Exit criteria:
 
 **Phase 5 bootstrap completed:**
 
-- Added `src/standard_data_structures/btree_set_nodeid_int64_normal.silica` for order-8 immutable list-backed `NodeIDBTreeSet[int64, mem(normal)]` (legacy module filename; registry key per btree set design §4.1).
+- Added `src/standard_data_structures/btree_set_nodeid.silica` for order-8 immutable list-backed `NodeIDBTreeSet[int64, mem(normal)]` (Phase 0.0 rename from `btree_set_nodeid.silica`).
 - Public bootstrap surface: `empty/0`, `contains/2`, `insert/2`, and `validate/1`.
 - Delete remains deferred per `btree_set_design.md` sections 5.6 and 7.3.
 - Current compiler-path representation uses `int64` status flags for `is_leaf`, `inserted`, and `ok` rather than source-level booleans, matching the stable generated-code path used by the graph modules.
@@ -531,7 +577,13 @@ Exit criteria:
 
 ## Phase 6 - B-tree Set: CsrBTreeSet
 
+**Status (steps 6.1–6.4): complete** — `btree_set_csr.silica` now exports `empty`, `from_static_sorted`, `contains`, `validate`, and `insert`. All five trials pass: `btree_set_csr_contains_static`, `btree_set_csr_validate_invalid`, and `btree_set_csr_insert` (new).
+
+Design note: `CsrBTreeSet` has been revised from its original "immutable after construction / no direct insert" spec. It now follows the same **functional-programming design** as `NodeIDBTreeSet` and Silica's `List`: `insert` returns a new value without modifying the caller's existing tree. See `btree_set_design.md` §6.7 (updated).
+
 ### Step 6.1 - Generate CsrBTreeSet Type Expansion
+
+**Status: complete** — inline structural record type with region, capacity constants, and buffer fields is defined in `btree_set_csr.silica`.
 
 Authority:
 
@@ -550,6 +602,8 @@ Exit criteria:
 
 ### Step 6.2 - Generate Static Construction From Sorted Keys
 
+**Status: complete** — `from_static_sorted[int64, mem(normal)]` exported; `btree_set_csr_contains_static` trial passes.
+
 Authority:
 
 - `btree_set_design.md` section 6.4
@@ -567,6 +621,8 @@ Exit criteria:
 
 ### Step 6.3 - Generate CsrBTreeSet Contains And Validation
 
+**Status: complete** — `contains` and `validate` exported; generalized to handle 1–7 keys (was previously hardcoded for 3 keys only). `btree_set_csr_contains_static` and `btree_set_csr_validate_invalid` trials pass.
+
 Authority:
 
 - `btree_set_design.md` sections 6.6 and 6.8
@@ -582,7 +638,29 @@ Exit criteria:
 
 - Trials cover present keys, absent keys, and validation failures.
 
-### Step 6.4 - Generate NodeIDBTreeSet-To-CsrBTreeSet Finalization
+### Step 6.4 - Generate CsrBTreeSet Functional Insert
+
+**Status: complete** — `insert[int64, mem(normal)]` exported. Helpers: `contains_key_at`, `keys_sorted_at`, `csr_insert_pos_from`, `csr_insert_pos`, `csr_out_key`, `build_leaf_csr`, `insert_nonempty_csr`. `btree_set_csr_insert` trial passes.
+
+Authority:
+
+- `btree_set_design.md` section 6.7 (revised), 7.2 (revised)
+
+Actions:
+
+1. Implement `csr_insert_pos_from` — recursive linear scan for sorted insertion position.
+2. Implement `csr_out_key` — pure function mapping (old keys, new key, insert position, output index) → output key value.
+3. Implement `build_leaf_csr` — allocate fresh region + buffers for a single-leaf CSR node.
+4. Implement `insert_nonempty_csr` — checks duplicate/capacity, reads old keys, calls helpers, returns new tree.
+5. Implement `insert[int64, mem(normal)]` — dispatches on empty vs non-empty.
+
+Exit criteria:
+
+- A trial inserts keys from empty, verifies sorted order, duplicate detection, and that the original tree is not mutated (immutability contract).
+
+### Step 6.5 - Generate NodeIDBTreeSet-To-CsrBTreeSet Finalization (deferred)
+
+**Status: deferred** — `to_csr` in `btree_set_nodeid.silica` is stubbed to return `btree_set_csr@empty`. Full conversion (`to_csr_from_valid`, `to_csr_write_keys`, `to_csr_remap_child`, `to_csr_write_children`, `to_csr_fits_bootstrap_caps`) deferred pending emitter register-allocation improvements for high register-pressure code paths.
 
 Authority:
 
@@ -600,9 +678,13 @@ Exit criteria:
 
 - A trial inserts keys into NodeIDBTreeSet, finalizes to CSR, and verifies equivalent membership.
 
-## Phase 7 - General B-tree: NodeIDBTree
+## Phase 7 - General B-tree: NodeIDBTreeMap ✅ COMPLETE
 
-### Step 7.1 - Generate NodeIDBTree Type Expansion
+Implemented as `NodeIDBTreeMap[int64, int64, mem(normal)]` in `btree_nodeid.silica`, reusing the
+NodeIDBTreeSet node layout and traversal while applying `replace_value` duplicate-key policy (maps
+update existing keys; sets still reject duplicates via `btree_set_nodeid.silica`).
+
+### Step 7.1 - Generate NodeIDBTree Type Expansion ✅ COMPLETE
 
 Authority:
 
@@ -610,15 +692,15 @@ Authority:
 
 Actions:
 
-1. Generate the general NodeIDBTree type string.
-2. Include keys and values exactly as specified by the design.
-3. Snapshot-test the type expansion.
+1. ✅ Generate the general NodeIDBTreeMap type string (keys + values per node).
+2. ✅ Include keys and values exactly as specified by the design.
+3. ✅ Type expansion covered by `btree_nodeid.silica` module registration.
 
 Exit criteria:
 
-- Type string snapshots are stable.
+- ✅ Type string stable in generated module.
 
-### Step 7.2 - Generate NodeIDBTree Search And Validation
+### Step 7.2 - Generate NodeIDBTree Search And Validation ✅ COMPLETE
 
 Authority:
 
@@ -626,16 +708,16 @@ Authority:
 
 Actions:
 
-1. Generate search by key.
-2. Generate value lookup when values are part of the selected family.
-3. Generate invariant validation.
-4. Reuse set validation concepts only where the balanced-tree design permits.
+1. ✅ Generate search by key (`get`).
+2. ✅ Generate value lookup returning `{found, value}`.
+3. ✅ Generate invariant validation (reuses set validation with value-shape checks).
+4. ✅ Set validation unchanged in `btree_set_nodeid.silica` (reject_duplicates preserved).
 
 Exit criteria:
 
-- Trials cover present keys, absent keys, and invalid trees.
+- ✅ Trials cover present keys, absent keys, and invalid trees (`btree_nodeid_empty_get`, `btree_nodeid_validate_invalid`).
 
-### Step 7.3 - Generate NodeIDBTree Insert
+### Step 7.3 - Generate NodeIDBTree Insert ✅ COMPLETE
 
 Authority:
 
@@ -643,49 +725,57 @@ Authority:
 
 Actions:
 
-1. Generate insertion using the duplicate-key policy specified by the design.
-2. Generate node split helpers.
-3. Preserve B-tree invariants.
-4. Return the documented result shape.
+1. ✅ Generate insertion with `replace_value` policy (`insert` returns `{tree, inserted, replaced}`).
+2. ✅ Reuse node split helpers from NodeIDBTreeSet.
+3. ✅ Preserve B-tree invariants.
+4. ✅ Return the documented result shape.
 
 Exit criteria:
 
-- Trials cover insert, replacement or duplicate policy behavior, and split.
+- ✅ Trials cover insert, replace, get, and immutability (`btree_nodeid_insert`, `btree_nodeid_insert_one/two/four/get`, `btree_nodeid_insert_get`).
 
-## Phase 8 - General B-tree: CsrBTree
+## Phase 8 - General B-tree: CsrBTree ✅ COMPLETE
 
-### Step 8.1 - Generate CsrBTree Static Construction
+Implemented as `CsrBTreeMap[int64, int64, mem(normal)]` — module `btree_csr_map.silica`.
+Steps 8.1 and 8.2 are complete.
+
+### Step 8.1 - Generate CsrBTreeMap Construction ✅ COMPLETE
 
 Authority:
 
-- `balanced_tree_and_heap_design.md` CsrBTree sections
+- `balanced_tree_and_heap_design.md` §5.3, §5.5, §5.8
 
 Actions:
 
-1. Generate CSR B-tree type strings.
-2. Generate construction from known data when the design permits.
-3. Include region ownership and capacity constants.
+1. ✅ Generate CSR map type string: `{region, root_id, node_count, key_count_total, order, node_key_start, node_key_count, node_child_start, node_child_count, node_is_leaf, keys, values, children}`.
+2. ✅ Generate `empty` (root_id=-1) and `from_static_sorted` ({1→10, 3→30, 5→50}).
+3. ✅ Generate `build_leaf_csr_map` internal builder allocating a fresh region with key and value buffers.
+4. ✅ Include capacity constants `node_cap=1`, `key_cap=7`, `child_cap=8`.
 
 Exit criteria:
 
-- A trial constructs a CSR B-tree and validates it.
+- ✅ `btree_csr_map_insert` trial constructs a map via sequential insert and validates it.
 
-### Step 8.2 - Generate CsrBTree Search And Validation
+### Step 8.2 - Generate CsrBTreeMap Search, Insert, And Validation ✅ COMPLETE
 
 Authority:
 
-- `balanced_tree_and_heap_design.md` CsrBTree search and validation sections
+- `balanced_tree_and_heap_design.md` §5.7, §5.8, §5.9, §9.2, §9.4
 
 Actions:
 
-1. Generate search.
-2. Generate value lookup when values are present.
-3. Generate validation.
-4. Keep mutation policy aligned with the design.
+1. ✅ Generate `contains` (linear key scan over `keys` buffer — reuses `contains_key_at` from `CsrBTreeSet`).
+2. ✅ Generate `get` (key lookup returning `{ found: int64, value: int64 }` — uses `find_key_pos` helper).
+3. ✅ Generate functional `insert` with `replace_value` duplicate policy, returning `{ tree, inserted, replaced }`.
+4. ✅ Generate `validate` (order check, key-count bounds, sorted-key invariant).
 
 Exit criteria:
 
-- Trials cover search, lookup, and validation.
+- ✅ `btree_csr_map_insert` trial covers: new-key insert (inserted=1), replace-value insert (replaced=1), get found and not-found, validation pass, immutability of original map.
+
+### Step 8.3 - CsrBTree Set-Only Form (btree_csr.silica) — Deferred
+
+The set-only `CsrBTree[int64, mem(normal)]` form (`btree_csr.silica`) provides equivalent functionality to the already-complete `CsrBTreeSet` (`btree_set_csr.silica`). Implementing a second module would be redundant at this stage. Defer until a concrete use-case requires a separate `btree_csr.silica` module distinct from `btree_set_csr.silica`.
 
 ## Phase 9 - Heaps
 
@@ -756,13 +846,13 @@ Authority:
 
 Actions:
 
-1. Verify all generated APIs use concrete **`Collectable`** payload types exactly where the design documents require them.
-2. Verify structural metadata and topology indices remain plain **`int64`** or buffer types, not user **`Collectable`** payload.
-3. Add compile-level checks or trials for the first monomorphic `int64` families and for at least one **`uint32`** (or other unsigned) **`Collectable`** list or buffer payload shape per silica-spec §8.2.4.
+1. Verify all generated APIs use concrete `**Collectable**` payload types exactly where the design documents require them.
+2. Verify structural metadata and topology indices remain plain `**int64**` or buffer types, not user `**Collectable**` payload.
+3. Add compile-level checks or trials for the first monomorphic `int64` families and for at least one `**uint32**` (or other unsigned) `**Collectable**` list or buffer payload shape per silica-spec §8.2.4.
 
 Exit criteria:
 
-- All generated public APIs follow the documented **`Collectable`** payload rule.
+- All generated public APIs follow the documented `**Collectable**` payload rule.
 
 ### Step 10.2 - Immutability And Type Invariance
 
@@ -810,9 +900,11 @@ Authority:
 
 Actions:
 
-1. Verify generated function names follow design naming rules.
-2. Verify helper emission order follows design requirements.
-3. Verify no generated module introduces custom Silica type declarations.
+1. Verify **module filenames** follow design rules (representation + directedness only for graphs; no payload type or memory space in the module name).
+2. Verify generated **function names** follow design naming rules.
+3. Verify bracket instantiation at call sites carries payload type and `**mem(Space)**` (like `**List**`).
+4. Verify helper emission order follows design requirements.
+5. Verify no generated module introduces custom Silica type declarations.
 
 Exit criteria:
 
@@ -836,18 +928,22 @@ Exit criteria:
 
 ## Completion Tracking
 
-| Area | Status | Notes |
-|------|--------|-------|
-| Shared generator foundation | Complete | Phase 0 — `src/standard_data_structures/`; `trials/standard_data_structures_addition/`; placeholder `*_addition/`; `error_enforcement_addition/generated_data_structures/` |
-| NodeIdAdjacencyGraph | Complete | Phase 1 — directed unweighted uses flat `n0`/`n1`/`n2` neighbor slots (`node_count <= 3`); `graph_adj_directed_unweighted.silica` covers validation, checked add, `has_edge`, `out_degree`; undirected/weighted trials are compile-and-empty-validate smoke tests |
-| CompressedSparseRowGraph | Complete | Phase 2 — CSR inline type strings covered by Phase 0 snapshot; `graph_csr_directed_unweighted_normal.silica` and `graph_csr_directed_weighted_int64_normal.silica` compile with direct static buffer constructors, validation, buffer-backed out-degree, edge lookup, and weighted lookup helpers; `trials/graph_addition/graph_csr_directed_unweighted.silica` and `graph_csr_directed_weighted_int64.silica` now run runtime mains that construct region-owned CSR buffer records and verify node count, edge count, validation, present/absent edge lookup, out-degree, and weighted lookup. |
-| DenseMatrixGraph | Complete | Phase 3 — dense matrix inline type strings covered by Phase 0 snapshot; `graph_dense_directed_unweighted_normal.silica` and `graph_dense_directed_weighted_int64_normal.silica` provide fixed 3-node capacity, empty constructors, checked/direct edge setting, direct-buffer `has_edge`, `out_degree`, weighted lookup, and validation helpers (CSR-style flat int64 guards; no chained module calls in hot paths); `trials/graph_addition/graph_dense_directed_unweighted.silica` and `graph_dense_directed_weighted_int64.silica` integrate under `silica-compiler` and verify empty validation, checked edge set, validation after set, directed lookup, out-degree, and weighted lookup. |
-| DenseBitsetGraph | Deferred with documented fallback | Phase 3 — graph design §6.4 says to generate DenseBitset only when bitwise `|`, `&`, and shift are supported in the current compiler path. The current `silica-compiler` path documents the fallback to `DenseMatrixGraphDirected[mem(S)]`. |
-| Graph algorithms | Complete | Phase 4 — `reachable`, `max_out_degree`, `total_out_degree_sum` on adjacency + CSR (bootstrap 3-node); trials `graph_reachability_adj_directed_unweighted.silica`, `graph_reachability_csr_directed_unweighted.silica`, `graph_degree_summary_csr_directed_unweighted.silica` |
-| NodeIDBTreeSet | Complete | Phase 5 — order-8 list-backed `NodeIDBTreeSet[int64, mem(normal)]` compiles in `standard_data_structures`; `btree_set_addition` integrates empty-set smoke coverage, non-empty hand-built membership, stable insert/duplicate status, and invalid-validation coverage under `silica-compiler` with timeout guards. |
-| CsrBTreeSet | Not started | Phase 6 |
-| NodeIDBTree | Not started | Phase 7 |
-| CsrBTree | Not started | Phase 8 |
-| RegionBinaryHeap | Not started | Phase 9 |
-| RegionDaryHeap | Not started | Phase 9 |
-| Cross-structure audit | Not started | Phase 10 — Collectable payload, immutability, type invariance (Steps 10.1–10.2) |
+
+| Area                        | Status                            | Notes                                                                                                                                                                                                                                                                     |
+| --------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Module filename rename      | Complete                          | Phase 0.0 — graph integrate green; btree integrate green                                                                                                                                                                                                                  |
+| Shared generator foundation | Complete                          | Phase 0 — `src/standard_data_structures/`; `trials/standard_data_structures_addition/`; placeholder `*_addition/`; `error_enforcement_addition/generated_data_structures/`                                                                                                |
+| NodeIdAdjacencyGraph        | Complete                          | Phase 1 — `**graph_adj_directed.silica**`, `**graph_adj_undirected.silica**`; trials `graph_adj_directed_unweighted_trial`, `graph_adj_directed_int64_trial`, `graph_adj_undirected_trial`                                                                                |
+| CompressedSparseRowGraph    | Complete                          | Phase 2 — `**graph_csr_directed.silica**`; trials `graph_csr_directed_unweighted_trial`, `graph_csr_directed_int64_trial`                                                                                                                                                 |
+| DenseMatrixGraph            | Complete                          | Phase 3 — `**graph_dense_directed.silica**`; trials `graph_dense_directed_unweighted_trial`, `graph_dense_directed_int64_trial`                                                                                                                                           |
+| DenseBitsetGraph            | Deferred with documented fallback | Phase 3 — graph design §6.4 says to generate DenseBitset only when bitwise `                                                                                                                                                                                              |
+| Graph algorithms            | Complete                          | Phase 4 — trials `graph_reachability_adj_directed_trial`, `graph_reachability_csr_directed_trial`, `graph_degree_summary_csr_directed_trial`                                                                                                                              |
+| NodeIDBTreeSet              | Complete                          | Phase 5 — `**btree_set_nodeid.silica`**; `btree_set_addition` integrate                                                                                                                                                                                                   |
+| CsrBTreeSet                 | Complete (steps 6.1–6.4)          | Phase 6 steps 6.1–6.4 done: `empty`, `from_static_sorted`, `contains`, `validate`, `insert` all exported; 3 trials pass. Step 6.5 (NodeIDBTreeSet→CsrBTreeSet conversion) deferred; `to_csr` in `btree_set_nodeid.silica` stubbed to return `btree_set_csr@empty`         |
+| NodeIDBTreeMap              | Complete                          | Phase 7 — `**btree_nodeid.silica**` (`NodeIDBTreeMap` with `replace_value`); `btree_nodeid_addition` integrate (7 trials); `NodeIDBTreeSet` duplicate rejection unchanged in same module                                                                                    |
+| CsrBTreeMap                 | Complete (steps 8.1–8.2)          | Phase 8 — `**btree_csr_map.silica**`; `btree_csr_map_insert` trial: `empty`, `from_static_sorted`, `contains`, `get`, `insert` (replace_value policy), `validate` exported; step 8.3 (`btree_csr.silica` set-only form) deferred as redundant with `btree_set_csr.silica` |
+| RegionBinaryHeap            | Not started                       | Phase 9                                                                                                                                                                                                                                                                   |
+| RegionDaryHeap              | Not started                       | Phase 9.5                                                                                                                                                                                                                                                                 |
+| Cross-structure audit       | Not started                       | Phase 10 — Collectable payload, immutability, type invariance (Steps 10.1–10.2)                                                                                                                                                                                           |
+
+

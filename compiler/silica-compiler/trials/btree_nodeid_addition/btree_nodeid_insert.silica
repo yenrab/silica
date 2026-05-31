@@ -1,0 +1,89 @@
+// Phase 7 step 7.3 — NodeIDBTreeMap[int64, int64, mem(normal)] insert, get, and replace_value.
+// Test: inserted=1 for new keys, replaced=1 for existing keys, get returns updated values,
+// and the original pre-replace tree is unmodified (functional immutability).
+// Split into small helpers that each use fewer than 10 simultaneous bindings.
+use btree_nodeid;
+
+// Build the final tree (after 3 inserts + 1 replace) starting from tree0.
+// Returns { tree: final_tree, inserted: r1.inserted, r2.inserted, r3.inserted, replaced: replace1.replaced }.
+// Only 5 sequential bindings needed here (r1, r2, r3, replace1 + struct).
+fn build_final_tree(
+    tree0: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }
+) -> { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, ins1: int64, ins2: int64, ins3: int64, rep1: int64 } {
+    sequence proc[mem(normal)]
+        r1: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, inserted: int64, replaced: int64 } <-
+            btree_nodeid@insert[int64, int64, mem(normal)](tree0, 10, 100);
+        r2: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, inserted: int64, replaced: int64 } <-
+            btree_nodeid@insert[int64, int64, mem(normal)](r1.tree, 20, 200);
+        r3: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, inserted: int64, replaced: int64 } <-
+            btree_nodeid@insert[int64, int64, mem(normal)](r2.tree, 30, 300);
+        replace1: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, inserted: int64, replaced: int64 } <-
+            btree_nodeid@insert[int64, int64, mem(normal)](r3.tree, 10, 999);
+        result: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, ins1: int64, ins2: int64, ins3: int64, rep1: int64 } <- {
+            tree: replace1.tree,
+            ins1: r1.inserted,
+            ins2: r2.inserted,
+            ins3: r3.inserted,
+            rep1: replace1.replaced
+        }
+    produces
+        pure result
+    end
+}
+
+// Check that the pre-replace tree (r3.tree) still returns value=100 for key=10 (immutability).
+// Only 5 bindings: r1, r2, r3, get_result, ok_flag.
+fn check_original_unmodified(
+    tree0: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }
+) -> int64 {
+    sequence proc[mem(normal)]
+        r1: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, inserted: int64, replaced: int64 } <-
+            btree_nodeid@insert[int64, int64, mem(normal)](tree0, 10, 100);
+        r2: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, inserted: int64, replaced: int64 } <-
+            btree_nodeid@insert[int64, int64, mem(normal)](r1.tree, 20, 200);
+        r3: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, inserted: int64, replaced: int64 } <-
+            btree_nodeid@insert[int64, int64, mem(normal)](r2.tree, 30, 300);
+        get10: { found: int64, value: int64 } <- btree_nodeid@get[int64, int64, mem(normal)](r3.tree, 10);
+        ok: int64 <- case get10.found == 1 of {
+            true -> case get10.value == 100 of { true -> 1; false -> 0 };
+            false -> 0
+        }
+    produces
+        pure ok
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        tree0: {
+            root_id: int64,
+            node_count: int64,
+            order: int64,
+            nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        } <- btree_nodeid@empty[int64, int64, mem(normal)]();
+
+        built: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, ins1: int64, ins2: int64, ins3: int64, rep1: int64 } <-
+            build_final_tree(tree0);
+
+        get10: { found: int64, value: int64 } <- btree_nodeid@get[int64, int64, mem(normal)](built.tree, 10);
+        get20: { found: int64, value: int64 } <- btree_nodeid@get[int64, int64, mem(normal)](built.tree, 20);
+        get30: { found: int64, value: int64 } <- btree_nodeid@get[int64, int64, mem(normal)](built.tree, 30);
+        get99: { found: int64, value: int64 } <- btree_nodeid@get[int64, int64, mem(normal)](built.tree, 99);
+        validation: { ok: int64, error_code: int64 } <- btree_nodeid@validate[int64, int64, mem(normal)](built.tree);
+        imm_ok: int64 <- check_original_unmodified(tree0);
+
+        failures: int64 <-
+            (1 - built.ins1) +
+            ((1 - built.ins2) * 2) +
+            ((1 - built.ins3) * 4) +
+            ((1 - built.rep1) * 8) +
+            ((1 - get10.found) * 16) +
+            ((1 - get20.found) * 32) +
+            ((1 - get30.found) * 64) +
+            (get99.found * 128) +
+            ((1 - validation.ok) * 256) +
+            ((1 - imm_ok) * 512)
+    produces
+        pure failures
+    end
+}

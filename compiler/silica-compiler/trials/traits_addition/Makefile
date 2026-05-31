@@ -53,7 +53,7 @@ all: compile
 			continue; \
 		fi; \
 		echo "Assembling $$sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || failed=1; \
 	done; \
 	if [ -f "__silica_runtime.sams" ]; then \
 		echo "Assembling __silica_runtime.sams..."; \
@@ -64,7 +64,7 @@ all: compile
 		base=$$(basename "$$sams" .sams); \
 		obj="traits/$$base.o"; \
 		echo "Assembling $$sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj" || { failed=1; break; }; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj" || failed=1; \
 	done; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
 		base=$${line%.silica}; \
@@ -100,7 +100,7 @@ integrate: clean silica.config compile
 			continue; \
 		fi; \
 		echo "Assembling $$sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || failed=1; \
 	done; \
 	if [ -f "__silica_runtime.sams" ]; then \
 		echo "Assembling __silica_runtime.sams..."; \
@@ -111,7 +111,7 @@ integrate: clean silica.config compile
 		base=$$(basename "$$sams" .sams); \
 		obj="traits/$$base.o"; \
 		echo "Assembling $$sams..."; \
-		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj" || { failed=1; break; }; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$obj" || failed=1; \
 	done; \
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^traits/'); do \
 		base=$${line%.silica}; \
