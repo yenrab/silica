@@ -3720,21 +3720,28 @@ _silica_rt_badarith:
 	bl	_silica_rt_cv_signal
 	add	x0, x19, #16
 	bl	_os_unfair_lock_unlock
+	ldr	x20, [x19, #208]
+	ldr	x21, [x19, #192]
 	ldr	x8, [x19, #272]
-	cbnz	x8, Lbadarith_report_already_done
-	mov	x0, x19
-	bl	_silica_rt_actor_deliver_exit
-	mov	x20, x0
+	cbnz	x8, Lbadarith_after_report
 	mov	x0, x19
 	bl	_silica_rt_actor_deliver_unwind_report
 	b	Lbadarith_after_report
-Lbadarith_report_already_done:
-	mov	x20, #0
 Lbadarith_after_report:
+	cbz	x21, Lbadarith_after_restart
+	cbz	x20, Lbadarith_after_restart
+; Synchronous language failures must finish the declarative supervisor restart before
+; waking the blocked caller; otherwise the caller can query the row while it still
+; points at this dying ACB and then call through a freed os_unfair_lock.
+	mov	x9, #1
+	str	x9, [x20, #56]
+	mov	x0, x19
+	mov	x1, x21
+	mov	x2, #1
+	bl	_silica_rt_supervisor_maybe_restart
+Lbadarith_after_restart:
 	mov	x0, x19
 	bl	_silica_rt_actor_signal_pending_call_deaths
-	ldr	x20, [x19, #208]
-	ldr	x21, [x19, #192]
 	cbz	x21, Lbadarith_thread_exit
 	mov	x0, x19
 	bl	_silica_rt_child_table_free
@@ -3742,9 +3749,6 @@ Lbadarith_after_report:
 	bl	_silica_rt_actor_dealloc_region
 	mov	x0, x19
 	bl	_free
-	cbz	x20, Lbadarith_thread_exit
-	mov	x9, #1
-	str	x9, [x20, #56]
 Lbadarith_thread_exit:
 	mov	x0, #0
 	bl	_pthread_exit
@@ -3791,21 +3795,26 @@ _silica_rt_case_clause:
 	bl	_silica_rt_cv_signal
 	add	x0, x19, #16
 	bl	_os_unfair_lock_unlock
+	ldr	x20, [x19, #208]
+	ldr	x21, [x19, #192]
 	ldr	x8, [x19, #272]
-	cbnz	x8, Lcaseclause_report_already_done
-	mov	x0, x19
-	bl	_silica_rt_actor_deliver_exit
-	mov	x20, x0
+	cbnz	x8, Lcaseclause_after_report
 	mov	x0, x19
 	bl	_silica_rt_actor_deliver_unwind_report
 	b	Lcaseclause_after_report
-Lcaseclause_report_already_done:
-	mov	x20, #0
 Lcaseclause_after_report:
+	cbz	x21, Lcaseclause_after_restart
+	cbz	x20, Lcaseclause_after_restart
+; Same synchronous restart ordering as badarith, but reason_tag 2 (:language_error).
+	mov	x9, #1
+	str	x9, [x20, #56]
+	mov	x0, x19
+	mov	x1, x21
+	mov	x2, #2
+	bl	_silica_rt_supervisor_maybe_restart
+Lcaseclause_after_restart:
 	mov	x0, x19
 	bl	_silica_rt_actor_signal_pending_call_deaths
-	ldr	x20, [x19, #208]
-	ldr	x21, [x19, #192]
 	cbz	x21, Lcaseclause_thread_exit
 	mov	x0, x19
 	bl	_silica_rt_child_table_free
@@ -3813,9 +3822,6 @@ Lcaseclause_after_report:
 	bl	_silica_rt_actor_dealloc_region
 	mov	x0, x19
 	bl	_free
-	cbz	x20, Lcaseclause_thread_exit
-	mov	x9, #1
-	str	x9, [x20, #56]
 Lcaseclause_thread_exit:
 	mov	x0, #0
 	bl	_pthread_exit

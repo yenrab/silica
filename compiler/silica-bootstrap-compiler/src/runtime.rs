@@ -34,7 +34,7 @@ use std::mem;
 // TODO: Implement actual macOS CPU affinity using pthreads API
 
 // CPU Topology Detection for macOS/AArch64
-#[cfg(target_os = "macos")]
+#[cfg(any())]
 mod topology {
     use std::mem;
     use std::ptr;
@@ -532,10 +532,12 @@ static mut NEXT_ACTOR_ID: u64 = 1;
 // Using usize as key (pointer value) instead of *mut to satisfy Send requirement
 static ACTOR_PTR_MAP: OnceLock<Mutex<std::collections::HashMap<usize, Arc<Mutex<SilicaActor>>>>> = OnceLock::new();
 
+/*
 // Core affinity load balancing
 static mut NEXT_CORE_ID: i32 = 0;
 static mut NEXT_PERFORMANCE_CORE: i32 = 0;
 static mut NEXT_EFFICIENCY_CORE: i32 = 0;
+*/
 
 
 // Helper function to start an actor's message processing loop
@@ -548,10 +550,13 @@ fn start_actor_message_loop(actor: Arc<Mutex<SilicaActor>>, core_affinity: i32) 
     // Spawn a new thread for the actor's message loop
     std::thread::spawn(move || {
         // eprintln!("[DEBUG] start_actor_message_loop: Thread spawned for actor ID {}", actor_id);
+        /*
         // Set CPU affinity if specified (core_affinity != 0)
         if core_affinity != 0 {
             set_thread_affinity(core_affinity as u32);
         }
+        */
+        let _ = core_affinity;
         actor_message_loop(actor);
     });
 }
@@ -567,7 +572,7 @@ fn set_thread_affinity(core_id: u32) {
     // - CPU_SET macros to manipulate cpu_set_t
     let _ = core_id; // Suppress unused parameter warning
 }
-
+/*
 /// Get the number of available CPU cores
 fn get_available_cores() -> i32 {
     // Try topology detection first (macOS specific)
@@ -593,7 +598,7 @@ fn get_available_cores() -> i32 {
             .unwrap_or(4)
     }
 }
-
+*/
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct CpuTopology {
@@ -643,7 +648,7 @@ fn detect_sve_support() -> (bool, usize) {
         (false, 0)
     }
 }
-
+/*
 /// Get CPU topology as structured data
 pub fn get_cpu_topology() -> CpuTopology {
     let cores = topology::detect_core_types().unwrap_or_default();
@@ -694,7 +699,7 @@ fn select_next_performance_core() -> i32 {
     }
 
     unsafe {
-        let core_count = perf_cores.len() as i32;
+       let core_count = perf_cores.len() as i32;
         let selected_idx = NEXT_PERFORMANCE_CORE % core_count;
         let selected_core = perf_cores[selected_idx as usize];
         NEXT_PERFORMANCE_CORE = (NEXT_PERFORMANCE_CORE + 1) % core_count;
@@ -717,9 +722,30 @@ fn select_next_efficiency_core() -> i32 {
         selected_core
     }
 }
+*/
+
+/// Get CPU topology as structured data.
+///
+/// Core execution selection is disabled; keep the exported topology API
+/// available with conservative core counts so the bootstrap compiler links.
+pub fn get_cpu_topology() -> CpuTopology {
+    let (has_neon, neon_version, vector_size_bytes, has_sve, sve_vector_length, max_simd_registers) = detect_simd_capabilities();
+
+    CpuTopology {
+        total_cores: 0,
+        performance_core_count: 0,
+        efficiency_core_count: 0,
+        has_neon,
+        neon_version: neon_version as i64,
+        vector_size_bytes: vector_size_bytes as i64,
+        has_sve,
+        sve_vector_length: sve_vector_length as i64,
+        max_simd_registers: max_simd_registers as i64,
+    }
+}
 
 /// Set CPU affinity for the current thread (fallback for other platforms)
-#[cfg(not(target_os = "macos"))]
+#[cfg(any())]
 fn set_thread_affinity(_core_id: u32) {
     // CPU affinity not implemented for this platform
     // This is a no-op that allows compilation
@@ -955,6 +981,7 @@ pub extern "C" fn silica_region_destroy(region_ptr: *mut SilicaRegion) {
 pub extern "C" fn silica_actor_spawn(initial_state: *mut u8, behavior_fn: *mut u8, core_affinity: i32) -> *mut SilicaActor {
     // eprintln!("[DEBUG] silica_actor_spawn: Called with initial_state={:p}, behavior_fn={:p}, core_affinity={}", 
     //           initial_state, behavior_fn, core_affinity);
+    /*
     // Determine actual core affinity based on the requested type
     let actual_core_affinity = match core_affinity {
         0 => select_next_core(), // Any core - load balanced
@@ -963,6 +990,9 @@ pub extern "C" fn silica_actor_spawn(initial_state: *mut u8, behavior_fn: *mut u
         positive if positive > 0 => positive, // Specific core ID
         _ => select_next_core(), // Unknown negative values - fallback to any core
     };
+    */
+    let _ = core_affinity;
+    let actual_core_affinity = 0;
     // eprintln!("[DEBUG] silica_actor_spawn: Actual core affinity={}", actual_core_affinity);
 
     // Initialize actor registry if needed

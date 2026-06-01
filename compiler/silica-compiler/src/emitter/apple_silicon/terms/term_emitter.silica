@@ -1131,9 +1131,21 @@ fn emit_case_one_branch_inner(branch: SIRTerm, scrut_t: string, scrut_reg: strin
     };
     body_asm: string <- term_to_asm_opt_bound(branch.right_expr, dest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, br_bn, br_br, outer_body, false);
     branch_stack_n: int64 <- aggregate_callee_return_stack_bytes(branch.right_expr);
+    tuple_sret_branch: string <- var@find_sp_binding(outer_reg, "_tuple_sret");
+    // tuple_make can write directly into an enclosing aggregate return buffer
+    // (actor behavior reply buffer, user-call sret, etc.). Keep the heap
+    // promotion for the returned pointer, but only pop bytes that this branch
+    // actually pushed on SP.
+    branch_dealloc_n: int64 <- case len(tuple_sret_branch) > 0 and branch.right_expr.kind == 6 and branch.right_expr.name == "tuple_make" of {
+        true -> 0;
+        false -> branch_stack_n
+    };
     branch_cleanup: string <- case dest == "X0" of {
         true -> case branch_stack_n > 0 of {
-            true -> concat(aggregate_return_heap_promote_x0(branch_stack_n), concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(branch_stack_n), "\n")));
+            true -> concat(aggregate_return_heap_promote_x0(branch_stack_n), case branch_dealloc_n > 0 of {
+                true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(branch_dealloc_n), "\n"));
+                false -> ""
+            });
             false -> ""
         };
         false -> ""

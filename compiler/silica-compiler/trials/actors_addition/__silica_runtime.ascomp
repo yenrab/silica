@@ -4452,6 +4452,67 @@ Lfrdl_b:
 	.loh AdrpAdd	Lfrdl_a, Lfrdl_b
 	.cfi_endproc
                                         ; -- End function
+	.globl	_silica_rt_unwind_behavior_display_name
+	.p2align	2
+_silica_rt_unwind_behavior_display_name:
+; X0 = dladdr dli_sname (may include Mach-O leading '_'). Returns X0 = cstring to print (short Silica fn name when a __silica_modpfx record matches).
+; Uses only caller-saved x9–x15 so deliver_unwind_report callee-saved registers stay intact.
+	.cfi_startproc
+	mov	x15, x0
+	cbz	x0, Ludn_done
+	ldrb	w8, [x0]
+	cmp	w8, #95
+	b.ne	Ludn_scan
+	add	x0, x0, #1
+Ludn_scan:
+	mov	x9, x0
+Ludn_mpf_a:
+	adrp	x10, section$start$__DATA$__silica_modpfx@PAGE
+Ludn_mpf_b:
+	add	x10, x10, section$start$__DATA$__silica_modpfx@PAGEOFF
+Ludn_mpe_a:
+	adrp	x11, section$end$__DATA$__silica_modpfx@PAGE
+Ludn_mpe_b:
+	add	x11, x11, section$end$__DATA$__silica_modpfx@PAGEOFF
+	cmp	x10, x11
+	b.ge	Ludn_nomatch
+Ludn_ploop:
+	cmp	x10, x11
+	b.ge	Ludn_nomatch
+	mov	x12, x10
+	mov	x13, xzr
+Ludn_plen:
+	ldrb	w8, [x12, x13]
+	cbz	w8, Ludn_ptest
+	add	x13, x13, #1
+	b	Ludn_plen
+Ludn_ptest:
+	cbz	x13, Ludn_pnext
+	mov	x14, xzr
+Ludn_pcmp:
+	cmp	x14, x13
+	b.ge	Ludn_pmatch
+	ldrb	w8, [x12, x14]
+	ldrb	w10, [x9, x14]
+	cmp	w8, w10
+	b.ne	Ludn_pnext
+	add	x14, x14, #1
+	b	Ludn_pcmp
+Ludn_pmatch:
+	add	x0, x9, x13
+	ret
+Ludn_pnext:
+	add	x10, x12, x13
+	add	x10, x10, #1
+	b	Ludn_ploop
+Ludn_nomatch:
+	mov	x0, x9
+Ludn_done:
+	ret
+	.loh AdrpAdd	Ludn_mpf_a, Ludn_mpf_b
+	.loh AdrpAdd	Ludn_mpe_a, Ludn_mpe_b
+	.cfi_endproc
+                                        ; -- End function
 	.globl	_silica_rt_actor_deliver_unwind_report
 	.p2align	2
 _silica_rt_actor_deliver_unwind_report:
@@ -4526,7 +4587,10 @@ Lcs_dladdr:
 	ldr	x9, [sp, #16]
 	add	sp, sp, #48
 	cbz	x9, Lcs_frame0_unk
-; x9 = dli_sname; format frame-0 line via snprintf.
+; x9 = dli_sname; strip module prefix (see __silica_modpfx) then format frame-0 line via snprintf.
+	mov	x0, x9
+	bl	_silica_rt_unwind_behavior_display_name
+	mov	x3, x0
 	sub	x1, x27, x26
 	cmp	x1, #8
 	b.lt	Lcs_frame1
@@ -4535,7 +4599,6 @@ Lcs_f0_fmt_a:
 	adrp	x2, L_phase_f_cs_frame0_fmt@PAGE
 Lcs_f0_fmt_b:
 	add	x2, x2, L_phase_f_cs_frame0_fmt@PAGEOFF
-	mov	x3, x9
 	sub	sp, sp, #16
 	str	x3, [sp]
 	bl	_snprintf
@@ -4690,21 +4753,28 @@ _silica_rt_badarith:
 	bl	_silica_rt_cv_signal
 	add	x0, x19, #16
 	bl	_os_unfair_lock_unlock
+	ldr	x20, [x19, #208]
+	ldr	x21, [x19, #192]
 	ldr	x8, [x19, #272]
-	cbnz	x8, Lbadarith_report_already_done
-	mov	x0, x19
-	bl	_silica_rt_actor_deliver_exit
-	mov	x20, x0
+	cbnz	x8, Lbadarith_after_report
 	mov	x0, x19
 	bl	_silica_rt_actor_deliver_unwind_report
 	b	Lbadarith_after_report
-Lbadarith_report_already_done:
-	mov	x20, #0
 Lbadarith_after_report:
+	cbz	x21, Lbadarith_after_restart
+	cbz	x20, Lbadarith_after_restart
+; Synchronous language failures must finish the declarative supervisor restart before
+; waking the blocked caller; otherwise the caller can query the row while it still
+; points at this dying ACB and then call through a freed os_unfair_lock.
+	mov	x9, #1
+	str	x9, [x20, #56]
+	mov	x0, x19
+	mov	x1, x21
+	mov	x2, #1
+	bl	_silica_rt_supervisor_maybe_restart
+Lbadarith_after_restart:
 	mov	x0, x19
 	bl	_silica_rt_actor_signal_pending_call_deaths
-	ldr	x20, [x19, #208]
-	ldr	x21, [x19, #192]
 	cbz	x21, Lbadarith_thread_exit
 	mov	x0, x19
 	bl	_silica_rt_child_table_free
@@ -4712,9 +4782,6 @@ Lbadarith_after_report:
 	bl	_silica_rt_actor_dealloc_region
 	mov	x0, x19
 	bl	_free
-	cbz	x20, Lbadarith_thread_exit
-	mov	x9, #1
-	str	x9, [x20, #56]
 Lbadarith_thread_exit:
 	mov	x0, #0
 	bl	_pthread_exit
@@ -4757,21 +4824,26 @@ _silica_rt_case_clause:
 	bl	_silica_rt_cv_signal
 	add	x0, x19, #16
 	bl	_os_unfair_lock_unlock
+	ldr	x20, [x19, #208]
+	ldr	x21, [x19, #192]
 	ldr	x8, [x19, #272]
-	cbnz	x8, Lcaseclause_report_already_done
-	mov	x0, x19
-	bl	_silica_rt_actor_deliver_exit
-	mov	x20, x0
+	cbnz	x8, Lcaseclause_after_report
 	mov	x0, x19
 	bl	_silica_rt_actor_deliver_unwind_report
 	b	Lcaseclause_after_report
-Lcaseclause_report_already_done:
-	mov	x20, #0
 Lcaseclause_after_report:
+	cbz	x21, Lcaseclause_after_restart
+	cbz	x20, Lcaseclause_after_restart
+; Same synchronous restart ordering as badarith, but reason_tag 2 (:language_error).
+	mov	x9, #1
+	str	x9, [x20, #56]
+	mov	x0, x19
+	mov	x1, x21
+	mov	x2, #2
+	bl	_silica_rt_supervisor_maybe_restart
+Lcaseclause_after_restart:
 	mov	x0, x19
 	bl	_silica_rt_actor_signal_pending_call_deaths
-	ldr	x20, [x19, #208]
-	ldr	x21, [x19, #192]
 	cbz	x21, Lcaseclause_thread_exit
 	mov	x0, x19
 	bl	_silica_rt_child_table_free
@@ -4779,9 +4851,6 @@ Lcaseclause_after_report:
 	bl	_silica_rt_actor_dealloc_region
 	mov	x0, x19
 	bl	_free
-	cbz	x20, Lcaseclause_thread_exit
-	mov	x9, #1
-	str	x9, [x20, #56]
 Lcaseclause_thread_exit:
 	mov	x0, #0
 	bl	_pthread_exit
