@@ -21,7 +21,9 @@ SILICA_CONFIG_FILES := \
 	graph_dense_directed.silica \
 	btree_set_csr.silica \
 	btree_set_nodeid.silica \
-	btree_nodeid.silica
+	btree_nodeid.silica \
+	heap_binary_min.silica \
+	heap_binary_max.silica
 
 SAMS_FILES := $(SILICA_CONFIG_FILES:.silica=.sams)
 
