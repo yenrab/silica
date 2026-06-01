@@ -13,8 +13,17 @@ COMPILER_CLANG := $(shell test -x /opt/homebrew/opt/llvm/bin/clang && echo "/opt
 LINKER_CLANG := clang
 HAS_LLVM_TOOLS := $(and $(LLVM_AS),$(LLVM_LLC))
 
+# On Raspbian/Debian, llc defaults to a generic ARM triple without VFP register
+# arguments; Rust and clang use gnueabihf. macOS Homebrew llc already matches.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+LLC_FLAGS := -mtriple=arm-linux-gnueabihf
+else
+LLC_FLAGS :=
+endif
+
 # Export variables for sub-Makefiles
-export COMPILER_CLANG LINKER_CLANG LLVM_AS LLVM_LLC
+export COMPILER_CLANG LINKER_CLANG LLVM_AS LLVM_LLC LLC_FLAGS
 
 .PHONY: all clean $(SUBDIRS) help
 

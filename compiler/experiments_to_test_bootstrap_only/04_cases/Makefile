@@ -26,9 +26,17 @@ HAS_LLC := $(or $(LLVM_LLC), $(shell command -v llc 2> /dev/null || (test -x /op
 # Build the standalone runtime library
 RUNTIME_LIB := ../../silica-bootstrap-compiler/target/release/libsilica_compiler.a
 
-# Set clang variables - use Homebrew for compilation, system for linking
-COMPILER_CLANG := /opt/homebrew/opt/llvm/bin/clang
-LINKER_CLANG := /usr/bin/clang
+# Inherit from parent Makefile when invoked via experiments master build
+COMPILER_CLANG ?= $(shell test -x /opt/homebrew/opt/llvm/bin/clang && echo "/opt/homebrew/opt/llvm/bin/clang" || echo "clang")
+LINKER_CLANG ?= clang
+
+# Raspbian/Debian: llc must emit gnueabihf VFP ABI to link with the Rust runtime
+UNAME_S := $(shell uname -s)
+ifndef LLC_FLAGS
+ifeq ($(UNAME_S),Linux)
+LLC_FLAGS := -mtriple=arm-linux-gnueabihf
+endif
+endif
 
 $(RUNTIME_LIB): ../../silica-bootstrap-compiler/src/runtime.rs
 	@echo "Building Silica runtime library..."
@@ -48,7 +56,7 @@ ifdef HAS_LLC
 			exe_file=$$(basename $$ll_file .ll); \
 			echo "  $$ll_file -> $$exe_file"; \
 			if $(HAS_LLVM_AS) $$ll_file -o $$bc_file && \
-			   $(HAS_LLC) -filetype=obj $$bc_file -o $$obj_file && \
+			   $(HAS_LLC) -filetype=obj $(LLC_FLAGS) $$bc_file -o $$obj_file && \
 			   $(LINKER_CLANG) $$obj_file $(RUNTIME_LIB) -o $$exe_file; then \
 				echo "    ✅ Successfully built $$exe_file"; \
 			else \

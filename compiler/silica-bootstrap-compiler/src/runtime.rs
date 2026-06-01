@@ -191,6 +191,7 @@ mod topology {
     }
 }
 
+/*
 // Linux/AArch64 CPU topology detection using sysfs
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 mod topology {
@@ -497,6 +498,7 @@ mod topology {
             .collect()
     }
 }
+*/
 
 // Basic region structure for memory management
 #[repr(C)]
@@ -561,6 +563,7 @@ fn start_actor_message_loop(actor: Arc<Mutex<SilicaActor>>, core_affinity: i32) 
     });
 }
 
+/*
 /// Set CPU affinity for the current thread (macOS/AArch64 implementation)
 #[cfg(target_os = "macos")]
 fn set_thread_affinity(core_id: u32) {
@@ -572,7 +575,7 @@ fn set_thread_affinity(core_id: u32) {
     // - CPU_SET macros to manipulate cpu_set_t
     let _ = core_id; // Suppress unused parameter warning
 }
-/*
+
 /// Get the number of available CPU cores
 fn get_available_cores() -> i32 {
     // Try topology detection first (macOS specific)

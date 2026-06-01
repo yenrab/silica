@@ -149,7 +149,9 @@ Exit criteria:
 **Phase 0 completed (trial layout):**
 
 - `trials/standard_data_structures_addition/` — type-string snapshot (`.scout` / `.ascomp`)
-- `trials/graph_addition/`, `btree_set_addition/`, `balanced_tree_addition/`, `heap_addition/` — empty integrate via `trials/base/placeholder_makefile`
+- `trials/graph_addition/`, `btree_set_addition/` — integrate suites (graph and B-tree set); `trials/btree_nodeid_addition/` — NodeIDBTreeMap trials
+- `trials/balanced_tree_addition/` — empty placeholder until additional balanced-tree families need trials beyond `btree_nodeid_addition`
+- `trials/heap_addition/` — RegionBinaryHeap integrate (min and max batches; see Phase 9)
 - `trials/error_enforcement_addition/generated_data_structures/` — validation-failure naming and subdirs (`graph/`, `btree_set/`, `balanced_tree/`, `heap/`); goldens added when `validate` exists
 
 ## Phase 1 - Graph Foundation: NodeIdAdjacencyGraph
@@ -779,7 +781,11 @@ The set-only `CsrBTree[int64, mem(normal)]` form (`btree_csr.silica`) provides e
 
 ## Phase 9 - Heaps
 
+**Status (steps 9.1–9.2): complete in source** — `heap_binary_min.silica` and `heap_binary_max.silica` in `src/standard_data_structures/`; `trials/heap_addition/` integrate suite wired (min and max compile in separate batches per E4011). Confirm with `make -C trials/heap_addition integrate` on a host with a built `src/silica-compiler`.
+
 ### Step 9.1 - Generate RegionBinaryMinHeapInt64
+
+**Status: complete** — `heap_binary_min.silica` exports `empty`, `len`, `is_empty`, `is_full`, `peek`, `push`, `pop`, `validate` for `RegionBinaryMinHeap[int64, mem(normal)]` (CAP=8).
 
 Authority:
 
@@ -798,7 +804,11 @@ Exit criteria:
 
 - Trials cover empty heap, push, peek, pop, and validation.
 
+**Trials:** `heap_binary_min_empty`, `heap_binary_min_push_pop`, `heap_binary_min_validate_invalid`.
+
 ### Step 9.2 - Generate RegionBinaryHeap Variants Permitted By Design
+
+**Status: complete** — max heap in `heap_binary_max.silica`; priority/value variant in `heap_binary_min.silica` (`peek_priority`, `peek_value`, `push_priority_value`, `pop_priority_value`, `validate` for `[int64, int64, mem(normal)]`).
 
 Authority:
 
@@ -814,7 +824,11 @@ Exit criteria:
 
 - Variant trials pass without changing the documented heap model.
 
+**Trials:** `heap_binary_min_priority_push_pop`, `heap_binary_max_push_pop`.
+
 ### Step 9.3 - Generate RegionDaryHeap Only After Binary Heap Stability
+
+**Status: not started** — registry lists `RegionDaryMinHeap[int64, mem(normal)]`; no `heap_dary_min.silica` / `heap_dary_max.silica` yet.
 
 Authority:
 
@@ -942,8 +956,8 @@ Exit criteria:
 | CsrBTreeSet                 | Complete (steps 6.1–6.4)          | Phase 6 steps 6.1–6.4 done: `empty`, `from_static_sorted`, `contains`, `validate`, `insert` all exported; 3 trials pass. Step 6.5 (NodeIDBTreeSet→CsrBTreeSet conversion) deferred; `to_csr` in `btree_set_nodeid.silica` stubbed to return `btree_set_csr@empty`         |
 | NodeIDBTreeMap              | Complete                          | Phase 7 — `**btree_nodeid.silica**` (`NodeIDBTreeMap` with `replace_value`); `btree_nodeid_addition` integrate (7 trials); `NodeIDBTreeSet` duplicate rejection unchanged in same module                                                                                    |
 | CsrBTreeMap                 | Complete (steps 8.1–8.2)          | Phase 8 — `**btree_csr_map.silica**`; `btree_csr_map_insert` trial: `empty`, `from_static_sorted`, `contains`, `get`, `insert` (replace_value policy), `validate` exported; step 8.3 (`btree_csr.silica` set-only form) deferred as redundant with `btree_set_csr.silica` |
-| RegionBinaryHeap            | Not started                       | Phase 9                                                                                                                                                                                                                                                                   |
-| RegionDaryHeap              | Not started                       | Phase 9.5                                                                                                                                                                                                                                                                 |
+| RegionBinaryHeap            | Complete (steps 9.1–9.2)          | Phase 9 — `**heap_binary_min.silica**`, `**heap_binary_max.silica**`; `trials/heap_addition` integrate: `heap_binary_min_empty`, `heap_binary_min_push_pop`, `heap_binary_min_validate_invalid`, `heap_binary_min_priority_push_pop`, `heap_binary_max_push_pop` (min/max separate silica.config batches) |
+| RegionDaryHeap              | Not started                       | Phase 9 step 9.3 — `heap_dary_min` / `heap_dary_max` per balanced_tree_and_heap_design.md §7                                                                                                                                                                                                                                              |
 | Cross-structure audit       | Not started                       | Phase 10 — Collectable payload, immutability, type invariance (Steps 10.1–10.2)                                                                                                                                                                                           |
 
 
