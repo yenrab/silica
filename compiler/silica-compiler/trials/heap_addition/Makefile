@@ -1,4 +1,4 @@
-# Phase 9 — RegionBinaryHeap generated modules (balanced_tree_and_heap_design.md §6).
+# Phase 9 — RegionBinaryHeap and RegionDaryHeap generated modules.
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 SILICA_COMPILER := $(THIS_DIR)../../src/silica-compiler
 TRIAL_DIR := $(notdir $(patsubst %/,%,$(THIS_DIR)))
@@ -25,15 +25,21 @@ MIN_TRIAL_SOURCES := \
 MAX_TRIAL_SOURCES := \
 	heap_binary_max_push_pop.silica
 
+DARY_TRIAL_SOURCES := \
+	heap_dary_min_empty.silica \
+	heap_dary_min_push_pop.silica \
+	heap_dary_min_validate_invalid.silica
+
 LIB_SRC := ../../src/standard_data_structures
 
 .DEFAULT_GOAL := all
-.PHONY: all clean assembly objects executables integrate help lib-sources silica.config.min silica.config.max
+.PHONY: all clean assembly objects executables integrate help lib-sources silica.config.min silica.config.max silica.config.dary
 
 lib-sources:
 	@mkdir -p "$(THIS_DIR)lib"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/heap_binary_min.silica)" "$(THIS_DIR)lib/heap_binary_min.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/heap_binary_max.silica)" "$(THIS_DIR)lib/heap_binary_max.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/heap_dary_min.silica)" "$(THIS_DIR)lib/heap_dary_min.silica"
 
 silica.config.min: lib-sources
 	@cd "$(THIS_DIR)" && { \
@@ -47,16 +53,24 @@ silica.config.max: lib-sources
 		for src in $(MAX_TRIAL_SOURCES); do echo "$$src"; done; \
 	} > silica.config.max
 
-silica.config: silica.config.min silica.config.max
-	@cd "$(THIS_DIR)" && cat silica.config.min silica.config.max > silica.config
+silica.config.dary: lib-sources
+	@cd "$(THIS_DIR)" && { \
+		echo 'lib/heap_dary_min.silica'; \
+		for src in $(DARY_TRIAL_SOURCES); do echo "$$src"; done; \
+	} > silica.config.dary
+
+silica.config: silica.config.min silica.config.max silica.config.dary
+	@cd "$(THIS_DIR)" && cat silica.config.min silica.config.max silica.config.dary > silica.config
 
 all: executables
 
-assembly: silica.config.min silica.config.max
+assembly: silica.config.min silica.config.max silica.config.dary
 	@echo "Compiling min-heap trials with silica-compiler..."
 	@cd "$(THIS_DIR)" && cp silica.config.min silica.config && $(SILICA_COMPILER)
 	@echo "Compiling max-heap trials with silica-compiler..."
 	@cd "$(THIS_DIR)" && cp silica.config.max silica.config && $(SILICA_COMPILER)
+	@echo "Compiling d-ary heap trials with silica-compiler..."
+	@cd "$(THIS_DIR)" && cp silica.config.dary silica.config && $(SILICA_COMPILER)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
 
 objects: assembly
@@ -69,6 +83,13 @@ objects: assembly
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || exit 1; \
 	done; \
 	for line in $$(grep -v '^#' silica.config.max 2>/dev/null | grep -v '^$$'); do \
+		base=$${line%.silica}; \
+		sams="$$base.sams"; \
+		[ -f "$$sams" ] || continue; \
+		echo "Assembling: $$sams -> $$base.o"; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || exit 1; \
+	done; \
+	for line in $$(grep -v '^#' silica.config.dary 2>/dev/null | grep -v '^$$'); do \
 		base=$${line%.silica}; \
 		sams="$$base.sams"; \
 		[ -f "$$sams" ] || continue; \
@@ -105,9 +126,21 @@ executables: objects
 		else \
 			$(ASSEMBLER) "$$base.o" $$lib_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base"; \
 		fi; \
+	done; \
+	for line in $$(grep -v '^#' silica.config.dary 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
+		base=$${line%.silica}; \
+		[ -f "$$base.o" ] || continue; \
+		lib_objs="lib/heap_dary_min.o"; \
+		runtime_obj=""; \
+		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
+		if test -x "$(RUST_LLD)"; then \
+			$(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$lib_objs $$runtime_obj $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base"; \
+		else \
+			$(ASSEMBLER) "$$base.o" $$lib_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base"; \
+		fi; \
 	done
 
-integrate: lib-sources silica.config.min silica.config.max
+integrate: lib-sources silica.config.min silica.config.max silica.config.dary
 	@rm -f .integrate_counts; ok=0; ko=0; failed=0; \
 	rm -f *.sams lib/*.sams; \
 	echo "Compiling min-heap trials..."; \
@@ -122,7 +155,13 @@ integrate: lib-sources silica.config.min silica.config.max
 		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
-	for cfg in silica.config.min silica.config.max; do \
+	echo "Compiling d-ary heap trials..."; \
+	if ! (cd "$(THIS_DIR)" && cp silica.config.dary silica.config && $(abspath $(SILICA_COMPILER))); then \
+		echo "FAIL: d-ary heap compilation failed"; \
+		printf '%d %d\n' 0 1 > .integrate_counts; \
+		exit 1; \
+	fi; \
+	for cfg in silica.config.min silica.config.max silica.config.dary; do \
 		for line in $$(grep -v '^#' "$(THIS_DIR)/$$cfg" 2>/dev/null | grep -v '^$$'); do \
 			base=$${line%.silica}; \
 			sams="$(THIS_DIR)/$$base.sams"; \
@@ -134,9 +173,10 @@ integrate: lib-sources silica.config.min silica.config.max
 	if [ -f "$(THIS_DIR)/__silica_runtime.sams" ]; then \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$(THIS_DIR)/__silica_runtime.sams" -o "$(THIS_DIR)/__silica_runtime.o" || failed=1; \
 	fi; \
-	for cfg in silica.config.min silica.config.max; do \
+	for cfg in silica.config.min silica.config.max silica.config.dary; do \
 		lib_obj="lib/heap_binary_min.o"; \
 		case "$$cfg" in *max*) lib_obj="lib/heap_binary_max.o";; esac; \
+		case "$$cfg" in *dary*) lib_obj="lib/heap_dary_min.o";; esac; \
 		for line in $$(grep -v '^#' "$(THIS_DIR)/$$cfg" 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
 			base=$${line%.silica}; \
 			[ -f "$(THIS_DIR)/$$base.o" ] || continue; \
@@ -150,7 +190,7 @@ integrate: lib-sources silica.config.min silica.config.max
 			fi; \
 		done; \
 	done; \
-	for cfg in silica.config.min silica.config.max; do \
+	for cfg in silica.config.min silica.config.max silica.config.dary; do \
 		for line in $$(grep -v '^#' "$(THIS_DIR)/$$cfg" 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
 			base=$${line%.silica}; \
 			if [ -x "$(THIS_DIR)/$$base" ]; then \
@@ -191,9 +231,10 @@ clean:
 	rm -f *.sout *.sams *.o __silica_runtime.o __silica_runtime.sams \
 		heap_binary_min_empty heap_binary_min_push_pop heap_binary_min_validate_invalid \
 		heap_binary_min_priority_push_pop heap_binary_max_push_pop \
-		silica.config silica.config.min silica.config.max .integrate_counts; \
-	rm -f lib/*.sams lib/*.o
+		heap_dary_min_empty heap_dary_min_push_pop heap_dary_min_validate_invalid \
+		silica.config silica.config.min silica.config.max silica.config.dary .integrate_counts; \
+	rm -f lib/*.sams lib/*.o lib/heap_dary_min.silica
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
-	@echo "heap_addition — RegionBinaryHeap trials (Phase 9)"
+	@echo "heap_addition — RegionBinaryHeap and RegionDaryHeap trials (Phase 9)"

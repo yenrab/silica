@@ -779,7 +779,11 @@ The set-only `CsrBTree[int64, mem(normal)]` form (`btree_csr.silica`) provides e
 
 ## Phase 9 - Heaps
 
-### Step 9.1 - Generate RegionBinaryMinHeapInt64
+Status note:
+
+RegionBinaryHeap work has source and trial coverage already. The old completion row that marked `RegionBinaryHeap` as "Not started" was stale relative to `src/standard_data_structures/heap_binary_min.silica`, `src/standard_data_structures/heap_binary_max.silica`, and `trials/heap_addition/Makefile`.
+
+### Step 9.1 - Generate RegionBinaryMinHeapInt64 — Implemented
 
 Authority:
 
@@ -787,18 +791,18 @@ Authority:
 
 Actions:
 
-1. Generate the binary heap type string.
-2. Generate empty or allocate construction.
-3. Generate push.
-4. Generate peek.
-5. Generate pop.
-6. Generate validation of heap ordering and capacity metadata.
+1. ✅ Generate the binary heap type string.
+2. ✅ Generate empty or allocate construction.
+3. ✅ Generate push.
+4. ✅ Generate peek.
+5. ✅ Generate pop.
+6. ✅ Generate validation of heap ordering and capacity metadata.
 
 Exit criteria:
 
-- Trials cover empty heap, push, peek, pop, and validation.
+- ✅ `heap_binary_min_empty`, `heap_binary_min_push_pop`, and `heap_binary_min_validate_invalid` cover empty heap, push, peek, pop, and validation for `RegionBinaryMinHeap[int64, mem(normal)]`.
 
-### Step 9.2 - Generate RegionBinaryHeap Variants Permitted By Design
+### Step 9.2 - Generate RegionBinaryHeap Variants Permitted By Design — Implemented
 
 Authority:
 
@@ -806,15 +810,15 @@ Authority:
 
 Actions:
 
-1. Generate only variants explicitly described by the design.
-2. Reuse the same validation structure.
-3. Add trials for each generated variant.
+1. ✅ Generate only variants explicitly described by the design: `RegionBinaryMaxHeap[int64, mem(normal)]` and `RegionBinaryMinHeap[int64, int64, mem(normal)]`.
+2. ✅ Reuse the same validation structure.
+3. ✅ Add trials for each generated variant.
 
 Exit criteria:
 
-- Variant trials pass without changing the documented heap model.
+- ✅ `heap_binary_max_push_pop` and `heap_binary_min_priority_push_pop` cover the generated binary heap variants without changing the documented heap model.
 
-### Step 9.3 - Generate RegionDaryHeap Only After Binary Heap Stability
+### Step 9.3 - Generate RegionDaryHeap Only After Binary Heap Stability — Pending
 
 Authority:
 
@@ -942,8 +946,7 @@ Exit criteria:
 | CsrBTreeSet                 | Complete (steps 6.1–6.4)          | Phase 6 steps 6.1–6.4 done: `empty`, `from_static_sorted`, `contains`, `validate`, `insert` all exported; 3 trials pass. Step 6.5 (NodeIDBTreeSet→CsrBTreeSet conversion) deferred; `to_csr` in `btree_set_nodeid.silica` stubbed to return `btree_set_csr@empty`         |
 | NodeIDBTreeMap              | Complete                          | Phase 7 — `**btree_nodeid.silica**` (`NodeIDBTreeMap` with `replace_value`); `btree_nodeid_addition` integrate (7 trials); `NodeIDBTreeSet` duplicate rejection unchanged in same module                                                                                    |
 | CsrBTreeMap                 | Complete (steps 8.1–8.2)          | Phase 8 — `**btree_csr_map.silica**`; `btree_csr_map_insert` trial: `empty`, `from_static_sorted`, `contains`, `get`, `insert` (replace_value policy), `validate` exported; step 8.3 (`btree_csr.silica` set-only form) deferred as redundant with `btree_set_csr.silica` |
-| RegionBinaryHeap            | Not started                       | Phase 9                                                                                                                                                                                                                                                                   |
-| RegionDaryHeap              | Not started                       | Phase 9.5                                                                                                                                                                                                                                                                 |
+| RegionBinaryHeap            | Implemented (steps 9.1–9.2)       | Phase 9 — `**heap_binary_min.silica**` exports `empty`, `len`, `is_empty`, `is_full`, `peek`, `push`, `pop`, `validate`, plus the priority/value variant; `**heap_binary_max.silica**` exports the max-heap API; `heap_addition` trials cover min, max, priority/value, and invalid validation. Full standard-data-structures build-list wiring and rebuilt-compiler verification remain pending. |
+| RegionDaryHeap              | Not started                       | Phase 9.3 — registry and inline type expansion mention `RegionDaryMinHeap[int64, mem(normal)]`, but no d-ary heap module or d-ary heap trials have been generated yet.                                                                                                     |
 | Cross-structure audit       | Not started                       | Phase 10 — Collectable payload, immutability, type invariance (Steps 10.1–10.2)                                                                                                                                                                                           |
-
 

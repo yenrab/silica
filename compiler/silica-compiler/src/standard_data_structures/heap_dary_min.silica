@@ -1,0 +1,590 @@
+// Copyright 2026 Lee Scott Barney — Apache License 2.0
+// RegionDaryMinHeap[int64, mem(normal)] (balanced_tree_and_heap_design.md §7.2).
+// Bootstrap generated family: CAP=8, D=4.
+
+export empty[int64, mem(normal)]/0;
+export len[int64, mem(normal)]/1;
+export is_empty[int64, mem(normal)]/1;
+export is_full[int64, mem(normal)]/1;
+export peek[int64, mem(normal)]/1;
+export push[int64, mem(normal)]/2;
+export pop[int64, mem(normal)]/1;
+export validate[int64, mem(normal)]/1;
+
+fn cap() -> int64 {
+    8
+}
+
+fn arity() -> int64 {
+    4
+}
+
+fn parent_index(index: int64) -> int64 {
+    (index - 1) / arity()
+}
+
+fn child_index(index: int64, child_slot: int64) -> int64 {
+    arity() * index + 1 + child_slot
+}
+
+fn swap_buf_values(
+    values: buf(L1, normal, int64, 8),
+    left_index: int64,
+    right_index: int64
+) -> atom {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    left_saved: int64 <- left_index;
+    right_saved: int64 <- right_index;
+    sequence proc[mem(normal)]
+        left_value: int64 <- read_buf(values_saved, left_saved);
+        right_value: int64 <- read_buf(values_saved, right_saved);
+        _: atom <- write_buf(values_saved, left_saved, right_value);
+        _: atom <- write_buf(values_saved, right_saved, left_value)
+    produces
+        pure :ok
+    end
+}
+
+fn sift_up_dary_min_step(values: buf(L1, normal, int64, 8), index: int64) -> int64 {
+    case index of {
+        -1 -> -1;
+        0 -> -1;
+        _: int64 -> sift_up_dary_min_step_nonroot(values, index)
+    }
+}
+
+fn sift_up_dary_min_step_nonroot(values: buf(L1, normal, int64, 8), index: int64) -> int64 {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    index_saved: int64 <- index;
+    parent: int64 <- parent_index(index_saved);
+    needs_swap: int64 <- sequence proc[mem(normal)]
+        parent_value: int64 <- read_buf(values_saved, parent);
+        child_value: int64 <- read_buf(values_saved, index_saved);
+        swap_flag: int64 <- case parent_value <= child_value of {
+            true -> 0;
+            false -> 1
+        }
+    produces
+        pure swap_flag
+    end;
+    _: atom <- case needs_swap of {
+        0 -> :ok;
+        _: int64 -> swap_buf_values(values_saved, parent, index_saved)
+    };
+    case needs_swap of {
+        0 -> -1;
+        _: int64 -> parent
+    }
+}
+
+fn sift_up_dary_min(values: buf(L1, normal, int64, 8), index: int64) -> atom {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    index_saved: int64 <- index;
+    i1: int64 <- sift_up_dary_min_step(values_saved, index_saved);
+    i2: int64 <- sift_up_dary_min_step(values_saved, i1);
+    _: int64 <- sift_up_dary_min_step(values_saved, i2);
+    :ok
+}
+
+fn select_smaller_child(
+    values: buf(L1, normal, int64, 8),
+    heap_len: int64,
+    current_smallest: int64,
+    candidate: int64
+) -> int64 {
+    case candidate < heap_len of {
+        true -> {
+            values_saved: buf(L1, normal, int64, 8) <- values;
+            current_saved: int64 <- current_smallest;
+            candidate_saved: int64 <- candidate;
+            sequence proc[mem(normal)]
+                current_value: int64 <- read_buf(values_saved, current_saved);
+                candidate_value: int64 <- read_buf(values_saved, candidate_saved);
+                result: int64 <- case candidate_value < current_value of {
+                    true -> candidate_saved;
+                    false -> current_saved
+                }
+            produces
+                pure result
+            end
+        };
+        false -> current_smallest
+    }
+}
+
+fn smallest_child_dary_min(
+    values: buf(L1, normal, int64, 8),
+    index: int64,
+    heap_len: int64
+) -> int64 {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    index_saved: int64 <- index;
+    heap_len_saved: int64 <- heap_len;
+    c0: int64 <- child_index(index_saved, 0);
+    c1: int64 <- child_index(index_saved, 1);
+    c2: int64 <- child_index(index_saved, 2);
+    c3: int64 <- child_index(index_saved, 3);
+    s0: int64 <- select_smaller_child(values_saved, heap_len_saved, index_saved, c0);
+    s1: int64 <- select_smaller_child(values_saved, heap_len_saved, s0, c1);
+    s2: int64 <- select_smaller_child(values_saved, heap_len_saved, s1, c2);
+    select_smaller_child(values_saved, heap_len_saved, s2, c3)
+}
+
+fn sift_down_dary_min_step(values: buf(L1, normal, int64, 8), index: int64, heap_len: int64) -> int64 {
+    case index of {
+        -1 -> -1;
+        _: int64 -> sift_down_dary_min_step_active(values, index, heap_len)
+    }
+}
+
+fn sift_down_dary_min_step_active(values: buf(L1, normal, int64, 8), index: int64, heap_len: int64) -> int64 {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    index_saved: int64 <- index;
+    heap_len_saved: int64 <- heap_len;
+    smallest: int64 <- smallest_child_dary_min(values_saved, index_saved, heap_len_saved);
+    needs_swap: int64 <- case smallest == index_saved of {
+        true -> 0;
+        false -> 1
+    };
+    _: atom <- case needs_swap of {
+        0 -> :ok;
+        _: int64 -> swap_buf_values(values_saved, index_saved, smallest)
+    };
+    case needs_swap of {
+        0 -> -1;
+        _: int64 -> smallest
+    }
+}
+
+fn sift_down_dary_min(values: buf(L1, normal, int64, 8), index: int64, heap_len: int64) -> atom {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    index_saved: int64 <- index;
+    heap_len_saved: int64 <- heap_len;
+    i1: int64 <- sift_down_dary_min_step(values_saved, index_saved, heap_len_saved);
+    i2: int64 <- sift_down_dary_min_step(values_saved, i1, heap_len_saved);
+    _: int64 <- sift_down_dary_min_step(values_saved, i2, heap_len_saved);
+    :ok
+}
+
+fn check_heap_order_at(
+    values: buf(L1, normal, int64, 8),
+    heap_len: int64,
+    index: int64
+) -> int64 {
+    case index >= heap_len of {
+        true -> 0;
+        false -> {
+            values_saved: buf(L1, normal, int64, 8) <- values;
+            index_saved: int64 <- index;
+            parent: int64 <- parent_index(index_saved);
+            sequence proc[mem(normal)]
+                parent_value: int64 <- read_buf(values_saved, parent);
+                child_value: int64 <- read_buf(values_saved, index_saved);
+                order_ok: int64 <- case parent_value <= child_value of {
+                    true -> 1;
+                    false -> 0
+                }
+            produces
+                pure case order_ok of {
+                    0 -> 5;
+                    _: int64 -> 0
+                }
+            end
+        }
+    }
+}
+
+fn validate_heap_order(
+    values: buf(L1, normal, int64, 8),
+    heap_len: int64
+) -> int64 {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    heap_len_saved: int64 <- heap_len;
+    e1: int64 <- check_heap_order_at(values_saved, heap_len_saved, 1);
+    case e1 of {
+        0 -> {
+            e2: int64 <- check_heap_order_at(values_saved, heap_len_saved, 2);
+            case e2 of {
+                0 -> {
+                    e3: int64 <- check_heap_order_at(values_saved, heap_len_saved, 3);
+                    case e3 of {
+                        0 -> {
+                            e4: int64 <- check_heap_order_at(values_saved, heap_len_saved, 4);
+                            case e4 of {
+                                0 -> {
+                                    e5: int64 <- check_heap_order_at(values_saved, heap_len_saved, 5);
+                                    case e5 of {
+                                        0 -> {
+                                            e6: int64 <- check_heap_order_at(values_saved, heap_len_saved, 6);
+                                            case e6 of {
+                                                0 -> check_heap_order_at(values_saved, heap_len_saved, 7);
+                                                _: int64 -> e6
+                                            }
+                                        };
+                                        _: int64 -> e5
+                                    }
+                                };
+                                _: int64 -> e4
+                            }
+                        };
+                        _: int64 -> e3
+                    }
+                };
+                _: int64 -> e2
+            }
+        };
+        _: int64 -> e1
+    }
+}
+
+fn empty[int64, mem(normal)]() -> {
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+} {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        values: buf(L1, normal, int64, 8) <- alloc_buf(r, cap());
+        heap: {
+            region: region(L1, normal),
+            len: int64,
+            capacity: int64,
+            arity: int64,
+            values: buf(L1, normal, int64, 8)
+        } <- {
+            region: r,
+            len: 0,
+            capacity: cap(),
+            arity: arity(),
+            values: values
+        }
+    produces
+        pure heap
+    end
+}
+
+fn len[int64, mem(normal)](heap: {
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}) -> int64 {
+    heap.len
+}
+
+fn is_empty[int64, mem(normal)](heap: {
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}) -> int64 {
+    case heap.len of {
+        0 -> 1;
+        _: int64 -> 0
+    }
+}
+
+fn is_full[int64, mem(normal)](heap: {
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}) -> int64 {
+    case heap.len == heap.capacity of {
+        true -> 1;
+        false -> 0
+    }
+}
+
+fn peek[int64, mem(normal)](heap: {
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}) -> { ok: int64, value: int64 } {
+    case heap.len of {
+        0 -> { ok: 0, value: 0 };
+        _: int64 -> {
+            values_saved: buf(L1, normal, int64, 8) <- heap.values;
+            top: int64 <- sequence proc[mem(normal)]
+                value: int64 <- read_buf(values_saved, 0)
+            produces
+                pure value
+            end;
+            { ok: 1, value: top }
+        }
+    }
+}
+
+fn push[int64, mem(normal)](
+    heap: {
+        region: region(L1, normal),
+        len: int64,
+        capacity: int64,
+        arity: int64,
+        values: buf(L1, normal, int64, 8)
+    },
+    value: int64
+) -> {
+    heap: {
+        region: region(L1, normal),
+        len: int64,
+        capacity: int64,
+        arity: int64,
+        values: buf(L1, normal, int64, 8)
+    },
+    ok: int64
+} {
+    case heap.len == heap.capacity of {
+        true -> { heap: heap, ok: 0 };
+        false -> {
+            pushed_value: int64 <- value;
+            values_saved: buf(L1, normal, int64, 8) <- heap.values;
+            heap_len: int64 <- heap.len;
+            heap_region: region(L1, normal) <- heap.region;
+            heap_capacity: int64 <- heap.capacity;
+            heap_arity: int64 <- heap.arity;
+            insert_index: int64 <- heap_len;
+            result: {
+                heap: {
+                    region: region(L1, normal),
+                    len: int64,
+                    capacity: int64,
+                    arity: int64,
+                    values: buf(L1, normal, int64, 8)
+                },
+                ok: int64
+            } <- sequence proc[mem(normal)]
+                _: atom <- write_buf(values_saved, insert_index, pushed_value);
+                _: atom <- sift_up_dary_min(values_saved, insert_index);
+                updated: {
+                    region: region(L1, normal),
+                    len: int64,
+                    capacity: int64,
+                    arity: int64,
+                    values: buf(L1, normal, int64, 8)
+                } <- {
+                    region: heap_region,
+                    len: heap_len + 1,
+                    capacity: heap_capacity,
+                    arity: heap_arity,
+                    values: values_saved
+                };
+                push_result: {
+                    heap: {
+                        region: region(L1, normal),
+                        len: int64,
+                        capacity: int64,
+                        arity: int64,
+                        values: buf(L1, normal, int64, 8)
+                    },
+                    ok: int64
+                } <- {
+                    heap: updated,
+                    ok: 1
+                }
+            produces
+                pure push_result
+            end;
+            result
+        }
+    }
+}
+
+fn pop[int64, mem(normal)](heap: {
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}) -> {
+    heap: {
+        region: region(L1, normal),
+        len: int64,
+        capacity: int64,
+        arity: int64,
+        values: buf(L1, normal, int64, 8)
+    },
+    ok: int64,
+    value: int64
+} {
+    case heap.len of {
+        0 -> {
+            heap_region: region(L1, normal) <- heap.region;
+            heap_len: int64 <- heap.len;
+            heap_capacity: int64 <- heap.capacity;
+            heap_arity: int64 <- heap.arity;
+            values_saved: buf(L1, normal, int64, 8) <- heap.values;
+            unchanged: {
+                region: region(L1, normal),
+                len: int64,
+                capacity: int64,
+                arity: int64,
+                values: buf(L1, normal, int64, 8)
+            } <- {
+                region: heap_region,
+                len: heap_len,
+                capacity: heap_capacity,
+                arity: heap_arity,
+                values: values_saved
+            };
+            pop_result: {
+                heap: {
+                    region: region(L1, normal),
+                    len: int64,
+                    capacity: int64,
+                    arity: int64,
+                    values: buf(L1, normal, int64, 8)
+                },
+                ok: int64,
+                value: int64
+            } <- {
+                heap: unchanged,
+                ok: 0,
+                value: 0
+            };
+            pop_result
+        };
+        _: int64 -> {
+            values_saved: buf(L1, normal, int64, 8) <- heap.values;
+            heap_len: int64 <- heap.len;
+            heap_region: region(L1, normal) <- heap.region;
+            heap_capacity: int64 <- heap.capacity;
+            heap_arity: int64 <- heap.arity;
+            last_index: int64 <- heap_len - 1;
+            new_len: int64 <- heap_len - 1;
+            min_value: int64 <- sequence proc[mem(normal)]
+                top: int64 <- read_buf(values_saved, 0);
+                tail: int64 <- read_buf(values_saved, last_index);
+                _: atom <- write_buf(values_saved, 0, tail)
+            produces
+                pure top
+            end;
+            _: atom <- case new_len of {
+                0 -> :ok;
+                _: int64 -> sift_down_dary_min(values_saved, 0, new_len)
+            };
+            updated: {
+                region: region(L1, normal),
+                len: int64,
+                capacity: int64,
+                arity: int64,
+                values: buf(L1, normal, int64, 8)
+            } <- {
+                region: heap_region,
+                len: new_len,
+                capacity: heap_capacity,
+                arity: heap_arity,
+                values: values_saved
+            };
+            pop_result: {
+                heap: {
+                    region: region(L1, normal),
+                    len: int64,
+                    capacity: int64,
+                    arity: int64,
+                    values: buf(L1, normal, int64, 8)
+                },
+                ok: int64,
+                value: int64
+            } <- {
+                heap: updated,
+                ok: 1,
+                value: min_value
+            };
+            pop_result
+        }
+    }
+}
+
+fn validate_shape(
+    heap: {
+        region: region(L1, normal),
+        len: int64,
+        capacity: int64,
+        arity: int64,
+        values: buf(L1, normal, int64, 8)
+    }
+) -> int64 {
+    heap_len: int64 <- heap.len;
+    heap_capacity: int64 <- heap.capacity;
+    heap_arity: int64 <- heap.arity;
+    len_low_ok: int64 <- case heap_len of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        3 -> 1;
+        4 -> 1;
+        5 -> 1;
+        6 -> 1;
+        7 -> 1;
+        8 -> 1;
+        _: int64 -> 0
+    };
+    len_high_ok: int64 <- case heap_len <= heap_capacity of {
+        true -> 1;
+        false -> 0
+    };
+    expected_cap: int64 <- cap();
+    cap_ok: int64 <- case heap_capacity == expected_cap of {
+        true -> 1;
+        false -> 0
+    };
+    expected_arity: int64 <- arity();
+    arity_ok: int64 <- case heap_arity == expected_arity of {
+        true -> 1;
+        false -> 0
+    };
+    case len_low_ok of {
+        0 -> 1;
+        _: int64 -> case len_high_ok of {
+            0 -> 2;
+            _: int64 -> case cap_ok of {
+                0 -> 3;
+                _: int64 -> case arity_ok of {
+                    0 -> 4;
+                    _: int64 -> 0
+                }
+            }
+        }
+    }
+}
+
+fn validate[int64, mem(normal)](heap: {
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}) -> { ok: int64, error_code: int64 } {
+    sequence
+        heap_len: int64 <- heap.len;
+        values_buf: buf(L1, normal, int64, 8) <- heap.values;
+        shape_error: int64 <- validate_shape(heap);
+        order_error: int64 <- case shape_error of {
+            0 -> validate_heap_order(values_buf, heap_len);
+            _: int64 -> 0
+        };
+        err: int64 <- case shape_error of {
+            0 -> order_error;
+            _: int64 -> shape_error
+        };
+        ok_value: int64 <- case err of {
+            0 -> 1;
+            _: int64 -> 0
+        };
+        result: { ok: int64, error_code: int64 } <- {
+            ok: ok_value,
+            error_code: err
+        }
+    produces
+        pure result
+    end
+}
