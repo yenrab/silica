@@ -27,7 +27,7 @@ use instantiated_fn_name;
 
 export sir_fn_link_name/2;
 export sir_resolve_qualified_callee_composite/4;
-export mangle_fn_part_if_overloaded/5;
+export mangle_fn_part_if_overloaded/6;
 export type_slug_for_param_type/1;
 export count_call_args_user_call/1;
 
@@ -62,56 +62,36 @@ fn count_call_args_user_call(expr: Expr) -> int64 {
     }
 }
 
-fn count_tag0_same_name_arity(decls: ListDeclaration, fn_name: string, arity: int64) -> int64 {
+// Count tag-0 declarations sharing the same operation base name and arity (Phase 0.4 overload set).
+fn count_tag0_same_name_arity(decls: ListDeclaration, fn_base: string, arity: int64) -> int64 {
     case decls.is_nil of {
         true -> 0;
         false -> case decls.head.tag == 0 of {
-            true -> case instantiated_fn_name@decl_name_matches(decls.head.name, fn_name) and list_param_length_call(decls.head.parameters) == arity of {
-                true -> 1 + count_tag0_same_name_arity(decls.tail, fn_name, arity);
-                false -> count_tag0_same_name_arity(decls.tail, fn_name, arity)
+            true -> case instantiated_fn_name@fn_base_name_before_brackets(decls.head.name) == fn_base and list_param_length_call(decls.head.parameters) == arity of {
+                true -> 1 + count_tag0_same_name_arity(decls.tail, fn_base, arity);
+                false -> count_tag0_same_name_arity(decls.tail, fn_base, arity)
             };
-            false -> count_tag0_same_name_arity(decls.tail, fn_name, arity)
+            false -> count_tag0_same_name_arity(decls.tail, fn_base, arity)
         }
     }
 }
 
-fn qualified_call_first_arg_matches_decl(inferred: string, decl: Declaration, world: ListNamedProgram) -> bool {
-    case decl.parameters.is_nil of {
-        true -> false;
+fn link_name_from_decl(decl: Declaration, overload_count: int64) -> string {
+    case overload_count <= 1 of {
+        true -> instantiated_fn_name@link_name_to_asm_symbol(decl.name);
         false -> do
-            expect: string <- type_checker_traits@trim_type_text(decl.parameters.head.type_name);
-            act: string <- type_checker_traits@trim_type_text(inferred);
-            case act == expect of {
-                true -> true;
-                false -> case type_checker_traits@actual_type_satisfies_trait_expectation(act, expect, world) of {
-                    true -> true;
-                    // Mirror the type-checker's call-site narrowing (spec §3.4.8) so the
-                    // mangler picks the same overload the checker already accepted — int64
-                    // literals narrow to smaller ints, struct literals narrow their fields.
-                    false -> type_checker_expressions@dispatch_actual_fits_impl_parameter(act, expect, world)
-                }
+            ret_slug: string <- type_slug_for_param_type(decl.return_type_name);
+            prefix: string <- instantiated_fn_name@link_name_to_asm_symbol(decl.name);
+            case decl.parameters.is_nil of {
+                true -> concat(prefix, concat("__ret_", ret_slug));
+                false -> concat(prefix, concat("__", concat(type_slug_for_param_type(decl.parameters.head.type_name), concat("__ret_", ret_slug))))
             }
         end
     }
 }
 
-fn find_tag0_decl_for_qualified_call(decls: ListDeclaration, fn_name: string, arity: int64, recv_ty: string, world: ListNamedProgram) -> (bool, Declaration) {
-    case decls.is_nil of {
-        true -> (false, parser_ast@dummy_decl());
-        false -> case decls.head.tag == 0 of {
-            true -> case instantiated_fn_name@decl_name_matches(decls.head.name, fn_name) and list_param_length_call(decls.head.parameters) == arity of {
-                true -> case len(recv_ty) == 0 of {
-                    true -> (true, decls.head);
-                    false -> case qualified_call_first_arg_matches_decl(recv_ty, decls.head, world) of {
-                        true -> (true, decls.head);
-                        false -> find_tag0_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
-                    }
-                };
-                false -> find_tag0_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
-            };
-            false -> find_tag0_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
-        }
-    }
+fn find_tag0_decl_for_qualified_call(decls: ListDeclaration, fn_name: string, arity: int64, recv_ty: string, expected_ty: string, world: ListNamedProgram) -> (bool, Declaration) {
+    type_checker_expressions@find_tag0_decl_for_qualified_call(decls, fn_name, arity, recv_ty, expected_ty, world)
 }
 
 // Map type text to a conservative asm-safe slug (alphanumeric + underscore).
@@ -159,29 +139,23 @@ fn sir_fn_link_name(decl: Declaration, all_decls: ListDeclaration) -> string {
         false -> qual_name_local(decl.name);
         true -> do
             arity: int64 <- list_param_length_call(decl.parameters);
-            n: int64 <- count_tag0_same_name_arity(all_decls, decl.name, arity);
-            case n <= 1 of {
-                true -> qual_name_local(decl.name);
-                false -> case decl.parameters.is_nil of {
-                    true -> qual_name_local(decl.name);
-                    false -> concat(qual_name_local(decl.name), concat("__", type_slug_for_param_type(decl.parameters.head.type_name)))
-                }
-            }
+            fn_base: string <- instantiated_fn_name@fn_base_name_before_brackets(decl.name);
+            n: int64 <- count_tag0_same_name_arity(all_decls, fn_base, arity);
+            link_name_from_decl(decl, n)
         end
     }
 }
 
-fn mangle_fn_part_if_overloaded(fn_id: string, arity: int64, recv_ty: string, callee_decls: ListDeclaration, world: ListNamedProgram) -> string {
-    n: int64 <- count_tag0_same_name_arity(callee_decls, fn_id, arity);
-    case n <= 1 of {
-        true -> fn_id;
+fn mangle_fn_part_if_overloaded(fn_id: string, arity: int64, recv_ty: string, expected_ty: string, callee_decls: ListDeclaration, world: ListNamedProgram) -> string {
+    fn_base: string <- instantiated_fn_name@fn_base_name_before_brackets(fn_id);
+    n: int64 <- count_tag0_same_name_arity(callee_decls, fn_base, arity);
+    (df: bool, d: Declaration) <- find_tag0_decl_for_qualified_call(callee_decls, fn_id, arity, recv_ty, expected_ty, world);
+    case df of {
+        true -> link_name_from_decl(d, n);
         false -> do
-            (df: bool, d: Declaration) <- find_tag0_decl_for_qualified_call(callee_decls, fn_id, arity, recv_ty, world);
-            case df of {
-                true -> case d.parameters.is_nil of {
-                    true -> fn_id;
-                    false -> concat(fn_id, concat("__", type_slug_for_param_type(d.parameters.head.type_name)))
-                };
+            (df2: bool, d2: Declaration) <- type_checker_expressions@find_function_decl_by_name_arity_call(callee_decls, fn_id, arity);
+            case df2 of {
+                true -> link_name_from_decl(d2, n);
                 false -> fn_id
             }
         end
@@ -203,7 +177,7 @@ fn sir_resolve_qualified_callee_composite(world: ListNamedProgram, context: Type
                         true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                         false -> ""
                     };
-                    fn2: string <- mangle_fn_part_if_overloaded(fn_part, ac, recv_ty, prog.declarations, world);
+                    fn2: string <- mangle_fn_part_if_overloaded(fn_part, ac, recv_ty, "", prog.declarations, world);
                     concat(mod_part, concat("@", fn2))
                 end
             }

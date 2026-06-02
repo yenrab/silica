@@ -3176,7 +3176,7 @@ Examples:
 - `List[(int64 -> int64)]` - list of functions
 - `List[List[int64, normal], normal]` - nested list (inner and outer list types each carry `Space` where required)
 
-**Type Annotation Requirement**: All list variables and expressions must explicitly specify the element type using `List[ElementType]` or `List[ElementType, Space]` syntax. Type inference is not performed for lists - the element type (and memory space, when present) must always be explicitly provided. The type `List` alone (without element type) is not valid.
+**Type Annotation Requirement**: All list variables and expressions must specify the element type using `List[ElementType]` or `List[ElementType, Space]` syntax, where `ElementType` is either a **concrete** inline type or the **`Collectable`** placeholder (§8.2.4). The compiler does **not** infer an element type from list literal elements alone without an annotation. **`Collectable`** in the element position is resolved to a concrete `T` from binding, parameter, return, or scrutinee context before codegen (§8.2.4). **Memory space `S`** remains part of `List[T, S]` and must still agree with `sequence proc[mem(S)]` for that value flow; `S` is not inferred from the enclosing sequence effect alone. The type `List` alone (without an element-type position) is not valid. **Explicit** bracket instantiation on list or std-structure calls (e.g. `empty[int64, normal]()`) remains supported when context resolution is not used or not desired.
 
 **Uniform list types (parameters, variables, and call sites):** The list type of a **formal parameter** of a function must **match** the list type of any **argument** passed to that function: same `ElementType` and, when `List[..., Space]` is used, the **same** `Space`. **Local variables**, **`let`** bindings, **return types**, **list literal** annotations (`[...] : List[...]`), **pattern** annotations in `case`, and the **scrutinee** type in `case` must all use that **same** list type for a given value or call chain. Mixing `List[ElementType]` in one position with `List[ElementType, Space]` in another for the same list value is **ill-formed**. Implementations may require the canonical `List[ElementType, Space]` form everywhere in source; see `design_documents/list_implementation_design.md` (silica-compiler).
 
@@ -4122,12 +4122,38 @@ The `List` type itself automatically implements `Collectable`, enabling nested l
 
 **Type Checking Rules for Lists:**
 - All elements in a list literal must have exactly the same type
-- The explicit type annotation `List[ElementType]` must match the types of all elements exactly
+- The type annotation `List[ElementType]` or `List[ElementType, Space]` must match the types of all elements exactly after any compile-time resolution of placeholders (see **Collectable element placeholder** below)
 - Mixing different types in a list literal is a compile-time error, even if both types implement `Collectable`
-- The element type must implement `Collectable`
-- All list variables must have an explicit element type - `List` alone is not a valid type
+- Every list element type (concrete or resolved from a placeholder) must implement `Collectable`
+- `List` alone (without an element type position) is not a valid type
 
-**Note**: While many types implement `Collectable`, a list can only contain elements of a single, specific type. For example, a `List[string]` cannot contain `int64` values, even though both `string` and `int64` implement `Collectable`.
+**Collectable element placeholder (`List[Collectable, Space]` and `List[Collectable]`):**
+
+Silica allows the **`Collectable`** trait name in the element-type position of a list type as a **compile-time placeholder**, not as a runtime heterogeneous list. This is an optional alternative to spelling a concrete element type at every list position when specialization from context is desired.
+
+```silica
+// Placeholder in a type position; resolved before codegen for this value flow
+keys: List[Collectable, mem(normal)]
+
+// Equivalent after resolution for one binding (example)
+keys: List[(int32, string), mem(normal)]
+```
+
+**Meaning:** `List[Collectable, S]` (or `List[Collectable]` when space is inferred from the same value flow) means “some single concrete `T` such that `T` implements `Collectable`.” The compiler **must** resolve `T` to a concrete inline type before monomorphizing list primitives (`empty`, `prepend`, `length`, pattern matching, and buffer lowering). At runtime each list still holds **one homogeneous** element type, identical to `List[T, S]` with concrete `T`.
+
+**Resolution sources (checked in order when a placeholder appears):**
+1. **Binding or parameter annotation** on the same value flow — e.g. `xs: List[int64, normal] <- empty()` is not a placeholder; `tree: { ..., nodes: List[{ keys: List[Collectable, mem(normal)], ... }], ... } <- module@empty()` resolves `Collectable` inside nested lists from the full declared structure type.
+2. **Expected type** from a `let` / parameter / return position — e.g. `xs: List[int64, normal] <- empty()` when `empty` is declared to return `List[Collectable, normal]` for stdlib list primitives, or `g: GraphRecord <- graph_adj_directed@empty()` when the graph record embeds `List[Collectable, S]` fields.
+3. **Scrutinee-driven operations** — e.g. `insert(g, key, value)` resolves payload types from the inline type of `g` (first argument), including `List[Collectable, S]` slots inside node records.
+4. **Explicit bracket instantiation** at a call site — e.g. `empty[int64, normal]()` or `graph_adj_directed@add_edge[int64, mem(normal)](...)` when the programmer prefers explicit spelling (see generated data-structure design documents).
+
+**Errors:** If `Collectable` cannot be resolved to exactly one concrete `T` for a value flow, the compiler reports an ambiguity or missing-context error. Unresolved `List[Collectable, S]` must not reach codegen.
+
+**When to use concrete `T` vs placeholder:** Use **`List[T, S]`** with concrete `T` when the element type is known at the write site. Use **`List[Collectable, S]`** in **shared stdlib / generated** modules and type schemas where the same source must serve all `Collectable` instantiations without duplicating functions per element type. Bracket specialization at call sites (`operation[T, mem(S)](...)`) remains valid but is **not required** when context resolution applies.
+
+**Standard generated structures:** Graph, B-tree, B-tree set, heap, and map families may declare payload slots as `List[Collectable, S]`, `NodeData: Collectable`, `Key: Collectable`, etc., in **one** exported function body per operation; the compiler specializes to concrete payload types from the structure value's type (see `graph_representation_design.md`, `balanced_tree_and_heap_design.md`, `btree_set_design.md`). B-tree **keys** additionally require a total order: use concrete comparison in specialized code, or `Comparable` where trait dispatch is used (design documents).
+
+**Note**: While many types implement `Collectable`, a list can only contain elements of a single, specific type after resolution. For example, a resolved `List[string]` cannot contain `int64` values, even though both `string` and `int64` implement `Collectable`.
 
 **Trait-Based Polymorphism Examples:**
 

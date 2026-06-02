@@ -23,7 +23,8 @@ TRIAL_SOURCES := \
 	btree_nodeid_insert_four.silica \
 	btree_nodeid_insert_get.silica \
 	btree_nodeid_insert.silica \
-	btree_nodeid_validate_invalid.silica
+	btree_nodeid_validate_invalid.silica \
+	btree_nodeid_context_trial.silica
 
 LIB_SRC := ../../src/standard_data_structures
 

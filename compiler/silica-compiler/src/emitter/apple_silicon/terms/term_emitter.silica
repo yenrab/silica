@@ -218,6 +218,12 @@ fn let_rhs_type_spills_across_io(type_name: string) -> bool {
     case type_name of {
         "int64" -> true;
         "uint64" -> true;
+        "int32" -> true;
+        "uint32" -> true;
+        "int16" -> true;
+        "uint16" -> true;
+        "int8" -> true;
+        "uint8" -> true;
         "char" -> true;
         "boolean" -> true;
         "bool" -> true;
@@ -1526,6 +1532,22 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         and arg1_is_substring
         and arg1_reg == "X0"
         and arg2_reg == "X1";
+    arg2_binding_for_reorder: string <- case term.right_expr.name == "user_call_rest" of {
+        true -> case term.right_expr.inner.kind == 1 of {
+            true -> var@find_sp_binding_bare_or_percent_param(outer_reg, term.right_expr.inner.name);
+            false -> ""
+        };
+        false -> case term.right_expr.kind == 1 of {
+            true -> var@find_sp_binding_bare_or_percent_param(outer_reg, term.right_expr.name);
+            false -> ""
+        }
+    };
+    arg2_bound_in_x0_or_w0: bool <- arg2_binding_for_reorder == "X0" or arg2_binding_for_reorder == "W0";
+    use_arg2_save_around_arg1_x0: bool <- len(rest_asm) > 0
+        and two_arg_tail_rest
+        and arg1_reg == "X0"
+        and arg2_term_ok
+        and arg2_bound_in_x0_or_w0;
     args_asm: string <- case len(rest_asm) > 0 of {
         true -> case use_two_arg_gpr_reorder of {
             true -> do
@@ -1545,7 +1567,10 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
                     true -> concat(concat(rest_asm, "\n"), concat(arg1_asm, "\n"));
                     false -> case use_arg2_first_around_substring_arg1 of {
                         true -> concat(concat(concat(concat(rest_asm, "\n"), "    STR X1, [SP, #-16]!\n"), concat(arg1_asm, "\n")), "    LDR X1, [SP], #16\n");
-                        false -> concat(concat(arg1_asm, "\n"), concat(rest_asm, "\n"))
+                        false -> case use_arg2_save_around_arg1_x0 of {
+                            true -> concat(concat(concat(concat(rest_asm, "\n"), "    STR X1, [SP, #-16]!\n"), concat(arg1_asm, "\n")), "    LDR X1, [SP], #16\n");
+                            false -> concat(concat(arg1_asm, "\n"), concat(rest_asm, "\n"))
+                        }
                     }
                 }
             }
@@ -3096,7 +3121,17 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                             false -> term_to_asm_opt_bound(term.right_expr, right_reg, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                         }
                                     };
-                                    (l, r)
+                                    right_simple_for_left_prim: bool <- term.right_expr.kind == 0 or term.right_expr.kind == 1;
+                                    preserve_left_for_right: bool <- right_simple_for_left_prim == false and is_string_prim == false and is_float64 == false and is_float32 == false and is_float16 == false;
+                                    case preserve_left_for_right of {
+                                        true -> do
+                                            save_left_np: string <- concat(concat("    STR ", left_reg), ", [SP, #-16]!\n");
+                                            restore_left_np: string <- concat(concat("    LDR ", left_reg), ", [SP], #16\n");
+                                            combined_np: string <- concat(concat(concat(concat(concat(concat(l, "\n"), save_left_np), r), "\n"), restore_left_np), "");
+                                            (combined_np, "")
+                                        end;
+                                        false -> (l, r)
+                                    }
                                 end
                             }
                         };

@@ -126,34 +126,27 @@ dense bitset buffer may be better than a B-tree set
 
 ### 4.0 `Collectable` set keys
 
-For B-tree **sets**, any API parameter that carries **stored key data** — insert, `from_list` elements, `contains`, range endpoints, `delete` — uses a concrete **`Key: Collectable`** type in emitted signatures (design-level placeholder **`Key`** in abstract descriptions).
+For B-tree **sets**, any API parameter that carries **stored key data** — insert, `from_list` elements, `contains`, range endpoints, `delete` — uses **`Key: Collectable`** in the **single** emitted function per operation; the compiler resolves **`Key`** to a concrete inline type per set value flow ([silica-specification.md](silica-specification.md) §8.2.4). **`Key`** must be totally ordered at specialization time (**`Comparable`** or inlined compare). Node storage uses `List[Collectable, S]` in the generic source form, resolving to `List[Key, S]`. Buffer encoding follows [graph_representation_design.md](graph_representation_design.md) §2.6.
 
-The **first** monomorphic generators use **`int64`** keys. Storage layouts (`List[int64, S]`, `buf(R, S, int64, ...)`) remain concrete inline types. Buffer encoding follows [graph_representation_design.md](graph_representation_design.md) §2.6.
+Bootstrap trials may still use **`int64`** examples; do not duplicate set APIs per primitive width in one module.
 
 Structural **`int64` node ids** inside tree nodes are not set keys and are not typed as **`Collectable`**.
 
 There is no separate storage marker trait beyond language **`Collectable`**.
 
-### 4.1 Design-name bracket syntax (`List`-aligned)
+### 4.1 Payload typing and call syntax (`List`-aligned)
 
-B-tree set families use the same bracket convention as lists and graphs ([list_implementation_design.md](list_implementation_design.md) §3.5; [graph_representation_design.md](graph_representation_design.md) §2.11):
+B-tree set families follow lists, graphs, and balanced trees ([list_implementation_design.md](list_implementation_design.md) §3.5; [graph_representation_design.md](graph_representation_design.md) §2.11; silica-spec §8.2.4):
 
-- **Sets:** `[Key, mem(Space)]` — for example `NodeIDBTreeSet[int64, mem(normal)]`, `CsrBTreeSet[int64, mem(atomic)]`.
-- Bracket forms are **design/generator names**; emitted Silica still uses **full inline structural record types** at every type position unless the compiler expands the shorthand.
-- B-tree **`order`** and CSR **buffer capacities** are separate generator inputs, not bracket parameters.
+- **Preferred:** `export empty/0`, `export contains/2`, …; one `fn` per operation with **`Collectable`** keys and `List[Collectable, S]` in node records; `tree: <set record> <- btree_set_nodeid@empty()`; `btree_set_nodeid@contains(tree, key)`.
+- **Registry names** may use `[Key, mem(Space)]` (e.g. `NodeIDBTreeSet[int64, mem(normal)]`) for documentation only.
+- B-tree **`order`** and CSR **buffer capacities** are separate generator inputs, not call-site brackets.
 
-**Emitted module names** (one per representation family):
+**Emitted module names:** `btree_set_nodeid`, `btree_set_csr`. Do **not** encode key type or memory space in the module name.
 
-```text
-btree_set_nodeid
-btree_set_csr
-```
+**Generated operation calls (preferred):** `btree_set_nodeid@empty()`, `btree_set_csr@contains(tree, key)`. Explicit brackets optional.
 
-Do **not** encode key type or memory space in the module name. Callers write `btree_set_nodeid@empty[int64, mem(normal)]()` — aligned with **`List`** (`empty[int64, normal]()`).
-
-**Generated operation calls** use **`module@operation`** with explicit bracket instantiation — for example `btree_set_nodeid@empty[int64, mem(normal)]()`, `btree_set_csr@contains[int64, mem(normal)](tree, key)`.
-
-See also [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) §2.6 for map and general B-tree bracket arity (`[Key, Value, mem(Space)]`).
+See [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) §2.6 for map arity.
 
 ### 4.2 Key rules
 
@@ -1113,39 +1106,19 @@ Import and call (short operation name after `@`; do not repeat the module name):
 
 ```text
 use btree_set_nodeid;
-btree_set_nodeid@empty[int64, mem(normal)]()
-btree_set_nodeid@contains[int64, mem(normal)](tree, key)
+tree: <NodeIDBTreeSet record> <- btree_set_nodeid@empty();
+btree_set_nodeid@contains(tree, key)
 ```
 
-**Single-file `use` rule:** do not `use` two generated modules in one source file when both export the same `operation[brackets]` (for example both export `empty[int64, mem(normal)]` — E4011). Cross-representation trials should call through one module (for example `btree_set_nodeid@validate_csr`, `btree_set_nodeid@contains_csr` re-export CSR helpers) or split into separate compilation units.
+**Single-file `use` rule:** do not `use` two generated modules in one source file when both export the same `operation/arity` without disambiguation (E4011). Cross-representation trials use re-export wrappers or separate compilation units.
 
 ### Operation names
 
-**Exported function names** are short operation verbs — for example `empty`, `contains`, `insert`, `validate`, `to_csr`, `from_static_sorted`. They **do not** repeat the module name.
+**Exported function names** are short operation verbs — `empty`, `contains`, `insert`, `validate`, `to_csr`, `from_static_sorted`. **Exports** use arity only (`export contains/2`).
 
-**Module-qualified call syntax:** `btree_set_csr@contains[int64, mem(normal)](tree, key)`
+**Module-qualified call syntax (preferred):** `btree_set_csr@contains(tree, key)`. Optional explicit brackets when needed.
 
-Bracket parameters at call sites (final slot is always **`mem(Space)`**):
-
-```text
-[Key, mem(Space)]
-```
-
-Examples:
-
-```text
-btree_set_nodeid@empty[int64, mem(normal)]()
-btree_set_nodeid@contains[int64, mem(normal)](tree, key)
-btree_set_nodeid@insert[int64, mem(normal)](tree, key)
-btree_set_nodeid@validate[int64, mem(normal)](tree)
-btree_set_nodeid@to_csr[int64, mem(normal)](tree)
-
-btree_set_csr@from_static_sorted[int64, mem(normal)](...)
-btree_set_csr@contains[int64, mem(normal)](tree, key)
-btree_set_csr@validate[int64, mem(normal)](tree)
-```
-
-**Linker symbols:** the compiler prefixes assembly labels with the module name (for example `btree_set_csr_contains_int64_mem_normal__`) so short export names can link together in one executable.
+**Linker symbols:** the compiler mangles by module, operation, arity, and resolved set record / key types.
 
 Internal helpers are module-local (not exported for `module@` calls). Examples: `find_node`, `split_child`, `insert_nonfull`, `search_key_range`, `contains_node`.
 
@@ -1157,7 +1130,7 @@ Set generator inputs:
 
 ```text
 representation: nodeid_btree_set | csr_btree_set
-key_type: int64       // monomorphic specialization; must implement Collectable (§4.0); bracket slot Key
+key_type: Collectable  // resolved per value flow to concrete Key (§4.0); registry trials may use int64
 memory_space: normal | normal_writethrough | normal_noncacheable | atomic
 order: int64
 generate_insert: bool

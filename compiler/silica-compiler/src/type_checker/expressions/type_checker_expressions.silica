@@ -2535,49 +2535,90 @@ fn qualified_call_first_arg_matches_decl(inferred: string, decl: Declaration, wo
             act: string <- type_checker_traits@trim_type_text(inferred);
             case act == expect of {
                 true -> true;
-                false -> type_checker_traits@actual_type_satisfies_trait_expectation(act, expect, world)
+                false -> case type_checker_lists@formal_type_accepts_actual(act, expect, world) of {
+                    true -> true;
+                    false -> dispatch_actual_fits_impl_parameter(act, expect, world)
+                }
             }
         end
     }
 }
 
-fn find_tag0_decl_for_qualified_call(decls: ListDeclaration, fn_name: string, arity: int64, recv_ty: string, world: ListNamedProgram) -> (bool, Declaration) {
-    case decls.is_nil of {
-        true -> (false, parser_ast@dummy_decl());
-        false -> case decls.head.tag == 0 of {
-            true -> case instantiated_fn_name@decl_name_matches(decls.head.name, fn_name) and list_param_length_call(decls.head.parameters) == arity of {
-                true -> case len(recv_ty) == 0 of {
-                    true -> (true, decls.head);
-                    false -> case qualified_call_first_arg_matches_decl(recv_ty, decls.head, world) of {
-                        true -> (true, decls.head);
-                        false -> find_tag0_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
+fn qualified_call_return_matches_expected(expected_ty: string, decl: Declaration, world: ListNamedProgram) -> bool {
+    case len(expected_ty) == 0 of {
+        true -> true;
+        false -> case expected_ty == "discard" of {
+            true -> true;
+            false -> do
+                ret: string <- type_checker_traits@trim_type_text(decl.return_type_name);
+                exp: string <- type_checker_traits@trim_type_text(expected_ty);
+                case type_checker_lists@formal_type_accepts_actual(ret, exp, world) of {
+                    true -> true;
+                    false -> case type_checker_lists@formal_type_accepts_actual(exp, ret, world) of {
+                        true -> true;
+                        false -> type_checker_lists@types_equal_strip(ret, exp)
                     }
-                };
-                false -> find_tag0_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
-            };
-            false -> find_tag0_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
+                }
+            end
         }
     }
 }
 
-fn find_tag7_decl_for_qualified_call(decls: ListDeclaration, fn_name: string, arity: int64, recv_ty: string, world: ListNamedProgram) -> (bool, Declaration) {
+fn decl_matches_qualified_call_target(decl: Declaration, fn_name: string, arity: int64, recv_ty: string, expected_ty: string, world: ListNamedProgram) -> bool {
+    case decl.tag == 0 of {
+        false -> false;
+        true -> case instantiated_fn_name@decl_name_matches(decl.name, fn_name) and list_param_length_call(decl.parameters) == arity of {
+            false -> false;
+            true -> case len(recv_ty) == 0 of {
+                true -> qualified_call_return_matches_expected(expected_ty, decl, world);
+                false -> case qualified_call_first_arg_matches_decl(recv_ty, decl, world) of {
+                    false -> false;
+                    true -> qualified_call_return_matches_expected(expected_ty, decl, world)
+                }
+            }
+        }
+    }
+}
+
+fn find_tag0_decl_for_qualified_call(decls: ListDeclaration, fn_name: string, arity: int64, recv_ty: string, expected_ty: string, world: ListNamedProgram) -> (bool, Declaration) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case decl_matches_qualified_call_target(decls.head, fn_name, arity, recv_ty, expected_ty, world) of {
+            true -> (true, decls.head);
+            false -> find_tag0_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, expected_ty, world)
+        }
+    }
+}
+
+fn find_tag7_decl_for_qualified_call(decls: ListDeclaration, fn_name: string, arity: int64, recv_ty: string, expected_ty: string, world: ListNamedProgram) -> (bool, Declaration) {
     case decls.is_nil of {
         true -> (false, parser_ast@dummy_decl());
         false -> case decls.head.tag == 7 of {
             true -> case instantiated_fn_name@decl_name_matches(decls.head.name, fn_name) and list_param_length_call(decls.head.parameters) == arity of {
                 true -> case len(recv_ty) == 0 of {
-                    true -> (true, decls.head);
-                    false -> case qualified_call_first_arg_matches_decl(recv_ty, decls.head, world) of {
+                    true -> case qualified_call_return_matches_expected(expected_ty, decls.head, world) of {
                         true -> (true, decls.head);
-                        false -> find_tag7_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
+                        false -> find_tag7_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, expected_ty, world)
+                    };
+                    false -> case qualified_call_first_arg_matches_decl(recv_ty, decls.head, world) of {
+                        true -> case qualified_call_return_matches_expected(expected_ty, decls.head, world) of {
+                            true -> (true, decls.head);
+                            false -> find_tag7_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, expected_ty, world)
+                        };
+                        false -> find_tag7_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, expected_ty, world)
                     }
                 };
-                false -> find_tag7_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
+                false -> find_tag7_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, expected_ty, world)
             };
-            false -> find_tag7_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, world)
+            false -> find_tag7_decl_for_qualified_call(decls.tail, fn_name, arity, recv_ty, expected_ty, world)
         }
     }
 }
+
+export find_tag0_decl_for_qualified_call/6;
+export find_function_decl_by_name_arity_call/3;
+export qualified_call_first_arg_matches_decl/3;
+export context_after_sequence_body/2;
 
 fn param_types_str_from_params(params: ListParam) -> string {
     case params.is_nil of {
@@ -2733,13 +2774,13 @@ fn resolve_site_bucket_type_for_param(inferred: string, formal_ty: string, calle
     }
 }
 
-fn find_qualified_call_resolved_declaration(pprog: Program, fn_id: string, generic_value: string, ac: int64, recv_ty: string, world: ListNamedProgram) -> (bool, Declaration) {
+fn find_qualified_call_resolved_declaration(pprog: Program, fn_id: string, generic_value: string, ac: int64, recv_ty: string, expected_ty: string, world: ListNamedProgram) -> (bool, Declaration) {
     resolved_fn: string <- instantiated_fn_name@resolve_call_fn_name(fn_id, generic_value);
-    (df0: bool, d0: Declaration) <- find_tag0_decl_for_qualified_call(pprog.declarations, resolved_fn, ac, recv_ty, world);
+    (df0: bool, d0: Declaration) <- find_tag0_decl_for_qualified_call(pprog.declarations, resolved_fn, ac, recv_ty, expected_ty, world);
     case df0 of {
         true -> (true, d0);
         false -> do
-            (df7: bool, d7: Declaration) <- find_tag7_decl_for_qualified_call(pprog.declarations, resolved_fn, ac, recv_ty, world);
+            (df7: bool, d7: Declaration) <- find_tag7_decl_for_qualified_call(pprog.declarations, resolved_fn, ac, recv_ty, expected_ty, world);
             case df7 of {
                 true -> (true, d7);
                 false -> find_function_decl_by_name_arity_call(pprog.declarations, resolved_fn, ac)
@@ -2870,7 +2911,7 @@ fn check_callsite_body_with_concrete_params(decl: Declaration, world: ListNamedP
 }
 
 // §19.3.2: for `module@fn(args)`, resolve callee in `world` (includes the current module). Overloads share name/arity; pick by inferred first-argument type, then required trait signature (tag 7), then first tag-0 match.
-fn try_resolve_qualified_call_func_type(expr: Expr, world: ListNamedProgram, context: TypeContext) -> (bool, string) {
+fn try_resolve_qualified_call_func_type(expr: Expr, expected_type: string, world: ListNamedProgram, context: TypeContext) -> (bool, string) {
     at: int64 <- first_at_in_expr_call_name(expr.name, 0);
     case at < 0 of {
         true -> (false, "");
@@ -2887,11 +2928,11 @@ fn try_resolve_qualified_call_func_type(expr: Expr, world: ListNamedProgram, con
                         true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                         false -> ""
                     };
-                    (df0: bool, d0: Declaration) <- find_tag0_decl_for_qualified_call(pprog.declarations, resolved_fn, ac, recv_ty, world);
+                    (df0: bool, d0: Declaration) <- find_tag0_decl_for_qualified_call(pprog.declarations, resolved_fn, ac, recv_ty, expected_type, world);
                     case df0 of {
                         true -> (true, build_function_type_for_decl_call(d0));
                         false -> do
-                            (df7: bool, d7: Declaration) <- find_tag7_decl_for_qualified_call(pprog.declarations, resolved_fn, ac, recv_ty, world);
+                            (df7: bool, d7: Declaration) <- find_tag7_decl_for_qualified_call(pprog.declarations, resolved_fn, ac, recv_ty, expected_type, world);
                             case df7 of {
                                 true -> (true, build_function_type_for_decl_call(d7));
                                 false -> do
@@ -2922,13 +2963,19 @@ fn try_resolve_qualified_call_func_type(expr: Expr, world: ListNamedProgram, con
 fn check_user_call_result_user_call(expr: Expr, expected_type: string, return_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
     case expected_type == "discard" of {
         true -> type_checker_core@type_check_ok();
-        false -> case type_checker_lists@types_equal_strip(expected_type, return_type) of {
+        false -> case type_checker_lists@formal_type_accepts_actual(return_type, expected_type, world) of {
             true -> type_checker_core@type_check_ok();
-            false -> case trim_leading_user_call(expected_type) == "string" and return_type_has_ptr_len_out_fields(return_type) of {
+            false -> case type_checker_lists@formal_type_accepts_actual(expected_type, return_type, world) of {
                 true -> type_checker_core@type_check_ok();
-                false -> case type_checker_traits@actual_type_satisfies_trait_expectation(return_type, expected_type, world) of {
+                false -> case type_checker_lists@types_equal_strip(expected_type, return_type) of {
                     true -> type_checker_core@type_check_ok();
-                    false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat(expr.name, " returns "), return_type), ", expected "), expected_type), "sect6")
+                    false -> case trim_leading_user_call(expected_type) == "string" and return_type_has_ptr_len_out_fields(return_type) of {
+                        true -> type_checker_core@type_check_ok();
+                        false -> case type_checker_traits@actual_type_satisfies_trait_expectation(return_type, expected_type, world) of {
+                            true -> type_checker_core@type_check_ok();
+                            false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat(expr.name, " returns "), return_type), ", expected "), expected_type), "sect6")
+                        }
+                    }
                 }
             }
         }
@@ -3030,7 +3077,7 @@ fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: strin
                         true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                         false -> ""
                     };
-                    (pfd: bool, callee_decl: Declaration) <- find_qualified_call_resolved_declaration(pprog, fn_id, expr.value, ac, recv_ty, world);
+                    (pfd: bool, callee_decl: Declaration) <- find_qualified_call_resolved_declaration(pprog, fn_id, expr.value, ac, recv_ty, expected_type, world);
                     case pfd of {
                         false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world);
                         true -> case callee_decl.tag == 0 of {
@@ -3066,7 +3113,7 @@ fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: strin
 }
 
 fn check_user_defined_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    (rw: bool, ft_world: string) <- try_resolve_qualified_call_func_type(expr, world, context);
+    (rw: bool, ft_world: string) <- try_resolve_qualified_call_func_type(expr, expected_type, world, context);
     local_name: string <- instantiated_fn_name@resolve_call_fn_name(expr.name, expr.value);
     resolved_type: string <- case rw of {
         true -> ft_world;
@@ -3788,117 +3835,136 @@ fn check_list_elem_tree(expr: Expr, elem_type: string, context: TypeContext, wor
 }
 
 // Compiler-known list primitives (list_implementation_design.md §7): empty, length, prepend, remove_head, head.
-fn check_list_primitive_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
-    (elem: string, space: string) <- type_checker_lists@parse_generic_ts(expr.value);
-    case len(elem) == 0 of {
-        true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("list primitive ", expr.name), " requires explicit generic type arguments [T, S] or [T]"), "list");
-        false -> do
-            list_t: string <- type_checker_lists@format_list_type_from_parts(elem, space);
-            case expr.name == "empty" of {
-                true -> do
-                    ac: int64 <- type_checker_lists@list_empty_effective_arg_count(expr);
-                    case ac == 0 of {
-                        false -> type_checker_core@type_check_err("E2005", expr.location, "empty expects 0 arguments", "list");
-                        true -> case expected_type == "discard" of {
-                            true -> type_checker_core@type_check_ok();
-                            false -> case type_checker_lists@list_types_compatible(expected_type, list_t) of {
+// Phase 0.4: resolve List[Collectable, S] from expected_type once, then check like concrete generics.
+fn check_list_primitive_resolved(expr: Expr, expected_type: string, elem_res: string, list_t: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    case expr.name == "empty" of {
+        true -> do
+            ac: int64 <- type_checker_lists@list_empty_effective_arg_count(expr);
+            case ac == 0 of {
+                false -> type_checker_core@type_check_err("E2005", expr.location, "empty expects 0 arguments", "list");
+                true -> case expected_type == "discard" of {
+                    true -> type_checker_core@type_check_err("E2016", expr.location, "empty[Collectable, S]() requires a typed List binding on the left-hand side", "list");
+                    false -> case type_checker_lists@list_types_compatible(expected_type, list_t) of {
+                        true -> type_checker_core@type_check_ok();
+                        false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("empty returns ", list_t), ", expected "), expected_type), ""), "list")
+                    }
+                }
+            }
+        end;
+        false -> case expr.name == "length" of {
+            true -> do
+                ac: int64 <- type_checker_lists@count_call_args_list(expr);
+                case ac == 1 of {
+                    false -> type_checker_core@type_check_err("E2005", expr.location, "length expects 1 argument", "list");
+                    true -> do
+                        r1: TypeCheckResult <- check_expr(expr.inner, list_t, context, world);
+                        case r1.is_ok of {
+                            false -> r1;
+                            true -> case expected_type == "discard" of {
                                 true -> type_checker_core@type_check_ok();
-                                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("empty returns ", list_t), ", expected "), expected_type), ""), "list")
+                                false -> case expected_type == "int64" of {
+                                    true -> type_checker_core@type_check_ok();
+                                    false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat("length returns int64, expected ", expected_type), ""), "list")
+                                }
                             }
                         }
+                    end
+                }
+            end;
+            false -> case expr.name == "prepend" of {
+                true -> do
+                    ac: int64 <- type_checker_lists@count_call_args_list(expr);
+                    case ac == 2 of {
+                        false -> type_checker_core@type_check_err("E2005", expr.location, "prepend expects 2 arguments (element, list)", "list");
+                        true -> do
+                            r1: TypeCheckResult <- check_expr(expr.inner, elem_res, context, world);
+                            case r1.is_ok of {
+                                false -> r1;
+                                true -> do
+                                    r2: TypeCheckResult <- check_expr(call_second_arg_expr(expr), list_t, context, world);
+                                    case r2.is_ok of {
+                                        false -> r2;
+                                        true -> case expected_type == "discard" of {
+                                            true -> type_checker_core@type_check_ok();
+                                            false -> case type_checker_lists@list_types_compatible(expected_type, list_t) of {
+                                                true -> type_checker_core@type_check_ok();
+                                                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("prepend returns ", list_t), ", expected "), expected_type), ""), "list")
+                                            }
+                                        }
+                                    }
+                                end
+                            }
+                        end
                     }
                 end;
-                false -> case expr.name == "length" of {
+                false -> case expr.name == "remove_head" of {
                     true -> do
                         ac: int64 <- type_checker_lists@count_call_args_list(expr);
                         case ac == 1 of {
-                            false -> type_checker_core@type_check_err("E2005", expr.location, "length expects 1 argument", "list");
+                            false -> type_checker_core@type_check_err("E2005", expr.location, "remove_head expects 1 argument", "list");
                             true -> do
                                 r1: TypeCheckResult <- check_expr(expr.inner, list_t, context, world);
                                 case r1.is_ok of {
                                     false -> r1;
                                     true -> case expected_type == "discard" of {
                                         true -> type_checker_core@type_check_ok();
-                                        false -> case expected_type == "int64" of {
+                                        false -> case type_checker_lists@list_types_compatible(expected_type, list_t) of {
                                             true -> type_checker_core@type_check_ok();
-                                            false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat("length returns int64, expected ", expected_type), ""), "list")
+                                            false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("remove_head returns ", list_t), ", expected "), expected_type), ""), "list")
                                         }
                                     }
                                 }
                             end
                         }
                     end;
-                    false -> case expr.name == "prepend" of {
+                    false -> case expr.name == "head" of {
                         true -> do
                             ac: int64 <- type_checker_lists@count_call_args_list(expr);
-                            case ac == 2 of {
-                                false -> type_checker_core@type_check_err("E2005", expr.location, "prepend expects 2 arguments (element, list)", "list");
+                            case ac == 1 of {
+                                false -> type_checker_core@type_check_err("E2005", expr.location, "head expects 1 argument", "list");
                                 true -> do
-                                    r1: TypeCheckResult <- check_expr(expr.inner, elem, context, world);
+                                    r1: TypeCheckResult <- check_expr(expr.inner, list_t, context, world);
                                     case r1.is_ok of {
                                         false -> r1;
-                                        true -> do
-                                            r2: TypeCheckResult <- check_expr(call_second_arg_expr(expr), list_t, context, world);
-                                            case r2.is_ok of {
-                                                false -> r2;
-                                                true -> case expected_type == "discard" of {
-                                                    true -> type_checker_core@type_check_ok();
-                                                    false -> case type_checker_lists@list_types_compatible(expected_type, list_t) of {
-                                                        true -> type_checker_core@type_check_ok();
-                                                        false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("prepend returns ", list_t), ", expected "), expected_type), ""), "list")
-                                                    }
-                                                }
+                                        true -> case expected_type == "discard" of {
+                                            true -> type_checker_core@type_check_ok();
+                                            false -> case type_checker_lists@types_equal_strip(expected_type, elem_res) of {
+                                                true -> type_checker_core@type_check_ok();
+                                                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("head returns ", elem_res), ", expected "), expected_type), ""), "list")
                                             }
-                                        end
+                                        }
                                     }
                                 end
                             }
                         end;
-                        false -> case expr.name == "remove_head" of {
-                            true -> do
-                                ac: int64 <- type_checker_lists@count_call_args_list(expr);
-                                case ac == 1 of {
-                                    false -> type_checker_core@type_check_err("E2005", expr.location, "remove_head expects 1 argument", "list");
-                                    true -> do
-                                        r1: TypeCheckResult <- check_expr(expr.inner, list_t, context, world);
-                                        case r1.is_ok of {
-                                            false -> r1;
-                                            true -> case expected_type == "discard" of {
-                                                true -> type_checker_core@type_check_ok();
-                                                false -> case type_checker_lists@list_types_compatible(expected_type, list_t) of {
-                                                    true -> type_checker_core@type_check_ok();
-                                                    false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("remove_head returns ", list_t), ", expected "), expected_type), ""), "list")
-                                                }
-                                            }
-                                        }
-                                    end
-                                }
-                            end;
-                            false -> case expr.name == "head" of {
-                                true -> do
-                                    ac: int64 <- type_checker_lists@count_call_args_list(expr);
-                                    case ac == 1 of {
-                                        false -> type_checker_core@type_check_err("E2005", expr.location, "head expects 1 argument", "list");
-                                        true -> do
-                                            r1: TypeCheckResult <- check_expr(expr.inner, list_t, context, world);
-                                            case r1.is_ok of {
-                                                false -> r1;
-                                                true -> case expected_type == "discard" of {
-                                                    true -> type_checker_core@type_check_ok();
-                                                    false -> case type_checker_lists@types_equal_strip(expected_type, elem) of {
-                                                        true -> type_checker_core@type_check_ok();
-                                                        false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("head returns ", elem), ", expected "), expected_type), ""), "list")
-                                                    }
-                                                }
-                                            }
-                                        end
-                                    }
-                                end;
-                                false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown list primitive: ", expr.name), "list")
-                            }
-                        }
+                        false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown list primitive: ", expr.name), "list")
                     }
                 }
+            }
+        }
+    }
+}
+
+fn list_primitive_collectable_context_type(expr: Expr, expected_type: string, context: TypeContext) -> string {
+    case expr.name == "empty" of {
+        true -> expected_type;
+        false -> case expr.name == "prepend" of {
+            true -> type_checker_tuple_decompose_helpers@infer_expr_type(call_second_arg_expr(expr), context);
+            false -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context)
+        }
+    }
+}
+
+fn check_list_primitive_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    (elem: string, space: string) <- type_checker_lists@parse_generic_ts(expr.value);
+    case len(elem) == 0 of {
+        true -> type_checker_core@type_check_err("E2005", expr.location, concat(concat("list primitive ", expr.name), " requires [T, S], [T], or [Collectable, S] with a typed binding"), "list");
+        false -> do
+            list_context: string <- list_primitive_collectable_context_type(expr, expected_type, context);
+            (ok_lt: bool, elem_res: string, space_res: string, list_t: string) <- type_checker_lists@resolve_list_type_from_collectable_generic(elem, space, list_context);
+            case ok_lt of {
+                false -> type_checker_core@type_check_err("E2016", expr.location, concat(concat("cannot resolve List[Collectable, Space] for ", expr.name), " without a concrete List type in context"), "list");
+                true -> check_list_primitive_resolved(expr, expected_type, elem_res, list_t, context, world)
             }
         end
     }

@@ -24,6 +24,7 @@ export compose_instantiated_fn_name/2;
 export fn_names_equivalent/2;
 export resolve_call_fn_name/2;
 export decl_name_matches/2;
+export fn_base_name_before_brackets/1;
 export link_name_to_asm_symbol/1;
 
 fn strip_all_spaces_inst_from(s: string, i: int64, acc: string) -> string {
@@ -55,8 +56,40 @@ fn resolve_call_fn_name(base: string, generic_value: string) -> string {
     compose_instantiated_fn_name(base, generic_value)
 }
 
+fn fn_base_name_before_brackets(name: string) -> string {
+    fn_base_name_scan(name, 0, 0)
+}
+
+fn fn_base_name_scan(s: string, i: int64, depth: int64) -> string {
+    case i >= len(s) of {
+        true -> s;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "[" of {
+                true -> case depth == 0 of {
+                    true -> substring(s, 0, i);
+                    false -> fn_base_name_scan(s, i + 1, depth + 1)
+                };
+                false -> case c == "]" of {
+                    true -> fn_base_name_scan(s, i + 1, depth - 1);
+                    false -> fn_base_name_scan(s, i + 1, depth)
+                }
+            }
+        end
+    }
+}
+
+// Phase 0.4: bracketed call targets require exact instantiation spelling (add_edge[mem(normal)]
+// must not match add_edge[int64, mem(normal)]). Unbracketed targets (module@empty) keep
+// base-name matching so context resolution can pick the overload by arity and types.
 fn decl_name_matches(decl_name: string, target_name: string) -> bool {
-    fn_names_equivalent(decl_name, target_name)
+    case fn_names_equivalent(decl_name, target_name) of {
+        true -> true;
+        false -> case fn_name_has_bracket_instantiation(target_name) of {
+            true -> false;
+            false -> fn_base_name_before_brackets(decl_name) == fn_base_name_before_brackets(target_name)
+        }
+    }
 }
 
 // Map source bracket instantiation names to assembler-safe global labels (Apple Silicon).

@@ -39,11 +39,12 @@ This document specifies how **immutable, Erlang-style lists** (`List[T, S]`) are
 
 The **authoritative** surface syntax and typing rules remain in [silica-specification.md](silica-specification.md), including:
 
-- `List[ElementType, Space]` with **Collectable** on the element type and a **memory space** `Space` from the same vocabulary as **`alloc_region(Space)`** (e.g. **`normal`**, **`atomic`**, **`normal_writethrough`** — see [memory_region_types.md](../tutorials_and_howtos/memory_region_types.md)).
-- **Explicit** element type and **space** annotations: the compiler does **not** infer `Space` from the enclosing `sequence` alone; **`S`** is part of the **`List`** type and must **agree** with **`sequence proc[mem(S)]`** wherever list storage is **allocated** or **accessed** (§9.8).
-- **List literals** and **pattern matching** (`[]`, cons, `_`) use **`List[ElementType, Space]`** in **patterns** and **annotations** (same **`Space`** as the scrutinee).
+- `List[ElementType, Space]` with **Collectable** on the element type (or **`Collectable`** as the element **placeholder** — §8.2.4 silica-spec) and a **memory space** `Space` from the same vocabulary as **`alloc_region(Space)`** (e.g. **`normal`**, **`atomic`**, **`normal_writethrough`** — see [memory_region_types.md](../tutorials_and_howtos/memory_region_types.md)).
+- **Element type:** either a **concrete** inline `T` or **`Collectable`** resolved to concrete `T` per value flow from bindings, parameters, returns, or scrutinee types (silica-spec §8.2.4). The compiler does **not** infer element type from literal elements alone without an annotation.
+- **Space `S`:** remains explicit in `List[T, S]` for a value flow; the compiler does **not** infer `S` from the enclosing `sequence` effect alone; **`S`** must **agree** with **`sequence proc[mem(S)]`** wherever list storage is **allocated** or **accessed** (§9.8).
+- **List literals** and **pattern matching** use the **resolved** `List[ElementType, Space]` in patterns and annotations (same **`Space`** as the scrutinee).
 
-**Uniformity (spec):** [silica-specification.md](silica-specification.md) §4.2.4 requires that **function parameters**, **local variables**, **return types**, **literal** annotations, **case** scrutinees, and **patterns** use the **same** list type for the same data flow—**no** mixing **`List[T]`** with **`List[T, S]`** across a boundary. The **canonical** surface for **effect checking** and **silica-compiler** trials is **`List[T, S]`** with **explicit** **`S`** everywhere those types appear.
+**Uniformity (spec):** [silica-specification.md](silica-specification.md) §4.2.4 requires the **same** list type (after placeholder resolution) across parameters, locals, returns, literals, and patterns for one data flow. **Generated std structures** (graphs, trees, heaps) embed `List[Collectable, S]` in records and rely on resolution from the enclosing structure type; application code may continue to use concrete **`List[T, S]`** everywhere.
 
 **Compile-time list data** (literals, static initialization) is handled by **ordinary compiler lowering**, not user-level macros (Silica does not have macros).
 
@@ -51,7 +52,7 @@ The **authoritative** surface syntax and typing rules remain in [silica-specific
 
 - **`S`** is a **type-level** (or otherwise **statically explicit**) **memory space**; **runtime** does **not** infer or dispatch on `S` for **semantics** (no **runtime** **space** inference).
 - **`List[T, S]`** **carries** **`S`** across **move** and **return** so **callers** and **callees** keep a **single** **consistent** **story** with **`region(L1, S)`** for the **list’s** **owning** **region**.
-- **Primitives** that are **polymorphic** in **`T`** and **`S`** (e.g. **`empty`**, **`prepend`**, **`length`**) use **explicit** **instantiation** at the call site, e.g. **`empty[int64, normal]()`**, **`prepend[int64, normal](...)`**, **`length[int64, normal](...)`** — **no** **inference** of **`S`** from **context** (see §7).
+- **List primitives** (`empty`, **`prepend`**, **`length`**, …): support **`List[Collectable, S]`** in their declared result/parameter types; resolve to concrete **`T`** from context when the call appears under a typed binding or argument (silica-spec §8.2.4). **Explicit** bracket instantiation at the call site (e.g. **`empty[int64, normal]()`**) remains valid when context resolution is not used. **`S`** is still not inferred from **`sequence proc[mem(S)]`** alone (see §7).
 
 ---
 
@@ -149,7 +150,7 @@ end
 
 **`<space>`** is a **memory** **space** from the same vocabulary as **`alloc_region(<space>)`** (e.g. **`normal`**, **`normal_writethrough`**, **`atomic`**, **`normal_noncacheable`** — see **`tutorials_and_howtos/memory_region_types.md`**). **That** **same** **`mem(<space>)`** **covers** the **list** **region** and **every** **additional** **buffer** **when** **chunks** **are** **added**. If the **block** **also** **performs** **I/O** (e.g. **`print`**), **declare** **combined** **effects**, e.g. **`sequence proc[mem(normal), device_io]`** (see **`trials/list_addition/list_int64_two_primaries_shared_suffix.silica`**).
 
-**Explicit** **instantiation** at **call** **sites** for **list** **primitives** includes **`S`**, e.g. **`empty[int64, normal]()`**, **`prepend[int64, normal](x, xs)`**, **`length[int64, normal](xs)`** — **no** **inference** of **`S`** from **lexical** `mem` **alone** (§3.5, §9.8).
+**Call sites** for list primitives: prefer **`xs: List[int64, normal] <- empty()`** or **`prepend(x, xs)`** with **`xs`** already typed; optional **`empty[int64, normal]()`** when explicit. **`Collectable`** element placeholders in stdlib list ops resolve from that context. **`S`** is not inferred from lexical `mem` alone (§3.5, §9.8).
 
 **Named** **functions** **may** **declare** **effects** **on** **the** **signature** **when** **the** **API** **surface** **is** **fixed** (e.g. **`with mem(S)`**); **at minimum**, **put** **`sequence proc[mem(<space>)] … produces pure … end`** **inside** **the** **function** **body** **when** **the** **body** **allocates** **or** **reads** **list** **storage** (**`case`** **on** **`List[T, S]`**, **etc.**). **Recursive** **list** **walks** **repeat** **that** **sequence** **per** **call** (see **`list_int64_recursive_sum.silica`**).
 

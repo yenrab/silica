@@ -20,6 +20,7 @@
 
 use parser_ast;
 use type_checker_core;
+use type_checker_traits;
 
 export ListEmptyPat/0;
 export ListConsPat/0;
@@ -36,6 +37,10 @@ export count_call_args_list/1;
 export list_empty_effective_arg_count/1;
 export types_equal_strip/2;
 export validate_list_type_declaration/2;
+export is_collectable_element_placeholder/1;
+export collectable_types_compatible/3;
+export formal_type_accepts_actual/3;
+export resolve_list_type_from_collectable_generic/3;
 
 struct ListEmptyPat {
     ok: bool,
@@ -192,7 +197,11 @@ fn memory_spaces_equivalent_for_list(a: string, b: string) -> bool {
     types_equal_strip(normalize_memory_space_for_list(a), normalize_memory_space_for_list(b))
 }
 
-// Legacy List[T] matches List[T, S] when element types match. Ignore all spaces (token-join differences).
+fn is_collectable_element_placeholder(elem: string) -> bool {
+    strip_all_spaces_list(elem) == "Collectable"
+}
+
+// Legacy List[T] matches List[T, S] when element types match. List[Collectable, S] matches List[T, S] when T is Collectable (silica-spec §8.2.4).
 fn list_types_compatible(a: string, b: string) -> bool {
     case strip_all_spaces_list(a) == strip_all_spaces_list(b) of {
         true -> true;
@@ -203,19 +212,228 @@ fn list_types_compatible(a: string, b: string) -> bool {
                 false -> false;
                 true -> case ok_b of {
                     false -> false;
-                    true -> case types_equal_strip(ea, eb) of {
-                        false -> false;
-                        true -> case len(sa) == 0 of {
+                    true -> do
+                        elem_ok: bool <- case types_equal_strip(ea, eb) of {
                             true -> true;
-                            false -> case len(sb) == 0 of {
-                                true -> true;
-                                false -> memory_spaces_equivalent_for_list(sa, sb)
+                            false -> case is_collectable_element_placeholder(ea) of {
+                                true -> type_checker_traits@is_builtin_collectable_instance(eb);
+                                false -> case is_collectable_element_placeholder(eb) of {
+                                    true -> type_checker_traits@is_builtin_collectable_instance(ea);
+                                    false -> false
+                                }
                             }
+                        };
+                        case elem_ok of {
+                            false -> false;
+                            true -> case len(sa) == 0 of {
+                                true -> true;
+                                false -> case len(sb) == 0 of {
+                                    true -> true;
+                                    false -> memory_spaces_equivalent_for_list(sa, sb)
+                                }
+                            }
+                        }
+                    end
+                }
+            }
+        end
+    }
+}
+
+// Phase 0.4: structural match allowing Collectable placeholders in formal types (lists, structs, top-level Collectable).
+fn collectable_types_compatible(actual: string, formal: string, world: ListNamedProgram) -> bool {
+    act: string <- strip_all_spaces_list(actual);
+    frm: string <- strip_all_spaces_list(formal);
+    case act == frm of {
+        true -> true;
+        false -> case frm == "Collectable" of {
+            true -> type_checker_traits@is_builtin_collectable_instance(act);
+            false -> case starts_with_list(frm, "List[") of {
+                true -> case starts_with_list(act, "List[") of {
+                    false -> false;
+                    true -> do
+                        (ok_f: bool, ef: string, sf: string) <- parse_list_type_params(frm);
+                        (ok_a: bool, ea: string, sa: string) <- parse_list_type_params(act);
+                        case ok_f of {
+                            false -> false;
+                            true -> case ok_a of {
+                                false -> false;
+                                true -> case is_collectable_element_placeholder(ef) of {
+                                    false -> false;
+                                    true -> case type_checker_traits@is_builtin_collectable_instance(ea) of {
+                                        false -> false;
+                                        true -> case len(sf) == 0 of {
+                                            true -> true;
+                                            false -> case len(sa) == 0 of {
+                                                true -> true;
+                                                false -> memory_spaces_equivalent_for_list(sf, sa)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    end
+                };
+                false -> case substring(frm, 0, 1) == "{" of {
+                    true -> case substring(act, 0, 1) == "{" of {
+                        false -> false;
+                        true -> struct_collectable_types_compatible(act, frm, world)
+                    };
+                    false -> false
+                }
+            }
+        }
+    }
+}
+
+fn struct_collectable_types_compatible(actual: string, formal: string, world: ListNamedProgram) -> bool {
+    struct_fields_compatible_loop(actual, formal, 1, 1, world)
+}
+
+fn struct_field_pair_collectable_compatible(actual: string, formal: string, ai: int64, fi: int64, world: ListNamedProgram) -> bool {
+    (ok_f: bool, fname_f: string, ftype_f: string, fi2: int64) <- struct_read_field(formal, fi);
+    case ok_f of {
+        false -> false;
+        true -> struct_field_pair_collectable_compatible_actual(actual, formal, ai, fname_f, ftype_f, fi2, world)
+    }
+}
+
+fn struct_field_pair_collectable_compatible_actual(actual: string, formal: string, ai: int64, fname_f: string, ftype_f: string, fi2: int64, world: ListNamedProgram) -> bool {
+    (ok_a: bool, fname_a: string, ftype_a: string, ai2: int64) <- struct_read_field(actual, ai);
+    case ok_a of {
+        false -> false;
+        true -> case fname_f == fname_a of {
+            false -> false;
+            true -> case collectable_types_compatible(ftype_a, ftype_f, world) of {
+                false -> false;
+                true -> struct_fields_compatible_loop(actual, formal, ai2, fi2, world)
+            }
+        }
+    }
+}
+
+fn struct_fields_compatible_loop(actual: string, formal: string, ai: int64, fi: int64, world: ListNamedProgram) -> bool {
+    case ai >= len(actual) - 1 of {
+        true -> fi >= len(formal) - 1;
+        false -> case fi >= len(formal) - 1 of {
+            true -> false;
+            false -> struct_field_pair_collectable_compatible(actual, formal, ai, fi, world)
+        }
+    }
+}
+
+// Single compile-time gate for formal-vs-actual (qualified calls, returns): structural Collectable
+// placeholders plus marker traits. SIR mangling must call this via type_checker_expressions only.
+fn formal_type_accepts_actual(actual: string, formal: string, world: ListNamedProgram) -> bool {
+    case collectable_types_compatible(actual, formal, world) of {
+        true -> true;
+        false -> type_checker_traits@actual_type_satisfies_trait_expectation(actual, formal, world)
+    }
+}
+
+fn struct_skip_ws(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> i;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> struct_skip_ws(s, i + 1);
+            false -> i
+        }
+    }
+}
+
+fn struct_read_field(s: string, i: int64) -> (bool, string, string, int64) {
+    start: int64 <- struct_skip_ws(s, i);
+    colon: int64 <- struct_find_colon_depth0(s, start, 0);
+    case colon < 0 of {
+        true -> (false, "", "", start);
+        false -> do
+            name: string <- strip_spaces_list(substring(s, start, colon));
+            tstart: int64 <- struct_skip_ws(s, colon + 1);
+            (tend: int64, next_i: int64) <- struct_type_end(s, tstart, 0);
+            typ: string <- strip_spaces_list(substring(s, tstart, tend));
+            (true, name, typ, next_i)
+        end
+    }
+}
+
+fn struct_find_colon_depth0(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == ":" of {
+                true -> case depth == 0 of {
+                    true -> i;
+                    false -> struct_find_colon_depth0(s, i + 1, depth)
+                };
+                false -> case c == "(" or c == "[" or c == "{" of {
+                    true -> struct_find_colon_depth0(s, i + 1, depth + 1);
+                    false -> case c == ")" or c == "]" or c == "}" of {
+                        true -> struct_find_colon_depth0(s, i + 1, depth - 1);
+                        false -> struct_find_colon_depth0(s, i + 1, depth)
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn struct_type_end(s: string, i: int64, depth: int64) -> (int64, int64) {
+    case i >= len(s) of {
+        true -> (i, i);
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "," of {
+                true -> case depth == 0 of {
+                    true -> (i, struct_skip_ws(s, i + 1));
+                    false -> struct_type_end(s, i + 1, depth)
+                };
+                false -> case c == "}" of {
+                    true -> case depth == 0 of {
+                        true -> (i, i + 1);
+                        false -> struct_type_end(s, i + 1, depth - 1)
+                    };
+                    false -> case c == "(" or c == "[" or c == "{" of {
+                        true -> struct_type_end(s, i + 1, depth + 1);
+                        false -> case c == ")" or c == "]" of {
+                            true -> struct_type_end(s, i + 1, depth - 1);
+                            false -> struct_type_end(s, i + 1, depth)
                         }
                     }
                 }
             }
         end
+    }
+}
+
+// list primitive generic `Collectable` or `Collectable, mem(S)` with expected `List[T,S]` at the call site.
+fn resolve_list_type_from_collectable_generic(elem: string, space: string, expected_type: string) -> (bool, string, string, string) {
+    case is_collectable_element_placeholder(elem) of {
+        false -> do
+            list_t: string <- format_list_type_from_parts(elem, space);
+            (true, elem, space, list_t)
+        end;
+        true -> case expected_type == "discard" of {
+            true -> (false, "", "", "");
+            false -> do
+                (ok_e: bool, ee: string, es: string) <- parse_list_type_params(expected_type);
+                case ok_e of {
+                    false -> (false, "", "", "");
+                    true -> case is_collectable_element_placeholder(ee) of {
+                        true -> (false, "", "", "");
+                        false -> do
+                            use_space: string <- case len(strip_spaces_list(space)) == 0 of {
+                                true -> es;
+                                false -> space
+                            };
+                            list_t: string <- format_list_type_from_parts(ee, use_space);
+                            (true, ee, use_space, list_t)
+                        end
+                    }
+                }
+            end
+        }
     }
 }
 

@@ -95,7 +95,7 @@ key type: int64
 value type: int64, when values are stored
 ```
 
-This avoids needing generic type parameters or polymorphic comparison. Later generator variants instantiate other concrete **`Collectable`** types in bracket slots (§2.6):
+The first generated pass used **`int64`**-only concrete code paths for bootstrap. **Target methodology:** one function definition per operation in each module, with **`Key`**, **`Value`**, and **`Element`** as **`Collectable`** placeholders (and **`List[Collectable, S]`** in node records), resolved to concrete types per value flow ([silica-specification.md](silica-specification.md) §8.2.4). Registry names may still appear as design shorthands:
 
 ```text
 NodeIDBTree[uint64, mem(normal)]
@@ -103,7 +103,7 @@ CsrBTreeMap[string, int64, mem(normal)]
 RegionBinaryMinHeap[uint32, mem(normal)]
 ```
 
-The first pass should not attempt generic B-trees.
+**Keys** require a total order at specialization time (concrete compare in emitted code, or **`Comparable`** if trait compare is used). Do not duplicate source functions per primitive width or per user struct spelling.
 
 ### 2.4 `Collectable` keys, values, and heap elements
 
@@ -114,9 +114,9 @@ Generated balanced-tree and heap APIs use **`Collectable`** for **stored user da
 
 **Plain types (not `Collectable`):** structural **`int64` node ids**, `order`, `node_count`, capacities, region handles, and internal indices that are not user keys.
 
-**Monomorphic generators** emit the concrete inline key/value/element type (for example `int64`). Design-level signatures may use placeholders **`Key`**, **`Value`**, or **`Element`** where the concrete type is **`Collectable`**. Buffer and list storage use the same **`Collectable` buffer encoding** as graphs ([graph_representation_design.md](graph_representation_design.md) §2.6; [list_implementation_design.md](list_implementation_design.md) §4).
+**Emitted stdlib** uses **`Collectable`** (and **`Comparable`** for ordered **keys** where applicable) in parameter and record positions; the compiler **resolves** to concrete inline types per tree/heap value flow before codegen. Design prose uses **`Key`**, **`Value`**, or **`Element`**; generated Silica may spell **`Collectable`** in `List[Collectable, S]` and payload formals. Buffer and list storage use the same encoding as graphs ([graph_representation_design.md](graph_representation_design.md) §2.6; [list_implementation_design.md](list_implementation_design.md) §4).
 
-There is no separate storage marker trait beyond language **`Collectable`**.
+There is no separate storage marker trait beyond language **`Collectable`** (and **`Comparable`** for key ordering when not fully inlined).
 
 ### 2.5 Immutability and type invariance
 
@@ -128,37 +128,24 @@ Generated trees and heaps are **immutable values** ([graph_representation_design
 
 The **same inline tree or heap record type** must appear at every boundary for one value flow (uniform types, graph §2.7). Constructor return types pin the concrete **`Key`** / **`Value`** / **`Element`** spellings for later operations (graph §2.8).
 
-### 2.6 Design-name bracket syntax (`List`-aligned)
+### 2.6 Payload typing and call syntax (`List`-aligned)
 
-Tree and heap families use the same bracket convention as graphs and lists ([graph_representation_design.md](graph_representation_design.md) §2.11; [list_implementation_design.md](list_implementation_design.md) §3.5):
+Tree and heap families follow graphs and lists ([graph_representation_design.md](graph_representation_design.md) §2.11; [list_implementation_design.md](list_implementation_design.md) §3.5; silica-spec §8.2.4):
 
-- Bracket parameters list concrete **`Collectable`** payload types, then **`mem(Space)`** as the **final** parameter.
-- The **representation family name** (`NodeIDBTree`, `CsrBTreeMap`, `RegionBinaryMinHeap`, …) stays outside the brackets. Min/max (`Min` / `Max`), B-tree **`order`**, d-ary **`D`**, and CSR **buffer capacities** are separate generator inputs, not bracket slots.
+- **Preferred:** **one** `fn` per operation with **`Collectable`** / **`Comparable`** (keys) placeholders in formals and `List[Collectable, S]` node fields; **exports** are arity-only (`export insert/3`). Calls use `module@insert(tree, key, value)` with `tree` (and typed `empty`) supplying the specialization.
+- **Optional:** explicit brackets at call sites (`btree_nodeid@insert[int64, mem(normal)](tree, key)`) when desired.
+- Registry / design tables may still list bracket forms for documentation:
 
-| Family | Bracket form | Example |
-|--------|--------------|---------|
-| B-tree (keys only) | `[Key, mem(S)]` | `NodeIDBTree[int64, mem(normal)]` |
-| B-tree map | `[Key, Value, mem(S)]` | `NodeIDBTreeMap[int64, int64, mem(normal)]` |
-| Binary heap (element only) | `[Element, mem(S)]` | `RegionBinaryMinHeap[int64, mem(normal)]` |
-| Priority heap | `[Priority, Value, mem(S)]` | `RegionBinaryMinHeap[int64, int64, mem(normal)]` |
-| D-ary heap | `[Element, mem(S)]` | `RegionDaryMinHeap[int64, mem(normal)]` with **`D`** as a generator constant |
+| Family | Registry bracket form | Context-resolved example |
+|--------|----------------------|---------------------------|
+| B-tree (keys only) | `[Key, mem(S)]` | `tree: <NodeIDBTree record> <- btree_nodeid@empty()` |
+| B-tree map | `[Key, Value, mem(S)]` | `btree_nodeid@insert(tree, key, value)` |
+| Binary heap | `[Element, mem(S)]` | `heap_binary_min@push(heap, value)` |
+| Priority heap | `[Priority, Value, mem(S)]` | priorities/values from `heap`'s type |
 
-**Emitted module names** (one per representation family; heaps include min/max kind):
+**Emitted module names** (one per representation family; heaps include min/max kind): `btree_nodeid`, `btree_csr`, `btree_nodeid_map`, `btree_csr_map`, `heap_binary_min`, `heap_binary_max`, `heap_dary_min`, `heap_dary_max`. Do **not** encode key/value/element type or memory space in the module name.
 
-```text
-btree_nodeid
-btree_csr
-btree_nodeid_map
-btree_csr_map
-heap_binary_min
-heap_binary_max
-heap_dary_min
-heap_dary_max
-```
-
-Do **not** encode key/value/element type or memory space in the module name. Callers write `btree_nodeid@empty[int64, mem(normal)]()` — aligned with **`List`**.
-
-**Generated operation calls** use **`module@operation`** with explicit bracket instantiation — for example `btree_nodeid@insert[int64, mem(normal)](tree, key)`, `heap_binary_min@push[int64, mem(normal)](heap, value)`.
+**Do not** emit separate `fn insert[int8,…]`, `fn insert[int16,…]`, … copies in one module for each primitive width; the compiler specializes from the structure type.
 
 ## 3. B-tree terminology
 
@@ -1070,7 +1057,7 @@ Generated code should unroll child checks when `D` is a small constant, especial
 
 ## 8. Naming rules
 
-Generated names should be deterministic. **Design/registry names** use bracket syntax (§2.6). **Module names** and **operation names** follow **`List`** conventions: the module identifies the representation family; payload types and memory space are **bracket parameters on function calls**.
+Generated names should be deterministic. **Design/registry names** may use bracket syntax (§2.6). **Module names** and **operation names** follow **`List`** conventions: the module identifies the representation family; payload types and memory space are resolved from **structure value types** or optional explicit brackets.
 
 ### Module names
 
@@ -1093,37 +1080,16 @@ Import and call:
 
 ```text
 use btree_nodeid;
-btree_nodeid@empty[int64, mem(normal)]()
-heap_binary_min@push[int64, mem(normal)](heap, value)
+tree: <NodeIDBTreeMap record with concrete Key, Value> <- btree_nodeid@empty();
+btree_nodeid@insert(tree, key, value)
+heap_binary_min@push(heap, value)
 ```
 
 ### Operation names
 
-**Exported function names** are short operation verbs inside each module — for example `empty`, `insert`, `get`, `contains`, `push`, `pop`. They **do not** repeat the module name.
+**Exported function names** are short operation verbs — `empty`, `insert`, `get`, `contains`, `push`, `pop`. **Export declarations** use arity (`export insert/3`), not per-key bracket suffixes.
 
-**Module-qualified call syntax:** `<module>@<operation>[<bracket-params>](<args>)`
-
-Bracket parameters at call sites (final slot is always **`mem(Space)`**):
-
-```text
-B-tree keys only: [Key, mem(Space)]
-B-tree map: [Key, Value, mem(Space)]
-Heap element only: [Element, mem(Space)]
-Priority heap: [Priority, Value, mem(Space)]
-```
-
-Examples:
-
-```text
-btree_nodeid@empty[int64, mem(normal)]()
-btree_nodeid@insert[int64, mem(normal)](tree, key)
-btree_nodeid_map@get[int64, int64, mem(normal)](tree, key)
-btree_csr@contains[int64, mem(normal)](tree, key)
-btree_csr_map@get[int64, int64, mem(normal)](tree, key)
-heap_binary_min@empty[int64, mem(normal)]()
-heap_binary_min@push[int64, mem(normal)](heap, value)
-heap_dary_min@pop[int64, mem(normal)](heap)
-```
+**Module-qualified call syntax (preferred):** `<module>@<operation>(<args>)`. Optional: `<module>@<operation>[<bracket-params>](<args>)`.
 
 ## 9. Generator requirements
 
@@ -1287,8 +1253,8 @@ The generator must:
 4. Include the owning region in any returned value that contains buffers.
 5. Use exact concrete buffer capacities in type positions.
 6. Keep `List` and `buf` memory spaces aligned with the enclosing `sequence proc[mem(S)]`.
-7. Generate monomorphic comparison logic for the key type.
-8. Declare **add / find / remove** operands (`key`, `value`, heap `value`, priority-queue priority and value where applicable) using concrete **`Collectable`** payload types in emitted signatures (see §2.4).
+7. After **`Collectable`** resolution, generate monomorphic comparison logic for the concrete key type (or document trait-based compare if used).
+8. Declare **add / find / remove** operands using **`Collectable`** (keys also **`Comparable`** when trait compare is used) in the **single** emitted function per operation; resolve to concrete types per value flow before codegen (see §2.4).
 
 ## 10. Implementation staging
 

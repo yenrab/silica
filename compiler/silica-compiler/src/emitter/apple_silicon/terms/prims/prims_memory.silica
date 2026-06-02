@@ -107,20 +107,93 @@ fn emit_alloc_buf(dest: string) -> string {
     concat(check, alloc)
 }
 
+fn memory_type_contains_from(h: string, needle: string, i: int64) -> bool {
+    case len(needle) == 0 of {
+        true -> true;
+        false -> case i + len(needle) > len(h) of {
+            true -> false;
+            false -> case substring(h, i, i + len(needle)) == needle of {
+                true -> true;
+                false -> memory_type_contains_from(h, needle, i + 1)
+            }
+        }
+    }
+}
+
+fn memory_type_contains(h: string, needle: string) -> bool {
+    memory_type_contains_from(h, needle, 0)
+}
+
+fn w_reg_from_gpr(reg: string) -> string {
+    case len(reg) > 0 of {
+        true -> case substring(reg, 0, 1) == "X" of {
+            true -> concat("W", substring(reg, 1, len(reg)));
+            false -> reg
+        };
+        false -> reg
+    }
+}
+
 // buf_load(buf, index): load from buf[index]
-// Operands: X1 = buf base, X2 = index
-// LDR dest, [buf, index, LSL #3] for int64
-fn emit_buf_load(dest: string) -> string {
-    concat(concat(concat(concat("    LDR ", dest), ", [X1, X2, LSL #3]"), ""), "")
+// Operands: X1 = buf base, X2 = index.
+fn emit_buf_load(term: SIRTerm, dest: string) -> string {
+    wd: string <- w_reg_from_gpr(dest);
+    case term.type_name of {
+        "int8" -> concat(concat("    LDRSB ", wd), ", [X1, X2]");
+        "uint8" -> concat(concat("    LDRB ", wd), ", [X1, X2]");
+        "int16" -> concat(concat("    LDRSH ", wd), ", [X1, X2, LSL #1]");
+        "uint16" -> concat(concat("    LDRH ", wd), ", [X1, X2, LSL #1]");
+        "int32" -> concat(concat("    LDR ", wd), ", [X1, X2, LSL #2]");
+        "uint32" -> concat(concat("    LDR ", wd), ", [X1, X2, LSL #2]");
+        _: string -> concat(concat("    LDR ", dest), ", [X1, X2, LSL #3]")
+    }
+}
+
+fn buf_store_value_type(tuple_type: string) -> string {
+    case memory_type_contains(tuple_type, "int8") of {
+        true -> "int8";
+        false -> case memory_type_contains(tuple_type, "uint8") of {
+            true -> "uint8";
+            false -> case memory_type_contains(tuple_type, "int16") of {
+                true -> "int16";
+                false -> case memory_type_contains(tuple_type, "uint16") of {
+                    true -> "uint16";
+                    false -> case memory_type_contains(tuple_type, "int32") of {
+                        true -> "int32";
+                        false -> case memory_type_contains(tuple_type, "uint32") of {
+                            true -> "uint32";
+                            false -> "int64"
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // buf_store(buf, index, value): store value at buf[index]
-// Operands: X1 = buf, X2 = pointer to tuple(index, value) from tuple_make
-// Load value from [X2,#8], index from [X2], then STR value, [buf, index, LSL #3]
-fn emit_buf_store(dest: string) -> string {
-    ldr_val: string <- "    LDR X3, [X2, #8]\n";
+// Operands: X1 = buf, X2 = pointer to tuple(index, value) from tuple_make.
+fn emit_buf_store(term: SIRTerm, dest: string) -> string {
+    value_type: string <- buf_store_value_type(term.right_expr.type_name);
+    ldr_val: string <- case value_type of {
+        "int8" -> "    LDRSB W3, [X2, #8]\n";
+        "uint8" -> "    LDRB W3, [X2, #8]\n";
+        "int16" -> "    LDRSH W3, [X2, #8]\n";
+        "uint16" -> "    LDRH W3, [X2, #8]\n";
+        "int32" -> "    LDR W3, [X2, #8]\n";
+        "uint32" -> "    LDR W3, [X2, #8]\n";
+        _: string -> "    LDR X3, [X2, #8]\n"
+    };
     ldr_idx: string <- "    LDR X2, [X2]\n";
-    str_asm: string <- "    STR X3, [X1, X2, LSL #3]";
+    str_asm: string <- case value_type of {
+        "int8" -> "    STRB W3, [X1, X2]";
+        "uint8" -> "    STRB W3, [X1, X2]";
+        "int16" -> "    STRH W3, [X1, X2, LSL #1]";
+        "uint16" -> "    STRH W3, [X1, X2, LSL #1]";
+        "int32" -> "    STR W3, [X1, X2, LSL #2]";
+        "uint32" -> "    STR W3, [X1, X2, LSL #2]";
+        _: string -> "    STR X3, [X1, X2, LSL #3]"
+    };
     concat(concat(ldr_val, ldr_idx), str_asm)
 }
 
@@ -241,10 +314,10 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
         "read_ref" -> emit_read_ref(dest);
         "write_ref" -> emit_write_ref(dest);
         "alloc_buf" -> emit_alloc_buf(dest);
-        "buf_load" -> emit_buf_load(dest);
-        "buf_store" -> emit_buf_store(dest);
-        "read_buf" -> emit_buf_load(dest);
-        "write_buf" -> emit_buf_store(dest);
+        "buf_load" -> emit_buf_load(term, dest);
+        "buf_store" -> emit_buf_store(term, dest);
+        "read_buf" -> emit_buf_load(term, dest);
+        "write_buf" -> emit_buf_store(term, dest);
         "fresh_lifetime" -> emit_fresh_lifetime(dest);
         _: string -> concat(concat("    ; unsupported memory prim: ", term.name), "")
     }

@@ -46,6 +46,7 @@ silica.config: lib-sources
 		echo 'graph_reachability_csr_directed_trial.silica'; \
 		echo 'graph_reachability_adj_directed_trial.silica'; \
 		echo 'graph_degree_summary_csr_directed_trial.silica'; \
+		echo 'graph_adj_directed_context_trial.silica'; \
 	} > silica.config
 
 all: executables
