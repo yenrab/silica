@@ -71,37 +71,35 @@ fn qual_fn_name_for_linkage(name: string) -> string {
     instantiated_fn_name@link_name_to_asm_symbol(mapped)
 }
 
-fn asm_symbol_starts_with_digit(raw: string) -> bool {
-    case len(raw) == 0 of {
-        true -> false;
-        false -> case substring(raw, 0, 1) of {
-            "0" -> true;
-            "1" -> true;
-            "2" -> true;
-            "3" -> true;
-            "4" -> true;
-            "5" -> true;
-            "6" -> true;
-            "7" -> true;
-            "8" -> true;
-            "9" -> true;
-            _: string -> false
-        }
+// Mach-O / clang integrated assembler: 'L' prefixes are file-local; leading digits are invalid
+// label tokens (e.g. module 01_basic_struct_creation → _01_basic_struct_creation_fn).
+fn asm_decimal_digit_char(c: string) -> bool {
+    case c of {
+        "0" -> true; "1" -> true; "2" -> true; "3" -> true; "4" -> true;
+        "5" -> true; "6" -> true; "7" -> true; "8" -> true; "9" -> true;
+        _: string -> false
     }
 }
 
-// Mach-O integrated assembler treats labels beginning with 'L' as file-local; prefix '_' so
-// modules like Labeled (Labeled_code_of) remain linkable globals. It also rejects ordinary
-// labels beginning with a digit, so numeric trial module names need the same escape.
+fn macho_global_sym_needs_underscore_prefix(raw: string) -> bool {
+    case len(raw) > 0 of {
+        false -> false;
+        true -> do
+            first: string <- substring(raw, 0, 1);
+            case first == "L" of {
+                true -> true;
+                false -> asm_decimal_digit_char(first)
+            }
+        end
+    }
+}
+
 fn macho_escape_global_asm_symbol(raw: string) -> string {
     case raw == "main" of {
         true -> raw;
-        false -> case len(raw) > 0 and substring(raw, 0, 1) == "L" of {
+        false -> case macho_global_sym_needs_underscore_prefix(raw) of {
             true -> concat("_", raw);
-            false -> case asm_symbol_starts_with_digit(raw) of {
-                true -> concat("_", raw);
-                false -> raw
-            }
+            false -> raw
         }
     }
 }
@@ -385,22 +383,20 @@ fn supervisor_init_sret_alloc_bytes(return_type_name: string) -> int64 {
 // Supervisors Phase E (supervisors_implementation_development_plan §15.4.12–§15.4.13.2, tasks e2a/e2b):
 // For every `impl T for Supervisor` marker in the module, emit a per-supervisor trampoline symbol
 //     _silica_supervisor_start_<T>
-// whose minimal body calls the module's `init` (flat-namespace in bootstrap: one supervisor
-// impl per module) and returns. Later phases (e3a–e3c) extend this body to walk the returned
+// whose minimal body calls the module's `init` ({module}_init linkage symbol) and returns. Later phases (e3a–e3c) extend this body to walk the returned
 // (supervisor_flags, List[child_spec, normal]) tuple, spawn_linked each child, record child
 // table entries on the ACB, and anchor the runtime automatic-restart path.
 // The trampoline is invoked once at first schedule of the supervisor actor by
 // _silica_rt_supervisor_start (to be wired in a subsequent phase). Emitting the symbol now
 // keeps the link graph complete and lets integration tests observe its presence.
 // Phase E e3b: trampoline invoked once at first schedule (actor_thread_main hook).
-// X0 in = ACB pointer. Load initial state from [ACB], call module-local init with X8 = sret buffer,
-// pass (ACB, tuple_ptr) to materialize.
+// X0 in = ACB pointer. Load initial state from [ACB], call init with X8 = sret buffer, pass (ACB, tuple_ptr) to materialize.
 fn format_one_supervisor_trampoline(module_name: string, actor_type: string, sret_bytes: int64) -> string {
     sym: string <- concat("_silica_supervisor_start_", actor_type);
     header: string <- concat(concat(concat(".globl ", sym), "\n.p2align 2\n"), concat(sym, ":\n"));
     prologue: string <- "    STP X20, X19, [SP, #-32]!\n    STP X29, X30, [SP, #16]\n    ADD X29, SP, #16\n    MOV X19, X0\n";
     init_sym: string <- asm_symbol_for_definition(module_name, "init");
-    init_call: string <- concat("    LDR X0, [X19]\n    BL ", concat(init_sym, "\n"));
+    init_call: string <- concat(concat("    LDR X0, [X19]\n    BL ", init_sym), "\n");
     mid: string <- "    MOV X1, X0\n    MOV X0, X19\n    BL _silica_rt_supervisor_materialize_init_children\n";
     epilogue: string <- "    LDP X29, X30, [SP, #16]\n    LDP X20, X19, [SP], #32\n    RET\n";
     szs: string <- atom_table@int64_to_decimal_string(sret_bytes);
@@ -435,11 +431,12 @@ fn emit_supervisor_start_trampolines_loop(module_name: string, types: ListSirStr
 
 fn emit_supervisor_start_trampolines(sir_module: SIRModule) -> string {
     hdr: string <- "    ; supervisors Phase E (e3b): per-impl start trampolines (calls init + materialize children)\n";
+    mod_name: string <- sir_module.module_name;
     case sir_module.supervisor_phase_e.is_nil of {
-        false -> concat(hdr, emit_supervisor_start_trampolines_phase_e_loop(sir_module.module_name, sir_module.supervisor_phase_e, ""));
+        false -> concat(hdr, emit_supervisor_start_trampolines_phase_e_loop(mod_name, sir_module.supervisor_phase_e, ""));
         true -> case sir_module.supervisor_impl_types.is_nil of {
             true -> "";
-            false -> concat(hdr, emit_supervisor_start_trampolines_loop(sir_module.module_name, sir_module.supervisor_impl_types, ""))
+            false -> concat(hdr, emit_supervisor_start_trampolines_loop(mod_name, sir_module.supervisor_impl_types, ""))
         }
     }
 }

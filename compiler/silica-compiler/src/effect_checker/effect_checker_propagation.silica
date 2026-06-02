@@ -46,9 +46,11 @@
 use parser_ast;
 use lexer_core;
 use effect_checker_core;
+use effect_checker_declarations;
 use effect_checker_memory_regions;
 use effect_checker_lists;
 use type_checker_core;
+use instantiated_fn_name;
 
 export collect_expr_effects/2;
 export collect_expr_effects_outside_sequence_blocks/2;
@@ -351,18 +353,37 @@ fn resolve_call_effects_with_binding(fn_name: string, ctx: EffectContext, first_
                         case is_dangerous_module_name(qmod) of {
                             true -> stamp_effect_locations(external_danger_effect_singleton(location), location);
                             false -> do
-                        base: string <- type_checker_core@user_call_base_function_name(fn_name);
-                        (found_mq: bool, mq_effects: ListEffectName) <- effect_checker_core@lookup_fn_effects(ctx.fn_env, base);
-                        case found_mq of {
-                            true -> stamp_effect_locations(expand_effect_list(mq_effects, ctx.alias_env), location);
-                            false -> do
-                                (found_builtin_mq: bool, builtin_mq_effects: ListEffectName) <- effect_checker_core@builtin_fn_effects(base);
-                                case found_builtin_mq of {
-                                    true -> stamp_effect_locations(builtin_mq_effects, location);
-                                    false -> parser_ast@empty_effect_name_list()
+                                base: string <- type_checker_core@user_call_base_function_name(fn_name);
+                                resolved: string <- instantiated_fn_name@resolve_call_fn_name(base, generic_value);
+                                (found_mod: bool, mod_prog: Program) <- parser_ast@find_named_program(qmod, ctx.world);
+                                (found_mq: bool, mq_effects: ListEffectName) <- case found_mod of {
+                                    true -> effect_checker_declarations@lookup_fn_declared_effects(mod_prog.declarations, resolved);
+                                    false -> (false, parser_ast@empty_effect_name_list())
+                                };
+                                inst_effects: ListEffectName <- effect_checker_lists@mem_effects_from_fn_instantiation(generic_value, resolved, location);
+                                resolved_mq_effects: ListEffectName <- case found_mq of {
+                                    true -> case effect_checker_core@effect_list_length(mq_effects) > 0 of {
+                                        true -> mq_effects;
+                                        false -> inst_effects
+                                    };
+                                    false -> inst_effects
+                                };
+                                case effect_checker_core@effect_list_length(resolved_mq_effects) > 0 of {
+                                    true -> stamp_effect_locations(expand_effect_list(resolved_mq_effects, ctx.alias_env), location);
+                                    false -> do
+                                        (found_local: bool, local_effects: ListEffectName) <- effect_checker_core@lookup_fn_effects(ctx.fn_env, resolved);
+                                        case found_local of {
+                                            true -> stamp_effect_locations(expand_effect_list(local_effects, ctx.alias_env), location);
+                                            false -> do
+                                                (found_builtin_mq: bool, builtin_mq_effects: ListEffectName) <- effect_checker_core@builtin_fn_effects(base);
+                                                case found_builtin_mq of {
+                                                    true -> stamp_effect_locations(builtin_mq_effects, location);
+                                                    false -> parser_ast@empty_effect_name_list()
+                                                }
+                                            end
+                                        }
+                                    end
                                 }
-                            end
-                        }
                             end
                         }
                     end;

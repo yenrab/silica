@@ -32,7 +32,10 @@ clean:
 	@rm -f "$(THIS_DIR)main_use_camelcase_qualifier.cur_fail" "$(THIS_DIR)silica.config" "$(THIS_DIR).integrate_counts"
 
 silica.config: | clean
-	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find "$$PWD" -type f -name '*.silica' | sed "s|^$$PWD/||" > silica.config
+	@printf '%s\n' \
+		main_use_camelcase_qualifier.silica \
+		PascalCaseLib.silica \
+		> "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))silica.config"
 
 help:
 	@echo "qualified_call_module_name_case_mismatch_trial (multi-file error enforcement)"

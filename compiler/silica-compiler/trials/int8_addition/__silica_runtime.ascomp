@@ -422,6 +422,24 @@ LBB1_exit:
 LBB1_exit_report_already_done:
 	mov	x20, #0
 LBB1_exit_after_report:
+	ldr	x21, [x19, #192]
+	cbz	x21, LBB1_exit_no_sup_drain
+	mov	x0, x21
+	bl	_silica_rt_supervisor_drain_ingress
+	ldr	w23, [x19, #336]
+	cbz	w23, LBB1_exit_no_sup_drain
+	ldr	x22, [x19, #208]
+	cbz	x22, LBB1_exit_no_sup_drain
+	ldr	w8, [x21, #152]
+	cbz	w8, LBB1_exit_no_sup_drain
+LBB1_exit_wait_new_child:
+	ldr	x0, [x22]
+	cmp	x0, x19
+	beq	LBB1_exit_wait_new_child
+	cbz	x0, LBB1_exit_wait_new_child
+	ldr	x8, [x0, #288]
+	cbz	x8, LBB1_exit_wait_new_child
+LBB1_exit_no_sup_drain:
 	mov	x0, x19
 	bl	_silica_rt_actor_signal_pending_call_deaths
 	cbz	x20, LBB1_exit_skip_legacy_root
@@ -4455,62 +4473,16 @@ Lfrdl_b:
 	.globl	_silica_rt_unwind_behavior_display_name
 	.p2align	2
 _silica_rt_unwind_behavior_display_name:
-; X0 = dladdr dli_sname (may include Mach-O leading '_'). Returns X0 = cstring to print (short Silica fn name when a __silica_modpfx record matches).
-; Uses only caller-saved x9–x15 so deliver_unwind_report callee-saved registers stay intact.
+; X0 = dladdr dli_sname (may include Mach-O leading '_'). Returns X0 = full linker symbol for frame #0 (module_fn), without leading '_'.
+; Uses only caller-saved x8–x15 so deliver_unwind_report callee-saved registers stay intact.
 	.cfi_startproc
-	mov	x15, x0
 	cbz	x0, Ludn_done
 	ldrb	w8, [x0]
 	cmp	w8, #95
-	b.ne	Ludn_scan
+	b.ne	Ludn_done
 	add	x0, x0, #1
-Ludn_scan:
-	mov	x9, x0
-Ludn_mpf_a:
-	adrp	x10, section$start$__DATA$__silica_modpfx@PAGE
-Ludn_mpf_b:
-	add	x10, x10, section$start$__DATA$__silica_modpfx@PAGEOFF
-Ludn_mpe_a:
-	adrp	x11, section$end$__DATA$__silica_modpfx@PAGE
-Ludn_mpe_b:
-	add	x11, x11, section$end$__DATA$__silica_modpfx@PAGEOFF
-	cmp	x10, x11
-	b.ge	Ludn_nomatch
-Ludn_ploop:
-	cmp	x10, x11
-	b.ge	Ludn_nomatch
-	mov	x12, x10
-	mov	x13, xzr
-Ludn_plen:
-	ldrb	w8, [x12, x13]
-	cbz	w8, Ludn_ptest
-	add	x13, x13, #1
-	b	Ludn_plen
-Ludn_ptest:
-	cbz	x13, Ludn_pnext
-	mov	x14, xzr
-Ludn_pcmp:
-	cmp	x14, x13
-	b.ge	Ludn_pmatch
-	ldrb	w8, [x12, x14]
-	ldrb	w10, [x9, x14]
-	cmp	w8, w10
-	b.ne	Ludn_pnext
-	add	x14, x14, #1
-	b	Ludn_pcmp
-Ludn_pmatch:
-	add	x0, x9, x13
-	ret
-Ludn_pnext:
-	add	x10, x12, x13
-	add	x10, x10, #1
-	b	Ludn_ploop
-Ludn_nomatch:
-	mov	x0, x9
 Ludn_done:
 	ret
-	.loh AdrpAdd	Ludn_mpf_a, Ludn_mpf_b
-	.loh AdrpAdd	Ludn_mpe_a, Ludn_mpe_b
 	.cfi_endproc
                                         ; -- End function
 	.globl	_silica_rt_actor_deliver_unwind_report
@@ -4587,7 +4559,7 @@ Lcs_dladdr:
 	ldr	x9, [sp, #16]
 	add	sp, sp, #48
 	cbz	x9, Lcs_frame0_unk
-; x9 = dli_sname; strip module prefix (see __silica_modpfx) then format frame-0 line via snprintf.
+; x9 = dli_sname; skip Mach-O '_' then format frame-0 line via snprintf (full module_fn name).
 	mov	x0, x9
 	bl	_silica_rt_unwind_behavior_display_name
 	mov	x3, x0
@@ -4764,20 +4736,36 @@ _silica_rt_badarith:
 Lbadarith_report_already_done:
 	mov	x20, #0
 Lbadarith_after_report:
+	ldr	x21, [x19, #192]
+	cbz	x21, Lbadarith_no_supervisor
+	mov	x0, x21
+	bl	_silica_rt_supervisor_drain_ingress
+	ldr	x22, [x19, #208]
+	cbz	x22, Lbadarith_no_supervisor
+	ldr	w8, [x21, #152]
+	cbz	w8, Lbadarith_no_supervisor
+Lbadarith_wait_new_child:
+	ldr	x0, [x22]
+	cmp	x0, x19
+	beq	Lbadarith_wait_new_child
+	cbz	x0, Lbadarith_wait_new_child
+	ldr	x8, [x0, #288]
+	cbz	x8, Lbadarith_wait_new_child
+Lbadarith_no_supervisor:
 	mov	x0, x19
 	bl	_silica_rt_actor_signal_pending_call_deaths
-	ldr	x20, [x19, #208]
-	ldr	x21, [x19, #192]
-	cbz	x21, Lbadarith_thread_exit
+	ldr	x22, [x19, #208]
 	mov	x0, x19
 	bl	_silica_rt_child_table_free
+	mov	x0, x19
+	bl	_silica_rt_ffi_arena_teardown
 	mov	x0, x19
 	bl	_silica_rt_actor_dealloc_region
 	mov	x0, x19
 	bl	_free
-	cbz	x20, Lbadarith_thread_exit
+	cbz	x22, Lbadarith_thread_exit
 	mov	x9, #1
-	str	x9, [x20, #56]
+	str	x9, [x22, #56]
 Lbadarith_thread_exit:
 	mov	x0, #0
 	bl	_pthread_exit
@@ -4831,20 +4819,36 @@ _silica_rt_case_clause:
 Lcaseclause_report_already_done:
 	mov	x20, #0
 Lcaseclause_after_report:
+	ldr	x21, [x19, #192]
+	cbz	x21, Lcaseclause_no_supervisor
+	mov	x0, x21
+	bl	_silica_rt_supervisor_drain_ingress
+	ldr	x22, [x19, #208]
+	cbz	x22, Lcaseclause_no_supervisor
+	ldr	w8, [x21, #152]
+	cbz	w8, Lcaseclause_no_supervisor
+Lcaseclause_wait_new_child:
+	ldr	x0, [x22]
+	cmp	x0, x19
+	beq	Lcaseclause_wait_new_child
+	cbz	x0, Lcaseclause_wait_new_child
+	ldr	x8, [x0, #288]
+	cbz	x8, Lcaseclause_wait_new_child
+Lcaseclause_no_supervisor:
 	mov	x0, x19
 	bl	_silica_rt_actor_signal_pending_call_deaths
-	ldr	x20, [x19, #208]
-	ldr	x21, [x19, #192]
-	cbz	x21, Lcaseclause_thread_exit
+	ldr	x22, [x19, #208]
 	mov	x0, x19
 	bl	_silica_rt_child_table_free
+	mov	x0, x19
+	bl	_silica_rt_ffi_arena_teardown
 	mov	x0, x19
 	bl	_silica_rt_actor_dealloc_region
 	mov	x0, x19
 	bl	_free
-	cbz	x20, Lcaseclause_thread_exit
+	cbz	x22, Lcaseclause_thread_exit
 	mov	x9, #1
-	str	x9, [x20, #56]
+	str	x9, [x22, #56]
 Lcaseclause_thread_exit:
 	mov	x0, #0
 	bl	_pthread_exit

@@ -48,7 +48,7 @@ fn key_equal(left: int64, right: int64) -> int64 {
     }
 }
 
-fn empty_map_skeleton() -> {
+fn empty[int64, int64, mem(normal)]() -> {
     region: region(L1, normal),
     root_id: int64,
     node_count: int64,
@@ -106,24 +106,6 @@ fn empty_map_skeleton() -> {
     produces
         pure tree
     end
-}
-
-fn empty[int64, int64, mem(normal)]() -> {
-    region: region(L1, normal),
-    root_id: int64,
-    node_count: int64,
-    key_count_total: int64,
-    order: int64,
-    node_key_start: buf(L1, normal, int64, 1),
-    node_key_count: buf(L1, normal, int64, 1),
-    node_child_start: buf(L1, normal, int64, 1),
-    node_child_count: buf(L1, normal, int64, 1),
-    node_is_leaf: buf(L1, normal, int64, 1),
-    keys: buf(L1, normal, int64, 7),
-    values: buf(L1, normal, int64, 7),
-    children: buf(L1, normal, int64, 8)
-} {
-    empty_map_skeleton()
 }
 
 // Static example: keys {1, 3, 5} mapped to values {10, 30, 50}.
@@ -465,35 +447,7 @@ fn val_at_or_new_from_buf(
     }
 }
 
-fn csr_out_val_0(v0: int64, v1: int64, v2: int64, v3: int64, v4: int64, v5: int64, new_val: int64, pos: int64) -> int64 {
-    case pos == 0 of { true -> new_val; false -> v0 }
-}
-
-fn csr_out_val_1(v0: int64, v1: int64, v2: int64, v3: int64, v4: int64, v5: int64, new_val: int64, pos: int64) -> int64 {
-    case pos == 1 of { true -> new_val; false -> case pos < 1 of { true -> v0; false -> v1 } }
-}
-
-fn csr_out_val_2(v0: int64, v1: int64, v2: int64, v3: int64, v4: int64, v5: int64, new_val: int64, pos: int64) -> int64 {
-    case pos == 2 of { true -> new_val; false -> case pos < 2 of { true -> v1; false -> v2 } }
-}
-
-fn csr_out_val_3(v0: int64, v1: int64, v2: int64, v3: int64, v4: int64, v5: int64, new_val: int64, pos: int64) -> int64 {
-    case pos == 3 of { true -> new_val; false -> case pos < 3 of { true -> v2; false -> v3 } }
-}
-
-fn csr_out_val_4(v0: int64, v1: int64, v2: int64, v3: int64, v4: int64, v5: int64, new_val: int64, pos: int64) -> int64 {
-    case pos == 4 of { true -> new_val; false -> case pos < 4 of { true -> v3; false -> v4 } }
-}
-
-fn csr_out_val_5(v0: int64, v1: int64, v2: int64, v3: int64, v4: int64, v5: int64, new_val: int64, pos: int64) -> int64 {
-    case pos == 5 of { true -> new_val; false -> case pos < 5 of { true -> v4; false -> v5 } }
-}
-
-fn csr_out_val_6(v0: int64, v1: int64, v2: int64, v3: int64, v4: int64, v5: int64, new_val: int64, pos: int64) -> int64 {
-    case pos == 6 of { true -> new_val; false -> v5 }
-}
-
-fn csr_out_val_from_buf(
+fn csr_out_value_from_buf(
     values_buf: buf(L1, normal, int64, 7),
     out_i: int64,
     new_val: int64,
@@ -518,99 +472,222 @@ fn csr_out_val_from_buf(
     }
 }
 
-// Write all seven key/value slots after insert-at-pos shuffle in one function.
-fn fill_seven_csr_map_keys_vals(
-    nk: buf(L1, normal, int64, 7),
-    nv: buf(L1, normal, int64, 7),
-    keys_buf: buf(L1, normal, int64, 7),
-    values_buf: buf(L1, normal, int64, 7),
+fn build_leaf_csr_map_skeleton(
+    key_count: int64
+) -> {
+    region: region(L1, normal),
+    root_id: int64,
+    node_count: int64,
+    key_count_total: int64,
+    order: int64,
+    node_key_start: buf(L1, normal, int64, 1),
+    node_key_count: buf(L1, normal, int64, 1),
+    node_child_start: buf(L1, normal, int64, 1),
+    node_child_count: buf(L1, normal, int64, 1),
+    node_is_leaf: buf(L1, normal, int64, 1),
+    keys: buf(L1, normal, int64, 7),
+    values: buf(L1, normal, int64, 7),
+    children: buf(L1, normal, int64, 8)
+} {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        nks: buf(L1, normal, int64, 1) <- alloc_buf(r, 1);
+        nkc: buf(L1, normal, int64, 1) <- alloc_buf(r, 1);
+        ncs: buf(L1, normal, int64, 1) <- alloc_buf(r, 1);
+        ncc: buf(L1, normal, int64, 1) <- alloc_buf(r, 1);
+        nil_buf: buf(L1, normal, int64, 1) <- alloc_buf(r, 1);
+        nk: buf(L1, normal, int64, 7) <- alloc_buf(r, 7);
+        nv: buf(L1, normal, int64, 7) <- alloc_buf(r, 7);
+        nc: buf(L1, normal, int64, 8) <- alloc_buf(r, 8);
+        _: atom <- write_buf(nks, 0, 0);
+        _: atom <- write_buf(nkc, 0, key_count);
+        _: atom <- write_buf(ncs, 0, 0);
+        _: atom <- write_buf(ncc, 0, 0);
+        _: atom <- write_buf(nil_buf, 0, 1);
+        tree: {
+            region: region(L1, normal),
+            root_id: int64,
+            node_count: int64,
+            key_count_total: int64,
+            order: int64,
+            node_key_start: buf(L1, normal, int64, 1),
+            node_key_count: buf(L1, normal, int64, 1),
+            node_child_start: buf(L1, normal, int64, 1),
+            node_child_count: buf(L1, normal, int64, 1),
+            node_is_leaf: buf(L1, normal, int64, 1),
+            keys: buf(L1, normal, int64, 7),
+            values: buf(L1, normal, int64, 7),
+            children: buf(L1, normal, int64, 8)
+        } <- {
+            region: r,
+            root_id: 0,
+            node_count: 1,
+            key_count_total: key_count,
+            order: 8,
+            node_key_start: nks,
+            node_key_count: nkc,
+            node_child_start: ncs,
+            node_child_count: ncc,
+            node_is_leaf: nil_buf,
+            keys: nk,
+            values: nv,
+            children: nc
+        }
+    produces
+        pure tree
+    end
+}
+
+fn fill_csr_map_insert_slots(
+    tree: {
+        region: region(L1, normal),
+        root_id: int64,
+        node_count: int64,
+        key_count_total: int64,
+        order: int64,
+        node_key_start: buf(L1, normal, int64, 1),
+        node_key_count: buf(L1, normal, int64, 1),
+        node_child_start: buf(L1, normal, int64, 1),
+        node_child_count: buf(L1, normal, int64, 1),
+        node_is_leaf: buf(L1, normal, int64, 1),
+        keys: buf(L1, normal, int64, 7),
+        values: buf(L1, normal, int64, 7),
+        children: buf(L1, normal, int64, 8)
+    },
+    old_keys: buf(L1, normal, int64, 7),
+    old_values: buf(L1, normal, int64, 7),
     new_key: int64,
     new_val: int64,
     pos: int64
-) -> atom {
+) -> {
+    region: region(L1, normal),
+    root_id: int64,
+    node_count: int64,
+    key_count_total: int64,
+    order: int64,
+    node_key_start: buf(L1, normal, int64, 1),
+    node_key_count: buf(L1, normal, int64, 1),
+    node_child_start: buf(L1, normal, int64, 1),
+    node_child_count: buf(L1, normal, int64, 1),
+    node_is_leaf: buf(L1, normal, int64, 1),
+    keys: buf(L1, normal, int64, 7),
+    values: buf(L1, normal, int64, 7),
+    children: buf(L1, normal, int64, 8)
+} {
     sequence proc[mem(normal)]
-        nk_saved: buf(L1, normal, int64, 7) <- nk;
-        nv_saved: buf(L1, normal, int64, 7) <- nv;
-        keys_saved: buf(L1, normal, int64, 7) <- keys_buf;
-        values_saved: buf(L1, normal, int64, 7) <- values_buf;
+        old_keys_saved: buf(L1, normal, int64, 7) <- old_keys;
+        old_values_saved: buf(L1, normal, int64, 7) <- old_values;
         new_key_saved: int64 <- new_key;
         new_val_saved: int64 <- new_val;
         pos_saved: int64 <- pos;
-        o0: int64 <- csr_out_key_from_buf(keys_saved, 0, new_key_saved, pos_saved);
-        _: atom <- write_buf(nk_saved, 0, o0);
-        u0: int64 <- csr_out_key_from_buf(values_saved, 0, new_val_saved, pos_saved);
-        _: atom <- write_buf(nv_saved, 0, u0);
-        o1: int64 <- csr_out_key_from_buf(keys_saved, 1, new_key_saved, pos_saved);
-        _: atom <- write_buf(nk_saved, 1, o1);
-        u1: int64 <- csr_out_key_from_buf(values_saved, 1, new_val_saved, pos_saved);
-        _: atom <- write_buf(nv_saved, 1, u1);
-        o2: int64 <- csr_out_key_from_buf(keys_saved, 2, new_key_saved, pos_saved);
-        _: atom <- write_buf(nk_saved, 2, o2);
-        u2: int64 <- csr_out_key_from_buf(values_saved, 2, new_val_saved, pos_saved);
-        _: atom <- write_buf(nv_saved, 2, u2);
-        o3: int64 <- csr_out_key_from_buf(keys_saved, 3, new_key_saved, pos_saved);
-        _: atom <- write_buf(nk_saved, 3, o3);
-        u3: int64 <- csr_out_key_from_buf(values_saved, 3, new_val_saved, pos_saved);
-        _: atom <- write_buf(nv_saved, 3, u3);
-        o4: int64 <- csr_out_key_from_buf(keys_saved, 4, new_key_saved, pos_saved);
-        _: atom <- write_buf(nk_saved, 4, o4);
-        u4: int64 <- csr_out_key_from_buf(values_saved, 4, new_val_saved, pos_saved);
-        _: atom <- write_buf(nv_saved, 4, u4);
-        o5: int64 <- csr_out_key_from_buf(keys_saved, 5, new_key_saved, pos_saved);
-        _: atom <- write_buf(nk_saved, 5, o5);
-        u5: int64 <- csr_out_key_from_buf(values_saved, 5, new_val_saved, pos_saved);
-        _: atom <- write_buf(nv_saved, 5, u5);
-        o6: int64 <- csr_out_key_from_buf(keys_saved, 6, new_key_saved, pos_saved);
-        _: atom <- write_buf(nk_saved, 6, o6);
-        u6: int64 <- csr_out_key_from_buf(values_saved, 6, new_val_saved, pos_saved);
-        result: atom <- write_buf(nv_saved, 6, u6)
+        o0: int64 <- csr_out_key_from_buf(old_keys_saved, 0, new_key_saved, pos_saved);
+        _: atom <- write_buf(tree.keys, 0, o0);
+        u0: int64 <- csr_out_value_from_buf(old_values_saved, 0, new_val_saved, pos_saved);
+        _: atom <- write_buf(tree.values, 0, u0);
+        o1: int64 <- csr_out_key_from_buf(old_keys_saved, 1, new_key_saved, pos_saved);
+        _: atom <- write_buf(tree.keys, 1, o1);
+        u1: int64 <- csr_out_value_from_buf(old_values_saved, 1, new_val_saved, pos_saved);
+        _: atom <- write_buf(tree.values, 1, u1);
+        o2: int64 <- csr_out_key_from_buf(old_keys_saved, 2, new_key_saved, pos_saved);
+        _: atom <- write_buf(tree.keys, 2, o2);
+        u2: int64 <- csr_out_value_from_buf(old_values_saved, 2, new_val_saved, pos_saved);
+        _: atom <- write_buf(tree.values, 2, u2);
+        o3: int64 <- csr_out_key_from_buf(old_keys_saved, 3, new_key_saved, pos_saved);
+        _: atom <- write_buf(tree.keys, 3, o3);
+        u3: int64 <- csr_out_value_from_buf(old_values_saved, 3, new_val_saved, pos_saved);
+        _: atom <- write_buf(tree.values, 3, u3);
+        o4: int64 <- csr_out_key_from_buf(old_keys_saved, 4, new_key_saved, pos_saved);
+        _: atom <- write_buf(tree.keys, 4, o4);
+        u4: int64 <- csr_out_value_from_buf(old_values_saved, 4, new_val_saved, pos_saved);
+        _: atom <- write_buf(tree.values, 4, u4);
+        o5: int64 <- csr_out_key_from_buf(old_keys_saved, 5, new_key_saved, pos_saved);
+        _: atom <- write_buf(tree.keys, 5, o5);
+        u5: int64 <- csr_out_value_from_buf(old_values_saved, 5, new_val_saved, pos_saved);
+        _: atom <- write_buf(tree.values, 5, u5);
+        o6: int64 <- csr_out_key_from_buf(old_keys_saved, 6, new_key_saved, pos_saved);
+        _: atom <- write_buf(tree.keys, 6, o6);
+        u6: int64 <- csr_out_value_from_buf(old_values_saved, 6, new_val_saved, pos_saved);
+        _: atom <- write_buf(tree.values, 6, u6)
     produces
-        pure result
+        pure tree
     end
 }
 
-// Write one output key/value slot after insert-at-pos shuffle (map variant).
-fn write_csr_map_key_at(
-    nk: buf(L1, normal, int64, 7),
-    keys_buf: buf(L1, normal, int64, 7),
-    out_i: int64,
-    new_key: int64,
-    pos: int64
-) -> atom {
+fn fill_csr_map_replace_slots(
+    tree: {
+        region: region(L1, normal),
+        root_id: int64,
+        node_count: int64,
+        key_count_total: int64,
+        order: int64,
+        node_key_start: buf(L1, normal, int64, 1),
+        node_key_count: buf(L1, normal, int64, 1),
+        node_child_start: buf(L1, normal, int64, 1),
+        node_child_count: buf(L1, normal, int64, 1),
+        node_is_leaf: buf(L1, normal, int64, 1),
+        keys: buf(L1, normal, int64, 7),
+        values: buf(L1, normal, int64, 7),
+        children: buf(L1, normal, int64, 8)
+    },
+    old_keys: buf(L1, normal, int64, 7),
+    old_values: buf(L1, normal, int64, 7),
+    key_pos: int64,
+    new_val: int64
+) -> {
+    region: region(L1, normal),
+    root_id: int64,
+    node_count: int64,
+    key_count_total: int64,
+    order: int64,
+    node_key_start: buf(L1, normal, int64, 1),
+    node_key_count: buf(L1, normal, int64, 1),
+    node_child_start: buf(L1, normal, int64, 1),
+    node_child_count: buf(L1, normal, int64, 1),
+    node_is_leaf: buf(L1, normal, int64, 1),
+    keys: buf(L1, normal, int64, 7),
+    values: buf(L1, normal, int64, 7),
+    children: buf(L1, normal, int64, 8)
+} {
     sequence proc[mem(normal)]
-        nk_saved: buf(L1, normal, int64, 7) <- nk;
-        keys_saved: buf(L1, normal, int64, 7) <- keys_buf;
-        out_i_saved: int64 <- out_i;
-        new_key_saved: int64 <- new_key;
-        pos_saved: int64 <- pos;
-        o: int64 <- csr_out_key_from_buf(keys_saved, out_i_saved, new_key_saved, pos_saved);
-        result: atom <- write_buf(nk_saved, out_i_saved, o)
-    produces
-        pure result
-    end
-}
-
-fn write_csr_map_val_at(
-    nv: buf(L1, normal, int64, 7),
-    values_buf: buf(L1, normal, int64, 7),
-    out_i: int64,
-    new_val: int64,
-    pos: int64
-) -> atom {
-    sequence proc[mem(normal)]
-        nv_saved: buf(L1, normal, int64, 7) <- nv;
-        values_saved: buf(L1, normal, int64, 7) <- values_buf;
-        out_i_saved: int64 <- out_i;
+        old_keys_saved: buf(L1, normal, int64, 7) <- old_keys;
+        old_values_saved: buf(L1, normal, int64, 7) <- old_values;
+        key_pos_saved: int64 <- key_pos;
         new_val_saved: int64 <- new_val;
-        pos_saved: int64 <- pos;
-        u: int64 <- csr_out_key_from_buf(values_saved, out_i_saved, new_val_saved, pos_saved);
-        result: atom <- write_buf(nv_saved, out_i_saved, u)
+        k0: int64 <- read_buf(old_keys_saved, 0);
+        _: atom <- write_buf(tree.keys, 0, k0);
+        v0: int64 <- val_at_or_new_from_buf(old_values_saved, 0, new_val_saved, key_pos_saved);
+        _: atom <- write_buf(tree.values, 0, v0);
+        k1: int64 <- read_buf(old_keys_saved, 1);
+        _: atom <- write_buf(tree.keys, 1, k1);
+        v1: int64 <- val_at_or_new_from_buf(old_values_saved, 1, new_val_saved, key_pos_saved);
+        _: atom <- write_buf(tree.values, 1, v1);
+        k2: int64 <- read_buf(old_keys_saved, 2);
+        _: atom <- write_buf(tree.keys, 2, k2);
+        v2: int64 <- val_at_or_new_from_buf(old_values_saved, 2, new_val_saved, key_pos_saved);
+        _: atom <- write_buf(tree.values, 2, v2);
+        k3: int64 <- read_buf(old_keys_saved, 3);
+        _: atom <- write_buf(tree.keys, 3, k3);
+        v3: int64 <- val_at_or_new_from_buf(old_values_saved, 3, new_val_saved, key_pos_saved);
+        _: atom <- write_buf(tree.values, 3, v3);
+        k4: int64 <- read_buf(old_keys_saved, 4);
+        _: atom <- write_buf(tree.keys, 4, k4);
+        v4: int64 <- val_at_or_new_from_buf(old_values_saved, 4, new_val_saved, key_pos_saved);
+        _: atom <- write_buf(tree.values, 4, v4);
+        k5: int64 <- read_buf(old_keys_saved, 5);
+        _: atom <- write_buf(tree.keys, 5, k5);
+        v5: int64 <- val_at_or_new_from_buf(old_values_saved, 5, new_val_saved, key_pos_saved);
+        _: atom <- write_buf(tree.values, 5, v5);
+        k6: int64 <- read_buf(old_keys_saved, 6);
+        _: atom <- write_buf(tree.keys, 6, k6);
+        v6: int64 <- val_at_or_new_from_buf(old_values_saved, 6, new_val_saved, key_pos_saved);
+        _: atom <- write_buf(tree.values, 6, v6)
     produces
-        pure result
+        pure tree
     end
 }
 
-// Build a new single-leaf map by inserting new_key/new_val at sorted position.
+// Build a new single-leaf map by inserting new_key/new_val at pos into existing buffers.
 fn build_leaf_csr_map_insert(
     keys_buf: buf(L1, normal, int64, 7),
     values_buf: buf(L1, normal, int64, 7),
@@ -632,27 +709,16 @@ fn build_leaf_csr_map_insert(
     values: buf(L1, normal, int64, 7),
     children: buf(L1, normal, int64, 8)
 } {
-    sequence proc[mem(normal)]
-        keys_saved: buf(L1, normal, int64, 7) <- keys_buf;
-        values_saved: buf(L1, normal, int64, 7) <- values_buf;
+    sequence
+        keys_buf_saved: buf(L1, normal, int64, 7) <- keys_buf;
+        values_buf_saved: buf(L1, normal, int64, 7) <- values_buf;
         new_key_saved: int64 <- new_key;
         new_val_saved: int64 <- new_val;
         old_count_saved: int64 <- old_count;
-        k0: int64 <- read_buf(keys_saved, 0);
-        k1: int64 <- read_buf(keys_saved, 1);
-        k2: int64 <- read_buf(keys_saved, 2);
-        k3: int64 <- read_buf(keys_saved, 3);
-        k4: int64 <- read_buf(keys_saved, 4);
-        k5: int64 <- read_buf(keys_saved, 5);
-        v0: int64 <- read_buf(values_saved, 0);
-        v1: int64 <- read_buf(values_saved, 1);
-        v2: int64 <- read_buf(values_saved, 2);
-        v3: int64 <- read_buf(values_saved, 3);
-        v4: int64 <- read_buf(values_saved, 4);
-        v5: int64 <- read_buf(values_saved, 5);
-        pos: int64 <- csr_insert_pos(k0, k1, k2, k3, k4, k5, old_count_saved, new_key_saved);
+        pos: int64 <- csr_insert_pos_from_buf(keys_buf_saved, 0, old_count_saved, new_key_saved);
         new_count: int64 <- old_count_saved + 1;
-        partial: {
+        pos_saved: int64 <- pos;
+        skeleton: {
             region: region(L1, normal),
             root_id: int64,
             node_count: int64,
@@ -666,24 +732,7 @@ fn build_leaf_csr_map_insert(
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
             children: buf(L1, normal, int64, 8)
-        } <- case pos of {
-            0 -> case new_count <= 3 of {
-                true -> build_leaf_csr_keys3(new_key_saved, k0, k1, new_count);
-                false -> build_leaf_csr_keys(new_key_saved, k0, k1, k2, k3, k4, k5, new_count)
-            };
-            1 -> case new_count <= 3 of {
-                true -> build_leaf_csr_keys3(k0, new_key_saved, k1, new_count);
-                false -> build_leaf_csr_keys(k0, new_key_saved, k1, k2, k3, k4, k5, new_count)
-            };
-            2 -> case new_count <= 3 of {
-                true -> build_leaf_csr_keys3(k0, k1, new_key_saved, new_count);
-                false -> build_leaf_csr_keys(k0, k1, new_key_saved, k2, k3, k4, k5, new_count)
-            };
-            3 -> build_leaf_csr_keys(k0, k1, k2, new_key_saved, k3, k4, k5, new_count);
-            4 -> build_leaf_csr_keys(k0, k1, k2, k3, new_key_saved, k4, k5, new_count);
-            5 -> build_leaf_csr_keys(k0, k1, k2, k3, k4, new_key_saved, k5, new_count);
-            _: int64 -> build_leaf_csr_keys(k0, k1, k2, k3, k4, k5, new_key_saved, new_count)
-        };
+        } <- build_leaf_csr_map_skeleton(new_count);
         result: {
             region: region(L1, normal),
             root_id: int64,
@@ -698,15 +747,7 @@ fn build_leaf_csr_map_insert(
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
             children: buf(L1, normal, int64, 8)
-        } <- case pos of {
-            0 -> fill_csr_map_values(partial, new_val_saved, v0, v1, v2, v3, v4, v5);
-            1 -> fill_csr_map_values(partial, v0, new_val_saved, v1, v2, v3, v4, v5);
-            2 -> fill_csr_map_values(partial, v0, v1, new_val_saved, v2, v3, v4, v5);
-            3 -> fill_csr_map_values(partial, v0, v1, v2, new_val_saved, v3, v4, v5);
-            4 -> fill_csr_map_values(partial, v0, v1, v2, v3, new_val_saved, v4, v5);
-            5 -> fill_csr_map_values(partial, v0, v1, v2, v3, v4, new_val_saved, v5);
-            _: int64 -> fill_csr_map_values(partial, v0, v1, v2, v3, v4, v5, new_val_saved)
-        }
+        } <- fill_csr_map_insert_slots(skeleton, keys_buf_saved, values_buf_saved, new_key_saved, new_val_saved, pos_saved)
     produces
         pure result
     end
@@ -734,34 +775,13 @@ fn build_leaf_csr_map_replace(
     values: buf(L1, normal, int64, 7),
     children: buf(L1, normal, int64, 8)
 } {
-    sequence proc[mem(normal)]
+    sequence
         keys_buf_saved: buf(L1, normal, int64, 7) <- keys_buf;
         values_buf_saved: buf(L1, normal, int64, 7) <- values_buf;
         new_val_saved: int64 <- new_val;
         key_pos_saved: int64 <- key_pos;
         key_count_saved: int64 <- key_count;
-        k0: int64 <- read_buf(keys_buf_saved, 0);
-        k1: int64 <- read_buf(keys_buf_saved, 1);
-        k2: int64 <- read_buf(keys_buf_saved, 2);
-        k3: int64 <- read_buf(keys_buf_saved, 3);
-        k4: int64 <- read_buf(keys_buf_saved, 4);
-        k5: int64 <- read_buf(keys_buf_saved, 5);
-        k6: int64 <- read_buf(keys_buf_saved, 6);
-        v0: int64 <- read_buf(values_buf_saved, 0);
-        v1: int64 <- read_buf(values_buf_saved, 1);
-        v2: int64 <- read_buf(values_buf_saved, 2);
-        v3: int64 <- read_buf(values_buf_saved, 3);
-        v4: int64 <- read_buf(values_buf_saved, 4);
-        v5: int64 <- read_buf(values_buf_saved, 5);
-        v6: int64 <- read_buf(values_buf_saved, 6);
-        u0: int64 <- case key_pos_saved == 0 of { true -> new_val_saved; false -> v0 };
-        u1: int64 <- case key_pos_saved == 1 of { true -> new_val_saved; false -> v1 };
-        u2: int64 <- case key_pos_saved == 2 of { true -> new_val_saved; false -> v2 };
-        u3: int64 <- case key_pos_saved == 3 of { true -> new_val_saved; false -> v3 };
-        u4: int64 <- case key_pos_saved == 4 of { true -> new_val_saved; false -> v4 };
-        u5: int64 <- case key_pos_saved == 5 of { true -> new_val_saved; false -> v5 };
-        u6: int64 <- case key_pos_saved == 6 of { true -> new_val_saved; false -> v6 };
-        partial: {
+        skeleton: {
             region: region(L1, normal),
             root_id: int64,
             node_count: int64,
@@ -775,10 +795,7 @@ fn build_leaf_csr_map_replace(
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
             children: buf(L1, normal, int64, 8)
-        } <- case key_count_saved <= 3 of {
-            true -> build_leaf_csr_keys3(k0, k1, k2, key_count_saved);
-            false -> build_leaf_csr_keys(k0, k1, k2, k3, k4, k5, k6, key_count_saved)
-        };
+        } <- build_leaf_csr_map_skeleton(key_count_saved);
         result: {
             region: region(L1, normal),
             root_id: int64,
@@ -793,99 +810,13 @@ fn build_leaf_csr_map_replace(
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
             children: buf(L1, normal, int64, 8)
-        } <- fill_csr_map_values(partial, u0, u1, u2, u3, u4, u5, u6)
+        } <- fill_csr_map_replace_slots(skeleton, keys_buf_saved, values_buf_saved, key_pos_saved, new_val_saved)
     produces
         pure result
     end
 }
 
 // ── Leaf-builder ─────────────────────────────────────────────────────────────
-
-fn build_leaf_csr_keys3(
-    k0: int64,
-    k1: int64,
-    k2: int64,
-    key_count: int64
-) -> {
-    region: region(L1, normal),
-    root_id: int64,
-    node_count: int64,
-    key_count_total: int64,
-    order: int64,
-    node_key_start: buf(L1, normal, int64, 1),
-    node_key_count: buf(L1, normal, int64, 1),
-    node_child_start: buf(L1, normal, int64, 1),
-    node_child_count: buf(L1, normal, int64, 1),
-    node_is_leaf: buf(L1, normal, int64, 1),
-    keys: buf(L1, normal, int64, 7),
-    values: buf(L1, normal, int64, 7),
-    children: buf(L1, normal, int64, 8)
-} {
-    sequence proc[mem(normal)]
-        k0_saved: int64 <- k0;
-        k1_saved: int64 <- k1;
-        k2_saved: int64 <- k2;
-        key_count_saved: int64 <- key_count;
-        base: {
-            region: region(L1, normal),
-            root_id: int64,
-            node_count: int64,
-            key_count_total: int64,
-            order: int64,
-            node_key_start: buf(L1, normal, int64, 1),
-            node_key_count: buf(L1, normal, int64, 1),
-            node_child_start: buf(L1, normal, int64, 1),
-            node_child_count: buf(L1, normal, int64, 1),
-            node_is_leaf: buf(L1, normal, int64, 1),
-            keys: buf(L1, normal, int64, 7),
-            values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
-        } <- empty_map_skeleton();
-        _: atom <- write_buf(base.node_key_start, 0, 0);
-        _: atom <- write_buf(base.node_key_count, 0, key_count_saved);
-        _: atom <- write_buf(base.node_child_start, 0, 0);
-        _: atom <- write_buf(base.node_child_count, 0, 0);
-        _: atom <- write_buf(base.node_is_leaf, 0, 1);
-        _: atom <- write_buf(base.keys, 0, k0_saved);
-        _: atom <- write_buf(base.keys, 1, k1_saved);
-        _: atom <- write_buf(base.keys, 2, k2_saved);
-        _: atom <- write_buf(base.keys, 3, 0);
-        _: atom <- write_buf(base.keys, 4, 0);
-        _: atom <- write_buf(base.keys, 5, 0);
-        _: atom <- write_buf(base.keys, 6, 0);
-        tree: {
-            region: region(L1, normal),
-            root_id: int64,
-            node_count: int64,
-            key_count_total: int64,
-            order: int64,
-            node_key_start: buf(L1, normal, int64, 1),
-            node_key_count: buf(L1, normal, int64, 1),
-            node_child_start: buf(L1, normal, int64, 1),
-            node_child_count: buf(L1, normal, int64, 1),
-            node_is_leaf: buf(L1, normal, int64, 1),
-            keys: buf(L1, normal, int64, 7),
-            values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
-        } <- {
-            region: base.region,
-            root_id: 0,
-            node_count: 1,
-            key_count_total: key_count_saved,
-            order: 8,
-            node_key_start: base.node_key_start,
-            node_key_count: base.node_key_count,
-            node_child_start: base.node_child_start,
-            node_child_count: base.node_child_count,
-            node_is_leaf: base.node_is_leaf,
-            keys: base.keys,
-            values: base.values,
-            children: base.children
-        }
-    produces
-        pure tree
-    end
-}
 
 // Allocate a fresh single-leaf CsrBTreeMap skeleton with key_count keys k0..k6.
 // Values buffer is allocated but left empty; call fill_csr_map_values next.
@@ -915,41 +846,28 @@ fn build_leaf_csr_keys(
     children: buf(L1, normal, int64, 8)
 } {
     sequence proc[mem(normal)]
-        k0_saved: int64 <- k0;
-        k1_saved: int64 <- k1;
-        k2_saved: int64 <- k2;
-        k3_saved: int64 <- k3;
-        k4_saved: int64 <- k4;
-        k5_saved: int64 <- k5;
-        k6_saved: int64 <- k6;
-        key_count_saved: int64 <- key_count;
-        base: {
-            region: region(L1, normal),
-            root_id: int64,
-            node_count: int64,
-            key_count_total: int64,
-            order: int64,
-            node_key_start: buf(L1, normal, int64, 1),
-            node_key_count: buf(L1, normal, int64, 1),
-            node_child_start: buf(L1, normal, int64, 1),
-            node_child_count: buf(L1, normal, int64, 1),
-            node_is_leaf: buf(L1, normal, int64, 1),
-            keys: buf(L1, normal, int64, 7),
-            values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
-        } <- empty_map_skeleton();
-        _: atom <- write_buf(base.node_key_start, 0, 0);
-        _: atom <- write_buf(base.node_key_count, 0, key_count_saved);
-        _: atom <- write_buf(base.node_child_start, 0, 0);
-        _: atom <- write_buf(base.node_child_count, 0, 0);
-        _: atom <- write_buf(base.node_is_leaf, 0, 1);
-        _: atom <- write_buf(base.keys, 0, k0_saved);
-        _: atom <- write_buf(base.keys, 1, k1_saved);
-        _: atom <- write_buf(base.keys, 2, k2_saved);
-        _: atom <- write_buf(base.keys, 3, k3_saved);
-        _: atom <- write_buf(base.keys, 4, k4_saved);
-        _: atom <- write_buf(base.keys, 5, k5_saved);
-        _: atom <- write_buf(base.keys, 6, k6_saved);
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        nks: buf(L1, normal, int64, 1) <- alloc_buf(r, 1);
+        nkc: buf(L1, normal, int64, 1) <- alloc_buf(r, 1);
+        ncs: buf(L1, normal, int64, 1) <- alloc_buf(r, 1);
+        ncc: buf(L1, normal, int64, 1) <- alloc_buf(r, 1);
+        nil_buf: buf(L1, normal, int64, 1) <- alloc_buf(r, 1);
+        nk: buf(L1, normal, int64, 7) <- alloc_buf(r, 7);
+        nv: buf(L1, normal, int64, 7) <- alloc_buf(r, 7);
+        nc: buf(L1, normal, int64, 8) <- alloc_buf(r, 8);
+        _: atom <- write_buf(nks, 0, 0);
+        _: atom <- write_buf(nkc, 0, key_count);
+        _: atom <- write_buf(ncs, 0, 0);
+        _: atom <- write_buf(ncc, 0, 0);
+        _: atom <- write_buf(nil_buf, 0, 1);
+        _: atom <- write_buf(nk, 0, k0);
+        _: atom <- write_buf(nk, 1, k1);
+        _: atom <- write_buf(nk, 2, k2);
+        _: atom <- write_buf(nk, 3, k3);
+        _: atom <- write_buf(nk, 4, k4);
+        _: atom <- write_buf(nk, 5, k5);
+        _: atom <- write_buf(nk, 6, k6);
         tree: {
             region: region(L1, normal),
             root_id: int64,
@@ -965,19 +883,19 @@ fn build_leaf_csr_keys(
             values: buf(L1, normal, int64, 7),
             children: buf(L1, normal, int64, 8)
         } <- {
-            region: base.region,
+            region: r,
             root_id: 0,
             node_count: 1,
-            key_count_total: key_count_saved,
-            order: 8,
-            node_key_start: base.node_key_start,
-            node_key_count: base.node_key_count,
-            node_child_start: base.node_child_start,
-            node_child_count: base.node_child_count,
-            node_is_leaf: base.node_is_leaf,
-            keys: base.keys,
-            values: base.values,
-            children: base.children
+            key_count_total: key_count,
+            order: order(),
+            node_key_start: nks,
+            node_key_count: nkc,
+            node_child_start: ncs,
+            node_child_count: ncc,
+            node_is_leaf: nil_buf,
+            keys: nk,
+            values: nv,
+            children: nc
         }
     produces
         pure tree
@@ -1025,21 +943,13 @@ fn fill_csr_map_values(
     children: buf(L1, normal, int64, 8)
 } {
     sequence proc[mem(normal)]
-        values_saved: buf(L1, normal, int64, 7) <- tree.values;
-        v0_saved: int64 <- v0;
-        v1_saved: int64 <- v1;
-        v2_saved: int64 <- v2;
-        v3_saved: int64 <- v3;
-        v4_saved: int64 <- v4;
-        v5_saved: int64 <- v5;
-        v6_saved: int64 <- v6;
-        _: atom <- write_buf(values_saved, 0, v0_saved);
-        _: atom <- write_buf(values_saved, 1, v1_saved);
-        _: atom <- write_buf(values_saved, 2, v2_saved);
-        _: atom <- write_buf(values_saved, 3, v3_saved);
-        _: atom <- write_buf(values_saved, 4, v4_saved);
-        _: atom <- write_buf(values_saved, 5, v5_saved);
-        _: atom <- write_buf(values_saved, 6, v6_saved)
+        _: atom <- write_buf(tree.values, 0, v0);
+        _: atom <- write_buf(tree.values, 1, v1);
+        _: atom <- write_buf(tree.values, 2, v2);
+        _: atom <- write_buf(tree.values, 3, v3);
+        _: atom <- write_buf(tree.values, 4, v4);
+        _: atom <- write_buf(tree.values, 5, v5);
+        _: atom <- write_buf(tree.values, 6, v6)
     produces
         pure tree
     end
@@ -1074,9 +984,9 @@ fn replace_val_csr_map(
     inserted: int64,
     replaced: int64
 } {
-    sequence proc[]
-        keys_saved: buf(L1, normal, int64, 7) <- keys_buf;
-        values_saved: buf(L1, normal, int64, 7) <- values_buf;
+    sequence
+        keys_buf_saved: buf(L1, normal, int64, 7) <- keys_buf;
+        values_buf_saved: buf(L1, normal, int64, 7) <- values_buf;
         key_pos_saved: int64 <- key_pos;
         new_val_saved: int64 <- new_val;
         old_count_saved: int64 <- old_count;
@@ -1094,9 +1004,9 @@ fn replace_val_csr_map(
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
             children: buf(L1, normal, int64, 8)
-        } <- build_leaf_csr_map_replace(keys_saved, values_saved, key_pos_saved, new_val_saved, old_count_saved)
+        } <- build_leaf_csr_map_replace(keys_buf_saved, values_buf_saved, key_pos_saved, new_val_saved, old_count_saved)
     produces
-        pure wrap_map_insert_result(new_tree, 0, 1)
+        pure { tree: new_tree, inserted: 0, replaced: 1 }
     end
 }
 
@@ -1129,9 +1039,9 @@ fn insert_new_key_csr_map(
     inserted: int64,
     replaced: int64
 } {
-    sequence proc[]
-        keys_saved: buf(L1, normal, int64, 7) <- keys_buf;
-        values_saved: buf(L1, normal, int64, 7) <- values_buf;
+    sequence
+        keys_buf_saved: buf(L1, normal, int64, 7) <- keys_buf;
+        values_buf_saved: buf(L1, normal, int64, 7) <- values_buf;
         key_saved: int64 <- key;
         value_saved: int64 <- value;
         old_count_saved: int64 <- old_count;
@@ -1149,143 +1059,13 @@ fn insert_new_key_csr_map(
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
             children: buf(L1, normal, int64, 8)
-        } <- build_leaf_csr_map_insert(
-            keys_saved,
-            values_saved,
-            key_saved,
-            value_saved,
-            old_count_saved
-        )
+        } <- build_leaf_csr_map_insert(keys_buf_saved, values_buf_saved, key_saved, value_saved, old_count_saved)
     produces
-        pure wrap_map_insert_result(new_tree, 1, 0)
+        pure { tree: new_tree, inserted: 1, replaced: 0 }
     end
 }
 
 // ── Non-empty insert dispatcher ──────────────────────────────────────────────
-
-// Return tree with inserted/replaced flags (separate fn avoids stack copy in caller).
-fn wrap_map_insert_result(
-    tree: {
-        region: region(L1, normal),
-        root_id: int64,
-        node_count: int64,
-        key_count_total: int64,
-        order: int64,
-        node_key_start: buf(L1, normal, int64, 1),
-        node_key_count: buf(L1, normal, int64, 1),
-        node_child_start: buf(L1, normal, int64, 1),
-        node_child_count: buf(L1, normal, int64, 1),
-        node_is_leaf: buf(L1, normal, int64, 1),
-        keys: buf(L1, normal, int64, 7),
-        values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
-    },
-    inserted: int64,
-    replaced: int64
-) -> {
-    tree: {
-        region: region(L1, normal),
-        root_id: int64,
-        node_count: int64,
-        key_count_total: int64,
-        order: int64,
-        node_key_start: buf(L1, normal, int64, 1),
-        node_key_count: buf(L1, normal, int64, 1),
-        node_child_start: buf(L1, normal, int64, 1),
-        node_child_count: buf(L1, normal, int64, 1),
-        node_is_leaf: buf(L1, normal, int64, 1),
-        keys: buf(L1, normal, int64, 7),
-        values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
-    },
-    inserted: int64,
-    replaced: int64
-} {
-    sequence proc[]
-        result: {
-            tree: {
-                region: region(L1, normal),
-                root_id: int64,
-                node_count: int64,
-                key_count_total: int64,
-                order: int64,
-                node_key_start: buf(L1, normal, int64, 1),
-                node_key_count: buf(L1, normal, int64, 1),
-                node_child_start: buf(L1, normal, int64, 1),
-                node_child_count: buf(L1, normal, int64, 1),
-                node_is_leaf: buf(L1, normal, int64, 1),
-                keys: buf(L1, normal, int64, 7),
-                values: buf(L1, normal, int64, 7),
-                children: buf(L1, normal, int64, 8)
-            },
-            inserted: int64,
-            replaced: int64
-        } <- { tree: tree, inserted: inserted, replaced: replaced }
-    produces
-        pure result
-    end
-}
-
-// Return tree unchanged with inserted=0, replaced=0 (separate fn avoids stack copy in caller).
-fn wrap_map_insert_noop(
-    tree: {
-        region: region(L1, normal),
-        root_id: int64,
-        node_count: int64,
-        key_count_total: int64,
-        order: int64,
-        node_key_start: buf(L1, normal, int64, 1),
-        node_key_count: buf(L1, normal, int64, 1),
-        node_child_start: buf(L1, normal, int64, 1),
-        node_child_count: buf(L1, normal, int64, 1),
-        node_is_leaf: buf(L1, normal, int64, 1),
-        keys: buf(L1, normal, int64, 7),
-        values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
-    }
-) -> {
-    tree: {
-        region: region(L1, normal),
-        root_id: int64,
-        node_count: int64,
-        key_count_total: int64,
-        order: int64,
-        node_key_start: buf(L1, normal, int64, 1),
-        node_key_count: buf(L1, normal, int64, 1),
-        node_child_start: buf(L1, normal, int64, 1),
-        node_child_count: buf(L1, normal, int64, 1),
-        node_is_leaf: buf(L1, normal, int64, 1),
-        keys: buf(L1, normal, int64, 7),
-        values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
-    },
-    inserted: int64,
-    replaced: int64
-} {
-    sequence proc[]
-        result: {
-            tree: {
-                region: region(L1, normal),
-                root_id: int64,
-                node_count: int64,
-                key_count_total: int64,
-                order: int64,
-                node_key_start: buf(L1, normal, int64, 1),
-                node_key_count: buf(L1, normal, int64, 1),
-                node_child_start: buf(L1, normal, int64, 1),
-                node_child_count: buf(L1, normal, int64, 1),
-                node_is_leaf: buf(L1, normal, int64, 1),
-                keys: buf(L1, normal, int64, 7),
-                values: buf(L1, normal, int64, 7),
-                children: buf(L1, normal, int64, 8)
-            },
-            inserted: int64,
-            replaced: int64
-        } <- { tree: tree, inserted: 0, replaced: 0 }
-    produces
-        pure result
-    end
-}
 
 // Dispatches to replace_val_csr_map (key found) or insert_new_key_csr_map
 // (key absent, room available). Returns { tree: old, inserted: 0, replaced: 0 }
@@ -1327,12 +1107,16 @@ fn insert_nonempty_csr_map(
     inserted: int64,
     replaced: int64
 } {
-    sequence proc[]
+    sequence proc[mem(normal)]
         key_saved: int64 <- key;
         value_saved: int64 <- value;
         keys_saved: buf(L1, normal, int64, 7) <- tree.keys;
         values_saved: buf(L1, normal, int64, 7) <- tree.values;
-        old_count: int64 <- tree.key_count_total;
+        node_kc: int64 <- read_buf(tree.node_key_count, 0);
+        old_count: int64 <- case node_kc >= 0 of {
+            true -> tree.key_count_total;
+            false -> tree.key_count_total
+        };
         key_pos: int64 <- find_key_pos(keys_saved, key_saved, 0, old_count);
         result: {
             tree: {
@@ -1356,7 +1140,7 @@ fn insert_nonempty_csr_map(
             -1 -> {
                 at_cap: int64 <- case old_count >= 7 of { true -> 1; false -> 0 };
                 case at_cap of {
-                    1 -> wrap_map_insert_noop(tree);
+                    1 -> { tree: tree, inserted: 0, replaced: 0 };
                     _: int64 -> insert_new_key_csr_map(keys_saved, values_saved, key_saved, value_saved, old_count)
                 }
             };
@@ -1391,9 +1175,12 @@ fn contains_bootstrap(
         1 -> {
             sequence proc[mem(normal)]
                 key_saved: int64 <- key;
-                keys_saved: buf(L1, normal, int64, 7) <- tree.keys;
-                key_count: int64 <- tree.key_count_total;
-                result: int64 <- contains_key_at(keys_saved, key_saved, 0, key_count)
+                node_kc: int64 <- read_buf(tree.node_key_count, 0);
+                key_count: int64 <- case node_kc >= 0 of {
+                    true -> tree.key_count_total;
+                    false -> tree.key_count_total
+                };
+                result: int64 <- contains_key_at(tree.keys, key_saved, 0, key_count)
             produces
                 pure result
             end
@@ -1420,7 +1207,7 @@ fn contains[int64, int64, mem(normal)](
     },
     key: int64
 ) -> int64 {
-    sequence proc[]
+    sequence
         root_saved: int64 <- tree.root_id;
         key_saved: int64 <- key;
         result: int64 <- case root_saved of {
@@ -1456,15 +1243,17 @@ fn get_bootstrap(
         1 -> {
             sequence proc[mem(normal)]
                 key_saved: int64 <- key;
-                keys_saved: buf(L1, normal, int64, 7) <- tree.keys;
-                values_saved: buf(L1, normal, int64, 7) <- tree.values;
-                key_count: int64 <- tree.key_count_total;
-                key_pos: int64 <- find_key_pos(keys_saved, key_saved, 0, key_count);
+                node_kc: int64 <- read_buf(tree.node_key_count, 0);
+                key_count: int64 <- case node_kc >= 0 of {
+                    true -> tree.key_count_total;
+                    false -> tree.key_count_total
+                };
+                key_pos: int64 <- find_key_pos(tree.keys, key_saved, 0, key_count);
                 result: { found: int64, value: int64 } <- case key_pos of {
                     -1 -> { found: 0, value: 0 };
                     _: int64 -> {
                         sequence proc[mem(normal)]
-                            v: int64 <- read_buf(values_saved, key_pos)
+                            v: int64 <- read_buf(tree.values, key_pos)
                         produces
                             pure { found: 1, value: v }
                         end
@@ -1496,7 +1285,7 @@ fn get[int64, int64, mem(normal)](
     },
     key: int64
 ) -> { found: int64, value: int64 } {
-    sequence proc[]
+    sequence
         result: { found: int64, value: int64 } <- case tree.root_id of {
             -1 -> { found: 0, value: 0 };
             _: int64 -> get_bootstrap(tree, key)
@@ -1650,7 +1439,7 @@ fn validate[int64, int64, mem(normal)](
         children: buf(L1, normal, int64, 8)
     }
 ) -> { ok: int64, error_code: int64 } {
-    sequence proc[]
+    sequence
         err: int64 <- validate_error(tree);
         ok_value: int64 <- case err of {
             0 -> 1;
@@ -1727,7 +1516,9 @@ fn insert[int64, int64, mem(normal)](
                     keys: buf(L1, normal, int64, 7),
                     values: buf(L1, normal, int64, 7),
                     children: buf(L1, normal, int64, 8)
-                } <- build_leaf_csr_keys3(key_saved, 0, 0, 1);
+                } <- build_leaf_csr_map_skeleton(1);
+                _: atom <- write_buf(partial_tree.keys, 0, key_saved);
+                _: atom <- write_buf(partial_tree.values, 0, value_saved);
                 new_tree: {
                     region: region(L1, normal),
                     root_id: int64,
@@ -1742,9 +1533,9 @@ fn insert[int64, int64, mem(normal)](
                     keys: buf(L1, normal, int64, 7),
                     values: buf(L1, normal, int64, 7),
                     children: buf(L1, normal, int64, 8)
-                } <- fill_csr_map_values(partial_tree, value_saved, 0, 0, 0, 0, 0, 0)
+                } <- partial_tree
             produces
-                pure wrap_map_insert_result(new_tree, 1, 0)
+                pure { tree: new_tree, inserted: 1, replaced: 0 }
             end
         };
         _: int64 -> insert_nonempty_csr_map(tree, key, value)

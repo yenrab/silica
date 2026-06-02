@@ -664,6 +664,37 @@ fn skip_bracketed_slots(slots: ListTokenSlot, depth: int64) -> ListTokenSlot {
     }
 }
 
+fn sequence_has_empty_proc_effect_list(slots_after_sequence: ListTokenSlot) -> (bool, SourceLocation) {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    after_seq: ListTokenSlot <- skip_leading_whitespace_slots(slots_after_sequence);
+    case after_seq.is_nil of {
+        true -> (false, parser_ast@zero_location());
+        false -> case after_seq.head.token.kind == kinds.proc_keyword or after_seq.head.token.lexeme == "proc" of {
+            true -> do
+                proc_loc: SourceLocation <- after_seq.head.token.location;
+                after_proc: ListTokenSlot <- skip_leading_whitespace_slots(after_seq.tail);
+                case after_proc.is_nil of {
+                    true -> (false, parser_ast@zero_location());
+                    false -> case after_proc.head.token.kind == kinds.left_bracket of {
+                        true -> do
+                            after_lbr: ListTokenSlot <- skip_leading_whitespace_slots(after_proc.tail);
+                            case after_lbr.is_nil of {
+                                true -> (false, parser_ast@zero_location());
+                                false -> case after_lbr.head.token.kind == kinds.right_bracket of {
+                                    true -> (true, proc_loc);
+                                    false -> (false, parser_ast@zero_location())
+                                }
+                            }
+                        end;
+                        false -> (false, parser_ast@zero_location())
+                    }
+                }
+            end;
+            false -> (false, parser_ast@zero_location())
+        }
+    }
+}
+
 fn slots_after_sequence_prefix(slots_after_sequence: ListTokenSlot) -> ListTokenSlot {
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     after_seq: ListTokenSlot <- skip_leading_whitespace_slots(slots_after_sequence);
@@ -740,46 +771,52 @@ fn has_malformed_sequence_keywords(slots: ListTokenSlot) -> (bool, SourceLocatio
         true -> (false, parser_ast@zero_location(), "", "");
         false -> case trimmed.head.token.kind == kinds.sequence_keyword or trimmed.head.token.lexeme == "sequence" of {
             true -> do
-                after_prefix: ListTokenSlot <- slots_after_sequence_prefix(trimmed.tail);
-                case after_prefix.is_nil of {
-                    true -> (true, trimmed.head.token.location, "E1049", "sequence block is missing 'produces'; write 'sequence ... produces pure <expr> end'");
-                    false -> case after_prefix.head.token.kind == kinds.sequence_keyword or after_prefix.head.token.lexeme == "sequence" of {
-                        true -> (true, after_prefix.head.token.location, "E1052", "duplicate 'sequence' keyword in sequence block; write a single 'sequence ... produces pure <expr> end'");
-                        false -> do
-                            (found_produces: bool, produces_or_boundary_loc: SourceLocation, after_produces: ListTokenSlot) <- find_sequence_produces(after_prefix, 0);
-                            case found_produces of {
-                                false -> (true, trimmed.head.token.location, "E1049", "sequence block is missing 'produces'; write 'sequence ... produces pure <expr> end'");
-                                true -> do
-                                    after_produces_trimmed: ListTokenSlot <- skip_leading_whitespace_slots(after_produces);
-                                    case after_produces_trimmed.is_nil of {
-                                        true -> (true, produces_or_boundary_loc, "E1050", "sequence produces clause is missing 'pure'; write 'produces pure <expr> end'");
-                                        false -> case after_produces_trimmed.head.token.kind == kinds.produces_keyword or after_produces_trimmed.head.token.lexeme == "produces" of {
-                                            true -> (true, after_produces_trimmed.head.token.location, "E1053", "duplicate 'produces' keyword in sequence block; write 'produces pure <expr> end'");
-                                            false -> case after_produces_trimmed.head.token.kind == kinds.pure_keyword or after_produces_trimmed.head.token.lexeme == "pure" of {
-                                                false -> (true, after_produces_trimmed.head.token.location, "E1050", "sequence produces clause is missing 'pure'; write 'produces pure <expr> end'");
-                                                true -> do
-                                                    (found_end: bool, end_or_boundary_loc: SourceLocation, after_end: ListTokenSlot) <- find_sequence_end(after_produces_trimmed.tail, 0);
-                                                    case found_end of {
+                (empty_proc: bool, empty_proc_loc: SourceLocation) <- sequence_has_empty_proc_effect_list(trimmed.tail);
+                case empty_proc of {
+                    true -> (true, empty_proc_loc, "E1056", "empty proc[] on a pure sequence block; omit proc when no effects are required — write 'sequence produces pure <expr> end' (spec §9.3.1)");
+                    false -> do
+                        after_prefix: ListTokenSlot <- slots_after_sequence_prefix(trimmed.tail);
+                        case after_prefix.is_nil of {
+                            true -> (true, trimmed.head.token.location, "E1049", "sequence block is missing 'produces'; write 'sequence ... produces pure <expr> end'");
+                            false -> case after_prefix.head.token.kind == kinds.sequence_keyword or after_prefix.head.token.lexeme == "sequence" of {
+                                true -> (true, after_prefix.head.token.location, "E1052", "duplicate 'sequence' keyword in sequence block; write a single 'sequence ... produces pure <expr> end'");
+                                false -> do
+                                    (found_produces: bool, produces_or_boundary_loc: SourceLocation, after_produces: ListTokenSlot) <- find_sequence_produces(after_prefix, 0);
+                                    case found_produces of {
+                                        false -> (true, trimmed.head.token.location, "E1049", "sequence block is missing 'produces'; write 'sequence ... produces pure <expr> end'");
+                                        true -> do
+                                            after_produces_trimmed: ListTokenSlot <- skip_leading_whitespace_slots(after_produces);
+                                            case after_produces_trimmed.is_nil of {
+                                                true -> (true, produces_or_boundary_loc, "E1050", "sequence produces clause is missing 'pure'; write 'produces pure <expr> end'");
+                                                false -> case after_produces_trimmed.head.token.kind == kinds.produces_keyword or after_produces_trimmed.head.token.lexeme == "produces" of {
+                                                    true -> (true, after_produces_trimmed.head.token.location, "E1053", "duplicate 'produces' keyword in sequence block; write 'produces pure <expr> end'");
+                                                    false -> case after_produces_trimmed.head.token.kind == kinds.pure_keyword or after_produces_trimmed.head.token.lexeme == "pure" of {
+                                                        false -> (true, after_produces_trimmed.head.token.location, "E1050", "sequence produces clause is missing 'pure'; write 'produces pure <expr> end'");
                                                         true -> do
-                                                            after_end_trimmed: ListTokenSlot <- skip_leading_whitespace_slots(after_end);
-                                                            case after_end_trimmed.is_nil of {
-                                                                true -> has_malformed_sequence_keywords(after_end);
-                                                                false -> case after_end_trimmed.head.token.kind == kinds.end_keyword or after_end_trimmed.head.token.lexeme == "end" of {
-                                                                    true -> (true, after_end_trimmed.head.token.location, "E1054", "extra 'end' after sequence block; sequence blocks close with one 'end' and functions close with '}'");
-                                                                    false -> has_malformed_sequence_keywords(after_end)
-                                                                }
+                                                            (found_end: bool, end_or_boundary_loc: SourceLocation, after_end: ListTokenSlot) <- find_sequence_end(after_produces_trimmed.tail, 0);
+                                                            case found_end of {
+                                                                true -> do
+                                                                    after_end_trimmed: ListTokenSlot <- skip_leading_whitespace_slots(after_end);
+                                                                    case after_end_trimmed.is_nil of {
+                                                                        true -> has_malformed_sequence_keywords(after_end);
+                                                                        false -> case after_end_trimmed.head.token.kind == kinds.end_keyword or after_end_trimmed.head.token.lexeme == "end" of {
+                                                                            true -> (true, after_end_trimmed.head.token.location, "E1054", "extra 'end' after sequence block; sequence blocks close with one 'end' and functions close with '}'");
+                                                                            false -> has_malformed_sequence_keywords(after_end)
+                                                                        }
+                                                                    }
+                                                                end;
+                                                                false -> (true, end_or_boundary_loc, "E1051", "sequence block is missing closing 'end'; write 'sequence ... produces pure <expr> end'")
                                                             }
-                                                        end;
-                                                        false -> (true, end_or_boundary_loc, "E1051", "sequence block is missing closing 'end'; write 'sequence ... produces pure <expr> end'")
+                                                        end
                                                     }
-                                                end
+                                                }
                                             }
-                                        }
+                                        end
                                     }
                                 end
                             }
-                        end
-                    }
+                        }
+                    end
                 }
             end;
             false -> case trimmed.head.token.kind == kinds.produces_keyword or trimmed.head.token.lexeme == "produces" of {

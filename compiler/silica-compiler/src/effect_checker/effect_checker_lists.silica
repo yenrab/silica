@@ -33,6 +33,7 @@ export mem_effects_for_list_literal/2;
 export mem_effects_from_case_pattern/2;
 export extract_space_from_list_type_str/1;
 export extract_space_from_generic_instantiation/1;
+export mem_effects_from_fn_instantiation/3;
 export first_mem_space_from_effects/1;
 export check_list_mem_alignment_in_sequence/2;
 
@@ -49,8 +50,26 @@ fn is_list_primitive_fn(name: string) -> bool {
     }
 }
 
-{- Generic call: value holds joined type args (e.g. "int64 normal", "int64,normal", "int64 , normal").
-   Memory space S is the last whitespace-separated token, or the part after the first comma if no space.
+{- Try to read mem(S) from one generic-instantiation fragment (token, mem(...), or bare space name). -}
+fn mem_space_from_instantiation_fragment(fragment: string) -> (bool, string) {
+    trimmed: string <- eff_strip_spaces_list(trim_leading_ws(fragment));
+    case len(trimmed) == 0 of {
+        true -> (false, "");
+        false -> do
+            bare: string <- unwrap_mem_param(trimmed);
+            case effect_checker_core@is_valid_mem_parameter(bare) of {
+                true -> (true, bare);
+                false -> case effect_checker_core@is_valid_mem_parameter(trimmed) of {
+                    true -> (true, trimmed);
+                    false -> (false, "")
+                }
+            }
+        end
+    }
+}
+
+{- Generic call: value holds joined type args (e.g. "int64 normal", "int64,normal", "int64, int64, mem(normal)").
+   Memory space S is the last depth-0 comma-separated arg, else the last whitespace-separated token.
    Parser strips `]` but not spaces before it, so joins can end with "… normal " — trim both ends before parsing. -}
 fn extract_space_from_generic_instantiation(generic_value: string) -> (bool, string) {
     case len(generic_value) == 0 of {
@@ -60,34 +79,30 @@ fn extract_space_from_generic_instantiation(generic_value: string) -> (bool, str
             case len(trimmed) == 0 of {
                 true -> (false, "");
                 false -> do
-                    comma_idx: int64 <- index_of_first_comma(trimmed);
-                    case comma_idx >= 0 of {
+                    last_comma: int64 <- index_of_last_comma(trimmed);
+                    case last_comma >= 0 of {
                         true -> do
-                            after_comma: string <- eff_strip_spaces_list(trim_leading_ws(substring(trimmed, comma_idx + 1, len(trimmed))));
-                            bare_ac: string <- unwrap_mem_param(after_comma);
-                            case effect_checker_core@is_valid_mem_parameter(bare_ac) of {
-                                true -> (true, bare_ac);
-                                false -> case effect_checker_core@is_valid_mem_parameter(after_comma) of {
-                                    true -> (true, after_comma);
-                                    false -> (false, "")
-                                }
+                            tail: string <- eff_strip_spaces_list(trim_leading_ws(substring(trimmed, last_comma + 1, len(trimmed))));
+                            (ok_tail: bool, space_tail: string) <- mem_space_from_instantiation_fragment(tail);
+                            case ok_tail of {
+                                true -> (true, space_tail);
+                                false -> do
+                                    first_comma: int64 <- index_of_first_comma(trimmed);
+                                    case first_comma >= 0 of {
+                                        true -> do
+                                            after_first: string <- eff_strip_spaces_list(trim_leading_ws(substring(trimmed, first_comma + 1, len(trimmed))));
+                                            mem_space_from_instantiation_fragment(after_first)
+                                        end;
+                                        false -> (false, "")
+                                    }
+                                end
                             }
                         end;
                         false -> do
                             last_sp: int64 <- last_space_index(trimmed);
                             case last_sp < 0 of {
                                 true -> (false, "");
-                                false -> do
-                                    space: string <- eff_strip_spaces_list(substring(trimmed, last_sp + 1, len(trimmed)));
-                                    bare_sp: string <- unwrap_mem_param(space);
-                                    case effect_checker_core@is_valid_mem_parameter(bare_sp) of {
-                                        true -> (true, bare_sp);
-                                        false -> case effect_checker_core@is_valid_mem_parameter(space) of {
-                                            true -> (true, space);
-                                            false -> (false, "")
-                                        }
-                                    }
-                                end
+                                false -> mem_space_from_instantiation_fragment(substring(trimmed, last_sp + 1, len(trimmed)))
                             }
                         end
                     }
@@ -281,6 +296,32 @@ fn index_of_first_comma(s: string) -> int64 {
     index_of_first_comma_depth0(s, 0, 0)
 }
 
+fn index_of_last_comma(s: string) -> int64 {
+    index_of_last_comma_depth0(s, 0, 0, -1)
+}
+
+fn index_of_last_comma_depth0(s: string, i: int64, depth: int64, last_at_depth0: int64) -> int64 {
+    case i >= len(s) of {
+        true -> last_at_depth0;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "[" or c == "{" of {
+                true -> index_of_last_comma_depth0(s, i + 1, depth + 1, last_at_depth0);
+                false -> case c == ")" or c == "]" or c == "}" of {
+                    true -> index_of_last_comma_depth0(s, i + 1, depth - 1, last_at_depth0);
+                    false -> case c == "," of {
+                        true -> case depth == 0 of {
+                            true -> index_of_last_comma_depth0(s, i + 1, depth, i);
+                            false -> index_of_last_comma_depth0(s, i + 1, depth, last_at_depth0)
+                        };
+                        false -> index_of_last_comma_depth0(s, i + 1, depth, last_at_depth0)
+                    }
+                }
+            }
+        end
+    }
+}
+
 fn index_of_first_comma_depth0(s: string, i: int64, depth: int64) -> int64 {
     case i >= len(s) of {
         true -> -1;
@@ -349,6 +390,49 @@ fn contains_list_prefix(s: string) -> bool {
 fn mem_effect_singleton(space: string, loc: SourceLocation) -> ListEffectName {
     eff: EffectName <- EffectName { name: "mem", parameter: space, location: loc };
     parser_ast@cons_effect_name(eff, parser_ast@empty_effect_name_list())
+}
+
+{- Bracket text after a function name: `foo[mem(normal)]` -> `mem(normal)`. -}
+fn bracket_instantiation_suffix(fn_name: string) -> string {
+    lbr: int64 <- index_of_char_from(fn_name, "[", 0);
+    case lbr < 0 of {
+        true -> "";
+        false -> do
+            rbr: int64 <- index_of_char_from(fn_name, "]", lbr + 1);
+            case rbr > lbr of {
+                true -> substring(fn_name, lbr + 1, rbr);
+                false -> ""
+            }
+        end
+    }
+}
+
+{- mem(S) from call-site or definition bracket instantiation (`mem(normal)` or `int64, mem(normal)`). -}
+fn mem_effects_from_generic_text(generic_text: string, location: SourceLocation) -> ListEffectName {
+    case len(generic_text) == 0 of {
+        true -> parser_ast@empty_effect_name_list();
+        false -> do
+            (ok: bool, space: string) <- extract_space_from_generic_instantiation(generic_text);
+            case ok of {
+                true -> mem_effect_singleton(space, location);
+                false -> do
+                    bare: string <- unwrap_mem_param(eff_strip_spaces_list(generic_text));
+                    case effect_checker_core@is_valid_mem_parameter(bare) of {
+                        true -> mem_effect_singleton(bare, location);
+                        false -> parser_ast@empty_effect_name_list()
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn mem_effects_from_fn_instantiation(generic_value: string, resolved_fn_name: string, location: SourceLocation) -> ListEffectName {
+    from_call: ListEffectName <- mem_effects_from_generic_text(generic_value, location);
+    case effect_checker_core@effect_list_length(from_call) > 0 of {
+        true -> from_call;
+        false -> mem_effects_from_generic_text(bracket_instantiation_suffix(resolved_fn_name), location)
+    }
 }
 
 fn mem_effects_for_list_call(fn_name: string, generic_value: string, location: SourceLocation) -> ListEffectName {
