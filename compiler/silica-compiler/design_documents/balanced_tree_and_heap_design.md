@@ -2,9 +2,9 @@
 
 ## 1. Purpose and scope
 
-This document specifies balanced tree and heap representations that can be generated as Silica code without custom type declarations. It extends [graph_representation_design.md](graph_representation_design.md): trees and heaps are treated as constrained graph-like structures over integer node ids and region-backed storage. **Stored keys, map values, and heap elements use types that implement the language `Collectable` trait** ([silica-specification.md](silica-specification.md) §8.2.4), following [graph_representation_design.md](graph_representation_design.md) §2.4. **Immutability and uniform inline types** follow graph §2.7–§2.8.
+This document specifies balanced tree and heap representations that can be generated as Silica code without custom type declarations. It extends [graph_representation_design.md](graph_representation_design.md): trees and heaps are treated as constrained graph-like structures over internal node ids and region-backed storage. Phase 1 standard behavior is trait-oriented: generated tree, map, heap, and priority-queue representations implement standard traits, and constructors take inline typed function records as described in [Phase1_TODOs/data_structures_as_traits.md](Phase1_TODOs/data_structures_as_traits.md). **Immutability and uniform inline types** follow graph §2.7–§2.8.
 
-The names in this document are **design/generator names**, not Silica type aliases. Bracket forms identify **registry keys** and **function-call instantiation** (§2.6). **Emitted module filenames** use **representation (+ kind for heaps) only** (§8) — for example `btree_nodeid.silica`, `heap_binary_min.silica`, not filenames that embed key type or memory space. Payload types and **`mem(Space)`** appear on **function calls**, not in module names. Generated Silica must still use inline structural record types in every parameter, return type, local binding, and pattern annotation.
+The names in this document are **design/generator names**, not Silica type aliases. Registry bracket forms may still identify generator keys (§2.6), but function-call instantiation is through constructor records, not optional bracket payload lists. **Emitted module filenames** use **representation (+ kind for heaps) only** (§8) — for example `btree_nodeid.silica`, `heap_binary_min.silica`, not filenames that embed key type or memory space. Key/value/element types and **`mem(Space)`** are fixed by the declared collection type and checked through constructor function-record fields. Generated Silica must still use inline structural record types in every parameter, return type, local binding, and pattern annotation.
 
 Primary families:
 
@@ -21,7 +21,7 @@ CsrBTree[int64, mem(normal)]
 RegionBinaryMinHeap[int64, mem(normal)]
 ```
 
-Later variants can add weights/payloads, max-heaps, d-ary heaps, and non-`int64` key/value element types once the generator has stable templates. Design-name bracket rules are in §2.6 (graphs: [graph_representation_design.md](graph_representation_design.md) §2.11).
+Later variants can add weights/payloads, max-heaps, d-ary heaps, and non-`int64` key/value element types once constructor-record checking and trait impl generation are stable. Design-name registry rules are in §2.6 (graphs: [graph_representation_design.md](graph_representation_design.md) §2.11).
 
 ## 2. Shared constraints
 
@@ -95,7 +95,7 @@ key type: int64
 value type: int64, when values are stored
 ```
 
-The first generated pass used **`int64`**-only concrete code paths for bootstrap. **Target methodology:** one function definition per operation in each module, with **`Key`**, **`Value`**, and **`Element`** as **`Collectable`** placeholders (and **`List[Collectable, S]`** in node records), resolved to concrete types per value flow ([silica-specification.md](silica-specification.md) §8.2.4). Registry names may still appear as design shorthands:
+The first generated pass used **`int64`**-only concrete code paths for bootstrap. **Target methodology:** one exported operation per arity in each module, with concrete **`KeyType`**, **`ValueType`**, **`ElementType`**, and **`PriorityType`** witnessed by constructor function-record fields. Registry names may still appear as design shorthands:
 
 ```text
 NodeIDBTree[uint64, mem(normal)]
@@ -103,20 +103,54 @@ CsrBTreeMap[string, int64, mem(normal)]
 RegionBinaryMinHeap[uint32, mem(normal)]
 ```
 
-**Keys** require a total order at specialization time (concrete compare in emitted code, or **`Comparable`** if trait compare is used). Do not duplicate source functions per primitive width or per user struct spelling.
+**Keys, heap elements, and priorities** require total ordering at construction time through comparator fields that return `atom` (`:less`, `:equal`, `:greater`). Do not duplicate source functions per primitive width or per user struct spelling.
 
-### 2.4 `Collectable` keys, values, and heap elements
+### 2.4 Constructor function records and operands
 
-Generated balanced-tree and heap APIs use **`Collectable`** for **stored user data** in add/find/remove operations:
+Generated balanced-tree and heap constructors use inline typed function records for **stored user data** in add/find/remove operations:
 
 - Tree **keys** and map **values** (`insert`, `contains`, `get`, `delete`, search bounds).
 - Heap **elements** (`push`, peek, pop).
 
-**Plain types (not `Collectable`):** structural **`int64` node ids**, `order`, `node_count`, capacities, region handles, and internal indices that are not user keys.
+Set/search-tree constructor record:
 
-**Emitted stdlib** uses **`Collectable`** (and **`Comparable`** for ordered **keys** where applicable) in parameter and record positions; the compiler **resolves** to concrete inline types per tree/heap value flow before codegen. Design prose uses **`Key`**, **`Value`**, or **`Element`**; generated Silica may spell **`Collectable`** in `List[Collectable, S]` and payload formals. Buffer and list storage use the same encoding as graphs ([graph_representation_design.md](graph_representation_design.md) §2.6; [list_implementation_design.md](list_implementation_design.md) §4).
+```text
+{
+    compare_item: fn(ItemType, ItemType) -> atom
+}
+```
 
-There is no separate storage marker trait beyond language **`Collectable`** (and **`Comparable`** for key ordering when not fully inlined).
+Map/search-map constructor record:
+
+```text
+{
+    compare_key: fn(KeyType, KeyType) -> atom,
+    compare_value: fn(ValueType, ValueType) -> atom
+}
+```
+
+Heap constructor record:
+
+```text
+{
+    compare_item: fn(ItemType, ItemType) -> atom
+}
+```
+
+Priority queue constructor record:
+
+```text
+{
+    compare_item: fn(ItemType, ItemType) -> atom,
+    compare_priority: fn(PriorityType, PriorityType) -> atom
+}
+```
+
+If priority is embedded in the item, add `priority_of: fn(ItemType) -> PriorityType`.
+
+**Plain types:** structural **`int64` node ids**, `order`, `node_count`, capacities, region handles, and internal indices that are not user keys.
+
+Design prose uses **`KeyType`**, **`ValueType`**, **`ItemType`**, **`ElementType`**, or **`PriorityType`**. Generated Silica fields and function parameters use concrete inline types established by the declared collection type and constructor function record. Buffer and list storage use the same encoding as graphs ([graph_representation_design.md](graph_representation_design.md) §2.6; [list_implementation_design.md](list_implementation_design.md) §4).
 
 ### 2.5 Immutability and type invariance
 
@@ -128,24 +162,25 @@ Generated trees and heaps are **immutable values** ([graph_representation_design
 
 The **same inline tree or heap record type** must appear at every boundary for one value flow (uniform types, graph §2.7). Constructor return types pin the concrete **`Key`** / **`Value`** / **`Element`** spellings for later operations (graph §2.8).
 
-### 2.6 Payload typing and call syntax (`List`-aligned)
+### 2.6 Constructor records, traits, and call syntax
 
-Tree and heap families follow graphs and lists ([graph_representation_design.md](graph_representation_design.md) §2.11; [list_implementation_design.md](list_implementation_design.md) §3.5; silica-spec §8.2.4):
+Tree and heap families follow graphs and [Phase1_TODOs/data_structures_as_traits.md](Phase1_TODOs/data_structures_as_traits.md):
 
-- **Preferred:** **one** `fn` per operation with **`Collectable`** / **`Comparable`** (keys) placeholders in formals and `List[Collectable, S]` node fields; **exports** are arity-only (`export insert/3`). Calls use `module@insert(tree, key, value)` with `tree` (and typed `empty`) supplying the specialization.
-- **Optional:** explicit brackets at call sites (`btree_nodeid@insert[int64, mem(normal)](tree, key)`) when desired.
+- **Preferred constructors:** one exported constructor per arity whose first argument is an inline function record, for example `btree_nodeid@empty({ compare_key: compare_string, compare_value: compare_user })`.
+- **Generated updates:** representation module operations such as `insert`, `delete`, `push`, and `pop` preserve the compare/extract functions captured at construction.
+- **Behavior traits:** standard operations such as `OrderedMap@get`, `OrderedSet@contains`, `Heap@peek`, and `PriorityQueue@pop` dispatch from the concrete generated receiver value.
 - Registry / design tables may still list bracket forms for documentation:
 
-| Family | Registry bracket form | Context-resolved example |
+| Family | Registry form | Constructor record fields |
 |--------|----------------------|---------------------------|
-| B-tree (keys only) | `[Key, mem(S)]` | `tree: <NodeIDBTree record> <- btree_nodeid@empty()` |
-| B-tree map | `[Key, Value, mem(S)]` | `btree_nodeid@insert(tree, key, value)` |
-| Binary heap | `[Element, mem(S)]` | `heap_binary_min@push(heap, value)` |
-| Priority heap | `[Priority, Value, mem(S)]` | priorities/values from `heap`'s type |
+| B-tree (items only) | `[ItemType, mem(S)]` | `compare_item` |
+| B-tree map | `[KeyType, ValueType, mem(S)]` | `compare_key`, `compare_value` |
+| Binary heap | `[ItemType, mem(S)]` | `compare_item` |
+| Priority heap | `[PriorityType, ItemType, mem(S)]` | `compare_priority`, `compare_item`, optional `priority_of` |
 
 **Emitted module names** (one per representation family; heaps include min/max kind): `btree_nodeid`, `btree_csr`, `btree_nodeid_map`, `btree_csr_map`, `heap_binary_min`, `heap_binary_max`, `heap_dary_min`, `heap_dary_max`. Do **not** encode key/value/element type or memory space in the module name.
 
-**Do not** emit separate `fn insert[int8,…]`, `fn insert[int16,…]`, … copies in one module for each primitive width; the compiler specializes from the structure type.
+**Do not** emit separate `fn insert[int8,…]`, `fn insert[int16,…]`, … copies in one module for each primitive width; constructor records and generated impls provide the specialization path.
 
 ## 3. B-tree terminology
 
@@ -320,10 +355,10 @@ This is intentionally not the final high-performance form. It is for clarity and
 
 ### 4.5 Search algorithm
 
-Generated search over one node (`key` is **`Collectable`**):
+Generated search over one node (`key` is **`KeyType`**):
 
 ```text
-node_search_position(keys, key: Collectable, index):
+node_search_position(keys, key: KeyType, index):
     if index == key_count:
         return { found: false, index: index }
     current = keys[index]
@@ -337,7 +372,7 @@ node_search_position(keys, key: Collectable, index):
 Tree search:
 
 ```text
-search_node(tree, node_id, key: Collectable):
+search_node(tree, node_id, key: KeyType):
     node = find_node(tree, node_id)
     pos = node_search_position(node.keys, key, 0)
     if pos.found:
@@ -356,7 +391,7 @@ btree_nodeid_map_get[Key, Value, mem(Space)]
 btree_nodeid_find_node[Key, mem(Space)]
 ```
 
-Abstract operand types: **`contains(..., key: Collectable)`**; **`get(..., key: Collectable)`** returns map values typed **`Collectable`** when present (`find_node` uses internal **`int64` node ids**, not `Collectable`, because those are structural graph ids, not user keys).
+Abstract operand types: **`contains(..., key: KeyType)`**; **`get(..., key: KeyType)`** returns map values typed **`ValueType`** when present (`find_node` uses internal **`int64` node ids** because those are structural graph ids, not user keys).
 
 ### 4.6 Insertion strategy
 
@@ -382,12 +417,12 @@ Recommended generated result shape:
 
 For set-only trees, `replaced` can always be `false`.
 
-Internal helper shapes (key/value operands **`Collectable`**):
+Internal helper shapes (key/value operands use concrete **`KeyType`** / **`ValueType`**):
 
 ```text
-btree_nodeid_split_child[Key, mem(Space)](tree, parent_id, child_index) -> { tree, promoted_key: Collectable }
-btree_nodeid_insert_nonfull[Key, mem(Space)](tree, node_id, key: Collectable) -> { tree, inserted: bool, replaced: bool }
-btree_nodeid_map_insert_nonfull[Key, Value, mem(Space)](tree, node_id, key: Collectable, value: Collectable) -> { tree, inserted: bool, replaced: bool }
+btree_nodeid_split_child[KeyType, mem(Space)](tree, parent_id, child_index) -> { tree, promoted_key: KeyType }
+btree_nodeid_insert_nonfull[KeyType, mem(Space)](tree, node_id, key: KeyType) -> { tree, inserted: bool, replaced: bool }
+btree_nodeid_map_insert_nonfull[KeyType, ValueType, mem(Space)](tree, node_id, key: KeyType, value: ValueType) -> { tree, inserted: bool, replaced: bool }
 ```
 
 ### 4.7 Deletion strategy
@@ -407,7 +442,7 @@ When deletion is generated, use the standard top-down B-tree deletion algorithm:
 Abstract public signature when deletion is emitted:
 
 ```text
-delete(tree, key: Collectable) -> { tree, removed: bool }
+delete(tree, key: KeyType) -> { tree, removed: bool }
 ```
 
 Recommended initial generator stance:
@@ -609,10 +644,10 @@ btree_nodeid_map_to_csr[Key, Value, mem(Space)]
 
 ### 5.7 Search algorithm
 
-Search in a CSR node (`key` is **`Collectable`**):
+Search in a CSR node (`key` is **`KeyType`**):
 
 ```text
-search_csr_node(tree, node_id, key: Collectable):
+search_csr_node(tree, node_id, key: KeyType):
     key_start = read_buf(node_key_start, node_id)
     key_count = read_buf(node_key_count, node_id)
     pos = search_key_range(keys, key_start, key_count, key)
@@ -796,7 +831,7 @@ for every index i > 0:
 
 ### 6.3 Key/value heap shape
 
-For priority queues where payload differs from priority (both operand types **`Collectable`** in abstract push/pop APIs):
+For priority queues where payload differs from priority (both operand types are concrete collection parameters in abstract push/pop APIs):
 
 
 Design name:
@@ -860,7 +895,7 @@ Heapify is O(n). Repeated push is O(n log n). Prefer heapify for known static in
 
 ### 6.5 Push
 
-The pushed element is **stored data**; the abstract API is **`push(heap, value: Collectable)`** (monomorphic generators emit `int64` and rely on `impl int64` for `Collectable`).
+The pushed element is **stored data**; the abstract API is **`push(heap, value: ItemType)`**. Bootstrap monomorphic generators emit `int64`.
 
 Generated `push` should return a result record:
 
@@ -876,7 +911,7 @@ Algorithm:
 ```text
 if heap.len == heap.capacity:
     return { heap: heap, ok: false }
-write value (type Collectable) at index heap.len
+write value (type ItemType) at index heap.len
 new_len = heap.len + 1
 sift_up(index = heap.len)
 return updated heap with len = new_len, ok = true
@@ -896,10 +931,10 @@ sift_up(p)
 
 ### 6.6 Peek and pop
 
-Peek result (stored element typed **`Collectable`** in the abstract API):
+Peek result (stored element typed **`ItemType`** in the abstract API):
 
 ```silica
-{ ok: bool, value: Collectable }
+{ ok: bool, value: ItemType }
 ```
 
 `peek_min`:
@@ -917,7 +952,7 @@ Pop result:
 {
     heap: <full inline heap type>,
     ok: bool,
-    value: Collectable
+    value: ItemType
 }
 ```
 
@@ -1057,7 +1092,7 @@ Generated code should unroll child checks when `D` is a small constant, especial
 
 ## 8. Naming rules
 
-Generated names should be deterministic. **Design/registry names** may use bracket syntax (§2.6). **Module names** and **operation names** follow **`List`** conventions: the module identifies the representation family; payload types and memory space are resolved from **structure value types** or optional explicit brackets.
+Generated names should be deterministic. **Design/registry names** may use bracket syntax (§2.6). **Module names** and **operation names** identify the representation family and operation; key/value/element/priority types and memory space are checked through the declared collection type and constructor function record.
 
 ### Module names
 
@@ -1080,16 +1115,19 @@ Import and call:
 
 ```text
 use btree_nodeid;
-tree: <NodeIDBTreeMap record with concrete Key, Value> <- btree_nodeid@empty();
+tree: OrderedMap[string, User, mem(normal)] <- btree_nodeid@empty({
+    compare_key: compare_string,
+    compare_value: compare_user
+});
 btree_nodeid@insert(tree, key, value)
-heap_binary_min@push(heap, value)
+Heap@peek(heap)
 ```
 
 ### Operation names
 
 **Exported function names** are short operation verbs — `empty`, `insert`, `get`, `contains`, `push`, `pop`. **Export declarations** use arity (`export insert/3`), not per-key bracket suffixes.
 
-**Module-qualified call syntax (preferred):** `<module>@<operation>(<args>)`. Optional: `<module>@<operation>[<bracket-params>](<args>)`.
+**Module-qualified generated update syntax:** `<module>@<operation>(<args>)`. **Trait behavior syntax:** `<Trait>@<operation>(<receiver>, ...)`.
 
 ## 9. Generator requirements
 
@@ -1099,9 +1137,10 @@ B-tree generator inputs:
 
 ```text
 representation: nodeid_btree | csr_btree
-key_type: int64       // concrete Collectable inline type for bracket slot Key
-value_type: int64     // map only; concrete Collectable inline type for bracket slot Value
+key_type: concrete inline KeyType
+value_type: concrete inline ValueType     // map only
 memory_space: normal | normal_writethrough | normal_noncacheable | atomic
+map_functions: { compare_key: fn(KeyType, KeyType) -> atom, compare_value: fn(ValueType, ValueType) -> atom }
 order: int64
 duplicate_policy: reject_duplicates | replace_value | allow_duplicates_right
 node_capacity: int64, required for CSR
@@ -1111,17 +1150,19 @@ static_sorted_input: bool
 generate_delete: bool
 ```
 
-**Registry keys (bracket form, §2.6):** `NodeIDBTree[<key_type>, mem(<memory_space>)]`, `NodeIDBTreeMap[<key_type>, <value_type>, mem(<memory_space>)]`, `CsrBTree[...]`, `CsrBTreeMap[...]`, `RegionBinaryMinHeap[<element_type>, mem(<memory_space>)]`, `RegionBinaryMinHeap[<priority_type>, <value_type>, mem(<memory_space>)]` (priority shape), `RegionDaryMinHeap[<element_type>, mem(<memory_space>)]`.
+**Registry keys (bracket form, §2.6):** `NodeIDBTree[<item_type>, mem(<memory_space>)]`, `NodeIDBTreeMap[<key_type>, <value_type>, mem(<memory_space>)]`, `CsrBTree[...]`, `CsrBTreeMap[...]`, `RegionBinaryMinHeap[<item_type>, mem(<memory_space>)]`, `RegionBinaryMinHeap[<priority_type>, <item_type>, mem(<memory_space>)]` (priority shape), `RegionDaryMinHeap[<item_type>, mem(<memory_space>)]`.
 
 Heap generator inputs:
 
 ```text
 representation: binary_heap | dary_heap
 kind: min | max
-element_type: int64   // concrete Collectable inline type for bracket slot Element
+element_type: concrete inline ItemType
 priority_type: int64  // priority heap only
-value_type: int64     // priority heap only
+value_type: concrete inline ItemType     // priority heap only
 memory_space: normal | normal_writethrough | normal_noncacheable | atomic
+heap_functions: { compare_item: fn(ItemType, ItemType) -> atom }
+priority_functions: { compare_priority: fn(PriorityType, PriorityType) -> atom, compare_item: fn(ItemType, ItemType) -> atom } // priority heap only
 capacity: int64
 arity: int64, for dary_heap
 ```
@@ -1208,10 +1249,10 @@ clear
 
 Use records rather than exceptions for ordinary capacity or lookup failure.
 
-Lookup (map **`get`** and similar; the retrieved payload is **`Collectable`**):
+Lookup (map **`get`** and similar; the retrieved payload is **`ValueType`**):
 
 ```silica
-{ found: bool, value: Collectable }
+{ found: bool, value: ValueType }
 ```
 
 Insert:
@@ -1233,13 +1274,13 @@ Heap push:
 }
 ```
 
-Heap pop (popped element **`Collectable`**):
+Heap pop (popped element **`ItemType`**):
 
 ```silica
 {
     heap: <full inline heap type>,
     ok: bool,
-    value: Collectable
+    value: ItemType
 }
 ```
 
@@ -1253,8 +1294,8 @@ The generator must:
 4. Include the owning region in any returned value that contains buffers.
 5. Use exact concrete buffer capacities in type positions.
 6. Keep `List` and `buf` memory spaces aligned with the enclosing `sequence proc[mem(S)]`.
-7. After **`Collectable`** resolution, generate monomorphic comparison logic for the concrete key type (or document trait-based compare if used).
-8. Declare **add / find / remove** operands using **`Collectable`** (keys also **`Comparable`** when trait compare is used) in the **single** emitted function per operation; resolve to concrete types per value flow before codegen (see §2.4).
+7. After constructor-record checking, generate or call comparison logic through the captured comparator function for the concrete key/item/priority type.
+8. Declare **add / find / remove** operands using concrete key/item/value types established by the declared collection type and constructor function record; keep one exported operation per arity (see §2.4).
 
 ## 10. Implementation staging
 
@@ -1271,9 +1312,9 @@ Recommended staging:
 
 ## 11. References
 
-- **`Collectable`** — language trait for keys/values and heap elements (§2.4; silica-spec §8.2.4).
+- **Constructor function record** — inline structural value whose function fields witness key/value/item/priority types and preserve compare/extract behavior (§2.4; [Phase1_TODOs/data_structures_as_traits.md](Phase1_TODOs/data_structures_as_traits.md)).
 - **Immutability and type invariance** — §2.5; graph §2.7–§2.8.
-- [graph_representation_design.md](graph_representation_design.md) - graph families that these tree representations specialize (includes §2.4 `Collectable` for graph operands).
+- [graph_representation_design.md](graph_representation_design.md) - graph families that these tree representations specialize (includes §2.4 constructor records for graph operands).
 - [silica-specification.md](silica-specification.md) - inline structural types, effects, lists, regions, buffers.
 - [list_implementation_design.md](list_implementation_design.md) - list storage and memory-space alignment.
 - [region_memory_safety_todo.md](Phase1_TODOs/region_memory_safety_todo.md) - region lifetime implementation gaps relevant to returned buffers.

@@ -44,7 +44,7 @@ The **authoritative** surface syntax and typing rules remain in [silica-specific
 - **Space `S`:** remains explicit in `List[T, S]` for a value flow; the compiler does **not** infer `S` from the enclosing `sequence` effect alone; **`S`** must **agree** with **`sequence proc[mem(S)]`** wherever list storage is **allocated** or **accessed** (§9.8).
 - **List literals** and **pattern matching** use the **resolved** `List[ElementType, Space]` in patterns and annotations (same **`Space`** as the scrutinee).
 
-**Uniformity (spec):** [silica-specification.md](silica-specification.md) §4.2.4 requires the **same** list type (after placeholder resolution) across parameters, locals, returns, literals, and patterns for one data flow. **Generated std structures** (graphs, trees, heaps) embed `List[Collectable, S]` in records and rely on resolution from the enclosing structure type; application code may continue to use concrete **`List[T, S]`** everywhere.
+**Uniformity (spec):** [silica-specification.md](silica-specification.md) §4.2.4 requires the **same** list type (after placeholder resolution) across parameters, locals, returns, literals, and patterns for one data flow. **Standard data structures** (graphs, trees, heaps, sets, maps) now use trait-oriented constructor function records for their public construction model; their generated representation records should store concrete **`List[T, S]`** fields once the collection type and constructor record have been checked. The `List[Collectable, S]` placeholder rule remains list/compiler machinery, not the standard-structure constructor strategy.
 
 **Compile-time list data** (literals, static initialization) is handled by **ordinary compiler lowering**, not user-level macros (Silica does not have macros).
 

@@ -2,9 +2,9 @@
 
 ## 1. Purpose and scope
 
-This document specifies generated B-tree set representations for Silica code. It specializes [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) and reuses the storage vocabulary from [graph_representation_design.md](graph_representation_design.md): node ids, inline structural records, `List[T, S]`, region handles, and region buffers. **Set keys use types that implement the language `Collectable` trait** (§4.0). **Immutability and uniform inline types** follow [graph_representation_design.md](graph_representation_design.md) §2.7–§2.8.
+This document specifies generated B-tree set representations for Silica code. It specializes [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) and reuses the storage vocabulary from [graph_representation_design.md](graph_representation_design.md): internal node ids, inline structural records, `List[T, S]`, region handles, and region buffers. Phase 1 standard set behavior is trait-oriented: generated set representations implement `OrderedSet`, and constructors take inline typed function records as described in [Phase1_TODOs/data_structures_as_traits.md](Phase1_TODOs/data_structures_as_traits.md). **Immutability and uniform inline types** follow [graph_representation_design.md](graph_representation_design.md) §2.7–§2.8.
 
-The names `NodeIDBTreeSet` and `CsrBTreeSet` are **design/generator names** using **`List`-aligned bracket syntax** (§4.1; [graph_representation_design.md](graph_representation_design.md) §2.11), not Silica type aliases. Bracket forms identify **registry keys** and **function-call instantiation**. **Emitted module filenames** use **representation only** (§8) — for example `btree_set_nodeid.silica`, not `btree_set_nodeid_int64_mem_normal.silica`. Key type and **`mem(Space)`** appear on **function calls**, not in module names. Generated Silica must use inline structural record types everywhere a type is required (or expand a compiler-known shorthand to that inline type).
+The names `NodeIDBTreeSet` and `CsrBTreeSet` are **design/generator names**, not Silica type aliases. Registry bracket forms remain useful for generator keys (§4.1), but function-call instantiation is through constructor records. **Emitted module filenames** use **representation only** (§8) — for example `btree_set_nodeid.silica`, not `btree_set_nodeid_int64_mem_normal.silica`. Key type and **`mem(Space)`** are fixed by the declared collection type and checked through constructor function-record fields. Generated Silica must use inline structural record types everywhere a type is required (or expand a compiler-known shorthand to that inline type).
 
 Primary first target:
 
@@ -13,7 +13,7 @@ NodeIDBTreeSet[int64, mem(normal)]
 CsrBTreeSet[int64, mem(normal)]
 ```
 
-Later target variants can use other concrete key types, but this document assumes `int64` keys so the generator can emit monomorphic comparison code.
+Later target variants can use other concrete key types once constructor-record checking and trait impl generation are stable. Existing implementation notes that mention `int64` describe bootstrap concrete modules.
 
 ## 2. Relationship to graph and B-tree designs
 
@@ -24,7 +24,7 @@ This document avoids repeating the graph-level model. Use [graph_representation_
 - The requirement that generated structures with buffers carry their owning region.
 - The naming convention idea of deterministic generated function prefixes.
 - The preference for node ids and packed buffers instead of recursive custom node objects.
-- **`Collectable`** payload rules, buffer encoding, immutability, and uniform inline types (§2.4–§2.8).
+- Constructor function-record rules, payload buffer encoding, immutability, and uniform inline types (§2.4–§2.8).
 
 Use [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) for:
 
@@ -124,27 +124,39 @@ dense bitset buffer may be better than a B-tree set
 
 ## 4. Shared B-tree set model
 
-### 4.0 `Collectable` set keys
+### 4.0 Constructor function records and set keys
 
-For B-tree **sets**, any API parameter that carries **stored key data** — insert, `from_list` elements, `contains`, range endpoints, `delete` — uses **`Key: Collectable`** in the **single** emitted function per operation; the compiler resolves **`Key`** to a concrete inline type per set value flow ([silica-specification.md](silica-specification.md) §8.2.4). **`Key`** must be totally ordered at specialization time (**`Comparable`** or inlined compare). Node storage uses `List[Collectable, S]` in the generic source form, resolving to `List[Key, S]`. Buffer encoding follows [graph_representation_design.md](graph_representation_design.md) §2.6.
+For B-tree **sets**, any API parameter that carries **stored key data** — insert, `from_list` elements, `contains`, range endpoints, `delete` — uses **`ItemType`** from the declared `OrderedSet[ItemType, mem(S)]` collection type.
+
+The generated constructor takes an inline function record:
+
+```text
+{
+    compare_item: fn(ItemType, ItemType) -> atom
+}
+```
+
+The compiler checks `compare_item` against the declared collection type. Comparator results are atoms with valid values `:less`, `:equal`, and `:greater`. Node storage uses `List[ItemType, S]`; buffer encoding follows [graph_representation_design.md](graph_representation_design.md) §2.6.
 
 Bootstrap trials may still use **`int64`** examples; do not duplicate set APIs per primitive width in one module.
 
-Structural **`int64` node ids** inside tree nodes are not set keys and are not typed as **`Collectable`**.
+Structural **`int64` node ids** inside tree nodes are not set keys.
 
-There is no separate storage marker trait beyond language **`Collectable`**.
+There is no separate storage marker trait beyond the standard `OrderedSet` behavior trait for set operations.
 
-### 4.1 Payload typing and call syntax (`List`-aligned)
+### 4.1 Constructor records, traits, and call syntax
 
-B-tree set families follow lists, graphs, and balanced trees ([list_implementation_design.md](list_implementation_design.md) §3.5; [graph_representation_design.md](graph_representation_design.md) §2.11; silica-spec §8.2.4):
+B-tree set families follow graphs, balanced trees, and [Phase1_TODOs/data_structures_as_traits.md](Phase1_TODOs/data_structures_as_traits.md):
 
-- **Preferred:** `export empty/0`, `export contains/2`, …; one `fn` per operation with **`Collectable`** keys and `List[Collectable, S]` in node records; `tree: <set record> <- btree_set_nodeid@empty()`; `btree_set_nodeid@contains(tree, key)`.
-- **Registry names** may use `[Key, mem(Space)]` (e.g. `NodeIDBTreeSet[int64, mem(normal)]`) for documentation only.
+- **Preferred constructors:** `export empty/1`; the argument is an inline function record, for example `btree_set_nodeid@empty({ compare_item: compare_string })` under an explicitly typed `OrderedSet[string, mem(normal)]` binding.
+- **Generated updates:** representation module operations such as `insert` and `delete` preserve the `compare_item` function captured at construction.
+- **Behavior trait calls:** standard set behavior is exposed through `OrderedSet@contains`, `OrderedSet@size`, `OrderedSet@fold`, and `OrderedSet@compare_item`.
+- **Registry names** may use `[ItemType, mem(Space)]` (e.g. `NodeIDBTreeSet[int64, mem(normal)]`) for documentation only.
 - B-tree **`order`** and CSR **buffer capacities** are separate generator inputs, not call-site brackets.
 
 **Emitted module names:** `btree_set_nodeid`, `btree_set_csr`. Do **not** encode key type or memory space in the module name.
 
-**Generated operation calls (preferred):** `btree_set_nodeid@empty()`, `btree_set_csr@contains(tree, key)`. Explicit brackets optional.
+**Generated operation calls (preferred):** `btree_set_nodeid@empty({ compare_item: compare_item })`, `btree_set_csr@insert(tree, key)`, and `OrderedSet@contains(tree, key)` for behavior-trait access.
 
 See [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) §2.6 for map arity.
 
@@ -229,7 +241,7 @@ NodeIDBTreeSet[int64, mem(normal)]
 NodeIDBTreeSet[int64, mem(atomic)]
 ```
 
-**Naming in §5–§7:** subsection headings use `{module}_{operation}` labels for readability in this design spec. Emitted Silica uses **short export names** and **`module@operation[brackets]`** call syntax (§8).
+**Naming in §5–§7:** subsection headings use `{module}_{operation}` labels for readability in this design spec. Emitted Silica uses **short export names** and constructor-record call syntax (§8).
 
 ### 5.2 Inline Silica shape
 
@@ -327,8 +339,8 @@ fn empty[int64, mem(normal)]() -> {
 Abstract API (design level):
 
 ```text
-btree_set_nodeid_contains[Key, mem(Space)](tree: <NodeIDBTreeSet type>, key: Collectable) -> bool
-btree_set_csr_contains[Key, mem(Space)](tree: <CsrBTreeSet type>, key: Collectable) -> bool
+btree_set_nodeid_contains[ItemType, mem(Space)](tree: <NodeIDBTreeSet type>, key: ItemType) -> bool
+btree_set_csr_contains[ItemType, mem(Space)](tree: <CsrBTreeSet type>, key: ItemType) -> bool
 ```
 
 Generated function:
@@ -346,7 +358,7 @@ bool
 Algorithm:
 
 ```text
-contains(tree, key: Collectable):
+contains(tree, key: ItemType):
     if tree.root_id == -1:
         false
     else:
@@ -356,7 +368,7 @@ contains(tree, key: Collectable):
 Node search:
 
 ```text
-contains_node(tree, node_id, key: Collectable):
+contains_node(tree, node_id, key: ItemType):
     node_result = find_node(tree.nodes, node_id)
     if node_result.found == false:
         false
@@ -384,7 +396,7 @@ The returned `index` is the child slot where the key should be found or inserted
 Abstract API (design level):
 
 ```text
-btree_set_nodeid_insert[Key, mem(Space)](tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, inserted: bool }
+btree_set_nodeid_insert[ItemType, mem(Space)](tree, key: ItemType) -> { tree: <NodeIDBTreeSet type>, inserted: bool }
 ```
 
 Generated function:
@@ -411,10 +423,10 @@ if key already exists:
 
 Recommended algorithm: top-down B-tree insertion.
 
-High-level steps (`key` is **`Collectable`**):
+High-level steps (`key` is **`ItemType`**):
 
 ```text
-insert(tree, key: Collectable):
+insert(tree, key: ItemType):
     if tree.root_id == -1:
         create root leaf with key
         return inserted = true
@@ -432,7 +444,7 @@ insert(tree, key: Collectable):
         insert_nonfull(root_id, key)
 ```
 
-`insert_nonfull(tree, node_id, key: Collectable)`:
+`insert_nonfull(tree, node_id, key: ItemType)`:
 
 ```text
 node = find_node(node_id)
@@ -503,13 +515,13 @@ Deletion is optional for the first generated set.
 Abstract API when generated:
 
 ```text
-btree_set_nodeid_delete[Key, mem(Space)](tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, removed: bool }
+btree_set_nodeid_delete[ItemType, mem(Space)](tree, key: ItemType) -> { tree: <NodeIDBTreeSet type>, removed: bool }
 ```
 
 If generated, use B-tree top-down deletion:
 
 ```text
-delete(tree, key: Collectable) -> { tree, removed: bool }
+delete(tree, key: ItemType) -> { tree, removed: bool }
 ```
 
 Rules:
@@ -840,7 +852,7 @@ bool
 Algorithm:
 
 ```text
-contains(tree, key: Collectable):
+contains(tree, key: ItemType):
     if tree.root_id == -1:
         false
     else:
@@ -850,7 +862,7 @@ contains(tree, key: Collectable):
 CSR node search:
 
 ```text
-contains_node(tree, node_id, key: Collectable):
+contains_node(tree, node_id, key: ItemType):
     key_start = read_buf(tree.node_key_start, node_id)
     key_count = read_buf(tree.node_key_count, node_id)
     pos = search_key_range(tree.keys, key_start, key_count, key)
@@ -966,15 +978,15 @@ In practice, linear scan inside a small B-tree node is often better because the 
 
 ## 7. Common set operations
 
-All operations that take a **lookup or mutation key** use **`key: Collectable`** (§4.0) in abstract signatures.
+All operations that take a **lookup or mutation key** use **`key: ItemType`** (§4.0) in abstract signatures.
 
 ### 7.1 `contains`
 
 Abstract signatures:
 
 ```text
-btree_set_nodeid_contains[Key, mem(Space)](tree, key: Collectable) -> bool
-btree_set_csr_contains[Key, mem(Space)](tree, key: Collectable) -> bool
+btree_set_nodeid_contains[ItemType, mem(Space)](tree, key: ItemType) -> bool
+btree_set_csr_contains[ItemType, mem(Space)](tree, key: ItemType) -> bool
 ```
 
 Both representations must generate:
@@ -997,8 +1009,8 @@ Both representations generate `insert`. Both are **functional and immutable**: t
 Abstract signatures:
 
 ```text
-btree_set_nodeid_insert[Key, mem(Space)](tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, inserted: bool }
-btree_set_csr_insert[Key, mem(Space)](tree, key: Collectable) -> { tree: <CsrBTreeSet type>, inserted: bool }
+btree_set_nodeid_insert[ItemType, mem(Space)](tree, key: ItemType) -> { tree: <NodeIDBTreeSet type>, inserted: bool }
+btree_set_csr_insert[ItemType, mem(Space)](tree, key: ItemType) -> { tree: <CsrBTreeSet type>, inserted: bool }
 ```
 
 Generated functions:
@@ -1021,10 +1033,10 @@ Return shape (both representations):
 
 ### 7.3 `delete`
 
-Optional later (operands **`Collectable`**):
+Optional later (operands **`ItemType`**):
 
 ```text
-btree_set_nodeid_delete[Key, mem(Space)](tree, key: Collectable) -> { tree: <NodeIDBTreeSet type>, removed: bool }
+btree_set_nodeid_delete[ItemType, mem(Space)](tree, key: ItemType) -> { tree: <NodeIDBTreeSet type>, removed: bool }
 ```
 
 Do not generate CSR deletion in the first pass.
@@ -1041,7 +1053,7 @@ Algorithm:
 
 ```text
 start with empty NodeIDBTreeSet
-for each key (`Collectable`) in input List[int64, S]:
+for each key (`ItemType`) in input List[ItemType, S]:
     insert key
 return final tree
 ```
@@ -1070,16 +1082,16 @@ btree_set_csr_range[Key, mem(Space)]
 Abstract signatures:
 
 ```text
-btree_set_nodeid_range[Key, mem(Space)](tree, low: Collectable, high: Collectable) -> List[int64, S]
-btree_set_csr_range[Key, mem(Space)](tree, low: Collectable, high: Collectable) -> List[int64, S]
+btree_set_nodeid_range[ItemType, mem(Space)](tree, low: ItemType, high: ItemType) -> List[ItemType, S]
+btree_set_csr_range[ItemType, mem(Space)](tree, low: ItemType, high: ItemType) -> List[ItemType, S]
 ```
 
 Result should be a `List[int64, S]` of keys in ascending order.
 
-Range query (`low` and `high` are **`Collectable`** bounds):
+Range query (`low` and `high` are **`ItemType`** bounds):
 
 ```text
-range(tree, low: Collectable, high: Collectable):
+range(tree, low: ItemType, high: ItemType):
     include keys k where low <= k and k <= high
 ```
 
@@ -1087,7 +1099,7 @@ This is useful for compiler interval-like structures, but it requires careful in
 
 ## 8. Generated naming rules
 
-**Design/registry names** use bracket syntax (§4.1). **Module names** and **operation names** follow **`List`** conventions: the module identifies the representation family; key type and memory space are **bracket parameters on function calls**.
+**Design/registry names** may use bracket syntax (§4.1). **Module names** and **operation names** identify the representation family and operation; key type and memory space are checked through the declared collection type and constructor function record.
 
 ### Module names
 
@@ -1106,8 +1118,11 @@ Import and call (short operation name after `@`; do not repeat the module name):
 
 ```text
 use btree_set_nodeid;
-tree: <NodeIDBTreeSet record> <- btree_set_nodeid@empty();
-btree_set_nodeid@contains(tree, key)
+tree: OrderedSet[string, mem(normal)] <- btree_set_nodeid@empty({
+    compare_item: compare_string
+});
+btree_set_nodeid@insert(tree, key)
+OrderedSet@contains(tree, key)
 ```
 
 **Single-file `use` rule:** do not `use` two generated modules in one source file when both export the same `operation/arity` without disambiguation (E4011). Cross-representation trials use re-export wrappers or separate compilation units.
@@ -1116,7 +1131,7 @@ btree_set_nodeid@contains(tree, key)
 
 **Exported function names** are short operation verbs — `empty`, `contains`, `insert`, `validate`, `to_csr`, `from_static_sorted`. **Exports** use arity only (`export contains/2`).
 
-**Module-qualified call syntax (preferred):** `btree_set_csr@contains(tree, key)`. Optional explicit brackets when needed.
+**Module-qualified generated update syntax:** `btree_set_csr@insert(tree, key)`. **Trait behavior syntax:** `OrderedSet@contains(tree, key)`.
 
 **Linker symbols:** the compiler mangles by module, operation, arity, and resolved set record / key types.
 
@@ -1130,8 +1145,9 @@ Set generator inputs:
 
 ```text
 representation: nodeid_btree_set | csr_btree_set
-key_type: Collectable  // resolved per value flow to concrete Key (§4.0); registry trials may use int64
+item_type: concrete inline ItemType  // witnessed by compare_item (§4.0); registry trials may use int64
 memory_space: normal | normal_writethrough | normal_noncacheable | atomic
+item_functions: { compare_item: fn(ItemType, ItemType) -> atom }
 order: int64
 generate_insert: bool
 generate_delete: bool
@@ -1139,7 +1155,7 @@ generate_range: bool
 generate_validate: bool
 ```
 
-**Registry key (bracket form, §4.1):** `NodeIDBTreeSet[<key_type>, mem(<memory_space>)]`, `CsrBTreeSet[<key_type>, mem(<memory_space>)]` — for example `NodeIDBTreeSet[int64, mem(normal)]`.
+**Registry key (bracket form, §4.1):** `NodeIDBTreeSet[<item_type>, mem(<memory_space>)]`, `CsrBTreeSet[<item_type>, mem(<memory_space>)]` — for example `NodeIDBTreeSet[int64, mem(normal)]`.
 
 Additional CSR inputs:
 
@@ -1302,7 +1318,7 @@ Recommended project staging:
 
 ## 12. References
 
-- **`Collectable`** — language trait for set keys (§4.0; silica-spec §8.2.4).
+- **`OrderedSet`** — standard behavior trait for set membership, size, fold, and item comparison (§4.1; [Phase1_TODOs/data_structures_as_traits.md](Phase1_TODOs/data_structures_as_traits.md)).
 - **Immutability and type invariance** — [graph_representation_design.md](graph_representation_design.md) §2.7–§2.8; [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) §2.5.
 - [graph_representation_design.md](graph_representation_design.md) - graph storage families and generator conventions reused here.
 - [balanced_tree_and_heap_design.md](balanced_tree_and_heap_design.md) - B-tree and heap design this set document specializes.

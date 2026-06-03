@@ -2,22 +2,26 @@
 
 This plan organizes implementation work for Silica's standard generated data structures. It is an execution plan only. The design authority remains:
 
+- [data_structures_as_traits.md](data_structures_as_traits.md) — Phase 1 standard-structure trait model, constructor function records, comparator result contract
 - [silica-specification.md](../silica-specification.md) — §4.2.4 (lists), §8.2.4 (`Collectable`, **`List[Collectable, Space]`** placeholder)
 - [list_implementation_design.md](../list_implementation_design.md) — §3, §7 (resolution and list primitives)
 - [graph_representation_design.md](../graph_representation_design.md)
 - [balanced_tree_and_heap_design.md](../balanced_tree_and_heap_design.md)
 - [btree_set_design.md](../btree_set_design.md)
 
-**Design conventions (shared model — updated methodology):**
+**Design conventions (shared model — trait-oriented methodology):**
 
-- Graphs, trees, heaps, and sets are **immutable values** with **uniform inline record types** at every boundary (graph §2.7–§2.8). After compile-time resolution, every value flow uses **concrete** inline types; before resolution, generated stdlib may spell payload slots as **`Collectable`** and list slots as **`List[Collectable, mem(Space)]`** (silica-spec §8.2.4).
-- CSR/dense topology buffers remain **`int64`**; user payload lives in `List[Collectable, S]` (resolved to `List[T, S]`), `buf(R, S, T, N)`, or inline payload fields.
-- **One exported function per operation** per module (`export insert/3`, not `export insert[int64, int64, mem(normal)]/3` per width or user type). **One `fn` body** per operation in generated source, using **`Collectable`** / **`Comparable`** (keys) placeholders—not duplicated `fn insert[int8,…]`, `fn insert[int16,…]`, … in the same file.
-- **Call sites (preferred):** `module@operation(args)` with specialization from the typed structure value (`tree`, `g`, `heap`) and from typed **`empty()`** results (`let` / parameter / return). **Optional:** explicit bracket instantiation at call sites when desired (graph §2.11; balanced tree §2.6; btree set §4.1).
+- Graphs, trees, heaps, maps, and sets expose behavior through **standard traits** (`DirectedGraph`, `OrderedSet`, `OrderedMap`, `Heap`, etc.). Generated concrete representations implement those traits automatically.
+- Generated constructors take **inline typed function records**. These records contain the comparators, extractors, and hash functions required by the representation. The compiler uses the function-field signatures as compile-time type witnesses.
+- Collection variables still declare their collection type explicitly, including memory effect/type parameters such as `mem(normal)` or `mem(writethrough)`. Constructor function records check against that declaration; they do not hide or infer the collection type from return context alone.
+- Comparator functions return **`atom`** with valid results `:less`, `:equal`, and `:greater`; standard-library behavior treats any other atom as invalid comparator behavior.
+- Node ids, keys, values, priorities, edge payloads, and weights are **typed collection parameters**. They must not be assumed to be `int64`. Counts, capacities, dense physical slots, and generated buffer indices may remain `int64`.
+- **One exported function per operation** per module remains the naming rule (`export insert/2`, not `export insert[int64, mem(normal)]/2` per width or user type), but specialization comes from concrete collection types and constructor function records, not from `Collectable` placeholders in standard-structure APIs.
+- **Call sites (preferred):** constructors are called with function records (`btree_set_nodeid@empty({ compare_item: compare_string })`), and operations dispatch from typed structure values (`OrderedSet@contains(set, key)` for trait behavior or `btree_set_nodeid@insert(set, key)` for generated representation updates).
 - **Module filenames** use representation only (`graph_adj_directed.silica`, `btree_nodeid.silica`). Do **not** suffix modules with payload type or memory space.
-- **Compiler obligation:** resolve `Collectable` placeholders and select/link the correct specialization per value flow before codegen (overload by first-argument structure type for non-empty ops; expected type for `empty` and other zero-receiver constructors). See **Phase 0.4**.
+- **Compiler obligation:** check constructor record field signatures against the declared collection type, preserve captured functions in the generated representation value, and resolve trait operations from the concrete receiver type. See **Phase 0.4**.
 
-**Migration note:** Existing bootstrap modules (e.g. duplicated `insert[int8,…]` / `insert[int32,…]` in `btree_nodeid.silica`) are **legacy** relative to this plan. New work and refactors must converge on the single-function + placeholder model; remove per-primitive duplicate exports when Phase 0.4 is available.
+**Clean rewrite note:** Existing bootstrap modules and their `.bak` copies are algorithm references only. They preserve useful insertion, validation, traversal, CSR, and heap algorithms, but new `.silica` work should be written directly against standard behavior traits plus typed constructor function records. The list-specific `List[Collectable, S]` placeholder support remains useful for lists; it is not the standard data-structure construction model.
 
 This document does not introduce new representations or memory-space rules beyond the design documents. **Naming and call syntax** are defined in those documents (graph §2.11, §8.4; balanced tree §2.6, §8; btree set §4.1, §8; list §3.5). When a detail is needed, use the section named in the step.
 
@@ -25,77 +29,32 @@ This document intentionally contains no Silica source code. It is written as fin
 
 ## Implementation Order
 
-1. **Module filename rename (blocking).** Phase 0.0 — complete.
-2. **`Collectable` list placeholder and structure specialization (blocking for new methodology).** Phase 0.4 — compiler type-check and codegen resolution; see silica-spec §8.2.4. **No new per-width duplicate stdlib functions until 0.4 exit criteria pass** (refactors of existing modules may proceed in parallel where they only remove duplicates).
-3. Graph representations (refactor to single-function + placeholder exports where touched).
-4. B-tree set representations second.
-5. General balanced B-tree and map representations third (includes `btree_nodeid.silica` deduplication).
-6. Heap representations fourth.
-7. Cross-structure validation, docs, and trial cleanup last.
+1. **Trait-oriented constructor records and trait dispatch (blocking for final methodology).** Phase 0.4 — add standard traits, function-record checking, captured function preservation, and generated impl resolution.
+2. Graph representations first.
+3. B-tree set representations second.
+4. General balanced B-tree and map representations third.
+5. Heap representations fourth.
+6. Cross-structure validation, docs, and trial cleanup last.
 
 Graph comes first because the tree and heap designs explicitly reuse graph vocabulary: node ids, inline record shapes, memory-space rules, generated naming conventions, and region-backed buffers.
-
-## Phase 0.0 - Module Filename Rename (blocking)
-
-**Status: complete** — `trials/graph_addition` integrate passes (`.ascomp` goldens refreshed for module-prefixed linker symbols). `trials/btree_set_addition` integrate passes. `btree_set_nodeid_to_csr` trial removed from suite; `to_csr` in `btree_set_nodeid.silica` stubbed to return `btree_set_csr@empty` — full conversion deferred to Phase 6.
-
-Authority:
-
-- `graph_representation_design.md` sections 2.2, 2.11, and 8.4
-- `btree_set_design.md` sections 4.1 and 8
-- `balanced_tree_and_heap_design.md` sections 2.6 and 8
-
-Actions:
-
-1. Rename graph modules under `src/standard_data_structures/` to representation + directedness only:
-  - `graph_adj_directed_mem_normal.silica` + `graph_adj_directed_int64_mem_normal.silica` → `**graph_adj_directed.silica**` (one module, both bracket instantiations)
-  - `graph_adj_undirected_mem_normal.silica` → `**graph_adj_undirected.silica**`
-  - `graph_csr_directed_mem_normal.silica` + `graph_csr_directed_int64_mem_normal.silica` → `**graph_csr_directed.silica**`
-  - `graph_dense_directed_mem_normal.silica` + `graph_dense_directed_int64_mem_normal.silica` → `**graph_dense_directed.silica**`
-2. Rename B-tree set modules:
-  - `btree_set_nodeid_mem_normal.silica` → `**btree_set_nodeid.silica**`
-  - `btree_set_csr_mem_normal.silica` → `**btree_set_csr.silica**`
-3. Update `**use**` declarations and `**module@operation**` call sites (short operation name after `@`; prefer context-typed calls; brackets optional per graph §2.11).
-4. Update `src/standard_data_structures/Makefile`, `silica.config`, and trial Makefiles / `lib/` symlinks.
-5. Rename trial sources to drop `**_mem_normal**` from filenames (keep `**int64**` / `**unweighted**` in trial names when they denote the bracket instantiation under test).
-6. Re-run `**trials/graph_addition**` and `**trials/btree_set_addition**` `**integrate**`; refresh `.ascomp` goldens when assembly output changes only because of module rename.
-
-Exit criteria:
-
-- No generated module filename contains payload type or memory-space suffix.
-- Every trial `**use**` names a design-document module (`graph_adj_directed`, not `graph_adj_directed_int64_mem_normal`).
-- Graph and B-tree set integrate suites pass.
-
-**Rename map (authoritative):**
-
-
-| Legacy module file                                                                        | Target module file            |
-| ----------------------------------------------------------------------------------------- | ----------------------------- |
-| `graph_adj_directed_mem_normal.silica` + `graph_adj_directed_int64_mem_normal.silica`     | `graph_adj_directed.silica`   |
-| `graph_adj_undirected_mem_normal.silica`                                                  | `graph_adj_undirected.silica` |
-| `graph_csr_directed_mem_normal.silica` + `graph_csr_directed_int64_mem_normal.silica`     | `graph_csr_directed.silica`   |
-| `graph_dense_directed_mem_normal.silica` + `graph_dense_directed_int64_mem_normal.silica` | `graph_dense_directed.silica` |
-| `btree_set_nodeid_mem_normal.silica`                                                      | `btree_set_nodeid.silica`     |
-| `btree_set_csr_mem_normal.silica`                                                         | `btree_set_csr.silica`        |
-
 
 ## Global Rules For All Steps
 
 Every implementation step must obey these rules:
 
 1. Treat design names as generator names only.
-2. In **generated stdlib** sources, payload positions may use **`Collectable`** and `List[Collectable, S]` until resolution; at **codegen boundaries** for a value flow, emit/use the **resolved** full inline structural types (silica-spec §8.2.4).
+2. In **generated standard data-structure** sources, collection element/key/value/node/edge/priority types are witnessed by constructor function records and then stored as concrete inline structural types in the generated value. `Collectable` placeholders are list/compiler machinery, not the public construction rule for standard structures.
 3. Use the memory-space rules from the relevant design document.
 4. Use payload and operand rules exactly as described by the relevant design document (graph §2.4; balanced tree §2.4; btree set §4.0).
-5. Keep generated naming consistent with the relevant design document: **module names** = representation family only; **exported function names** = short operation verbs with **arity-only exports** (`export contains/2`); **preferred call syntax** = `module@operation(args)` with specialization from typed structure arguments and typed `empty()` results; **optional** `module@operation[brackets](args)`. Registry keys may still record `(payload…, mem(Space))` for generator metadata. The compiler emits **module-prefixed mangled linker symbols** from resolved structure/payload types so arity-only exports can link.
+5. Keep generated naming consistent with the relevant design document: **module names** = representation family only; **exported function names** = short operation verbs with **arity-only exports** (`export contains/2`); constructors receive inline function records; behavior operations are available through standard traits and dispatch from the receiver's concrete generated representation.
 6. **Single-file `use` rule (E4011):** do not `use` two generated modules in one file when both export the same `operation/arity` and overload resolution is ambiguous. Cross-representation call sites use re-export wrappers or separate trial files.
-7. Generated stdlib functions use **`Collectable`** / **`Comparable`** (keys) in payload and `List[Collectable, S]` positions; do **not** add another copy of the same operation for each primitive width or user struct spelling in one module.
+7. Do **not** add another copy of the same public operation for each primitive width or user struct spelling in one module. Use constructor function records and generated impl specialization instead.
 8. Add positive trials before relying on a generated helper in later phases.
 9. Add negative or validation trials for every documented invariant that can be checked.
 10. Do not implement a faster packed form until the clear list-oriented form has validation coverage, unless the design document specifically allows direct packed construction.
 11. Do not add unplanned APIs. If a helper is needed only internally, name and scope it as a generator helper and keep it aligned with the design document's helper requirements.
 12. Emit **immutable** APIs by default: mutating operations return new structure values; use `_builder`_ / `_mutable_` suffixes only when the design document allows (graph §2.7).
-13. Enforce **uniform inline types** for each structure value flow after placeholder resolution (graph §2.7; list spec §4.2.4 / §8.2.4).
+13. Enforce **uniform inline types** for each structure value flow after constructor-record checking (graph §2.7; list spec §4.2.4 / §8.2.4).
 
 ## Phase 0 - Shared Generator Foundation
 
@@ -140,10 +99,11 @@ Exit criteria:
 - Every supported family can produce a canonical inline type string.
 - Snapshot tests fail if field order or memory-space spelling changes.
 
-### Step 0.4 - `Collectable` Placeholder Resolution (blocking for new methodology)
+### Step 0.4 - Trait-Oriented Constructor Records And Trait Dispatch (blocking for final methodology)
 
 Authority:
 
+- [data_structures_as_traits.md](data_structures_as_traits.md)
 - [silica-specification.md](../silica-specification.md) §4.2.4, §8.2.4
 - [list_implementation_design.md](../list_implementation_design.md) §3.5, §7
 - [graph_representation_design.md](../graph_representation_design.md) §2.4, §2.8, §2.11
@@ -152,19 +112,21 @@ Authority:
 
 Actions:
 
-1. **Type checker (shallow Collectable — same boundary as `ActorMessage`):** resolve `List[Collectable, S]` to concrete `List[T, S]` per value flow; use `type_checker_lists@formal_type_accepts_actual` for structural placeholder matching and `type_checker_traits@actual_type_satisfies_trait_expectation` for marker `Collectable` only. No emitter or SIR interpretation of the string `Collectable`.
-2. **Type checker:** for qualified std-structure calls, select the single `fn` via `find_tag0_decl_for_qualified_call` (first argument and/or return vs binding type for zero-receiver ops); error on ambiguity or missing context.
-3. **Exports:** accept arity-only exports (`export insert/3`) with multiple internal overloads distinguished by resolved structure types, or a single `fn` whose formals use `Collectable` placeholders—do not require per-payload export bracket suffixes.
-4. **Linkage pass only:** `qualified_call_mangler` rewrites call names using the same `find_tag0_decl_for_qualified_call` as the type checker, then `overload_mangle` applies type slugs — monomorph after resolution, no Collectable logic in `src/emitter`.
-5. **Trials:** add `trials/list_addition/` cases for `List[Collectable, normal]` under typed bindings; add graph/btree trials for context-typed `module@empty()` / `module@insert` without call-site brackets.
-6. **Keys:** document/enforce `Comparable` (or inlined compare) when resolving ordered-structure keys.
+1. Define standard behavior traits for graph, set, map, tree, heap, and priority-queue operations named in `data_structures_as_traits.md`.
+2. Add type-checking for inline constructor function records. Each required field must exist and have the exact function type required by the declared collection type, for example `compare_item: fn(ItemType, ItemType) -> atom`.
+3. Treat constructor function records as structural inline values only. Do not introduce named or aliased struct types for these records.
+4. Preserve captured comparator, extractor, and hashing functions in generated representation values so update operations (`insert`, `push`, `add_edge`, etc.) reuse the construction-time functions.
+5. Add generated impls that connect concrete representations to standard behavior traits. Trait calls dispatch from the receiver-like first argument (`OrderedSet@contains(set, key)`, `DirectedGraph@neighbors(g, node)`).
+6. Validate comparator result handling for the atom contract (`:less`, `:equal`, `:greater`); add negative or runtime-validation trials for invalid atoms once the standard-library error path is selected.
+7. Retain the already-completed list `Collectable` placeholder trials as compiler/list coverage, but stop using them as the acceptance criterion for standard data-structure constructors.
 
 Exit criteria:
 
-- List `empty` / `prepend` / `length` work with `List[Collectable, S]` when RHS or argument context supplies concrete `T`.
-- At least one graph and one btree trial call `graph_adj_directed@empty()` / `btree_nodeid@insert(tree, …)` with typed structure variables and no per-width duplicate exports in that module.
-- For graph constructors with non-payload arguments, add a follow-up context trial that calls the preferred API as `graph_adj_directed@empty(3)` (no `[mem(normal)]`) once graph overloads collapse to one export per operation.
-- Unresolved `List[Collectable, S]` without context is a compile error.
+- Set, map, graph, and heap constructors accept inline typed function records and reject records whose function-field signatures disagree with the declared collection type.
+- Generated representation values preserve construction-time functions across update operations.
+- At least one generated set/map, one graph, and one heap representation implements and passes calls through its corresponding standard behavior trait.
+- Comparator functions returning atoms outside `:less`, `:equal`, and `:greater` are covered by validation behavior or by a documented deferred stricter check.
+- Existing list `Collectable` placeholder tests remain green as list-specific coverage.
 
 ### Step 0.3 - Establish Trial Layout
 
@@ -183,7 +145,7 @@ Actions:
 
 Exit criteria:
 
-- The trial harness can run empty placeholder suites for each data-structure family.
+- The trial harness can run reserved suites for each data-structure family.
 
 **Phase 0 completed (trial layout):**
 
@@ -321,25 +283,6 @@ Exit criteria:
 
 - Positive validation passes for constructed graphs.
 - Negative validation trials fail or return errors for each checkable invariant.
-
-### Step 1.8 - Deduplicate NodeIdAdjacencyGraph Stdlib Surface
-
-Authority:
-
-- `graph_representation_design.md` sections 2.4, 2.8, 2.11, and 8.4
-- [silica-specification.md](../silica-specification.md) §8.2.4
-
-Actions:
-
-1. Collapse legacy per-width graph stdlib exports such as `empty[int8|int16|int32|int64, …]` to one exported operation per arity (`export empty/1`, `export add_edge/4`, `export validate/1`, etc.).
-2. Keep payload and memory-space specialization in `Collectable` / resolved inline structure types, not in duplicated public function names.
-3. Update graph context trials so the preferred constructor call is `graph_adj_directed@empty(3)` without `[mem(normal)]`; keep explicit brackets only as optional syntax coverage where the graph design documents it.
-4. Verify the context trial covers real payload specialization, not only the mem-only bracket form.
-
-Exit criteria:
-
-- `graph_adj_directed.silica` no longer contains duplicate public bodies for the same operation solely by primitive payload width.
-- Graph context trials pass with typed structure variables and unbracketed preferred API calls.
 
 ## Phase 2 - Graph Packed Form: CompressedSparseRowGraph
 
@@ -486,7 +429,7 @@ Exit criteria:
 
 **Phase 3 completed:**
 
-- Steps 3.1–3.2: `graph_dense_directed.silica` (unweighted and weighted edge-payload via typed graph values or optional explicit brackets); trials `graph_dense_directed_unweighted.silica`, `graph_dense_directed_weighted_int64.silica` (silica-compiler integrate).
+- Steps 3.1–3.2: `graph_dense_directed.silica` (bootstrap unweighted and weighted edge-payload via typed graph values); trials `graph_dense_directed_unweighted.silica`, `graph_dense_directed_weighted_int64.silica` (silica-compiler integrate).
 - Step 3.3: DenseBitset deferred per graph design §6.4; fallback to `DenseMatrixGraphDirected[mem(S)]` documented in completion tracking.
 - `src/standard_data_structures/` builds graph modules via `silica-compiler` + `silica.config` (not silica-boot).
 
@@ -625,13 +568,11 @@ Exit criteria:
 
 - Either delete trials pass, or delete is explicitly listed as deferred according to the design.
 
-**Phase 5 bootstrap completed:**
+**Algorithm reference available:**
 
-- Added `src/standard_data_structures/btree_set_nodeid.silica` for order-8 immutable list-backed `NodeIDBTreeSet[int64, mem(normal)]` (Phase 0.0 rename from `btree_set_nodeid.silica`).
-- Public bootstrap surface: `empty/0`, `contains/2`, `insert/2`, and `validate/1`.
+- The `.bak` copy of `btree_set_nodeid.silica` preserves the order-8 immutable list-backed insertion, membership, and validation algorithms.
 - Delete remains deferred per `btree_set_design.md` sections 5.6 and 7.3.
-- Current compiler-path representation uses `int64` status flags for `is_leaf`, `inserted`, and `ok` rather than source-level booleans, matching the stable generated-code path used by the graph modules.
-- `trials/btree_set_addition` now wires empty-set smoke coverage, non-empty hand-built membership, stable insert/duplicate status, and invalid-validation coverage into `integrate` with per-executable timeout guards.
+- The clean `.silica` rewrite should expose constructor-record and trait-oriented APIs rather than the bootstrap `empty/0`, `contains/2`, `insert/2`, and `validate/1` surface.
 
 ## Phase 6 - B-tree Set: CsrBTreeSet
 
@@ -716,33 +657,11 @@ Exit criteria:
 
 - A trial inserts keys from empty, verifies sorted order, duplicate detection, and that the original tree is not mutated (immutability contract).
 
-### Step 6.5 - Generate NodeIDBTreeSet-To-CsrBTreeSet Finalization (deferred)
+## Phase 7 - General B-tree: NodeIDBTreeMap
 
-**Status: deferred** — `to_csr` in `btree_set_nodeid.silica` is stubbed to return `btree_set_csr@empty`. Full conversion (`to_csr_from_valid`, `to_csr_write_keys`, `to_csr_remap_child`, `to_csr_write_children`, `to_csr_fits_bootstrap_caps`) deferred pending emitter register-allocation improvements for high register-pressure code paths.
+Algorithm reference exists in `btree_nodeid.silica.bak`, reusing the NodeIDBTreeSet node layout and traversal while applying `replace_value` duplicate-key policy. The clean rewrite must expose the map through constructor records and `OrderedMap` behavior.
 
-Authority:
-
-- `btree_set_design.md` sections 6.5 and 7.5
-
-Actions:
-
-1. Validate the NodeIDBTreeSet input.
-2. Assign dense node ids according to the design.
-3. Allocate CSR buffers.
-4. Copy keys and children into packed buffers.
-5. Return the CSR set with the documented root convention.
-
-Exit criteria:
-
-- A trial inserts keys into NodeIDBTreeSet, finalizes to CSR, and verifies equivalent membership.
-
-## Phase 7 - General B-tree: NodeIDBTreeMap ✅ COMPLETE
-
-Implemented as `NodeIDBTreeMap[int64, int64, mem(normal)]` in `btree_nodeid.silica`, reusing the
-NodeIDBTreeSet node layout and traversal while applying `replace_value` duplicate-key policy (maps
-update existing keys; sets still reject duplicates via `btree_set_nodeid.silica`).
-
-### Step 7.1 - Generate NodeIDBTree Type Expansion ✅ COMPLETE
+### Step 7.1 - Generate NodeIDBTree Type Expansion
 
 Authority:
 
@@ -750,15 +669,15 @@ Authority:
 
 Actions:
 
-1. ✅ Generate the general NodeIDBTreeMap type string (keys + values per node).
-2. ✅ Include keys and values exactly as specified by the design.
-3. ✅ Type expansion covered by `btree_nodeid.silica` module registration.
+1. Generate the general NodeIDBTreeMap type string (keys + values per node).
+2. Include keys and values exactly as specified by the design.
+3. Preserve constructor-record fields needed for `compare_key` and `compare_value`.
 
 Exit criteria:
 
-- ✅ Type string stable in generated module.
+- Type string stable in generated module.
 
-### Step 7.2 - Generate NodeIDBTree Search And Validation ✅ COMPLETE
+### Step 7.2 - Generate NodeIDBTree Search And Validation
 
 Authority:
 
@@ -766,16 +685,16 @@ Authority:
 
 Actions:
 
-1. ✅ Generate search by key (`get`).
-2. ✅ Generate value lookup returning `{found, value}`.
-3. ✅ Generate invariant validation (reuses set validation with value-shape checks).
-4. ✅ Set validation unchanged in `btree_set_nodeid.silica` (reject_duplicates preserved).
+1. Generate search by key (`get`).
+2. Generate value lookup returning `{found, value}`.
+3. Generate invariant validation (reuses set validation with value-shape checks).
+4. Preserve `replace_value` map policy while keeping set `reject_duplicates` separate.
 
 Exit criteria:
 
-- ✅ Trials cover present keys, absent keys, and invalid trees (`btree_nodeid_empty_get`, `btree_nodeid_validate_invalid`).
+- Trials cover present keys, absent keys, and invalid trees.
 
-### Step 7.3 - Generate NodeIDBTree Insert ✅ COMPLETE
+### Step 7.3 - Generate NodeIDBTree Insert
 
 Authority:
 
@@ -783,21 +702,20 @@ Authority:
 
 Actions:
 
-1. ✅ Generate insertion with `replace_value` policy (`insert` returns `{tree, inserted, replaced}`).
-2. ✅ Reuse node split helpers from NodeIDBTreeSet.
-3. ✅ Preserve B-tree invariants.
-4. ✅ Return the documented result shape.
+1. Generate insertion with `replace_value` policy (`insert` returns `{tree, inserted, replaced}`).
+2. Reuse node split helpers from NodeIDBTreeSet.
+3. Preserve B-tree invariants.
+4. Return the documented result shape.
 
 Exit criteria:
 
-- ✅ Trials cover insert, replace, get, and immutability (`btree_nodeid_insert`, `btree_nodeid_insert_one/two/four/get`, `btree_nodeid_insert_get`).
+- Trials cover insert, replace, get, and immutability.
 
-## Phase 8 - General B-tree: CsrBTree ✅ COMPLETE
+## Phase 8 - General B-tree: CsrBTree
 
-Implemented as `CsrBTreeMap[int64, int64, mem(normal)]` — module `btree_csr_map.silica`.
-Steps 8.1 and 8.2 are complete.
+Algorithm reference exists in `btree_csr_map.silica.bak` for `CsrBTreeMap[int64, int64, mem(normal)]`.
 
-### Step 8.1 - Generate CsrBTreeMap Construction ✅ COMPLETE
+### Step 8.1 - Generate CsrBTreeMap Construction
 
 Authority:
 
@@ -805,16 +723,16 @@ Authority:
 
 Actions:
 
-1. ✅ Generate CSR map type string: `{region, root_id, node_count, key_count_total, order, node_key_start, node_key_count, node_child_start, node_child_count, node_is_leaf, keys, values, children}`.
-2. ✅ Generate `empty` (root_id=-1) and `from_static_sorted` ({1→10, 3→30, 5→50}).
-3. ✅ Generate `build_leaf_csr_map` internal builder allocating a fresh region with key and value buffers.
-4. ✅ Include capacity constants `node_cap=1`, `key_cap=7`, `child_cap=8`.
+1. Generate CSR map type string: `{region, root_id, node_count, key_count_total, order, node_key_start, node_key_count, node_child_start, node_child_count, node_is_leaf, keys, values, children}`.
+2. Generate `empty` (root_id=-1) and `from_static_sorted`.
+3. Generate `build_leaf_csr_map` internal builder allocating a fresh region with key and value buffers.
+4. Include capacity constants `node_cap`, `key_cap`, and `child_cap`.
 
 Exit criteria:
 
-- ✅ `btree_csr_map_insert` trial constructs a map via sequential insert and validates it.
+- A trial constructs a map via sequential insert and validates it.
 
-### Step 8.2 - Generate CsrBTreeMap Search, Insert, And Validation ✅ COMPLETE
+### Step 8.2 - Generate CsrBTreeMap Search, Insert, And Validation
 
 Authority:
 
@@ -822,45 +740,22 @@ Authority:
 
 Actions:
 
-1. ✅ Generate `contains` (linear key scan over `keys` buffer — reuses `contains_key_at` from `CsrBTreeSet`).
-2. ✅ Generate `get` (key lookup returning `{ found: int64, value: int64 }` — uses `find_key_pos` helper).
-3. ✅ Generate functional `insert` with `replace_value` duplicate policy, returning `{ tree, inserted, replaced }`.
-4. ✅ Generate `validate` (order check, key-count bounds, sorted-key invariant).
+1. Generate `contains` (linear key scan over `keys` buffer — reuses `contains_key_at` from `CsrBTreeSet`).
+2. Generate `get` (key lookup returning `{ found: int64, value: ValueType }` — uses `find_key_pos` helper).
+3. Generate functional `insert` with `replace_value` duplicate policy, returning `{ tree, inserted, replaced }`.
+4. Generate `validate` (order check, key-count bounds, sorted-key invariant).
 
 Exit criteria:
 
-- ✅ `btree_csr_map_insert` trial covers: new-key insert (inserted=1), replace-value insert (replaced=1), get found and not-found, validation pass, immutability of original map.
-
-### Step 8.3 - CsrBTree Set-Only Form (btree_csr.silica) — Deferred
-
-The set-only `CsrBTree[int64, mem(normal)]` form (`btree_csr.silica`) provides equivalent functionality to the already-complete `CsrBTreeSet` (`btree_set_csr.silica`). Implementing a second module would be redundant at this stage. Defer until a concrete use-case requires a separate `btree_csr.silica` module distinct from `btree_set_csr.silica`.
+- Trial covers: new-key insert, replace-value insert, get found and not-found, validation pass, and immutability of original map.
 
 ## Phase 9 - Heaps
 
-Status note:
+Algorithm reference available:
 
-RegionBinaryHeap work has source and trial coverage already. The old completion row that marked `RegionBinaryHeap` as "Not started" was stale relative to `src/standard_data_structures/heap_binary_min.silica`, `src/standard_data_structures/heap_binary_max.silica`, and `trials/heap_addition/Makefile`.
+The `.bak` copies of `heap_binary_min.silica` and `heap_binary_max.silica` preserve binary min/max heap and priority/value heap algorithms. The clean rewrite must expose heap behavior through constructor records and `Heap` / `PriorityQueue` traits.
 
-### Step 9.1 - Generate RegionBinaryMinHeapInt64 — Implemented
-
-Authority:
-
-- `balanced_tree_and_heap_design.md` RegionBinaryHeap sections
-
-Actions:
-
-1. ✅ Generate the binary heap type string.
-2. ✅ Generate empty or allocate construction.
-3. ✅ Generate push.
-4. ✅ Generate peek.
-5. ✅ Generate pop.
-6. ✅ Generate validation of heap ordering and capacity metadata.
-
-Exit criteria:
-
-- ✅ `heap_binary_min_empty`, `heap_binary_min_push_pop`, and `heap_binary_min_validate_invalid` cover empty heap, push, peek, pop, and validation for `RegionBinaryMinHeap[int64, mem(normal)]`.
-
-### Step 9.2 - Generate RegionBinaryHeap Variants Permitted By Design — Implemented
+### Step 9.1 - Generate RegionBinaryMinHeap
 
 Authority:
 
@@ -868,13 +763,32 @@ Authority:
 
 Actions:
 
-1. ✅ Generate only variants explicitly described by the design: `RegionBinaryMaxHeap[int64, mem(normal)]` and `RegionBinaryMinHeap[int64, int64, mem(normal)]`.
-2. ✅ Reuse the same validation structure.
-3. ✅ Add trials for each generated variant.
+1. Generate the binary heap type string.
+2. Generate empty or allocate construction with a `compare_item` constructor function record.
+3. Generate push.
+4. Generate peek.
+5. Generate pop.
+6. Generate validation of heap ordering and capacity metadata.
 
 Exit criteria:
 
-- ✅ `heap_binary_max_push_pop` and `heap_binary_min_priority_push_pop` cover the generated binary heap variants without changing the documented heap model.
+- Trials cover empty heap, push, peek, pop, and validation for `RegionBinaryMinHeap[ItemType, mem(normal)]`.
+
+### Step 9.2 - Generate RegionBinaryHeap Variants Permitted By Design
+
+Authority:
+
+- `balanced_tree_and_heap_design.md` RegionBinaryHeap sections
+
+Actions:
+
+1. Generate only variants explicitly described by the design: max heaps and priority/value heaps.
+2. Reuse the same validation structure.
+3. Add trials for each generated variant.
+
+Exit criteria:
+
+- Trials cover generated binary heap variants without changing the documented heap model.
 
 ### Step 9.3 - Generate RegionDaryHeap Only After Binary Heap Stability — Pending
 
@@ -922,12 +836,12 @@ Actions:
 1. Add trials covering every signed integer width supported as payload by the design documents (`**int8**`, `**int16**`, `**int32**`, `**int64**`, and any other signed widths the silica spec permits in generated buffer/list slots).
 2. For each width, exercise at least one graph node-data or edge-data slot, one tree/map key or value slot, and one heap element slot where that width is a legal payload.
 3. Verify round-trip storage and retrieval through generated get/set, peek, or contains helpers.
-4. Keep the signed payload suite under the naming pattern `trials/std_data_structures_payload_signed_addition/`; refresh any older `payload_signed_addition` / signed btree trials after int8/int16/int32 duplicate exports are removed, using context-typed `Collectable` key/value flows or the remaining canonical int64 API.
+4. Keep the signed payload suite under the naming pattern `trials/std_data_structures_payload_signed_addition/`; use constructor function records to witness key/value/element types.
 
 Exit criteria:
 
 - Every signed integer width named in the design documents has at least one passing positive trial per applicable structure family.
-- Signed btree payload trials are either updated to the single-export `Collectable` API or explicitly narrowed to the canonical supported int64 map surface; no trial depends on removed int8/int16/int32 public btree exports.
+- Signed btree payload trials use the trait/constructor-record API and do not rely on per-width public btree exports.
 
 ### Step 10.2 - Unsigned Integer Payload Trials
 
@@ -1251,8 +1165,7 @@ Exit criteria:
 
 Authority:
 
-- [silica-specification.md](../silica-specification.md) §8.2.4
-- [list_implementation_design.md](../list_implementation_design.md) §3.5, §7
+- [data_structures_as_traits.md](data_structures_as_traits.md)
 - `graph_representation_design.md` section 8.4
 - `btree_set_design.md` sections 8 and 9.5
 - `balanced_tree_and_heap_design.md` naming and generator requirement sections
@@ -1261,11 +1174,11 @@ Actions:
 
 1. Verify **module filenames** follow design rules (representation + directedness only for graphs; no payload type or memory space in the module name).
 2. Verify generated **function names** follow design naming rules.
-3. Verify **preferred** call sites use typed structure values without brackets; verify **optional** explicit brackets still work where documented; verify `List[Collectable, S]` resolution matches typed `empty` / first-argument overload rules (silica-spec §8.2.4).
-4. Verify graph preferred call sites include `graph_adj_directed@empty(3)` without `[mem(normal)]` once graph overloads are collapsed to one export per operation.
-5. Verify stdlib modules do **not** duplicate the same `operation` per primitive width in one file (legacy `graph_adj_directed` and `btree_nodeid` int8/int16/int32 blocks must be removed or gated behind migration).
+3. Verify constructors use inline function records whose field signatures agree with the declared collection type.
+4. Verify behavior trait calls dispatch from concrete generated receiver values.
+5. Verify stdlib modules do **not** duplicate the same `operation` per primitive width in one file.
 6. Verify helper emission order follows design requirements.
-7. Verify no generated module introduces custom Silica type declarations.
+7. Verify no generated module introduces custom Silica type declarations or named constructor-record aliases.
 Exit criteria:
 
 - Snapshot tests cover representative generated names and emission order.
@@ -1279,7 +1192,7 @@ Authority:
 Actions:
 
 1. Add implementation-status notes to this plan as families are completed.
-2. Design documents now include **`Collectable` placeholder** methodology (silica-spec §8.2.4; graph §2.11; balanced tree §2.6; btree set §4.1). Update this plan if implementation reveals a mismatch; do not revert to per-width duplicate exports in stdlib modules.
+2. Design documents now include the **trait-oriented constructor-record** methodology (`data_structures_as_traits.md`; graph §2.11; balanced tree §2.6; btree set §4.1). Update this plan if implementation reveals a mismatch; do not revert to per-width duplicate exports in stdlib modules.
 3. Link completed trial names from this plan.
 
 Exit criteria:
@@ -1289,21 +1202,19 @@ Exit criteria:
 ## Completion Tracking
 
 
-| Area                        | Status                            | Notes                                                                                                                                                                                                                                                                                                                                                                                             |
-| --------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Module filename rename      | Complete                          | Phase 0.0 — graph integrate green; btree integrate green                                                                                                                                                                                                                                                                                                                                          |
-| Shared generator foundation | Partial                           | Phase 0.1–0.3 complete; **Phase 0.4 complete** — shallow Collectable in type checker; `qualified_call_mangler` + `overload_mangle` linkage aligned (export `.global` slugs, sequence env, local/unqualified mangling, arity fallback)                                                                                                                                                             |
-| Collectable placeholder (0.4) | Complete                      | `list_collectable_context`, `graph_adj_directed_context_trial` (`@empty[mem(normal)]` / `@validate[mem(normal)]` / `@add_edge_slot0[mem(normal)]`), `btree_nodeid_context_trial` (`@empty()` / `@insert` / `@get` without payload brackets); `btree_nodeid` int64-only exports; E2016 on unresolved list Collectable (`trial_negative_list_collectable_unresolved`) |
-| NodeIdAdjacencyGraph        | Complete                          | Phase 1 — `**graph_adj_directed.silica**`, `**graph_adj_undirected.silica**`; trials `graph_adj_directed_unweighted_trial`, `graph_adj_directed_int64_trial`, `graph_adj_undirected_trial`                                                                                                                                                                                                        |
-| CompressedSparseRowGraph    | Complete                          | Phase 2 — `**graph_csr_directed.silica**`; trials `graph_csr_directed_unweighted_trial`, `graph_csr_directed_int64_trial`                                                                                                                                                                                                                                                                         |
-| DenseMatrixGraph            | Complete                          | Phase 3 — `**graph_dense_directed.silica**`; trials `graph_dense_directed_unweighted_trial`, `graph_dense_directed_int64_trial`                                                                                                                                                                                                                                                                   |
-| DenseBitsetGraph            | Deferred with documented fallback | Phase 3 — graph design §6.4 says to generate DenseBitset only when bitwise `                                                                                                                                                                                                                                                                                                                      |
-| Graph algorithms            | Complete                          | Phase 4 — trials `graph_reachability_adj_directed_trial`, `graph_reachability_csr_directed_trial`, `graph_degree_summary_csr_directed_trial`                                                                                                                                                                                                                                                      |
-| NodeIDBTreeSet              | Complete                          | Phase 5 — `**btree_set_nodeid.silica`**; `btree_set_addition` integrate                                                                                                                                                                                                                                                                                                                           |
-| CsrBTreeSet                 | Complete (steps 6.1–6.4)          | Phase 6 steps 6.1–6.4 done: `empty`, `from_static_sorted`, `contains`, `validate`, `insert` all exported; 3 trials pass. Step 6.5 (NodeIDBTreeSet→CsrBTreeSet conversion) deferred; `to_csr` in `btree_set_nodeid.silica` stubbed to return `btree_set_csr@empty`                                                                                                                                 |
-| NodeIDBTreeMap              | Refactor started (int64 canonical)  | Phase 7 — `**btree_nodeid.silica**` deduped to int64 `empty`/`insert`/`get` exports; context trial uses unbracketed `@empty()` / `@insert` / `@get`; signed-width payload trials need refresh or Collectable key placeholders                                                                                                                                                                    |
-| CsrBTreeMap                 | Complete (steps 8.1–8.2)          | Phase 8 — `**btree_csr_map.silica**`; `btree_csr_map_insert` trial: `empty`, `from_static_sorted`, `contains`, `get`, `insert` (replace_value policy), `validate` exported; step 8.3 (`btree_csr.silica` set-only form) deferred as redundant with `btree_set_csr.silica`                                                                                                                         |
-| RegionBinaryHeap            | Implemented (steps 9.1–9.2)       | Phase 9 — `**heap_binary_min.silica**` exports `empty`, `len`, `is_empty`, `is_full`, `peek`, `push`, `pop`, `validate`, plus the priority/value variant; `**heap_binary_max.silica**` exports the max-heap API; `heap_addition` trials cover min, max, priority/value, and invalid validation. Full standard-data-structures build-list wiring and rebuilt-compiler verification remain pending. |
-| RegionDaryHeap              | Not started                       | Phase 9.3 — registry and inline type expansion mention `RegionDaryMinHeap[int64, mem(normal)]`, but no d-ary heap module or d-ary heap trials have been generated yet.                                                                                                                                                                                                                            |
-| Cross-structure audit       | Not started                       | Phase 10 — Payload coverage (Steps 10.1–10.23), immutability (10.24), region ownership (10.25), naming (10.26), documentation (10.27)                                                                                                                                                                                                                                                             |
-
+| Area                        | Status          | Notes                                                                                                                                                                                                 |
+| --------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shared generator foundation | Partial         | Phase 0.1–0.3 foundation exists; Phase 0.4 trait-constructor-record work is the next blocking task.                                                                                                    |
+| Trait constructor records   | Not started     | New Phase 0.4 acceptance target from `data_structures_as_traits.md`: standard traits, inline constructor function-record checking, captured function preservation, and generated trait impl dispatch. |
+| NodeIdAdjacencyGraph        | Rewrite pending | `.bak` files preserve bootstrap adjacency algorithms and trials; clean `.silica` rewrite must implement constructor records and graph traits.                                                         |
+| CompressedSparseRowGraph    | Rewrite pending | `.bak` files preserve CSR construction, validation, and inspection algorithms; clean rewrite must expose trait-oriented graph behavior.                                                                |
+| DenseMatrixGraph            | Rewrite pending | `.bak` files preserve dense graph construction and inspection algorithms; clean rewrite must use constructor records and graph traits.                                                                 |
+| DenseBitsetGraph            | Deferred        | Generate only when required bitwise operations are available; dense matrix remains the documented fallback.                                                                                            |
+| Graph algorithms            | Rewrite pending | Existing reachability and degree-summary algorithms are reference material; reattach them through graph trait behavior after graph representations are rebuilt.                                       |
+| NodeIDBTreeSet              | Rewrite pending | `.bak` files preserve list-backed set insertion, membership, duplicate handling, and validation algorithms.                                                                                            |
+| CsrBTreeSet                 | Rewrite pending | `.bak` files preserve static construction, contains, validation, and functional insert algorithms.                                                                                                     |
+| NodeIDBTreeMap              | Rewrite pending | `.bak` files preserve NodeID map insert/get/replace and validation algorithms.                                                                                                                         |
+| CsrBTreeMap                 | Rewrite pending | `.bak` files preserve CSR map construction, search, insert, replace, and validation algorithms.                                                                                                        |
+| RegionBinaryHeap            | Rewrite pending | `.bak` files preserve binary min/max heap and priority/value heap algorithms.                                                                                                                          |
+| RegionDaryHeap              | Not started     | Registry and inline type expansion mention `RegionDaryMinHeap[int64, mem(normal)]`, but no d-ary heap module or d-ary heap trials have been generated yet.                                           |
+| Cross-structure audit       | Not started     | Phase 10 — Payload coverage (Steps 10.1–10.23), immutability (10.24), region ownership (10.25), naming (10.26), documentation (10.27).                                                               |

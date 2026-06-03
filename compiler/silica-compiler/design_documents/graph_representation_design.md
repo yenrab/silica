@@ -10,9 +10,9 @@ This document specifies graph representations that can be generated for Silica c
 - Region handles, region references, and buffers: `region(R, Space)`, `ref(R, Space, T)`, `buf(R, Space, T, N)`
 - `sequence proc[mem(Space)] ... produces pure ... end` for graph allocation and mutation during construction
 
-Silica has no user-defined custom type names. Graph names in this document are therefore **design/generator names** using **`List`-aligned bracket syntax** (§2.11), not Silica type aliases. Bracket forms identify **registry keys** and **function-call instantiation** (like **`empty[int64, normal]()`** for lists). **Emitted module filenames** use **representation + directedness only** (§2.2, §8.4) — for example `graph_adj_directed.silica`, not `graph_adj_directed_int64_mem_normal.silica`. Payload types and **`mem(Space)`** appear on **function calls**, not in module names. Emitted Silica type positions must repeat the full inline structural type (or expand a compiler-known shorthand to that inline type).
+Silica has no user-defined custom type names. Graph names in this document are therefore **design/generator names**, not Silica type aliases. The Phase 1 standard-structure model is trait-oriented: generated graph representations implement graph behavior traits, and generated constructors take inline typed function records as described in [Phase1_TODOs/data_structures_as_traits.md](Phase1_TODOs/data_structures_as_traits.md). **Emitted module filenames** use **representation + directedness only** (§2.2, §8.4) — for example `graph_adj_directed.silica`, not `graph_adj_directed_int64_mem_normal.silica`. Node id type, payload types, and **`mem(Space)`** are fixed by the declared collection type and checked through constructor function-record fields. Emitted Silica type positions must repeat the full inline structural type (or expand a compiler-known shorthand to that inline type).
 
-**Payload model:** topology uses **`int64` node ids**; optional vertex and edge attributes use concrete **`Collectable`** types in list slots or parallel buffers (§2.3–§2.6). Generated graphs are **immutable values** with **uniform inline types** (§2.7–§2.8).
+**Typing model:** public graph behavior is generic in **`NodeIdType`** and **`EdgePayloadType`**. Dense physical slots, counts, capacities, and CSR offsets may remain **`int64`**, but user-visible node ids and edge payloads are not assumed to be `int64`. Generated graphs are **immutable values** with **uniform inline types** (§2.7–§2.8).
 
 This document covers three primary families:
 
@@ -26,15 +26,15 @@ The families correspond to the practical graph forms that fit Silica today while
 
 ### 2.1 Node identity
 
-All graph families use `int64` node ids. Node ids are values, not pointers.
+Graph behavior uses an explicit **`NodeIdType`**. Node ids are values, not pointers. They are compared by the constructor record's `compare_node: fn(NodeIdType, NodeIdType) -> atom` field.
 
-Recommended invariant:
+For the bootstrap physical representations already implemented, `NodeIdType = int64` and the recommended dense-id invariant is:
 
 ```text
 0 <= node_id < node_count
 ```
 
-Generators should prefer contiguous node ids because they make CSR and dense graphs straightforward and make adjacency-list validation cheap.
+Generators should prefer contiguous dense ids when they can because they make CSR and dense graphs straightforward and make adjacency-list validation cheap. When a graph exposes non-`int64` node ids, the representation must either store those ids directly or maintain a generated mapping between `NodeIdType` values and internal dense `int64` slots.
 
 If source data uses non-contiguous ids, generate a normalization pass outside the graph representation:
 
@@ -43,7 +43,7 @@ external id -> dense int64 id
 dense int64 id -> external id
 ```
 
-Until a map type exists, the normalization table should be a sorted `List[{ external_id: int64, dense_id: int64 }, S]` for small inputs or a generated direct buffer when the external id range is bounded.
+Until a map type exists, the normalization table should be a sorted `List[{ external_id: NodeIdType, dense_id: int64 }, S]` for small inputs or a generated direct buffer when the external id range is bounded and `NodeIdType` supports that encoding.
 
 ### 2.2 Directedness
 
@@ -69,59 +69,82 @@ graph_bitset_directed
 graph_bitset_undirected
 ```
 
-Do **not** encode payload type, weightedness, or memory space in the module name. Payload and space are fixed by each **graph value's inline type** (§2.11), aligned with **`List[Collectable, S]`** resolution: one module per representation family; callers write `graph_adj_directed@empty()` under a typed binding or `graph_adj_directed@add_edge(g, ...)` with `g` already typed.
+Do **not** encode node id type, payload type, weightedness, or memory space in the module name. These are fixed by each **graph value's inline type** and by the constructor function record (§2.11): one module per representation family; callers write `graph_adj_directed@empty({ ... })` under an explicitly typed graph binding.
 
 ### 2.3 Edge and node payload
 
-Topology always uses **`int64` node ids** (§2.1). **User payload** on nodes and edges uses types that implement the language **`Collectable`** trait ([silica-specification.md](silica-specification.md) §8.2.4). There is no separate graph storage marker trait.
+Public topology uses **`NodeIdType`** (§2.1). **User payload** on nodes and edges uses the concrete types declared by the graph collection type. There is no separate graph storage marker trait; behavior is provided by graph traits and generated representation impls.
 
 Use separate representation names when edge payload shape differs. This avoids nullable or variant edge payloads in tight traversal code.
 
-| Name suffix | Edge topology | Edge payload (`EdgeData`) |
+| Name suffix | Edge topology | Edge payload (`EdgePayloadType`) |
 |-------------|---------------|---------------------------|
 | `Unweighted` | Neighbor id only. | None (no parallel payload buffer). |
-| `int64` edge payload | Neighbor id in `neighbors`. | `int64` in parallel `edge_data` (or list slot). Design name: `…[int64, mem(S)]`. |
+| Edge payload | Neighbor id in `neighbors`. | `EdgePayloadType` in parallel `edge_data` (or list slot). Bootstrap examples use `int64`. |
 
-Generators may emit other **`EdgeData`** and **`NodeData`** specializations (any concrete **`Collectable`** inline type). The first edge-payload family uses **`EdgeData = int64`**, written **`NodeIdAdjacencyGraphDirected[int64, mem(S)]`** (§2.11) rather than a separate weightedness suffix.
+Generators may emit other **`EdgePayloadType`** and **`NodeDataType`** specializations. The first edge-payload family uses **`EdgePayloadType = int64`** as a bootstrap specialization rather than a separate weightedness suffix.
 
-Optional **`NodeData: Collectable`** on each vertex is stored in adjacency node records and, for CSR/dense families, in a parallel **`node_data`** buffer indexed by node id.
+Optional **`NodeDataType`** on each vertex is stored in adjacency node records and, for CSR/dense families, in a parallel **`node_data`** buffer indexed by internal dense slot.
 
-### 2.4 `Collectable` payloads and API operands
+### 2.4 Constructor function records and API operands
 
-Generated graph APIs use **`Collectable`** only for **stored user payload** — node attributes, edge weights/labels, and dense cell values — not for structural metadata.
+Generated graph constructors take an inline function record that witnesses graph-relevant types and behavior.
 
-**`Collectable` operands (abstract generator signatures):**
+Directed graph constructor record:
 
-- **`NodeData`** — `set_node_data`, `get_node_data`, node record **`data`** fields.
-- **`EdgeData`** — `add_edge` edge payload, `edge_data_at`, weighted neighbor records, dense **`cell_data`**.
+```text
+{
+    compare_node: fn(NodeIdType, NodeIdType) -> atom,
+    compare_edge: fn(EdgePayloadType, EdgePayloadType) -> atom,
+    edge_target: fn(EdgePayloadType) -> NodeIdType
+}
+```
 
-**Plain types (not `Collectable`):**
+Weighted graph records add the weight comparator when weight is separate from the edge payload:
 
-- **`int64` node ids** — endpoints, lookup keys, matrix indices (`from_id`, `to_id`, `id`).
+```text
+{
+    compare_node: fn(NodeIdType, NodeIdType) -> atom,
+    compare_edge: fn(EdgePayloadType, EdgePayloadType) -> atom,
+    compare_weight: fn(WeightType, WeightType) -> atom,
+    edge_target: fn(EdgePayloadType) -> NodeIdType
+}
+```
+
+The compiler checks these fields against the declared graph collection type. Comparator results are atoms with valid values `:less`, `:equal`, and `:greater`.
+
+**Typed operands (abstract generator signatures):**
+
+- **`NodeIdType`** — endpoints and lookup keys.
+- **`NodeDataType`** — `set_node_data`, `get_node_data`, node record **`data`** fields.
+- **`EdgePayloadType`** — `add_edge` edge payload, `edge_data_at`, weighted neighbor records, dense **`cell_data`**.
+- **`WeightType`** — weighted graph values when stored separately from edge payload.
+
+**Plain structural types:**
+
 - **`node_count`**, **`edge_count`**, buffer capacities, generator constants, region handles.
+- Dense physical slots, CSR offsets, and internal buffer indices.
 
-**Emitted APIs** use **`Collectable`** in payload positions (`NodeData`, `EdgeData`, `List[Collectable, S]` slots) as a **compile-time placeholder** ([silica-specification.md](silica-specification.md) §8.2.4). The compiler **resolves** each placeholder to a **concrete** inline type per graph value flow from the declared graph type, parameters, or `let` bindings—not from runtime trait erasure. Design-level prose may still use names **`NodeData`** / **`EdgeData`**; in generated Silica, payload fields may spell **`Collectable`** until resolution. After resolution, the checker and codegen see concrete types (for example `int64` or `(int32, string)`), identical to a fully spelled graph record.
-
-Lists and buffers that hold payload values require **`T: Collectable`**, matching [list_implementation_design.md](list_implementation_design.md) §4 and [silica-specification.md](silica-specification.md) §8.2.4 (including **`uint8`–`uint64`**).
+Design-level prose may still use names **`NodeDataType`** / **`EdgePayloadType`**. In generated Silica, fields and function parameters use concrete inline types established by the declared collection type and constructor function record.
 
 ### 2.5 Topology vs payload storage
 
 | Layer | CSR / dense | Adjacency |
 |-------|-------------|-----------|
-| **Topology** | `offsets`, `neighbors`, `present` / bitset — **`int64` only** | `neighbors: List[int64, S]` or `List[{ to: int64, ... }, S]` |
+| **Topology** | `offsets`, `present` / bitset — **`int64` physical slots**; `neighbors` may store dense slots or `NodeIdType` values depending on representation | `neighbors: List[NodeIdType, S]` or `List[{ edge: EdgePayloadType, ... }, S]` |
 | **Node payload** | `node_data: buf(R, S, NodeData, N)` | `data: NodeData` on each node record |
-| **Edge payload** | `edge_data: buf(R, S, EdgeData, M)` parallel to `neighbors` | `{ to: int64, data: EdgeData }` or weight field in neighbor record |
+| **Edge payload** | `edge_data: buf(R, S, EdgePayloadType, M)` parallel to `neighbors` | `{ to: NodeIdType, data: EdgePayloadType }` or weight field in neighbor record |
 
 Unweighted graphs omit **`edge_data`**. Graphs without vertex attributes omit **`node_data`** or use a generator **`none`** node-data mode.
 
-Construction may build from **`List[{ from: int64, to: int64, data: EdgeData }, S]`** (or unweighted edge lists), then **freeze** into CSR/dense buffers (§4.5, §2.7).
+Construction may build from **`List[EdgePayloadType, S]`** when `edge_target` extracts the destination, or from **`List[{ from: NodeIdType, edge: EdgePayloadType }, S]`** when source id is not implicit, then **freeze** into CSR/dense buffers (§4.5, §2.7).
 
-### 2.6 Collectable buffer encoding
+### 2.6 Payload buffer encoding
 
-**`buf(R, S, T, N)`** where **`T: Collectable`** uses the **same per-element encoding as `List[T, S]`** ([list_implementation_design.md](list_implementation_design.md) §4.1–§4.2, §9.2):
+**`buf(R, S, T, N)`** where **`T`** is a payload type uses the **same per-element encoding as `List[T, S]`** ([list_implementation_design.md](list_implementation_design.md) §4.1–§4.2, §9.2):
 
 - Scalars and fixed packed compounds → **inline** in the buffer cell.
-- Non-primitive **`Collectable`** values (strings, nested lists, structs with indirect fields) → **region indirection** inside the cell, with payload objects allocated under the graph's **owning region**.
+- Non-primitive values (strings, nested lists, structs with indirect fields) → **region indirection** inside the cell, with payload objects allocated under the graph's **owning region**.
 
 Every graph value that contains buffers must carry the owning **`region(R, S)`** (§4.8). Payload and topology buffers share one region bundle.
 
@@ -148,13 +171,14 @@ The graph type returned by **`empty`**, **`from_static_edges`**, or **`from_edge
 
 ### 2.8 Type checking
 
-Type safety for graph payload **reads and writes** is enforced through **structural typing** on the graph record ([silica-specification.md](silica-specification.md) §8.2.2), not through a separate graph marker trait.
+Type safety for graph payload **reads and writes** is enforced through **structural typing** on the graph record ([silica-specification.md](silica-specification.md) §8.2.2) plus constructor function-record checking. Graph behavior itself is exposed through standard graph traits.
 
 | Direction | Call site | Checked against |
 |-----------|-----------|-----------------|
 | **Write payload** | `add_edge(g, …, data)`, `set_node_data(g, id, data)` | **`EdgeData`** / **`NodeData`** fields embedded in **`g`**'s inline type |
 | **Read payload** | `get_node_data(g, id).value`, `edge_data_at(g, slot).value` | Return **`value`** type extracted from the **`graph`** parameter type of the generated helper |
-| **Topology** | `has_edge(g, from_id, to_id)`, `neighbors(g, id)` | **`from_id`**, **`to_id`**, **`id`** are **`int64`**; graph argument matches the helper's full inline graph parameter |
+| **Topology** | `has_edge(g, from_id, to_id)`, `neighbors(g, id)` | **`from_id`**, **`to_id`**, **`id`** have **`NodeIdType`**; graph argument matches the helper's full inline graph parameter |
+| **Constructor record** | `graph_adj_directed@empty({ ... })` | record fields have required function types, such as `compare_node: fn(NodeIdType, NodeIdType) -> atom` and `edge_target: fn(EdgePayloadType) -> NodeIdType` |
 
 Generated helpers take the **full inline graph type** as their first parameter. The compiler verifies that the **`graph`** argument is structurally identical to that parameter and that payload bindings match the **`NodeData`** / **`EdgeData`** slots declared in the graph record (for example `node_data: buf(R, S, NodeData, N)`).
 
@@ -210,40 +234,46 @@ degree summaries
 
 For the first generated code pass, prioritize construction plus inspection. Algorithms can then be generated over a stable traversal API.
 
-### 2.11 Payload typing and call syntax (`List`-aligned)
+### 2.11 Constructor records, traits, and call syntax
 
-Standard generated graph families align with **`List[ElementType, mem(Space)]`** ([list_implementation_design.md](list_implementation_design.md) §3.5; [silica-specification.md](silica-specification.md) §8.2.4):
+Standard generated graph families follow [Phase1_TODOs/data_structures_as_traits.md](Phase1_TODOs/data_structures_as_traits.md):
 
-- **Preferred (stdlib / generated modules):** **one** exported function per operation (e.g. `export add_edge/3`); formals use the **full inline graph record** with **`Collectable`** payload placeholders in `node_data`, `edge_data`, and `List[Collectable, S]` fields. **Call sites** omit bracket specialization when the graph value’s type is known—e.g. `g: <full record with EdgeData = int64> <- graph_adj_directed@empty()`, then `graph_adj_directed@add_edge(g, from, to, weight)`.
-- **Optional (explicit):** bracket parameters at call sites list concrete **`Collectable`** payload types, then **`mem(Space)`** as the **final** slot—e.g. `graph_adj_directed@add_edge[int64, mem(normal)](g, from_id, to_id, weight)` when the programmer wants explicit instantiation.
-- The **representation family name** (for example `NodeIdAdjacencyGraphDirected`) stays outside any brackets. **Directedness** is part of the family name, not a bracket slot.
-- **Registry / design names** may still use bracket notation (`NodeIdAdjacencyGraphDirected[int64, mem(S)]`) for documentation and generator keys; that is not a requirement to duplicate exported functions per payload type in one module.
+- **Preferred constructors:** one exported constructor per arity whose first argument is an inline function record. Example: `graph_adj_directed@empty({ compare_node: compare_node_id, compare_edge: compare_edge, edge_target: edge_to })` under an explicitly typed graph binding.
+- **Generated updates:** representation module operations such as `add_edge` preserve the compare/extract functions captured at construction.
+- **Behavior traits:** standard operations such as `node_count`, `edge_count`, `neighbors`, `has_edge`, and `reachable` are available through graph traits (`DirectedGraph@neighbors(g, node_id)`) and dispatch from the concrete generated receiver value.
+- The **representation family name** (for example `NodeIdAdjacencyGraphDirected`) stays outside any function-record fields. **Directedness** is part of the family name, not a type argument.
+- **Registry / design names** may still use bracket notation (`NodeIdAdjacencyGraphDirected[NodeIdType, EdgePayloadType, mem(S)]`) for documentation and generator keys; that is not a requirement to duplicate exported functions per payload type in one module.
 - There is no user-defined generic polymorphism (silica-spec §1.2). The compiler **specializes** each value flow to concrete `NodeData` / `EdgeData` before codegen.
 
-| Graph payload | Registry / explicit bracket form | Context-resolved call (preferred) |
-|---------------|----------------------------------|----------------------------------|
-| Unweighted, no vertex attributes | `[mem(S)]` | `g: <unweighted record> <- graph_adj_directed@empty()` then `add_edge(g, …)` |
-| Edge payload only | `[EdgeData, mem(S)]` | `g` typed with concrete `EdgeData`; `add_edge(g, …, data)` |
-| Vertex and edge payload | `[NodeData, EdgeData, mem(S)]` | both payloads fixed by `g`'s type |
+| Graph shape | Registry form | Constructor record fields |
+|-------------|---------------|----------------------------|
+| Unweighted, no vertex attributes | `[NodeIdType, mem(S)]` | `compare_node` |
+| Edge payload only | `[NodeIdType, EdgePayloadType, mem(S)]` | `compare_node`, `compare_edge`, `edge_target` |
+| Vertex and edge payload | `[NodeIdType, NodeDataType, EdgePayloadType, mem(S)]` | `compare_node`, `compare_edge`, `edge_target`, plus node-data functions when required |
 
 **Not in brackets:** region id **`R`**, CSR/dense **buffer capacities** (`N_PLUS_ONE`, `M`, `N_TIMES_N`, `WORD_COUNT`), and runtime topology flags. Those remain separate generator inputs (§8.1).
 
-The first edge-payload trial family uses **`EdgeData = int64`**.
+The first edge-payload trial family uses **`EdgePayloadType = int64`**.
 
 **Generated operation calls:**
 
 ```text
-graph_adj_directed@empty()
+graph_adj_directed@empty({ compare_node: compare_node_id, compare_edge: compare_edge, edge_target: edge_target })
 graph_adj_directed@add_edge(g, from_id, to_id)
 graph_csr_directed@has_edge(g, from_id, to_id)
 graph_csr_directed@weight_at(g, slot)
 ```
 
-Explicit bracket forms remain valid when needed:
+Constructor examples:
 
 ```text
-graph_adj_directed@empty[mem(normal)]()
-graph_adj_directed@add_edge[int64, mem(normal)](g, from_id, to_id, weight)
+g: DirectedGraph[string, Edge, mem(normal)] <- graph_adj_directed@empty({
+    compare_node: compare_string,
+    compare_edge: compare_edge,
+    edge_target: edge_target
+});
+g2 <- graph_adj_directed@add_edge(g, "root", { to: "leaf", label: :walk });
+DirectedGraph@has_edge(g2, "root", "leaf")
 ```
 
 The **module** name (`graph_adj_directed`, `graph_csr_directed`, …) identifies the representation family (§2.2). **Do not** repeat the module name in the function identifier after `@`. **Exports** use short operation verbs and arity only (`export empty/1`, `export add_edge/3`, …), not one export line per payload spelling.
@@ -274,7 +304,7 @@ Avoid it when:
 Design name:
 
 ```text
-NodeIdAdjacencyGraphDirected[mem(S)]
+NodeIdAdjacencyGraphDirected[NodeIdType, mem(S)]
 ```
 
 Silica inline shape (no vertex attributes):
@@ -285,15 +315,15 @@ Silica inline shape (no vertex attributes):
     edge_count: int64,
     nodes: List[
         {
-            id: int64,
-            neighbors: List[int64, S]
+            id: NodeIdType,
+            neighbors: List[NodeIdType, S]
         },
         S
     ]
 }
 ```
 
-With optional **`NodeData: Collectable`** vertex attributes:
+With optional **`NodeDataType`** vertex attributes:
 
 ```silica
 {
@@ -301,16 +331,16 @@ With optional **`NodeData: Collectable`** vertex attributes:
     edge_count: int64,
     nodes: List[
         {
-            id: int64,
-            data: NodeData,
-            neighbors: List[int64, S]
+            id: NodeIdType,
+            data: NodeDataType,
+            neighbors: List[NodeIdType, S]
         },
         S
     ]
 }
 ```
 
-Example concrete shape for `normal`:
+Bootstrap concrete shape for `NodeIdType = int64` and `normal`:
 
 ```silica
 {
@@ -404,7 +434,7 @@ fn empty[mem(normal)](
 }
 ```
 
-Add edge (topology endpoints are **`int64`**; optional edge payload is **`EdgeData: Collectable`**):
+Bootstrap add edge (`NodeIdType = int64`; optional edge payload is concrete `EdgePayloadType`):
 
 ```silica
 fn add_edge[mem(normal)](
@@ -432,17 +462,17 @@ Weighted or attributed add edge prepends `{ to: to_id, data: edge_data }` (or `{
 
 ### 3.6 Traversal strategy
 
-Generated traversal should expose neighbor lists directly. The **node id** operand that selects whose neighbors to return is an **`int64`** topology index:
+Generated traversal should expose neighbor lists directly. The **node id** operand that selects whose neighbors to return is **`NodeIdType`**; bootstrap int64 modules use an `int64` topology index:
 
 ```text
-neighbors(graph, id: int64) -> List[int64, S]
-weighted_neighbors(graph, id: int64) -> List[{ to: int64, data: EdgeData }, S]
-get_node_data(graph, id: int64) -> { ok: bool, value: NodeData }
+neighbors(graph, id: NodeIdType) -> List[NodeIdType, S]
+weighted_neighbors(graph, id: NodeIdType) -> List[{ to: NodeIdType, data: EdgePayloadType }, S]
+get_node_data(graph, id: NodeIdType) -> { ok: bool, value: NodeDataType }
 ```
 
 Implementation scans `graph.nodes` until it finds `node.id == id`.
 
-`has_edge(graph, from_id: int64, to_id: int64)`:
+`has_edge(graph, from_id: NodeIdType, to_id: NodeIdType)`:
 
 1. `neighbors(graph, from_id)`
 2. scan list for `to_id`
@@ -459,22 +489,15 @@ has_edge: O(node_count + out_degree(from_id))
 The generator should emit one concrete family per:
 
 ```text
-directedness x weightedness x memory space
-```
-
-Function prefix format:
-
-```text
-graph_adj_<directedness>_<weightedness>_<space>_
+directedness x constructor-record/type family x memory space
 ```
 
 Examples:
 
 ```text
-graph_adj_directed@empty[mem(normal)]()
-graph_adj_directed@add_edge[mem(normal)](g, from_id, to_id)
-graph_adj_directed@neighbors[mem(normal)](g, id)
-graph_adj_undirected_add_edge[int64, mem(normal)](g, from_id, to_id, weight)
+graph_adj_directed@empty({ compare_node: compare_node, compare_edge: compare_edge, edge_target: edge_target })
+graph_adj_directed@add_edge(g, from_id, edge)
+DirectedGraph@neighbors(g, id)
 ```
 
 Do not generate a type alias. Repeat the inline structural type in each signature.
@@ -583,7 +606,7 @@ Silica inline shape (`EdgeData = int64`; **`weights`** is the **`edge_data`** bu
 }
 ```
 
-General **`EdgeData: Collectable`** uses field name **`edge_data`** instead of **`weights`** (§2.5).
+General **`EdgePayloadType`** uses field name **`edge_data`** instead of **`weights`** (§2.5).
 
 Invariant:
 
@@ -621,13 +644,13 @@ Input:
 
 ```text
 node_count: int64
-edges: List[{ from: int64, to: int64 }, S]
+edges: List[{ from: NodeIdType, to: NodeIdType }, S]
 ```
 
-For edge payload **`EdgeData: Collectable`**:
+For edge payload **`EdgePayloadType`**:
 
 ```text
-edges: List[{ from: int64, to: int64, data: EdgeData }, S]
+edges: List[{ from: NodeIdType, edge: EdgePayloadType }, S]
 ```
 
 Build steps:
@@ -757,7 +780,7 @@ Function prefix format:
 graph_csr_<directedness>_<operation>
 ```
 
-Examples (context-resolved calls — §2.11; brackets optional):
+Examples (constructor-record/trait-oriented calls — §2.11):
 
 ```text
 g: <CSR graph record> <- graph_csr_directed@from_static_edges(...)
@@ -783,7 +806,7 @@ index = from * node_count + to
 Use it when:
 
 - The graph is dense.
-- `has_edge(u: int64, v: int64)` must be O(1).
+- `has_edge(u: NodeIdType, v: NodeIdType)` must be O(1) after mapping to dense physical slots.
 - `node_count` is small enough that `node_count * node_count` storage is acceptable.
 - You need simple generated code and predictable indexing.
 
@@ -868,9 +891,9 @@ Static generation:
 
 1. Allocate `cells` or `present`/`weights`.
 2. Initialize all cells to `0`.
-3. For each edge, compute `index = from * node_count + to` (`from` and `to` are **`int64`** endpoints).
+3. For each edge, compute `index = from_slot * node_count + to_slot` (`from_slot` and `to_slot` are dense **`int64`** physical slots derived from `NodeIdType`).
 4. Write `1` to presence.
-5. For weighted or attributed graphs, write **`EdgeData`** to **`cell_data`** or **`weights`** ( **`Collectable`** payload ).
+5. For weighted or attributed graphs, write **`EdgePayloadType`** to **`cell_data`** or **`weights`**.
 6. For undirected graphs, also write the mirror edge when `from != to`.
 
 Generated constructor shape:
@@ -1050,11 +1073,13 @@ A graph code generator should take:
 ```text
 representation: adjacency | csr | dense_matrix | dense_bitset
 directedness: directed | undirected
-weightedness: unweighted | weighted_int64 | edge_data_collectable
-node_data_type: none | Collectable inline spelling
-edge_data_type: none | Collectable inline spelling
-cell_data_type: none | Collectable inline spelling   // dense only
+weightedness: unweighted | weighted | edge_payload
+node_id_type: concrete inline NodeIdType
+node_data_type: none | concrete inline NodeDataType
+edge_payload_type: none | concrete inline EdgePayloadType
+cell_data_type: none | concrete inline CellDataType   // dense only
 memory_space: normal | normal_writethrough | normal_noncacheable | atomic
+graph_functions: { compare_node: fn(NodeIdType, NodeIdType) -> atom, compare_edge: fn(EdgePayloadType, EdgePayloadType) -> atom, edge_target: fn(EdgePayloadType) -> NodeIdType }
 node_count_known: bool
 node_count: int64, when known
 edge_count: int64, when known
@@ -1062,11 +1087,11 @@ sorted_neighbors: bool
 module_name: string   // Silica module / filename stem: graph_<repr>_<directedness> (§8.4); no payload or mem suffix
 ```
 
-**`module_name`:** the representation family module stem — for example `graph_adj_directed`, `graph_csr_undirected`. Bracket payload and **`mem(Space)`** are **not** part of this string; they appear on exported function calls.
+**`module_name`:** the representation family module stem — for example `graph_adj_directed`, `graph_csr_undirected`. Node id type, payload types, and **`mem(Space)`** are **not** part of this string; they are fixed by the declared collection type and constructor function record.
 
-**Payload resolution:** each graph value flow resolves **`Collectable`** placeholders to the full concrete inline type for **`NodeData`**, **`EdgeData`**, or **`CellData`** (for example `int64` or `(int8, string, atom, { x: int64 })`). Generators emit **one module per representation family** (§2.2, §8.4) with **arity-only exports**; specialization comes from the typed graph variable or optional explicit brackets (§2.11), not a separate module filename per payload (§2.4, §2.8).
+**Type witness rule:** each graph value flow uses concrete inline types for **`NodeIdType`**, **`NodeDataType`**, **`EdgePayloadType`**, and **`CellDataType`** (for example `int64`, `string`, or `(int8, string, atom, { x: int64 })`). Generators emit **one module per representation family** (§2.2, §8.4) with **arity-only exports**; constructor function records witness and check the concrete types (§2.4, §2.8).
 
-**Registry key (bracket form, §2.11):** combine representation family, directedness, and bracket payload slots — for example `NodeIdAdjacencyGraphDirected[mem(normal)]` (unweighted, no vertex attributes), `NodeIdAdjacencyGraphDirected[int64, mem(normal)]` (`EdgeData = int64`), `CompressedSparseRowGraphUndirected[NodeData, EdgeData, mem(normal)]` when both payload buffers are present.
+**Registry key (bracket form, §2.11):** combine representation family, directedness, and type slots — for example `NodeIdAdjacencyGraphDirected[int64, mem(normal)]` (bootstrap unweighted), `NodeIdAdjacencyGraphDirected[string, Edge, mem(normal)]`, `CompressedSparseRowGraphUndirected[NodeIdType, NodeDataType, EdgePayloadType, mem(normal)]` when both payload buffers are present.
 
 CSR and dense buffer generators also require concrete buffer capacities:
 
@@ -1105,7 +1130,7 @@ Weighted or attributed edge modules should also emit:
 edge_data_at (or weight_at for EdgeData = int64), returning an explicit found flag plus payload
 ```
 
-For **`edge_data_at`**, **`get_node_data`**, **`add_edge`**, and **`set_node_data`**, payload operands and return **`value`** fields use the concrete **`EdgeData`** / **`NodeData`** embedded in the graph parameter type (§2.4, §2.8). Topology operands (**`from_id`**, **`to_id`**, **`id`**) are **`int64`**.
+For **`edge_data_at`**, **`get_node_data`**, **`add_edge`**, and **`set_node_data`**, payload operands and return **`value`** fields use the concrete **`EdgePayloadType`** / **`NodeDataType`** embedded in the graph parameter type (§2.4, §2.8). Topology operands (**`from_id`**, **`to_id`**, **`id`**) are **`NodeIdType`**.
 
 Recommended return shape for **`edge_data_at`** / **`weight_at`**:
 
@@ -1138,7 +1163,7 @@ has_edge_unchecked[mem(normal)]
 
 ### 8.4 Naming rules
 
-Generated names should be deterministic. **Design/registry names** use bracket syntax (§2.11). **Module names** and **operation names** follow **`List`** conventions: the module identifies the representation family; payload type and memory space are **bracket parameters on function calls**.
+Generated names should be deterministic. **Design/registry names** may use bracket syntax (§2.11). **Module names** and **operation names** identify the representation family and operation; node id type, payload type, and memory space are checked through the declared collection type and constructor function record.
 
 #### Module names
 
@@ -1163,7 +1188,11 @@ Import and call (short operation name after `@`; do not repeat the module name):
 
 ```text
 use graph_adj_directed;
-g: <inline graph type for unweighted mem(normal)> <- graph_adj_directed@empty();
+g: DirectedGraph[string, Edge, mem(normal)] <- graph_adj_directed@empty({
+    compare_node: compare_string,
+    compare_edge: compare_edge,
+    edge_target: edge_target
+});
 graph_adj_directed@add_edge(g, from_id, to_id)
 ```
 
@@ -1173,19 +1202,19 @@ graph_adj_directed@add_edge(g, from_id, to_id)
 
 **Exported function names** are short operation verbs inside the module file — for example `empty`, `add_edge`, `has_edge`, `validate`. They **do not** repeat the module name. **Export declarations** use arity only (`export add_edge/3`), not per-payload bracket suffixes.
 
-**Module-qualified call syntax (preferred):**
+**Module-qualified generated update syntax:**
 
 ```text
 <module>@<operation>(<args>)
 ```
 
-Context from the typed **`graph`** argument (and typed **`empty`** result) selects the specialization. Optional explicit brackets:
+**Trait behavior syntax:**
 
 ```text
-<module>@<operation>[<bracket-params>](<args>)
+<Trait>@<operation>(<receiver>, ...)
 ```
 
-**Internal** helpers stay module-local. **Linker symbols:** the compiler mangles by module, operation, arity, and resolved structure/payload types (for example suffix from the first-parameter graph record type) so one export name can link correctly.
+Constructor records check the typed **`graph`** binding and preserve comparator/extractor functions. **Internal** helpers stay module-local. **Linker symbols:** the compiler mangles by module, operation, arity, and resolved structure/payload types (for example suffix from the first-parameter graph record type) so one export name can link correctly.
 
 ### 8.5 Structural type emission
 
@@ -1225,7 +1254,7 @@ fn use_graph(g: { node_count: int64, edge_count: int64, ... }) -> int64 {
 
 ## 10. References
 
-- **`Collectable`** — language trait for list/buffer elements and graph payload types (§2.4; [silica-specification.md](silica-specification.md) §8.2.4).
+- **Constructor function record** — inline structural value whose function fields witness node id, edge payload, and weight types and preserve compare/extract behavior (§2.4; [Phase1_TODOs/data_structures_as_traits.md](Phase1_TODOs/data_structures_as_traits.md)).
 - **Immutability and type invariance** — §2.7; **type checking** — §2.8.
 - [silica-specification.md](silica-specification.md) - inline structural types, lists, regions, effects.
 - [list_implementation_design.md](list_implementation_design.md) - `List[T, S]` as region-backed storage and bundle model.
