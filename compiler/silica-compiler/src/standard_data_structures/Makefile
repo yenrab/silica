@@ -39,6 +39,20 @@ HEAP_BINARY_MAX_CONFIG_FILES := \
 HEAP_DARY_MIN_CONFIG_FILES := \
 	heap_dary_min.silica
 
+PHASE04_TRAIT_CONFIG_FILES := \
+	OrderedSet.silica \
+	OrderedMap.silica \
+	DirectedGraph.silica \
+	UndirectedGraph.silica \
+	WeightedGraph.silica \
+	Heap.silica \
+	PriorityQueue.silica \
+	Tree.silica \
+	SearchTree.silica \
+	btree_set_phase04.silica \
+	heap_phase04.silica \
+	graph_phase04.silica
+
 SILICA_CONFIG_FILES := \
 	$(BASE_CONFIG_FILES) \
 	$(BTREE_SET_CONFIG_FILES) \
@@ -46,7 +60,8 @@ SILICA_CONFIG_FILES := \
 	$(BTREE_CSR_MAP_CONFIG_FILES) \
 	$(HEAP_BINARY_MIN_CONFIG_FILES) \
 	$(HEAP_BINARY_MAX_CONFIG_FILES) \
-	$(HEAP_DARY_MIN_CONFIG_FILES)
+	$(HEAP_DARY_MIN_CONFIG_FILES) \
+	$(PHASE04_TRAIT_CONFIG_FILES)
 
 CONFIG_FILES := \
 	silica.config.base \
@@ -55,7 +70,8 @@ CONFIG_FILES := \
 	silica.config.btree_csr_map \
 	silica.config.heap_binary_min \
 	silica.config.heap_binary_max \
-	silica.config.heap_dary_min
+	silica.config.heap_dary_min \
+	silica.config.phase04_traits
 
 SAMS_FILES := $(SILICA_CONFIG_FILES:.silica=.sams)
 
@@ -71,6 +87,7 @@ all: $(SILICA_COMPILER) $(CONFIG_FILES)
 	@cd "$(CURDIR)" && cp silica.config.heap_binary_min silica.config && "$(abspath $(SILICA_COMPILER))"
 	@cd "$(CURDIR)" && cp silica.config.heap_binary_max silica.config && "$(abspath $(SILICA_COMPILER))"
 	@cd "$(CURDIR)" && cp silica.config.heap_dary_min silica.config && "$(abspath $(SILICA_COMPILER))"
+	@cd "$(CURDIR)" && cp silica.config.phase04_traits silica.config && "$(abspath $(SILICA_COMPILER))"
 	@echo "✅ standard_data_structures compiled with silica-compiler"
 
 $(SILICA_COMPILER):
@@ -100,6 +117,9 @@ silica.config.heap_binary_max:
 
 silica.config.heap_dary_min:
 	@printf '%s\n' $(HEAP_DARY_MIN_CONFIG_FILES) > $@
+
+silica.config.phase04_traits:
+	@printf '%s\n' $(PHASE04_TRAIT_CONFIG_FILES) > $@
 
 silica.config.all:
 	@printf '%s\n' $(SILICA_CONFIG_FILES) > $@
