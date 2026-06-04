@@ -1,7 +1,7 @@
 use OrderedSet;
-use btree_set_phase04;
+use btree_set_nodeid;
 
-fn compare_int64_atom(left: int64, right: int64) -> atom {
+fn compare_int64_atom(left: int64, right: int64) -> :less | :equal | :greater {
     case left < right of {
         true -> :less;
         false -> case left == right of {
@@ -11,18 +11,22 @@ fn compare_int64_atom(left: int64, right: int64) -> atom {
     }
 }
 
-fn bool_score(value: boolean) -> int64 {
-    case value of {
-        true -> 1;
-        false -> 0
-    }
-}
-
 fn main() -> int64 {
-    functions: { compare_item: fn(int64, int64) -> atom } <- { compare_item: compare_int64_atom };
-    set0: { compare_item: fn(int64, int64) -> atom } <- btree_set_phase04@empty(functions);
-    set1: { compare_item: fn(int64, int64) -> atom } <- btree_set_phase04@insert(set0, 42);
-    size_score: int64 <- OrderedSet@size(set1);
-    contains_score: int64 <- bool_score(OrderedSet@contains(set1, 42));
-    size_score + contains_score
+    sequence proc[mem(normal)]
+        functions: { compare_item: fn(int64, int64) -> :less | :equal | :greater } <- { compare_item: compare_int64_atom };
+        set0: {
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            root_id: int64,
+            node_count: int64,
+            order: int64,
+            nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        } <- btree_set_nodeid@empty(functions);
+        cmp: atom <- OrderedSet@compare_item(set0, 1, 2);
+        result: int64 <- case cmp of {
+            :less -> OrderedSet@size(set0);
+            _: atom -> 99
+        }
+    produces
+        pure result
+    end
 }

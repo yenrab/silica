@@ -96,13 +96,46 @@ fn infer_literal_type(value: string) -> string {
 }
 
 // Parse " ( T1 , T2 ) -> R " return type (same convention as check_user_defined_call).
-fn find_arrow_pos_infer(s: string, i: int64) -> int64 {
-    case i + 4 > len(s) of {
+fn find_arrow_pos_infer_depth(s: string, i: int64, depth: int64) -> int64 {
+    case i + 2 > len(s) of {
         true -> -1;
-        false -> case substring(s, i, i + 4) == " -> " of {
-            true -> i;
-            false -> find_arrow_pos_infer(s, i + 1)
-        }
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "{" or c == "[" of {
+                true -> find_arrow_pos_infer_depth(s, i + 1, depth + 1);
+                false -> case c == ")" or c == "}" or c == "]" of {
+                    true -> find_arrow_pos_infer_depth(s, i + 1, depth - 1);
+                    false -> case depth == 0 and substring(s, i, i + 2) == "->" of {
+                        true -> i;
+                        false -> find_arrow_pos_infer_depth(s, i + 1, depth)
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn find_arrow_pos_infer(s: string, i: int64) -> int64 {
+    find_arrow_pos_infer_depth(s, i, 0)
+}
+
+fn trim_function_return_prefix_infer(s: string) -> string {
+    t: string <- trim_leading_infer_from(s, 0);
+    case len(t) > 0 and substring(t, 0, 1) == ">" of {
+        true -> trim_leading_infer_from(substring(t, 1, len(t)), 0);
+        false -> t
+    }
+}
+
+fn parse_function_return_after_arrow_infer(func_type: string, arrow_pos: int64) -> string {
+    trim_function_return_prefix_infer(substring(func_type, arrow_pos + 2, len(func_type)))
+}
+
+fn parse_function_return_from_scheme(func_type: string) -> string {
+    arrow_pos: int64 <- find_arrow_pos_infer(func_type, 0);
+    case arrow_pos < 0 of {
+        true -> "";
+        false -> parse_function_return_after_arrow_infer(func_type, arrow_pos)
     }
 }
 
@@ -113,14 +146,6 @@ fn trim_leading_infer_from(s: string, i: int64) -> string {
             true -> trim_leading_infer_from(s, i + 1);
             false -> substring(s, i, len(s))
         }
-    }
-}
-
-fn parse_function_return_from_scheme(func_type: string) -> string {
-    arrow_pos: int64 <- find_arrow_pos_infer(func_type, 0);
-    case arrow_pos < 0 of {
-        true -> "";
-        false -> trim_leading_infer_from(substring(func_type, arrow_pos + 4, len(func_type)), 0)
     }
 }
 
@@ -824,8 +849,12 @@ fn skip_bindings_with_prefix(bindings: ListTupleDecomposeBinding, prefix: string
     }
 }
 
+fn normalize_type_equal_text(s: string) -> string {
+    normalize_mem_normal_alias(case_unwrap_atom_union_parens(s))
+}
+
 fn types_equal(a: string, b: string) -> bool {
-    normalize_mem_normal_alias(strip_spaces(a)) == normalize_mem_normal_alias(strip_spaces(b))
+    normalize_type_equal_text(a) == normalize_type_equal_text(b)
 }
 
 fn normalize_mem_normal_alias(s: string) -> string {
@@ -1086,9 +1115,23 @@ fn case_find_union_bar(s: string, pos: int64) -> int64 {
     }
 }
 
+fn case_unwrap_atom_union_parens(t: string) -> string {
+    s: string <- strip_spaces(t);
+    case len(s) >= 2 and substring(s, 0, 1) == "(" and substring(s, len(s) - 1, len(s)) == ")" of {
+        false -> s;
+        true -> do
+            inner: string <- substring(s, 1, len(s) - 1);
+            case len(inner) > 0 and substring(inner, 0, 1) == ":" of {
+                true -> inner;
+                false -> s
+            }
+        end
+    }
+}
+
 fn case_atom_union_contains(union_text: string, atom_name: string) -> bool {
     needle: string <- concat(":", atom_name);
-    parts: string <- strip_spaces(union_text);
+    parts: string <- case_unwrap_atom_union_parens(union_text);
     case len(parts) == 0 of {
         true -> false;
         false -> case parts == needle of {
@@ -1108,7 +1151,7 @@ fn case_atom_union_contains(union_text: string, atom_name: string) -> bool {
 }
 
 fn case_type_is_atom_union(t: string) -> bool {
-    s: string <- strip_spaces(t);
+    s: string <- case_unwrap_atom_union_parens(t);
     len(s) > 0 and substring(s, 0, 1) == ":" and case_find_union_bar(s, 0) >= 0
 }
 

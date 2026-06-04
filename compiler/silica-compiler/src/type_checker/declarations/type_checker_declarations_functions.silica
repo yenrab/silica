@@ -85,6 +85,103 @@ fn validate_record_type_string(type_str: string, location: SourceLocation) -> Ty
     }
 }
 
+fn trim_left_type_text(s: string, i: int64) -> string {
+    case i >= len(s) of {
+        true -> "";
+        false -> case substring(s, i, i + 1) == " " or substring(s, i, i + 1) == "\t" or substring(s, i, i + 1) == "\n" or substring(s, i, i + 1) == "\r" of {
+            true -> trim_left_type_text(s, i + 1);
+            false -> substring(s, i, len(s))
+        }
+    }
+}
+
+fn trim_right_type_text(s: string, end_i: int64) -> string {
+    case end_i <= 0 of {
+        true -> "";
+        false -> case substring(s, end_i - 1, end_i) == " " or substring(s, end_i - 1, end_i) == "\t" or substring(s, end_i - 1, end_i) == "\n" or substring(s, end_i - 1, end_i) == "\r" of {
+            true -> trim_right_type_text(s, end_i - 1);
+            false -> substring(s, 0, end_i)
+        }
+    }
+}
+
+fn trim_type_text_local(s: string) -> string {
+    left: string <- trim_left_type_text(s, 0);
+    trim_right_type_text(left, len(left))
+}
+
+fn find_top_level_or_bar(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "|" and depth == 0 of {
+                true -> i;
+                false -> do
+                    d2: int64 <- case c == "(" or c == "{" or c == "[" of {
+                        true -> depth + 1;
+                        false -> case c == ")" or c == "}" or c == "]" of {
+                            true -> case depth > 0 of {
+                                true -> depth - 1;
+                                false -> 0
+                            };
+                            false -> depth
+                        }
+                    };
+                    find_top_level_or_bar(s, i + 1, d2)
+                end
+            }
+        end
+    }
+}
+
+fn return_type_has_top_level_or(type_str: string) -> bool {
+    find_top_level_or_bar(type_str, 0, 0) >= 0
+}
+
+fn return_or_part_is_atom(part: string) -> bool {
+    t: string <- trim_type_text_local(part);
+    len(t) > 1 and substring(t, 0, 1) == ":"
+}
+
+fn invalid_return_or_part(type_str: string) -> string {
+    invalid_return_or_part_from(type_str)
+}
+
+fn invalid_return_or_part_from(type_str: string) -> string {
+    t: string <- trim_type_text_local(type_str);
+    bar: int64 <- find_top_level_or_bar(t, 0, 0);
+    case bar < 0 of {
+        true -> case return_or_part_is_atom(t) of {
+            true -> "";
+            false -> t
+        };
+        false -> do
+            left: string <- substring(t, 0, bar);
+            case return_or_part_is_atom(left) of {
+                false -> trim_type_text_local(left);
+                true -> invalid_return_or_part_from(substring(t, bar + 1, len(t)))
+            }
+        end
+    }
+}
+
+fn validate_or_return_type(type_str: string, location: SourceLocation) -> TypeCheckResult {
+    case return_type_has_top_level_or(type_str) of {
+        false -> type_checker_core@type_check_ok();
+        true -> do
+            bad: string <- invalid_return_or_part(type_str);
+            case len(bad) == 0 of {
+                true -> type_checker_core@type_check_ok();
+                false -> do
+                    msg: string <- concat(concat(concat("invalid OR return type ", type_str), "; OR'd return types are atom option lists, so every option must be an atom literal like :ok. Invalid option: "), bad);
+                    type_checker_core@type_check_err("E2003", location, msg, "sect4")
+                end
+            }
+        end
+    }
+}
+
 // Validate each param type (memory region types must be valid). Return first error or ok.
 fn validate_params_loop(params: ListParam) -> TypeCheckResult proc[DeviceIO] {
     case params.is_nil of {
@@ -142,10 +239,14 @@ fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListN
     case ret_rec.is_ok of {
         false -> ret_rec;
         true -> do
-            ret_list: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(decl.return_type_name, decl.return_type_location);
-            case ret_list.is_ok of {
-                false -> ret_list;
-                true -> case decl.return_type_name == "unit" of {
+            ret_or: TypeCheckResult <- validate_or_return_type(decl.return_type_name, decl.return_type_location);
+            case ret_or.is_ok of {
+                false -> ret_or;
+                true -> do
+                    ret_list: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(decl.return_type_name, decl.return_type_location);
+                    case ret_list.is_ok of {
+                        false -> ret_list;
+                        true -> case decl.return_type_name == "unit" of {
         true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
         false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
             true -> check_body_memory_region_return(decl, body_ctx, world);
@@ -164,6 +265,8 @@ fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListN
             end
         }
         }
+                    }
+                end
             }
         end
     }

@@ -174,8 +174,27 @@ fn find_first_comma_depth0_list(s: string, i: int64, depth: int64) -> int64 {
     }
 }
 
+fn unwrap_atom_union_parens_list(s: string) -> string {
+    t: string <- strip_all_spaces_list(s);
+    case len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
+        false -> t;
+        true -> do
+            inner: string <- substring(t, 1, len(t) - 1);
+            case len(inner) > 0 and substring(inner, 0, 1) == ":" of {
+                true -> inner;
+                false -> t
+            }
+        end
+    }
+}
+
 fn types_equal_strip(a: string, b: string) -> bool {
-    strip_all_spaces_list(a) == strip_all_spaces_list(b)
+    unwrap_atom_union_parens_list(a) == unwrap_atom_union_parens_list(b)
+}
+
+fn is_atom_option_type_list(t: string) -> bool {
+    s: string <- unwrap_atom_union_parens_list(t);
+    len(s) > 0 and substring(s, 0, 1) == ":"
 }
 
 // Surface memory space is mem(<space>); compare after stripping so mem(normal) matches the inner token form.
@@ -248,9 +267,11 @@ fn collectable_types_compatible(actual: string, formal: string, world: ListNamed
         true -> true;
         false -> case function_type_texts_compatible_list(act, frm) of {
             true -> true;
-            false -> case frm == "Collectable" of {
-                true -> type_checker_traits@is_builtin_collectable_instance(act);
-                false -> case starts_with_list(frm, "List[") of {
+            false -> case frm == "atom" and is_atom_option_type_list(act) of {
+                true -> true;
+                false -> case frm == "Collectable" of {
+                    true -> type_checker_traits@is_builtin_collectable_instance(act);
+                    false -> case starts_with_list(frm, "List[") of {
                     true -> case starts_with_list(act, "List[") of {
                         false -> false;
                         true -> do
@@ -288,6 +309,7 @@ fn collectable_types_compatible(actual: string, formal: string, world: ListNamed
             }
         }
     }
+}
 }
 
 fn function_type_texts_compatible_list(actual: string, formal: string) -> bool {

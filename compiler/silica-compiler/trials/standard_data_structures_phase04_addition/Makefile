@@ -24,6 +24,7 @@ LIB_SRC := ../../src/standard_data_structures
 lib-sources:
 	@mkdir -p "$(THIS_DIR)lib"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/OrderedSet.silica)" "$(THIS_DIR)lib/OrderedSet.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/OrderedMap.silica)" "$(THIS_DIR)lib/OrderedMap.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/Heap.silica)" "$(THIS_DIR)lib/Heap.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/DirectedGraph.silica)" "$(THIS_DIR)lib/DirectedGraph.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_nodeid.silica)" "$(THIS_DIR)lib/btree_set_nodeid.silica"
@@ -36,6 +37,7 @@ lib-sources:
 silica.config: lib-sources
 	@cd "$(THIS_DIR)" && { \
 		echo 'lib/OrderedSet.silica'; \
+		echo 'lib/OrderedMap.silica'; \
 		echo 'lib/Heap.silica'; \
 		echo 'lib/DirectedGraph.silica'; \
 		echo 'lib/btree_set_csr.silica'; \
@@ -49,6 +51,7 @@ silica.config: lib-sources
 		echo 'directed_graph_trait.silica'; \
 		echo 'btree_set_nodeid_constructor_record.silica'; \
 		echo 'btree_nodeid_map_trait_names.silica'; \
+		echo 'ordered_map_btree_shape_trait.silica'; \
 	} > silica.config
 
 all: executables
@@ -72,7 +75,7 @@ objects: assembly
 
 executables: objects
 	@cd "$(THIS_DIR)" && \
-	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica; do \
+	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica ordered_map_btree_shape_trait.silica; do \
 		base=$${line%.silica}; \
 		lib_objs=""; \
 		for lib_obj in lib/*.o; do \
@@ -105,7 +108,7 @@ integrate: clean silica.config
 	if [ -f "__silica_runtime.sams" ]; then \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o" || failed=1; \
 	fi; \
-	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica; do \
+	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica ordered_map_btree_shape_trait.silica; do \
 		base=$${line%.silica}; \
 		lib_objs=""; \
 		for lib_obj in lib/*.o; do \
@@ -119,7 +122,7 @@ integrate: clean silica.config
 			$(ASSEMBLER) "$$base.o" $$lib_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) || failed=1; \
 		fi; \
 	done; \
-	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica; do \
+	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica ordered_map_btree_shape_trait.silica; do \
 		base=$${line%.silica}; \
 		if [ -x "$$base" ]; then \
 			{ ./"$$base" 2>&1; echo $$?; } > "$$base.sout"; \
@@ -137,7 +140,7 @@ integrate: clean silica.config
 	exit $$failed
 
 clean:
-	@cd "$(THIS_DIR)" && rm -f *.sout lib/*.sams lib/*.o lib/*.silica *.sams *.o __silica_runtime.o ordered_set_constructor_record_trait heap_constructor_record_trait directed_graph_trait btree_set_nodeid_constructor_record btree_nodeid_map_trait_names silica.config .integrate_counts
+	@cd "$(THIS_DIR)" && rm -f *.sout lib/*.sams lib/*.o lib/*.silica *.sams *.o __silica_runtime.o ordered_set_constructor_record_trait heap_constructor_record_trait directed_graph_trait btree_set_nodeid_constructor_record btree_nodeid_map_trait_names ordered_map_btree_shape_trait silica.config .integrate_counts
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:

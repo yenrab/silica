@@ -49,6 +49,39 @@ fn is_float16_type(type_name: string) -> bool {
     type_name == "float16"
 }
 
+fn strip_spaces_regcv(s: string) -> string {
+    strip_spaces_regcv_from(s, 0, "")
+}
+
+fn strip_spaces_regcv_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> strip_spaces_regcv_from(s, i + 1, acc);
+            false -> strip_spaces_regcv_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn unwrap_atom_option_parens_regcv(type_name: string) -> string {
+    t: string <- strip_spaces_regcv(type_name);
+    case len(t) >= 2 and substring(t, 0, 1) == "(" and substring(t, len(t) - 1, len(t)) == ")" of {
+        false -> t;
+        true -> do
+            inner: string <- substring(t, 1, len(t) - 1);
+            case len(inner) > 0 and substring(inner, 0, 1) == ":" of {
+                true -> inner;
+                false -> t
+            }
+        end
+    }
+}
+
+fn is_atom_option_type_regcv(type_name: string) -> bool {
+    t: string <- unwrap_atom_option_parens_regcv(type_name);
+    len(t) > 0 and substring(t, 0, 1) == ":"
+}
+
 // Top-level `->` in parenthesized types: distinguishes `(T1,...,Tn) -> R` (function) from `(T1, T2)` (tuple).
 // Mirrors sir_generator / var emitter arrow scanning so tuple vs function classification stays aligned.
 fn find_top_arrow_from_regcv(s: string, i: int64, depth: int64) -> int64 {
@@ -73,11 +106,14 @@ fn find_top_arrow_from_regcv(s: string, i: int64, depth: int64) -> int64 {
 
 // Tuple type: (T1, T2, ...). Parenthesized function types `(params) -> R` also start with "(" — exclude them.
 fn is_tuple_type(type_name: string) -> bool {
-    case len(type_name) < 2 of {
+    case is_atom_option_type_regcv(type_name) of {
         true -> false;
-        false -> case substring(type_name, 0, 1) == "(" of {
-            false -> false;
-            true -> find_top_arrow_from_regcv(type_name, 1, 1) < 0
+        false -> case len(type_name) < 2 of {
+            true -> false;
+            false -> case substring(type_name, 0, 1) == "(" of {
+                false -> false;
+                true -> find_top_arrow_from_regcv(type_name, 1, 1) < 0
+            }
         }
     }
 }

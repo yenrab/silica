@@ -65,6 +65,7 @@ fn role_param_name() -> int64 { 25 }
 fn role_param_colon() -> int64 { 26 }
 fn role_param_type() -> int64 { 27 }
 fn role_param_comma() -> int64 { 28 }
+fn role_atom_union_bar() -> int64 { 29 }
 fn role_stmt_sep() -> int64 { 55 }
 
 fn single_role(r: int64) -> ListInt {
@@ -95,7 +96,7 @@ fn constraints() -> ListConstraint {
     c5: Constraint <- Constraint { trigger_role: role_right_arrow(), next_token_roles: two_roles(role_type_name(), capability_list@role_list_type_kw()), prev_token_roles: single_role(role_right_paren()), constraint_id: 5 };
     // proc[...] only allowed on sequence clauses (spec §9.3.1); reject proc after return type
     // Required trait methods end with `-> type ;` instead of `{` (silica-specification §3.4.8).
-    c6: Constraint <- Constraint { trigger_role: role_type_name(), next_token_roles: three_roles(role_left_brace(), role_tuple_type_lparen(), role_stmt_sep()), prev_token_roles: single_role(role_right_arrow()), constraint_id: 6 };
+    c6: Constraint <- Constraint { trigger_role: role_type_name(), next_token_roles: four_roles(role_left_brace(), role_tuple_type_lparen(), role_stmt_sep(), role_atom_union_bar()), prev_token_roles: two_roles(role_right_arrow(), role_atom_union_bar()), constraint_id: 6 };
     c7: Constraint <- Constraint { trigger_role: role_left_brace(), next_token_roles: three_roles(role_body_expr(), role_right_brace(), capability_case@role_case_keyword()), prev_token_roles: three_roles(role_type_name(), role_right_bracket(), capability_list@role_list_type_rbracket()), constraint_id: 7 };
     c8: Constraint <- Constraint { trigger_role: role_body_expr(), next_token_roles: single_role(role_right_brace()), prev_token_roles: single_role(role_left_brace()), constraint_id: 8 };
     c9: Constraint <- Constraint { trigger_role: role_right_brace(), next_token_roles: no_prev(), prev_token_roles: two_roles(role_body_expr(), role_left_brace()), constraint_id: 9 };
@@ -109,9 +110,10 @@ fn constraints() -> ListConstraint {
     c17: Constraint <- Constraint { trigger_role: role_effect_param_rparen(), next_token_roles: two_roles(role_right_bracket(), role_effect_comma()), prev_token_roles: single_role(role_effect_param_name()), constraint_id: 24 };
     c18: Constraint <- Constraint { trigger_role: role_param_name(), next_token_roles: single_role(role_param_colon()), prev_token_roles: two_roles(role_left_paren(), role_param_comma()), constraint_id: 25 };
     c19: Constraint <- Constraint { trigger_role: role_param_colon(), next_token_roles: two_roles(role_param_type(), capability_list@role_list_type_kw()), prev_token_roles: single_role(role_param_name()), constraint_id: 26 };
-    c20: Constraint <- Constraint { trigger_role: role_param_type(), next_token_roles: two_roles(role_right_paren(), role_param_comma()), prev_token_roles: single_role(role_param_colon()), constraint_id: 27 };
+    c20: Constraint <- Constraint { trigger_role: role_param_type(), next_token_roles: three_roles(role_right_paren(), role_param_comma(), role_atom_union_bar()), prev_token_roles: two_roles(role_param_colon(), role_atom_union_bar()), constraint_id: 27 };
     c21: Constraint <- Constraint { trigger_role: role_param_comma(), next_token_roles: single_role(role_param_name()), prev_token_roles: single_role(role_param_type()), constraint_id: 28 };
-    base: ListConstraint <- constraint_core@cons_constraint(c21, constraint_core@empty_list_constraint());
+    c22: Constraint <- Constraint { trigger_role: role_atom_union_bar(), next_token_roles: two_roles(role_type_name(), role_param_type()), prev_token_roles: two_roles(role_type_name(), role_param_type()), constraint_id: 29 };
+    base: ListConstraint <- constraint_core@cons_constraint(c22, constraint_core@cons_constraint(c21, constraint_core@empty_list_constraint()));
     with_c20: ListConstraint <- constraint_core@cons_constraint(c20, base);
     with_c19: ListConstraint <- constraint_core@cons_constraint(c19, with_c20);
     with_c18: ListConstraint <- constraint_core@cons_constraint(c18, with_c19);
@@ -147,27 +149,33 @@ fn initial_roles(token_kind: int64) -> ListInt {
             true -> constraint_core@cons_int(role_param_name(), four_roles(role_fn_name(), role_type_name(), role_effect_name(), role_effect_param_name()));
             false -> case is_type_keyword(kinds, token_kind) of {
                 true -> two_roles(role_type_name(), role_param_type());
-                false -> case token_kind == kinds.left_paren of {
-                    true -> two_roles(role_left_paren(), role_effect_param_lparen());
-                    false -> case token_kind == kinds.right_paren of {
-                        true -> two_roles(role_right_paren(), role_effect_param_rparen());
-                        false -> case token_kind == kinds.right_arrow of {
-                            true -> single_role(role_right_arrow());
-                            false -> case token_kind == kinds.proc_keyword of {
-                                true -> single_role(role_proc_keyword());
-                                false -> case token_kind == kinds.left_bracket of {
-                                    true -> single_role(role_left_bracket());
-                                    false -> case token_kind == kinds.right_bracket of {
-                                        true -> single_role(role_right_bracket());
-                                        false -> case token_kind == kinds.comma of {
-                                            true -> two_roles(role_effect_comma(), role_param_comma());
-                                            false -> case token_kind == kinds.colon of {
-                                                true -> single_role(role_param_colon());
-                                                false -> case token_kind == kinds.left_brace of {
-                                                    true -> three_roles(role_left_brace(), capability_trait@role_required_block_lbrace(), capability_trait@role_provided_block_lbrace());
-                                                    false -> case token_kind == kinds.right_brace of {
-                                                        true -> single_role(role_right_brace());
-                                                        false -> constraint_core@empty_list_int()
+                false -> case token_kind == kinds.atom_literal of {
+                    true -> two_roles(role_type_name(), role_param_type());
+                    false -> case token_kind == kinds.unknown_char of {
+                        true -> single_role(role_atom_union_bar());
+                        false -> case token_kind == kinds.left_paren of {
+                            true -> two_roles(role_left_paren(), role_effect_param_lparen());
+                            false -> case token_kind == kinds.right_paren of {
+                                true -> two_roles(role_right_paren(), role_effect_param_rparen());
+                                false -> case token_kind == kinds.right_arrow of {
+                                    true -> single_role(role_right_arrow());
+                                    false -> case token_kind == kinds.proc_keyword of {
+                                        true -> single_role(role_proc_keyword());
+                                        false -> case token_kind == kinds.left_bracket of {
+                                            true -> single_role(role_left_bracket());
+                                            false -> case token_kind == kinds.right_bracket of {
+                                                true -> single_role(role_right_bracket());
+                                                false -> case token_kind == kinds.comma of {
+                                                    true -> two_roles(role_effect_comma(), role_param_comma());
+                                                    false -> case token_kind == kinds.colon of {
+                                                        true -> single_role(role_param_colon());
+                                                        false -> case token_kind == kinds.left_brace of {
+                                                            true -> three_roles(role_left_brace(), capability_trait@role_required_block_lbrace(), capability_trait@role_provided_block_lbrace());
+                                                            false -> case token_kind == kinds.right_brace of {
+                                                                true -> single_role(role_right_brace());
+                                                                false -> constraint_core@empty_list_int()
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
