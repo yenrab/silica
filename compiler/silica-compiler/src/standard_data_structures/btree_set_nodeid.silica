@@ -12,6 +12,7 @@ export validate[int64, mem(normal)]/1;
 export to_csr[int64, mem(normal)]/1;
 export validate_csr[int64, mem(normal)]/1;
 export contains_csr[int64, mem(normal)]/2;
+export ordered_set_contains/2;
 
 fn order() -> int64 {
     8
@@ -133,7 +134,8 @@ fn empty[int64, mem(normal)]() -> {
     root_id: int64,
     node_count: int64,
     order: int64,
-    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+    compare_item: fn(int64, int64) -> :less | :equal | :greater
 } {
     sequence proc[mem(normal)]
         nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] <-
@@ -142,12 +144,14 @@ fn empty[int64, mem(normal)]() -> {
             root_id: int64,
             node_count: int64,
             order: int64,
-            nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+            nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+            compare_item: fn(int64, int64) -> :less | :equal | :greater
         } <- {
             root_id: -1,
             node_count: 0,
             order: order(),
-            nodes: nodes
+            nodes: nodes,
+            compare_item: compare_int64_atom
         }
     produces
         pure tree
@@ -155,31 +159,70 @@ fn empty[int64, mem(normal)]() -> {
 }
 
 fn empty(item_functions: { compare_item: fn(int64, int64) -> :less | :equal | :greater }) -> {
-    compare_item: fn(int64, int64) -> :less | :equal | :greater,
     root_id: int64,
     node_count: int64,
     order: int64,
-    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+    compare_item: fn(int64, int64) -> :less | :equal | :greater
 } {
     sequence proc[mem(normal)]
         nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] <-
             empty[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]();
         tree: {
-            compare_item: fn(int64, int64) -> :less | :equal | :greater,
             root_id: int64,
             node_count: int64,
             order: int64,
-            nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+            nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+            compare_item: fn(int64, int64) -> :less | :equal | :greater
         } <- {
-            compare_item: item_functions.compare_item,
             root_id: -1,
             node_count: 0,
             order: order(),
-            nodes: nodes
+            nodes: nodes,
+            compare_item: item_functions.compare_item
         }
     produces
         pure tree
     end
+}
+
+fn compare_int64_atom(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn cmp_is_equal(result: :less | :equal | :greater) -> int64 {
+    case result of {
+        :equal -> 1;
+        _ -> 0
+    }
+}
+
+fn cmp_is_less(result: :less | :equal | :greater) -> int64 {
+    case result of {
+        :less -> 1;
+        _ -> 0
+    }
+}
+
+fn cmp_is_less_or_equal(result: :less | :equal | :greater) -> int64 {
+    case result of {
+        :less -> 1;
+        :equal -> 1;
+        _ -> 0
+    }
+}
+
+fn cmp_is_greater(result: :less | :equal | :greater) -> int64 {
+    case result of {
+        :greater -> 1;
+        _ -> 0
+    }
 }
 
 fn list_int64_length(values: List[int64, mem(normal)]) -> int64 {
@@ -1201,7 +1244,8 @@ fn contains[int64, mem(normal)](
         root_id: int64,
         node_count: int64,
         order: int64,
-        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
     },
     key: int64
 ) -> int64 {
@@ -1715,7 +1759,8 @@ fn insert[int64, mem(normal)](
         root_id: int64,
         node_count: int64,
         order: int64,
-        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
     },
     key: int64
 ) -> {
@@ -1723,20 +1768,26 @@ fn insert[int64, mem(normal)](
         root_id: int64,
         node_count: int64,
         order: int64,
-        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
     },
     inserted: int64
 } {
     sequence proc[mem(normal)]
-        tree_saved: {
+        key_saved: int64 <- key;
+        already_present: int64 <- contains[int64, mem(normal)](tree, key_saved);
+        inner: {
             root_id: int64,
             node_count: int64,
             order: int64,
             nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
-        } <- tree;
-        key_saved: int64 <- key;
-        already_present: int64 <- contains[int64, mem(normal)](tree_saved, key_saved);
-        result: {
+        } <- {
+            root_id: tree.root_id,
+            node_count: tree.node_count,
+            order: tree.order,
+            nodes: tree.nodes
+        };
+        inner_result: {
             tree: {
                 root_id: int64,
                 node_count: int64,
@@ -1744,9 +1795,23 @@ fn insert[int64, mem(normal)](
                 nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
             },
             inserted: int64
-        } <- insert_after_contains(tree_saved, key_saved, already_present)
+        } <- insert_after_contains(inner, key_saved, already_present);
+        cmp: fn(int64, int64) -> :less | :equal | :greater <- tree.compare_item;
+        result_tree: {
+            root_id: int64,
+            node_count: int64,
+            order: int64,
+            nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+            compare_item: fn(int64, int64) -> :less | :equal | :greater
+        } <- {
+            root_id: inner_result.tree.root_id,
+            node_count: inner_result.tree.node_count,
+            order: inner_result.tree.order,
+            nodes: inner_result.tree.nodes,
+            compare_item: cmp
+        }
     produces
-        pure result
+        pure { tree: result_tree, inserted: inner_result.inserted }
     end
 }
 
@@ -2214,7 +2279,8 @@ fn validate_empty(
         root_id: int64,
         node_count: int64,
         order: int64,
-        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
     }
 ) -> int64 {
     case tree.root_id == -1 of {
@@ -2231,7 +2297,8 @@ fn validate_nonempty(
         root_id: int64,
         node_count: int64,
         order: int64,
-        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
     }
 ) -> int64 {
     sequence proc[mem(normal)]
@@ -2353,7 +2420,8 @@ fn validate_error(
         root_id: int64,
         node_count: int64,
         order: int64,
-        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
     }
 ) -> int64 {
     case tree.order == order() of {
@@ -2370,7 +2438,8 @@ fn validate[int64, mem(normal)](
         root_id: int64,
         node_count: int64,
         order: int64,
-        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
     }
 ) -> { ok: int64, error_code: int64 } {
     sequence
@@ -2397,7 +2466,8 @@ fn to_csr[int64, mem(normal)](
         root_id: int64,
         node_count: int64,
         order: int64,
-        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
     }
 ) -> {
     region: region(L1, normal),
@@ -2478,4 +2548,21 @@ fn contains_csr[int64, mem(normal)](
     produces
         pure found
     end
+}
+
+fn ordered_set_contains(
+    set: {
+        root_id: int64,
+        node_count: int64,
+        order: int64,
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
+    },
+    item: int64
+) -> boolean {
+    raw: int64 <- contains[int64, mem(normal)](set, item);
+    case raw of {
+        0 -> false;
+        _: int64 -> true
+    }
 }

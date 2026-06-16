@@ -1,0 +1,290 @@
+// Trait required/provided signature placeholder matching (Phase 0.4 #2).
+// Trait Self (OrderedSet, Shape, …), collection trait types OrderedSet[T,S], and assoc-type
+// placeholders ItemType/KeyType/ValueType match concrete impl parameter types.
+
+use parser_ast;
+use type_checker_core;
+use type_checker_traits;
+use type_checker_collections;
+use type_checker_tuple_decompose_helpers;
+use type_checker_record_types;
+
+export placeholder_param_types_compatible/5;
+export placeholder_return_types_compatible/4;
+export impl_signature_matches_required/5;
+export check_trait_impl_required_consistency/1;
+
+fn program_exports_trait_named_ph(decls: ListDeclaration, trait_id: string) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 5 and decls.head.name == trait_id of {
+            true -> true;
+            false -> program_exports_trait_named_ph(decls.tail, trait_id)
+        }
+    }
+}
+
+fn trim_ph(s: string) -> string {
+    type_checker_traits@trim_type_text(s)
+}
+
+fn is_assoc_type_placeholder(t: string) -> bool {
+    type_checker_collections@is_assoc_type_placeholder(t)
+}
+
+fn assoc_placeholder_param_compatible(req_type: string, impl_type: string) -> bool {
+    req_t: string <- trim_ph(req_type);
+    impl_t: string <- trim_ph(impl_type);
+    case is_assoc_type_placeholder(req_t) of {
+        true -> case is_assoc_type_placeholder(impl_t) of {
+            true -> req_t == impl_t;
+            false -> true
+        };
+        false -> case is_assoc_type_placeholder(impl_t) of {
+            true -> true;
+            false -> false
+        }
+    }
+}
+
+fn is_trait_self_placeholder(formal: string, trait_name: string) -> bool {
+    trim_ph(formal) == trim_ph(trait_name)
+}
+
+fn placeholder_param_types_compatible(impl_type: string, req_type: string, trait_name: string, trait_prog: Program, world: ListNamedProgram) -> bool {
+    impl_t: string <- trim_ph(impl_type);
+    req_t: string <- trim_ph(req_type);
+    case impl_t == req_t of {
+        true -> true;
+        false -> case assoc_placeholder_param_compatible(req_t, impl_t) of {
+            true -> true;
+            false -> case is_trait_self_placeholder(req_t, trait_name) of {
+            true -> type_checker_traits@trait_program_accepts_concrete(trait_prog, impl_t);
+            false -> case is_trait_self_placeholder(impl_t, trait_name) of {
+                true -> type_checker_traits@trait_program_accepts_concrete(trait_prog, req_t);
+                false -> case type_checker_collections@is_collection_trait_type(req_t) of {
+                    true -> type_checker_collections@collection_type_fits_concrete_record(req_t, impl_t, world);
+                    false -> case type_checker_collections@is_collection_trait_type(impl_t) of {
+                        true -> type_checker_collections@collection_type_fits_concrete_record(impl_t, req_t, world);
+                        false -> case type_checker_tuple_decompose_helpers@types_equal(impl_t, req_t) of {
+                            true -> true;
+                            false -> type_checker_traits@actual_type_satisfies_trait_expectation(impl_t, req_t, world)
+                        }
+                    }
+                }
+            }
+        }
+        }
+    }
+}
+
+fn record_field_assoc_compatible(req_field: string, impl_field: string) -> bool {
+    case is_assoc_type_placeholder(req_field) of {
+        true -> true;
+        false -> type_checker_tuple_decompose_helpers@types_equal(trim_ph(req_field), trim_ph(impl_field))
+    }
+}
+
+fn record_return_types_assoc_compatible(req_ret: string, impl_ret: string) -> bool {
+    req_t: string <- trim_ph(req_ret);
+    impl_t: string <- trim_ph(impl_ret);
+    case type_checker_tuple_decompose_helpers@types_equal(req_t, impl_t) of {
+        true -> true;
+        false -> case len(req_t) > 0 and substring(req_t, 0, 1) == "{" and len(impl_t) > 0 and substring(impl_t, 0, 1) == "{" of {
+            false -> assoc_placeholder_param_compatible(req_t, impl_t);
+            true -> do
+                req_val: string <- type_checker_record_types@find_field_type_in_record(req_t, "value");
+                impl_val: string <- type_checker_record_types@find_field_type_in_record(impl_t, "value");
+                req_found: string <- type_checker_record_types@find_field_type_in_record(req_t, "found");
+                impl_found: string <- type_checker_record_types@find_field_type_in_record(impl_t, "found");
+                case len(req_found) > 0 and len(impl_found) > 0 of {
+                    false -> false;
+                    true -> record_field_assoc_compatible(req_found, impl_found) and record_field_assoc_compatible(req_val, impl_val)
+                }
+            end
+        }
+    }
+}
+
+fn placeholder_return_types_compatible(impl_ret: string, req_ret: string, trait_prog: Program, world: ListNamedProgram) -> bool {
+    impl_t: string <- trim_ph(impl_ret);
+    req_t: string <- trim_ph(req_ret);
+    case impl_t == req_t of {
+        true -> true;
+        false -> case record_return_types_assoc_compatible(req_t, impl_t) of {
+            true -> true;
+            false -> case type_checker_tuple_decompose_helpers@types_equal(impl_t, req_t) of {
+                true -> true;
+                false -> case type_checker_collections@is_collection_trait_type(req_t) of {
+                    true -> type_checker_collections@collection_type_fits_concrete_record(req_t, impl_t, world);
+                    false -> case type_checker_collections@is_collection_trait_type(impl_t) of {
+                        true -> type_checker_collections@collection_type_fits_concrete_record(impl_t, req_t, world);
+                        false -> placeholder_param_types_compatible(impl_t, req_t, "", trait_prog, world)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn list_param_length_ph(params: ListParam) -> int64 {
+    case params.is_nil of {
+        true -> 0;
+        false -> 1 + list_param_length_ph(params.tail)
+    }
+}
+
+fn params_placeholder_compatible_loop(req: ListParam, impl_p: ListParam, trait_name: string, trait_prog: Program, world: ListNamedProgram) -> bool {
+    case req.is_nil of {
+        true -> impl_p.is_nil;
+        false -> case impl_p.is_nil of {
+            true -> false;
+            false -> case placeholder_param_types_compatible(impl_p.head.type_name, req.head.type_name, trait_name, trait_prog, world) of {
+                false -> false;
+                true -> params_placeholder_compatible_loop(req.tail, impl_p.tail, trait_name, trait_prog, world)
+            }
+        }
+    }
+}
+
+fn impl_signature_matches_required(impl_decl: Declaration, req_decl: Declaration, trait_name: string, trait_prog: Program, world: ListNamedProgram) -> bool {
+    case list_param_length_ph(impl_decl.parameters) == list_param_length_ph(req_decl.parameters) of {
+        false -> false;
+        true -> do
+            req_src: ListParam <- parser_ast@list_param_reverse_with_acc(req_decl.parameters, parser_ast@nil_list_param());
+            impl_src: ListParam <- parser_ast@list_param_reverse_with_acc(impl_decl.parameters, parser_ast@nil_list_param());
+            case params_placeholder_compatible_loop(req_src, impl_src, trait_name, trait_prog, world) of {
+                false -> false;
+                true -> placeholder_return_types_compatible(impl_decl.return_type_name, req_decl.return_type_name, trait_prog, world)
+            }
+        end
+    }
+}
+
+fn is_concrete_impl_fn(d: Declaration, trait_name: string, unit_decls: ListDeclaration) -> bool {
+    case d.tag == 0 of {
+        false -> false;
+        true -> case d.parameters.is_nil of {
+            true -> false;
+            false -> do
+                src: ListParam <- parser_ast@list_param_reverse_with_acc(d.parameters, parser_ast@nil_list_param());
+                p0: string <- trim_ph(src.head.type_name);
+                case p0 == trim_ph(trait_name) of {
+                    true -> false;
+                    false -> case program_exports_trait_named_ph(unit_decls, p0) of {
+                        true -> false;
+                        false -> true
+                    }
+                }
+            end
+        }
+    }
+}
+
+fn find_required_by_name(decls: ListDeclaration, method_name: string) -> (bool, Declaration) {
+    case decls.is_nil of {
+        true -> (false, parser_ast@dummy_decl());
+        false -> case decls.head.tag == 7 of {
+            true -> case decls.head.name == method_name of {
+                true -> (true, decls.head);
+                false -> find_required_by_name(decls.tail, method_name)
+            };
+            false -> find_required_by_name(decls.tail, method_name)
+        }
+    }
+}
+
+fn export_trait_name_from_decls(decls: ListDeclaration) -> string {
+    case decls.is_nil of {
+        true -> "";
+        false -> case decls.head.tag == 5 of {
+            true -> decls.head.name;
+            false -> export_trait_name_from_decls(decls.tail)
+        }
+    }
+}
+
+fn check_one_impl_against_required(decls: ListDeclaration, impl_decl: Declaration, trait_name: string, trait_prog: Program, world: ListNamedProgram) -> (int64, string, SourceLocation, string) {
+    (found: bool, req: Declaration) <- find_required_by_name(decls, impl_decl.name);
+    case found of {
+        false -> (0, "", parser_ast@zero_location(), "");
+        true -> case impl_signature_matches_required(impl_decl, req, trait_name, trait_prog, world) of {
+            true -> (0, "", parser_ast@zero_location(), "");
+            false -> do
+                msg: string <- concat(concat(concat(concat("impl fn ", impl_decl.name), " does not match required signature for trait "), trait_name), " (spec 3.4.8)");
+                (1, "E2092", impl_decl.location, msg)
+            end
+        }
+    }
+}
+
+fn check_impls_match_required_loop(decls: ListDeclaration, all_decls: ListDeclaration, trait_name: string, trait_prog: Program, world: ListNamedProgram) -> (int64, string, SourceLocation, string) {
+    case decls.is_nil of {
+        true -> (0, "", parser_ast@zero_location(), "");
+        false -> case is_concrete_impl_fn(decls.head, trait_name, all_decls) of {
+            true -> do
+                (st: int64, ec: string, eloc: SourceLocation, emsg: string) <- check_one_impl_against_required(all_decls, decls.head, trait_name, trait_prog, world);
+                case st == 0 of {
+                    false -> (st, ec, eloc, emsg);
+                    true -> check_impls_match_required_loop(decls.tail, all_decls, trait_name, trait_prog, world)
+                }
+            end;
+            false -> check_impls_match_required_loop(decls.tail, all_decls, trait_name, trait_prog, world)
+        }
+    }
+}
+
+fn has_matching_impl_for_required_loop(decls: ListDeclaration, req: Declaration, trait_name: string, trait_prog: Program, world: ListNamedProgram, all_decls: ListDeclaration) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case is_concrete_impl_fn(decls.head, trait_name, all_decls) of {
+            true -> case decls.head.name == req.name of {
+                true -> case impl_signature_matches_required(decls.head, req, trait_name, trait_prog, world) of {
+                    true -> true;
+                    false -> has_matching_impl_for_required_loop(decls.tail, req, trait_name, trait_prog, world, all_decls)
+                };
+                false -> has_matching_impl_for_required_loop(decls.tail, req, trait_name, trait_prog, world, all_decls)
+            };
+            false -> has_matching_impl_for_required_loop(decls.tail, req, trait_name, trait_prog, world, all_decls)
+        }
+    }
+}
+
+fn check_required_have_impl_loop(decls: ListDeclaration, all_decls: ListDeclaration, trait_name: string, trait_prog: Program, world: ListNamedProgram) -> (int64, string, SourceLocation, string) {
+    case decls.is_nil of {
+        true -> (0, "", parser_ast@zero_location(), "");
+        false -> case decls.head.tag == 7 of {
+            true -> case has_matching_impl_for_required_loop(all_decls, decls.head, trait_name, trait_prog, world, all_decls) of {
+                false -> do
+                    msg: string <- concat(concat(concat(concat("required fn ", decls.head.name), " has no matching impl fn for trait "), trait_name), " (spec 3.4.8)");
+                    (1, "E2092", decls.head.location, msg)
+                end;
+                true -> check_required_have_impl_loop(decls.tail, all_decls, trait_name, trait_prog, world)
+            };
+            false -> check_required_have_impl_loop(decls.tail, all_decls, trait_name, trait_prog, world)
+        }
+    }
+}
+
+fn check_trait_module_placeholders(program: Program, trait_name: string, world: ListNamedProgram) -> (int64, string, SourceLocation, string) {
+    case len(trait_name) == 0 of {
+        true -> (0, "", parser_ast@zero_location(), "");
+        false -> do
+            (st1: int64, ec1: string, loc1: SourceLocation, msg1: string) <- check_required_have_impl_loop(program.declarations, program.declarations, trait_name, program, world);
+            case st1 == 0 of {
+                false -> (st1, ec1, loc1, msg1);
+                true -> check_impls_match_required_loop(program.declarations, program.declarations, trait_name, program, world)
+            }
+        end
+    }
+}
+
+fn check_trait_impl_required_consistency(program: Program) -> TypeCheckResult {
+    trait_name: string <- export_trait_name_from_decls(program.declarations);
+    empty_world: ListNamedProgram <- parser_ast@empty_named_program_list();
+    (st: int64, ec: string, loc: SourceLocation, msg: string) <- check_trait_module_placeholders(program, trait_name, empty_world);
+    case st == 0 of {
+        true -> type_checker_core@type_check_ok();
+        false -> type_checker_core@type_check_err(ec, loc, msg, "sect3.4.8")
+    }
+}

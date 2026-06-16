@@ -3,10 +3,13 @@ export contains/2;
 export size/1;
 export compare_item/3;
 
+use ordered_set_nodeid_adapter;
+use ordered_set_csr_adapter;
+
 required {
-    fn contains(set: OrderedSet, item: int64) -> boolean;
+    fn contains(set: OrderedSet, item: ItemType) -> boolean;
     fn size(set: OrderedSet) -> int64;
-    fn compare_item(set: OrderedSet, left: int64, right: int64) -> :less | :equal | :greater;
+    fn compare_item(set: OrderedSet, left: ItemType, right: ItemType) -> :less | :equal | :greater;
 }
 
 impl fn compare_item(
@@ -38,11 +41,11 @@ impl fn size(set: { compare_item: fn(int64, int64) -> :less | :equal | :greater,
 
 impl fn compare_item(
     set: {
-        compare_item: fn(int64, int64) -> :less | :equal | :greater,
         root_id: int64,
         node_count: int64,
         order: int64,
-        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
     },
     left: int64,
     right: int64
@@ -53,25 +56,91 @@ impl fn compare_item(
 
 impl fn contains(
     set: {
-        compare_item: fn(int64, int64) -> :less | :equal | :greater,
         root_id: int64,
         node_count: int64,
         order: int64,
-        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
     },
     item: int64
 ) -> boolean {
-    false
+    ordered_set_nodeid_adapter@contains_nodeid(set, item)
 }
 
 impl fn size(
     set: {
-        compare_item: fn(int64, int64) -> :less | :equal | :greater,
         root_id: int64,
         node_count: int64,
         order: int64,
-        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
     }
 ) -> int64 {
     set.node_count
+}
+
+impl fn compare_item(
+    set: {
+        region: region(L1, normal),
+        root_id: int64,
+        node_count: int64,
+        key_count_total: int64,
+        order: int64,
+        node_key_start: buf(L1, normal, int64, 1),
+        node_key_count: buf(L1, normal, int64, 1),
+        node_child_start: buf(L1, normal, int64, 1),
+        node_child_count: buf(L1, normal, int64, 1),
+        node_is_leaf: buf(L1, normal, int64, 1),
+        keys: buf(L1, normal, int64, 7),
+        children: buf(L1, normal, int64, 8)
+    },
+    left: int64,
+    right: int64
+) -> :less | :equal | :greater {
+    case left < right of {
+        true -> :less;
+        false -> case left == right of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+impl fn contains(
+    set: {
+        region: region(L1, normal),
+        root_id: int64,
+        node_count: int64,
+        key_count_total: int64,
+        order: int64,
+        node_key_start: buf(L1, normal, int64, 1),
+        node_key_count: buf(L1, normal, int64, 1),
+        node_child_start: buf(L1, normal, int64, 1),
+        node_child_count: buf(L1, normal, int64, 1),
+        node_is_leaf: buf(L1, normal, int64, 1),
+        keys: buf(L1, normal, int64, 7),
+        children: buf(L1, normal, int64, 8)
+    },
+    item: int64
+) -> boolean {
+    ordered_set_csr_adapter@contains_csr(set, item)
+}
+
+impl fn size(
+    set: {
+        region: region(L1, normal),
+        root_id: int64,
+        node_count: int64,
+        key_count_total: int64,
+        order: int64,
+        node_key_start: buf(L1, normal, int64, 1),
+        node_key_count: buf(L1, normal, int64, 1),
+        node_child_start: buf(L1, normal, int64, 1),
+        node_child_count: buf(L1, normal, int64, 1),
+        node_is_leaf: buf(L1, normal, int64, 1),
+        keys: buf(L1, normal, int64, 7),
+        children: buf(L1, normal, int64, 8)
+    }
+) -> int64 {
+    set.key_count_total
 }

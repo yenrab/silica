@@ -1,7 +1,8 @@
 // Phase 6 step 6.4 — direct functional insert into CsrBTreeSet[int64, mem(normal)].
 // Inserts {3, 1, 5} one at a time; checks deduplication, sorted contains, and
 // that the original empty tree is not mutated (immutability contract).
-use btree_set_csr;
+use OrderedSet;
+use csr_set_trait_bridge;
 
 fn fail_unless_one(value: int64) -> int64 {
     case value of {
@@ -24,22 +25,24 @@ fn check_contains(tree: {
     keys: buf(L1, normal, int64, 7),
     children: buf(L1, normal, int64, 8)
 }) -> int64 {
-    sequence proc[mem(normal)]        has1: int64 <- btree_set_csr@contains[int64, mem(normal)](tree, 1);
-        has3: int64 <- btree_set_csr@contains[int64, mem(normal)](tree, 3);
-        has5: int64 <- btree_set_csr@contains[int64, mem(normal)](tree, 5);
-        has4: int64 <- btree_set_csr@contains[int64, mem(normal)](tree, 4);
+    sequence
+        has1: boolean <- OrderedSet@contains(tree, 1);
+        has3: boolean <- OrderedSet@contains(tree, 3);
+        has5: boolean <- OrderedSet@contains(tree, 5);
+        has4: boolean <- OrderedSet@contains(tree, 4);
         failures: int64 <-
-            (fail_unless_one(has1) * 32) +
-            (fail_unless_one(has3) * 64) +
-            (fail_unless_one(has5) * 128) +
-            (has4 * 256)
+            (case has1 of { true -> 0; false -> 32 }) +
+            (case has3 of { true -> 0; false -> 64 }) +
+            (case has5 of { true -> 0; false -> 128 }) +
+            (case has4 of { true -> 256; false -> 0 })
     produces
         pure failures
     end
 }
 
 fn main() -> int64 {
-    sequence proc[mem(normal)]        tree0: {
+    sequence
+        tree0: {
             region: region(L1, normal),
             root_id: int64,
             node_count: int64,
@@ -52,7 +55,7 @@ fn main() -> int64 {
             node_is_leaf: buf(L1, normal, int64, 1),
             keys: buf(L1, normal, int64, 7),
             children: buf(L1, normal, int64, 8)
-        } <- btree_set_csr@empty[int64, mem(normal)]();
+        } <- csr_set_trait_bridge@empty_set();
         r1: {
             tree: {
                 region: region(L1, normal),
@@ -69,7 +72,7 @@ fn main() -> int64 {
                 children: buf(L1, normal, int64, 8)
             },
             inserted: int64
-        } <- btree_set_csr@insert[int64, mem(normal)](tree0, 3);
+        } <- csr_set_trait_bridge@insert_set(tree0, 3);
         r2: {
             tree: {
                 region: region(L1, normal),
@@ -86,7 +89,7 @@ fn main() -> int64 {
                 children: buf(L1, normal, int64, 8)
             },
             inserted: int64
-        } <- btree_set_csr@insert[int64, mem(normal)](r1.tree, 1);
+        } <- csr_set_trait_bridge@insert_set(r1.tree, 1);
         r3: {
             tree: {
                 region: region(L1, normal),
@@ -103,7 +106,7 @@ fn main() -> int64 {
                 children: buf(L1, normal, int64, 8)
             },
             inserted: int64
-        } <- btree_set_csr@insert[int64, mem(normal)](r2.tree, 5);
+        } <- csr_set_trait_bridge@insert_set(r2.tree, 5);
         r4: {
             tree: {
                 region: region(L1, normal),
@@ -120,8 +123,8 @@ fn main() -> int64 {
                 children: buf(L1, normal, int64, 8)
             },
             inserted: int64
-        } <- btree_set_csr@insert[int64, mem(normal)](r3.tree, 3);
-        validation: { ok: int64, error_code: int64 } <- btree_set_csr@validate[int64, mem(normal)](r3.tree);
+        } <- csr_set_trait_bridge@insert_set(r3.tree, 3);
+        validation: { ok: int64, error_code: int64 } <- csr_set_trait_bridge@validate_set(r3.tree);
         contains_failures: int64 <- check_contains(r3.tree);
         tree0_unchanged: int64 <- case tree0.root_id of { -1 -> 0; _: int64 -> 1 };
         failures: int64 <-

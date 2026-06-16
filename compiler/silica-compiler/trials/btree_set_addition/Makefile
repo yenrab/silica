@@ -36,13 +36,29 @@ lib-sources:
 	@mkdir -p "$(THIS_DIR)lib"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_csr.silica)" "$(THIS_DIR)lib/btree_set_csr.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_nodeid.silica)" "$(THIS_DIR)lib/btree_set_nodeid.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_nodeid.silica)" "$(THIS_DIR)lib/btree_nodeid.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_csr_map.silica)" "$(THIS_DIR)lib/btree_csr_map.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/OrderedSet.silica)" "$(THIS_DIR)lib/OrderedSet.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/OrderedMap.silica)" "$(THIS_DIR)lib/OrderedMap.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/ordered_set_nodeid_adapter.silica)" "$(THIS_DIR)lib/ordered_set_nodeid_adapter.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/ordered_set_csr_adapter.silica)" "$(THIS_DIR)lib/ordered_set_csr_adapter.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/ordered_map_nodeid_adapter.silica)" "$(THIS_DIR)lib/ordered_map_nodeid_adapter.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/ordered_map_csr_adapter.silica)" "$(THIS_DIR)lib/ordered_map_csr_adapter.silica"
 
 silica.config: lib-sources
 	@cd "$(THIS_DIR)" && { \
 		echo 'lib/btree_set_csr.silica'; \
 		echo 'lib/btree_set_nodeid.silica'; \
+		echo 'lib/btree_nodeid.silica'; \
 		echo 'lib/btree_csr_map.silica'; \
+		echo 'lib/OrderedSet.silica'; \
+		echo 'lib/OrderedMap.silica'; \
+		echo 'lib/ordered_set_nodeid_adapter.silica'; \
+		echo 'lib/ordered_set_csr_adapter.silica'; \
+		echo 'lib/ordered_map_nodeid_adapter.silica'; \
+		echo 'lib/ordered_map_csr_adapter.silica'; \
+		echo 'lib/csr_set_trait_bridge.silica'; \
+		echo 'lib/csr_map_trait_bridge.silica'; \
 		for src in $(TRIAL_SOURCES); do echo "$$src"; done; \
 	} > silica.config
 
@@ -82,6 +98,58 @@ executables: objects
 				case "$$lib_objs" in \
 					*lib/btree_set_csr.o*) ;; \
 					*) [ -f lib/btree_set_csr.o ] && lib_objs="$$lib_objs lib/btree_set_csr.o" ;; \
+				esac ;; \
+		esac; \
+		case "$$lib_objs" in \
+			*lib/OrderedSet.o*) \
+				case "$$lib_objs" in \
+					*lib/ordered_set_nodeid_adapter.o*) ;; \
+					*) [ -f lib/ordered_set_nodeid_adapter.o ] && lib_objs="$$lib_objs lib/ordered_set_nodeid_adapter.o" ;; \
+				esac; \
+				case "$$lib_objs" in \
+					*lib/ordered_set_csr_adapter.o*) ;; \
+					*) [ -f lib/ordered_set_csr_adapter.o ] && lib_objs="$$lib_objs lib/ordered_set_csr_adapter.o" ;; \
+				esac; \
+				case "$$lib_objs" in \
+					*lib/btree_set_nodeid.o*) ;; \
+					*) [ -f lib/btree_set_nodeid.o ] && lib_objs="$$lib_objs lib/btree_set_nodeid.o" ;; \
+				esac; \
+				case "$$lib_objs" in \
+					*lib/btree_set_csr.o*) ;; \
+					*) [ -f lib/btree_set_csr.o ] && lib_objs="$$lib_objs lib/btree_set_csr.o" ;; \
+				esac ;; \
+		esac; \
+		case "$$lib_objs" in \
+			*lib/OrderedMap.o*) \
+				case "$$lib_objs" in \
+					*lib/ordered_map_nodeid_adapter.o*) ;; \
+					*) [ -f lib/ordered_map_nodeid_adapter.o ] && lib_objs="$$lib_objs lib/ordered_map_nodeid_adapter.o" ;; \
+				esac; \
+				case "$$lib_objs" in \
+					*lib/ordered_map_csr_adapter.o*) ;; \
+					*) [ -f lib/ordered_map_csr_adapter.o ] && lib_objs="$$lib_objs lib/ordered_map_csr_adapter.o" ;; \
+				esac; \
+				case "$$lib_objs" in \
+					*lib/btree_nodeid.o*) ;; \
+					*) [ -f lib/btree_nodeid.o ] && lib_objs="$$lib_objs lib/btree_nodeid.o" ;; \
+				esac; \
+				case "$$lib_objs" in \
+					*lib/btree_csr_map.o*) ;; \
+					*) [ -f lib/btree_csr_map.o ] && lib_objs="$$lib_objs lib/btree_csr_map.o" ;; \
+				esac ;; \
+		esac; \
+		case "$$lib_objs" in \
+			*lib/csr_set_trait_bridge.o*) \
+				case "$$lib_objs" in \
+					*lib/btree_set_csr.o*) ;; \
+					*) [ -f lib/btree_set_csr.o ] && lib_objs="$$lib_objs lib/btree_set_csr.o" ;; \
+				esac ;; \
+		esac; \
+		case "$$lib_objs" in \
+			*lib/csr_map_trait_bridge.o*) \
+				case "$$lib_objs" in \
+					*lib/btree_csr_map.o*) ;; \
+					*) [ -f lib/btree_csr_map.o ] && lib_objs="$$lib_objs lib/btree_csr_map.o" ;; \
 				esac ;; \
 		esac; \
 		runtime_obj=""; \
@@ -125,6 +193,58 @@ integrate: silica.config
 				case "$$lib_objs" in \
 					*lib/btree_set_csr.o*) ;; \
 					*) [ -f lib/btree_set_csr.o ] && lib_objs="$$lib_objs lib/btree_set_csr.o" ;; \
+				esac ;; \
+		esac; \
+		case "$$lib_objs" in \
+			*lib/OrderedSet.o*) \
+				case "$$lib_objs" in \
+					*lib/ordered_set_nodeid_adapter.o*) ;; \
+					*) [ -f lib/ordered_set_nodeid_adapter.o ] && lib_objs="$$lib_objs lib/ordered_set_nodeid_adapter.o" ;; \
+				esac; \
+				case "$$lib_objs" in \
+					*lib/ordered_set_csr_adapter.o*) ;; \
+					*) [ -f lib/ordered_set_csr_adapter.o ] && lib_objs="$$lib_objs lib/ordered_set_csr_adapter.o" ;; \
+				esac; \
+				case "$$lib_objs" in \
+					*lib/btree_set_nodeid.o*) ;; \
+					*) [ -f lib/btree_set_nodeid.o ] && lib_objs="$$lib_objs lib/btree_set_nodeid.o" ;; \
+				esac; \
+				case "$$lib_objs" in \
+					*lib/btree_set_csr.o*) ;; \
+					*) [ -f lib/btree_set_csr.o ] && lib_objs="$$lib_objs lib/btree_set_csr.o" ;; \
+				esac ;; \
+		esac; \
+		case "$$lib_objs" in \
+			*lib/OrderedMap.o*) \
+				case "$$lib_objs" in \
+					*lib/ordered_map_nodeid_adapter.o*) ;; \
+					*) [ -f lib/ordered_map_nodeid_adapter.o ] && lib_objs="$$lib_objs lib/ordered_map_nodeid_adapter.o" ;; \
+				esac; \
+				case "$$lib_objs" in \
+					*lib/ordered_map_csr_adapter.o*) ;; \
+					*) [ -f lib/ordered_map_csr_adapter.o ] && lib_objs="$$lib_objs lib/ordered_map_csr_adapter.o" ;; \
+				esac; \
+				case "$$lib_objs" in \
+					*lib/btree_nodeid.o*) ;; \
+					*) [ -f lib/btree_nodeid.o ] && lib_objs="$$lib_objs lib/btree_nodeid.o" ;; \
+				esac; \
+				case "$$lib_objs" in \
+					*lib/btree_csr_map.o*) ;; \
+					*) [ -f lib/btree_csr_map.o ] && lib_objs="$$lib_objs lib/btree_csr_map.o" ;; \
+				esac ;; \
+		esac; \
+		case "$$lib_objs" in \
+			*lib/csr_set_trait_bridge.o*) \
+				case "$$lib_objs" in \
+					*lib/btree_set_csr.o*) ;; \
+					*) [ -f lib/btree_set_csr.o ] && lib_objs="$$lib_objs lib/btree_set_csr.o" ;; \
+				esac ;; \
+		esac; \
+		case "$$lib_objs" in \
+			*lib/csr_map_trait_bridge.o*) \
+				case "$$lib_objs" in \
+					*lib/btree_csr_map.o*) ;; \
+					*) [ -f lib/btree_csr_map.o ] && lib_objs="$$lib_objs lib/btree_csr_map.o" ;; \
 				esac ;; \
 		esac; \
 		runtime_obj=""; \

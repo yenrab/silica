@@ -1,0 +1,790 @@
+// Collection trait type strings and constructor-record type witnesses (Phase 0.4).
+// OrderedSet[Item, mem(Space)], OrderedMap[Key, Value, mem(Space)], Heap[Item, mem(Space)].
+
+use parser_ast;
+use type_checker_core;
+use type_checker_lists;
+use type_checker_record_types;
+
+export parse_ordered_set_type/1;
+export parse_ordered_map_type/1;
+export parse_heap_type/1;
+export is_ordered_set_type/1;
+export is_ordered_map_type/1;
+export is_heap_type/1;
+export is_collection_trait_type/1;
+export validate_collection_type_declaration/2;
+export collection_return_accepts_constructor/3;
+export collection_type_fits_concrete_record/3;
+export collection_type_fits_impl_parameter/3;
+export collection_param_type_for_trait_arg/2;
+export is_assoc_type_placeholder/1;
+export resolve_assoc_type_placeholder/3;
+export collection_space_from_type/1;
+export infer_collection_decl_from_receiver/3;
+export resolve_trait_formal_type/3;
+export resolve_trait_formal_with_contexts/4;
+export witness_matches_ordered_set_declaration/3;
+export witness_matches_ordered_map_declaration/4;
+export witness_matches_heap_declaration/3;
+export parse_fn_binary_param_types/1;
+export expected_compare_item_fn_type/1;
+export expected_compare_key_fn_type/1;
+export expected_compare_value_fn_type/1;
+export expected_compare_priority_fn_type/1;
+
+fn strip_all_spaces_col(s: string) -> string {
+    strip_all_spaces_col_from(s, 0, "")
+}
+
+fn strip_all_spaces_col_from(s: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> strip_all_spaces_col_from(s, i + 1, acc);
+            false -> strip_all_spaces_col_from(s, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn strip_spaces_col(s: string) -> string {
+    strip_spaces_col_from(s, 0, len(s) - 1)
+}
+
+fn strip_spaces_col_from(s: string, start: int64, end_inclusive: int64) -> string {
+    case start > end_inclusive of {
+        true -> "";
+        false -> case substring(s, start, start + 1) == " " of {
+            true -> strip_spaces_col_from(s, start + 1, end_inclusive);
+            false -> case substring(s, end_inclusive, end_inclusive + 1) == " " of {
+                true -> strip_spaces_col_from(s, start, end_inclusive - 1);
+                false -> substring(s, start, end_inclusive + 1)
+            }
+        }
+    }
+}
+
+fn starts_with_col(s: string, prefix: string) -> bool {
+    case len(s) < len(prefix) of {
+        true -> false;
+        false -> substring(s, 0, len(prefix)) == prefix
+    }
+}
+
+fn skip_spaces_index_col(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> i;
+        false -> case substring(s, i, i + 1) == " " of {
+            true -> skip_spaces_index_col(s, i + 1);
+            false -> i
+        }
+    }
+}
+
+fn find_first_comma_depth0_col(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "[" or c == "{" of {
+                true -> find_first_comma_depth0_col(s, i + 1, depth + 1);
+                false -> case c == ")" or c == "]" or c == "}" of {
+                    true -> find_first_comma_depth0_col(s, i + 1, depth - 1);
+                    false -> case c == "," of {
+                        true -> case depth == 0 of {
+                            true -> i;
+                            false -> find_first_comma_depth0_col(s, i + 1, depth)
+                        };
+                        false -> find_first_comma_depth0_col(s, i + 1, depth)
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn normalize_collection_bracket(prefix: string, s: string) -> string {
+    plen: int64 <- len(prefix);
+    case len(s) < plen of {
+        true -> s;
+        false -> case substring(s, 0, plen) == prefix of {
+            false -> s;
+            true -> do
+                j: int64 <- skip_spaces_index_col(s, plen);
+                case j >= len(s) of {
+                    true -> s;
+                    false -> case substring(s, j, j + 1) == "[" of {
+                        true -> concat(prefix, concat("[", substring(s, j + 1, len(s))));
+                        false -> s
+                    }
+                }
+            end
+        }
+    }
+}
+
+fn collection_space_has_mem_form(space: string) -> bool {
+    t: string <- strip_all_spaces_col(space);
+    len(t) >= 6 and substring(t, 0, 4) == "mem(" and substring(t, len(t) - 1, len(t)) == ")"
+}
+
+fn parse_bracketed_collection_two(full: string, prefix: string) -> (bool, string, string, string, string) {
+    t: string <- normalize_collection_bracket(prefix, strip_all_spaces_col(full));
+    plen: int64 <- len(prefix);
+    case len(t) < plen + 2 of {
+        true -> (false, "", "", "", "");
+        false -> case starts_with_col(t, concat(prefix, "[")) of {
+            false -> (false, "", "", "", "");
+            true -> case substring(t, len(t) - 1, len(t)) == "]" of {
+                false -> (false, "", "", "", "");
+                true -> do
+                    inner: string <- substring(t, plen + 1, len(t) - 1);
+                    inner_trim: string <- strip_spaces_col(inner);
+                    comma_pos: int64 <- find_first_comma_depth0_col(inner_trim, 0, 0);
+                    case comma_pos >= len(inner_trim) of {
+                        true -> (false, "", "", "", "");
+                        false -> do
+                            p1: string <- strip_spaces_col(substring(inner_trim, 0, comma_pos));
+                            p2: string <- strip_spaces_col(substring(inner_trim, comma_pos + 1, len(inner_trim)));
+                            (true, p1, p2, "", "")
+                        end
+                    }
+                end
+            }
+        }
+    }
+}
+
+fn parse_bracketed_collection_three(full: string, prefix: string) -> (bool, string, string, string, string) {
+    t: string <- normalize_collection_bracket(prefix, strip_all_spaces_col(full));
+    plen: int64 <- len(prefix);
+    case len(t) < plen + 2 of {
+        true -> (false, "", "", "", "");
+        false -> case starts_with_col(t, concat(prefix, "[")) of {
+            false -> (false, "", "", "", "");
+            true -> case substring(t, len(t) - 1, len(t)) == "]" of {
+                false -> (false, "", "", "", "");
+                true -> do
+                    inner: string <- substring(t, plen + 1, len(t) - 1);
+                    inner_trim: string <- strip_spaces_col(inner);
+                    c1: int64 <- find_first_comma_depth0_col(inner_trim, 0, 0);
+                    case c1 >= len(inner_trim) of {
+                        true -> (false, "", "", "", "");
+                        false -> do
+                            rest1: string <- substring(inner_trim, c1 + 1, len(inner_trim));
+                            c2: int64 <- find_first_comma_depth0_col(rest1, 0, 0);
+                            case c2 >= len(rest1) of {
+                                true -> (false, "", "", "", "");
+                                false -> do
+                                    p1: string <- strip_spaces_col(substring(inner_trim, 0, c1));
+                                    p2: string <- strip_spaces_col(substring(rest1, 0, c2));
+                                    p3: string <- strip_spaces_col(substring(rest1, c2 + 1, len(rest1)));
+                                    (true, p1, p2, p3, "")
+                                end
+                            }
+                        end
+                    }
+                end
+            }
+        }
+    }
+}
+
+fn parse_bracketed_collection(full: string, prefix: string, n_params: int64) -> (bool, string, string, string, string) {
+    case n_params == 2 of {
+        true -> parse_bracketed_collection_two(full, prefix);
+        false -> case n_params == 3 of {
+            true -> parse_bracketed_collection_three(full, prefix);
+            false -> (false, "", "", "", "")
+        }
+    }
+}
+
+fn parse_ordered_set_type(full: string) -> (bool, string, string) {
+    (ok: bool, item: string, space: string, _: string, _: string) <- parse_bracketed_collection(full, "OrderedSet", 2);
+    case ok of { true -> (true, item, space); false -> (false, "", "") }
+}
+
+fn parse_ordered_map_type(full: string) -> (bool, string, string, string) {
+    (ok: bool, key: string, value: string, space: string, _: string) <- parse_bracketed_collection(full, "OrderedMap", 3);
+    case ok of { true -> (true, key, value, space); false -> (false, "", "", "") }
+}
+
+fn parse_heap_type(full: string) -> (bool, string, string) {
+    (ok: bool, item: string, space: string, _: string, _: string) <- parse_bracketed_collection(full, "Heap", 2);
+    case ok of { true -> (true, item, space); false -> (false, "", "") }
+}
+
+fn is_ordered_set_type(s: string) -> bool {
+    (ok: bool, _: string, _: string) <- parse_ordered_set_type(s);
+    ok
+}
+
+fn is_ordered_map_type(s: string) -> bool {
+    (ok: bool, _: string, _: string, _: string) <- parse_ordered_map_type(s);
+    ok
+}
+
+fn is_heap_type(s: string) -> bool {
+    (ok: bool, _: string, _: string) <- parse_heap_type(s);
+    ok
+}
+
+fn is_collection_trait_type(s: string) -> bool {
+    is_ordered_set_type(s) or is_ordered_map_type(s) or is_heap_type(s)
+}
+
+fn comparator_return_type_ok(ret: string) -> bool {
+    r: string <- strip_spaces_col(ret);
+    case r == "atom" of {
+        true -> true;
+        false -> case len(r) > 0 and substring(r, 0, 1) == ":" of {
+            true -> true;
+            false -> case len(r) >= 2 and substring(r, 0, 1) == "(" of {
+                true -> contains_less_equal_greater(r);
+                false -> false
+            }
+        }
+    }
+}
+
+fn contains_atom_token(s: string, token: string) -> bool {
+    case len(token) == 0 of {
+        true -> true;
+        false -> case len(s) < len(token) of {
+            true -> false;
+            false -> case substring(s, 0, len(token)) == token of {
+                true -> true;
+                false -> contains_atom_token(substring(s, 1, len(s)), token)
+            }
+        }
+    }
+}
+
+fn contains_less_equal_greater(s: string) -> bool {
+    contains_atom_token(s, ":less") and contains_atom_token(s, ":equal") and contains_atom_token(s, ":greater")
+}
+
+fn expected_compare_item_fn_type(item_type: string) -> string {
+    item: string <- strip_spaces_col(item_type);
+    concat(concat(concat("fn(", item), ", "), concat(item, ") -> :less | :equal | :greater"))
+}
+
+fn expected_compare_key_fn_type(key_type: string) -> string {
+    expected_compare_item_fn_type(key_type)
+}
+
+fn expected_compare_value_fn_type(value_type: string) -> string {
+    expected_compare_item_fn_type(value_type)
+}
+
+fn expected_compare_priority_fn_type(item_type: string) -> string {
+    expected_compare_item_fn_type(item_type)
+}
+
+fn find_arrow_col_depth(s: string, i: int64, depth: int64) -> int64 {
+    case i + 2 > len(s) of {
+        true -> -1;
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "(" or c == "{" or c == "[" of {
+                true -> find_arrow_col_depth(s, i + 1, depth + 1);
+                false -> case c == ")" or c == "}" or c == "]" of {
+                    true -> find_arrow_col_depth(s, i + 1, depth - 1);
+                    false -> case depth == 0 and substring(s, i, i + 2) == "->" of {
+                        true -> i;
+                        false -> find_arrow_col_depth(s, i + 1, depth)
+                    }
+                }
+            }
+        end
+    }
+}
+
+fn params_inner_before_arrow_col(t: string, arrow: int64) -> string {
+    prefix: string <- substring(t, 0, arrow);
+    case len(prefix) < 5 of {
+        true -> "";
+        false -> case substring(prefix, 0, 3) == "fn(" and substring(prefix, len(prefix) - 1, len(prefix)) == ")" of {
+            true -> substring(prefix, 3, len(prefix) - 1);
+            false -> ""
+        }
+    }
+}
+
+fn fn_return_after_arrow_col(fn_type: string) -> string {
+    t: string <- strip_all_spaces_col(fn_type);
+    arrow: int64 <- find_arrow_col_depth(t, 0, 0);
+    case arrow < 0 of {
+        true -> "";
+        false -> strip_spaces_col(substring(t, arrow + 2, len(t)))
+    }
+}
+
+fn parse_fn_binary_param_types(fn_type: string) -> (bool, string, string) {
+    t: string <- strip_all_spaces_col(fn_type);
+    case len(t) < 5 of {
+        true -> (false, "", "");
+        false -> case substring(t, 0, 3) == "fn(" of {
+            false -> (false, "", "");
+            true -> do
+                arrow: int64 <- find_arrow_col_depth(t, 0, 0);
+                case arrow < 0 of {
+                    true -> (false, "", "");
+                    false -> do
+                        inner: string <- params_inner_before_arrow_col(t, arrow);
+                        comma: int64 <- find_first_comma_depth0_col(inner, 0, 0);
+                        case comma >= len(inner) of {
+                            true -> (false, "", "");
+                            false -> do
+                                left: string <- strip_spaces_col(substring(inner, 0, comma));
+                                right: string <- strip_spaces_col(substring(inner, comma + 1, len(inner)));
+                                (true, left, right)
+                            end
+                        }
+                    end
+                }
+            end
+        }
+    }
+}
+
+fn fn_type_witnesses_item_with_world(fn_type: string, item_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, left: string, right: string) <- parse_fn_binary_param_types(fn_type);
+    case ok of {
+        false -> false;
+        true -> do
+            item: string <- strip_spaces_col(item_type);
+            params_ok: bool <- type_checker_lists@types_equal_strip(left, item) and type_checker_lists@types_equal_strip(right, item);
+            case params_ok of {
+                false -> false;
+                true -> do
+                    expected: string <- expected_compare_item_fn_type(item);
+                    type_checker_lists@formal_type_accepts_actual(expected, fn_type, world) or type_checker_lists@formal_type_accepts_actual(fn_type, expected, world)
+                end
+            }
+        end
+    }
+}
+
+fn record_field_fn_witnesses_item_with_world(record_type: string, field: string, item_type: string, world: ListNamedProgram) -> bool {
+    ft: string <- type_checker_record_types@find_field_type_in_record(record_type, field);
+    case len(ft) == 0 of {
+        true -> false;
+        false -> fn_type_witnesses_item_with_world(ft, item_type, world)
+    }
+}
+
+fn fn_type_witnesses_item(fn_type: string, item_type: string) -> bool {
+    (ok: bool, left: string, right: string) <- parse_fn_binary_param_types(fn_type);
+    case ok of {
+        false -> false;
+        true -> do
+            item: string <- strip_spaces_col(item_type);
+            params_ok: bool <- type_checker_lists@types_equal_strip(left, item) and type_checker_lists@types_equal_strip(right, item);
+            case params_ok of {
+                false -> false;
+                true -> do
+                    ret: string <- fn_return_after_arrow_col(fn_type);
+                    comparator_return_type_ok(ret)
+                end
+            }
+        end
+    }
+}
+
+fn record_field_fn_witnesses_item(record_type: string, field: string, item_type: string) -> bool {
+    ft: string <- type_checker_record_types@find_field_type_in_record(record_type, field);
+    case len(ft) == 0 of {
+        true -> false;
+        false -> fn_type_witnesses_item(ft, item_type)
+    }
+}
+
+fn witness_matches_ordered_set_declaration(decl_type: string, witness_fn_type: string, location: SourceLocation) -> TypeCheckResult {
+    (ok: bool, item: string, space: string) <- parse_ordered_set_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid OrderedSet type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("OrderedSet requires mem(Space): ", decl_type), ""), "sect4");
+            true -> case fn_type_witnesses_item(witness_fn_type, item) of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_item type ", witness_fn_type), " does not witness OrderedSet item type "), item), ""), "sect4");
+                true -> type_checker_core@type_check_ok()
+            }
+        }
+    }
+}
+
+fn witness_matches_ordered_map_declaration(decl_type: string, key_fn_type: string, value_fn_type: string, location: SourceLocation) -> TypeCheckResult {
+    (ok: bool, key: string, value: string, space: string) <- parse_ordered_map_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid OrderedMap type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("OrderedMap requires mem(Space): ", decl_type), ""), "sect4");
+            true -> case fn_type_witnesses_item(key_fn_type, key) of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_key type ", key_fn_type), " does not witness OrderedMap key type "), key), ""), "sect4");
+                true -> case fn_type_witnesses_item(value_fn_type, value) of {
+                    false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_value type ", value_fn_type), " does not witness OrderedMap value type "), value), ""), "sect4");
+                    true -> type_checker_core@type_check_ok()
+                }
+            }
+        }
+    }
+}
+
+fn witness_matches_heap_declaration(decl_type: string, witness_fn_type: string, location: SourceLocation) -> TypeCheckResult {
+    (ok: bool, item: string, space: string) <- parse_heap_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid Heap type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("Heap requires mem(Space): ", decl_type), ""), "sect4");
+            true -> case fn_type_witnesses_item(witness_fn_type, item) of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_priority type ", witness_fn_type), " does not witness Heap item type "), item), ""), "sect4");
+                true -> type_checker_core@type_check_ok()
+            }
+        }
+    }
+}
+
+fn collection_return_accepts_ordered_set(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, item: string, _: string) <- parse_ordered_set_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_item", item, world)
+    }
+}
+
+fn collection_return_accepts_ordered_map(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, key: string, value: string, _: string) <- parse_ordered_map_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_key", key, world) and record_field_fn_witnesses_item_with_world(return_type, "compare_value", value, world)
+    }
+}
+
+fn collection_return_accepts_heap(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, item: string, _: string) <- parse_heap_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_priority", item, world)
+    }
+}
+
+fn collection_return_accepts_constructor(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    case is_ordered_set_type(decl_type) of {
+        true -> collection_return_accepts_ordered_set(decl_type, return_type, world);
+        false -> case is_ordered_map_type(decl_type) of {
+            true -> collection_return_accepts_ordered_map(decl_type, return_type, world);
+            false -> case is_heap_type(decl_type) of {
+                true -> collection_return_accepts_heap(decl_type, return_type, world);
+                false -> false
+            }
+        }
+    }
+}
+
+fn collection_type_fits_concrete_record(collection_type: string, record_type: string, world: ListNamedProgram) -> bool {
+    collection_return_accepts_constructor(collection_type, record_type, world)
+}
+
+fn collection_type_fits_impl_parameter(collection_type: string, impl_param: string, world: ListNamedProgram) -> bool {
+    case collection_type_fits_concrete_record(collection_type, impl_param, world) of {
+        true -> true;
+        false -> type_checker_lists@formal_type_accepts_actual(impl_param, collection_type, world)
+    }
+}
+
+fn collection_param_type_for_trait_arg(collection_type: string, arg_index: int64) -> string {
+    case is_ordered_set_type(collection_type) of {
+        true -> do
+            (ok: bool, item: string, _: string) <- parse_ordered_set_type(collection_type);
+            case ok of { true -> item; false -> "" }
+        end;
+        false -> case is_ordered_map_type(collection_type) of {
+            true -> case arg_index of {
+                1 -> do
+                    (ok: bool, key: string, _: string, _: string) <- parse_ordered_map_type(collection_type);
+                    case ok of { true -> key; false -> "" }
+                end;
+                2 -> do
+                    (ok: bool, _: string, value: string, _: string) <- parse_ordered_map_type(collection_type);
+                    case ok of { true -> value; false -> "" }
+                end;
+                _: int64 -> ""
+            };
+            false -> case is_heap_type(collection_type) of {
+                true -> do
+                    (ok: bool, item: string, _: string) <- parse_heap_type(collection_type);
+                    case ok of { true -> item; false -> "" }
+                end;
+                false -> ""
+            }
+        }
+    }
+}
+
+fn is_assoc_type_placeholder(t: string) -> bool {
+    u: string <- strip_spaces_col(t);
+    u == "ItemType" or u == "KeyType" or u == "ValueType" or u == "SpaceType" or u == "SetType" or u == "MapType" or u == "HeapType" or u == "NodeIdType" or u == "EdgePayloadType" or u == "PriorityType" or u == "WeightType" or u == "AccType"
+}
+
+fn collection_space_from_type(collection_type: string) -> string {
+    case is_ordered_set_type(collection_type) of {
+        true -> do
+            (ok: bool, _: string, space: string) <- parse_ordered_set_type(collection_type);
+            case ok of { true -> space; false -> "" }
+        end;
+        false -> case is_ordered_map_type(collection_type) of {
+            true -> do
+                (ok: bool, _: string, _: string, space: string) <- parse_ordered_map_type(collection_type);
+                case ok of { true -> space; false -> "" }
+            end;
+            false -> case is_heap_type(collection_type) of {
+                true -> do
+                    (ok: bool, _: string, space: string) <- parse_heap_type(collection_type);
+                    case ok of { true -> space; false -> "" }
+                end;
+                false -> ""
+            }
+        }
+    }
+}
+
+fn resolve_assoc_type_placeholder(placeholder: string, collection_type: string, param_index: int64) -> string {
+    p: string <- strip_spaces_col(placeholder);
+    case is_assoc_type_placeholder(p) of {
+        false -> p;
+        true -> case p == "ItemType" or p == "PriorityType" of {
+            true -> collection_param_type_for_trait_arg(collection_type, 1);
+            false -> case p == "KeyType" of {
+                true -> collection_param_type_for_trait_arg(collection_type, 1);
+                false -> case p == "ValueType" of {
+                    true -> collection_param_type_for_trait_arg(collection_type, 2);
+                    false -> case p == "SpaceType" of {
+                        true -> collection_space_from_type(collection_type);
+                        false -> case p == "SetType" of {
+                            true -> case is_ordered_set_type(collection_type) of { true -> collection_type; false -> "" };
+                            false -> case p == "MapType" of {
+                                true -> case is_ordered_map_type(collection_type) of { true -> collection_type; false -> "" };
+                                false -> case p == "HeapType" of {
+                                    true -> case is_heap_type(collection_type) of { true -> collection_type; false -> "" };
+                                    false -> ""
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn resolve_trait_formal_type(formal: string, collection_type: string, param_index: int64) -> string {
+    f: string <- strip_spaces_col(formal);
+    case len(collection_type) == 0 of {
+        true -> f;
+        false -> case is_assoc_type_placeholder(f) of {
+            true -> resolve_assoc_type_placeholder(f, collection_type, param_index);
+            false -> f
+        }
+    }
+}
+
+fn witness_type_from_record_field(record_type: string, field: string) -> string {
+    ft: string <- type_checker_record_types@find_field_type_in_record(record_type, field);
+    case len(ft) == 0 of {
+        true -> "";
+        false -> do
+            (ok: bool, left: string, _: string) <- parse_fn_binary_param_types(ft);
+            case ok of { true -> left; false -> "" }
+        end
+    }
+}
+
+fn assoc_type_from_record_witness(placeholder: string, record_type: string) -> string {
+    p: string <- strip_spaces_col(placeholder);
+    case len(record_type) == 0 of {
+        true -> "";
+        false -> case p == "ItemType" or p == "PriorityType" of {
+            true -> case len(witness_type_from_record_field(record_type, "compare_priority")) > 0 of {
+                true -> witness_type_from_record_field(record_type, "compare_priority");
+                false -> witness_type_from_record_field(record_type, "compare_item")
+            };
+            false -> case p == "KeyType" of {
+                true -> witness_type_from_record_field(record_type, "compare_key");
+                false -> case p == "ValueType" of {
+                    true -> witness_type_from_record_field(record_type, "compare_value");
+                    false -> ""
+                }
+            }
+        }
+    }
+}
+
+fn resolve_trait_formal_with_contexts(formal: string, collection_type: string, record_type: string, param_index: int64) -> string {
+    f: string <- strip_spaces_col(formal);
+    case is_assoc_type_placeholder(f) of {
+        false -> f;
+        true -> do
+            from_col: string <- case len(collection_type) > 0 of {
+                true -> resolve_assoc_type_placeholder(f, collection_type, param_index);
+                false -> ""
+            };
+            case len(from_col) > 0 of {
+                true -> from_col;
+                false -> assoc_type_from_record_witness(f, record_type)
+            }
+        end
+    }
+}
+
+fn infer_collection_decl_from_receiver(inferred: string, arg_expr: Expr, context_env: ListSymbolEntry) -> string {
+    inf: string <- strip_all_spaces_col(inferred);
+    case is_collection_trait_type(inf) of {
+        true -> inferred;
+        false -> case arg_expr.kind == 4 of {
+            true -> case arg_expr.inner.kind == 1 of {
+                true -> do
+                    (found: bool, bound: string) <- type_checker_core@lookup_symbol_found(context_env, arg_expr.inner.name);
+                    case found of {
+                        false -> "";
+                        true -> case is_collection_trait_type(bound) of { true -> bound; false -> "" }
+                    }
+                end;
+                false -> ""
+            };
+            false -> ""
+        }
+    }
+}
+
+fn find_collection_keyword_index(s: string, i: int64, kw: string) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case len(s) - i >= len(kw) and substring(s, i, i + len(kw)) == kw of {
+            true -> i;
+            false -> find_collection_keyword_index(s, i + 1, kw)
+        }
+    }
+}
+
+fn find_matching_closing_bracket_col(s: string, i: int64, depth: int64) -> int64 {
+    case i >= len(s) of {
+        true -> len(s);
+        false -> do
+            c: string <- substring(s, i, i + 1);
+            case c == "[" or c == "(" or c == "{" of {
+                true -> find_matching_closing_bracket_col(s, i + 1, depth + 1);
+                false -> case c == "]" or c == ")" or c == "}" of {
+                    true -> case depth == 1 of {
+                        true -> i;
+                        false -> find_matching_closing_bracket_col(s, i + 1, depth - 1)
+                    };
+                    false -> find_matching_closing_bracket_col(s, i + 1, depth)
+                }
+            }
+        end
+    }
+}
+
+fn validate_one_collection_surface(col_type: string, location: SourceLocation) -> TypeCheckResult {
+    case is_ordered_set_type(col_type) of {
+        true -> do
+            (ok: bool, _: string, space: string) <- parse_ordered_set_type(col_type);
+            case ok of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid OrderedSet type: ", col_type), ""), "sect4");
+                true -> case collection_space_has_mem_form(space) of {
+                    false -> type_checker_core@type_check_err("E2015", location, concat(concat("OrderedSet requires mem(Space): ", col_type), ""), "sect4");
+                    true -> type_checker_core@type_check_ok()
+                }
+            }
+        end;
+        false -> case is_ordered_map_type(col_type) of {
+            true -> do
+                (ok: bool, _: string, _: string, space: string) <- parse_ordered_map_type(col_type);
+                case ok of {
+                    false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid OrderedMap type: ", col_type), ""), "sect4");
+                    true -> case collection_space_has_mem_form(space) of {
+                        false -> type_checker_core@type_check_err("E2015", location, concat(concat("OrderedMap requires mem(Space): ", col_type), ""), "sect4");
+                        true -> type_checker_core@type_check_ok()
+                    }
+                }
+            end;
+            false -> case is_heap_type(col_type) of {
+                true -> do
+                    (ok: bool, _: string, space: string) <- parse_heap_type(col_type);
+                    case ok of {
+                        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid Heap type: ", col_type), ""), "sect4");
+                        true -> case collection_space_has_mem_form(space) of {
+                            false -> type_checker_core@type_check_err("E2015", location, concat(concat("Heap requires mem(Space): ", col_type), ""), "sect4");
+                            true -> type_checker_core@type_check_ok()
+                        }
+                    }
+                end;
+                false -> type_checker_core@type_check_ok()
+            }
+        }
+    }
+}
+
+fn validate_collection_in_type_string(s: string, location: SourceLocation, i: int64) -> TypeCheckResult {
+    case i >= len(s) of {
+        true -> type_checker_core@type_check_ok();
+        false -> do
+            pos_set: int64 <- find_collection_keyword_index(s, i, "OrderedSet");
+            pos_map: int64 <- find_collection_keyword_index(s, i, "OrderedMap");
+            pos_heap: int64 <- find_collection_keyword_index(s, i, "Heap");
+            pos: int64 <- min_pos3(pos_set, pos_map, pos_heap);
+            case pos < 0 of {
+                true -> type_checker_core@type_check_ok();
+                false -> do
+                    kw_len: int64 <- case pos == pos_set of {
+                        true -> 10;
+                        false -> case pos == pos_map of { true -> 10; false -> 4 }
+                    };
+                    j: int64 <- skip_spaces_index_col(s, pos + kw_len);
+                    case j >= len(s) of {
+                        true -> validate_collection_in_type_string(s, location, pos + kw_len);
+                        false -> case substring(s, j, j + 1) == "[" of {
+                            false -> validate_collection_in_type_string(s, location, pos + kw_len);
+                            true -> do
+                                end_j: int64 <- find_matching_closing_bracket_col(s, j, 0);
+                                case end_j >= len(s) of {
+                                    true -> validate_collection_in_type_string(s, location, pos + kw_len);
+                                    false -> do
+                                        col_ty: string <- substring(s, pos, end_j + 1);
+                                        one_r: TypeCheckResult <- validate_one_collection_surface(col_ty, location);
+                                        case one_r.is_ok of {
+                                            false -> one_r;
+                                            true -> validate_collection_in_type_string(s, location, end_j + 1)
+                                        }
+                                    end
+                                }
+                            end
+                        }
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn min_pos3(a: int64, b: int64, c: int64) -> int64 {
+    case a < 0 of {
+        true -> case b < 0 of { true -> c; false -> case c < 0 of { true -> b; false -> case b < c of { true -> b; false -> c } } };
+        false -> case b < 0 of {
+            true -> case c < 0 of { true -> a; false -> case a < c of { true -> a; false -> c } };
+            false -> case c < 0 of {
+                true -> case a < b of { true -> a; false -> b };
+                false -> case a < b of {
+                    true -> case a < c of { true -> a; false -> c };
+                    false -> case b < c of { true -> b; false -> c }
+                }
+            }
+        }
+    }
+}
+
+fn validate_collection_type_declaration(type_str: string, location: SourceLocation) -> TypeCheckResult {
+    validate_collection_in_type_string(type_str, location, 0)
+}

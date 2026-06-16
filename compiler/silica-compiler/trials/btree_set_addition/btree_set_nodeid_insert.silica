@@ -1,23 +1,42 @@
 // Phase 5 step 5.4 — NodeIDBTreeSet[int64, mem(normal)] insertion status and duplicate handling.
+use OrderedSet;
 use btree_set_nodeid;
+
+fn compare_int64_atom(left: int64, right: int64) -> :less | :equal | :greater {
+    case left < right of {
+        true -> :less;
+        false -> case left == right of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
 
 fn main() -> int64 {
     sequence proc[mem(normal)]
+        functions: { compare_item: fn(int64, int64) -> :less | :equal | :greater } <- {
+            compare_item: compare_int64_atom
+        };
         tree0: {
             root_id: int64,
             node_count: int64,
             order: int64,
-            nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
-        } <- btree_set_nodeid@empty[int64, mem(normal)]();
-        r1: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, inserted: int64 } <-
-            btree_set_nodeid@insert[int64, mem(normal)](tree0, 4);
-        r2: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, inserted: int64 } <-
-            btree_set_nodeid@insert[int64, mem(normal)](r1.tree, 2);
-        duplicate: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, inserted: int64 } <-
-            btree_set_nodeid@insert[int64, mem(normal)](r2.tree, 4);
+            nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+            compare_item: fn(int64, int64) -> :less | :equal | :greater
+        } <- btree_set_nodeid@empty(functions);
+        r1: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)], compare_item: fn(int64, int64) -> :less | :equal | :greater }, inserted: int64 } <-
+            btree_set_nodeid@insert(tree0, 4);
+        r2: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)], compare_item: fn(int64, int64) -> :less | :equal | :greater }, inserted: int64 } <-
+            btree_set_nodeid@insert(r1.tree, 2);
+        duplicate: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)], compare_item: fn(int64, int64) -> :less | :equal | :greater }, inserted: int64 } <-
+            btree_set_nodeid@insert(r2.tree, 4);
+        has4: boolean <- OrderedSet@contains(duplicate.tree, 4);
+        has9: boolean <- OrderedSet@contains(duplicate.tree, 9);
         failures: int64 <- ((1 - r1.inserted) * 1)
             + ((1 - r2.inserted) * 2)
             + (duplicate.inserted * 4)
+            + (case has4 of { true -> 0; false -> 8 })
+            + (case has9 of { true -> 16; false -> 0 })
     produces
         pure failures
     end

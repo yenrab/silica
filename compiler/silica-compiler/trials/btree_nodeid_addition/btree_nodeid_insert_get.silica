@@ -1,8 +1,26 @@
 // Test: four inserts + get operations (no validate).
+use OrderedMap;
 use btree_nodeid;
+
+fn compare_int64_atom(left: int64, right: int64) -> :less | :equal | :greater {
+    case left < right of {
+        true -> :less;
+        false -> case left == right of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
 
 fn main() -> int64 {
     sequence proc[mem(normal)]
+        functions: {
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater
+        } <- {
+            compare_key: compare_int64_atom,
+            compare_value: compare_int64_atom
+        };
         tree0: {
             root_id: int64,
             node_count: int64,
@@ -19,14 +37,34 @@ fn main() -> int64 {
         replace1: { tree: { root_id: int64, node_count: int64, order: int64, nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] }, inserted: int64, replaced: int64 } <-
             btree_nodeid@insert[int64, int64, mem(normal)](r3.tree, 10, 999);
 
-        get10: { found: int64, value: int64 } <- btree_nodeid@get[int64, int64, mem(normal)](replace1.tree, 10);
+        trait_map: {
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            root_id: int64,
+            node_count: int64,
+            order: int64,
+            nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], values: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        } <- {
+            compare_key: functions.compare_key,
+            compare_value: functions.compare_value,
+            root_id: replace1.tree.root_id,
+            node_count: replace1.tree.node_count,
+            order: replace1.tree.order,
+            nodes: replace1.tree.nodes
+        };
+
+        has10: boolean <- OrderedMap@contains_key(trait_map, 10);
+        get10: { found: int64, value: int64 } <- OrderedMap@get(trait_map, 10);
+        get40: { found: int64, value: int64 } <- OrderedMap@get(trait_map, 40);
 
         failures: int64 <-
             (1 - r1.inserted) +
             ((1 - r2.inserted) * 2) +
             ((1 - r3.inserted) * 4) +
             ((1 - replace1.replaced) * 8) +
-            ((1 - get10.found) * 16)
+            (case has10 of { true -> 0; false -> 16 }) +
+            ((1 - get10.found) * 32) +
+            (get40.found * 64)
     produces
         pure failures
     end

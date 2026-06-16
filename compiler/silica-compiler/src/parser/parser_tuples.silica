@@ -28,6 +28,7 @@ export extract_tuple_type_from_slots/1;
 export extract_parametrized_type_from_slots/1;
 export extract_inline_record_type_from_slots/1;
 export extract_list_type_from_slots/1;
+export slots_start_bracketed_collection_type/2;
 export extract_atom_option_type_from_slots/1;
 export extract_top_level_or_type_from_slots/1;
 export is_tuple_type_binding_start/1;
@@ -212,8 +213,37 @@ fn kind_to_type_name_inner(token_kind: int64) -> string {
 }
 }
 
+fn token_is_bracketed_collection_type_name(tok: Token, kinds: TokenKinds) -> bool {
+    tok.kind == kinds.list_keyword
+}
+
+fn slots_tail_has_left_bracket(slots: ListTokenSlot, kinds: TokenKinds) -> bool {
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots_for_types(slots);
+    case trimmed.is_nil of {
+        true -> false;
+        false -> trimmed.head.token.kind == kinds.left_bracket
+    }
+}
+
+fn slots_start_bracketed_collection_type(slots: ListTokenSlot, kinds: TokenKinds) -> bool {
+    trimmed: ListTokenSlot <- skip_leading_whitespace_slots_for_types(slots);
+    case trimmed.is_nil of {
+        true -> false;
+        false -> case token_is_bracketed_collection_type_name(trimmed.head.token, kinds) of {
+            true -> slots_tail_has_left_bracket(trimmed.tail, kinds);
+            false -> case trimmed.head.token.kind == kinds.identifier of {
+                true -> case trimmed.head.token.lexeme == "OrderedSet" or trimmed.head.token.lexeme == "OrderedMap" or trimmed.head.token.lexeme == "Heap" of {
+                    false -> false;
+                    true -> slots_tail_has_left_bracket(trimmed.tail, kinds)
+                };
+                false -> false
+            }
+        }
+    }
+}
+
 fn token_is_list_type_name(tok: Token, kinds: TokenKinds) -> bool {
-    tok.kind == kinds.list_keyword or (tok.kind == kinds.identifier and tok.lexeme == "List")
+    token_is_bracketed_collection_type_name(tok, kinds)
 }
 
 fn slot_lexemes_join_pt(slots: ListTokenSlot) -> string proc[DeviceIO] {
@@ -320,7 +350,7 @@ fn extract_list_type_from_slots(slots: ListTokenSlot) -> TupleTypeResult proc[De
     kinds: TokenKinds <- lexer_token_kind@token_kinds();
     case slots.is_nil of {
         true -> TupleTypeResult { type_str: "", rest_slots: slots };
-        false -> case token_is_list_type_name(slots.head.token, kinds) of {
+        false -> case slots_start_bracketed_collection_type(slots, kinds) of {
             true -> case slots.tail.is_nil of {
                 true -> TupleTypeResult { type_str: "", rest_slots: slots };
                 false -> case slots.tail.head.token.kind == kinds.left_bracket of {
@@ -397,7 +427,7 @@ fn extract_type_head_from_slots(slots: ListTokenSlot, kinds: TokenKinds) -> Tupl
             true -> extract_tuple_type_from_slots(trimmed);
             false -> case trimmed.head.token.kind == kinds.left_brace or trimmed.head.token.lexeme == "{" of {
                 true -> extract_inline_record_type_from_slots(trimmed);
-                false -> case token_is_list_type_name(trimmed.head.token, kinds) of {
+                false -> case slots_start_bracketed_collection_type(trimmed, kinds) of {
                     true -> extract_list_type_from_slots(trimmed);
                     false -> case token_introduces_fn_type(trimmed.head.token, kinds) of {
                         true -> do
@@ -657,7 +687,7 @@ fn extract_tuple_type_loop(slots: ListTokenSlot, acc: string) -> TupleTypeResult
                             new_acc_br: string <- concat(acc, nested_rec.type_str);
                             extract_tuple_type_loop(nested_rec.rest_slots, new_acc_br)
                         end;
-                        false -> case token_is_list_type_name(trimmed.head.token, kinds) of {
+                        false -> case slots_start_bracketed_collection_type(trimmed, kinds) of {
                             true -> do
                                 nested_li: TupleTypeResult <- extract_list_type_from_slots(trimmed);
                                 new_acc_li: string <- concat(acc, nested_li.type_str);
@@ -888,7 +918,7 @@ fn extract_tuple_decompose_type_inline(slots: ListTokenSlot, kinds: TokenKinds) 
                             tr_br: TupleTypeResult <- extract_inline_record_type_from_slots(slots);
                             (tr_br.type_str, tr_br.rest_slots)
                         end;
-                        false -> case token_is_list_type_name(slots.head.token, kinds) of {
+                        false -> case slots_start_bracketed_collection_type(slots, kinds) of {
                             true -> do
                                 tr_ls: TupleTypeResult <- extract_list_type_from_slots(slots);
                                 (tr_ls.type_str, tr_ls.rest_slots)

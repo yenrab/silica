@@ -31,6 +31,7 @@ use type_checker_supervisor;
 use type_checker_tuple_decompose_helpers;
 use type_checker_memory_regions;
 use type_checker_lists;
+use type_checker_collections;
 use instantiated_fn_name;
 use type_checker_expressions_actors;
 use type_checker_record_types;
@@ -2709,6 +2710,7 @@ export find_tag0_decl_for_qualified_call/6;
 export find_function_decl_by_name_arity_call/3;
 export qualified_call_first_arg_matches_decl/3;
 export context_after_sequence_body/2;
+export recv_type_for_trait_link_mangle/3;
 
 fn param_types_str_from_params(params: ListParam) -> string {
     case params.is_nil of {
@@ -2743,9 +2745,15 @@ fn call_site_actual_matches_formal(inferred: string, formal: string, world: List
     fdecl: string <- type_checker_traits@trim_type_text(formal);
     case fin == fdecl of {
         true -> true;
-        false -> case type_checker_tuple_decompose_helpers@types_equal(fin, fdecl) of {
-            true -> true;
-            false -> type_checker_traits@actual_type_satisfies_trait_expectation(fin, fdecl, world)
+        false -> case type_checker_collections@is_collection_trait_type(fin) of {
+            true -> type_checker_collections@collection_type_fits_concrete_record(fin, fdecl, world);
+            false -> case type_checker_collections@is_collection_trait_type(fdecl) of {
+                true -> type_checker_collections@collection_type_fits_concrete_record(fdecl, fin, world);
+                false -> case type_checker_tuple_decompose_helpers@types_equal(fin, fdecl) of {
+                    true -> true;
+                    false -> type_checker_traits@actual_type_satisfies_trait_expectation(fin, fdecl, world)
+                }
+            }
         }
     }
 }
@@ -2782,9 +2790,12 @@ fn dispatch_actual_fits_impl_parameter(actual: string, impl_param: string, world
         false -> do
             a: string <- type_checker_traits@trim_type_text(actual);
             p: string <- type_checker_traits@trim_type_text(impl_param);
-            case a == "int64" of {
-                true -> p == "int8" or p == "int16" or p == "int32" or p == "uint8" or p == "uint16" or p == "uint32";
-                false -> struct_literal_inferred_matches_impl_record(actual, impl_param)
+            case type_checker_collections@is_collection_trait_type(a) of {
+                true -> type_checker_collections@collection_type_fits_impl_parameter(a, p, world);
+                false -> case a == "int64" of {
+                    true -> p == "int8" or p == "int16" or p == "int32" or p == "uint8" or p == "uint16" or p == "uint32";
+                    false -> struct_literal_inferred_matches_impl_record(actual, impl_param)
+                }
             }
         end
     }
@@ -2842,6 +2853,37 @@ fn infer_trait_dispatch_concrete_from_impls_status(trait_prog: Program, trait_se
     }
 }
 
+fn export_trait_name_from_decls_link(decls: ListDeclaration) -> string {
+    case decls.is_nil of {
+        true -> "";
+        false -> case decls.head.tag == 5 of {
+            true -> decls.head.name;
+            false -> export_trait_name_from_decls_link(decls.tail)
+        }
+    }
+}
+
+// Phase 0.4 #5: resolve trait-dispatch concrete receiver type for link-name mangling (mirrors type-check dispatch).
+fn recv_type_for_trait_link_mangle(recv_inferred: string, callee_decls: ListDeclaration, world: ListNamedProgram) -> string {
+    case len(recv_inferred) == 0 of {
+        true -> "";
+        false -> do
+            trait_self: string <- export_trait_name_from_decls_link(callee_decls);
+            case len(trait_self) == 0 of {
+                true -> recv_inferred;
+                false -> do
+                    trait_prog: Program <- Program { declarations: callee_decls, location: parser_ast@zero_location() };
+                    (st: int64, conc: string) <- infer_trait_dispatch_concrete_from_impls_status(trait_prog, trait_self, recv_inferred, world);
+                    case st == 1 of {
+                        true -> conc;
+                        false -> recv_inferred
+                    }
+                end
+            }
+        end
+    }
+}
+
 fn resolve_site_bucket_type_for_param(inferred: string, formal_ty: string, callee_mod: Program, loc: SourceLocation, call_name: string, world: ListNamedProgram) -> (TypeCheckResult, string) {
     case call_site_actual_matches_formal(inferred, formal_ty, world) of {
         true -> (type_checker_core@type_check_ok(), inferred);
@@ -2881,7 +2923,7 @@ fn find_qualified_call_resolved_declaration(pprog: Program, fn_id: string, gener
 }
 
 // Infer each actual's type; require it matches the corresponding formal (including trait formals). Returns types in source left-to-right order.
-fn infer_trait_site_call_args_walk(expr: Expr, params_lr: ListParam, context: TypeContext, world: ListNamedProgram, call_expr: Expr, callee_mod: Program) -> (TypeCheckResult, ListParam) {
+fn infer_trait_site_call_args_walk(expr: Expr, params_lr: ListParam, context: TypeContext, world: ListNamedProgram, call_expr: Expr, callee_mod: Program, collection_ctx: string, record_ctx: string, param_index: int64) -> (TypeCheckResult, ListParam) {
     case expr.inner.kind == -1 of {
         true -> case params_lr.is_nil of {
             true -> (type_checker_core@type_check_ok(), parser_ast@nil_list_param());
@@ -2894,37 +2936,54 @@ fn infer_trait_site_call_args_walk(expr: Expr, params_lr: ListParam, context: Ty
                 case len(inferred) == 0 of {
                     true -> (type_checker_core@type_check_err("E2005", expr.inner.location, "cannot infer concrete type for qualified call argument (needed to resolve trait-parameter body)", "sect6"), parser_ast@nil_list_param());
                     false -> do
-                        (res_ty: TypeCheckResult, bucket_ty: string) <- resolve_site_bucket_type_for_param(inferred, params_lr.head.type_name, callee_mod, expr.inner.location, call_expr.name, world);
-                        case res_ty.is_ok of {
-                            false -> (res_ty, parser_ast@nil_list_param());
-                            true -> case params_lr.tail.is_nil of {
-                                true -> do
-                                    extra: TypeCheckResult <- case expr.right_expr.kind == -1 of {
-                                        true -> type_checker_core@type_check_ok();
-                                        false -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6")
-                                    };
-                                    case extra.is_ok of {
-                                        false -> (extra, parser_ast@nil_list_param());
-                                        true -> (type_checker_core@type_check_ok(), parser_ast@build_infer_type_bucket(bucket_ty, parser_ast@nil_list_param()))
-                                    }
-                                end;
-                                false -> case expr.right_expr.kind == 4 of {
+                        formal_ty: string <- type_checker_collections@resolve_trait_formal_with_contexts(params_lr.head.type_name, collection_ctx, record_ctx, param_index);
+                        case len(formal_ty) == 0 and type_checker_collections@is_assoc_type_placeholder(params_lr.head.type_name) of {
+                            true -> (type_checker_core@type_check_err("E2017", expr.inner.location, concat(concat(concat("cannot resolve assoc type placeholder ", params_lr.head.type_name), " without collection declaration context for "), call_expr.name), "sect4"), parser_ast@nil_list_param());
+                            false -> do
+                                (res_ty: TypeCheckResult, bucket_ty: string) <- resolve_site_bucket_type_for_param(inferred, formal_ty, callee_mod, expr.inner.location, call_expr.name, world);
+                                case res_ty.is_ok of {
+                                    false -> (res_ty, parser_ast@nil_list_param());
                                     true -> do
-                                        (rest_ok: TypeCheckResult, rest_inf: ListParam) <- infer_trait_site_call_args_walk(expr.right_expr, params_lr.tail, context, world, call_expr, callee_mod);
-                                        case rest_ok.is_ok of {
-                                            false -> (rest_ok, parser_ast@nil_list_param());
-                                            true -> (type_checker_core@type_check_ok(), parser_ast@build_infer_type_bucket(bucket_ty, rest_inf))
-                                        }
-                                    end;
-                                    false -> do
-                                        (one_ok: TypeCheckResult, one_tail: ListParam) <- infer_one_flat_second_arg(expr.right_expr, params_lr.tail, context, world, call_expr, callee_mod);
-                                        case one_ok.is_ok of {
-                                            false -> (one_ok, parser_ast@nil_list_param());
-                                            true -> (type_checker_core@type_check_ok(), parser_ast@build_infer_type_bucket(bucket_ty, one_tail))
+                                        next_ctx: string <- type_checker_collections@infer_collection_decl_from_receiver(inferred, expr.inner, context.env);
+                                        ctx_after: string <- case len(next_ctx) > 0 of {
+                                            true -> next_ctx;
+                                            false -> case len(collection_ctx) > 0 of { true -> collection_ctx; false -> "" }
+                                        };
+                                        rec_after: string <- case param_index == 0 of {
+                                            true -> bucket_ty;
+                                            false -> record_ctx
+                                        };
+                                        case params_lr.tail.is_nil of {
+                                            true -> do
+                                                extra: TypeCheckResult <- case expr.right_expr.kind == -1 of {
+                                                    true -> type_checker_core@type_check_ok();
+                                                    false -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6")
+                                                };
+                                                case extra.is_ok of {
+                                                    false -> (extra, parser_ast@nil_list_param());
+                                                    true -> (type_checker_core@type_check_ok(), parser_ast@build_infer_type_bucket(bucket_ty, parser_ast@nil_list_param()))
+                                                }
+                                            end;
+                                            false -> case expr.right_expr.kind == 4 of {
+                                                true -> do
+                                                    (rest_ok: TypeCheckResult, rest_inf: ListParam) <- infer_trait_site_call_args_walk(expr.right_expr, params_lr.tail, context, world, call_expr, callee_mod, ctx_after, rec_after, param_index + 1);
+                                                    case rest_ok.is_ok of {
+                                                        false -> (rest_ok, parser_ast@nil_list_param());
+                                                        true -> (type_checker_core@type_check_ok(), parser_ast@build_infer_type_bucket(bucket_ty, rest_inf))
+                                                    }
+                                                end;
+                                                false -> do
+                                                    (one_ok: TypeCheckResult, one_tail: ListParam) <- infer_one_flat_second_arg(expr.right_expr, params_lr.tail, context, world, call_expr, callee_mod, ctx_after, rec_after, param_index + 1);
+                                                    case one_ok.is_ok of {
+                                                        false -> (one_ok, parser_ast@nil_list_param());
+                                                        true -> (type_checker_core@type_check_ok(), parser_ast@build_infer_type_bucket(bucket_ty, one_tail))
+                                                    }
+                                                end
+                                            }
                                         }
                                     end
                                 }
-                            }
+                            end
                         }
                     end
                 }
@@ -2933,7 +2992,7 @@ fn infer_trait_site_call_args_walk(expr: Expr, params_lr: ListParam, context: Ty
     }
 }
 
-fn infer_one_flat_second_arg(second_e: Expr, params_tail: ListParam, context: TypeContext, world: ListNamedProgram, call_expr: Expr, callee_mod: Program) -> (TypeCheckResult, ListParam) {
+fn infer_one_flat_second_arg(second_e: Expr, params_tail: ListParam, context: TypeContext, world: ListNamedProgram, call_expr: Expr, callee_mod: Program, collection_ctx: string, record_ctx: string, param_index: int64) -> (TypeCheckResult, ListParam) {
     case params_tail.is_nil of {
         true -> (type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6"), parser_ast@nil_list_param());
         false -> case params_tail.tail.is_nil of {
@@ -2943,10 +3002,16 @@ fn infer_one_flat_second_arg(second_e: Expr, params_tail: ListParam, context: Ty
                 case len(inf2) == 0 of {
                     true -> (type_checker_core@type_check_err("E2005", second_e.location, "cannot infer concrete type for qualified call argument (needed to resolve trait-parameter body)", "sect6"), parser_ast@nil_list_param());
                     false -> do
-                        (res2: TypeCheckResult, bucket2: string) <- resolve_site_bucket_type_for_param(inf2, params_tail.head.type_name, callee_mod, second_e.location, call_expr.name, world);
-                        case res2.is_ok of {
-                            false -> (res2, parser_ast@nil_list_param());
-                            true -> (type_checker_core@type_check_ok(), parser_ast@build_infer_type_bucket(bucket2, parser_ast@nil_list_param()))
+                        formal_ty: string <- type_checker_collections@resolve_trait_formal_with_contexts(params_tail.head.type_name, collection_ctx, record_ctx, param_index);
+                        case len(formal_ty) == 0 and type_checker_collections@is_assoc_type_placeholder(params_tail.head.type_name) of {
+                            true -> (type_checker_core@type_check_err("E2017", second_e.location, concat(concat(concat("cannot resolve assoc type placeholder ", params_tail.head.type_name), " without collection declaration context for "), call_expr.name), "sect4"), parser_ast@nil_list_param());
+                            false -> do
+                                (res2: TypeCheckResult, bucket2: string) <- resolve_site_bucket_type_for_param(inf2, formal_ty, callee_mod, second_e.location, call_expr.name, world);
+                                case res2.is_ok of {
+                                    false -> (res2, parser_ast@nil_list_param());
+                                    true -> (type_checker_core@type_check_ok(), parser_ast@build_infer_type_bucket(bucket2, parser_ast@nil_list_param()))
+                                }
+                            end
                         }
                     end
                 }
@@ -3054,17 +3119,23 @@ fn try_resolve_qualified_call_func_type(expr: Expr, expected_type: string, world
 fn check_user_call_result_user_call(expr: Expr, expected_type: string, return_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
     case expected_type == "discard" of {
         true -> type_checker_core@type_check_ok();
-        false -> case type_checker_lists@formal_type_accepts_actual(return_type, expected_type, world) of {
-            true -> type_checker_core@type_check_ok();
-            false -> case type_checker_lists@formal_type_accepts_actual(expected_type, return_type, world) of {
+        false -> case type_checker_collections@is_collection_trait_type(expected_type) of {
+            true -> case type_checker_collections@collection_return_accepts_constructor(expected_type, return_type, world) of {
+                false -> type_checker_core@type_check_err("E2017", expr.location, concat(concat(concat(concat(expr.name, " return type does not witness declared collection type "), expected_type), " (got "), concat(return_type, ")")), "sect4");
+                true -> type_checker_core@type_check_ok()
+            };
+            false -> case type_checker_lists@formal_type_accepts_actual(return_type, expected_type, world) of {
                 true -> type_checker_core@type_check_ok();
-                false -> case type_checker_lists@types_equal_strip(expected_type, return_type) of {
+                false -> case type_checker_lists@formal_type_accepts_actual(expected_type, return_type, world) of {
                     true -> type_checker_core@type_check_ok();
-                    false -> case trim_leading_user_call(expected_type) == "string" and return_type_has_ptr_len_out_fields(return_type) of {
+                    false -> case type_checker_lists@types_equal_strip(expected_type, return_type) of {
                         true -> type_checker_core@type_check_ok();
-                        false -> case type_checker_traits@actual_type_satisfies_trait_expectation(return_type, expected_type, world) of {
+                        false -> case trim_leading_user_call(expected_type) == "string" and return_type_has_ptr_len_out_fields(return_type) of {
                             true -> type_checker_core@type_check_ok();
-                            false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat(expr.name, " returns "), return_type), ", expected "), expected_type), "sect6")
+                            false -> case type_checker_traits@actual_type_satisfies_trait_expectation(return_type, expected_type, world) of {
+                                true -> type_checker_core@type_check_ok();
+                                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat(expr.name, " returns "), return_type), ", expected "), expected_type), "sect6")
+                            }
                         }
                     }
                 }
@@ -3175,7 +3246,7 @@ fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: strin
                             false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world);
                             true -> do
                                 params_lr: ListParam <- parser_ast@list_param_reverse_with_acc(callee_decl.parameters, parser_ast@nil_list_param());
-                                (inf_ok: TypeCheckResult, inf_left: ListParam) <- infer_trait_site_call_args_walk(expr, params_lr, context, world, expr, pprog);
+                                (inf_ok: TypeCheckResult, inf_left: ListParam) <- infer_trait_site_call_args_walk(expr, params_lr, context, world, expr, pprog, "", "", 0);
                                 case inf_ok.is_ok of {
                                     false -> inf_ok;
                                     true -> do
@@ -3306,6 +3377,119 @@ fn check_user_call_two_args_as_tuple(expr: Expr, tuple_param: string, expected_t
     }
 }
 
+fn is_empty_constructor_call(expr: Expr) -> bool {
+    type_checker_core@user_call_base_function_name(expr.name) == "empty"
+}
+
+fn constructor_record_field_fn_type(record_expr: Expr, field: string, context: TypeContext) -> string {
+    case record_expr.kind == 21 of {
+        true -> case record_expr.name == field of {
+            true -> type_checker_tuple_decompose_helpers@infer_expr_type(record_expr.inner, context);
+            false -> constructor_record_field_fn_type(record_expr.right_expr, field, context)
+        };
+        false -> do
+            inferred: string <- type_checker_tuple_decompose_helpers@infer_expr_type(record_expr, context);
+            case len(inferred) > 0 of {
+                true -> type_checker_record_types@find_field_type_in_record(inferred, field);
+                false -> case record_expr.kind == 1 of {
+                    true -> do
+                        (found: bool, var_type: string) <- type_checker_core@lookup_symbol_found(context.env, record_expr.name);
+                        case found of {
+                            false -> "";
+                            true -> type_checker_record_types@find_field_type_in_record(var_type, field)
+                        }
+                    end;
+                    false -> ""
+                }
+            }
+        end
+    }
+}
+
+fn empty_call_constructor_witness_fn_type(rhs: Expr, field: string, context: TypeContext, world: ListNamedProgram) -> string {
+    (rw: bool, func_type: string) <- try_resolve_qualified_call_func_type(rhs, "discard", world, context);
+    case rw of {
+        false -> "";
+        true -> do
+            func_type_canon: string <- type_checker_expressions_identifiers@normalize_fn_type_idf(func_type);
+            params_inner: string <- get_params_inner_from_func_type(func_type_canon);
+            (first_param: string, _: string) <- get_first_param_type(params_inner);
+            case len(first_param) == 0 of {
+                true -> "";
+                false -> type_checker_record_types@find_field_type_in_record(first_param, field)
+            }
+        end
+    }
+}
+
+fn verify_collection_constructor_witness(bind_type: string, rhs: Expr, context: TypeContext, location: SourceLocation, world: ListNamedProgram) -> TypeCheckResult {
+    case rhs.kind == 4 of {
+        false -> type_checker_core@type_check_err("E2017", location, "collection constructor binding requires a call to empty/1", "sect4");
+        true -> case is_empty_constructor_call(rhs) of {
+            false -> type_checker_core@type_check_err("E2017", location, "collection constructor binding requires a call to empty/1", "sect4");
+            true -> do
+                arg_e: Expr <- call_second_arg_expr(rhs);
+                case type_checker_collections@is_ordered_set_type(bind_type) of {
+                    true -> do
+                        wit_from_arg: string <- constructor_record_field_fn_type(arg_e, "compare_item", context);
+                        set_wit: string <- case len(wit_from_arg) > 0 of {
+                            true -> wit_from_arg;
+                            false -> empty_call_constructor_witness_fn_type(rhs, "compare_item", context, world)
+                        };
+                        case len(set_wit) == 0 of {
+                            true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_item witness", "sect4");
+                            false -> type_checker_collections@witness_matches_ordered_set_declaration(bind_type, set_wit, location)
+                        }
+                    end;
+                    false -> case type_checker_collections@is_ordered_map_type(bind_type) of {
+                        true -> do
+                            key_from_arg: string <- constructor_record_field_fn_type(arg_e, "compare_key", context);
+                            val_from_arg: string <- constructor_record_field_fn_type(arg_e, "compare_value", context);
+                            key_wit: string <- case len(key_from_arg) > 0 of { true -> key_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_key", context, world) };
+                            val_wit: string <- case len(val_from_arg) > 0 of { true -> val_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_value", context, world) };
+                            case len(key_wit) == 0 or len(val_wit) == 0 of {
+                                true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_key or compare_value witness", "sect4");
+                                false -> type_checker_collections@witness_matches_ordered_map_declaration(bind_type, key_wit, val_wit, location)
+                            }
+                        end;
+                        false -> case type_checker_collections@is_heap_type(bind_type) of {
+                            true -> do
+                                pri_from_arg: string <- constructor_record_field_fn_type(arg_e, "compare_priority", context);
+                                heap_wit: string <- case len(pri_from_arg) > 0 of { true -> pri_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_priority", context, world) };
+                                case len(heap_wit) == 0 of {
+                                    true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_priority witness", "sect4");
+                                    false -> type_checker_collections@witness_matches_heap_declaration(bind_type, heap_wit, location)
+                                }
+                            end;
+                            false -> type_checker_core@type_check_ok()
+                        }
+                    }
+                }
+            end
+        }
+    }
+}
+
+fn check_collection_trait_let(expr: Expr, expected_type: string, context: TypeContext, bind_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    rhs_result: TypeCheckResult <- check_expr(expr.inner, "discard", context, world);
+    case rhs_result.is_ok of {
+        false -> rhs_result;
+        true -> do
+            witness_result: TypeCheckResult <- verify_collection_constructor_witness(bind_type, expr.inner, context, expr.location, world);
+            case witness_result.is_ok of {
+                false -> witness_result;
+                true -> do
+                    base_env: ListSymbolEntry <- type_checker_core@add_symbol(context.env, expr.name, bind_type, parser_ast@empty_effect_name_list(), "");
+                    new_env: ListSymbolEntry <- enrich_env_for_actor_spawn(base_env, expr.name, bind_type, expr.inner, context);
+                    new_context: TypeContext <- type_checker_core@type_context_with_env(context, new_env);
+                    body_result: TypeCheckResult <- check_expr(expr.right_expr, expected_type, new_context, world);
+                    body_result
+                end
+            }
+        end
+    }
+}
+
 // Let binding: name: type <- rhs; body. Check rhs has declared type, add to env, check body.
 // Reject unit for named variables; allow _ : unit <- expr (discard pattern for expression statements).
 // Memory region types (ref, region, buf) are validated before type checking.
@@ -3314,10 +3498,19 @@ fn check_let(expr: Expr, expected_type: string, context: TypeContext, world: Lis
     list_result: TypeCheckResult <- type_checker_lists@validate_list_type_declaration(bind_type, expr.location);
     case list_result.is_ok of {
         false -> list_result;
-        true -> case type_checker_memory_regions@is_memory_region_type(bind_type) of {
-            true -> check_let_memory_region(expr, expected_type, context, bind_type, world);
-            false -> check_let_after_validation(expr, expected_type, context, bind_type, world)
-        }
+        true -> do
+            col_result: TypeCheckResult <- type_checker_collections@validate_collection_type_declaration(bind_type, expr.location);
+            case col_result.is_ok of {
+                false -> col_result;
+                true -> case type_checker_memory_regions@is_memory_region_type(bind_type) of {
+                    true -> check_let_memory_region(expr, expected_type, context, bind_type, world);
+                    false -> case type_checker_collections@is_collection_trait_type(bind_type) of {
+                        true -> check_collection_trait_let(expr, expected_type, context, bind_type, world);
+                        false -> check_let_after_validation(expr, expected_type, context, bind_type, world)
+                    }
+                }
+            }
+        end
     }
 }
 

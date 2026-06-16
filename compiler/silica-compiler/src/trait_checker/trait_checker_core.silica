@@ -28,7 +28,9 @@
 
 use parser_ast;
 use diagnostics_core;
+use type_checker_core;
 use type_checker_traits;
+use type_checker_trait_placeholders;
 
 export trait_checker_check_program/1;
 
@@ -183,5 +185,22 @@ fn check_supervisor_trait_required_shape(program: Program) -> int64 proc[DeviceI
 }
 
 fn trait_checker_check_program(program: Program) -> int64 proc[DeviceIO] {
-    check_supervisor_trait_required_shape(program)
+    sup_st: int64 <- check_supervisor_trait_required_shape(program);
+    case sup_st != 0 of {
+        true -> sup_st;
+        false -> do
+            ph_result: TypeCheckResult <- type_checker_trait_placeholders@check_trait_impl_required_consistency(program);
+            case ph_result.is_ok of {
+                false -> do
+                    err_code: string <- case ph_result.error_code == "" of {
+                        true -> "E2092";
+                        false -> ph_result.error_code
+                    };
+                    _: int8 <- diagnostics_core@print_compiler_error("TraitError", err_code, ph_result.error_location, ph_result.error_message, "sect3.4.8");
+                    1
+                end;
+                true -> 0
+            }
+        end
+    }
 }

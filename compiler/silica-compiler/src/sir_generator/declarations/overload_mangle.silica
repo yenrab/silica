@@ -16,7 +16,8 @@
 -}
 
 // Unique SIR / assembly link names when multiple tag-0 functions share the same name and arity
-// (trait `impl fn` overloads). Call-site resolution mirrors the type checker’s qualified-call rules.
+// (trait `impl fn` overloads). Call-site resolution mirrors the type checker’s qualified-call rules
+// and Phase 0.4 #5 trait-dispatch concrete receiver resolution.
 
 use parser_ast;
 use type_checker_core;
@@ -152,7 +153,8 @@ fn sir_fn_link_name(decl: Declaration, all_decls: ListDeclaration) -> string {
 fn mangle_fn_part_if_overloaded(fn_id: string, arity: int64, recv_ty: string, expected_ty: string, callee_decls: ListDeclaration, world: ListNamedProgram) -> string {
     fn_base: string <- instantiated_fn_name@fn_base_name_before_brackets(fn_id);
     n: int64 <- count_tag0_same_name_arity(callee_decls, fn_base, arity);
-    (df: bool, d: Declaration) <- find_tag0_decl_for_qualified_call(callee_decls, fn_id, arity, recv_ty, expected_ty, world);
+    resolved_recv: string <- type_checker_expressions@recv_type_for_trait_link_mangle(recv_ty, callee_decls, world);
+    (df: bool, d: Declaration) <- find_tag0_decl_for_qualified_call(callee_decls, fn_id, arity, resolved_recv, expected_ty, world);
     case df of {
         true -> link_name_from_decl(d, n);
         false -> do
@@ -177,7 +179,10 @@ fn sir_resolve_qualified_callee_composite(world: ListNamedProgram, context: Type
                 true -> do
                     ac: int64 <- count_call_args_user_call(expr);
                     recv_ty: string <- case ac > 0 of {
-                        true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                        true -> do
+                            inferred: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                            type_checker_expressions@recv_type_for_trait_link_mangle(inferred, prog.declarations, world)
+                        end;
                         false -> ""
                     };
                     fn2: string <- mangle_fn_part_if_overloaded(fn_part, ac, recv_ty, "", prog.declarations, world);

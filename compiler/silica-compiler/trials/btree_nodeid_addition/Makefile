@@ -34,10 +34,18 @@ LIB_SRC := ../../src/standard_data_structures
 lib-sources:
 	@mkdir -p "$(THIS_DIR)lib"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_nodeid.silica)" "$(THIS_DIR)lib/btree_nodeid.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_csr_map.silica)" "$(THIS_DIR)lib/btree_csr_map.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/OrderedMap.silica)" "$(THIS_DIR)lib/OrderedMap.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/ordered_map_nodeid_adapter.silica)" "$(THIS_DIR)lib/ordered_map_nodeid_adapter.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/ordered_map_csr_adapter.silica)" "$(THIS_DIR)lib/ordered_map_csr_adapter.silica"
 
 silica.config: lib-sources
 	@cd "$(THIS_DIR)" && { \
 		echo 'lib/btree_nodeid.silica'; \
+		echo 'lib/btree_csr_map.silica'; \
+		echo 'lib/OrderedMap.silica'; \
+		echo 'lib/ordered_map_nodeid_adapter.silica'; \
+		echo 'lib/ordered_map_csr_adapter.silica'; \
 		for src in $(TRIAL_SOURCES); do echo "$$src"; done; \
 	} > silica.config
 
@@ -68,6 +76,13 @@ executables: objects
 		base=$${line%.silica}; \
 		[ -f "$$base.o" ] || continue; \
 		lib_objs="lib/btree_nodeid.o"; \
+		case "$$(grep '^use ' "$$base.silica" 2>/dev/null | sed 's/^use //;s/;//')" in \
+			*OrderedMap*) \
+				[ -f "lib/OrderedMap.o" ] && lib_objs="$$lib_objs lib/OrderedMap.o"; \
+				[ -f "lib/ordered_map_nodeid_adapter.o" ] && lib_objs="$$lib_objs lib/ordered_map_nodeid_adapter.o"; \
+				[ -f "lib/ordered_map_csr_adapter.o" ] && lib_objs="$$lib_objs lib/ordered_map_csr_adapter.o"; \
+				[ -f "lib/btree_csr_map.o" ] && lib_objs="$$lib_objs lib/btree_csr_map.o" ;; \
+		esac; \
 		runtime_obj=""; \
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
@@ -100,6 +115,13 @@ integrate: silica.config
 		base=$${line%.silica}; \
 		[ -f "$$base.o" ] || continue; \
 		lib_objs="lib/btree_nodeid.o"; \
+		case "$$(grep '^use ' "$$base.silica" 2>/dev/null | sed 's/^use //;s/;//')" in \
+			*OrderedMap*) \
+				[ -f "lib/OrderedMap.o" ] && lib_objs="$$lib_objs lib/OrderedMap.o"; \
+				[ -f "lib/ordered_map_nodeid_adapter.o" ] && lib_objs="$$lib_objs lib/ordered_map_nodeid_adapter.o"; \
+				[ -f "lib/ordered_map_csr_adapter.o" ] && lib_objs="$$lib_objs lib/ordered_map_csr_adapter.o"; \
+				[ -f "lib/btree_csr_map.o" ] && lib_objs="$$lib_objs lib/btree_csr_map.o" ;; \
+		esac; \
 		runtime_obj=""; \
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		echo "Linking $$base..."; \

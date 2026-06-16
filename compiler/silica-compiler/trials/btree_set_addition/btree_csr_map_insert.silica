@@ -2,7 +2,18 @@
 // replace_value semantics, and key lookup (get).
 // Inserts {3→30, 1→10, 5→50}, then replaces 3→300, then queries all mappings.
 // Also verifies the original empty map is not mutated (immutability contract).
-use btree_csr_map;
+use OrderedMap;
+use csr_map_trait_bridge;
+
+fn compare_int64_atom(left: int64, right: int64) -> :less | :equal | :greater {
+    case left < right of {
+        true -> :less;
+        false -> case left == right of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
 
 fn fail_unless_one(value: int64) -> int64 {
     case value of {
@@ -19,7 +30,15 @@ fn fail_if_nonzero(value: int64) -> int64 {
 }
 
 fn main() -> int64 {
-    sequence proc[mem(normal)]        tree0: {
+    sequence
+        functions: {
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater
+        } <- {
+            compare_key: compare_int64_atom,
+            compare_value: compare_int64_atom
+        };
+        tree0: {
             region: region(L1, normal),
             root_id: int64,
             node_count: int64,
@@ -33,7 +52,7 @@ fn main() -> int64 {
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
             children: buf(L1, normal, int64, 8)
-        } <- btree_csr_map@empty[int64, int64, mem(normal)]();
+        } <- csr_map_trait_bridge@empty_map();
         r1: {
             tree: {
                 region: region(L1, normal),
@@ -52,7 +71,7 @@ fn main() -> int64 {
             },
             inserted: int64,
             replaced: int64
-        } <- btree_csr_map@insert[int64, int64, mem(normal)](tree0, 3, 30);
+        } <- csr_map_trait_bridge@insert_map(tree0, 3, 30);
         r2: {
             tree: {
                 region: region(L1, normal),
@@ -71,7 +90,7 @@ fn main() -> int64 {
             },
             inserted: int64,
             replaced: int64
-        } <- btree_csr_map@insert[int64, int64, mem(normal)](r1.tree, 1, 10);
+        } <- csr_map_trait_bridge@insert_map(r1.tree, 1, 10);
         r3: {
             tree: {
                 region: region(L1, normal),
@@ -90,7 +109,7 @@ fn main() -> int64 {
             },
             inserted: int64,
             replaced: int64
-        } <- btree_csr_map@insert[int64, int64, mem(normal)](r2.tree, 5, 50);
+        } <- csr_map_trait_bridge@insert_map(r2.tree, 5, 50);
         r4: {
             tree: {
                 region: region(L1, normal),
@@ -109,12 +128,45 @@ fn main() -> int64 {
             },
             inserted: int64,
             replaced: int64
-        } <- btree_csr_map@insert[int64, int64, mem(normal)](r3.tree, 3, 300);
-        g1: { found: int64, value: int64 } <- btree_csr_map@get[int64, int64, mem(normal)](r4.tree, 1);
-        g3: { found: int64, value: int64 } <- btree_csr_map@get[int64, int64, mem(normal)](r4.tree, 3);
-        g5: { found: int64, value: int64 } <- btree_csr_map@get[int64, int64, mem(normal)](r4.tree, 5);
-        g4: { found: int64, value: int64 } <- btree_csr_map@get[int64, int64, mem(normal)](r4.tree, 4);
-        validation: { ok: int64, error_code: int64 } <- btree_csr_map@validate[int64, int64, mem(normal)](r4.tree);
+        } <- csr_map_trait_bridge@insert_map(r3.tree, 3, 300);
+        trait_map: {
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L1, normal),
+            root_id: int64,
+            node_count: int64,
+            key_count_total: int64,
+            order: int64,
+            node_key_start: buf(L1, normal, int64, 1),
+            node_key_count: buf(L1, normal, int64, 1),
+            node_child_start: buf(L1, normal, int64, 1),
+            node_child_count: buf(L1, normal, int64, 1),
+            node_is_leaf: buf(L1, normal, int64, 1),
+            keys: buf(L1, normal, int64, 7),
+            values: buf(L1, normal, int64, 7),
+            children: buf(L1, normal, int64, 8)
+        } <- {
+            compare_key: functions.compare_key,
+            compare_value: functions.compare_value,
+            region: r4.tree.region,
+            root_id: r4.tree.root_id,
+            node_count: r4.tree.node_count,
+            key_count_total: r4.tree.key_count_total,
+            order: r4.tree.order,
+            node_key_start: r4.tree.node_key_start,
+            node_key_count: r4.tree.node_key_count,
+            node_child_start: r4.tree.node_child_start,
+            node_child_count: r4.tree.node_child_count,
+            node_is_leaf: r4.tree.node_is_leaf,
+            keys: r4.tree.keys,
+            values: r4.tree.values,
+            children: r4.tree.children
+        };
+        g1: { found: int64, value: int64 } <- OrderedMap@get(trait_map, 1);
+        g3: { found: int64, value: int64 } <- OrderedMap@get(trait_map, 3);
+        g5: { found: int64, value: int64 } <- OrderedMap@get(trait_map, 5);
+        has4: boolean <- OrderedMap@contains_key(trait_map, 4);
+        validation: { ok: int64, error_code: int64 } <- csr_map_trait_bridge@validate_map(r4.tree);
         g1_val_ok: int64 <- case g1.value == 10 of { true -> 1; false -> 0 };
         g3_val_ok: int64 <- case g3.value == 300 of { true -> 1; false -> 0 };
         g5_val_ok: int64 <- case g5.value == 50 of { true -> 1; false -> 0 };
@@ -133,7 +185,7 @@ fn main() -> int64 {
             (fail_unless_one(g3_val_ok) * 1024) +
             ((1 - g5.found) * 2048) +
             (fail_unless_one(g5_val_ok) * 4096) +
-            (g4.found * 8192) +
+            (case has4 of { true -> 8192; false -> 0 }) +
             (tree0_unchanged * 16384)
     produces
         pure failures

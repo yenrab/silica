@@ -24,12 +24,17 @@ LIB_SRC := ../../src/standard_data_structures
 lib-sources:
 	@mkdir -p "$(THIS_DIR)lib"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/OrderedSet.silica)" "$(THIS_DIR)lib/OrderedSet.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/ordered_set_nodeid_adapter.silica)" "$(THIS_DIR)lib/ordered_set_nodeid_adapter.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/ordered_set_csr_adapter.silica)" "$(THIS_DIR)lib/ordered_set_csr_adapter.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/OrderedMap.silica)" "$(THIS_DIR)lib/OrderedMap.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/ordered_map_nodeid_adapter.silica)" "$(THIS_DIR)lib/ordered_map_nodeid_adapter.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/ordered_map_csr_adapter.silica)" "$(THIS_DIR)lib/ordered_map_csr_adapter.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/Heap.silica)" "$(THIS_DIR)lib/Heap.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/DirectedGraph.silica)" "$(THIS_DIR)lib/DirectedGraph.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_nodeid.silica)" "$(THIS_DIR)lib/btree_set_nodeid.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_csr.silica)" "$(THIS_DIR)lib/btree_set_csr.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_nodeid.silica)" "$(THIS_DIR)lib/btree_nodeid.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_csr_map.silica)" "$(THIS_DIR)lib/btree_csr_map.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_phase04.silica)" "$(THIS_DIR)lib/btree_set_phase04.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/heap_phase04.silica)" "$(THIS_DIR)lib/heap_phase04.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_phase04.silica)" "$(THIS_DIR)lib/graph_phase04.silica"
@@ -37,12 +42,17 @@ lib-sources:
 silica.config: lib-sources
 	@cd "$(THIS_DIR)" && { \
 		echo 'lib/OrderedSet.silica'; \
+		echo 'lib/ordered_set_nodeid_adapter.silica'; \
+		echo 'lib/ordered_set_csr_adapter.silica'; \
 		echo 'lib/OrderedMap.silica'; \
+		echo 'lib/ordered_map_nodeid_adapter.silica'; \
+		echo 'lib/ordered_map_csr_adapter.silica'; \
 		echo 'lib/Heap.silica'; \
 		echo 'lib/DirectedGraph.silica'; \
 		echo 'lib/btree_set_csr.silica'; \
 		echo 'lib/btree_set_nodeid.silica'; \
 		echo 'lib/btree_nodeid.silica'; \
+		echo 'lib/btree_csr_map.silica'; \
 		echo 'lib/btree_set_phase04.silica'; \
 		echo 'lib/heap_phase04.silica'; \
 		echo 'lib/graph_phase04.silica'; \
@@ -51,8 +61,13 @@ silica.config: lib-sources
 		echo 'directed_graph_trait.silica'; \
 		echo 'btree_set_nodeid_constructor_record.silica'; \
 		echo 'btree_nodeid_map_trait_names.silica'; \
-		echo 'ordered_map_btree_shape_trait.silica'; \
-	} > silica.config
+        echo 'ordered_map_btree_shape_trait.silica'; \
+        echo 'ordered_set_witness_int64.silica'; \
+        echo 'ordered_set_witness_string.silica'; \
+        echo 'string_set_phase04.silica'; \
+        echo 'trait_link_name_dual_impl.silica'; \
+        echo 'heap_witness_int64.silica'; \
+    } > silica.config
 
 all: executables
 
@@ -133,6 +148,31 @@ integrate: clean silica.config
 				[ -f "$$base.scout" ] && diff -Bw "$$base.sout" "$$base.scout" || true; \
 				ko=$$((ko + 1)); failed=1; \
 			fi; \
+		fi; \
+	done; \
+	for line in ordered_set_witness_int64.silica ordered_set_witness_string.silica heap_witness_int64.silica; do \
+		base=$${line%.silica}; \
+		if [ -f "$$base.sams" ]; then \
+			echo "✅✅ $(MSG_PREFIX)$$base compiled (witness trial)"; ok=$$((ok + 1)); \
+		else \
+			echo "❌❌ $(MSG_PREFIX)$$base failed to compile"; ko=$$((ko + 1)); failed=1; \
+		fi; \
+	done; \
+	for line in trait_link_name_dual_impl.silica; do \
+		base=$${line%.silica}; \
+		sams="$$base.sams"; \
+		if [ ! -f "$$sams" ]; then \
+			echo "❌❌ $(MSG_PREFIX)$$base: missing $$sams"; ko=$$((ko + 1)); failed=1; \
+			continue; \
+		fi; \
+		if [ ! -f "$$base.ascomp" ]; then \
+			echo "❌❌ $(MSG_PREFIX)$$base has no .ascomp file"; ko=$$((ko + 1)); failed=1; \
+		elif ! diff -Bw -q "$$sams" "$$base.ascomp" > /dev/null 2>&1; then \
+			echo "❌❌ $(MSG_PREFIX)$$base .sams differs from .ascomp"; \
+			diff -Bw "$$sams" "$$base.ascomp" || true; \
+			ko=$$((ko + 1)); failed=1; \
+		else \
+			echo "✅✅ $(MSG_PREFIX)$$base assembly matches .ascomp (link-name mangling)"; ok=$$((ok + 1)); \
 		fi; \
 	done; \
 	[ "$$failed" -ne 0 ] && [ "$$ko" -eq 0 ] && ko=$$((ko + 1)); \

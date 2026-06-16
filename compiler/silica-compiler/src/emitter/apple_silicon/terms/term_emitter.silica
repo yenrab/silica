@@ -214,6 +214,9 @@ fn outer_append_id_ret_tuple_sret(term: SIRTerm, partial_outer: string, closure_
 }
 
 // Types whose let RHS is a single GPR that must survive across device_io / BL (lists, strings, aggregates).
+// Atom union types like `:less | :equal | :greater` have type_names starting with `:` and must also
+// be spilled: they are returned in X0 (caller-saved) and can be clobbered by subsequent BL calls in
+// the same sequence body.
 fn let_rhs_type_spills_across_io(type_name: string) -> bool {
     case type_name of {
         "int64" -> true;
@@ -227,6 +230,7 @@ fn let_rhs_type_spills_across_io(type_name: string) -> bool {
         "char" -> true;
         "boolean" -> true;
         "bool" -> true;
+        "atom" -> true;
         "actor_ref" -> true;
         "supervisor_ref" -> true;
         "string" -> true;
@@ -236,7 +240,10 @@ fn let_rhs_type_spills_across_io(type_name: string) -> bool {
                 true -> true;
                 false -> case len(type_name) >= 1 and substring(type_name, 0, 1) == "{" of {
                     true -> true;
-                    false -> type_name_is_memory_handle_like(type_name)
+                    false -> case len(type_name) >= 1 and substring(type_name, 0, 1) == ":" of {
+                        true -> true;
+                        false -> type_name_is_memory_handle_like(type_name)
+                    }
                 }
             }
         }
