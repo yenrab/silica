@@ -39,7 +39,20 @@ HEAP_BINARY_MAX_CONFIG_FILES := \
 HEAP_DARY_MIN_CONFIG_FILES := \
 	heap_dary_min.silica
 
+# B-tree backends and trait adapters required by OrderedSet/OrderedMap (same order as phase04 trials).
+PHASE04_TRAIT_DEPS_CONFIG_FILES := \
+	btree_set_csr.silica \
+	btree_set_nodeid.silica \
+	btree_nodeid.silica \
+	btree_csr_map.silica \
+	ordered_set_nodeid_adapter.silica \
+	ordered_set_csr_adapter.silica \
+	ordered_map_nodeid_adapter.silica \
+	ordered_map_csr_adapter.silica \
+	graph_adj_list_helpers.silica
+
 PHASE04_TRAIT_CONFIG_FILES := \
+	$(PHASE04_TRAIT_DEPS_CONFIG_FILES) \
 	OrderedSet.silica \
 	OrderedMap.silica \
 	DirectedGraph.silica \

@@ -9,9 +9,11 @@ use type_checker_record_types;
 export parse_ordered_set_type/1;
 export parse_ordered_map_type/1;
 export parse_heap_type/1;
+export parse_directed_graph_type/1;
 export is_ordered_set_type/1;
 export is_ordered_map_type/1;
 export is_heap_type/1;
+export is_directed_graph_type/1;
 export is_collection_trait_type/1;
 export validate_collection_type_declaration/2;
 export collection_return_accepts_constructor/3;
@@ -27,11 +29,14 @@ export resolve_trait_formal_with_contexts/4;
 export witness_matches_ordered_set_declaration/3;
 export witness_matches_ordered_map_declaration/4;
 export witness_matches_heap_declaration/3;
+export witness_matches_directed_graph_declaration/5;
 export parse_fn_binary_param_types/1;
+export parse_fn_unary_param_type/1;
 export expected_compare_item_fn_type/1;
 export expected_compare_key_fn_type/1;
 export expected_compare_value_fn_type/1;
 export expected_compare_priority_fn_type/1;
+export expected_edge_target_fn_type/2;
 
 fn strip_all_spaces_col(s: string) -> string {
     strip_all_spaces_col_from(s, 0, "")
@@ -215,6 +220,11 @@ fn parse_heap_type(full: string) -> (bool, string, string) {
     case ok of { true -> (true, item, space); false -> (false, "", "") }
 }
 
+fn parse_directed_graph_type(full: string) -> (bool, string, string, string) {
+    (ok: bool, node: string, edge: string, space: string, _: string) <- parse_bracketed_collection(full, "DirectedGraph", 3);
+    case ok of { true -> (true, node, edge, space); false -> (false, "", "", "") }
+}
+
 fn is_ordered_set_type(s: string) -> bool {
     (ok: bool, _: string, _: string) <- parse_ordered_set_type(s);
     ok
@@ -230,8 +240,13 @@ fn is_heap_type(s: string) -> bool {
     ok
 }
 
+fn is_directed_graph_type(s: string) -> bool {
+    (ok: bool, _: string, _: string, _: string) <- parse_directed_graph_type(s);
+    ok
+}
+
 fn is_collection_trait_type(s: string) -> bool {
-    is_ordered_set_type(s) or is_ordered_map_type(s) or is_heap_type(s)
+    is_ordered_set_type(s) or is_ordered_map_type(s) or is_heap_type(s) or is_directed_graph_type(s)
 }
 
 fn comparator_return_type_ok(ret: string) -> bool {
@@ -280,6 +295,12 @@ fn expected_compare_value_fn_type(value_type: string) -> string {
 
 fn expected_compare_priority_fn_type(item_type: string) -> string {
     expected_compare_item_fn_type(item_type)
+}
+
+fn expected_edge_target_fn_type(edge_type: string, node_type: string) -> string {
+    edge: string <- strip_spaces_col(edge_type);
+    node: string <- strip_spaces_col(node_type);
+    concat(concat(concat("fn(", edge), ") -> "), node)
 }
 
 fn find_arrow_col_depth(s: string, i: int64, depth: int64) -> int64 {
@@ -341,6 +362,30 @@ fn parse_fn_binary_param_types(fn_type: string) -> (bool, string, string) {
                                 right: string <- strip_spaces_col(substring(inner, comma + 1, len(inner)));
                                 (true, left, right)
                             end
+                        }
+                    end
+                }
+            end
+        }
+    }
+}
+
+fn parse_fn_unary_param_type(fn_type: string) -> (bool, string) {
+    t: string <- strip_all_spaces_col(fn_type);
+    case len(t) < 5 of {
+        true -> (false, "");
+        false -> case substring(t, 0, 3) == "fn(" of {
+            false -> (false, "");
+            true -> do
+                arrow: int64 <- find_arrow_col_depth(t, 0, 0);
+                case arrow < 0 of {
+                    true -> (false, "");
+                    false -> do
+                        inner: string <- params_inner_before_arrow_col(t, arrow);
+                        comma: int64 <- find_first_comma_depth0_col(inner, 0, 0);
+                        case comma >= len(inner) of {
+                            true -> (true, strip_spaces_col(inner));
+                            false -> (false, "")
                         }
                     end
                 }
@@ -446,6 +491,51 @@ fn witness_matches_heap_declaration(decl_type: string, witness_fn_type: string, 
     }
 }
 
+fn fn_type_witnesses_edge_target(fn_type: string, edge_type: string, node_type: string) -> bool {
+    (ok: bool, param: string) <- parse_fn_unary_param_type(fn_type);
+    case ok of {
+        false -> false;
+        true -> do
+            edge: string <- strip_spaces_col(edge_type);
+            node: string <- strip_spaces_col(node_type);
+            param_ok: bool <- type_checker_lists@types_equal_strip(param, edge);
+            case param_ok of {
+                false -> false;
+                true -> do
+                    ret: string <- fn_return_after_arrow_col(fn_type);
+                    type_checker_lists@types_equal_strip(ret, node)
+                end
+            }
+        end
+    }
+}
+
+fn witness_matches_directed_graph_declaration(
+    decl_type: string,
+    node_fn_type: string,
+    edge_fn_type: string,
+    target_fn_type: string,
+    location: SourceLocation
+) -> TypeCheckResult {
+    (ok: bool, node: string, edge: string, space: string) <- parse_directed_graph_type(decl_type);
+    case ok of {
+        false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid DirectedGraph type declaration: ", decl_type), ""), "sect4");
+        true -> case collection_space_has_mem_form(space) of {
+            false -> type_checker_core@type_check_err("E2015", location, concat(concat("DirectedGraph requires mem(Space): ", decl_type), ""), "sect4");
+            true -> case fn_type_witnesses_item(node_fn_type, node) of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_node type ", node_fn_type), " does not witness DirectedGraph node type "), node), ""), "sect4");
+                true -> case fn_type_witnesses_item(edge_fn_type, edge) of {
+                    false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor compare_edge type ", edge_fn_type), " does not witness DirectedGraph edge type "), edge), ""), "sect4");
+                    true -> case fn_type_witnesses_edge_target(target_fn_type, edge, node) of {
+                        false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("constructor edge_target type ", target_fn_type), " does not witness DirectedGraph edge/node types "), edge), ""), "sect4");
+                        true -> type_checker_core@type_check_ok()
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn collection_return_accepts_ordered_set(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
     (ok: bool, item: string, _: string) <- parse_ordered_set_type(decl_type);
     case ok of {
@@ -470,6 +560,29 @@ fn collection_return_accepts_heap(decl_type: string, return_type: string, world:
     }
 }
 
+fn collection_return_accepts_directed_graph(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
+    (ok: bool, node: string, edge: string, _: string) <- parse_directed_graph_type(decl_type);
+    case ok of {
+        false -> false;
+        true -> record_field_fn_witnesses_item_with_world(return_type, "compare_node", node, world)
+            and record_field_fn_witnesses_item_with_world(return_type, "compare_edge", edge, world)
+            and record_field_fn_witnesses_edge_target_with_world(return_type, "edge_target", edge, node, world)
+    }
+}
+
+fn record_field_fn_witnesses_edge_target_with_world(record_type: string, field: string, edge_type: string, node_type: string, world: ListNamedProgram) -> bool {
+    ft: string <- type_checker_record_types@find_field_type_in_record(record_type, field);
+    case len(ft) == 0 of {
+        true -> false;
+        false -> do
+            expected: string <- expected_edge_target_fn_type(edge_type, node_type);
+            fn_type_witnesses_edge_target(ft, edge_type, node_type)
+                or type_checker_lists@formal_type_accepts_actual(expected, ft, world)
+                or type_checker_lists@formal_type_accepts_actual(ft, expected, world)
+        end
+    }
+}
+
 fn collection_return_accepts_constructor(decl_type: string, return_type: string, world: ListNamedProgram) -> bool {
     case is_ordered_set_type(decl_type) of {
         true -> collection_return_accepts_ordered_set(decl_type, return_type, world);
@@ -477,7 +590,10 @@ fn collection_return_accepts_constructor(decl_type: string, return_type: string,
             true -> collection_return_accepts_ordered_map(decl_type, return_type, world);
             false -> case is_heap_type(decl_type) of {
                 true -> collection_return_accepts_heap(decl_type, return_type, world);
-                false -> false
+                false -> case is_directed_graph_type(decl_type) of {
+                    true -> collection_return_accepts_directed_graph(decl_type, return_type, world);
+                    false -> false
+                }
             }
         }
     }
@@ -517,7 +633,20 @@ fn collection_param_type_for_trait_arg(collection_type: string, arg_index: int64
                     (ok: bool, item: string, _: string) <- parse_heap_type(collection_type);
                     case ok of { true -> item; false -> "" }
                 end;
-                false -> ""
+                false -> case is_directed_graph_type(collection_type) of {
+                    true -> case arg_index of {
+                        1 -> do
+                            (ok: bool, node: string, _: string, _: string) <- parse_directed_graph_type(collection_type);
+                            case ok of { true -> node; false -> "" }
+                        end;
+                        2 -> do
+                            (ok: bool, _: string, edge: string, _: string) <- parse_directed_graph_type(collection_type);
+                            case ok of { true -> edge; false -> "" }
+                        end;
+                        _: int64 -> ""
+                    };
+                    false -> ""
+                }
             }
         }
     }
@@ -544,7 +673,13 @@ fn collection_space_from_type(collection_type: string) -> string {
                     (ok: bool, _: string, space: string) <- parse_heap_type(collection_type);
                     case ok of { true -> space; false -> "" }
                 end;
-                false -> ""
+                false -> case is_directed_graph_type(collection_type) of {
+                    true -> do
+                        (ok: bool, _: string, _: string, space: string) <- parse_directed_graph_type(collection_type);
+                        case ok of { true -> space; false -> "" }
+                    end;
+                    false -> ""
+                }
             }
         }
     }
@@ -556,9 +691,9 @@ fn resolve_assoc_type_placeholder(placeholder: string, collection_type: string, 
         false -> p;
         true -> case p == "ItemType" or p == "PriorityType" of {
             true -> collection_param_type_for_trait_arg(collection_type, 1);
-            false -> case p == "KeyType" of {
+            false -> case p == "KeyType" or p == "NodeIdType" of {
                 true -> collection_param_type_for_trait_arg(collection_type, 1);
-                false -> case p == "ValueType" of {
+                false -> case p == "ValueType" or p == "EdgePayloadType" of {
                     true -> collection_param_type_for_trait_arg(collection_type, 2);
                     false -> case p == "SpaceType" of {
                         true -> collection_space_from_type(collection_type);
@@ -568,7 +703,10 @@ fn resolve_assoc_type_placeholder(placeholder: string, collection_type: string, 
                                 true -> case is_ordered_map_type(collection_type) of { true -> collection_type; false -> "" };
                                 false -> case p == "HeapType" of {
                                     true -> case is_heap_type(collection_type) of { true -> collection_type; false -> "" };
-                                    false -> ""
+                                    false -> case p == "GraphType" of {
+                                        true -> case is_directed_graph_type(collection_type) of { true -> collection_type; false -> "" };
+                                        false -> ""
+                                    }
                                 }
                             }
                         }
@@ -610,10 +748,16 @@ fn assoc_type_from_record_witness(placeholder: string, record_type: string) -> s
                 true -> witness_type_from_record_field(record_type, "compare_priority");
                 false -> witness_type_from_record_field(record_type, "compare_item")
             };
-            false -> case p == "KeyType" of {
-                true -> witness_type_from_record_field(record_type, "compare_key");
-                false -> case p == "ValueType" of {
-                    true -> witness_type_from_record_field(record_type, "compare_value");
+            false -> case p == "KeyType" or p == "NodeIdType" of {
+                true -> case len(witness_type_from_record_field(record_type, "compare_node")) > 0 of {
+                    true -> witness_type_from_record_field(record_type, "compare_node");
+                    false -> witness_type_from_record_field(record_type, "compare_key")
+                };
+                false -> case p == "ValueType" or p == "EdgePayloadType" of {
+                    true -> case len(witness_type_from_record_field(record_type, "compare_edge")) > 0 of {
+                        true -> witness_type_from_record_field(record_type, "compare_edge");
+                        false -> witness_type_from_record_field(record_type, "compare_value")
+                    };
                     false -> ""
                 }
             }
@@ -721,8 +865,31 @@ fn validate_one_collection_surface(col_type: string, location: SourceLocation) -
                         }
                     }
                 end;
-                false -> type_checker_core@type_check_ok()
+                false -> case is_directed_graph_type(col_type) of {
+                    true -> do
+                        (ok: bool, _: string, _: string, space: string) <- parse_directed_graph_type(col_type);
+                        case ok of {
+                            false -> type_checker_core@type_check_err("E2017", location, concat(concat("invalid DirectedGraph type: ", col_type), ""), "sect4");
+                            true -> case collection_space_has_mem_form(space) of {
+                                false -> type_checker_core@type_check_err("E2015", location, concat(concat("DirectedGraph requires mem(Space): ", col_type), ""), "sect4");
+                                true -> type_checker_core@type_check_ok()
+                            }
+                        }
+                    end;
+                    false -> type_checker_core@type_check_ok()
+                }
             }
+        }
+    }
+}
+
+fn min_pos4(a: int64, b: int64, c: int64, d: int64) -> int64 {
+    m: int64 <- min_pos3(a, b, c);
+    case d < 0 of {
+        true -> m;
+        false -> case m < 0 of {
+            true -> d;
+            false -> case d < m of { true -> d; false -> m }
         }
     }
 }
@@ -734,13 +901,17 @@ fn validate_collection_in_type_string(s: string, location: SourceLocation, i: in
             pos_set: int64 <- find_collection_keyword_index(s, i, "OrderedSet");
             pos_map: int64 <- find_collection_keyword_index(s, i, "OrderedMap");
             pos_heap: int64 <- find_collection_keyword_index(s, i, "Heap");
-            pos: int64 <- min_pos3(pos_set, pos_map, pos_heap);
+            pos_graph: int64 <- find_collection_keyword_index(s, i, "DirectedGraph");
+            pos: int64 <- min_pos4(pos_set, pos_map, pos_heap, pos_graph);
             case pos < 0 of {
                 true -> type_checker_core@type_check_ok();
                 false -> do
                     kw_len: int64 <- case pos == pos_set of {
                         true -> 10;
-                        false -> case pos == pos_map of { true -> 10; false -> 4 }
+                        false -> case pos == pos_map of {
+                            true -> 10;
+                            false -> case pos == pos_heap of { true -> 4; false -> 13 }
+                        }
                     };
                     j: int64 <- skip_spaces_index_col(s, pos + kw_len);
                     case j >= len(s) of {

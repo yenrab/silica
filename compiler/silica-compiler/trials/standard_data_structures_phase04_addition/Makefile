@@ -38,6 +38,9 @@ lib-sources:
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_phase04.silica)" "$(THIS_DIR)lib/btree_set_phase04.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/heap_phase04.silica)" "$(THIS_DIR)lib/heap_phase04.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_phase04.silica)" "$(THIS_DIR)lib/graph_phase04.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_list_helpers.silica)" "$(THIS_DIR)lib/graph_adj_list_helpers.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_directed.silica)" "$(THIS_DIR)lib/graph_adj_directed.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_undirected.silica)" "$(THIS_DIR)lib/graph_adj_undirected.silica"
 
 silica.config: lib-sources
 	@cd "$(THIS_DIR)" && { \
@@ -56,6 +59,9 @@ silica.config: lib-sources
 		echo 'lib/btree_set_phase04.silica'; \
 		echo 'lib/heap_phase04.silica'; \
 		echo 'lib/graph_phase04.silica'; \
+		echo 'lib/graph_adj_list_helpers.silica'; \
+		echo 'lib/graph_adj_directed.silica'; \
+		echo 'lib/graph_adj_undirected.silica'; \
 		echo 'ordered_set_constructor_record_trait.silica'; \
 		echo 'heap_constructor_record_trait.silica'; \
 		echo 'directed_graph_trait.silica'; \
@@ -67,6 +73,22 @@ silica.config: lib-sources
         echo 'string_set_phase04.silica'; \
         echo 'trait_link_name_dual_impl.silica'; \
         echo 'heap_witness_int64.silica'; \
+        echo 'ordered_set_nodeid_size_trait.silica'; \
+        echo 'ordered_map_compare_value_trait.silica'; \
+        echo 'ordered_set_csr_compare_item_trait.silica'; \
+        echo 'directed_graph_adj_empty_trait.silica'; \
+        echo 'directed_graph_adj_lookup.silica'; \
+        echo 'directed_graph_adj_add_edge.silica'; \
+        echo 'undirected_graph_adj_add_edge.silica'; \
+        echo 'undirected_graph_adj_self_edge.silica'; \
+        echo 'directed_graph_adj_weight_add.silica'; \
+        echo 'directed_graph_adj_weight_missing.silica'; \
+        echo 'directed_graph_adj_validate_pass.silica'; \
+        echo 'directed_graph_adj_validate_bad_edge_count.silica'; \
+        echo 'directed_graph_adj_validate_bad_neighbor.silica'; \
+        echo 'undirected_graph_adj_validate_pass.silica'; \
+        echo 'undirected_graph_adj_validate_mirror_fail.silica'; \
+        echo 'directed_graph_witness_int64.silica'; \
     } > silica.config
 
 all: executables
@@ -90,7 +112,7 @@ objects: assembly
 
 executables: objects
 	@cd "$(THIS_DIR)" && \
-	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica ordered_map_btree_shape_trait.silica; do \
+	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica ordered_map_btree_shape_trait.silica ordered_set_nodeid_size_trait.silica ordered_map_compare_value_trait.silica ordered_set_csr_compare_item_trait.silica directed_graph_adj_empty_trait.silica directed_graph_adj_lookup.silica directed_graph_adj_add_edge.silica undirected_graph_adj_add_edge.silica undirected_graph_adj_self_edge.silica directed_graph_adj_weight_add.silica directed_graph_adj_weight_missing.silica directed_graph_adj_validate_pass.silica directed_graph_adj_validate_bad_edge_count.silica directed_graph_adj_validate_bad_neighbor.silica undirected_graph_adj_validate_pass.silica undirected_graph_adj_validate_mirror_fail.silica; do \
 		base=$${line%.silica}; \
 		lib_objs=""; \
 		for lib_obj in lib/*.o; do \
@@ -123,7 +145,7 @@ integrate: clean silica.config
 	if [ -f "__silica_runtime.sams" ]; then \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o" || failed=1; \
 	fi; \
-	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica ordered_map_btree_shape_trait.silica; do \
+	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica ordered_map_btree_shape_trait.silica ordered_set_nodeid_size_trait.silica ordered_map_compare_value_trait.silica ordered_set_csr_compare_item_trait.silica directed_graph_adj_empty_trait.silica directed_graph_adj_lookup.silica directed_graph_adj_add_edge.silica undirected_graph_adj_add_edge.silica undirected_graph_adj_self_edge.silica directed_graph_adj_weight_add.silica directed_graph_adj_weight_missing.silica directed_graph_adj_validate_pass.silica directed_graph_adj_validate_bad_edge_count.silica directed_graph_adj_validate_bad_neighbor.silica undirected_graph_adj_validate_pass.silica undirected_graph_adj_validate_mirror_fail.silica; do \
 		base=$${line%.silica}; \
 		lib_objs=""; \
 		for lib_obj in lib/*.o; do \
@@ -137,7 +159,7 @@ integrate: clean silica.config
 			$(ASSEMBLER) "$$base.o" $$lib_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) || failed=1; \
 		fi; \
 	done; \
-	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica ordered_map_btree_shape_trait.silica; do \
+	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica ordered_map_btree_shape_trait.silica ordered_set_nodeid_size_trait.silica ordered_map_compare_value_trait.silica ordered_set_csr_compare_item_trait.silica directed_graph_adj_empty_trait.silica directed_graph_adj_lookup.silica directed_graph_adj_add_edge.silica undirected_graph_adj_add_edge.silica undirected_graph_adj_self_edge.silica directed_graph_adj_weight_add.silica directed_graph_adj_weight_missing.silica directed_graph_adj_validate_pass.silica directed_graph_adj_validate_bad_edge_count.silica directed_graph_adj_validate_bad_neighbor.silica undirected_graph_adj_validate_pass.silica undirected_graph_adj_validate_mirror_fail.silica; do \
 		base=$${line%.silica}; \
 		if [ -x "$$base" ]; then \
 			{ ./"$$base" 2>&1; echo $$?; } > "$$base.sout"; \
@@ -150,7 +172,7 @@ integrate: clean silica.config
 			fi; \
 		fi; \
 	done; \
-	for line in ordered_set_witness_int64.silica ordered_set_witness_string.silica heap_witness_int64.silica; do \
+	for line in ordered_set_witness_int64.silica ordered_set_witness_string.silica heap_witness_int64.silica directed_graph_witness_int64.silica; do \
 		base=$${line%.silica}; \
 		if [ -f "$$base.sams" ]; then \
 			echo "✅✅ $(MSG_PREFIX)$$base compiled (witness trial)"; ok=$$((ok + 1)); \
@@ -180,7 +202,7 @@ integrate: clean silica.config
 	exit $$failed
 
 clean:
-	@cd "$(THIS_DIR)" && rm -f *.sout lib/*.sams lib/*.o lib/*.silica *.sams *.o __silica_runtime.o ordered_set_constructor_record_trait heap_constructor_record_trait directed_graph_trait btree_set_nodeid_constructor_record btree_nodeid_map_trait_names ordered_map_btree_shape_trait silica.config .integrate_counts
+	@cd "$(THIS_DIR)" && rm -f *.sout lib/*.sams lib/*.o lib/*.silica *.sams *.o __silica_runtime.o ordered_set_constructor_record_trait heap_constructor_record_trait directed_graph_trait btree_set_nodeid_constructor_record btree_nodeid_map_trait_names ordered_map_btree_shape_trait ordered_set_nodeid_size_trait ordered_map_compare_value_trait ordered_set_csr_compare_item_trait directed_graph_adj_empty_trait directed_graph_adj_lookup directed_graph_adj_add_edge undirected_graph_adj_add_edge undirected_graph_adj_self_edge directed_graph_adj_weight_add directed_graph_adj_weight_missing directed_graph_adj_validate_pass directed_graph_adj_validate_bad_edge_count directed_graph_adj_validate_bad_neighbor undirected_graph_adj_validate_pass undirected_graph_adj_validate_mirror_fail silica.config .integrate_counts
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:

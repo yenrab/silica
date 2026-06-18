@@ -13,6 +13,7 @@ export to_csr[int64, mem(normal)]/1;
 export validate_csr[int64, mem(normal)]/1;
 export contains_csr[int64, mem(normal)]/2;
 export ordered_set_contains/2;
+export item_count/1;
 
 fn order() -> int64 {
     8
@@ -298,6 +299,39 @@ fn node_list_length(
             1 + node_list_length(tail);
         _: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> 0
     }
+}
+
+fn leaf_key_total(
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+) -> int64 {
+    case nodes of {
+        []: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> 0;
+        [head: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, tail: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]] ->
+            leaf_key_total_cons(head, tail);
+        _: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> 0
+    }
+}
+
+fn leaf_key_total_cons(
+    head: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] },
+    tail: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+) -> int64 {
+    case head.is_leaf of {
+        1 -> list_int64_length(head.keys) + leaf_key_total(tail);
+        _: int64 -> leaf_key_total(tail)
+    }
+}
+
+fn item_count(
+    set: {
+        root_id: int64,
+        node_count: int64,
+        order: int64,
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
+    }
+) -> int64 {
+    leaf_key_total(set.nodes)
 }
 
 fn nth_int64(values: List[int64, mem(normal)], index: int64) -> int64 {
@@ -2481,7 +2515,8 @@ fn to_csr[int64, mem(normal)](
     node_child_count: buf(L1, normal, int64, 1),
     node_is_leaf: buf(L1, normal, int64, 1),
     keys: buf(L1, normal, int64, 7),
-    children: buf(L1, normal, int64, 8)
+    children: buf(L1, normal, int64, 8),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater
 } {
     sequence proc[mem(normal)]
         csr: {
@@ -2496,7 +2531,8 @@ fn to_csr[int64, mem(normal)](
             node_child_count: buf(L1, normal, int64, 1),
             node_is_leaf: buf(L1, normal, int64, 1),
             keys: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
+            children: buf(L1, normal, int64, 8),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater
         } <- btree_set_csr@empty[int64, mem(normal)]()
     produces
         pure csr
@@ -2516,7 +2552,8 @@ fn validate_csr[int64, mem(normal)](
         node_child_count: buf(L1, normal, int64, 1),
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
     }
 ) -> { ok: int64, error_code: int64 } {
     sequence proc[mem(normal)]
@@ -2539,7 +2576,8 @@ fn contains_csr[int64, mem(normal)](
         node_child_count: buf(L1, normal, int64, 1),
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
     },
     key: int64
 ) -> int64 {

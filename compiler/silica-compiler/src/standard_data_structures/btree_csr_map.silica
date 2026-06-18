@@ -50,6 +50,16 @@ fn key_equal(left: int64, right: int64) -> int64 {
     }
 }
 
+fn compare_int64_atom(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of {
+        true -> :less;
+        false -> case a == b of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
 fn empty[int64, int64, mem(normal)]() -> {
     region: region(L1, normal),
     root_id: int64,
@@ -63,7 +73,9 @@ fn empty[int64, int64, mem(normal)]() -> {
     node_is_leaf: buf(L1, normal, int64, 1),
     keys: buf(L1, normal, int64, 7),
     values: buf(L1, normal, int64, 7),
-    children: buf(L1, normal, int64, 8)
+    children: buf(L1, normal, int64, 8),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater
 } {
     sequence proc[mem(normal)]
         L1: lifetime <- fresh_lifetime();
@@ -89,7 +101,9 @@ fn empty[int64, int64, mem(normal)]() -> {
             node_is_leaf: buf(L1, normal, int64, 1),
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
+            children: buf(L1, normal, int64, 8),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater
         } <- {
             region: r,
             root_id: -1,
@@ -103,7 +117,9 @@ fn empty[int64, int64, mem(normal)]() -> {
             node_is_leaf: node_is_leaf,
             keys: keys,
             values: values,
-            children: children
+            children: children,
+            compare_key: compare_int64_atom,
+            compare_value: compare_int64_atom
         }
     produces
         pure tree
@@ -123,7 +139,9 @@ fn empty(map_functions: { compare_key: fn(int64, int64) -> :less | :equal | :gre
     node_is_leaf: buf(L1, normal, int64, 1),
     keys: buf(L1, normal, int64, 7),
     values: buf(L1, normal, int64, 7),
-    children: buf(L1, normal, int64, 8)
+    children: buf(L1, normal, int64, 8),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater
 } {
     sequence proc[mem(normal)]
         L1: lifetime <- fresh_lifetime();
@@ -149,7 +167,9 @@ fn empty(map_functions: { compare_key: fn(int64, int64) -> :less | :equal | :gre
             node_is_leaf: buf(L1, normal, int64, 1),
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
+            children: buf(L1, normal, int64, 8),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater
         } <- {
             region: r,
             root_id: -1,
@@ -163,7 +183,9 @@ fn empty(map_functions: { compare_key: fn(int64, int64) -> :less | :equal | :gre
             node_is_leaf: node_is_leaf,
             keys: keys,
             values: values,
-            children: children
+            children: children,
+            compare_key: map_functions.compare_key,
+            compare_value: map_functions.compare_value
         }
     produces
         pure tree
@@ -184,7 +206,9 @@ fn contains_key(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     key: int64
 ) -> int64 {
@@ -205,7 +229,9 @@ fn from_static_sorted[int64, int64, mem(normal)]() -> {
     node_is_leaf: buf(L1, normal, int64, 1),
     keys: buf(L1, normal, int64, 7),
     values: buf(L1, normal, int64, 7),
-    children: buf(L1, normal, int64, 8)
+    children: buf(L1, normal, int64, 8),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater
 } {
     sequence proc[mem(normal)]
         L1: lifetime <- fresh_lifetime();
@@ -242,7 +268,9 @@ fn from_static_sorted[int64, int64, mem(normal)]() -> {
             node_is_leaf: buf(L1, normal, int64, 1),
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
+            children: buf(L1, normal, int64, 8),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater
         } <- {
             region: r,
             root_id: 0,
@@ -256,7 +284,9 @@ fn from_static_sorted[int64, int64, mem(normal)]() -> {
             node_is_leaf: node_is_leaf,
             keys: keys,
             values: values,
-            children: children
+            children: children,
+            compare_key: compare_int64_atom,
+            compare_value: compare_int64_atom
         }
     produces
         pure tree
@@ -556,7 +586,24 @@ fn csr_out_value_from_buf(
 }
 
 fn build_leaf_csr_map_skeleton(
-    key_count: int64
+    key_count: int64,
+    source_tree: {
+        region: region(L1, normal),
+        root_id: int64,
+        node_count: int64,
+        key_count_total: int64,
+        order: int64,
+        node_key_start: buf(L1, normal, int64, 1),
+        node_key_count: buf(L1, normal, int64, 1),
+        node_child_start: buf(L1, normal, int64, 1),
+        node_child_count: buf(L1, normal, int64, 1),
+        node_is_leaf: buf(L1, normal, int64, 1),
+        keys: buf(L1, normal, int64, 7),
+        values: buf(L1, normal, int64, 7),
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
+    }
 ) -> {
     region: region(L1, normal),
     root_id: int64,
@@ -570,7 +617,9 @@ fn build_leaf_csr_map_skeleton(
     node_is_leaf: buf(L1, normal, int64, 1),
     keys: buf(L1, normal, int64, 7),
     values: buf(L1, normal, int64, 7),
-    children: buf(L1, normal, int64, 8)
+    children: buf(L1, normal, int64, 8),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater
 } {
     sequence proc[mem(normal)]
         L1: lifetime <- fresh_lifetime();
@@ -601,7 +650,9 @@ fn build_leaf_csr_map_skeleton(
             node_is_leaf: buf(L1, normal, int64, 1),
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
+            children: buf(L1, normal, int64, 8),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater
         } <- {
             region: r,
             root_id: 0,
@@ -615,7 +666,9 @@ fn build_leaf_csr_map_skeleton(
             node_is_leaf: nil_buf,
             keys: nk,
             values: nv,
-            children: nc
+            children: nc,
+            compare_key: source_tree.compare_key,
+            compare_value: source_tree.compare_value
         }
     produces
         pure tree
@@ -636,7 +689,9 @@ fn fill_csr_map_insert_slots(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     old_keys: buf(L1, normal, int64, 7),
     old_values: buf(L1, normal, int64, 7),
@@ -656,7 +711,9 @@ fn fill_csr_map_insert_slots(
     node_is_leaf: buf(L1, normal, int64, 1),
     keys: buf(L1, normal, int64, 7),
     values: buf(L1, normal, int64, 7),
-    children: buf(L1, normal, int64, 8)
+    children: buf(L1, normal, int64, 8),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater
 } {
     sequence proc[mem(normal)]
         old_keys_saved: buf(L1, normal, int64, 7) <- old_keys;
@@ -711,7 +768,9 @@ fn fill_csr_map_replace_slots(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     old_keys: buf(L1, normal, int64, 7),
     old_values: buf(L1, normal, int64, 7),
@@ -730,7 +789,9 @@ fn fill_csr_map_replace_slots(
     node_is_leaf: buf(L1, normal, int64, 1),
     keys: buf(L1, normal, int64, 7),
     values: buf(L1, normal, int64, 7),
-    children: buf(L1, normal, int64, 8)
+    children: buf(L1, normal, int64, 8),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater
 } {
     sequence proc[mem(normal)]
         old_keys_saved: buf(L1, normal, int64, 7) <- old_keys;
@@ -776,7 +837,24 @@ fn build_leaf_csr_map_insert(
     values_buf: buf(L1, normal, int64, 7),
     new_key: int64,
     new_val: int64,
-    old_count: int64
+    old_count: int64,
+    source_tree: {
+        region: region(L1, normal),
+        root_id: int64,
+        node_count: int64,
+        key_count_total: int64,
+        order: int64,
+        node_key_start: buf(L1, normal, int64, 1),
+        node_key_count: buf(L1, normal, int64, 1),
+        node_child_start: buf(L1, normal, int64, 1),
+        node_child_count: buf(L1, normal, int64, 1),
+        node_is_leaf: buf(L1, normal, int64, 1),
+        keys: buf(L1, normal, int64, 7),
+        values: buf(L1, normal, int64, 7),
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
+    }
 ) -> {
     region: region(L1, normal),
     root_id: int64,
@@ -790,7 +868,9 @@ fn build_leaf_csr_map_insert(
     node_is_leaf: buf(L1, normal, int64, 1),
     keys: buf(L1, normal, int64, 7),
     values: buf(L1, normal, int64, 7),
-    children: buf(L1, normal, int64, 8)
+    children: buf(L1, normal, int64, 8),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater
 } {
     sequence
         keys_buf_saved: buf(L1, normal, int64, 7) <- keys_buf;
@@ -814,8 +894,10 @@ fn build_leaf_csr_map_insert(
             node_is_leaf: buf(L1, normal, int64, 1),
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
-        } <- build_leaf_csr_map_skeleton(new_count);
+            children: buf(L1, normal, int64, 8),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater
+        } <- build_leaf_csr_map_skeleton(new_count, source_tree);
         result: {
             region: region(L1, normal),
             root_id: int64,
@@ -829,7 +911,9 @@ fn build_leaf_csr_map_insert(
             node_is_leaf: buf(L1, normal, int64, 1),
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
+            children: buf(L1, normal, int64, 8),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater
         } <- fill_csr_map_insert_slots(skeleton, keys_buf_saved, values_buf_saved, new_key_saved, new_val_saved, pos_saved)
     produces
         pure result
@@ -842,7 +926,24 @@ fn build_leaf_csr_map_replace(
     values_buf: buf(L1, normal, int64, 7),
     key_pos: int64,
     new_val: int64,
-    key_count: int64
+    key_count: int64,
+    source_tree: {
+        region: region(L1, normal),
+        root_id: int64,
+        node_count: int64,
+        key_count_total: int64,
+        order: int64,
+        node_key_start: buf(L1, normal, int64, 1),
+        node_key_count: buf(L1, normal, int64, 1),
+        node_child_start: buf(L1, normal, int64, 1),
+        node_child_count: buf(L1, normal, int64, 1),
+        node_is_leaf: buf(L1, normal, int64, 1),
+        keys: buf(L1, normal, int64, 7),
+        values: buf(L1, normal, int64, 7),
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
+    }
 ) -> {
     region: region(L1, normal),
     root_id: int64,
@@ -856,7 +957,9 @@ fn build_leaf_csr_map_replace(
     node_is_leaf: buf(L1, normal, int64, 1),
     keys: buf(L1, normal, int64, 7),
     values: buf(L1, normal, int64, 7),
-    children: buf(L1, normal, int64, 8)
+    children: buf(L1, normal, int64, 8),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater
 } {
     sequence
         keys_buf_saved: buf(L1, normal, int64, 7) <- keys_buf;
@@ -877,8 +980,10 @@ fn build_leaf_csr_map_replace(
             node_is_leaf: buf(L1, normal, int64, 1),
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
-        } <- build_leaf_csr_map_skeleton(key_count_saved);
+            children: buf(L1, normal, int64, 8),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater
+        } <- build_leaf_csr_map_skeleton(key_count_saved, source_tree);
         result: {
             region: region(L1, normal),
             root_id: int64,
@@ -892,7 +997,9 @@ fn build_leaf_csr_map_replace(
             node_is_leaf: buf(L1, normal, int64, 1),
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
+            children: buf(L1, normal, int64, 8),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater
         } <- fill_csr_map_replace_slots(skeleton, keys_buf_saved, values_buf_saved, key_pos_saved, new_val_saved)
     produces
         pure result
@@ -926,7 +1033,9 @@ fn build_leaf_csr_keys(
     node_is_leaf: buf(L1, normal, int64, 1),
     keys: buf(L1, normal, int64, 7),
     values: buf(L1, normal, int64, 7),
-    children: buf(L1, normal, int64, 8)
+    children: buf(L1, normal, int64, 8),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater
 } {
     sequence proc[mem(normal)]
         L1: lifetime <- fresh_lifetime();
@@ -964,7 +1073,9 @@ fn build_leaf_csr_keys(
             node_is_leaf: buf(L1, normal, int64, 1),
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
+            children: buf(L1, normal, int64, 8),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater
         } <- {
             region: r,
             root_id: 0,
@@ -978,7 +1089,9 @@ fn build_leaf_csr_keys(
             node_is_leaf: nil_buf,
             keys: nk,
             values: nv,
-            children: nc
+            children: nc,
+            compare_key: compare_int64_atom,
+            compare_value: compare_int64_atom
         }
     produces
         pure tree
@@ -1001,7 +1114,9 @@ fn fill_csr_map_values(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     v0: int64,
     v1: int64,
@@ -1023,7 +1138,9 @@ fn fill_csr_map_values(
     node_is_leaf: buf(L1, normal, int64, 1),
     keys: buf(L1, normal, int64, 7),
     values: buf(L1, normal, int64, 7),
-    children: buf(L1, normal, int64, 8)
+    children: buf(L1, normal, int64, 8),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater
 } {
     sequence proc[mem(normal)]
         _: atom <- write_buf(tree.values, 0, v0);
@@ -1047,7 +1164,24 @@ fn replace_val_csr_map(
     values_buf: buf(L1, normal, int64, 7),
     key_pos: int64,
     new_val: int64,
-    old_count: int64
+    old_count: int64,
+    source_tree: {
+        region: region(L1, normal),
+        root_id: int64,
+        node_count: int64,
+        key_count_total: int64,
+        order: int64,
+        node_key_start: buf(L1, normal, int64, 1),
+        node_key_count: buf(L1, normal, int64, 1),
+        node_child_start: buf(L1, normal, int64, 1),
+        node_child_count: buf(L1, normal, int64, 1),
+        node_is_leaf: buf(L1, normal, int64, 1),
+        keys: buf(L1, normal, int64, 7),
+        values: buf(L1, normal, int64, 7),
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
+    }
 ) -> {
     tree: {
         region: region(L1, normal),
@@ -1062,7 +1196,9 @@ fn replace_val_csr_map(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     inserted: int64,
     replaced: int64
@@ -1086,8 +1222,10 @@ fn replace_val_csr_map(
             node_is_leaf: buf(L1, normal, int64, 1),
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
-        } <- build_leaf_csr_map_replace(keys_buf_saved, values_buf_saved, key_pos_saved, new_val_saved, old_count_saved)
+            children: buf(L1, normal, int64, 8),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater
+        } <- build_leaf_csr_map_replace(keys_buf_saved, values_buf_saved, key_pos_saved, new_val_saved, old_count_saved, source_tree)
     produces
         pure { tree: new_tree, inserted: 0, replaced: 1 }
     end
@@ -1102,7 +1240,24 @@ fn insert_new_key_csr_map(
     values_buf: buf(L1, normal, int64, 7),
     key: int64,
     value: int64,
-    old_count: int64
+    old_count: int64,
+    source_tree: {
+        region: region(L1, normal),
+        root_id: int64,
+        node_count: int64,
+        key_count_total: int64,
+        order: int64,
+        node_key_start: buf(L1, normal, int64, 1),
+        node_key_count: buf(L1, normal, int64, 1),
+        node_child_start: buf(L1, normal, int64, 1),
+        node_child_count: buf(L1, normal, int64, 1),
+        node_is_leaf: buf(L1, normal, int64, 1),
+        keys: buf(L1, normal, int64, 7),
+        values: buf(L1, normal, int64, 7),
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
+    }
 ) -> {
     tree: {
         region: region(L1, normal),
@@ -1117,7 +1272,9 @@ fn insert_new_key_csr_map(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     inserted: int64,
     replaced: int64
@@ -1141,8 +1298,10 @@ fn insert_new_key_csr_map(
             node_is_leaf: buf(L1, normal, int64, 1),
             keys: buf(L1, normal, int64, 7),
             values: buf(L1, normal, int64, 7),
-            children: buf(L1, normal, int64, 8)
-        } <- build_leaf_csr_map_insert(keys_buf_saved, values_buf_saved, key_saved, value_saved, old_count_saved)
+            children: buf(L1, normal, int64, 8),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater
+        } <- build_leaf_csr_map_insert(keys_buf_saved, values_buf_saved, key_saved, value_saved, old_count_saved, source_tree)
     produces
         pure { tree: new_tree, inserted: 1, replaced: 0 }
     end
@@ -1167,7 +1326,9 @@ fn insert_nonempty_csr_map(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     key: int64,
     value: int64
@@ -1185,7 +1346,9 @@ fn insert_nonempty_csr_map(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     inserted: int64,
     replaced: int64
@@ -1215,7 +1378,9 @@ fn insert_nonempty_csr_map(
                 node_is_leaf: buf(L1, normal, int64, 1),
                 keys: buf(L1, normal, int64, 7),
                 values: buf(L1, normal, int64, 7),
-                children: buf(L1, normal, int64, 8)
+                children: buf(L1, normal, int64, 8),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater
             },
             inserted: int64,
             replaced: int64
@@ -1224,10 +1389,10 @@ fn insert_nonempty_csr_map(
                 at_cap: int64 <- case old_count >= 7 of { true -> 1; false -> 0 };
                 case at_cap of {
                     1 -> { tree: tree, inserted: 0, replaced: 0 };
-                    _: int64 -> insert_new_key_csr_map(keys_saved, values_saved, key_saved, value_saved, old_count)
+                    _: int64 -> insert_new_key_csr_map(keys_saved, values_saved, key_saved, value_saved, old_count, tree)
                 }
             };
-            _: int64 -> replace_val_csr_map(keys_saved, values_saved, key_pos, value_saved, old_count)
+            _: int64 -> replace_val_csr_map(keys_saved, values_saved, key_pos, value_saved, old_count, tree)
         }
     produces
         pure result
@@ -1250,7 +1415,9 @@ fn contains_bootstrap(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     key: int64
 ) -> int64 {
@@ -1286,7 +1453,9 @@ fn contains[int64, int64, mem(normal)](
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     key: int64
 ) -> int64 {
@@ -1318,7 +1487,9 @@ fn get_bootstrap(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     key: int64
 ) -> { found: int64, value: int64 } {
@@ -1364,7 +1535,9 @@ fn get[int64, int64, mem(normal)](
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     key: int64
 ) -> { found: int64, value: int64 } {
@@ -1394,7 +1567,9 @@ fn validate_empty(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     }
 ) -> int64 {
     case tree.root_id == -1 of {
@@ -1420,7 +1595,9 @@ fn validate_bootstrap_one(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     }
 ) -> int64 {
     root_ok: int64 <- case tree.root_id of {
@@ -1459,7 +1636,9 @@ fn validate_nonempty(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     }
 ) -> int64 {
     count_ok: int64 <- case tree.node_count of {
@@ -1493,7 +1672,9 @@ fn validate_error(
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     }
 ) -> int64 {
     case tree.order == order() of {
@@ -1519,7 +1700,9 @@ fn validate[int64, int64, mem(normal)](
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     }
 ) -> { ok: int64, error_code: int64 } {
     sequence
@@ -1557,7 +1740,9 @@ fn insert[int64, int64, mem(normal)](
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     key: int64,
     value: int64
@@ -1575,7 +1760,9 @@ fn insert[int64, int64, mem(normal)](
         node_is_leaf: buf(L1, normal, int64, 1),
         keys: buf(L1, normal, int64, 7),
         values: buf(L1, normal, int64, 7),
-        children: buf(L1, normal, int64, 8)
+        children: buf(L1, normal, int64, 8),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater
     },
     inserted: int64,
     replaced: int64
@@ -1585,6 +1772,23 @@ fn insert[int64, int64, mem(normal)](
             sequence proc[mem(normal)]
                 key_saved: int64 <- key;
                 value_saved: int64 <- value;
+                cmp_tree: {
+                    region: region(L1, normal),
+                    root_id: int64,
+                    node_count: int64,
+                    key_count_total: int64,
+                    order: int64,
+                    node_key_start: buf(L1, normal, int64, 1),
+                    node_key_count: buf(L1, normal, int64, 1),
+                    node_child_start: buf(L1, normal, int64, 1),
+                    node_child_count: buf(L1, normal, int64, 1),
+                    node_is_leaf: buf(L1, normal, int64, 1),
+                    keys: buf(L1, normal, int64, 7),
+                    values: buf(L1, normal, int64, 7),
+                    children: buf(L1, normal, int64, 8),
+                    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                    compare_value: fn(int64, int64) -> :less | :equal | :greater
+                } <- tree;
                 partial_tree: {
                     region: region(L1, normal),
                     root_id: int64,
@@ -1598,8 +1802,10 @@ fn insert[int64, int64, mem(normal)](
                     node_is_leaf: buf(L1, normal, int64, 1),
                     keys: buf(L1, normal, int64, 7),
                     values: buf(L1, normal, int64, 7),
-                    children: buf(L1, normal, int64, 8)
-                } <- build_leaf_csr_map_skeleton(1);
+                    children: buf(L1, normal, int64, 8),
+                    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                    compare_value: fn(int64, int64) -> :less | :equal | :greater
+                } <- build_leaf_csr_map_skeleton(1, cmp_tree);
                 _: atom <- write_buf(partial_tree.keys, 0, key_saved);
                 _: atom <- write_buf(partial_tree.values, 0, value_saved);
                 new_tree: {
@@ -1615,7 +1821,9 @@ fn insert[int64, int64, mem(normal)](
                     node_is_leaf: buf(L1, normal, int64, 1),
                     keys: buf(L1, normal, int64, 7),
                     values: buf(L1, normal, int64, 7),
-                    children: buf(L1, normal, int64, 8)
+                    children: buf(L1, normal, int64, 8),
+                    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                    compare_value: fn(int64, int64) -> :less | :equal | :greater
                 } <- partial_tree
             produces
                 pure { tree: new_tree, inserted: 1, replaced: 0 }

@@ -1,6 +1,6 @@
 # Standard Data Structures As Traits Proposal
 
-Date: 2026-06-03
+Date: 2026-06-03 (implementation status updated 2026-06-16)
 
 This proposal records the Phase 1 direction for Silica standard data structures.
 It replaces the earlier constructor-inference discussion with a single rule:
@@ -18,6 +18,85 @@ It replaces the earlier constructor-inference discussion with a single rule:
 
 This keeps type knowledge visible at call sites while giving constructors enough
 ordinary argument information to avoid fragile return-context-only inference.
+
+Execution steps, Phase 0.5 reconciliation work, and per-family completion notes live in
+[standard_data_structures_implementation_plan.md](standard_data_structures_implementation_plan.md).
+
+## Implementation Status And Staging
+
+This document is the **long-term authority** for trait APIs (`provided` + `fold`, full
+export lists, boolean `found` shapes). The stdlib and compiler may implement that
+authority in stages. Do not treat today's `required` + per-representation `impl fn`
+smoke modules as the final trait shape.
+
+### Phase 0.4 compiler — complete (set / map / heap)
+
+| # | Obligation | Status |
+| - | ---------- | ------ |
+| 1 | First-argument trait dispatch | Done |
+| 2 | Placeholder matching for trait required/provided signatures (E2092) | Done |
+| 3 | Constructor function-record resolution and witnesses (E2017) | Done |
+| 4 | Assoc-type placeholders (`ItemType`, `KeyType`, `ValueType`) on bracket collection types | Done for `OrderedSet[T, mem(S)]`, `OrderedMap[K, V, mem(S)]`, `Heap[T, mem(S)]` |
+| 5 | Link-name mangling from resolved concrete trait impl types | Done |
+
+**Not started:** bracket-type witnesses for `DirectedGraph[Node, Edge, mem(S)]`; checking
+bodies of `provided` trait blocks; strict invalid-comparator-atom enforcement.
+
+**Key modules:** `type_checker/type_checker_collections.silica`,
+`type_checker/traits/type_checker_trait_placeholders.silica`, SIR qualified-call manglers.
+
+**Trials:** `trials/standard_data_structures_phase04_addition/` (positive);
+`trials/error_enforcement_addition/standard_data_structures_phase04/` (E2017, E2092, E2003).
+
+### Phase 0.4 stdlib smoke — partial
+
+Standard trait **names** and minimal **exports** exist under `src/standard_data_structures/`.
+Set and map traits connect to generated families through **adapter modules** (same pattern as
+views, but wired as `use` + `@` calls inside trait `impl fn` bodies):
+
+| Adapter | Generated backend |
+| ------- | ----------------- |
+| `ordered_set_nodeid_adapter` | `btree_set_nodeid` |
+| `ordered_set_csr_adapter` | `btree_set_csr` |
+| `ordered_map_nodeid_adapter` | `btree_nodeid` |
+| `ordered_map_csr_adapter` | `btree_csr_map` |
+
+**Phase04 toy modules** (`graph_phase04`, `heap_phase04`, `btree_set_phase04`) support
+compiler smoke only; they are not design-complete generated families.
+
+**Stdlib batch:** `silica.config.phase04_traits` lists trait modules, adapters, and btree
+backends; `make` in `src/standard_data_structures/` succeeds.
+
+### Phase 0.5 — next (pre–Phase 1 gate)
+
+Fix known violations before graph migration copies wrong patterns. See implementation plan
+Phase 0.5:
+
+1. Trait impls must delegate to **captured** comparators (nodeid map `compare_value`, CSR set `compare_item`).
+2. `OrderedSet@size` on nodeid btree must return **item count**, not B-tree node count.
+3. CSR generated values (`btree_set_csr`, `btree_csr_map`) must **store** comparators from `empty/1` in the value.
+
+### Migration staging decisions
+
+| Topic | Current code | This document (target) |
+| ----- | ------------ | ---------------------- |
+| Trait module shape | `required` + per-shape `impl fn` | `provided` + `fold` for sets/maps where specified below |
+| `fold`, map `find_value`, map `size` | Not on trait exports yet | Exported; default algorithms via `fold` |
+| Comparator return | `:less \| :equal \| :greater` in generated signatures | Prose uses `atom`; sum type accepted as stricter staging spelling |
+| `get` / `peek` | `{ found: int64, … }`, bare `int64` peek in smoke | `{ found: boolean, value: T }` |
+| Module vs trait API | Both during migration | Trait acceptance is exit criterion |
+| Graph / heap acceptance | `graph_phase04`, `heap_phase04` toys | Real `graph_adj_*`, `heap_binary_*` with function records |
+
+### Generated-family migration snapshot
+
+| Family | Constructor record | Comparators in value | Trait wired | Notes |
+| ------ | ------------------ | -------------------- | ----------- | ----- |
+| `btree_set_nodeid` | Yes | Yes | Via adapter | Phase 0.5: fix `size` semantics in trait impl |
+| `btree_set_csr` | Accepts record | **No** (Phase 0.5) | Via adapter | Trait CSR `compare_item` hardcodes ordering today |
+| `btree_nodeid` | Yes | Yes | Via adapter | Phase 0.5: nodeid trait `compare_value` must use captured fn |
+| `btree_csr_map` | Accepts record | **No** (Phase 0.5) | Via adapter | CSR trait path delegates `compare_value` correctly |
+| `graph_adj_directed` | No (bootstrap) | N/A | No | Width-specialized exports; Phase 1 retarget |
+| `heap_binary_min` | No (bootstrap) | N/A | No | Phase 5 retarget |
 
 ## Comparator Result
 
@@ -43,6 +122,10 @@ The standard library must treat any other atom result as invalid comparator
 behavior. The exact enforcement path can be a runtime validation failure in
 early generated modules, then become stricter once effect/error handling for
 standard library contracts is settled.
+
+**Generated spelling (staging):** bootstrap and trait modules currently use the sum type
+`:less | :equal | :greater` rather than bare `atom`. Witness checking and trials use that
+spelling. Invalid-atom validation remains deferred (open question §5 below).
 
 ## Design Principles
 
@@ -113,6 +196,12 @@ names: OrderedSet[string, mem(normal)] <- btree_set@empty({
 
 This is an error because the inline comparator is not
 `fn(string, string) -> atom`.
+
+**Assoc-type placeholders (implemented):** trait required signatures and call sites use
+placeholders `ItemType`, `KeyType`, `ValueType`, and `SpaceType` (via `mem(SpaceType)` on
+bracket collection types). The compiler resolves them from the declared collection type and
+from constructor-record function-field witnesses. Module-level placeholder consistency across
+multiple impls is still permissive; call-site checking is strict.
 
 ## Trait Categories
 
@@ -235,6 +324,27 @@ fn insert[ItemType, SpaceType](
 
 Delete can remain deferred if the representation design is not ready.
 
+### Staging: current `OrderedSet.silica`
+
+Target shape is the `provided` block above. Current stdlib staging:
+
+```text
+export trait OrderedSet;
+export contains/2;
+export size/1;
+export compare_item/3;    // fold/3 not exported yet
+
+required {
+    fn contains(set: OrderedSet, item: ItemType) -> boolean;
+    fn size(set: OrderedSet) -> int64;
+    fn compare_item(set: OrderedSet, left: ItemType, right: ItemType) -> :less | :equal | :greater;
+}
+```
+
+Per-representation `impl fn` blocks cover: phase04 toy record, nodeid btree (via
+`ordered_set_nodeid_adapter`), CSR btree (via `ordered_set_csr_adapter`). Migrate to
+`provided` + representation-supplied `fold` after Phase 0.5 and the first `fold` impl lands.
+
 ## Map Traits
 
 Maps have separate key and value types. To keep collection creation uniform and
@@ -345,6 +455,29 @@ fn insert[KeyType, ValueType, SpaceType](
 };
 ```
 
+### Staging: current `OrderedMap.silica`
+
+Target exports include `find_value/2`, `size/1`, and `fold/3`. Current stdlib staging:
+
+```text
+export trait OrderedMap;
+export contains_key/2;
+export get/2;
+export compare_key/3;
+export compare_value/3;
+
+required {
+    fn contains_key(map: OrderedMap, key: KeyType) -> boolean;
+    fn get(map: OrderedMap, key: KeyType) -> { found: int64, value: ValueType };
+    fn compare_key(...);
+    fn compare_value(...);
+}
+```
+
+`get` uses `{ found: int64, … }` instead of `{ found: boolean, … }`. Nodeid and CSR btree
+shapes wired via `ordered_map_nodeid_adapter` / `ordered_map_csr_adapter`. Phase 0.5 fixes
+listed in Implementation Status.
+
 ## Heap And Priority Queue Traits
 
 Simple heaps have one stored and ordered type, `ItemType`.
@@ -410,6 +543,15 @@ needed. If the priority is embedded in the item, add:
 priority_of: fn(ItemType) -> PriorityType
 ```
 
+### Staging: current `Heap.silica` and `PriorityQueue.silica`
+
+**Heap (target vs staging):** target `peek` returns `{ found: boolean, value: ItemType }`;
+staging exports `compare_priority/3` and implements `peek` as bare `int64` on `heap_phase04`
+record shape only.
+
+**PriorityQueue:** trait module exists with `peek_priority/1` and `peek_value/1` smoke impls
+on the heap_phase04-shaped record; no generated priority-queue family wired yet.
+
 ## Tree Traits
 
 Tree traits should distinguish:
@@ -436,6 +578,11 @@ maps:
     compare_value: fn(ValueType, ValueType) -> atom
 }
 ```
+
+### Staging: `Tree.silica` and `SearchTree.silica`
+
+Minimal E2092 smoke only (`node_count` on graph-shaped record; `contains_key` on set-shaped
+record). No generated tree family acceptance yet.
 
 ## Graph Traits
 
@@ -572,6 +719,19 @@ For unweighted graphs, the edge payload may be either the destination id itself
 or an explicit record such as `{ to: NodeIdType }`. The explicit record form is more
 uniform with weighted graphs and makes `edge_target` unambiguous.
 
+**Decision pending:** resolve before Phase 1 edge-addition acceptance (see open question 3).
+
+### Staging: current graph trait modules
+
+| Trait | Target required ops | Current staging |
+| ----- | ------------------- | --------------- |
+| `DirectedGraph` | `node_count`, `edge_count`, `neighbors`, `edge_target` | `node_count`, `edge_count`, `has_edge` only; impl on `graph_phase04` toy |
+| `UndirectedGraph` | Same pattern as directed + undirected `has_edge` | Smoke impl on `graph_phase04` record |
+| `WeightedGraph` | `weight_at` and weight-aware ops | Smoke `weight_at` on `graph_phase04` record |
+
+`graph_adj_directed.silica` remains bootstrap (width exports, no function record). Phase 1
+retargets adjacency to constructor records and replaces `graph_phase04` for acceptance.
+
 ## View And Adapter Values
 
 Views and adapters remain useful, but they should follow the same constructor
@@ -605,6 +765,11 @@ neighbors_of: fn(GraphType, NodeIdType) -> List[EdgePayloadType, SpaceType]
 The adapter path is the low-code path for custom structures. Direct trait
 implementation remains better when the user wants their concrete type to behave
 as a graph, set, map, heap, or tree everywhere without constructing a view value.
+
+**In use today:** set/map trait modules use thin adapter modules
+(`ordered_set_nodeid_adapter`, etc.) that forward to generated `@` operations on inner
+record shapes. This matches the adapter idea but is wired as stdlib `impl fn` glue rather
+than user-facing `OrderedSet@view(...)`.
 
 ## What Generated Modules Would Supply
 
@@ -697,24 +862,24 @@ Explicit collection type declarations are required at bindings where constructor
 resolution would otherwise hide the concrete collection type. Return types on
 functions should likewise declare the collection type.
 
-## Impact On Current Phase 0.4 Work
+## Phase 0.4 Compiler Obligations
 
-This direction changes the meaning of Phase 0.4.
+Phase 0.4 meant trait-oriented constructor records and dispatch, not zero-receiver-only
+inference. Required compiler support:
 
-Instead of relying primarily on zero-receiver context resolution, Phase 0.4
-should support:
+1. First-argument trait dispatch for existing values — **done**
+2. Placeholder matching for trait required/provided functions — **done** (E2092)
+3. Function-record-aware constructor resolution from declared collection type plus
+   function-field signatures — **done** (E2017)
+4. Compile-time validation that function records agree with collection type parameters —
+   **done** for set/map/heap bracket types
+5. Link-name mangling based on resolved concrete trait implementation types — **done**
 
-1. First-argument trait dispatch for existing values.
-2. Placeholder matching for trait required/provided functions.
-3. Function-record-aware generated constructor resolution from declared collection
-   type plus function-field signatures.
-4. Compile-time validation that function records agree with declared
-   collection type parameters.
-5. Link-name mangling based on resolved concrete trait implementation types.
+The existing `Collectable` placeholder work remains list-specific coverage; constructor
+function records are the standard data-structure construction model.
 
-The existing `Collectable` placeholder work still matters, but constructor
-function records become the primary way to make `Collectable` concrete for
-constructors.
+**Still open for Phase 1+:** graph bracket witnesses; `provided`-block implementation;
+invalid comparator atoms.
 
 ## Benefits
 
@@ -734,49 +899,56 @@ constructors.
 
 ## Costs And Risks
 
-- The language may need clearer support for generic trait placeholders or
-  associated type-like behavior.
-- Generated constructors need function-record-aware resolution distinct from
-  ordinary first-argument trait dispatch.
-- Some existing generated modules and trials would need API migration.
+- Generic trait placeholders / assoc-type behavior — **partially addressed** for set/map/heap;
+  graph types remain.
+- Function-record-aware constructor resolution — **implemented** (E2017); error-message clarity
+  still improvable.
+- API migration of bootstrap modules and old trials — **in progress**; dual API during migration.
 - Provided trait algorithms over lists may need efficient traversal abstractions
-  to avoid unnecessary materialization.
+  (`fold_neighbors`, representation `fold`) to avoid unnecessary materialization.
 - Error messages must explain whether failure came from behavior dispatch,
   constructor resolution, function-record mismatch, comparator return type, or
   payload mismatch.
-- Storing function fields in collection values may need a clear representation
-  and linking rule in generated code.
+- Function fields in collection values — **in use** for nodeid set/map; linking rule proven in
+  phase04 trials; CSR storage gap is Phase 0.5 work.
 
 ## Open Questions
 
-1. How should Silica spell trait-level type placeholders such as `NodeIdType`,
-   `EdgePayloadType`, `KeyType`, `ValueType`, `PriorityType`, `WeightType`, and `SpaceType`?
-2. Should constructor function fields be stored directly in collection values, or should
-   generated specializations bake them into type-specific function bodies when
-   possible?
-3. Should unweighted graph edge payload be the destination id, or should it use
-   an explicit `{ to: NodeIdType }` record for uniformity with weighted graphs?
-4. Should algorithms prefer `neighbors(g, node)` returning a list, or
-   `fold_neighbors(g, node, init, fn)` to support CSR/dense forms without list
-   allocation?
-5. How should invalid comparator atoms be reported in early generated modules?
-6. Should generated modules continue exposing direct module functions alongside
-   trait implementations during migration?
+1. **Trait-level type placeholders** — Partially resolved: `ItemType`, `KeyType`, `ValueType`
+   used as assoc-type placeholders; `NodeIdType`, `EdgePayloadType`, etc. follow the same
+   pattern when graph bracket witnesses land in Phase 1.
+2. **Store function fields in values vs bake into specializations** — Staging choice: store in
+   value for nodeid set/map; CSR families must catch up in Phase 0.5. Open for performance
+   specialization later.
+3. **Unweighted graph edge payload** — Still open; decide before Phase 1 Step 1.3 (`NodeId`
+   vs `{ to: NodeIdType }`). Explicit record preferred for weighted/unweighted uniformity.
+4. **`neighbors` list vs `fold_neighbors`** — Still open; list form is the initial trait
+   surface; fold variant may follow for CSR/dense graphs.
+5. **Invalid comparator atoms** — Deferred; sum-type comparators catch invalid shapes at
+   compile time where used; runtime validation path TBD.
+6. **Dual module + trait API during migration** — Resolved for staging: **yes**, both coexist;
+   trait-oriented trials are acceptance; old `*_addition` trials remain reference until
+   retargeted.
 
-## Suggested Next Experiment
+## Suggested Next Work
 
-Create a small trait trial for ordered set behavior:
+Phase 0.4 compiler smoke experiments below are **largely complete**. Next execution order
+(see implementation plan):
 
-1. Define an `OrderedSet` trait with provided `compare_item`, `fold`,
-   `contains`, and `size`.
-2. Define a generated `btree_set@empty(item_functions)` constructor.
-3. Require a binding such as
-   `names: OrderedSet[string, mem(normal)] <- btree_set@empty({ compare_item: compare_string })`.
-4. Verify the compiler rejects a function record whose comparator is not
-   `fn(string, string) -> atom`.
-5. Implement the representation-specific B-tree traversal used by
-   `OrderedSet@fold`.
-6. Verify `contains` and `size` work through the provided fold path.
+1. **Phase 0.5** — comparator preservation and trait semantics fixes (set/map CSR and nodeid).
+2. **Phase 1** — `graph_adj_directed@empty({ compare_node, compare_edge, edge_target }, n)`;
+   `DirectedGraph[Node, Edge, mem(S)]` witnesses; trait impls for `neighbors` and
+   `edge_target`; retire `graph_phase04` from acceptance trials.
+3. **Trait richness** — after first representation implements `fold`, migrate `OrderedSet` /
+   `OrderedMap` toward `provided` + `fold` as specified in Set/Map Traits above.
 
-Then repeat with `OrderedMap[KeyType, ValueType, SpaceType]` using both `compare_key` and
-`compare_value`.
+Completed smoke experiments (for audit):
+
+1. `OrderedSet` trait with staging `required` + `impl fn` (not yet `provided` + `fold`).
+2. `btree_set_nodeid@empty(item_functions)` and witness trials (`ordered_set_witness_int64`,
+   `ordered_set_witness_string`).
+3. Compiler rejects mismatched function records (E2017) and trait impl mismatches (E2092).
+4. `OrderedSet@contains` / `@compare_item` / `@size` on nodeid btree via trait dispatch.
+5. Link-name mangling golden (`trait_link_name_dual_impl`).
+
+Repeat fold-based provided algorithms when B-tree set `fold` is implemented per representation.
