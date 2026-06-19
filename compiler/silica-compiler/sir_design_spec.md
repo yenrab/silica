@@ -109,6 +109,10 @@ SIRType ::=
   | int16
   | int32
   | int64
+  | uint8
+  | uint16
+  | uint32
+  | uint64
   | float16
   | float32
   | float64
@@ -352,6 +356,18 @@ The guard term must have type `bool`. If the pattern matches, the guard is evalu
 | and | bool | (a, b) | [] |
 | or | bool | (a, b) | [] |
 | not | bool | (a) | [] |
+
+### 7.3.1 Bitwise
+
+| PrimOp | SIRType | Args | Effect |
+|--------|---------|------|--------|
+| bor | uint64 | (a, b) | [] |
+| band | uint64 | (a, b) | [] |
+| bnot | uint64 | (a) | [] |
+| shl | uint64 | (a, amount: int64) | [] |
+| shr | uint64 | (a, amount: int64) | [] |
+
+Phase 1 bitwise primitives are `uint64` only. `shr` is logical right shift.
 
 ### 7.4 Memory
 

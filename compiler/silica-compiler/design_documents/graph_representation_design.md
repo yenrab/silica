@@ -1010,7 +1010,7 @@ Indexing:
 bit_index = from * node_count + to
 word_index = bit_index / 64
 bit_offset = bit_index % 64
-mask = 1 << bit_offset
+mask = one shl bit_offset
 ```
 
 ### 6.3 Operations
@@ -1021,21 +1021,29 @@ Operands `from` and `to` are **`int64`** topology indices.
 
 ```text
 word = read_buf(words, word_index)
-new_word = word | mask
+new_word = word bor mask
 write_buf(words, word_index, new_word)
 ```
 
 `has_edge(g, from: int64, to: int64)`:
 
 ```text
-(read_buf(words, word_index) & mask) != 0
+(read_buf(words, word_index) band mask) != zero
+```
+
+`clear_edge(g, from: int64, to: int64)`:
+
+```text
+word = read_buf(words, word_index)
+new_word = word band (bnot mask)
+write_buf(words, word_index, new_word)
 ```
 
 Undirected insertion sets both bits.
 
 ### 6.4 Code-generation note
 
-Only generate `DenseBitsetGraph` when the current compiler path supports the required bitwise operators (`|`, `&`, shift). If those are not available for the target stage, generate `DenseMatrixGraphDirected[mem(S)]` instead. The matrix form has worse storage use but simpler generated code.
+Only generate `DenseBitsetGraph` when the current compiler path supports the required keyword bitwise operators (`bor`, `band`, `bnot`, `shl`, `shr`). If those are not available for the target stage, generate `DenseMatrixGraphDirected[mem(S)]` instead. The matrix form has worse storage use but simpler generated code.
 
 ## 7. Choosing a graph representation
 
@@ -1246,7 +1254,7 @@ fn use_graph(g: { node_count: int64, edge_count: int64, ... }) -> int64 {
 ## 9. Open implementation questions
 
 1. Dynamic buffer sizes in type positions: CSR and dense graphs are easiest when capacities are generator constants. If dynamic buffer types become available, this document should add dynamic forms.
-2. Bitwise operator coverage: `DenseBitsetGraph` depends on bit operations. Until those are uniformly available, dense matrix is the fallback.
+2. Bitwise operator coverage: `DenseBitsetGraph` depends on `bor`, `band`, `bnot`, `shl`, and `shr`. Until those are uniformly available, dense matrix is the fallback.
 3. Map support: if Silica gains a map/dictionary representation, adjacency lookup can become faster without CSR conversion.
 4. Region lifetime ergonomics: graph records with buffers must carry the owning region. Future region-bundle ergonomics may reduce the amount of repeated inline type text.
 5. Sorting support: sorted CSR adjacency enables binary search for `has_edge`; unsorted CSR preserves insertion order and simpler construction.

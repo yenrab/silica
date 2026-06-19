@@ -115,6 +115,34 @@ fn is_atom_char(c: string) -> bool {
     }
 }
 
+fn char_at_offset(lexer: Lexer, offset: int64) -> string {
+    pos: int64 <- lexer.position + offset;
+    case pos >= len(lexer.source) of {
+        true -> "";
+        false -> substring(lexer.source, pos, pos + 1)
+    }
+}
+
+fn colon_followed_by_word(lexer: Lexer, word: string) -> bool {
+    start: int64 <- lexer.position + 1;
+    end_pos: int64 <- start + len(word);
+    case end_pos > len(lexer.source) of {
+        true -> false;
+        false -> case substring(lexer.source, start, end_pos) == word of {
+            false -> false;
+            true -> is_atom_delimiter(char_at_offset(lexer, 1 + len(word)))
+        }
+    }
+}
+
+fn colon_followed_by_bitwise_keyword(lexer: Lexer) -> bool {
+    colon_followed_by_word(lexer, "bor")
+        or colon_followed_by_word(lexer, "band")
+        or colon_followed_by_word(lexer, "bnot")
+        or colon_followed_by_word(lexer, "shl")
+        or colon_followed_by_word(lexer, "shr")
+}
+
 
 {-
 - Consumes zero or more atom name characters (letters, digits, underscores) from the lexer, appends them to the given lexeme, and returns the atom_literal token and the lexer at the first non-atom character or EOF.
@@ -200,13 +228,20 @@ fn read_colon_or_atom_literal(lexer: Lexer) -> (Token, Lexer) {
                     updated_lexer: Lexer <- lexer_core@advance(lexer);
                     (lexer_core@make_token(kinds.colon, ":", start_location), updated_lexer)
                 end;
-                _: string -> case is_atom_start_char(second) of {
-                    true -> read_atom_literal(lexer, start_location);
-                    false -> do
+                _: string -> case colon_followed_by_bitwise_keyword(lexer) of {
+                    true -> do
                         kinds: TokenKinds <- lexer_token_kind@token_kinds();
                         updated_lexer: Lexer <- lexer_core@advance(lexer);
                         (lexer_core@make_token(kinds.colon, ":", start_location), updated_lexer)
-                    end
+                    end;
+                    false -> case is_atom_start_char(second) of {
+                        true -> read_atom_literal(lexer, start_location);
+                        false -> do
+                            kinds: TokenKinds <- lexer_token_kind@token_kinds();
+                            updated_lexer: Lexer <- lexer_core@advance(lexer);
+                            (lexer_core@make_token(kinds.colon, ":", start_location), updated_lexer)
+                        end
+                    }
                 }
             }
         end;

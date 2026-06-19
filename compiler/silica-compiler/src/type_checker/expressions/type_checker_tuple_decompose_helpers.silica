@@ -153,6 +153,10 @@ fn is_arithmetic_op_infer(op: string) -> bool {
     op == "+" or op == "-" or op == "*" or op == "/" or op == "%"
 }
 
+fn is_bitwise_op_infer(op: string) -> bool {
+    op == "bor" or op == "band" or op == "shl" or op == "shr"
+}
+
 fn is_comparison_op_infer(op: string) -> bool {
     op == "<" or op == ">" or op == "<=" or op == ">=" or op == "==" or op == "!="
 }
@@ -188,15 +192,18 @@ fn negate_builtin_operand_type(name: string) -> string {
 // use it so literals don't default to int64 and get int64 prims with a W/S/D/H dest from the caller.
 fn infer_binop_operand_type_for_sir(expr: Expr, context: TypeContext, enclosing_expected: string) -> string {
     op: string <- expr.value;
-    case is_arithmetic_op_infer(op) of {
-        true -> case is_floatish_type_infer(enclosing_expected) of {
-            true -> enclosing_expected;
-            false -> case is_narrow_integral_binop_context(enclosing_expected) of {
+    case is_bitwise_op_infer(op) of {
+        true -> "uint64";
+        false -> case is_arithmetic_op_infer(op) of {
+            true -> case is_floatish_type_infer(enclosing_expected) of {
                 true -> enclosing_expected;
-                false -> infer_binop_left_preferred_operand_type(expr, context)
-            }
-        };
-        false -> infer_binop_left_preferred_operand_type(expr, context)
+                false -> case is_narrow_integral_binop_context(enclosing_expected) of {
+                    true -> enclosing_expected;
+                    false -> infer_binop_left_preferred_operand_type(expr, context)
+                }
+            };
+            false -> infer_binop_left_preferred_operand_type(expr, context)
+        }
     }
 }
 
@@ -228,7 +235,7 @@ fn infer_binop_left_preferred_operand_type(expr: Expr, context: TypeContext) -> 
                     }
                 }
             };
-            case is_arithmetic_op_infer(op) or is_comparison_op_infer(op) or is_logical_op_infer(op) of {
+            case is_arithmetic_op_infer(op) or is_bitwise_op_infer(op) or is_comparison_op_infer(op) or is_logical_op_infer(op) of {
                 true -> case is_floatish_type_infer(lt) of {
                     true -> lt;
                     false -> case is_floatish_type_infer(rt) of {
@@ -257,12 +264,15 @@ fn infer_binary_expr_type(expr: Expr, context: TypeContext) -> string {
                 false -> case len(rt) > 0 of { true -> rt; false -> "" }
             }
         end;
-        false -> case is_comparison_op_infer(op) of {
+        false -> case is_bitwise_op_infer(op) of {
+            true -> "uint64";
+            false -> case is_comparison_op_infer(op) of {
             true -> "boolean";
             false -> case is_logical_op_infer(op) of {
                 true -> "boolean";
                 false -> ""
             }
+        }
         }
     }
 }
@@ -355,7 +365,9 @@ fn infer_call_expr_type(expr: Expr, context: TypeContext) -> string {
     neg_ty: string <- negate_builtin_operand_type(call_base);
     case len(neg_ty) > 0 of {
         true -> neg_ty;
-        false -> case call_base == "spawn" or call_base == "spawn_registered" of {
+        false -> case call_base == "bnot" of {
+            true -> "uint64";
+            false -> case call_base == "spawn" or call_base == "spawn_registered" of {
             true -> "actor_ref";
             false -> case call_base == "spawn_dangerous" or call_base == "spawn_dangerous_registered" of {
                 true -> "dangerous_actor_ref";
@@ -409,6 +421,7 @@ fn infer_call_expr_type(expr: Expr, context: TypeContext) -> string {
                 }
             }
             }
+        }
         }
     }
 }

@@ -456,6 +456,8 @@ literal ::= integer_literal
           | atom_literal
 ```
 
+For Phase 1 integer operations, `binary_operator` includes arithmetic `+`, `-`, `*`, `/`, `%`, comparisons, logical `and`/`or`, and the keyword bitwise operators `bor`, `band`, `shl`, and `shr`. `unary_operator` includes logical `not` and keyword bitwise complement `bnot`. The bitwise keywords are operations, not atoms or identifiers.
+
 #### 3.3.2 Function Calls
 ```
 function_call ::= local_function_call
@@ -2959,11 +2961,14 @@ effect ::= effect_identifier
 From highest to lowest precedence:
 
 1. Function application (left associative)
-2. Unary operators: `not` (right associative)
+2. Unary operators: `not`, `bnot` (right associative)
 3. Type annotation: `#` (left associative)
 4. Binary operators:
    - `*`, `/`, `%` (left associative)
    - `+`, `-` (left associative)
+   - `shl`, `shr` (left associative)
+   - `band` (left associative)
+   - `bor` (left associative)
    - `<`, `<=`, `>`, `>=` (non-associative)
    - `==`, `!=` (non-associative)
    - `and` (left associative)
@@ -3921,8 +3926,21 @@ x + y       // integer addition
 a - b       // integer subtraction
 m * n       // integer multiplication
 p / q       // integer division (truncates toward zero)
-r % s       // integer modulo
+r % s       // integer remainder
 ```
+
+### 7.3.1 Bitwise Expressions
+Phase 1 bitwise expressions are available for `uint64` values:
+
+```
+a bor b     // bitwise OR
+a band b    // bitwise AND
+bnot a      // bitwise complement
+a shl n     // logical left shift by int64 amount n
+a shr n     // logical right shift by int64 amount n
+```
+
+`bor`, `band`, `bnot`, `shl`, and `shr` are keyword operations. `bor` and `band` take two `uint64` operands and return `uint64`. `bnot` takes one `uint64` operand and returns `uint64`. `shl` and `shr` take a `uint64` left operand and an `int64` shift amount; literal shift amounts must be in the range `0..63`. These operations are pure and have effect `[]`.
 
 ### 7.4 Comparison Expressions
 Comparison operators return boolean values:

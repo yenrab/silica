@@ -511,6 +511,8 @@ Exit criteria:
 
 ### Step 3.1 - Generate DenseMatrixGraph Type And Constructor
 
+**Status: complete** — `graph_dense_directed.silica` provides unweighted and weighted inline shapes, `empty/1`, and `set_edge` with `index = from * node_count + to` (§5.5). Trials: `graph_dense_type_expansion_snapshot.silica`, `graph_dense_constructor_trial.silica`.
+
 Authority:
 
 - `graph_representation_design.md` sections 5.1 through 5.5
@@ -527,6 +529,8 @@ Exit criteria:
 - Trials construct dense matrix graphs and verify edge presence.
 
 ### Step 3.2 - Generate DenseMatrixGraph Inspection And Validation
+
+**Status: complete** — `has_edge`, `neighbor_at`, `out_degree`, `weight_at`, and `validate` in `graph_dense_directed.silica` (§5.4, §5.6). Trials: `graph_dense_inspection_trial.silica`, `graph_dense_validate_invalid.silica`, plus existing unweighted/int64 trials.
 
 Authority:
 
@@ -548,6 +552,7 @@ Exit criteria:
 Authority:
 
 - `graph_representation_design.md` sections 6.1 through 6.4 and 9
+- `bitwise_operators_implementation_plan.md` for the required `bor`, `band`, `bnot`, `shl`, and `shr` compiler support.
 
 Actions:
 
@@ -562,7 +567,7 @@ Exit criteria:
 **Phase 3 completed:**
 
 - Steps 3.1–3.2: `graph_dense_directed.silica` (bootstrap unweighted and weighted edge-payload via typed graph values); trials `graph_dense_directed_unweighted.silica`, `graph_dense_directed_weighted_int64.silica` (silica-compiler integrate).
-- Step 3.3: DenseBitset deferred per graph design §6.4; fallback to `DenseMatrixGraphDirected[mem(S)]` documented in completion tracking.
+- Step 3.3: DenseBitset deferred per graph design §6.4 and `bitwise_operators_implementation_plan.md`; fallback to `DenseMatrixGraphDirected[mem(S)]` documented in completion tracking.
 - `src/standard_data_structures/` builds graph modules via `silica-compiler` + `silica.config` (not silica-boot).
 
 ## Phase 4 - Graph Algorithms Over Stable Traversal APIs
@@ -1345,8 +1350,8 @@ Last updated to reflect Phase 0.5 stdlib reconciliation completion and Phase 1 s
 | Trait constructor records   | Partial         | Witness checking works for `OrderedSet`, `OrderedMap`, `Heap` bracket types. Negative trials: E2017, E2092, E2003 in error_enforcement phase04 suite. Invalid-atom validation deferred. Phase 0.5 acceptance trials green; full generated-family acceptance pending Phase 1+. |
 | NodeIdAdjacencyGraph        | Partial         | `graph_adj_directed.silica` is old-design (width exports, no function record). `graph_phase04.silica` + `directed_graph_trait.silica` cover trait-dispatch smoke only. Phase 1 retargets adjacency to constructor records + `DirectedGraph` trait. |
 | CompressedSparseRowGraph    | Steps 2.1–2.5 complete | Type expansion, static constructor, validation, inspection, and adjacency `freeze`. |
-| DenseMatrixGraph            | Rewrite pending | Existing `graph_dense_directed.silica` and dense graph trials are old-design/reference material. |
-| DenseBitsetGraph            | Deferred        | Generate only when required bitwise operations are available; dense matrix remains the documented fallback. |
+| DenseMatrixGraph            | Steps 3.1–3.2 complete | Type expansion, constructor, inspection (`has_edge`, `neighbor_at`, `out_degree`, `weight_at`), validation trials green. |
+| DenseBitsetGraph            | Deferred        | Generate only when required `bor` / `band` / `bnot` / `shl` / `shr` operations from `bitwise_operators_implementation_plan.md` are available; dense matrix remains the documented fallback. |
 | Graph algorithms            | Rewrite pending | Existing reachability and degree-summary trials are old-design/reference material; reattach through standard graph traits after Phase 1 representation rebuild. |
 | NodeIDBTreeSet              | Partial         | `btree_set_nodeid@empty({ compare_item })` preserves comparator; trait wired via adapters; `OrderedSet@size` delegates to `item_count` (sums leaf keys). Multi-insert accumulation in bootstrap nodeid insert remains separate from Phase 0.5 size semantics. |
 | CsrBTreeSet                 | Partial         | `btree_set_csr@empty/1` stores `compare_item` in value and threads through insert skeleton paths; CSR trait `compare_item` delegates to captured fn. |

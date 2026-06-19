@@ -10,6 +10,7 @@ export edge_count[mem(normal)]/1;
 export set_edge[mem(normal)]/3;
 export set_edge_checked[mem(normal)]/3;
 export has_edge[mem(normal)]/3;
+export neighbor_at[mem(normal)]/3;
 export out_degree[mem(normal)]/2;
 export validate[mem(normal)]/1;
 
@@ -19,6 +20,8 @@ export edge_count[int64, mem(normal)]/1;
 export set_edge[int64, mem(normal)]/4;
 export set_edge_checked[int64, mem(normal)]/4;
 export has_edge[int64, mem(normal)]/3;
+export neighbor_at[int64, mem(normal)]/3;
+export weight_at[int64, mem(normal)]/3;
 export weight_at_checked[int64, mem(normal)]/3;
 export out_degree[int64, mem(normal)]/2;
 export validate[int64, mem(normal)]/1;
@@ -76,7 +79,7 @@ fn edge_count[mem(normal)](graph: {
     graph.edge_count
 }
 
-fn index(graph: {
+fn cell_index(graph: {
     region: region(L1, normal),
     node_count: int64,
     edge_count: int64,
@@ -115,18 +118,42 @@ fn set_edge[mem(normal)](graph: {
         1 -> to_saved;
         _: int64 -> 0
     };
+    cell: int64 <- cell_index(graph, safe_from, safe_to);
     sequence proc[mem(normal)]
-        index: int64 <- index(graph, safe_from, safe_to);
-        previous: int64 <- read_buf(graph.cells, index);
-        next_value: int64 <- case endpoints_ok of {
-            0 -> previous;
-            1 -> 1;
-            _: int64 -> previous
+        previous: int64 <- case cell of {
+            0 -> read_buf(graph.cells, 0);
+            1 -> read_buf(graph.cells, 1);
+            2 -> read_buf(graph.cells, 2);
+            3 -> read_buf(graph.cells, 3);
+            4 -> read_buf(graph.cells, 4);
+            5 -> read_buf(graph.cells, 5);
+            6 -> read_buf(graph.cells, 6);
+            7 -> read_buf(graph.cells, 7);
+            8 -> read_buf(graph.cells, 8);
+            _: int64 -> 0
         };
-        _: atom <- write_buf(graph.cells, index, next_value);
+        _: atom <- case endpoints_ok of {
+            0 -> 0;
+            1 -> case cell of {
+                0 -> write_buf(graph.cells, 0, 1);
+                1 -> write_buf(graph.cells, 1, 1);
+                2 -> write_buf(graph.cells, 2, 1);
+                3 -> write_buf(graph.cells, 3, 1);
+                4 -> write_buf(graph.cells, 4, 1);
+                5 -> write_buf(graph.cells, 5, 1);
+                6 -> write_buf(graph.cells, 6, 1);
+                7 -> write_buf(graph.cells, 7, 1);
+                8 -> write_buf(graph.cells, 8, 1);
+                _: int64 -> 0
+            };
+            _: int64 -> 0
+        };
         next_edge_count: int64 <- case endpoints_ok of {
             0 -> graph.edge_count;
-            1 -> graph.edge_count + 1;
+            1 -> case previous of {
+                0 -> graph.edge_count + 1;
+                _: int64 -> graph.edge_count
+            };
             _: int64 -> graph.edge_count
         };
         updated: {
@@ -215,9 +242,20 @@ fn has_edge[mem(normal)](graph: {
         0 -> 1;
         _: int64 -> 0
     };
+    cell: int64 <- cell_index(graph, from_saved, to_saved);
     sequence proc[mem(normal)]
-        index: int64 <- index(graph, from_saved, to_saved);
-        value: int64 <- read_buf(graph.cells, index);
+        value: int64 <- case cell of {
+            0 -> read_buf(graph.cells, 0);
+            1 -> read_buf(graph.cells, 1);
+            2 -> read_buf(graph.cells, 2);
+            3 -> read_buf(graph.cells, 3);
+            4 -> read_buf(graph.cells, 4);
+            5 -> read_buf(graph.cells, 5);
+            6 -> read_buf(graph.cells, 6);
+            7 -> read_buf(graph.cells, 7);
+            8 -> read_buf(graph.cells, 8);
+            _: int64 -> 0
+        };
         result: int64 <- endpoints_ok * dim_ok * value
     produces
         pure result
@@ -242,17 +280,149 @@ fn out_degree[mem(normal)](graph: {
         _: int64 -> 0
     };
     sequence proc[mem(normal)]
-        i0: int64 <- index(graph, from_saved, 0);
-        i1: int64 <- index(graph, from_saved, 1);
-        i2: int64 <- index(graph, from_saved, 2);
-        c0: int64 <- read_buf(graph.cells, i0);
-        c1: int64 <- read_buf(graph.cells, i1);
-        c2: int64 <- read_buf(graph.cells, i2);
-        degree: int64 <- c0 + c1 + c2;
+        c00: int64 <- read_buf(graph.cells, 0);
+        c01: int64 <- read_buf(graph.cells, 1);
+        c02: int64 <- read_buf(graph.cells, 2);
+        c10: int64 <- read_buf(graph.cells, 3);
+        c11: int64 <- read_buf(graph.cells, 4);
+        c12: int64 <- read_buf(graph.cells, 5);
+        c20: int64 <- read_buf(graph.cells, 6);
+        c21: int64 <- read_buf(graph.cells, 7);
+        c22: int64 <- read_buf(graph.cells, 8);
+        from_is_0: int64 <- case from_saved of {
+            0 -> 1;
+            _: int64 -> 0
+        };
+        from_is_1: int64 <- case from_saved of {
+            1 -> 1;
+            _: int64 -> 0
+        };
+        from_is_2: int64 <- case from_saved of {
+            2 -> 1;
+            _: int64 -> 0
+        };
+        row0_degree: int64 <- c00 + c01 + c02;
+        row1_degree: int64 <- c10 + c11 + c12;
+        row2_degree: int64 <- c20 + c21 + c22;
+        degree: int64 <-
+            (row0_degree * from_is_0) +
+            (row1_degree * from_is_1) +
+            (row2_degree * from_is_2);
         result: int64 <- from_ok * dim_ok * degree
     produces
         pure result
     end
+}
+
+fn neighbor_pick_from_row(
+    c0: int64,
+    c1: int64,
+    c2: int64,
+    local_index: int64
+) -> int64 {
+    not_c0: int64 <- 1 - c0;
+    not_c1: int64 <- 1 - c1;
+    not_c2: int64 <- 1 - c2;
+    no_neighbor: int64 <- not_c0 * not_c1 * not_c2;
+    first: int64 <- (c1 * not_c0) + (c2 * not_c0 * not_c1 * 2) + (no_neighbor * -1);
+    second01: int64 <- c0 * c1;
+    second02: int64 <- c0 * not_c1 * c2;
+    second12: int64 <- not_c0 * c1 * c2;
+    has_second: int64 <- second01 + second02 + second12;
+    second_value: int64 <- second01 + (second02 * 2) + (second12 * 2);
+    second: int64 <- second_value + ((1 - has_second) * -1);
+    case local_index of {
+        0 -> first;
+        1 -> second;
+        _: int64 -> -1
+    }
+}
+
+fn neighbor_at_row0[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    cells: buf(L1, normal, int64, 9)
+}, local_index: int64) -> int64 {
+    local_saved: int64 <- local_index;
+    sequence proc[mem(normal)]
+        r00: int64 <- read_buf(graph.cells, 0);
+        r01: int64 <- read_buf(graph.cells, 1);
+        r02: int64 <- read_buf(graph.cells, 2);
+        picked: int64 <- neighbor_pick_from_row(r00, r01, r02, local_saved)
+    produces
+        pure picked
+    end
+}
+
+fn neighbor_at_row1[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    cells: buf(L1, normal, int64, 9)
+}, local_index: int64) -> int64 {
+    local_saved: int64 <- local_index;
+    sequence proc[mem(normal)]
+        r10: int64 <- read_buf(graph.cells, 3);
+        r11: int64 <- read_buf(graph.cells, 4);
+        r12: int64 <- read_buf(graph.cells, 5);
+        picked: int64 <- neighbor_pick_from_row(r10, r11, r12, local_saved)
+    produces
+        pure picked
+    end
+}
+
+fn neighbor_at_row2[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    cells: buf(L1, normal, int64, 9)
+}, local_index: int64) -> int64 {
+    local_saved: int64 <- local_index;
+    sequence proc[mem(normal)]
+        r20: int64 <- read_buf(graph.cells, 6);
+        r21: int64 <- read_buf(graph.cells, 7);
+        r22: int64 <- read_buf(graph.cells, 8);
+        picked: int64 <- neighbor_pick_from_row(r20, r21, r22, local_saved)
+    produces
+        pure picked
+    end
+}
+
+fn neighbor_at[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    cells: buf(L1, normal, int64, 9)
+}, from_id: int64, local_index: int64) -> int64 {
+    from_saved: int64 <- from_id;
+    local_saved: int64 <- local_index;
+    from_ok: int64 <- case from_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    dim_ok: int64 <- case graph.node_count - 3 of {
+        0 -> 1;
+        _: int64 -> 0
+    };
+    picked: int64 <- case from_saved of {
+        0 -> neighbor_at_row0[mem(normal)](graph, local_saved);
+        1 -> neighbor_at_row1[mem(normal)](graph, local_saved);
+        2 -> neighbor_at_row2[mem(normal)](graph, local_saved);
+        _: int64 -> -1
+    };
+    result: int64 <- case from_ok of {
+        0 -> -1;
+        1 -> case dim_ok of {
+            0 -> -1;
+            1 -> picked;
+            _: int64 -> -1
+        };
+        _: int64 -> -1
+    };
+    result
 }
 
 fn cell_ok(value: int64) -> int64 {
@@ -396,6 +566,186 @@ fn int64_index(graph: {
     from_id * graph.node_count + to_id
 }
 
+fn write_int64_matrix_cell_0(
+    graph: {
+        region: region(L1, normal),
+        node_count: int64,
+        edge_count: int64,
+        present: buf(L1, normal, int64, 9),
+        weights: buf(L1, normal, int64, 9)
+    },
+    present_value: int64,
+    weight_value: int64
+) -> atom {
+    sequence proc[mem(normal)]
+        _: atom <- write_buf(graph.present, 0, present_value);
+        _: atom <- write_buf(graph.weights, 0, weight_value);
+        done: atom <- 0
+    produces
+        pure done
+    end
+}
+
+fn write_int64_matrix_cell_1(
+    graph: {
+        region: region(L1, normal),
+        node_count: int64,
+        edge_count: int64,
+        present: buf(L1, normal, int64, 9),
+        weights: buf(L1, normal, int64, 9)
+    },
+    present_value: int64,
+    weight_value: int64
+) -> atom {
+    sequence proc[mem(normal)]
+        _: atom <- write_buf(graph.present, 1, present_value);
+        _: atom <- write_buf(graph.weights, 1, weight_value);
+        done: atom <- 0
+    produces
+        pure done
+    end
+}
+
+fn write_int64_matrix_cell_2(
+    graph: {
+        region: region(L1, normal),
+        node_count: int64,
+        edge_count: int64,
+        present: buf(L1, normal, int64, 9),
+        weights: buf(L1, normal, int64, 9)
+    },
+    present_value: int64,
+    weight_value: int64
+) -> atom {
+    sequence proc[mem(normal)]
+        _: atom <- write_buf(graph.present, 2, present_value);
+        _: atom <- write_buf(graph.weights, 2, weight_value);
+        done: atom <- 0
+    produces
+        pure done
+    end
+}
+
+fn write_int64_matrix_cell_3(
+    graph: {
+        region: region(L1, normal),
+        node_count: int64,
+        edge_count: int64,
+        present: buf(L1, normal, int64, 9),
+        weights: buf(L1, normal, int64, 9)
+    },
+    present_value: int64,
+    weight_value: int64
+) -> atom {
+    sequence proc[mem(normal)]
+        _: atom <- write_buf(graph.present, 3, present_value);
+        _: atom <- write_buf(graph.weights, 3, weight_value);
+        done: atom <- 0
+    produces
+        pure done
+    end
+}
+
+fn write_int64_matrix_cell_4(
+    graph: {
+        region: region(L1, normal),
+        node_count: int64,
+        edge_count: int64,
+        present: buf(L1, normal, int64, 9),
+        weights: buf(L1, normal, int64, 9)
+    },
+    present_value: int64,
+    weight_value: int64
+) -> atom {
+    sequence proc[mem(normal)]
+        _: atom <- write_buf(graph.present, 4, present_value);
+        _: atom <- write_buf(graph.weights, 4, weight_value);
+        done: atom <- 0
+    produces
+        pure done
+    end
+}
+
+fn write_int64_matrix_cell_5(
+    graph: {
+        region: region(L1, normal),
+        node_count: int64,
+        edge_count: int64,
+        present: buf(L1, normal, int64, 9),
+        weights: buf(L1, normal, int64, 9)
+    },
+    present_value: int64,
+    weight_value: int64
+) -> atom {
+    sequence proc[mem(normal)]
+        _: atom <- write_buf(graph.present, 5, present_value);
+        _: atom <- write_buf(graph.weights, 5, weight_value);
+        done: atom <- 0
+    produces
+        pure done
+    end
+}
+
+fn write_int64_matrix_cell_6(
+    graph: {
+        region: region(L1, normal),
+        node_count: int64,
+        edge_count: int64,
+        present: buf(L1, normal, int64, 9),
+        weights: buf(L1, normal, int64, 9)
+    },
+    present_value: int64,
+    weight_value: int64
+) -> atom {
+    sequence proc[mem(normal)]
+        _: atom <- write_buf(graph.present, 6, present_value);
+        _: atom <- write_buf(graph.weights, 6, weight_value);
+        done: atom <- 0
+    produces
+        pure done
+    end
+}
+
+fn write_int64_matrix_cell_7(
+    graph: {
+        region: region(L1, normal),
+        node_count: int64,
+        edge_count: int64,
+        present: buf(L1, normal, int64, 9),
+        weights: buf(L1, normal, int64, 9)
+    },
+    present_value: int64,
+    weight_value: int64
+) -> atom {
+    sequence proc[mem(normal)]
+        _: atom <- write_buf(graph.present, 7, present_value);
+        _: atom <- write_buf(graph.weights, 7, weight_value);
+        done: atom <- 0
+    produces
+        pure done
+    end
+}
+
+fn write_int64_matrix_cell_8(
+    graph: {
+        region: region(L1, normal),
+        node_count: int64,
+        edge_count: int64,
+        present: buf(L1, normal, int64, 9),
+        weights: buf(L1, normal, int64, 9)
+    },
+    present_value: int64,
+    weight_value: int64
+) -> atom {
+    sequence proc[mem(normal)]
+        _: atom <- write_buf(graph.present, 8, present_value);
+        _: atom <- write_buf(graph.weights, 8, weight_value);
+        done: atom <- 0
+    produces
+        pure done
+    end
+}
+
 fn set_edge[int64, mem(normal)](graph: {
     region: region(L1, normal),
     node_count: int64,
@@ -429,25 +779,58 @@ fn set_edge[int64, mem(normal)](graph: {
         1 -> to_saved;
         _: int64 -> 0
     };
+    cell: int64 <- int64_index(graph, safe_from, safe_to);
     sequence proc[mem(normal)]
-        index: int64 <- int64_index(graph, safe_from, safe_to);
-        previous_present: int64 <- read_buf(graph.present, index);
-        previous_weight: int64 <- read_buf(graph.weights, index);
-        next_present: int64 <- case endpoints_ok of {
-            0 -> previous_present;
-            1 -> 1;
-            _: int64 -> previous_present
+        previous_present: int64 <- case cell of {
+            0 -> read_buf(graph.present, 0);
+            1 -> read_buf(graph.present, 1);
+            2 -> read_buf(graph.present, 2);
+            3 -> read_buf(graph.present, 3);
+            4 -> read_buf(graph.present, 4);
+            5 -> read_buf(graph.present, 5);
+            6 -> read_buf(graph.present, 6);
+            7 -> read_buf(graph.present, 7);
+            8 -> read_buf(graph.present, 8);
+            _: int64 -> 0
         };
-        next_weight: int64 <- case endpoints_ok of {
-            0 -> previous_weight;
-            1 -> weight_saved;
-            _: int64 -> previous_weight
+        _: atom <- case endpoints_ok of {
+            0 -> 0;
+            1 -> case cell of {
+                0 -> write_buf(graph.present, 0, 1);
+                1 -> write_buf(graph.present, 1, 1);
+                2 -> write_buf(graph.present, 2, 1);
+                3 -> write_buf(graph.present, 3, 1);
+                4 -> write_buf(graph.present, 4, 1);
+                5 -> write_buf(graph.present, 5, 1);
+                6 -> write_buf(graph.present, 6, 1);
+                7 -> write_buf(graph.present, 7, 1);
+                8 -> write_buf(graph.present, 8, 1);
+                _: int64 -> 0
+            };
+            _: int64 -> 0
         };
-        _: atom <- write_buf(graph.present, index, next_present);
-        _: atom <- write_buf(graph.weights, index, next_weight);
+        _: atom <- case endpoints_ok of {
+            0 -> 0;
+            1 -> case cell of {
+                0 -> write_buf(graph.weights, 0, weight_saved);
+                1 -> write_buf(graph.weights, 1, weight_saved);
+                2 -> write_buf(graph.weights, 2, weight_saved);
+                3 -> write_buf(graph.weights, 3, weight_saved);
+                4 -> write_buf(graph.weights, 4, weight_saved);
+                5 -> write_buf(graph.weights, 5, weight_saved);
+                6 -> write_buf(graph.weights, 6, weight_saved);
+                7 -> write_buf(graph.weights, 7, weight_saved);
+                8 -> write_buf(graph.weights, 8, weight_saved);
+                _: int64 -> 0
+            };
+            _: int64 -> 0
+        };
         next_edge_count: int64 <- case endpoints_ok of {
             0 -> graph.edge_count;
-            1 -> graph.edge_count + 1;
+            1 -> case previous_present of {
+                0 -> graph.edge_count + 1;
+                _: int64 -> graph.edge_count
+            };
             _: int64 -> graph.edge_count
         };
         updated: {
@@ -544,9 +927,20 @@ fn has_edge[int64, mem(normal)](graph: {
         0 -> 1;
         _: int64 -> 0
     };
+    cell: int64 <- int64_index(graph, from_saved, to_saved);
     sequence proc[mem(normal)]
-        index: int64 <- int64_index(graph, from_saved, to_saved);
-        value: int64 <- read_buf(graph.present, index);
+        value: int64 <- case cell of {
+            0 -> read_buf(graph.present, 0);
+            1 -> read_buf(graph.present, 1);
+            2 -> read_buf(graph.present, 2);
+            3 -> read_buf(graph.present, 3);
+            4 -> read_buf(graph.present, 4);
+            5 -> read_buf(graph.present, 5);
+            6 -> read_buf(graph.present, 6);
+            7 -> read_buf(graph.present, 7);
+            8 -> read_buf(graph.present, 8);
+            _: int64 -> 0
+        };
         result: int64 <- endpoints_ok * dim_ok * value
     produces
         pure result
@@ -583,16 +977,49 @@ fn weight_at_checked[int64, mem(normal)](graph: {
         0 -> 1;
         _: int64 -> 0
     };
+    cell: int64 <- int64_index(graph, from_saved, to_saved);
     sequence proc[mem(normal)]
-        index: int64 <- int64_index(graph, from_saved, to_saved);
-        edge_present: int64 <- read_buf(graph.present, index);
-        raw_weight: int64 <- read_buf(graph.weights, index);
+        edge_present: int64 <- case cell of {
+            0 -> read_buf(graph.present, 0);
+            1 -> read_buf(graph.present, 1);
+            2 -> read_buf(graph.present, 2);
+            3 -> read_buf(graph.present, 3);
+            4 -> read_buf(graph.present, 4);
+            5 -> read_buf(graph.present, 5);
+            6 -> read_buf(graph.present, 6);
+            7 -> read_buf(graph.present, 7);
+            8 -> read_buf(graph.present, 8);
+            _: int64 -> 0
+        };
+        raw_weight: int64 <- case cell of {
+            0 -> read_buf(graph.weights, 0);
+            1 -> read_buf(graph.weights, 1);
+            2 -> read_buf(graph.weights, 2);
+            3 -> read_buf(graph.weights, 3);
+            4 -> read_buf(graph.weights, 4);
+            5 -> read_buf(graph.weights, 5);
+            6 -> read_buf(graph.weights, 6);
+            7 -> read_buf(graph.weights, 7);
+            8 -> read_buf(graph.weights, 8);
+            _: int64 -> 0
+        };
         ok_out: int64 <- endpoints_ok * dim_ok * edge_present;
         value: int64 <- ok_out * raw_weight;
         out: { ok: int64, value: int64 } <- { ok: ok_out, value: value }
     produces
         pure out
     end
+}
+
+fn weight_at[int64, mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    present: buf(L1, normal, int64, 9),
+    weights: buf(L1, normal, int64, 9)
+}, from_id: int64, to_id: int64) -> int64 {
+    checked: { ok: int64, value: int64 } <- weight_at_checked[int64, mem(normal)](graph, from_id, to_id);
+    checked.value
 }
 
 fn out_degree[int64, mem(normal)](graph: {
@@ -614,17 +1041,129 @@ fn out_degree[int64, mem(normal)](graph: {
         _: int64 -> 0
     };
     sequence proc[mem(normal)]
-        i0: int64 <- int64_index(graph, from_saved, 0);
-        i1: int64 <- int64_index(graph, from_saved, 1);
-        i2: int64 <- int64_index(graph, from_saved, 2);
-        c0: int64 <- read_buf(graph.present, i0);
-        c1: int64 <- read_buf(graph.present, i1);
-        c2: int64 <- read_buf(graph.present, i2);
-        degree: int64 <- c0 + c1 + c2;
+        p00: int64 <- read_buf(graph.present, 0);
+        p01: int64 <- read_buf(graph.present, 1);
+        p02: int64 <- read_buf(graph.present, 2);
+        p10: int64 <- read_buf(graph.present, 3);
+        p11: int64 <- read_buf(graph.present, 4);
+        p12: int64 <- read_buf(graph.present, 5);
+        p20: int64 <- read_buf(graph.present, 6);
+        p21: int64 <- read_buf(graph.present, 7);
+        p22: int64 <- read_buf(graph.present, 8);
+        from_is_0: int64 <- case from_saved of {
+            0 -> 1;
+            _: int64 -> 0
+        };
+        from_is_1: int64 <- case from_saved of {
+            1 -> 1;
+            _: int64 -> 0
+        };
+        from_is_2: int64 <- case from_saved of {
+            2 -> 1;
+            _: int64 -> 0
+        };
+        row0_degree: int64 <- p00 + p01 + p02;
+        row1_degree: int64 <- p10 + p11 + p12;
+        row2_degree: int64 <- p20 + p21 + p22;
+        degree: int64 <-
+            (row0_degree * from_is_0) +
+            (row1_degree * from_is_1) +
+            (row2_degree * from_is_2);
         result: int64 <- from_ok * dim_ok * degree
     produces
         pure result
     end
+}
+
+fn neighbor_at_row0[int64, mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    present: buf(L1, normal, int64, 9),
+    weights: buf(L1, normal, int64, 9)
+}, local_index: int64) -> int64 {
+    local_saved: int64 <- local_index;
+    sequence proc[mem(normal)]
+        r00: int64 <- read_buf(graph.present, 0);
+        r01: int64 <- read_buf(graph.present, 1);
+        r02: int64 <- read_buf(graph.present, 2);
+        picked: int64 <- neighbor_pick_from_row(r00, r01, r02, local_saved)
+    produces
+        pure picked
+    end
+}
+
+fn neighbor_at_row1[int64, mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    present: buf(L1, normal, int64, 9),
+    weights: buf(L1, normal, int64, 9)
+}, local_index: int64) -> int64 {
+    local_saved: int64 <- local_index;
+    sequence proc[mem(normal)]
+        r10: int64 <- read_buf(graph.present, 3);
+        r11: int64 <- read_buf(graph.present, 4);
+        r12: int64 <- read_buf(graph.present, 5);
+        picked: int64 <- neighbor_pick_from_row(r10, r11, r12, local_saved)
+    produces
+        pure picked
+    end
+}
+
+fn neighbor_at_row2[int64, mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    present: buf(L1, normal, int64, 9),
+    weights: buf(L1, normal, int64, 9)
+}, local_index: int64) -> int64 {
+    local_saved: int64 <- local_index;
+    sequence proc[mem(normal)]
+        r20: int64 <- read_buf(graph.present, 6);
+        r21: int64 <- read_buf(graph.present, 7);
+        r22: int64 <- read_buf(graph.present, 8);
+        picked: int64 <- neighbor_pick_from_row(r20, r21, r22, local_saved)
+    produces
+        pure picked
+    end
+}
+
+fn neighbor_at[int64, mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    present: buf(L1, normal, int64, 9),
+    weights: buf(L1, normal, int64, 9)
+}, from_id: int64, local_index: int64) -> int64 {
+    from_saved: int64 <- from_id;
+    local_saved: int64 <- local_index;
+    from_ok: int64 <- case from_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    dim_ok: int64 <- case graph.node_count - 3 of {
+        0 -> 1;
+        _: int64 -> 0
+    };
+    picked: int64 <- case from_saved of {
+        0 -> neighbor_at_row0[int64, mem(normal)](graph, local_saved);
+        1 -> neighbor_at_row1[int64, mem(normal)](graph, local_saved);
+        2 -> neighbor_at_row2[int64, mem(normal)](graph, local_saved);
+        _: int64 -> -1
+    };
+    result: int64 <- case from_ok of {
+        0 -> -1;
+        1 -> case dim_ok of {
+            0 -> -1;
+            1 -> picked;
+            _: int64 -> -1
+        };
+        _: int64 -> -1
+    };
+    result
 }
 
 fn int64_cell_ok(value: int64) -> int64 {

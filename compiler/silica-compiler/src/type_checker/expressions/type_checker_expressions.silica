@@ -37,6 +37,7 @@ use type_checker_expressions_actors;
 use type_checker_record_types;
 use type_checker_traits;
 use type_checker_callee_env;
+use string_parse;
 
 export check_expr/4;
 export dispatch_actual_fits_impl_parameter/3;
@@ -63,6 +64,68 @@ fn check_unary_minus_forbidden(expr: Expr, context: TypeContext) -> TypeCheckRes
 // Arithmetic: +, -, *, /, % (mod) - operands int64/int32/int16/int8/uint64/uint32/uint16/uint8, result matches operands
 fn is_arithmetic_op_lexeme(op: string) -> bool {
     op == "+" or op == "-" or op == "*" or op == "/" or op == "%"
+}
+
+// Phase 1 bitwise operations are intentionally uint64-only.
+fn is_bitwise_binary_op_lexeme(op: string) -> bool {
+    op == "bor" or op == "band" or op == "shl" or op == "shr"
+}
+
+fn is_shift_op_lexeme(op: string) -> bool {
+    op == "shl" or op == "shr"
+}
+
+fn check_uint64_result(expected_type: string, location: SourceLocation, op_label: string) -> TypeCheckResult {
+    case expected_type of {
+        "uint64" -> type_checker_core@type_check_ok();
+        "discard" -> type_checker_core@type_check_ok();
+        _: string -> type_checker_core@type_check_err("E2003", location, concat(concat(op_label, " returns uint64, expected "), expected_type), "sect6")
+    }
+}
+
+fn shift_amount_literal_out_of_range(expr: Expr) -> bool {
+    case expr.kind == 0 of {
+        true -> do
+            amount: int64 <- string_parse@string_to_int64(expr.value);
+            amount < 0 or amount >= 64
+        end;
+        false -> false
+    }
+}
+
+fn check_bnot_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    arg_result: TypeCheckResult <- check_expr(expr.inner, "uint64", context, world);
+    case arg_result.is_ok of {
+        false -> arg_result;
+        true -> check_uint64_result(expected_type, expr.location, "bnot")
+    }
+}
+
+fn check_bitwise_binary_op(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    op: string <- expr.value;
+    left_result: TypeCheckResult <- check_expr(expr.inner, "uint64", context, world);
+    case left_result.is_ok of {
+        false -> left_result;
+        true -> case is_shift_op_lexeme(op) of {
+            true -> case shift_amount_literal_out_of_range(expr.right_expr) of {
+                true -> type_checker_core@type_check_err("E2003", expr.right_expr.location, "shift amount literal must be in range 0..63", "sect6");
+                false -> do
+                    right_result: TypeCheckResult <- check_expr(expr.right_expr, "int64", context, world);
+                    case right_result.is_ok of {
+                        false -> right_result;
+                        true -> check_uint64_result(expected_type, expr.location, concat("bitwise ", op))
+                    }
+                end
+            };
+            false -> do
+                right_result: TypeCheckResult <- check_expr(expr.right_expr, "uint64", context, world);
+                case right_result.is_ok of {
+                    false -> right_result;
+                    true -> check_uint64_result(expected_type, expr.location, concat("bitwise ", op))
+                }
+            end
+        }
+    }
 }
 
 // Comparison: <, >, <=, >=, ==, != — operands boolean, numeric primitives, string, or atom; result bool
@@ -254,7 +317,9 @@ fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext, worl
                 end
             }
         end;
-        false -> case is_comparison_op_lexeme(op) of {
+        false -> case is_bitwise_binary_op_lexeme(op) of {
+            true -> check_bitwise_binary_op(expr, expected_type, context, world);
+            false -> case is_comparison_op_lexeme(op) of {
             true -> check_comparison_result(expr, expected_type, context, world);
             false -> case is_logical_op_lexeme(op) of {
                 true -> do
@@ -276,6 +341,7 @@ fn check_binary_op(expr: Expr, expected_type: string, context: TypeContext, worl
                 end;
                 false -> type_checker_core@type_check_err("E2004", expr.location, concat("unknown operator: ", op), "sect6")
             }
+        }
         }
     }
 }
@@ -2094,6 +2160,8 @@ fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: Type
         true -> check_region_builtin_call(expr, expected_type, context, world);
         false -> case is_actor_concurrency_builtin(expr.name) of {
             true -> check_actor_concurrency_call(expr, expected_type, context, world);
+            false -> case expr.name == "bnot" of {
+            true -> check_bnot_call(expr, expected_type, context, world);
             false -> case expr.name == "negate_unit" of {
             true -> type_checker_core@type_check_err("E2003", expr.location, "negation is not supported for unit", "sect6");
             false -> case len(negate_builtin_arg_type(expr.name)) > 0 of {
@@ -2268,6 +2336,7 @@ fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: Type
             }
         }
             }
+        }
         }
         }
     }

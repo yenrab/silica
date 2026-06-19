@@ -51,6 +51,10 @@ silica.config: lib-sources
 		echo 'graph_adj_directed_int64_trial.silica'; \
 		echo 'graph_csr_directed_unweighted_trial.silica'; \
 		echo 'graph_csr_directed_int64_trial.silica'; \
+		echo 'graph_dense_type_expansion_snapshot.silica'; \
+		echo 'graph_dense_constructor_trial.silica'; \
+		echo 'graph_dense_inspection_trial.silica'; \
+		echo 'graph_dense_validate_invalid.silica'; \
 		echo 'graph_dense_directed_unweighted_trial.silica'; \
 		echo 'graph_dense_directed_int64_trial.silica'; \
 		echo 'graph_reachability_csr_directed_trial.silica'; \
@@ -211,6 +215,10 @@ clean:
 		graph_csr_validate_invalid graph_csr_validate_invalid.o \
 		graph_csr_inspection_trial graph_csr_inspection_trial.o \
 		graph_csr_adj_finalize_trial graph_csr_adj_finalize_trial.o \
+		graph_dense_type_expansion_snapshot graph_dense_type_expansion_snapshot.o \
+		graph_dense_constructor_trial graph_dense_constructor_trial.o \
+		graph_dense_inspection_trial graph_dense_inspection_trial.o \
+		graph_dense_validate_invalid graph_dense_validate_invalid.o \
 		graph_adj_directed_unweighted_trial graph_adj_undirected_trial graph_adj_directed_int64_trial \
 		graph_csr_directed_unweighted_trial graph_csr_directed_int64_trial \
 		graph_dense_directed_unweighted_trial graph_dense_directed_int64_trial \
@@ -218,6 +226,8 @@ clean:
 		graph_degree_summary_csr_directed_trial \
 		graph_adj_directed_unweighted_trial.o graph_adj_undirected_trial.o graph_adj_directed_int64_trial.o \
 		graph_csr_directed_unweighted_trial.o graph_csr_directed_int64_trial.o \
+		graph_dense_type_expansion_snapshot.o graph_dense_constructor_trial.o \
+		graph_dense_inspection_trial.o graph_dense_validate_invalid.o \
 		graph_dense_directed_unweighted_trial.o graph_dense_directed_int64_trial.o \
 		graph_reachability_csr_directed_trial.o graph_reachability_adj_directed_trial.o \
 		graph_degree_summary_csr_directed_trial.o silica.config .integrate_counts

@@ -134,6 +134,14 @@ fn build_float_predicate_from_sir(name: string, arg: SIRTerm) -> SIRTerm {
     SIRTerm { kind: 6, type_name: "bool", value: "", name: float_predicate_prim_name(name), inner: arg, right_expr: sir_ast@dummy_sir_term() }
 }
 
+fn build_bnot_from_sir(arg: SIRTerm) -> SIRTerm {
+    SIRTerm { kind: 6, type_name: "uint64", value: "", name: "bnot", inner: arg, right_expr: sir_ast@dummy_sir_term() }
+}
+
+fn is_shift_op_lexeme(op: string) -> bool {
+    op == "shl" or op == "shr"
+}
+
 fn sir_int64_const(value: string) -> SIRTerm {
     SIRTerm { kind: 0, type_name: "int64", value: value, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() }
 }
@@ -1365,8 +1373,9 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
         end;
         3 -> do
             operand_type: string <- type_checker_tuple_decompose_helpers@infer_binop_operand_type_for_sir(expr, context, expected_type);
+            right_operand_type: string <- case is_shift_op_lexeme(expr.value) of { true -> "int64"; false -> operand_type };
             left: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, operand_type);
-            right: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, operand_type);
+            right: SIRTerm <- expr_to_sir_in_let_body(context, expr.right_expr, bound_name, bound_type, right_operand_type);
             build_prim_for_type(expr.value, left, right, operand_type)
         end;
         4 -> do
@@ -1414,7 +1423,12 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                                 end;
                                 false -> sir_ast@dummy_sir_term();
                             };
-                            false -> case negate_builtins@is_negate_builtin(expr.name) of {
+                            false -> case call_base == "bnot" of {
+                                true -> do
+                                    arg: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, "uint64");
+                                    build_bnot_from_sir(arg)
+                                end;
+                                false -> case negate_builtins@is_negate_builtin(expr.name) of {
                                 true -> do
                                     arg_t: string <- negate_builtins@negate_arg_type(expr.name);
                                     arg: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg_t);
@@ -1427,6 +1441,7 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
                                     end;
                                     false -> build_user_call_from_expr_in_body(context, expr, bound_name, bound_type, expected_type)
                                 };
+                            }
                             }
                         }
                     }
@@ -2102,8 +2117,9 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
         end;
         3 -> do
             operand_type: string <- type_checker_tuple_decompose_helpers@infer_binop_operand_type_for_sir(expr, context, expected_type);
+            right_operand_type: string <- case is_shift_op_lexeme(expr.value) of { true -> "int64"; false -> operand_type };
             left: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, operand_type);
-            right: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, operand_type);
+            right: SIRTerm <- expr_to_sir_with_expected(context, expr.right_expr, right_operand_type);
             build_prim_for_type(expr.value, left, right, operand_type)
         end;
         4 -> do
@@ -2151,7 +2167,12 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
                                 end;
                                 false -> sir_ast@dummy_sir_term();
                             };
-                            false -> case negate_builtins@is_negate_builtin(expr.name) of {
+                            false -> case call_base == "bnot" of {
+                                true -> do
+                                    arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, "uint64");
+                                    build_bnot_from_sir(arg)
+                                end;
+                                false -> case negate_builtins@is_negate_builtin(expr.name) of {
                                 true -> do
                                     arg_t: string <- negate_builtins@negate_arg_type(expr.name);
                                     arg: SIRTerm <- expr_to_sir_with_expected(context, expr.inner, arg_t);
@@ -2165,6 +2186,7 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
                                     end;
                                     false -> build_user_call_from_expr(context, expr, expected_type)
                                 };
+                            }
                             }
                         }
                     }

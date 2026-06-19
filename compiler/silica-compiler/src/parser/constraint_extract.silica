@@ -622,7 +622,7 @@ fn kind_to_type_name_not_failure(token_kind: int64) -> string {
 }
 
 fn is_op_token(kinds: TokenKinds, token_kind: int64) -> bool {
-    token_kind == kinds.plus or token_kind == kinds.minus or token_kind == kinds.star or token_kind == kinds.slash or token_kind == kinds.percent or token_kind == kinds.less_than or token_kind == kinds.greater_than or token_kind == kinds.less_equal or token_kind == kinds.greater_equal or token_kind == kinds.equal_equal or token_kind == kinds.bang_equal
+    token_kind == kinds.plus or token_kind == kinds.minus or token_kind == kinds.star or token_kind == kinds.slash or token_kind == kinds.percent or token_kind == kinds.less_than or token_kind == kinds.greater_than or token_kind == kinds.less_equal or token_kind == kinds.greater_equal or token_kind == kinds.equal_equal or token_kind == kinds.bang_equal or token_kind == kinds.bor_keyword or token_kind == kinds.band_keyword or token_kind == kinds.shl_keyword or token_kind == kinds.shr_keyword
 }
 
 // Logical operators and/or are keywords (and_keyword, or_keyword) or identifiers (legacy); treat as binary ops.
@@ -1599,16 +1599,20 @@ fn slots_head(slots: ListTokenSlot) -> TokenSlot {
 }
 
 // Operator precedence. Higher = binds tighter.
-// multiplicative (*, /, %) = 3; additive (+, -) = 2; comparison (<, >, ...) = 1; logical (and, or) = 0.
+// multiplicative (*, /, %) = 6; additive (+, -) = 5; shift = 4; band = 3; bor = 2; comparison (<, >, ...) = 1; logical (and, or) = 0.
 // Comparisons must bind tighter than `and`/`or` so guards like `n >= 0 and n < 100` parse as
 // `(n >= 0) and (n < 100)`, not `(n >= 0) and n` with stray `< 100`.
 fn op_precedence(lexeme: string) -> int64 {
     case lexeme of {
-        "*" -> 3;
-        "/" -> 3;
-        "%" -> 3;
-        "+" -> 2;
-        "-" -> 2;
+        "*" -> 6;
+        "/" -> 6;
+        "%" -> 6;
+        "+" -> 5;
+        "-" -> 5;
+        "shl" -> 4;
+        "shr" -> 4;
+        "band" -> 3;
+        "bor" -> 2;
         "<" -> 1;
         ">" -> 1;
         "<=" -> 1;
@@ -3106,7 +3110,14 @@ fn extract_case_rhs_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[
             unary_minus: Expr <- Expr { kind: 12, value: "", name: "", location: first.token.location, inner: operand, right_expr: dummy, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
             (unary_minus, rest_after)
         end;
-        false -> case constraint_core@slot_role(first) == capability_case@role_case_keyword() or first_kind == kinds.case_keyword of {
+        false -> case first_kind == kinds.bnot_keyword of {
+            true -> do
+                (operand: Expr, rest_after_bnot: ListTokenSlot) <- extract_case_rhs_with_precedence(rest, 7);
+                dummy_bnot: Expr <- parser_ast@dummy_expr();
+                bnot_expr: Expr <- Expr { kind: 4, value: "", name: "bnot", location: first.token.location, inner: operand, right_expr: dummy_bnot, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+                (bnot_expr, rest_after_bnot)
+            end;
+            false -> case constraint_core@slot_role(first) == capability_case@role_case_keyword() or first_kind == kinds.case_keyword of {
             true -> extract_case_expression(slots);
             false -> case parser_tuples@slots_start_fn_type(slots) of {
                 true -> expr_fn_type_opaque_from_slots(slots);
@@ -3157,6 +3168,7 @@ fn extract_case_rhs_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[
         }
         }
     }
+}
 }
 
 fn extract_case_rhs_binary_tail(left: Expr, rest: ListTokenSlot, min_prec: int64) -> (Expr, ListTokenSlot) proc[DeviceIO] {
@@ -3519,7 +3531,15 @@ fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO]
             true -> extract_lambda_expression(slots);
             false -> expr_fn_type_opaque_from_slots(slots)
         };
-        false -> case constraint_core@slot_role(first) == capability_case@role_case_keyword() or first.token.kind == kinds.case_keyword of {
+        false -> case first.token.kind == kinds.bnot_keyword of {
+            true -> do
+                rest_bnot: ListTokenSlot <- slots.tail;
+                (operand_bnot: Expr, rest_after_bnot: ListTokenSlot) <- extract_expr_with_precedence(rest_bnot, 7);
+                dummy_bnot: Expr <- parser_ast@dummy_expr();
+                bnot_expr: Expr <- Expr { kind: 4, value: "", name: "bnot", location: first.token.location, inner: operand_bnot, right_expr: dummy_bnot, pattern_bindings: parser_ast@nil_tuple_decompose_bindings(), sequence_effects: parser_ast@empty_effect_name_list() };
+                (bnot_expr, rest_after_bnot)
+            end;
+            false -> case constraint_core@slot_role(first) == capability_case@role_case_keyword() or first.token.kind == kinds.case_keyword of {
             true -> extract_case_expression(slots);
             false -> do
                 rest: ListTokenSlot <- slots.tail;
@@ -3564,6 +3584,7 @@ fn extract_primary(slots: ListTokenSlot) -> (Expr, ListTokenSlot) proc[DeviceIO]
                     }
                 }
             end
+        }
         }
     }
 }
