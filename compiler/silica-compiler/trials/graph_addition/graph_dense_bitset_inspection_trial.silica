@@ -1,0 +1,218 @@
+// Phase 3 step 3.3 -- DenseBitsetGraph cross-word edge tests, clear_edge, out_degree, neighbor_at.
+
+use graph_dense_bitset_directed;
+
+fn fail_unless_one(value: int64) -> int64 {
+    case value of {
+        1 -> 0;
+        _: int64 -> 1
+    }
+}
+
+fn fail_unless_zero(value: int64) -> int64 {
+    case value of {
+        0 -> 0;
+        _: int64 -> 1
+    }
+}
+
+fn fail_unless_uint64_one(value: uint64) -> int64 {
+    case value == 1 of {
+        true -> 0;
+        false -> 1
+    }
+}
+
+fn fail_unless_uint64_zero(value: uint64) -> int64 {
+    case value == 0 of {
+        true -> 0;
+        false -> 1
+    }
+}
+
+fn check_has_edge[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    words: buf(L1, normal, uint64, 4)
+}, from_id: int64, to_id: int64, expected: int64, weight: int64) -> int64 {
+    from_saved: int64 <- from_id;
+    to_saved: int64 <- to_id;
+    expected_saved: int64 <- expected;
+    weight_saved: int64 <- weight;
+    sequence proc[mem(normal)]
+        actual: int64 <- graph_dense_bitset_directed@has_edge[mem(normal)](graph, from_saved, to_saved);
+        fail: int64 <- case expected_saved of {
+            0 -> actual;
+            1 -> fail_unless_one(actual);
+            _: int64 -> 1
+        };
+        weighted: int64 <- fail * weight_saved
+    produces
+        pure weighted
+    end
+}
+
+fn check_out_degree[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    words: buf(L1, normal, uint64, 4)
+}, node_id: int64, expected: int64, weight: int64) -> int64 {
+    node_saved: int64 <- node_id;
+    expected_saved: int64 <- expected;
+    weight_saved: int64 <- weight;
+    sequence proc[mem(normal)]
+        actual: int64 <- graph_dense_bitset_directed@out_degree[mem(normal)](graph, node_saved);
+        weighted: int64 <- fail_unless_zero(actual - expected_saved) * weight_saved
+    produces
+        pure weighted
+    end
+}
+
+fn check_neighbor_at[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    words: buf(L1, normal, uint64, 4)
+}, from_id: int64, local_index: int64, expected: int64, weight: int64) -> int64 {
+    from_saved: int64 <- from_id;
+    local_saved: int64 <- local_index;
+    expected_saved: int64 <- expected;
+    weight_saved: int64 <- weight;
+    sequence proc[mem(normal)]
+        actual: int64 <- graph_dense_bitset_directed@neighbor_at[mem(normal)](graph, from_saved, local_saved);
+        weighted: int64 <- fail_unless_zero(actual - expected_saved) * weight_saved
+    produces
+        pure weighted
+    end
+}
+
+fn word_bit(word: uint64, bit_index: int64) -> uint64 {
+    bit_saved: int64 <- bit_index;
+    one: uint64 <- 1;
+    (word band (one shl bit_saved)) shr bit_saved
+}
+
+fn read_word[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    words: buf(L1, normal, uint64, 4)
+}, word_index: int64) -> uint64 {
+    index_saved: int64 <- word_index;
+    sequence proc[mem(normal)]
+        word: uint64 <- read_buf(graph.words, index_saved)
+    produces
+        pure word
+    end
+}
+
+fn check_word_bit[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    words: buf(L1, normal, uint64, 4)
+}, word_index: int64, bit_index: int64, expected: uint64, weight: int64) -> int64 {
+    word_saved: int64 <- word_index;
+    bit_saved: int64 <- bit_index;
+    expected_saved: uint64 <- expected;
+    weight_saved: int64 <- weight;
+    word: uint64 <- read_word[mem(normal)](graph, word_saved);
+    actual: uint64 <- word_bit(word, bit_saved);
+    fail: int64 <- case actual == expected_saved of {
+        true -> 0;
+        false -> 1
+    };
+    fail * weight_saved
+}
+
+fn check_edge_count(graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    words: buf(L1, normal, uint64, 4)
+}, expected: int64, weight: int64) -> int64 {
+    expected_saved: int64 <- expected;
+    weight_saved: int64 <- weight;
+    fail_unless_zero(graph.edge_count - expected_saved) * weight_saved
+}
+
+fn check_validate[mem(normal)](graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    words: buf(L1, normal, uint64, 4)
+}, weight: int64) -> int64 {
+    weight_saved: int64 <- weight;
+    sequence proc[mem(normal)]
+        valid: int64 <- graph_dense_bitset_directed@validate[mem(normal)](graph);
+        weighted: int64 <- fail_unless_one(valid) * weight_saved
+    produces
+        pure weighted
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        graph: {
+            region: region(L1, normal),
+            node_count: int64,
+            edge_count: int64,
+            words: buf(L1, normal, uint64, 4)
+        } <- graph_dense_bitset_directed@empty[mem(normal)](9);
+        with08: {
+            region: region(L1, normal),
+            node_count: int64,
+            edge_count: int64,
+            words: buf(L1, normal, uint64, 4)
+        } <- graph_dense_bitset_directed@set_edge[mem(normal)](graph, 0, 8);
+        with78: {
+            region: region(L1, normal),
+            node_count: int64,
+            edge_count: int64,
+            words: buf(L1, normal, uint64, 4)
+        } <- graph_dense_bitset_directed@set_edge[mem(normal)](with08, 7, 8);
+        with87: {
+            region: region(L1, normal),
+            node_count: int64,
+            edge_count: int64,
+            words: buf(L1, normal, uint64, 4)
+        } <- graph_dense_bitset_directed@set_edge[mem(normal)](with78, 8, 7);
+        cleared78: {
+            region: region(L1, normal),
+            node_count: int64,
+            edge_count: int64,
+            words: buf(L1, normal, uint64, 4)
+        } <- graph_dense_bitset_directed@clear_edge[mem(normal)](with87, 7, 8);
+        f0: int64 <- check_has_edge[mem(normal)](cleared78, 0, 8, 1, 1);
+        c1: int64 <- check_has_edge[mem(normal)](cleared78, 7, 8, 0, 2);
+        f1: int64 <- f0 + c1;
+        c2: int64 <- check_has_edge[mem(normal)](cleared78, 8, 7, 1, 4);
+        f2: int64 <- f1 + c2;
+        c3: int64 <- check_out_degree[mem(normal)](cleared78, 0, 1, 8);
+        f3: int64 <- f2 + c3;
+        c4: int64 <- check_out_degree[mem(normal)](cleared78, 7, 0, 16);
+        f4: int64 <- f3 + c4;
+        c5: int64 <- check_out_degree[mem(normal)](cleared78, 8, 1, 32);
+        f5: int64 <- f4 + c5;
+        c6: int64 <- check_neighbor_at[mem(normal)](cleared78, 0, 0, 8, 64);
+        f6: int64 <- f5 + c6;
+        c7: int64 <- check_neighbor_at[mem(normal)](cleared78, 0, 1, -1, 128);
+        f7: int64 <- f6 + c7;
+        c8: int64 <- check_neighbor_at[mem(normal)](cleared78, 8, 0, 7, 256);
+        f8: int64 <- f7 + c8;
+        zero: uint64 <- 0;
+        one: uint64 <- 1;
+        c9: int64 <- check_word_bit[mem(normal)](cleared78, 1, 7, zero, 512);
+        f9: int64 <- f8 + c9;
+        c10: int64 <- check_word_bit[mem(normal)](cleared78, 1, 15, one, 1024);
+        f10: int64 <- f9 + c10;
+        c11: int64 <- check_edge_count(cleared78, 2, 2048);
+        f11: int64 <- f10 + c11;
+        c12: int64 <- check_validate[mem(normal)](cleared78, 4096);
+        failures: int64 <- f11 + c12
+    produces
+        pure failures
+    end
+}

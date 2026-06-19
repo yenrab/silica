@@ -18,7 +18,8 @@ BASE_CONFIG_FILES := \
 	graph_adj_directed.silica \
 	graph_adj_undirected.silica \
 	graph_csr_directed.silica \
-	graph_dense_directed.silica
+	graph_dense_directed.silica \
+	graph_dense_bitset_directed.silica
 
 BTREE_SET_CONFIG_FILES := \
 	btree_set_csr.silica \

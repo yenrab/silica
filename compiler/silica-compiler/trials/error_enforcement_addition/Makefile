@@ -19,16 +19,16 @@ TRIAL_DIR := $(notdir $(patsubst %/,%,$(THIS_DIR)))
 MSG_PREFIX := $(TRIAL_DIR)/
 
 # Multi-file trials (checked-in silica.config + subdir Makefile).
-SUB_TRIALS      := ffi_addition module_nonexported_callee_trial qualified_call_module_name_case_mismatch_trial standard_data_structures_phase04 supervisor_agent_type_invalid_atom_trial
+SUB_TRIALS      := ffi_addition generated_data_structures/graph module_nonexported_callee_trial qualified_call_module_name_case_mismatch_trial standard_data_structures_phase04 supervisor_agent_type_invalid_atom_trial
 
 # Single-file trial sources only (paths under SUB_TRIALS excluded; keep prune list in sync with SUB_TRIALS).
-SILICA_FILES := $(shell cd "$(THIS_DIR)" && find . \( -path './ffi_addition/*' -o -path './module_nonexported_callee_trial/*' -o -path './qualified_call_module_name_case_mismatch_trial/*' -o -path './standard_data_structures_phase04/*' -o -path './supervisor_agent_type_invalid_atom_trial/*' \) -prune -o -type f -name '*.silica' -print 2>/dev/null | sed 's|^\./||')
+SILICA_FILES := $(shell cd "$(THIS_DIR)" && find . \( -path './ffi_addition/*' -o -path './generated_data_structures/graph/*' -o -path './module_nonexported_callee_trial/*' -o -path './qualified_call_module_name_case_mismatch_trial/*' -o -path './standard_data_structures_phase04/*' -o -path './supervisor_agent_type_invalid_atom_trial/*' \) -prune -o -type f -name '*.silica' -print 2>/dev/null | sed 's|^\./||')
 
 .DEFAULT_GOAL := all
 .PHONY: all integrate clean help silica.config
 
 silica.config: | clean
-	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find . \( -path './ffi_addition/*' -o -path './module_nonexported_callee_trial/*' -o -path './qualified_call_module_name_case_mismatch_trial/*' -o -path './standard_data_structures_phase04/*' -o -path './supervisor_agent_type_invalid_atom_trial/*' \) -prune -o -type f -name '*.silica' -print 2>/dev/null | sed 's|^\./||' > silica.config
+	@cd "$(dir $(abspath $(lastword $(MAKEFILE_LIST))))" && find . \( -path './ffi_addition/*' -o -path './generated_data_structures/graph/*' -o -path './module_nonexported_callee_trial/*' -o -path './qualified_call_module_name_case_mismatch_trial/*' -o -path './standard_data_structures_phase04/*' -o -path './supervisor_agent_type_invalid_atom_trial/*' \) -prune -o -type f -name '*.silica' -print 2>/dev/null | sed 's|^\./||' > silica.config
 
 # Same checks as top-level trials Makefile for this directory (error output vs .golden_fail).
 integrate: clean silica.config all

@@ -43,8 +43,12 @@ Steps 2.2–2.4:
 
 - `graph_dense_directed_unweighted_trial.silica`
 - `graph_dense_directed_int64_trial.silica`
+- `graph_dense_bitset_type_expansion_snapshot.silica` — registry + inline type expansion for dense bitset graph families
+- `graph_dense_bitset_constructor_trial.silica` — `DenseBitsetGraphDirected[mem(normal)]` construction, duplicate insert, checked invalid endpoint, validation
+- `graph_dense_bitset_inspection_trial.silica` — cross-word set/clear, `has_edge`, `out_degree`, `neighbor_at`, validation
+- `graph_dense_bitset_validate_invalid.silica` — validation rejects stored bits outside `node_count * node_count`
 
-`DenseBitsetGraph` is deferred per `graph_representation_design.md` §6.4.
+`DenseBitsetGraphDirected[mem(normal)]` is implemented for the Phase 1 unweighted `uint64` path. Weighted dense graphs continue to use the dense matrix representation.
 
 ## Phase 4
 

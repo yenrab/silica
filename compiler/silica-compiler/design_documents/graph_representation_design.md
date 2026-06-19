@@ -960,7 +960,7 @@ storage: O(node_count * node_count)
 
 ### 6.1 Summary
 
-`DenseBitsetGraph` is the packed unweighted dense representation. It stores one bit per possible edge, packed into `int64` words.
+`DenseBitsetGraph` is the packed unweighted dense representation. It stores one bit per possible edge, packed into `uint64` words.
 
 Use it when:
 
@@ -993,7 +993,7 @@ Silica inline shape:
     region: region(R, S),
     node_count: int64,
     edge_count: int64,
-    words: buf(R, S, int64, WORD_COUNT)
+    words: buf(R, S, uint64, WORD_COUNT)
 }
 ```
 
@@ -1254,7 +1254,7 @@ fn use_graph(g: { node_count: int64, edge_count: int64, ... }) -> int64 {
 ## 9. Open implementation questions
 
 1. Dynamic buffer sizes in type positions: CSR and dense graphs are easiest when capacities are generator constants. If dynamic buffer types become available, this document should add dynamic forms.
-2. Bitwise operator coverage: `DenseBitsetGraph` depends on `bor`, `band`, `bnot`, `shl`, and `shr`. Until those are uniformly available, dense matrix is the fallback.
+2. Bitwise operator coverage: `DenseBitsetGraph` depends on `bor`, `band`, `bnot`, `shl`, and `shr`. Phase 1 implements the `uint64` directed unweighted path; unsupported variants, including weighted dense bitsets, continue to fall back to dense matrix.
 3. Map support: if Silica gains a map/dictionary representation, adjacency lookup can become faster without CSR conversion.
 4. Region lifetime ergonomics: graph records with buffers must carry the owning region. Future region-bundle ergonomics may reduce the amount of repeated inline type text.
 5. Sorting support: sorted CSR adjacency enables binary search for `has_edge`; unsorted CSR preserves insertion order and simpler construction.

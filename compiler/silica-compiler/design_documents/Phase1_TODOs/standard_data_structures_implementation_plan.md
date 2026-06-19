@@ -549,6 +549,8 @@ Exit criteria:
 
 ### Step 3.3 - Generate DenseBitsetGraph Only When Supported
 
+**Status: complete for Phase 1 directed unweighted graphs** — required bitwise operations (`bor`, `band`, `bnot`, `shl`, `shr`) are available for `uint64`, and `graph_dense_bitset_directed.silica` now provides the generated-capacity `DenseBitsetGraphDirected[mem(normal)]` path. Trials: `graph_dense_bitset_type_expansion_snapshot.silica`, `graph_dense_bitset_constructor_trial.silica`, `graph_dense_bitset_inspection_trial.silica`, `graph_dense_bitset_validate_invalid.silica`, plus negative enforcement under `error_enforcement_addition/generated_data_structures/graph/`.
+
 Authority:
 
 - `graph_representation_design.md` sections 6.1 through 6.4 and 9
@@ -556,18 +558,18 @@ Authority:
 
 Actions:
 
-1. Check whether the current compiler path supports the bit operations required by the design.
-2. If supported, generate dense bitset type, set, clear, and edge-test helpers.
-3. If not supported, record the design-documented fallback to dense matrix in the implementation status notes.
+1. Check whether the current compiler path supports the bit operations required by the design. Complete: Phase 1 supports `uint64` bit operations.
+2. Generate dense bitset type, set, clear, and edge-test helpers. Complete for `DenseBitsetGraphDirected[mem(normal)]`.
+3. Record fallback behavior for unsupported variants. Complete: weighted DenseBitsetGraph construction remains rejected; use dense matrix for weighted dense graphs.
 
 Exit criteria:
 
-- Either dense bitset trials pass, or the fallback is documented without changing the graph design.
+- Dense bitset trials pass for supported unweighted directed graphs, and unsupported variants have negative enforcement coverage.
 
 **Phase 3 completed:**
 
 - Steps 3.1–3.2: `graph_dense_directed.silica` (bootstrap unweighted and weighted edge-payload via typed graph values); trials `graph_dense_directed_unweighted.silica`, `graph_dense_directed_weighted_int64.silica` (silica-compiler integrate).
-- Step 3.3: DenseBitset deferred per graph design §6.4 and `bitwise_operators_implementation_plan.md`; fallback to `DenseMatrixGraphDirected[mem(S)]` documented in completion tracking.
+- Step 3.3: `graph_dense_bitset_directed.silica` implements directed unweighted dense bitsets using `uint64` words, generated capacity `WORD_COUNT = 4`, and operations for set, clear, edge-test, degree, neighbor lookup, and validation.
 - `src/standard_data_structures/` builds graph modules via `silica-compiler` + `silica.config` (not silica-boot).
 
 ## Phase 4 - Graph Algorithms Over Stable Traversal APIs
@@ -1162,7 +1164,7 @@ Standard data structure families in scope:
 - CsrBTreeMap (`btree_csr_map`)
 - RegionBinaryHeap (`heap_binary_min`, `heap_binary_max`)
 
-Deferred families (add payload trials when the family is generated): DenseBitsetGraph, RegionDaryHeap.
+Deferred families (add payload trials when the family is generated): RegionDaryHeap. DenseBitsetGraph payload coverage is pending beyond the Phase 1 directed unweighted path.
 
 ### Step 10.16 - NodeIdAdjacencyGraph Payload Trials
 
@@ -1351,7 +1353,7 @@ Last updated to reflect Phase 0.5 stdlib reconciliation completion and Phase 1 s
 | NodeIdAdjacencyGraph        | Partial         | `graph_adj_directed.silica` is old-design (width exports, no function record). `graph_phase04.silica` + `directed_graph_trait.silica` cover trait-dispatch smoke only. Phase 1 retargets adjacency to constructor records + `DirectedGraph` trait. |
 | CompressedSparseRowGraph    | Steps 2.1–2.5 complete | Type expansion, static constructor, validation, inspection, and adjacency `freeze`. |
 | DenseMatrixGraph            | Steps 3.1–3.2 complete | Type expansion, constructor, inspection (`has_edge`, `neighbor_at`, `out_degree`, `weight_at`), validation trials green. |
-| DenseBitsetGraph            | Deferred        | Generate only when required `bor` / `band` / `bnot` / `shl` / `shr` operations from `bitwise_operators_implementation_plan.md` are available; dense matrix remains the documented fallback. |
+| DenseBitsetGraph            | Step 3.3 complete (directed unweighted) | `DenseBitsetGraphDirected[mem(normal)]` uses `uint64` word storage (`WORD_COUNT = 4`) with set/clear/has/out-degree/neighbor/validate trials green. Weighted variants remain unsupported and covered by negative enforcement; dense matrix remains the fallback for weighted dense graphs. |
 | Graph algorithms            | Rewrite pending | Existing reachability and degree-summary trials are old-design/reference material; reattach through standard graph traits after Phase 1 representation rebuild. |
 | NodeIDBTreeSet              | Partial         | `btree_set_nodeid@empty({ compare_item })` preserves comparator; trait wired via adapters; `OrderedSet@size` delegates to `item_count` (sums leaf keys). Multi-insert accumulation in bootstrap nodeid insert remains separate from Phase 0.5 size semantics. |
 | CsrBTreeSet                 | Partial         | `btree_set_csr@empty/1` stores `compare_item` in value and threads through insert skeleton paths; CSR trait `compare_item` delegates to captured fn. |
