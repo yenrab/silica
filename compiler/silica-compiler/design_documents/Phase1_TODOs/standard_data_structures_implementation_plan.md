@@ -410,6 +410,8 @@ Exit criteria:
 
 ### Step 2.1 - Generate CSR Type Expansion
 
+**Status: complete** — `inline_type_expansion.silica` exports `expand_csr_directed_unweighted/1` and `expand_csr_directed_weighted_int64/1`; unweighted and weighted shapes include `region(R, S)`, `offsets: buf(R, S, int64, N_PLUS_ONE)`, `neighbors: buf(R, S, int64, M)`, and weighted adds `weights: buf(R, S, int64, M)` per graph_representation_design.md §4.2–§4.3. Snapshot trial: `graph_csr_type_expansion_snapshot.silica` (also covered in `type_expansion_snapshot.silica` indices 4–7).
+
 Authority:
 
 - `graph_representation_design.md` sections 4.1, 4.2, 4.3, 4.8, and 8.5
@@ -425,6 +427,8 @@ Exit criteria:
 - Snapshot tests cover CSR type strings for unweighted and weighted forms.
 
 ### Step 2.2 - Generate CSR Direct Static Constructor
+
+**Status: complete** — `graph_csr_directed@from_static_edges[mem(normal)]` and `from_static_edges[int64, mem(normal)]` allocate region/buffers, fill offsets/neighbors/(weights), return full graph record with region ownership per §4.6. Trial: `graph_csr_static_constructor_trial.silica`.
 
 Authority:
 
@@ -442,6 +446,8 @@ Exit criteria:
 - A trial constructs a static CSR graph and verifies node count and edge count.
 
 ### Step 2.3 - Generate CSR Validation
+
+**Status: complete** — `validate[mem(normal)]` and `validate[int64, mem(normal)]` check offsets (first/final endpoints, monotonicity), neighbor endpoint ranges, and weighted buffer shape per §4.4. `validate_checked` exports error codes for negative trials. Trials: `graph_csr_validate_valid.silica`, `graph_csr_validate_invalid.silica` (non-monotonic offsets → error 4).
 
 Authority:
 
@@ -462,6 +468,8 @@ Exit criteria:
 
 ### Step 2.4 - Generate CSR Inspection
 
+**Status: complete** — `out_degree`, `neighbor_at` (offset-range traversal), `has_edge` (linear scan per §4.7 unsorted default), and `weight_at`/`weight_at_checked` for weighted CSR. Trial: `graph_csr_inspection_trial.silica`.
+
 Authority:
 
 - `graph_representation_design.md` sections 4.7, 8.2, and 8.3
@@ -479,6 +487,8 @@ Exit criteria:
 - Trials cover `out_degree`, present edge, absent edge, and weighted lookup.
 
 ### Step 2.5 - Generate Adjacency-To-CSR Finalization
+
+**Status: complete** — `freeze[mem(normal)]` and `freeze[int64, mem(normal)]` build CSR offsets and neighbor/weight buffers from flat bootstrap adjacency graphs (§4.5). Trial: `graph_csr_adj_finalize_trial.silica`.
 
 Authority:
 
@@ -1334,7 +1344,7 @@ Last updated to reflect Phase 0.5 stdlib reconciliation completion and Phase 1 s
 | Phase 0.5 stdlib reconciliation | Complete | Comparator delegation fixed in trait impls; nodeid `OrderedSet@size` uses `item_count` (leaf key totals); CSR set/map empty+insert preserve captured comparators; phase04 acceptance trials: `ordered_set_nodeid_size_trait`, `ordered_map_compare_value_trait`, `ordered_set_csr_compare_item_trait`. `{ found: int64 }` vs boolean remains staging debt. |
 | Trait constructor records   | Partial         | Witness checking works for `OrderedSet`, `OrderedMap`, `Heap` bracket types. Negative trials: E2017, E2092, E2003 in error_enforcement phase04 suite. Invalid-atom validation deferred. Phase 0.5 acceptance trials green; full generated-family acceptance pending Phase 1+. |
 | NodeIdAdjacencyGraph        | Partial         | `graph_adj_directed.silica` is old-design (width exports, no function record). `graph_phase04.silica` + `directed_graph_trait.silica` cover trait-dispatch smoke only. Phase 1 retargets adjacency to constructor records + `DirectedGraph` trait. |
-| CompressedSparseRowGraph    | Rewrite pending | Existing `graph_csr_directed.silica` and CSR trials are old-design/reference material; no CSR graph constructor-record/standard-trait acceptance trial. |
+| CompressedSparseRowGraph    | Steps 2.1–2.5 complete | Type expansion, static constructor, validation, inspection, and adjacency `freeze`. |
 | DenseMatrixGraph            | Rewrite pending | Existing `graph_dense_directed.silica` and dense graph trials are old-design/reference material. |
 | DenseBitsetGraph            | Deferred        | Generate only when required bitwise operations are available; dense matrix remains the documented fallback. |
 | Graph algorithms            | Rewrite pending | Existing reachability and degree-summary trials are old-design/reference material; reattach through standard graph traits after Phase 1 representation rebuild. |

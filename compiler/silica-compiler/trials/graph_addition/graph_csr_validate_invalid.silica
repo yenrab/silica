@@ -1,0 +1,39 @@
+// Phase 2 step 2.3 — invalid CSR validation: non-monotonic offsets (graph_representation_design.md §4.4).
+
+use graph_csr_directed;
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        offsets: buf(L1, normal, int64, 4) <- alloc_buf(r, 4);
+        neighbors: buf(L1, normal, int64, 2) <- alloc_buf(r, 2);
+        _: atom <- write_buf(offsets, 0, 0);
+        _: atom <- write_buf(offsets, 1, 2);
+        _: atom <- write_buf(offsets, 2, 1);
+        _: atom <- write_buf(offsets, 3, 2);
+        _: atom <- write_buf(neighbors, 0, 1);
+        _: atom <- write_buf(neighbors, 1, 2);
+        graph: {
+            region: region(L1, normal),
+            node_count: int64,
+            edge_count: int64,
+            offsets: buf(L1, normal, int64, 4),
+            neighbors: buf(L1, normal, int64, 2)
+        } <- {
+            region: r,
+            node_count: 3,
+            edge_count: 2,
+            offsets: offsets,
+            neighbors: neighbors
+        };
+        validation: { ok: int64, error_code: int64 } <- graph_csr_directed@validate_checked[mem(normal)](graph);
+        code_ok: int64 <- case validation.error_code == 4 of {
+            true -> 1;
+            false -> 0
+        };
+        failures: int64 <- (validation.ok * 1) + ((1 - code_ok) * 2)
+    produces
+        pure failures
+    end
+}

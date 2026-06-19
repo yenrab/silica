@@ -25,6 +25,17 @@ Success trials:
 
 ## Phase 2
 
+Step 2.1 — CSR inline type expansion (unweighted and weighted):
+
+- `graph_csr_type_expansion_snapshot.silica` — registry + `inline_type_expansion` golden for all four `CompressedSparseRowGraph*` families
+
+Steps 2.2–2.4:
+
+- `graph_csr_static_constructor_trial.silica` — step 2.2: `from_static_edges` for unweighted and weighted; verifies `node_count` and `edge_count` only
+- `graph_csr_validate_valid.silica` — step 2.3: positive validation on static graphs
+- `graph_csr_validate_invalid.silica` — step 2.3: non-monotonic offsets rejected (error code 4)
+- `graph_csr_inspection_trial.silica` — step 2.4: `out_degree`, `neighbor_at`, `has_edge`, `weight_at`
+- `graph_csr_adj_finalize_trial.silica` — step 2.5: `freeze` from adjacency graph; verifies equivalent `has_edge` and weighted `weight_at`
 - `graph_csr_directed_unweighted_trial.silica`
 - `graph_csr_directed_int64_trial.silica`
 
