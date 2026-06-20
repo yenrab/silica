@@ -66,6 +66,7 @@ silica.config: lib-sources
 		echo 'graph_reachability_csr_directed_trial.silica'; \
 		echo 'graph_reachability_adj_directed_trial.silica'; \
 		echo 'graph_degree_summary_csr_directed_trial.silica'; \
+		echo 'graph_degree_summary_adj_directed_trial.silica'; \
 		echo 'graph_adj_directed_context_trial.silica'; \
 	} > silica.config
 
@@ -233,7 +234,7 @@ clean:
 		graph_csr_directed_unweighted_trial graph_csr_directed_int64_trial \
 		graph_dense_directed_unweighted_trial graph_dense_directed_int64_trial \
 		graph_reachability_csr_directed_trial graph_reachability_adj_directed_trial \
-		graph_degree_summary_csr_directed_trial \
+		graph_degree_summary_csr_directed_trial graph_degree_summary_adj_directed_trial \
 		graph_adj_directed_unweighted_trial.o graph_adj_undirected_trial.o graph_adj_directed_int64_trial.o \
 		graph_csr_directed_unweighted_trial.o graph_csr_directed_int64_trial.o \
 		graph_dense_type_expansion_snapshot.o graph_dense_constructor_trial.o \
@@ -242,7 +243,8 @@ clean:
 		graph_dense_bitset_inspection_trial.o graph_dense_bitset_validate_invalid.o \
 		graph_dense_directed_unweighted_trial.o graph_dense_directed_int64_trial.o \
 		graph_reachability_csr_directed_trial.o graph_reachability_adj_directed_trial.o \
-		graph_degree_summary_csr_directed_trial.o silica.config .integrate_counts
+		graph_degree_summary_csr_directed_trial.o graph_degree_summary_adj_directed_trial.o \
+		silica.config .integrate_counts
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:

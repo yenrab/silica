@@ -367,12 +367,7 @@ fn out_degree[mem(normal)](graph: {
     neighbors: buf(L1, normal, int64, 2)
 }, node_id: int64) -> int64 {
     node_saved: int64 <- node_id;
-    in_range: int64 <- case node_saved of {
-        0 -> 1;
-        1 -> 1;
-        2 -> 1;
-        _: int64 -> 0
-    };
+    in_range: int64 <- graph_adj_list_helpers@graph_adj_node_id_in_range(node_saved, graph.node_count);
     safe_node: int64 <- case in_range of {
         0 -> 0;
         1 -> node_saved;
@@ -390,6 +385,78 @@ fn out_degree[mem(normal)](graph: {
     produces
         pure result
     end
+}
+
+fn graph_csr_present(value: int64) -> int64 {
+    case value of {
+        0 -> 0;
+        _: int64 -> 1
+    }
+}
+
+fn csr_neighbor_row0(o1: int64, n0: int64, n1: int64, local_index: int64) -> int64 {
+    case local_index of {
+        0 -> case o1 of {
+            1 -> n0;
+            2 -> n0;
+            _: int64 -> -1
+        };
+        1 -> case o1 of {
+            2 -> n1;
+            _: int64 -> -1
+        };
+        _: int64 -> -1
+    }
+}
+
+fn csr_neighbor_row1(o1: int64, o2: int64, n0: int64, n1: int64, local_index: int64) -> int64 {
+    case local_index of {
+        0 -> case o1 of {
+            0 -> case o2 of {
+                1 -> n0;
+                2 -> n0;
+                _: int64 -> -1
+            };
+            1 -> case o2 of {
+                2 -> n1;
+                _: int64 -> -1
+            };
+            _: int64 -> -1
+        };
+        1 -> case o1 of {
+            0 -> case o2 of {
+                2 -> n1;
+                _: int64 -> -1
+            };
+            _: int64 -> -1
+        };
+        _: int64 -> -1
+    }
+}
+
+fn csr_neighbor_row2(o2: int64, o3: int64, n0: int64, n1: int64, local_index: int64) -> int64 {
+    case local_index of {
+        0 -> case o2 of {
+            0 -> case o3 of {
+                1 -> n0;
+                2 -> n0;
+                _: int64 -> -1
+            };
+            1 -> case o3 of {
+                2 -> n1;
+                _: int64 -> -1
+            };
+            _: int64 -> -1
+        };
+        1 -> case o2 of {
+            0 -> case o3 of {
+                2 -> n1;
+                _: int64 -> -1
+            };
+            _: int64 -> -1
+        };
+        _: int64 -> -1
+    }
 }
 
 fn has_edge[mem(normal)](graph: {
@@ -418,38 +485,23 @@ fn has_edge[mem(normal)](graph: {
         1 -> to_ok;
         _: int64 -> 0
     };
-    sequence proc[mem(normal)]
-        n0: int64 <- read_buf(graph.neighbors, 0);
-        n1: int64 <- read_buf(graph.neighbors, 1);
-        found0: int64 <- case from_saved of {
-            0 -> case to_saved of {
-                1 -> case n0 of {
-                    1 -> 1;
-                    _: int64 -> 0
-                };
-                _: int64 -> 0
-            };
-            _: int64 -> 0
-        };
-        found1: int64 <- case from_saved of {
-            1 -> case to_saved of {
-                2 -> case n1 of {
-                    2 -> 1;
-                    _: int64 -> 0
-                };
-                _: int64 -> 0
-            };
-            _: int64 -> 0
-        };
-        total: int64 <- found0 + found1;
-        present: int64 <- case total of {
-            0 -> 0;
-            _: int64 -> 1
-        };
-        result: int64 <- endpoints_ok * present
-    produces
-        pure result
-    end
+    safe_from: int64 <- case endpoints_ok of {
+        0 -> 0;
+        1 -> from_saved;
+        _: int64 -> 0
+    };
+    n0: int64 <- neighbor_at[mem(normal)](graph, safe_from, 0);
+    n1: int64 <- neighbor_at[mem(normal)](graph, safe_from, 1);
+    hit0: int64 <- case n0 - to_saved of {
+        0 -> 1;
+        _: int64 -> 0
+    };
+    hit1: int64 <- case n1 - to_saved of {
+        0 -> 1;
+        _: int64 -> 0
+    };
+    found: int64 <- graph_csr_present(hit0 + hit1);
+    found * endpoints_ok
 }
 
 fn neighbor_at[mem(normal)](graph: {
@@ -461,19 +513,41 @@ fn neighbor_at[mem(normal)](graph: {
 }, node_id: int64, local_index: int64) -> int64 {
     node_saved: int64 <- node_id;
     local_saved: int64 <- local_index;
+    in_range: int64 <- case node_saved of {
+        0 -> 1;
+        1 -> 1;
+        2 -> 1;
+        _: int64 -> 0
+    };
+    local_nonnegative: int64 <- case local_saved < 0 of {
+        true -> 0;
+        false -> 1
+    };
+    safe_node: int64 <- case in_range of {
+        0 -> 0;
+        1 -> node_saved;
+        _: int64 -> 0
+    };
     sequence proc[mem(normal)]
+        o0: int64 <- read_buf(graph.offsets, 0);
+        o1: int64 <- read_buf(graph.offsets, 1);
+        o2: int64 <- read_buf(graph.offsets, 2);
+        o3: int64 <- read_buf(graph.offsets, 3);
         n0: int64 <- read_buf(graph.neighbors, 0);
         n1: int64 <- read_buf(graph.neighbors, 1);
-        result: int64 <- case node_saved of {
-            0 -> case local_saved of {
-                0 -> n0;
+        value: int64 <- case safe_node of {
+            0 -> csr_neighbor_row0(o1, n0, n1, local_saved);
+            1 -> csr_neighbor_row1(o1, o2, n0, n1, local_saved);
+            2 -> csr_neighbor_row2(o2, o3, n0, n1, local_saved);
+            _: int64 -> -1
+        };
+        result: int64 <- case in_range of {
+            0 -> -1;
+            1 -> case local_nonnegative of {
+                0 -> -1;
+                1 -> value;
                 _: int64 -> -1
             };
-            1 -> case local_saved of {
-                0 -> n1;
-                _: int64 -> -1
-            };
-            2 -> -1;
             _: int64 -> -1
         }
     produces
@@ -638,74 +712,111 @@ fn first_error(first: int64, second: int64) -> int64 {
     }
 }
 
-fn reachable_via_mid(
-    graph: {
-        region: region(L1, normal),
-        node_count: int64,
-        edge_count: int64,
-        offsets: buf(L1, normal, int64, 4),
-        neighbors: buf(L1, normal, int64, 2)
-    },
-    from_id: int64,
-    to_id: int64,
-    mid_id: int64
-) -> int64 {
-    h0: int64 <- has_edge[mem(normal)](graph, from_id, mid_id);
-    h1: int64 <- has_edge[mem(normal)](graph, mid_id, to_id);
-    h0 * h1
-}
-
-fn reachable_accumulate_mid(
-    graph: {
-        region: region(L1, normal),
-        node_count: int64,
-        edge_count: int64,
-        offsets: buf(L1, normal, int64, 4),
-        neighbors: buf(L1, normal, int64, 2)
-    },
-    from_id: int64,
-    to_id: int64,
-    mid_id: int64,
-    prior: int64
-) -> int64 {
-    via: int64 <- reachable_via_mid(graph, from_id, to_id, mid_id);
-    total: int64 <- prior + via;
-    case total of {
-        0 -> 0;
-        _: int64 -> 1
-    }
-}
-
-fn reachable_static_from0(to_id: int64) -> int64 {
-    case to_id of {
-        0 -> 1;
+fn csr_reach_01(graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    direct: int64 <- has_edge[mem(normal)](graph, 0, 1);
+    via2_left: int64 <- has_edge[mem(normal)](graph, 0, 2);
+    case direct of {
         1 -> 1;
-        2 -> 1;
-        _: int64 -> 0
+        _: int64 -> case via2_left of {
+            1 -> has_edge[mem(normal)](graph, 2, 1);
+            _: int64 -> 0
+        }
     }
 }
 
-fn reachable_static_from1(to_id: int64) -> int64 {
-    case to_id of {
+fn csr_reach_02(graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    direct: int64 <- has_edge[mem(normal)](graph, 0, 2);
+    via1_left: int64 <- has_edge[mem(normal)](graph, 0, 1);
+    case direct of {
         1 -> 1;
-        2 -> 1;
-        _: int64 -> 0
+        _: int64 -> case via1_left of {
+            1 -> has_edge[mem(normal)](graph, 1, 2);
+            _: int64 -> 0
+        }
     }
 }
 
-fn reachable_static_from2(to_id: int64) -> int64 {
-    case to_id of {
-        2 -> 1;
-        _: int64 -> 0
+fn csr_reach_10(graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    direct: int64 <- has_edge[mem(normal)](graph, 1, 0);
+    via2_left: int64 <- has_edge[mem(normal)](graph, 1, 2);
+    case direct of {
+        1 -> 1;
+        _: int64 -> case via2_left of {
+            1 -> has_edge[mem(normal)](graph, 2, 0);
+            _: int64 -> 0
+        }
     }
 }
 
-fn reachable_static(from_id: int64, to_id: int64) -> int64 {
-    case from_id of {
-        0 -> reachable_static_from0(to_id);
-        1 -> reachable_static_from1(to_id);
-        2 -> reachable_static_from2(to_id);
-        _: int64 -> 0
+fn csr_reach_12(graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    direct: int64 <- has_edge[mem(normal)](graph, 1, 2);
+    via0_left: int64 <- has_edge[mem(normal)](graph, 1, 0);
+    case direct of {
+        1 -> 1;
+        _: int64 -> case via0_left of {
+            1 -> has_edge[mem(normal)](graph, 0, 2);
+            _: int64 -> 0
+        }
+    }
+}
+
+fn csr_reach_20(graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    direct: int64 <- has_edge[mem(normal)](graph, 2, 0);
+    via1_left: int64 <- has_edge[mem(normal)](graph, 2, 1);
+    case direct of {
+        1 -> 1;
+        _: int64 -> case via1_left of {
+            1 -> has_edge[mem(normal)](graph, 1, 0);
+            _: int64 -> 0
+        }
+    }
+}
+
+fn csr_reach_21(graph: {
+    region: region(L1, normal),
+    node_count: int64,
+    edge_count: int64,
+    offsets: buf(L1, normal, int64, 4),
+    neighbors: buf(L1, normal, int64, 2)
+}) -> int64 {
+    direct: int64 <- has_edge[mem(normal)](graph, 2, 1);
+    via0_left: int64 <- has_edge[mem(normal)](graph, 2, 0);
+    case direct of {
+        1 -> 1;
+        _: int64 -> case via0_left of {
+            1 -> has_edge[mem(normal)](graph, 0, 1);
+            _: int64 -> 0
+        }
     }
 }
 
@@ -735,33 +846,48 @@ fn reachable[mem(normal)](graph: {
         1 -> to_ok;
         _: int64 -> 0
     };
-    dim_ok: int64 <- case graph.node_count - 3 of {
+    safe_from: int64 <- case endpoints_ok of {
+        0 -> 0;
+        1 -> from_saved;
+        _: int64 -> 0
+    };
+    safe_to: int64 <- case endpoints_ok of {
+        0 -> 0;
+        1 -> to_saved;
+        _: int64 -> 0
+    };
+    same_node: int64 <- case from_saved - to_saved of {
         0 -> 1;
         _: int64 -> 0
     };
-    static_reach: int64 <- reachable_static(from_saved, to_saved);
-    sequence proc[mem(normal)]
-        n0: int64 <- read_buf(graph.neighbors, 0);
-        n1: int64 <- read_buf(graph.neighbors, 1);
-        n0_ok: int64 <- case n0 - 1 of {
-            0 -> 1;
+    path_present: int64 <- case safe_from of {
+        0 -> case safe_to of {
+            0 -> same_node;
+            1 -> csr_reach_01(graph);
+            2 -> csr_reach_02(graph);
             _: int64 -> 0
         };
-        n1_ok: int64 <- case n1 - 2 of {
-            0 -> 1;
+        1 -> case safe_to of {
+            0 -> csr_reach_10(graph);
+            1 -> same_node;
+            2 -> csr_reach_12(graph);
             _: int64 -> 0
         };
-        shape_ok: int64 <- n0_ok * n1_ok;
-        result: int64 <- static_reach * endpoints_ok * dim_ok * shape_ok
-    produces
-        pure result
-    end
+        2 -> case safe_to of {
+            0 -> csr_reach_20(graph);
+            1 -> csr_reach_21(graph);
+            2 -> same_node;
+            _: int64 -> 0
+        };
+        _: int64 -> 0
+    };
+    path_present * endpoints_ok
 }
 
 fn max_out_degree_pair(a: int64, b: int64) -> int64 {
-    case a of {
-        0 -> b;
-        _: int64 -> a
+    case a >= b of {
+        true -> a;
+        false -> b
     }
 }
 

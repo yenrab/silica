@@ -52,6 +52,7 @@ Steps 2.2–2.4:
 
 ## Phase 4
 
-- `graph_reachability_adj_directed_trial.silica`
-- `graph_reachability_csr_directed_trial.silica`
+- `graph_reachability_adj_directed_trial.silica` — reflexive, direct, unreachable, and multi-hop reachability over adjacency traversal
+- `graph_reachability_csr_directed_trial.silica` — reachability plus neighbor lookup on a non-canonical hand-built CSR graph
 - `graph_degree_summary_csr_directed_trial.silica`
+- `graph_degree_summary_adj_directed_trial.silica` — total and max out-degree on adjacency graphs where the max is not the first nonzero degree

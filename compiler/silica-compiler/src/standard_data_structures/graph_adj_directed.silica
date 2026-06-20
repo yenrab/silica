@@ -553,21 +553,123 @@ fn validate[mem(normal)](
     validate_counts(graph)
 }
 
-fn reachable_via_mid(
-    graph: {
-        node_count: int64,
-        edge_count: int64,
-        n0_neighbors: List[int64, mem(normal)],
-        n1_neighbors: List[int64, mem(normal)],
-        n2_neighbors: List[int64, mem(normal)]
-    },
-    from_id: int64,
-    to_id: int64,
-    mid_id: int64
-) -> int64 {
-    h0: int64 <- has_edge[mem(normal)](graph, from_id, mid_id);
-    h1: int64 <- has_edge[mem(normal)](graph, mid_id, to_id);
-    h0 * h1
+fn graph_adj_present(value: int64) -> int64 {
+    case value of {
+        0 -> 0;
+        _: int64 -> 1
+    }
+}
+
+fn graph_adj_reach_01(graph: {
+    node_count: int64,
+    edge_count: int64,
+    n0_neighbors: List[int64, mem(normal)],
+    n1_neighbors: List[int64, mem(normal)],
+    n2_neighbors: List[int64, mem(normal)]
+}) -> int64 {
+    direct: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n0_neighbors, 1);
+    via2_left: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n0_neighbors, 2);
+    via2_right: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n2_neighbors, 1);
+    case direct of {
+        1 -> 1;
+        _: int64 -> case via2_left of {
+            1 -> via2_right;
+            _: int64 -> 0
+        }
+    }
+}
+
+fn graph_adj_reach_02(graph: {
+    node_count: int64,
+    edge_count: int64,
+    n0_neighbors: List[int64, mem(normal)],
+    n1_neighbors: List[int64, mem(normal)],
+    n2_neighbors: List[int64, mem(normal)]
+}) -> int64 {
+    direct: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n0_neighbors, 2);
+    case direct of {
+        1 -> 1;
+        _: int64 -> case graph_adj_reach_01(graph) of {
+            1 -> graph_adj_reach_12(graph);
+            _: int64 -> 0
+        }
+    }
+}
+
+fn graph_adj_reach_10(graph: {
+    node_count: int64,
+    edge_count: int64,
+    n0_neighbors: List[int64, mem(normal)],
+    n1_neighbors: List[int64, mem(normal)],
+    n2_neighbors: List[int64, mem(normal)]
+}) -> int64 {
+    direct: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n1_neighbors, 0);
+    via2_left: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n1_neighbors, 2);
+    via2_right: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n2_neighbors, 0);
+    case direct of {
+        1 -> 1;
+        _: int64 -> case via2_left of {
+            1 -> via2_right;
+            _: int64 -> 0
+        }
+    }
+}
+
+fn graph_adj_reach_12(graph: {
+    node_count: int64,
+    edge_count: int64,
+    n0_neighbors: List[int64, mem(normal)],
+    n1_neighbors: List[int64, mem(normal)],
+    n2_neighbors: List[int64, mem(normal)]
+}) -> int64 {
+    direct: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n1_neighbors, 2);
+    via0_left: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n1_neighbors, 0);
+    via0_right: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n0_neighbors, 2);
+    case direct of {
+        1 -> 1;
+        _: int64 -> case via0_left of {
+            1 -> via0_right;
+            _: int64 -> 0
+        }
+    }
+}
+
+fn graph_adj_reach_20(graph: {
+    node_count: int64,
+    edge_count: int64,
+    n0_neighbors: List[int64, mem(normal)],
+    n1_neighbors: List[int64, mem(normal)],
+    n2_neighbors: List[int64, mem(normal)]
+}) -> int64 {
+    direct: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n2_neighbors, 0);
+    via1_left: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n2_neighbors, 1);
+    via1_right: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n1_neighbors, 0);
+    case direct of {
+        1 -> 1;
+        _: int64 -> case via1_left of {
+            1 -> via1_right;
+            _: int64 -> 0
+        }
+    }
+}
+
+fn graph_adj_reach_21(graph: {
+    node_count: int64,
+    edge_count: int64,
+    n0_neighbors: List[int64, mem(normal)],
+    n1_neighbors: List[int64, mem(normal)],
+    n2_neighbors: List[int64, mem(normal)]
+}) -> int64 {
+    direct: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n2_neighbors, 1);
+    via0_left: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n2_neighbors, 0);
+    via0_right: int64 <- graph_adj_list_helpers@graph_adj_list_int64_contains(graph.n0_neighbors, 1);
+    case direct of {
+        1 -> 1;
+        _: int64 -> case via0_left of {
+            1 -> via0_right;
+            _: int64 -> 0
+        }
+    }
 }
 
 fn reachable[mem(normal)](
@@ -614,22 +716,35 @@ fn reachable[mem(normal)](
         0 -> 1;
         _: int64 -> 0
     };
-    direct: int64 <- has_edge[mem(normal)](graph, safe_from, safe_to);
-    path_count: int64 <- same_node + direct;
-    path_present: int64 <- case path_count of {
-        0 -> 0;
-        _: int64 -> 1
+    path_count: int64 <- case safe_from of {
+        0 -> case safe_to of {
+            0 -> same_node;
+            1 -> graph_adj_reach_01(graph);
+            2 -> graph_adj_reach_02(graph);
+            _: int64 -> 0
+        };
+        1 -> case safe_to of {
+            0 -> graph_adj_reach_10(graph);
+            1 -> same_node;
+            2 -> graph_adj_reach_12(graph);
+            _: int64 -> 0
+        };
+        2 -> case safe_to of {
+            0 -> graph_adj_reach_20(graph);
+            1 -> graph_adj_reach_21(graph);
+            2 -> same_node;
+            _: int64 -> 0
+        };
+        _: int64 -> 0
     };
+    path_present: int64 <- graph_adj_present(path_count);
     path_present * endpoints_ok
 }
 
 fn max_out_degree_pair(a: int64, b: int64) -> int64 {
-    case a - b of {
-        0 -> a;
-        _: int64 -> case b - a of {
-            0 -> b;
-            _: int64 -> a
-        }
+    case a >= b of {
+        true -> a;
+        false -> b
     }
 }
 

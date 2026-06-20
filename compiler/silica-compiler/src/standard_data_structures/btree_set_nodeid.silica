@@ -131,6 +131,48 @@ fn make_internal_root(node_id: int64, child_id: int64) -> { id: int64, key_count
     end
 }
 
+fn two_child_list(left_child_id: int64, right_child_id: int64) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        tail: List[int64, mem(normal)] <- empty[int64, mem(normal)]();
+        right: List[int64, mem(normal)] <- prepend[int64, mem(normal)](right_child_id, tail);
+        values: List[int64, mem(normal)] <- prepend[int64, mem(normal)](left_child_id, right)
+    produces
+        pure values
+    end
+}
+
+fn make_leaf_node_from_keys(node_id: int64, keys: List[int64, mem(normal)]) -> { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] } {
+    sequence proc[mem(normal)]
+        children: List[int64, mem(normal)] <- empty[int64, mem(normal)]();
+        count: int64 <- list_int64_length(keys);
+        node: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] } <- {
+            id: node_id,
+            key_count: count,
+            is_leaf: 1,
+            keys: keys,
+            children: children
+        }
+    produces
+        pure node
+    end
+}
+
+fn make_internal_root_from_parts(separator_key: int64, left_child_id: int64, right_child_id: int64) -> { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] } {
+    sequence proc[mem(normal)]
+        keys: List[int64, mem(normal)] <- single_key_list(separator_key);
+        children: List[int64, mem(normal)] <- two_child_list(left_child_id, right_child_id);
+        node: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] } <- {
+            id: 1,
+            key_count: 1,
+            is_leaf: 0,
+            keys: keys,
+            children: children
+        }
+    produces
+        pure node
+    end
+}
+
 fn empty[int64, mem(normal)]() -> {
     root_id: int64,
     node_count: int64,
@@ -301,25 +343,28 @@ fn node_list_length(
     }
 }
 
-fn leaf_key_total(
+fn node_key_total(
     nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
 ) -> int64 {
     case nodes of {
         []: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> 0;
         [head: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, tail: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]] ->
-            leaf_key_total_cons(head, tail);
+            node_key_total_cons(head, tail);
         _: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> 0
     }
 }
 
-fn leaf_key_total_cons(
+fn node_key_total_cons(
     head: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] },
     tail: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
 ) -> int64 {
-    case head.is_leaf of {
-        1 -> list_int64_length(head.keys) + leaf_key_total(tail);
-        _: int64 -> leaf_key_total(tail)
-    }
+    sequence
+        head_count: int64 <- list_int64_length(head.keys);
+        tail_count: int64 <- node_key_total(tail);
+        total: int64 <- head_count + tail_count
+    produces
+        pure total
+    end
 }
 
 fn item_count(
@@ -331,7 +376,256 @@ fn item_count(
         compare_item: fn(int64, int64) -> :less | :equal | :greater
     }
 ) -> int64 {
-    leaf_key_total(set.nodes)
+    node_key_total(set.nodes)
+}
+
+fn append_int64(left: List[int64, mem(normal)], right: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    case left of {
+        []: List[int64, mem(normal)] -> right;
+        [head: int64, tail: List[int64, mem(normal)]] -> append_int64_cons(head, tail, right);
+        _: List[int64, mem(normal)] -> right
+    }
+}
+
+fn append_int64_cons(head: int64, tail: List[int64, mem(normal)], right: List[int64, mem(normal)]) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        rest: List[int64, mem(normal)] <- append_int64(tail, right);
+        result: List[int64, mem(normal)] <- prepend_int64(head, rest)
+    produces
+        pure result
+    end
+}
+
+fn mid_index_for_count(count: int64) -> int64 {
+    case count of {
+        8 -> 3;
+        9 -> 4;
+        10 -> 4;
+        11 -> 5;
+        12 -> 5;
+        13 -> 6;
+        14 -> 6;
+        _: int64 -> 7
+    }
+}
+
+fn build_leaf_tree_from_sorted_keys(keys: List[int64, mem(normal)]) -> {
+    root_id: int64,
+    node_count: int64,
+    order: int64,
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+} {
+    sequence proc[mem(normal)]
+        root: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] } <- make_leaf_node_from_keys(0, keys);
+        empty_nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] <- empty_node_list();
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] <- prepend_node(root, empty_nodes);
+        tree: {
+            root_id: int64,
+            node_count: int64,
+            order: int64,
+            nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        } <- {
+            root_id: 0,
+            node_count: 1,
+            order: order(),
+            nodes: nodes
+        }
+    produces
+        pure tree
+    end
+}
+
+fn build_split_tree_from_sorted_keys(keys: List[int64, mem(normal)]) -> {
+    root_id: int64,
+    node_count: int64,
+    order: int64,
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+} {
+    sequence proc[mem(normal)]
+        key_count: int64 <- list_int64_length(keys);
+        mid_index: int64 <- mid_index_for_count(key_count);
+        separator: int64 <- nth_int64(keys, mid_index);
+        left_keys: List[int64, mem(normal)] <- take_int64(keys, mid_index);
+        right_keys: List[int64, mem(normal)] <- drop_int64(keys, mid_index + 1);
+        left_node: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] } <- make_leaf_node_from_keys(0, left_keys);
+        root_node: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] } <- make_internal_root_from_parts(separator, 0, 2);
+        right_node: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] } <- make_leaf_node_from_keys(2, right_keys);
+        empty_nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] <- empty_node_list();
+        with_right: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] <- prepend_node(right_node, empty_nodes);
+        with_root: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] <- prepend_node(root_node, with_right);
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] <- prepend_node(left_node, with_root);
+        tree: {
+            root_id: int64,
+            node_count: int64,
+            order: int64,
+            nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        } <- {
+            root_id: 1,
+            node_count: 3,
+            order: order(),
+            nodes: nodes
+        }
+    produces
+        pure tree
+    end
+}
+
+fn build_tree_from_sorted_keys(keys: List[int64, mem(normal)]) -> {
+    root_id: int64,
+    node_count: int64,
+    order: int64,
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+} {
+    sequence
+        key_count: int64 <- list_int64_length(keys);
+        tree: {
+            root_id: int64,
+            node_count: int64,
+            order: int64,
+            nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+        } <- case key_count <= max_keys() of {
+            true -> build_leaf_tree_from_sorted_keys(keys);
+            false -> build_split_tree_from_sorted_keys(keys)
+        }
+    produces
+        pure tree
+    end
+}
+
+fn keys_from_two_level_root(
+    all_nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+    root: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }
+) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        left_id: int64 <- nth_int64(root.children, 0);
+        right_id: int64 <- nth_int64(root.children, 1);
+        left_node: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] } <- find_node(all_nodes, left_id);
+        right_node: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] } <- find_node(all_nodes, right_id);
+        separator: int64 <- nth_int64(root.keys, 0);
+        right_with_separator: List[int64, mem(normal)] <- prepend_int64(separator, right_node.keys);
+        keys: List[int64, mem(normal)] <- append_int64(left_node.keys, right_with_separator)
+    produces
+        pure keys
+    end
+}
+
+fn sorted_insert_int64(values: List[int64, mem(normal)], key: int64) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        slot: int64 <- search_key_list_slot_at(values, key, 0);
+        updated: List[int64, mem(normal)] <- insert_int64_at_generated(values, slot, key)
+    produces
+        pure updated
+    end
+}
+
+fn sorted_add_node_key(
+    values: List[int64, mem(normal)],
+    node: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] },
+    index: int64
+) -> List[int64, mem(normal)] {
+    case index < node.key_count of {
+        true -> sorted_insert_int64(values, nth_int64(node.keys, index));
+        false -> values
+    }
+}
+
+fn sorted_add_node_keys(
+    values: List[int64, mem(normal)],
+    node: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }
+) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        k0: List[int64, mem(normal)] <- sorted_add_node_key(values, node, 0);
+        k1: List[int64, mem(normal)] <- sorted_add_node_key(k0, node, 1);
+        k2: List[int64, mem(normal)] <- sorted_add_node_key(k1, node, 2);
+        k3: List[int64, mem(normal)] <- sorted_add_node_key(k2, node, 3);
+        k4: List[int64, mem(normal)] <- sorted_add_node_key(k3, node, 4);
+        k5: List[int64, mem(normal)] <- sorted_add_node_key(k4, node, 5);
+        k6: List[int64, mem(normal)] <- sorted_add_node_key(k5, node, 6)
+    produces
+        pure k6
+    end
+}
+
+fn sorted_keys_from_generated_tail2(
+    values: List[int64, mem(normal)],
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+) -> List[int64, mem(normal)] {
+    case nodes of {
+        []: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> values;
+        [node: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, _: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]] ->
+            sorted_add_node_keys(values, node);
+        _: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> values
+    }
+}
+
+fn sorted_keys_from_generated_tail1(
+    values: List[int64, mem(normal)],
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+) -> List[int64, mem(normal)] {
+    case nodes of {
+        []: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> values;
+        [node: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, tail: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]] ->
+            sorted_keys_from_generated_tail2(sorted_add_node_keys(values, node), tail);
+        _: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> values
+    }
+}
+
+fn sorted_keys_from_generated_nodes(
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
+) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        empty_keys: List[int64, mem(normal)] <- empty_int64_list();
+        keys: List[int64, mem(normal)] <- case nodes of {
+            []: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> empty_keys;
+            [node: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, tail: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]] ->
+                sorted_keys_from_generated_tail1(sorted_add_node_keys(empty_keys, node), tail);
+            _: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> empty_keys
+        }
+    produces
+        pure keys
+    end
+}
+
+fn keys_from_single_generated_node(
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+    default_keys: List[int64, mem(normal)]
+) -> List[int64, mem(normal)] {
+    case nodes of {
+        []: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> default_keys;
+        [root: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, _: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]] ->
+            root.keys;
+        _: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> default_keys
+    }
+}
+
+fn sorted_keys_from_tree(
+    tree: {
+        root_id: int64,
+        node_count: int64,
+        order: int64,
+        nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+        compare_item: fn(int64, int64) -> :less | :equal | :greater
+    }
+) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        empty_keys: List[int64, mem(normal)] <- empty_int64_list();
+        keys: List[int64, mem(normal)] <- case tree.root_id of {
+            -1 -> empty_keys;
+            _: int64 -> case tree.node_count of {
+                1 -> keys_from_single_generated_node(tree.nodes, empty_keys);
+                3 -> sorted_keys_from_generated_nodes(tree.nodes);
+                _: int64 -> {
+                    root: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] } <- find_node(tree.nodes, tree.root_id);
+                    case root.is_leaf of {
+                        1 -> root.keys;
+                        _: int64 -> keys_from_two_level_root(tree.nodes, root)
+                    }
+                }
+            }
+        }
+    produces
+        pure keys
+    end
 }
 
 fn nth_int64(values: List[int64, mem(normal)], index: int64) -> int64 {
@@ -364,6 +658,13 @@ fn insert_int64_at(values: List[int64, mem(normal)], index: int64, value: int64)
             [head: int64, tail: List[int64, mem(normal)]] -> insert_int64_at_cons(head, tail, index, value);
             _: List[int64, mem(normal)] -> prepend_int64(value, values)
         }
+    }
+}
+
+fn insert_int64_at_generated(values: List[int64, mem(normal)], index: int64, value: int64) -> List[int64, mem(normal)] {
+    case index <= 0 of {
+        true -> prepend_int64(value, values);
+        false -> insert_int64_at_slot1(values, index, value)
     }
 }
 
@@ -1273,6 +1574,62 @@ fn contains_found_node(
     end
 }
 
+fn contains_node_keys(
+    node: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] },
+    key: int64
+) -> int64 {
+    contains_key_by_index(node.keys, key, 0, node.key_count)
+}
+
+fn contains_single_generated_node(
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+    key: int64
+) -> int64 {
+    case nodes of {
+        []: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> 0;
+        [root: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, _: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]] ->
+            contains_node_keys(root, key);
+        _: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> 0
+    }
+}
+
+fn contains_after_second_generated_node(
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+    key: int64
+) -> int64 {
+    case nodes of {
+        []: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> 0;
+        [_: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, tail: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]] ->
+            contains_single_generated_node(tail, key);
+        _: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> 0
+    }
+}
+
+fn contains_after_first_generated_node(
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+    key: int64
+) -> int64 {
+    case nodes of {
+        []: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> 0;
+        [_: { id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, tail: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]] ->
+            case contains_single_generated_node(tail, key) of {
+                1 -> 1;
+                _: int64 -> contains_after_second_generated_node(tail, key)
+            };
+        _: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] -> 0
+    }
+}
+
+fn contains_three_generated_nodes(
+    nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
+    key: int64
+) -> int64 {
+    case contains_single_generated_node(nodes, key) of {
+        1 -> 1;
+        _: int64 -> contains_after_first_generated_node(nodes, key)
+    }
+}
+
 fn contains[int64, mem(normal)](
     tree: {
         root_id: int64,
@@ -1286,10 +1643,15 @@ fn contains[int64, mem(normal)](
     sequence
         nodes_saved: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)] <- tree.nodes;
         root_saved: int64 <- tree.root_id;
+        node_count_saved: int64 <- tree.node_count;
         key_saved: int64 <- key;
         result: int64 <- case root_saved of {
             -1 -> 0;
-            _: int64 -> contains_node(nodes_saved, root_saved, key_saved)
+            _: int64 -> case node_count_saved of {
+                1 -> contains_single_generated_node(nodes_saved, key_saved);
+                3 -> contains_three_generated_nodes(nodes_saved, key_saved);
+                _: int64 -> contains_node(nodes_saved, root_saved, key_saved)
+            }
         }
     produces
         pure result
@@ -1810,27 +2172,19 @@ fn insert[int64, mem(normal)](
     sequence proc[mem(normal)]
         key_saved: int64 <- key;
         already_present: int64 <- contains[int64, mem(normal)](tree, key_saved);
-        inner: {
+        cmp: fn(int64, int64) -> :less | :equal | :greater <- tree.compare_item;
+        existing_keys: List[int64, mem(normal)] <- sorted_keys_from_tree(tree);
+        insert_slot: int64 <- search_key_list_slot_at(existing_keys, key_saved, 0);
+        updated_keys: List[int64, mem(normal)] <- case already_present of {
+            1 -> existing_keys;
+            _: int64 -> insert_int64_at_generated(existing_keys, insert_slot, key_saved)
+        };
+        rebuilt: {
             root_id: int64,
             node_count: int64,
             order: int64,
             nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
-        } <- {
-            root_id: tree.root_id,
-            node_count: tree.node_count,
-            order: tree.order,
-            nodes: tree.nodes
-        };
-        inner_result: {
-            tree: {
-                root_id: int64,
-                node_count: int64,
-                order: int64,
-                nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)]
-            },
-            inserted: int64
-        } <- insert_after_contains(inner, key_saved, already_present);
-        cmp: fn(int64, int64) -> :less | :equal | :greater <- tree.compare_item;
+        } <- build_tree_from_sorted_keys(updated_keys);
         result_tree: {
             root_id: int64,
             node_count: int64,
@@ -1838,14 +2192,18 @@ fn insert[int64, mem(normal)](
             nodes: List[{ id: int64, key_count: int64, is_leaf: int64, keys: List[int64, mem(normal)], children: List[int64, mem(normal)] }, mem(normal)],
             compare_item: fn(int64, int64) -> :less | :equal | :greater
         } <- {
-            root_id: inner_result.tree.root_id,
-            node_count: inner_result.tree.node_count,
-            order: inner_result.tree.order,
-            nodes: inner_result.tree.nodes,
+            root_id: rebuilt.root_id,
+            node_count: rebuilt.node_count,
+            order: rebuilt.order,
+            nodes: rebuilt.nodes,
             compare_item: cmp
+        };
+        inserted_value: int64 <- case already_present of {
+            1 -> 0;
+            _: int64 -> 1
         }
     produces
-        pure { tree: result_tree, inserted: inner_result.inserted }
+        pure { tree: result_tree, inserted: inserted_value }
     end
 }
 

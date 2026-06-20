@@ -20,6 +20,7 @@ TRIAL_SOURCES := \
 	btree_set_nodeid_empty_contains.silica \
 	btree_set_nodeid_contains_handbuilt.silica \
 	btree_set_nodeid_insert.silica \
+	btree_set_nodeid_insert_split.silica \
 	btree_set_nodeid_validate_invalid.silica \
 	btree_set_csr_contains_static.silica \
 	btree_set_csr_validate_invalid.silica \
@@ -296,6 +297,7 @@ clean:
 		btree_set_nodeid_empty_contains \
 		btree_set_nodeid_contains_handbuilt \
 		btree_set_nodeid_insert \
+		btree_set_nodeid_insert_split \
 		btree_set_nodeid_validate_invalid \
 		btree_set_csr_contains_static \
 		btree_set_csr_validate_invalid \

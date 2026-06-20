@@ -17,6 +17,7 @@ Call sites use **`module@operation[brackets](args)`** with short operation names
 - `btree_set_nodeid_empty_contains.silica` — empty construction, validation, absent key
 - `btree_set_nodeid_contains_handbuilt.silica` — membership on a hand-built tree
 - `btree_set_nodeid_insert.silica` — stable insert and duplicate status
+- `btree_set_nodeid_insert_split.silica` — root split insertion, membership, and size
 - `btree_set_nodeid_validate_invalid.silica` — invalid tree rejected by validation
 
 ## Phase 6 (`CsrBTreeSet[int64, mem(normal)]`)

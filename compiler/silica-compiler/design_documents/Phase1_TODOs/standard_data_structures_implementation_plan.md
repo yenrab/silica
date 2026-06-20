@@ -609,8 +609,8 @@ Exit criteria:
 
 **Phase 4 completed:**
 
-- Step 4.1: `reachable/3` on adjacency (flat slots) and CSR static graph; trials `graph_reachability_adj_directed_unweighted.silica`, `graph_reachability_csr_directed_unweighted.silica`.
-- Step 4.2: `max_out_degree/1`, `total_out_degree_sum/1` on CSR; trial `graph_degree_summary_csr_directed_unweighted.silica`.
+- Step 4.1: `reachable/3` on adjacency flat slots and CSR generated-capacity graphs. Coverage includes reflexive, direct, unreachable, and multi-hop pairs, including a non-canonical hand-built CSR graph. Trials: `graph_reachability_adj_directed_trial.silica`, `graph_reachability_csr_directed_trial.silica`.
+- Step 4.2: `max_out_degree/1`, `total_out_degree_sum/1` on CSR and adjacency graphs. Trials: `graph_degree_summary_csr_directed_trial.silica`, `graph_degree_summary_adj_directed_trial.silica`.
 
 ## Phase 5 - B-tree Set: NodeIDBTreeSet
 
@@ -712,6 +712,12 @@ Exit criteria:
 - The `.bak` copy of `btree_set_nodeid.silica` preserves the order-8 immutable list-backed insertion, membership, and validation algorithms.
 - Delete remains deferred per `btree_set_design.md` sections 5.6 and 7.3.
 - The clean `.silica` rewrite should expose constructor-record and trait-oriented APIs rather than the bootstrap `empty/0`, `contains/2`, `insert/2`, and `validate/1` surface.
+
+**Phase 5 completed:**
+
+- Steps 5.1-5.3: `btree_set_nodeid.silica` provides constructor-record empty construction, generated shape membership, size, and validation coverage for empty, valid hand-built, and invalid trees.
+- Step 5.4: `insert[int64, mem(normal)]` accumulates keys functionally, preserves captured comparators, reports duplicate insertion status, and splits from one leaf into a two-leaf root shape at order-8 capacity. Trials: `btree_set_nodeid_insert.silica`, `btree_set_nodeid_insert_split.silica`.
+- Step 5.5: delete remains explicitly deferred per `btree_set_design.md` sections 5.6 and 7.3.
 
 ## Phase 6 - B-tree Set: CsrBTreeSet
 
@@ -1354,8 +1360,8 @@ Last updated to reflect Phase 0.5 stdlib reconciliation completion and Phase 1 s
 | CompressedSparseRowGraph    | Steps 2.1–2.5 complete | Type expansion, static constructor, validation, inspection, and adjacency `freeze`. |
 | DenseMatrixGraph            | Steps 3.1–3.2 complete | Type expansion, constructor, inspection (`has_edge`, `neighbor_at`, `out_degree`, `weight_at`), validation trials green. |
 | DenseBitsetGraph            | Step 3.3 complete (directed unweighted) | `DenseBitsetGraphDirected[mem(normal)]` uses `uint64` word storage (`WORD_COUNT = 4`) with set/clear/has/out-degree/neighbor/validate trials green. Weighted variants remain unsupported and covered by negative enforcement; dense matrix remains the fallback for weighted dense graphs. |
-| Graph algorithms            | Rewrite pending | Existing reachability and degree-summary trials are old-design/reference material; reattach through standard graph traits after Phase 1 representation rebuild. |
-| NodeIDBTreeSet              | Partial         | `btree_set_nodeid@empty({ compare_item })` preserves comparator; trait wired via adapters; `OrderedSet@size` delegates to `item_count` (sums leaf keys). Multi-insert accumulation in bootstrap nodeid insert remains separate from Phase 0.5 size semantics. |
+| Graph algorithms            | Phase 4 complete (module API) | `reachable/3`, `max_out_degree/1`, and `total_out_degree_sum/1` are covered for adjacency and CSR generated-capacity graphs. Trait-level reattachment remains part of the later standard graph trait migration. |
+| NodeIDBTreeSet              | Phase 5 complete (module API) | `btree_set_nodeid@empty({ compare_item })` preserves comparator; `contains`, `validate`, `insert`, and `OrderedSet@size` are covered by Phase 5 trials. Insert handles generated-capacity leaf accumulation, duplicate status, and the first root split; delete remains deferred by design. |
 | CsrBTreeSet                 | Partial         | `btree_set_csr@empty/1` stores `compare_item` in value and threads through insert skeleton paths; CSR trait `compare_item` delegates to captured fn. |
 | NodeIDBTreeMap              | Partial         | `btree_nodeid@empty({ compare_key, compare_value })` stores both functions; nodeid trait `compare_value` delegates to captured fn. Missing trait exports: `find_value`, `size`, `fold`. |
 | CsrBTreeMap                 | Partial         | `btree_csr_map@empty/1` stores `compare_key` and `compare_value`; insert/replace skeleton paths thread comparators via source-tree record. CSR trait paths delegate captured comparators. |

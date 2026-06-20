@@ -1,27 +1,46 @@
-// Phase 4 step 4.1 — reachability on CompressedSparseRowGraphDirected[mem(normal)] (edges 0 -> 1 -> 2).
+// Phase 4 step 4.1 — reachability on CompressedSparseRowGraphDirected[mem(normal)].
 use graph_csr_directed;
 
 fn main() -> int64 {
-    sequence proc[mem(normal)]        graph: {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        offsets: buf(L1, normal, int64, 4) <- alloc_buf(r, 4);
+        neighbors: buf(L1, normal, int64, 2) <- alloc_buf(r, 2);
+        _: atom <- write_buf(offsets, 0, 0);
+        _: atom <- write_buf(offsets, 1, 1);
+        _: atom <- write_buf(offsets, 2, 1);
+        _: atom <- write_buf(offsets, 3, 2);
+        _: atom <- write_buf(neighbors, 0, 1);
+        _: atom <- write_buf(neighbors, 1, 0);
+        graph: {
             region: region(L1, normal),
             node_count: int64,
             edge_count: int64,
             offsets: buf(L1, normal, int64, 4),
             neighbors: buf(L1, normal, int64, 2)
-        } <- graph_csr_directed@from_static_edges[mem(normal)]();
+        } <- {
+            region: r,
+            node_count: 3,
+            edge_count: 2,
+            offsets: offsets,
+            neighbors: neighbors
+        };
         r00: int64 <- graph_csr_directed@reachable[mem(normal)](graph, 0, 0);
         r01: int64 <- graph_csr_directed@reachable[mem(normal)](graph, 0, 1);
+        r21: int64 <- graph_csr_directed@reachable[mem(normal)](graph, 2, 1);
+        r20: int64 <- graph_csr_directed@reachable[mem(normal)](graph, 2, 0);
         r02: int64 <- graph_csr_directed@reachable[mem(normal)](graph, 0, 2);
         r12: int64 <- graph_csr_directed@reachable[mem(normal)](graph, 1, 2);
-        r10: int64 <- graph_csr_directed@reachable[mem(normal)](graph, 1, 0);
-        r20: int64 <- graph_csr_directed@reachable[mem(normal)](graph, 2, 0);
+        n20: int64 <- graph_csr_directed@neighbor_at[mem(normal)](graph, 2, 0);
         failures: int64 <-
             ((1 - r00) * 1) +
             ((1 - r01) * 2) +
-            ((1 - r02) * 4) +
-            ((1 - r12) * 8) +
-            (r10 * 16) +
-            (r20 * 32)
+            ((1 - r21) * 4) +
+            ((1 - r20) * 8) +
+            (r02 * 16) +
+            (r12 * 32) +
+            (n20 * 64)
     produces
         pure failures
     end
