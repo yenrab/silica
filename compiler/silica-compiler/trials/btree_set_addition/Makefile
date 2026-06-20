@@ -25,8 +25,8 @@ TRIAL_SOURCES := \
 	btree_set_csr_contains_static.silica \
 	btree_set_csr_validate_invalid.silica \
 	btree_set_csr_insert.silica \
+	btree_set_nodeid_to_csr.silica \
 	btree_csr_map_insert.silica
-# btree_set_nodeid_to_csr.silica — deferred to Phase 6 (NodeIDBTreeSet→CsrBTreeSet conversion)
 
 LIB_SRC := ../../src/standard_data_structures
 
@@ -299,10 +299,10 @@ clean:
 		btree_set_nodeid_insert \
 		btree_set_nodeid_insert_split \
 		btree_set_nodeid_validate_invalid \
-		btree_set_csr_contains_static \
-		btree_set_csr_validate_invalid \
-		btree_set_csr_insert \
-		btree_csr_map_insert \
+			btree_set_csr_contains_static \
+			btree_set_csr_validate_invalid \
+			btree_set_csr_insert \
+			btree_csr_map_insert \
 		silica.config .integrate_counts; \
 	rm -f lib/*.sams lib/*.o
 	@echo "✅ $(MSG_PREFIX)Clean complete"

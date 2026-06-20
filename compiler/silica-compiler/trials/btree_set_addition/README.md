@@ -24,6 +24,7 @@ Call sites use **`module@operation[brackets](args)`** with short operation names
 
 - `btree_set_csr_contains_static.silica` — static sorted keys `{1,3,5}`
 - `btree_set_csr_validate_invalid.silica` — invalid CSR rejected by validation
-- `btree_set_nodeid_to_csr.silica` — insert on NodeID form, finalize to CSR, verify membership (CSR checks via `btree_set_nodeid@validate_csr` / `contains_csr` to avoid dual-`use` export collision)
+- `btree_set_csr_insert.silica` — direct functional CSR insert, duplicate status, membership, and immutability
+- `btree_set_nodeid_to_csr.silica` — insert to the split NodeID shape, finalize to split CSR, validate, and verify membership
 
 The `integrate` target runs all trials through the local compiler with a per-executable timeout so recursive runtime regressions fail quickly.

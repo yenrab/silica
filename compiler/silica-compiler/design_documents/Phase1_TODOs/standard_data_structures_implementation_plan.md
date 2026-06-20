@@ -721,13 +721,13 @@ Exit criteria:
 
 ## Phase 6 - B-tree Set: CsrBTreeSet
 
-**Status (steps 6.1–6.4): complete** — `btree_set_csr.silica` now exports `empty`, `from_static_sorted`, `contains`, `validate`, and `insert`. All five trials pass: `btree_set_csr_contains_static`, `btree_set_csr_validate_invalid`, and `btree_set_csr_insert` (new).
+**Status (steps 6.1–6.4 plus NodeID finalization bridge): complete** — `btree_set_csr.silica` now exports `empty`, `from_static_sorted`, `contains`, `validate`, and `insert` for the generated order-8 leaf form and first split-root form (`NODE_CAP=3`, `KEY_CAP=8`, `CHILD_CAP=2`). `btree_set_nodeid@to_csr` finalizes generated one-leaf and first-split NodeID trees into CSR. Trials pass: `btree_set_csr_contains_static`, `btree_set_csr_validate_invalid`, `btree_set_csr_insert`, and `btree_set_nodeid_to_csr`.
 
 Design note: `CsrBTreeSet` has been revised from its original "immutable after construction / no direct insert" spec. It now follows the same **functional-programming design** as `NodeIDBTreeSet` and Silica's `List`: `insert` returns a new value without modifying the caller's existing tree. See `btree_set_design.md` §6.7 (updated).
 
 ### Step 6.1 - Generate CsrBTreeSet Type Expansion
 
-**Status: complete** — inline structural record type with region, capacity constants, and buffer fields is defined in `btree_set_csr.silica`.
+**Status: complete** — inline structural record type with region, capacity constants, and buffer fields is defined in `btree_set_csr.silica`; the generated Phase 1 capacity now covers the leaf and first split-root CSR shapes.
 
 Authority:
 
@@ -765,7 +765,7 @@ Exit criteria:
 
 ### Step 6.3 - Generate CsrBTreeSet Contains And Validation
 
-**Status: complete** — `contains` and `validate` exported; generalized to handle 1–7 keys (was previously hardcoded for 3 keys only). `btree_set_csr_contains_static` and `btree_set_csr_validate_invalid` trials pass.
+**Status: complete** — `contains` and `validate` exported; generalized to handle leaf keys and the first split-root shape. `btree_set_csr_contains_static`, `btree_set_csr_validate_invalid`, and `btree_set_nodeid_to_csr` trials pass.
 
 Authority:
 
@@ -784,7 +784,7 @@ Exit criteria:
 
 ### Step 6.4 - Generate CsrBTreeSet Functional Insert
 
-**Status: complete** — `insert[int64, mem(normal)]` exported. Helpers: `contains_key_at`, `keys_sorted_at`, `csr_insert_pos_from`, `csr_insert_pos`, `csr_out_key`, `build_leaf_csr`, `insert_nonempty_csr`. `btree_set_csr_insert` trial passes.
+**Status: complete** — `insert[int64, mem(normal)]` exported. Helpers include generated leaf insertion plus first-split construction when inserting the eighth distinct key. `btree_set_csr_insert` passes for direct functional insert/duplicate/immutability coverage; `btree_set_nodeid_to_csr` covers split CSR finalization, validation, and membership.
 
 Authority:
 
@@ -801,6 +801,7 @@ Actions:
 Exit criteria:
 
 - A trial inserts keys from empty, verifies sorted order, duplicate detection, and that the original tree is not mutated (immutability contract).
+- A finalization trial converts a generated split NodeIDBTreeSet into split CSR and verifies metadata, validation, present-key lookup, and absent-key lookup.
 
 ## Phase 7 - General B-tree: NodeIDBTreeMap
 
@@ -1362,7 +1363,7 @@ Last updated to reflect Phase 0.5 stdlib reconciliation completion and Phase 1 s
 | DenseBitsetGraph            | Step 3.3 complete (directed unweighted) | `DenseBitsetGraphDirected[mem(normal)]` uses `uint64` word storage (`WORD_COUNT = 4`) with set/clear/has/out-degree/neighbor/validate trials green. Weighted variants remain unsupported and covered by negative enforcement; dense matrix remains the fallback for weighted dense graphs. |
 | Graph algorithms            | Phase 4 complete (module API) | `reachable/3`, `max_out_degree/1`, and `total_out_degree_sum/1` are covered for adjacency and CSR generated-capacity graphs. Trait-level reattachment remains part of the later standard graph trait migration. |
 | NodeIDBTreeSet              | Phase 5 complete (module API) | `btree_set_nodeid@empty({ compare_item })` preserves comparator; `contains`, `validate`, `insert`, and `OrderedSet@size` are covered by Phase 5 trials. Insert handles generated-capacity leaf accumulation, duplicate status, and the first root split; delete remains deferred by design. |
-| CsrBTreeSet                 | Partial         | `btree_set_csr@empty/1` stores `compare_item` in value and threads through insert skeleton paths; CSR trait `compare_item` delegates to captured fn. |
+| CsrBTreeSet                 | Phase 6 complete (module API) | `btree_set_csr@empty/1` stores `compare_item`; leaf and first split-root shapes support `contains`, `validate`, and functional insert. `btree_set_nodeid@to_csr` finalizes generated NodeID leaf/split trees into CSR; delete and deeper growth remain deferred by design. |
 | NodeIDBTreeMap              | Partial         | `btree_nodeid@empty({ compare_key, compare_value })` stores both functions; nodeid trait `compare_value` delegates to captured fn. Missing trait exports: `find_value`, `size`, `fold`. |
 | CsrBTreeMap                 | Partial         | `btree_csr_map@empty/1` stores `compare_key` and `compare_value`; insert/replace skeleton paths thread comparators via source-tree record. CSR trait paths delegate captured comparators. |
 | RegionBinaryHeap            | Partial         | `heap_phase04` + `heap_constructor_record_trait.silica` smoke only. `heap_binary_min.silica` has no constructor function record; old-design trials are reference material. |
