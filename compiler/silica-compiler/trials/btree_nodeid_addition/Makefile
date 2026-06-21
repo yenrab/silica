@@ -23,6 +23,7 @@ TRIAL_SOURCES := \
 	btree_nodeid_insert_four.silica \
 	btree_nodeid_insert_get.silica \
 	btree_nodeid_insert.silica \
+	btree_nodeid_split_replace.silica \
 	btree_nodeid_validate_invalid.silica \
 	btree_nodeid_context_trial.silica
 
@@ -174,6 +175,7 @@ clean:
 		btree_nodeid_insert_four \
 		btree_nodeid_insert_get \
 		btree_nodeid_insert \
+		btree_nodeid_split_replace \
 		btree_nodeid_validate_invalid \
 		silica.config .integrate_counts; \
 	rm -f lib/*.sams lib/*.o
