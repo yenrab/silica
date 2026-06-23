@@ -10,7 +10,7 @@ Separate from `list_addition` (compiler `List[T,S]` runtime).
 
 ## Layout
 
-- **`lib/`** — symlinks to `src/standard_data_structures/` modules.
+- **`lib/`** — symlinks to `stdlib/data_structures/` modules.
 - **Trial drivers** — `graph_<repr>_<directedness>_<variant>_trial.silica` (`unweighted`, `int64`, etc.).
 
 ## Phase 1

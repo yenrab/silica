@@ -16,12 +16,45 @@ ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
-LIB_SRC := ../../src/standard_data_structures
+TRIAL_SOURCES := \
+	graph_csr_type_expansion_snapshot.silica \
+	graph_csr_static_constructor_trial.silica \
+	graph_csr_validate_valid.silica \
+	graph_csr_validate_invalid.silica \
+	graph_csr_inspection_trial.silica \
+	graph_csr_adj_finalize_trial.silica \
+	graph_adj_directed_unweighted_trial.silica \
+	graph_adj_undirected_trial.silica \
+	graph_adj_directed_int64_trial.silica \
+	graph_csr_directed_unweighted_trial.silica \
+	graph_csr_directed_int64_trial.silica \
+	graph_dense_type_expansion_snapshot.silica \
+	graph_dense_constructor_trial.silica \
+	graph_dense_inspection_trial.silica \
+	graph_dense_validate_invalid.silica \
+	graph_dense_directed_unweighted_trial.silica \
+	graph_dense_directed_int64_trial.silica \
+	graph_dense_bitset_type_expansion_snapshot.silica \
+	graph_dense_bitset_constructor_trial.silica \
+	graph_dense_bitset_inspection_trial.silica \
+	graph_dense_bitset_validate_invalid.silica \
+	graph_reachability_csr_directed_trial.silica \
+	graph_reachability_adj_directed_trial.silica \
+	graph_degree_summary_csr_directed_trial.silica \
+	graph_degree_summary_adj_directed_trial.silica \
+	graph_adj_directed_context_trial.silica
+
+TRIAL_BINARIES := $(TRIAL_SOURCES:.silica=)
+
+LIB_SRC := ../../stdlib/data_structures
+
+STDLIB_PREREQ_MK := $(firstword $(wildcard $(THIS_DIR)../stdlib_prereq.mk $(THIS_DIR)../../stdlib_prereq.mk $(THIS_DIR)../../../stdlib_prereq.mk))
+include $(STDLIB_PREREQ_MK)
 
 .DEFAULT_GOAL := all
-.PHONY: all clean assembly objects executables integrate help silica.config lib-sources
+.PHONY: all clean assembly objects executables integrate help silica.config lib-sources stdlib-data-structures
 
-lib-sources:
+lib-sources: stdlib-data-structures
 	@mkdir -p "$(THIS_DIR)lib"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_list_helpers.silica)" "$(THIS_DIR)lib/graph_adj_list_helpers.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_directed.silica)" "$(THIS_DIR)lib/graph_adj_directed.silica"
@@ -42,32 +75,7 @@ silica.config: lib-sources
 		echo 'lib/graph_dense_bitset_directed.silica'; \
 		echo 'lib/structure_registry.silica'; \
 		echo 'lib/inline_type_expansion.silica'; \
-		echo 'graph_csr_type_expansion_snapshot.silica'; \
-		echo 'graph_csr_static_constructor_trial.silica'; \
-		echo 'graph_csr_validate_valid.silica'; \
-		echo 'graph_csr_validate_invalid.silica'; \
-		echo 'graph_csr_inspection_trial.silica'; \
-		echo 'graph_csr_adj_finalize_trial.silica'; \
-		echo 'graph_adj_directed_unweighted_trial.silica'; \
-		echo 'graph_adj_undirected_trial.silica'; \
-		echo 'graph_adj_directed_int64_trial.silica'; \
-		echo 'graph_csr_directed_unweighted_trial.silica'; \
-		echo 'graph_csr_directed_int64_trial.silica'; \
-		echo 'graph_dense_type_expansion_snapshot.silica'; \
-		echo 'graph_dense_constructor_trial.silica'; \
-		echo 'graph_dense_inspection_trial.silica'; \
-		echo 'graph_dense_validate_invalid.silica'; \
-		echo 'graph_dense_directed_unweighted_trial.silica'; \
-		echo 'graph_dense_directed_int64_trial.silica'; \
-		echo 'graph_dense_bitset_type_expansion_snapshot.silica'; \
-		echo 'graph_dense_bitset_constructor_trial.silica'; \
-		echo 'graph_dense_bitset_inspection_trial.silica'; \
-		echo 'graph_dense_bitset_validate_invalid.silica'; \
-		echo 'graph_reachability_csr_directed_trial.silica'; \
-		echo 'graph_reachability_adj_directed_trial.silica'; \
-		echo 'graph_degree_summary_csr_directed_trial.silica'; \
-		echo 'graph_degree_summary_adj_directed_trial.silica'; \
-		echo 'graph_adj_directed_context_trial.silica'; \
+		for src in $(TRIAL_SOURCES); do echo "$$src"; done; \
 	} > silica.config
 
 all: executables
@@ -96,25 +104,7 @@ executables: objects
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
 		base=$${line%.silica}; \
 		[ -f "$$base.o" ] || continue; \
-		lib_objs=""; \
-		for mod in $$(grep '^use ' "$$base.silica" 2>/dev/null | sed 's/^use //;s/;//'); do \
-			lib_obj="lib/$$mod.o"; \
-			[ -f "$$lib_obj" ] && lib_objs="$$lib_objs $$lib_obj"; \
-		done; \
-		case "$$lib_objs" in \
-			*lib/graph_adj_directed.o*|*lib/graph_adj_undirected.o*|*lib/graph_dense_directed.o*|*lib/graph_dense_bitset_directed.o*|*lib/graph_csr_directed.o*) \
-				case "$$lib_objs" in \
-					*lib/graph_adj_list_helpers.o*) ;; \
-					*) [ -f lib/graph_adj_list_helpers.o ] && lib_objs="$$lib_objs lib/graph_adj_list_helpers.o" ;; \
-				esac ;; \
-		esac; \
-		case "$$lib_objs" in \
-			*lib/graph_csr_directed.o*) \
-				case "$$lib_objs" in \
-					*lib/graph_adj_directed.o*) ;; \
-					*) [ -f lib/graph_adj_directed.o ] && lib_objs="$$lib_objs lib/graph_adj_directed.o" ;; \
-				esac ;; \
-		esac; \
+		$(COLLECT_LIB_OBJS); \
 		runtime_obj=""; \
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
@@ -126,7 +116,7 @@ executables: objects
 
 integrate: silica.config
 	@rm -f .integrate_counts; ok=0; ko=0; failed=0; \
-	rm -f *.sams lib/*.sams; \
+	rm -f *.sams lib/*.sams $(TRIAL_BINARIES); \
 	echo "Compiling with silica-compiler..."; \
 	if ! $(abspath $(SILICA_COMPILER)); then \
 		echo "FAIL: Compilation failed"; \
@@ -162,25 +152,7 @@ integrate: silica.config
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
 		base=$${line%.silica}; \
 		[ -f "$$base.o" ] || continue; \
-		lib_objs=""; \
-		for mod in $$(grep '^use ' "$$base.silica" 2>/dev/null | sed 's/^use //;s/;//'); do \
-			lib_obj="lib/$$mod.o"; \
-			[ -f "$$lib_obj" ] && lib_objs="$$lib_objs $$lib_obj"; \
-		done; \
-		case "$$lib_objs" in \
-			*lib/graph_adj_directed.o*|*lib/graph_adj_undirected.o*|*lib/graph_dense_directed.o*|*lib/graph_dense_bitset_directed.o*|*lib/graph_csr_directed.o*) \
-				case "$$lib_objs" in \
-					*lib/graph_adj_list_helpers.o*) ;; \
-					*) [ -f lib/graph_adj_list_helpers.o ] && lib_objs="$$lib_objs lib/graph_adj_list_helpers.o" ;; \
-				esac ;; \
-		esac; \
-		case "$$lib_objs" in \
-			*lib/graph_csr_directed.o*) \
-				case "$$lib_objs" in \
-					*lib/graph_adj_directed.o*) ;; \
-					*) [ -f lib/graph_adj_directed.o ] && lib_objs="$$lib_objs lib/graph_adj_directed.o" ;; \
-				esac ;; \
-		esac; \
+		$(COLLECT_LIB_OBJS); \
 		runtime_obj=""; \
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		echo "Linking $$base..."; \
@@ -216,34 +188,7 @@ integrate: silica.config
 clean:
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sout lib/*.sams lib/*.o lib/graph_adj_*.o lib/graph_csr_*.o lib/graph_dense_*.o lib/structure_registry.o lib/inline_type_expansion.o *.sams __silica_runtime.o \
-		graph_csr_type_expansion_snapshot graph_csr_type_expansion_snapshot.o \
-		graph_csr_static_constructor_trial graph_csr_static_constructor_trial.o \
-		graph_csr_validate_valid graph_csr_validate_valid.o \
-		graph_csr_validate_invalid graph_csr_validate_invalid.o \
-		graph_csr_inspection_trial graph_csr_inspection_trial.o \
-		graph_csr_adj_finalize_trial graph_csr_adj_finalize_trial.o \
-		graph_dense_type_expansion_snapshot graph_dense_type_expansion_snapshot.o \
-		graph_dense_constructor_trial graph_dense_constructor_trial.o \
-		graph_dense_inspection_trial graph_dense_inspection_trial.o \
-		graph_dense_validate_invalid graph_dense_validate_invalid.o \
-		graph_dense_bitset_type_expansion_snapshot graph_dense_bitset_type_expansion_snapshot.o \
-		graph_dense_bitset_constructor_trial graph_dense_bitset_constructor_trial.o \
-		graph_dense_bitset_inspection_trial graph_dense_bitset_inspection_trial.o \
-		graph_dense_bitset_validate_invalid graph_dense_bitset_validate_invalid.o \
-		graph_adj_directed_unweighted_trial graph_adj_undirected_trial graph_adj_directed_int64_trial \
-		graph_csr_directed_unweighted_trial graph_csr_directed_int64_trial \
-		graph_dense_directed_unweighted_trial graph_dense_directed_int64_trial \
-		graph_reachability_csr_directed_trial graph_reachability_adj_directed_trial \
-		graph_degree_summary_csr_directed_trial graph_degree_summary_adj_directed_trial \
-		graph_adj_directed_unweighted_trial.o graph_adj_undirected_trial.o graph_adj_directed_int64_trial.o \
-		graph_csr_directed_unweighted_trial.o graph_csr_directed_int64_trial.o \
-		graph_dense_type_expansion_snapshot.o graph_dense_constructor_trial.o \
-		graph_dense_inspection_trial.o graph_dense_validate_invalid.o \
-		graph_dense_bitset_type_expansion_snapshot.o graph_dense_bitset_constructor_trial.o \
-		graph_dense_bitset_inspection_trial.o graph_dense_bitset_validate_invalid.o \
-		graph_dense_directed_unweighted_trial.o graph_dense_directed_int64_trial.o \
-		graph_reachability_csr_directed_trial.o graph_reachability_adj_directed_trial.o \
-		graph_degree_summary_csr_directed_trial.o graph_degree_summary_adj_directed_trial.o \
+		$(TRIAL_BINARIES) $(addsuffix .o,$(TRIAL_BINARIES)) \
 		silica.config .integrate_counts
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 

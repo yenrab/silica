@@ -15,62 +15,70 @@ ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
-GRAPH_TRIALS := signed_payload_graph_int8.silica signed_payload_graph_int16.silica signed_payload_graph_int32.silica signed_payload_graph_int64.silica
-BTREE_TRIALS := signed_payload_btree_int8.silica signed_payload_btree_int16.silica signed_payload_btree_int32.silica signed_payload_btree_int64.silica
-HEAP_TRIALS := signed_payload_heap_int8.silica signed_payload_heap_int16.silica signed_payload_heap_int32.silica signed_payload_heap_int64.silica
+GRAPH_TRIALS := $(sort $(notdir $(wildcard $(THIS_DIR)signed_payload_graph_*.silica)))
+BTREE_TRIALS := $(sort $(notdir $(wildcard $(THIS_DIR)signed_payload_btree_*.silica)))
+HEAP_TRIALS := $(sort $(notdir $(wildcard $(THIS_DIR)signed_payload_heap_*.silica)))
 ALL_TRIALS := $(GRAPH_TRIALS) $(BTREE_TRIALS) $(HEAP_TRIALS)
+TRIAL_BINARIES := $(ALL_TRIALS:.silica=)
 
-LIB_SRC := ../../src/standard_data_structures
+LIB_SRC := ../../stdlib/data_structures
+
+STDLIB_PREREQ_MK := $(firstword $(wildcard $(THIS_DIR)../stdlib_prereq.mk $(THIS_DIR)../../stdlib_prereq.mk $(THIS_DIR)../../../stdlib_prereq.mk))
+include $(STDLIB_PREREQ_MK)
 
 .DEFAULT_GOAL := all
-.PHONY: all clean assembly objects executables integrate help silica.config lib-sources silica.config.graph silica.config.btree silica.config.heap
+.PHONY: all clean assembly objects executables integrate help silica.config lib-sources stdlib-data-structures
 
-lib-sources:
+lib-sources: stdlib-data-structures
 	@mkdir -p "$(THIS_DIR)lib"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_list_helpers.silica)" "$(THIS_DIR)lib/graph_adj_list_helpers.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_directed.silica)" "$(THIS_DIR)lib/graph_adj_directed.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_csr_map.silica)" "$(THIS_DIR)lib/btree_csr_map.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_nodeid.silica)" "$(THIS_DIR)lib/btree_nodeid.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/heap_binary_min.silica)" "$(THIS_DIR)lib/heap_binary_min.silica"
 
-silica.config.graph: lib-sources
+silica.config: lib-sources
+	@cd "$(THIS_DIR)" && { \
+		echo 'lib/graph_adj_list_helpers.silica'; \
+		echo 'lib/graph_adj_directed.silica'; \
+		echo 'lib/btree_csr_map.silica'; \
+		echo 'lib/btree_nodeid.silica'; \
+		echo 'lib/heap_binary_min.silica'; \
+		for src in $(ALL_TRIALS); do echo "$$src"; done; \
+	} > silica.config
+
+all: executables
+
+assembly: lib-sources
 	@cd "$(THIS_DIR)" && { \
 		echo 'lib/graph_adj_list_helpers.silica'; \
 		echo 'lib/graph_adj_directed.silica'; \
 		for src in $(GRAPH_TRIALS); do echo "$$src"; done; \
-	} > silica.config.graph
-
-silica.config.btree: lib-sources
+	} > silica.config && $(SILICA_COMPILER)
 	@cd "$(THIS_DIR)" && { \
+		echo 'lib/btree_csr_map.silica'; \
 		echo 'lib/btree_nodeid.silica'; \
 		for src in $(BTREE_TRIALS); do echo "$$src"; done; \
-	} > silica.config.btree
-
-silica.config.heap: lib-sources
+	} > silica.config && $(SILICA_COMPILER)
 	@cd "$(THIS_DIR)" && { \
 		echo 'lib/heap_binary_min.silica'; \
 		for src in $(HEAP_TRIALS); do echo "$$src"; done; \
-	} > silica.config.heap
-
-silica.config: silica.config.graph silica.config.btree silica.config.heap
-	@cd "$(THIS_DIR)" && cat silica.config.graph silica.config.btree silica.config.heap > silica.config
-
-all: executables
-
-assembly: silica.config.graph silica.config.btree silica.config.heap
-	@cd "$(THIS_DIR)" && cp silica.config.graph silica.config && $(SILICA_COMPILER)
-	@cd "$(THIS_DIR)" && cp silica.config.btree silica.config && $(SILICA_COMPILER)
-	@cd "$(THIS_DIR)" && cp silica.config.heap silica.config && $(SILICA_COMPILER)
+	} > silica.config && $(SILICA_COMPILER)
 	@echo "✅ $(MSG_PREFIX)Assembly generated"
 
 objects: assembly
 	@cd "$(THIS_DIR)" && \
-	for cfg in silica.config.graph silica.config.btree silica.config.heap; do \
-		for line in $$(grep -v '^#' "$$cfg" 2>/dev/null | grep -v '^$$'); do \
-			base=$${line%.silica}; sams="$$base.sams"; \
-			[ -f "$$sams" ] || continue; \
-			echo "Assembling: $$sams -> $$base.o"; \
-			$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || exit 1; \
-		done; \
+	for src in $(ALL_TRIALS); do \
+		base=$${src%.silica}; sams="$$base.sams"; \
+		[ -f "$$sams" ] || continue; \
+		echo "Assembling: $$sams -> $$base.o"; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || exit 1; \
+	done; \
+	for lib_sams in lib/graph_adj_list_helpers.sams lib/graph_adj_directed.sams lib/btree_csr_map.sams lib/btree_nodeid.sams lib/heap_binary_min.sams; do \
+		[ -f "$$lib_sams" ] || continue; \
+		base=$${lib_sams%.sams}; \
+		echo "Assembling: $$lib_sams -> $$base.o"; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$lib_sams" -o "$$base.o" || exit 1; \
 	done; \
 	if [ -f "__silica_runtime.sams" ]; then \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o"; \
@@ -78,44 +86,80 @@ objects: assembly
 
 executables: objects
 	@cd "$(THIS_DIR)" && \
-	for src in $(GRAPH_TRIALS); do $(MAKE) --no-print-directory link-one BASE=$${src%.silica} LIB_OBJS="lib/graph_adj_directed.o lib/graph_adj_list_helpers.o"; done; \
-	for src in $(BTREE_TRIALS); do $(MAKE) --no-print-directory link-one BASE=$${src%.silica} LIB_OBJS="lib/btree_nodeid.o"; done; \
-	for src in $(HEAP_TRIALS); do $(MAKE) --no-print-directory link-one BASE=$${src%.silica} LIB_OBJS="lib/heap_binary_min.o"; done
-
-link-one:
-	@cd "$(THIS_DIR)" && \
-	runtime_obj=""; [ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
-	if test -x "$(RUST_LLD)"; then \
-		$(RUST_LLD) -flavor darwin -o "$(BASE)" "$(BASE).o" $(LIB_OBJS) $$runtime_obj $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$(BASE)"; \
-	else \
-		$(ASSEMBLER) "$(BASE).o" $(LIB_OBJS) $$runtime_obj -o "$(BASE)" $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$(BASE)"; \
-	fi
-
-integrate: silica.config.graph silica.config.btree silica.config.heap
-	@rm -f .integrate_counts; ok=0; ko=0; failed=0; \
-	rm -f *.sams lib/*.sams; \
-	for cfg in graph btree heap; do \
-		echo "Compiling signed payload $$cfg trials..."; \
-		if ! (cd "$(THIS_DIR)" && cp silica.config.$$cfg silica.config && $(abspath $(SILICA_COMPILER))); then \
-			echo "FAIL: signed payload $$cfg compilation failed"; \
-			printf '%d %d\n' 0 1 > .integrate_counts; \
-			exit 1; \
+	for src in $(ALL_TRIALS); do \
+		base=$${src%.silica}; \
+		[ -f "$$base.o" ] || continue; \
+		$(COLLECT_LIB_OBJS); \
+		runtime_obj=""; \
+		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
+		if test -x "$(RUST_LLD)"; then \
+			$(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$lib_objs $$runtime_obj $(LDFLAGS_rust-lld) && echo "  ✅ $(MSG_PREFIX)$$base"; \
+		else \
+			$(ASSEMBLER) "$$base.o" $$lib_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) && echo "  ✅ $(MSG_PREFIX)$$base"; \
 		fi; \
+	done
+
+integrate: lib-sources
+	@cd "$(THIS_DIR)" && \
+	rm -f .integrate_counts; ok=0; ko=0; failed=0; \
+	rm -f *.sams lib/*.sams $(TRIAL_BINARIES) silica.config; \
+	{ \
+		echo 'lib/graph_adj_list_helpers.silica'; \
+		echo 'lib/graph_adj_directed.silica'; \
+		for src in $(GRAPH_TRIALS); do echo "$$src"; done; \
+	} > silica.config; \
+	echo "Compiling signed payload graph trials..."; \
+	if ! $(abspath $(SILICA_COMPILER)); then \
+		echo "FAIL: signed payload graph compilation failed"; \
+		printf '%d %d\n' 0 1 > .integrate_counts; exit 1; \
+	fi; \
+	{ \
+		echo 'lib/btree_csr_map.silica'; \
+		echo 'lib/btree_nodeid.silica'; \
+		for src in $(BTREE_TRIALS); do echo "$$src"; done; \
+	} > silica.config; \
+	echo "Compiling signed payload btree trials..."; \
+	if ! $(abspath $(SILICA_COMPILER)); then \
+		echo "FAIL: signed payload btree compilation failed"; \
+		printf '%d %d\n' 0 1 > .integrate_counts; exit 1; \
+	fi; \
+	{ \
+		echo 'lib/heap_binary_min.silica'; \
+		for src in $(HEAP_TRIALS); do echo "$$src"; done; \
+	} > silica.config; \
+	echo "Compiling signed payload heap trials..."; \
+	if ! $(abspath $(SILICA_COMPILER)); then \
+		echo "FAIL: signed payload heap compilation failed"; \
+		printf '%d %d\n' 0 1 > .integrate_counts; exit 1; \
+	fi; \
+	for src in $(ALL_TRIALS); do \
+		base=$${src%.silica}; sams="$$base.sams"; \
+		[ -f "$$sams" ] || continue; \
+		echo "Assembling $$sams..."; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
 	done; \
-	for cfg in silica.config.graph silica.config.btree silica.config.heap; do \
-		for line in $$(grep -v '^#' "$$cfg" 2>/dev/null | grep -v '^$$'); do \
-			base=$${line%.silica}; sams="$$base.sams"; \
-			[ -f "$$sams" ] || continue; \
-			echo "Assembling $$sams..."; \
-			$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$sams" -o "$$base.o" || { failed=1; break; }; \
-		done; \
+	for lib_sams in lib/graph_adj_list_helpers.sams lib/graph_adj_directed.sams lib/btree_csr_map.sams lib/btree_nodeid.sams lib/heap_binary_min.sams; do \
+		[ -f "$$lib_sams" ] || continue; \
+		base=$${lib_sams%.sams}; \
+		echo "Assembling $$lib_sams..."; \
+		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "$$lib_sams" -o "$$base.o" || failed=1; \
 	done; \
 	if [ -f "__silica_runtime.sams" ]; then \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o" || failed=1; \
 	fi; \
-	for src in $(GRAPH_TRIALS); do base=$${src%.silica}; runtime_obj=""; [ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; echo "Linking $$base..."; $(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" lib/graph_adj_directed.o lib/graph_adj_list_helpers.o $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; done; \
-	for src in $(BTREE_TRIALS); do base=$${src%.silica}; runtime_obj=""; [ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; echo "Linking $$base..."; $(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" lib/btree_nodeid.o $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; done; \
-	for src in $(HEAP_TRIALS); do base=$${src%.silica}; runtime_obj=""; [ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; echo "Linking $$base..."; $(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" lib/heap_binary_min.o $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; done; \
+	for src in $(ALL_TRIALS); do \
+		base=$${src%.silica}; \
+		[ -f "$$base.o" ] || continue; \
+		$(COLLECT_LIB_OBJS); \
+		runtime_obj=""; \
+		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
+		echo "Linking $$base..."; \
+		if test -x "$(RUST_LLD)"; then \
+			$(RUST_LLD) -flavor darwin -o "$$base" "$$base.o" $$lib_objs $$runtime_obj $(LDFLAGS_rust-lld) || failed=1; \
+		else \
+			$(ASSEMBLER) "$$base.o" $$lib_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) || failed=1; \
+		fi; \
+	done; \
 	for src in $(ALL_TRIALS); do \
 		base=$${src%.silica}; \
 		if [ -x "$$base" ]; then \
@@ -137,12 +181,11 @@ integrate: silica.config.graph silica.config.btree silica.config.heap
 clean:
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sout *.sams *.o __silica_runtime.o __silica_runtime.sams \
-		signed_payload_graph_int8 signed_payload_graph_int16 signed_payload_graph_int32 signed_payload_graph_int64 \
-		signed_payload_btree_int8 signed_payload_btree_int16 signed_payload_btree_int32 signed_payload_btree_int64 \
-		signed_payload_heap_int8 signed_payload_heap_int16 signed_payload_heap_int32 signed_payload_heap_int64 \
-		silica.config silica.config.graph silica.config.btree silica.config.heap .integrate_counts; \
+		$(TRIAL_BINARIES) \
+		silica.config .integrate_counts; \
 	rm -f lib/*.sams lib/*.o
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:
 	@echo "payload_signed_addition — Phase 10.1 signed integer payload trials"
+	@echo "Trials: $(ALL_TRIALS)"

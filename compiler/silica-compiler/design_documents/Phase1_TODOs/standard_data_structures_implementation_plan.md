@@ -50,7 +50,7 @@ These decisions align execution with current code while `data_structures_as_trai
 | `fold` / `find_value` / map `size` | Not exported on trait modules yet | Export and implement per `data_structures_as_traits.md` after first representation supplies `fold` |
 | Comparator result type | Sum type `:less \| :equal \| :greater` in generated signatures | Design prose uses `atom`; invalid atoms deferred (open question in traits doc) |
 | `get` / `peek` result shapes | `{ found: int64, value: T }` and bare `int64` peek in smoke impls | `{ found: boolean, value: T }` per traits doc — migrate when retargeting trials |
-| Unweighted graph edge payload | Undecided — resolve before Phase 1 Step 1.3 | Open question #3 in `data_structures_as_traits.md` (`NodeId` vs `{ to: NodeIdType }`) |
+| Unweighted graph edge payload | **Option A — resolved (Step 1.1 action 6):** `EdgePayloadType = NodeIdType`; neighbor lists store destination ids; `add_edge(g, from, to)`; `edge_target` is identity on the payload | Weighted/attributed graphs use explicit neighbor records (`{ to, weight }` / `{ to, data }`) per `graph_representation_design.md` §3.6 |
 | Module vs trait API | Both coexist during migration | Trait acceptance is the exit criterion; module exports retired per family as trials retarget |
 | Phase 0.4 graph/heaps | `graph_phase04`, `heap_phase04`, `btree_set_phase04` toy modules plus minimal trait impls | Replace with real generated families wired through standard traits |
 
@@ -162,18 +162,19 @@ Exit criteria:
 | ---- | ------ | ----- |
 | Trait module definitions | Partial | All nine standard trait names exist under `src/standard_data_structures/`; shape uses staging `required` + `impl fn`, not final `provided` + `fold` |
 | `OrderedSet` / `OrderedMap` trait impls | Partial | Wired through adapter modules to `btree_set_nodeid`, `btree_set_csr`, `btree_nodeid`, `btree_csr_map`; Phase 0.5 comparator/size/CSR fixes applied |
-| `DirectedGraph` / undirected / weighted | Smoke only | `graph_phase04` toy record; not `graph_adj_directed` |
+| `DirectedGraph` / undirected / weighted | Partial | `graph_adj_directed@empty/2` + trait impls on adjacency record (Step 1.1); `graph_phase04` toy still in `silica.config.phase04_traits` until Step 1.4 retires it |
 | `Heap` | Smoke only | `heap_phase04` toy record; not `heap_binary_min` |
 | Stdlib batch build | Done | `src/standard_data_structures/silica.config.phase04_traits` includes btree backends, adapters, and trait modules; `make` in that directory succeeds |
 | Phase 0.4 trials | Done | `trials/standard_data_structures_phase04_addition/` integrate; `trials/error_enforcement_addition/standard_data_structures_phase04/` negative trials |
-| Graph bracket-type witnesses | Not started | `DirectedGraph[Node, Edge, mem(S)]` not in collection witness machinery yet |
+| Graph bracket-type witnesses | Done | `DirectedGraph[Node, Edge, mem(S)]` in `type_checker_collections.silica`; compile witness: `directed_graph_witness_int64.silica` (Step 1.1) |
 | Provided-block bodies / default impl checking | Not started | Deferred until `fold` migration |
 | Invalid comparator atom validation | Deferred | Documented in Migration Staging Decisions |
 
 **Remaining Phase 0.4 exit criteria (not yet met):**
 
-- Graph and heap **generated** families (not phase04 toys) accept function records and pass trait calls.
-- CSR set/map generated values **preserve** captured comparators in the value (Phase 0.5).
+- Graph **generated** family accepts function records and passes trait calls on empty graph (Step 1.1 — **complete** for directed unweighted adjacency empty path; update/edge paths remain Phase 1.3+).
+- Heap **generated** families (not phase04 toys) accept function records and pass trait calls.
+- CSR set/map generated values **preserve** captured comparators in the value (Phase 0.5 — **complete**).
 - Comparator invalid-atom path selected and trialed.
 
 ### Step 0.3 - Establish Trial Layout
@@ -290,6 +291,43 @@ Exit criteria:
 - A trial constructs an empty directed unweighted adjacency graph via function record constructor.
 - A trial verifies node count and edge count through generated inspection helpers or `DirectedGraph@node_count` / `DirectedGraph@edge_count`.
 - Declared type `DirectedGraph[T, Edge, mem(normal)]` witnesses against constructor function-record field types.
+
+**Step 1.1 coverage — unique vs elsewhere in this plan:**
+
+| Item | Also covered elsewhere? | Notes |
+| ---- | ----------------------- | ----- |
+| Action 1 — directed unweighted adjacency family (trait-oriented record shape) | Partially | Step 0.1–0.2 registry/type expansion name the family but omit captured function fields; Step 1.5 adds undirected variant; Step 10.26 audits width-export retirement. **Only 1.1** introduces the trait-oriented directed unweighted empty family. |
+| Action 2 — `empty/2` with graph function record | Partially | Phase 0.4 defines the general constructor-record rule. **Only 1.1** emits graph `empty/2`. |
+| Action 3 — preserve comparators **across updates** | Yes | Phase 0.4 action 4 (general rule); Step 1.3+ threads through `add_edge` and later ops. At **empty** construction, 1.1 only. |
+| Action 4 — node records with empty neighbor lists | No | Initial empty construction only. |
+| Action 5 — `node_count` / `edge_count` fields in the value | Partially | Step 1.4 generates inspection helpers and trait wiring for the same fields on non-empty graphs. |
+| Action 6 — resolve unweighted edge payload shape | No | **Resolved:** Option A (`EdgePayloadType = NodeIdType`). Recorded in Migration Staging Decisions. |
+| Action 7 — `DirectedGraph[…]` bracket-type witnesses | Yes | Phase 0.4 exit criteria and `type_checker_collections.silica`; 1.1 adds the graph compile witness trial. |
+| Action 8 — minimum `DirectedGraph` trait impl (empty smoke) | Partially | Step 1.4 extends trait wiring (`has_edge`, `out_degree`, `edge_target` usage, retire `graph_phase04`). |
+| Exit — empty constructor + count trials | Partially | Step 1.4 adds post-edge inspection trials; empty-only acceptance is **1.1**. |
+| Exit — bracket-type witness | Yes | Phase 0.4 (same machinery as set/map/heap witnesses). |
+
+**Step 1.1 status — not covered elsewhere (still open):**
+
+- **Action 1 (remainder)** — align `inline_type_expansion.silica` with the runtime record (`compare_node`, `compare_edge`, `edge_target` fields); no dedicated later step names this for graphs (CSR set/map analogue: Step 0.5.3 action 3).
+- **Bootstrap coexistence** — old width-specialized exports remain beside the new API until Step 10.26 (naming/duplication audit) or explicit retirement in Step 1.4 action 7 (`graph_phase04`).
+
+**Step 1.1 status — complete:**
+
+| # | Work item | Status | Notes |
+| - | --------- | ------ | ----- |
+| 1 | Action 2 — `graph_adj_directed@empty/2` with function record | **Complete** | `build_empty_adj_unweighted_graph` in `graph_adj_directed.silica` |
+| 2 | Action 4 — empty node records | **Complete** | via `graph_adj_list_helpers@graph_adj_build_empty_nodes_unweighted` |
+| 3 | Action 5 — `node_count` / `edge_count` initialized | **Complete** | empty graph value |
+| 4 | Action 3 (empty) — captured `compare_node`, `compare_edge`, `edge_target` stored | **Complete** | preserved in empty graph record |
+| 5 | Action 7 — `DirectedGraph[T, Edge, mem(S)]` bracket witnesses | **Complete** | `type_checker_collections.silica`; trial `directed_graph_witness_int64.silica` (compile witness) |
+| 6 | Action 8 — minimum trait impl on adjacency record | **Complete** | `DirectedGraph.silica`: `@node_count`, `@edge_count`, `@neighbors` on empty graph |
+| 7 | Exit — empty constructor trial | **Complete** | `directed_graph_adj_empty_trait.silica` |
+| 8 | Exit — count verification via trait | **Complete** | same trial; also `directed_graph_trait.silica` |
+| 9 | Exit — declared-type witness | **Complete** | `directed_graph_witness_int64.silica` |
+| 10 | Action 6 — unweighted edge payload shape (Option A) | **Complete** | `EdgePayloadType = NodeIdType`; Migration Staging Decisions updated |
+
+**Step 1.1 exit criterion: met** for the empty directed unweighted adjacency path. Remaining 1.1-open items above do not block later Phase 1 steps.
 
 ### Step 1.2 - Generate Adjacency Node Lookup Helpers
 
@@ -807,6 +845,8 @@ Exit criteria:
 
 Algorithm reference exists in `btree_nodeid.silica.bak`, reusing the NodeIDBTreeSet node layout and traversal while applying `replace_value` duplicate-key policy. The clean rewrite must expose the map through constructor records and `OrderedMap` behavior.
 
+**Status (steps 7.1–7.3 plus trait exports): complete** — `btree_nodeid@empty({ compare_key, compare_value })` stores both comparators; `get`, `insert`, and `validate` cover generated leaf and first-split shapes; `to_csr` finalizes to CSR (Phase 8.3). `OrderedMap` trait exports `size`, `find_value`, and `fold` delegate through nodeid and CSR adapters. Trials: `ordered_map_nodeid_size_trait`, `ordered_map_nodeid_find_value_trait`, `ordered_map_nodeid_fold_trait`, plus existing `ordered_map_compare_value_trait` and `btree_nodeid_map_to_csr`.
+
 ### Step 7.1 - Generate NodeIDBTree Type Expansion
 
 Authority:
@@ -861,7 +901,11 @@ Exit criteria:
 
 Algorithm reference exists in `btree_csr_map.silica.bak` for `CsrBTreeMap[int64, int64, mem(normal)]`.
 
+**Status (steps 8.1–8.5): complete** — `btree_csr_map.silica` exports `empty`, `empty/1` (constructor function record), `from_static_sorted`, `contains`, `contains_key`, `get`, functional `insert` with `replace_value` policy, and `validate` for the generated order-8 leaf and first split-root shapes (`NODE_CAP=3`, `KEY_CAP=8`, `CHILD_CAP=2`). Captured `compare_key` and `compare_value` are preserved across insert/replace paths. `btree_nodeid@to_csr` finalizes generated NodeID leaf/split maps into CSR. Trials pass: `btree_csr_map_contains_static`, `btree_csr_map_validate_invalid`, `btree_csr_map_insert`, `btree_csr_map_insert_split`, `btree_nodeid_map_to_csr`, and `ordered_map_csr_compare_value_trait`.
+
 ### Step 8.1 - Generate CsrBTreeMap Construction
+
+**Status: complete** — type string matches design §5.3; `empty` (`root_id=-1`), `from_static_sorted`, and `build_leaf_csr_map_skeleton` / insert/replace builders allocate fresh regions with key and value buffers.
 
 Authority:
 
@@ -880,6 +924,8 @@ Exit criteria:
 
 ### Step 8.2 - Generate CsrBTreeMap Search, Insert, And Validation
 
+**Status: complete** — `contains` reuses linear `contains_key_at`; `get` uses `find_key_pos`; `insert` returns `{ tree, inserted, replaced }` with replace-value semantics; `validate` checks order, key-count bounds, and sorted-key invariant (error code 5 for unsorted keys).
+
 Authority:
 
 - `balanced_tree_and_heap_design.md` §5.7, §5.8, §5.9, §9.2, §9.4
@@ -894,6 +940,64 @@ Actions:
 Exit criteria:
 
 - Trial covers: new-key insert, replace-value insert, get found and not-found, validation pass, and immutability of original map.
+
+### Step 8.3 - Generate NodeIDBTreeMap To CsrBTreeMap Finalization
+
+**Status: complete** — `btree_nodeid@to_csr[int64, int64, mem(normal)]` finalizes generated one-leaf and first-split NodeID maps into CSR via structural leaf copy or sequential CSR insert with value lookup. Helpers `validate_csr_error`, `contains_csr`, and `get_csr` delegate to `btree_csr_map`. Trial: `btree_nodeid_map_to_csr`.
+
+Authority:
+
+- `balanced_tree_and_heap_design.md` §5.6
+
+Actions:
+
+1. Generate `btree_nodeid_map_to_csr[Key, Value, mem(Space)]` (exported as `to_csr`).
+2. Validate source NodeIDBTreeMap shape (node_count 1 or 3).
+3. Allocate CSR map buffers and copy keys/values or rebuild via functional insert.
+4. Preserve captured comparators in the CSR result.
+
+Exit criteria:
+
+- A trial builds a split NodeIDBTreeMap, finalizes to CSR, and verifies metadata, validation, membership, and value lookup.
+
+### Step 8.4 - Generate CsrBTreeMap First Split-Root Growth
+
+**Status: complete** — direct CSR map `insert` grows a full leaf into the first split-root shape when the eighth distinct key is inserted (mirrors Phase 6 CsrBTreeSet). Split-root `contains`, `get`, and `validate` paths handle three-node topology. Trial: `btree_csr_map_insert_split`.
+
+Authority:
+
+- `balanced_tree_and_heap_design.md` §5.8
+- Phase 6 CsrBTreeSet split-root reference (`btree_set_csr.silica`)
+
+Actions:
+
+1. Upgrade capacities to `NODE_CAP=3`, `KEY_CAP=8`, `CHILD_CAP=2`.
+2. Generate `build_split_csr_map_from_insert` with parallel key and value buffer shifts.
+3. Extend `insert_nonempty_csr_map` to split at leaf capacity and handle split-root replace-value updates.
+4. Extend search and validation for three-node split-root topology.
+
+Exit criteria:
+
+- Trial inserts eight distinct key-value pairs directly into CSR map and verifies split-root metadata and validation.
+
+### Step 8.5 - CsrBTreeMap Trait Dispatch Acceptance
+
+**Status: complete** — `OrderedMap@compare_value` on CSR map shape delegates to captured `compare_value` in the generated record (not hardcoded ordering). Trial: `ordered_map_csr_compare_value_trait` in `trials/standard_data_structures_phase04_addition/`.
+
+Authority:
+
+- [data_structures_as_traits.md](data_structures_as_traits.md)
+- Phase 0.4 trait dispatch and Phase 0.5 comparator delegation rules
+
+Actions:
+
+1. Confirm `OrderedMap` CSR impl record includes `compare_key` and `compare_value` fields.
+2. Add phase04 acceptance trial using constructor function record `empty/1` and non-default `compare_value`.
+3. Verify trait call returns comparator result from captured function.
+
+Exit criteria:
+
+- Trial passes with reversed value comparator on CSR map shape.
 
 ## Phase 9 - Heaps
 
@@ -1347,25 +1451,25 @@ Exit criteria:
 
 ## Completion Tracking
 
-Last updated to reflect Phase 0.5 stdlib reconciliation completion and Phase 1 staging readiness.
+Last updated to reflect Step 1.1 Action 6 decision (unweighted edge payload Option A).
 
 
 | Area                        | Status          | Notes                                                                                                                                                                                                 |
 | --------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Shared generator foundation | Partial         | Phase 0.1–0.3 foundation exists in `src/standard_data_structures/structure_registry.silica`, `inline_type_expansion.silica`, and `trials/standard_data_structures_addition/`. `make integrate` passed for `trials/standard_data_structures_addition/`. |
-| Phase 0.4 compiler          | Complete (set/map/heap) | Items 1–5 done: trait dispatch, E2092 placeholders, E2017 witnesses, assoc-type placeholders, link-name mangling. Graph bracket witnesses and provided-block checking not started. See Phase 0.4 status table. |
-| Phase 0.4 stdlib smoke      | Partial         | Nine trait modules; adapters for set/map; `silica.config.phase04_traits` batch green; phase04 trials integrate. Toys: `graph_phase04`, `heap_phase04`, `btree_set_phase04`. Trait shape is staging `required`+`impl`, not final `provided`+`fold`. |
+| Phase 0.4 compiler          | Complete (set/map/heap/graph witnesses) | Items 1–5 done plus `DirectedGraph[…]` bracket witnesses (Step 1.1). Provided-block checking not started. See Phase 0.4 status table. |
+| Phase 0.4 stdlib smoke      | Partial         | Nine trait modules; adapters for set/map; `silica.config.phase04_traits` batch green; phase04 trials integrate. `graph_adj_directed@empty/2` wired through `DirectedGraph` (Step 1.1); `graph_phase04` toy retained until Step 1.4. Toys: `heap_phase04`, `btree_set_phase04`. Trait shape is staging `required`+`impl`, not final `provided`+`fold`. |
 | Phase 0.5 stdlib reconciliation | Complete | Comparator delegation fixed in trait impls; nodeid `OrderedSet@size` uses `item_count` (leaf key totals); CSR set/map empty+insert preserve captured comparators; phase04 acceptance trials: `ordered_set_nodeid_size_trait`, `ordered_map_compare_value_trait`, `ordered_set_csr_compare_item_trait`. `{ found: int64 }` vs boolean remains staging debt. |
-| Trait constructor records   | Partial         | Witness checking works for `OrderedSet`, `OrderedMap`, `Heap` bracket types. Negative trials: E2017, E2092, E2003 in error_enforcement phase04 suite. Invalid-atom validation deferred. Phase 0.5 acceptance trials green; full generated-family acceptance pending Phase 1+. |
-| NodeIdAdjacencyGraph        | Partial         | `graph_adj_directed.silica` is old-design (width exports, no function record). `graph_phase04.silica` + `directed_graph_trait.silica` cover trait-dispatch smoke only. Phase 1 retargets adjacency to constructor records + `DirectedGraph` trait. |
+| Trait constructor records   | Partial         | Witness checking works for `OrderedSet`, `OrderedMap`, `Heap`, and `DirectedGraph` bracket types. Negative trials: E2017, E2092, E2003 in error_enforcement phase04 suite (graph negative witnesses not yet added). Invalid-atom validation deferred. |
+| NodeIdAdjacencyGraph        | Step 1.1 complete | Step 1.1: `graph_adj_directed@empty/2`, captured comparators in empty value, `DirectedGraph` trait impls, trials `directed_graph_adj_empty_trait`, `directed_graph_trait`, `directed_graph_witness_int64`. Bootstrap width exports coexist (Step 10.26); Steps 1.2–1.7 and 1.4 `graph_phase04` retirement remain. |
 | CompressedSparseRowGraph    | Steps 2.1–2.5 complete | Type expansion, static constructor, validation, inspection, and adjacency `freeze`. |
 | DenseMatrixGraph            | Steps 3.1–3.2 complete | Type expansion, constructor, inspection (`has_edge`, `neighbor_at`, `out_degree`, `weight_at`), validation trials green. |
 | DenseBitsetGraph            | Step 3.3 complete (directed unweighted) | `DenseBitsetGraphDirected[mem(normal)]` uses `uint64` word storage (`WORD_COUNT = 4`) with set/clear/has/out-degree/neighbor/validate trials green. Weighted variants remain unsupported and covered by negative enforcement; dense matrix remains the fallback for weighted dense graphs. |
 | Graph algorithms            | Phase 4 complete (module API) | `reachable/3`, `max_out_degree/1`, and `total_out_degree_sum/1` are covered for adjacency and CSR generated-capacity graphs. Trait-level reattachment remains part of the later standard graph trait migration. |
 | NodeIDBTreeSet              | Phase 5 complete (module API) | `btree_set_nodeid@empty({ compare_item })` preserves comparator; `contains`, `validate`, `insert`, and `OrderedSet@size` are covered by Phase 5 trials. Insert handles generated-capacity leaf accumulation, duplicate status, and the first root split; delete remains deferred by design. |
 | CsrBTreeSet                 | Phase 6 complete (module API) | `btree_set_csr@empty/1` stores `compare_item`; leaf and first split-root shapes support `contains`, `validate`, and functional insert. `btree_set_nodeid@to_csr` finalizes generated NodeID leaf/split trees into CSR; delete and deeper growth remain deferred by design. |
-| NodeIDBTreeMap              | Partial         | `btree_nodeid@empty({ compare_key, compare_value })` stores both functions; nodeid trait `compare_value` delegates to captured fn. Missing trait exports: `find_value`, `size`, `fold`. |
-| CsrBTreeMap                 | Partial         | `btree_csr_map@empty/1` stores `compare_key` and `compare_value`; insert/replace skeleton paths thread comparators via source-tree record. CSR trait paths delegate captured comparators. |
+| NodeIDBTreeMap              | Phase 7 complete (module API) | `btree_nodeid@empty({ compare_key, compare_value })` stores both functions; leaf and first split-root shapes support `get`, functional `insert`, and `validate`. `OrderedMap@size`, `@find_value`, and `@fold` delegate via adapters; nodeid `compare_value` uses captured fn. Trials: `ordered_map_nodeid_size_trait`, `ordered_map_nodeid_find_value_trait`, `ordered_map_nodeid_fold_trait`, `ordered_map_compare_value_trait`, `btree_nodeid_map_to_csr`. Deeper growth beyond first split-root remains deferred by design. |
+| CsrBTreeMap                 | Phase 8 complete (module API) | `btree_csr_map@empty/1` stores `compare_key` and `compare_value`; leaf and first split-root shapes support `from_static_sorted`, `contains`, `get`, functional `insert`, and `validate`. `btree_nodeid@to_csr` finalizes NodeID leaf/split maps. Trials: `btree_csr_map_contains_static`, `btree_csr_map_validate_invalid`, `btree_csr_map_insert`, `btree_csr_map_insert_split`, `btree_nodeid_map_to_csr`, `ordered_map_csr_compare_value_trait`. Deeper growth beyond first split-root remains deferred by design. |
 | RegionBinaryHeap            | Partial         | `heap_phase04` + `heap_constructor_record_trait.silica` smoke only. `heap_binary_min.silica` has no constructor function record; old-design trials are reference material. |
 | RegionDaryHeap              | Partial         | `heap_dary_min.silica` exists; not complete under new design until constructor-record capture and heap/priority-queue trait dispatch. |
 | Cross-structure audit       | Not started     | Phase 10 — Payload coverage (Steps 10.1–10.23), immutability (10.24), region ownership (10.25), naming (10.26), documentation (10.27). |

@@ -26,14 +26,23 @@ TRIAL_SOURCES := \
 	btree_set_csr_validate_invalid.silica \
 	btree_set_csr_insert.silica \
 	btree_set_nodeid_to_csr.silica \
-	btree_csr_map_insert.silica
+	btree_csr_map_contains_static.silica \
+	btree_csr_map_validate_invalid.silica \
+	btree_csr_map_insert.silica \
+	btree_csr_map_insert_split.silica \
+	btree_nodeid_map_to_csr.silica
 
-LIB_SRC := ../../src/standard_data_structures
+TRIAL_BINARIES := $(TRIAL_SOURCES:.silica=)
+
+LIB_SRC := ../../stdlib/data_structures
+
+STDLIB_PREREQ_MK := $(firstword $(wildcard $(THIS_DIR)../stdlib_prereq.mk $(THIS_DIR)../../stdlib_prereq.mk $(THIS_DIR)../../../stdlib_prereq.mk))
+include $(STDLIB_PREREQ_MK)
 
 .DEFAULT_GOAL := all
-.PHONY: all clean assembly objects executables integrate help silica.config lib-sources
+.PHONY: all clean assembly objects executables integrate help silica.config lib-sources stdlib-data-structures
 
-lib-sources:
+lib-sources: stdlib-data-structures
 	@mkdir -p "$(THIS_DIR)lib"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_csr.silica)" "$(THIS_DIR)lib/btree_set_csr.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_nodeid.silica)" "$(THIS_DIR)lib/btree_set_nodeid.silica"
@@ -89,70 +98,7 @@ executables: objects
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
 		base=$${line%.silica}; \
 		[ -f "$$base.o" ] || continue; \
-		lib_objs=""; \
-		for mod in $$(grep '^use ' "$$base.silica" 2>/dev/null | sed 's/^use //;s/;//'); do \
-			lib_obj="lib/$$mod.o"; \
-			[ -f "$$lib_obj" ] && lib_objs="$$lib_objs $$lib_obj"; \
-		done; \
-		case "$$lib_objs" in \
-			*lib/btree_set_nodeid.o*) \
-				case "$$lib_objs" in \
-					*lib/btree_set_csr.o*) ;; \
-					*) [ -f lib/btree_set_csr.o ] && lib_objs="$$lib_objs lib/btree_set_csr.o" ;; \
-				esac ;; \
-		esac; \
-		case "$$lib_objs" in \
-			*lib/OrderedSet.o*) \
-				case "$$lib_objs" in \
-					*lib/ordered_set_nodeid_adapter.o*) ;; \
-					*) [ -f lib/ordered_set_nodeid_adapter.o ] && lib_objs="$$lib_objs lib/ordered_set_nodeid_adapter.o" ;; \
-				esac; \
-				case "$$lib_objs" in \
-					*lib/ordered_set_csr_adapter.o*) ;; \
-					*) [ -f lib/ordered_set_csr_adapter.o ] && lib_objs="$$lib_objs lib/ordered_set_csr_adapter.o" ;; \
-				esac; \
-				case "$$lib_objs" in \
-					*lib/btree_set_nodeid.o*) ;; \
-					*) [ -f lib/btree_set_nodeid.o ] && lib_objs="$$lib_objs lib/btree_set_nodeid.o" ;; \
-				esac; \
-				case "$$lib_objs" in \
-					*lib/btree_set_csr.o*) ;; \
-					*) [ -f lib/btree_set_csr.o ] && lib_objs="$$lib_objs lib/btree_set_csr.o" ;; \
-				esac ;; \
-		esac; \
-		case "$$lib_objs" in \
-			*lib/OrderedMap.o*) \
-				case "$$lib_objs" in \
-					*lib/ordered_map_nodeid_adapter.o*) ;; \
-					*) [ -f lib/ordered_map_nodeid_adapter.o ] && lib_objs="$$lib_objs lib/ordered_map_nodeid_adapter.o" ;; \
-				esac; \
-				case "$$lib_objs" in \
-					*lib/ordered_map_csr_adapter.o*) ;; \
-					*) [ -f lib/ordered_map_csr_adapter.o ] && lib_objs="$$lib_objs lib/ordered_map_csr_adapter.o" ;; \
-				esac; \
-				case "$$lib_objs" in \
-					*lib/btree_nodeid.o*) ;; \
-					*) [ -f lib/btree_nodeid.o ] && lib_objs="$$lib_objs lib/btree_nodeid.o" ;; \
-				esac; \
-				case "$$lib_objs" in \
-					*lib/btree_csr_map.o*) ;; \
-					*) [ -f lib/btree_csr_map.o ] && lib_objs="$$lib_objs lib/btree_csr_map.o" ;; \
-				esac ;; \
-		esac; \
-		case "$$lib_objs" in \
-			*lib/csr_set_trait_bridge.o*) \
-				case "$$lib_objs" in \
-					*lib/btree_set_csr.o*) ;; \
-					*) [ -f lib/btree_set_csr.o ] && lib_objs="$$lib_objs lib/btree_set_csr.o" ;; \
-				esac ;; \
-		esac; \
-		case "$$lib_objs" in \
-			*lib/csr_map_trait_bridge.o*) \
-				case "$$lib_objs" in \
-					*lib/btree_csr_map.o*) ;; \
-					*) [ -f lib/btree_csr_map.o ] && lib_objs="$$lib_objs lib/btree_csr_map.o" ;; \
-				esac ;; \
-		esac; \
+		$(COLLECT_LIB_OBJS); \
 		runtime_obj=""; \
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		if test -x "$(RUST_LLD)"; then \
@@ -164,7 +110,7 @@ executables: objects
 
 integrate: silica.config
 	@rm -f .integrate_counts; ok=0; ko=0; failed=0; \
-	rm -f *.sams lib/*.sams; \
+	rm -f *.sams lib/*.sams $(TRIAL_BINARIES); \
 	echo "Compiling with silica-compiler..."; \
 	if ! $(abspath $(SILICA_COMPILER)); then \
 		echo "FAIL: Compilation failed"; \
@@ -184,70 +130,7 @@ integrate: silica.config
 	for line in $$(grep -v '^#' silica.config 2>/dev/null | grep -v '^$$' | grep -v '^lib/'); do \
 		base=$${line%.silica}; \
 		[ -f "$$base.o" ] || continue; \
-		lib_objs=""; \
-		for mod in $$(grep '^use ' "$$base.silica" 2>/dev/null | sed 's/^use //;s/;//'); do \
-			lib_obj="lib/$$mod.o"; \
-			[ -f "$$lib_obj" ] && lib_objs="$$lib_objs $$lib_obj"; \
-		done; \
-		case "$$lib_objs" in \
-			*lib/btree_set_nodeid.o*) \
-				case "$$lib_objs" in \
-					*lib/btree_set_csr.o*) ;; \
-					*) [ -f lib/btree_set_csr.o ] && lib_objs="$$lib_objs lib/btree_set_csr.o" ;; \
-				esac ;; \
-		esac; \
-		case "$$lib_objs" in \
-			*lib/OrderedSet.o*) \
-				case "$$lib_objs" in \
-					*lib/ordered_set_nodeid_adapter.o*) ;; \
-					*) [ -f lib/ordered_set_nodeid_adapter.o ] && lib_objs="$$lib_objs lib/ordered_set_nodeid_adapter.o" ;; \
-				esac; \
-				case "$$lib_objs" in \
-					*lib/ordered_set_csr_adapter.o*) ;; \
-					*) [ -f lib/ordered_set_csr_adapter.o ] && lib_objs="$$lib_objs lib/ordered_set_csr_adapter.o" ;; \
-				esac; \
-				case "$$lib_objs" in \
-					*lib/btree_set_nodeid.o*) ;; \
-					*) [ -f lib/btree_set_nodeid.o ] && lib_objs="$$lib_objs lib/btree_set_nodeid.o" ;; \
-				esac; \
-				case "$$lib_objs" in \
-					*lib/btree_set_csr.o*) ;; \
-					*) [ -f lib/btree_set_csr.o ] && lib_objs="$$lib_objs lib/btree_set_csr.o" ;; \
-				esac ;; \
-		esac; \
-		case "$$lib_objs" in \
-			*lib/OrderedMap.o*) \
-				case "$$lib_objs" in \
-					*lib/ordered_map_nodeid_adapter.o*) ;; \
-					*) [ -f lib/ordered_map_nodeid_adapter.o ] && lib_objs="$$lib_objs lib/ordered_map_nodeid_adapter.o" ;; \
-				esac; \
-				case "$$lib_objs" in \
-					*lib/ordered_map_csr_adapter.o*) ;; \
-					*) [ -f lib/ordered_map_csr_adapter.o ] && lib_objs="$$lib_objs lib/ordered_map_csr_adapter.o" ;; \
-				esac; \
-				case "$$lib_objs" in \
-					*lib/btree_nodeid.o*) ;; \
-					*) [ -f lib/btree_nodeid.o ] && lib_objs="$$lib_objs lib/btree_nodeid.o" ;; \
-				esac; \
-				case "$$lib_objs" in \
-					*lib/btree_csr_map.o*) ;; \
-					*) [ -f lib/btree_csr_map.o ] && lib_objs="$$lib_objs lib/btree_csr_map.o" ;; \
-				esac ;; \
-		esac; \
-		case "$$lib_objs" in \
-			*lib/csr_set_trait_bridge.o*) \
-				case "$$lib_objs" in \
-					*lib/btree_set_csr.o*) ;; \
-					*) [ -f lib/btree_set_csr.o ] && lib_objs="$$lib_objs lib/btree_set_csr.o" ;; \
-				esac ;; \
-		esac; \
-		case "$$lib_objs" in \
-			*lib/csr_map_trait_bridge.o*) \
-				case "$$lib_objs" in \
-					*lib/btree_csr_map.o*) ;; \
-					*) [ -f lib/btree_csr_map.o ] && lib_objs="$$lib_objs lib/btree_csr_map.o" ;; \
-				esac ;; \
-		esac; \
+		$(COLLECT_LIB_OBJS); \
 		runtime_obj=""; \
 		[ -f "__silica_runtime.o" ] && runtime_obj="__silica_runtime.o"; \
 		echo "Linking $$base..."; \
@@ -294,15 +177,7 @@ integrate: silica.config
 clean:
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sout *.sams *.o __silica_runtime.o __silica_runtime.sams \
-		btree_set_nodeid_empty_contains \
-		btree_set_nodeid_contains_handbuilt \
-		btree_set_nodeid_insert \
-		btree_set_nodeid_insert_split \
-		btree_set_nodeid_validate_invalid \
-			btree_set_csr_contains_static \
-			btree_set_csr_validate_invalid \
-			btree_set_csr_insert \
-			btree_csr_map_insert \
+		$(TRIAL_BINARIES) \
 		silica.config .integrate_counts; \
 	rm -f lib/*.sams lib/*.o
 	@echo "✅ $(MSG_PREFIX)Clean complete"

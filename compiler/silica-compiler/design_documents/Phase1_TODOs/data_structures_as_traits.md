@@ -715,11 +715,14 @@ fn add_edge[NodeIdType, EdgePayloadType, SpaceType](
 ) -> DirectedGraph[NodeIdType, EdgePayloadType, SpaceType];
 ```
 
-For unweighted graphs, the edge payload may be either the destination id itself
-or an explicit record such as `{ to: NodeIdType }`. The explicit record form is more
-uniform with weighted graphs and makes `edge_target` unambiguous.
-
-**Decision pending:** resolve before Phase 1 edge-addition acceptance (see open question 3).
+**Unweighted edge payload (resolved — Option A):** for unweighted graphs,
+`EdgePayloadType = NodeIdType`. Neighbor lists store destination node ids;
+`add_edge(g, from_id, to_id)` passes the destination as the edge payload;
+`edge_target(edge)` returns `edge` unchanged; `compare_edge` compares destination
+ids. Weighted and attributed graphs continue to use explicit neighbor records
+(`{ to: NodeIdType, weight: WeightType }` or `{ to: NodeIdType, data: EdgePayloadType }`)
+per `graph_representation_design.md` §3.6. The alternate `{ to: NodeIdType }`-only
+record form for unweighted graphs was not adopted.
 
 ### Staging: current graph trait modules
 
@@ -920,8 +923,9 @@ invalid comparator atoms.
 2. **Store function fields in values vs bake into specializations** — Staging choice: store in
    value for nodeid set/map; CSR families must catch up in Phase 0.5. Open for performance
    specialization later.
-3. **Unweighted graph edge payload** — Still open; decide before Phase 1 Step 1.3 (`NodeId`
-   vs `{ to: NodeIdType }`). Explicit record preferred for weighted/unweighted uniformity.
+3. **Unweighted graph edge payload** — **Resolved (Option A):** `EdgePayloadType =
+   NodeIdType` for unweighted graphs; bare destination id in neighbor lists;
+   `edge_target` is identity. Weighted graphs use explicit `{ to, … }` neighbor records.
 4. **`neighbors` list vs `fold_neighbors`** — Still open; list form is the initial trait
    surface; fold variant may follow for CSR/dense graphs.
 5. **Invalid comparator atoms** — Deferred; sum-type comparators catch invalid shapes at

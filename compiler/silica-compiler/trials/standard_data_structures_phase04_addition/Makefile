@@ -16,12 +16,44 @@ ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
-LIB_SRC := ../../src/standard_data_structures
+RUN_TRIAL_SOURCES := \
+	ordered_set_constructor_record_trait.silica \
+	heap_constructor_record_trait.silica \
+	directed_graph_trait.silica \
+	btree_set_nodeid_constructor_record.silica \
+	btree_nodeid_map_trait_names.silica \
+	ordered_map_btree_shape_trait.silica \
+	ordered_set_nodeid_size_trait.silica \
+	ordered_map_compare_value_trait.silica \
+	ordered_set_csr_compare_item_trait.silica \
+	ordered_map_csr_compare_value_trait.silica \
+	ordered_map_nodeid_size_trait.silica \
+	ordered_map_nodeid_find_value_trait.silica \
+	ordered_map_nodeid_fold_trait.silica \
+	directed_graph_adj_empty_trait.silica \
+	directed_graph_adj_lookup.silica \
+	directed_graph_adj_add_edge.silica \
+	undirected_graph_adj_add_edge.silica \
+	undirected_graph_adj_self_edge.silica \
+	directed_graph_adj_weight_add.silica \
+	directed_graph_adj_weight_missing.silica \
+	directed_graph_adj_validate_pass.silica \
+	directed_graph_adj_validate_bad_edge_count.silica \
+	directed_graph_adj_validate_bad_neighbor.silica \
+	undirected_graph_adj_validate_pass.silica \
+	undirected_graph_adj_validate_mirror_fail.silica
+
+TRIAL_BINARIES := $(RUN_TRIAL_SOURCES:.silica=)
+
+LIB_SRC := ../../stdlib/data_structures
+
+STDLIB_PREREQ_MK := $(firstword $(wildcard $(THIS_DIR)../stdlib_prereq.mk $(THIS_DIR)../../stdlib_prereq.mk $(THIS_DIR)../../../stdlib_prereq.mk))
+include $(STDLIB_PREREQ_MK)
 
 .DEFAULT_GOAL := all
-.PHONY: all clean assembly objects executables integrate help silica.config lib-sources
+.PHONY: all clean assembly objects executables integrate help silica.config lib-sources stdlib-data-structures
 
-lib-sources:
+lib-sources: stdlib-data-structures
 	@mkdir -p "$(THIS_DIR)lib"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/OrderedSet.silica)" "$(THIS_DIR)lib/OrderedSet.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/ordered_set_nodeid_adapter.silica)" "$(THIS_DIR)lib/ordered_set_nodeid_adapter.silica"
@@ -76,6 +108,10 @@ silica.config: lib-sources
         echo 'ordered_set_nodeid_size_trait.silica'; \
         echo 'ordered_map_compare_value_trait.silica'; \
         echo 'ordered_set_csr_compare_item_trait.silica'; \
+        echo 'ordered_map_csr_compare_value_trait.silica'; \
+        echo 'ordered_map_nodeid_size_trait.silica'; \
+        echo 'ordered_map_nodeid_find_value_trait.silica'; \
+        echo 'ordered_map_nodeid_fold_trait.silica'; \
         echo 'directed_graph_adj_empty_trait.silica'; \
         echo 'directed_graph_adj_lookup.silica'; \
         echo 'directed_graph_adj_add_edge.silica'; \
@@ -112,7 +148,7 @@ objects: assembly
 
 executables: objects
 	@cd "$(THIS_DIR)" && \
-	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica ordered_map_btree_shape_trait.silica ordered_set_nodeid_size_trait.silica ordered_map_compare_value_trait.silica ordered_set_csr_compare_item_trait.silica directed_graph_adj_empty_trait.silica directed_graph_adj_lookup.silica directed_graph_adj_add_edge.silica undirected_graph_adj_add_edge.silica undirected_graph_adj_self_edge.silica directed_graph_adj_weight_add.silica directed_graph_adj_weight_missing.silica directed_graph_adj_validate_pass.silica directed_graph_adj_validate_bad_edge_count.silica directed_graph_adj_validate_bad_neighbor.silica undirected_graph_adj_validate_pass.silica undirected_graph_adj_validate_mirror_fail.silica; do \
+	for line in $(RUN_TRIAL_SOURCES); do \
 		base=$${line%.silica}; \
 		lib_objs=""; \
 		for lib_obj in lib/*.o; do \
@@ -145,7 +181,7 @@ integrate: clean silica.config
 	if [ -f "__silica_runtime.sams" ]; then \
 		$(ASSEMBLER) $(ASFLAGS_macos) -c -x assembler "__silica_runtime.sams" -o "__silica_runtime.o" || failed=1; \
 	fi; \
-	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica ordered_map_btree_shape_trait.silica ordered_set_nodeid_size_trait.silica ordered_map_compare_value_trait.silica ordered_set_csr_compare_item_trait.silica directed_graph_adj_empty_trait.silica directed_graph_adj_lookup.silica directed_graph_adj_add_edge.silica undirected_graph_adj_add_edge.silica undirected_graph_adj_self_edge.silica directed_graph_adj_weight_add.silica directed_graph_adj_weight_missing.silica directed_graph_adj_validate_pass.silica directed_graph_adj_validate_bad_edge_count.silica directed_graph_adj_validate_bad_neighbor.silica undirected_graph_adj_validate_pass.silica undirected_graph_adj_validate_mirror_fail.silica; do \
+	for line in $(RUN_TRIAL_SOURCES); do \
 		base=$${line%.silica}; \
 		lib_objs=""; \
 		for lib_obj in lib/*.o; do \
@@ -159,7 +195,7 @@ integrate: clean silica.config
 			$(ASSEMBLER) "$$base.o" $$lib_objs $$runtime_obj -o "$$base" $(LDFLAGS_clang) || failed=1; \
 		fi; \
 	done; \
-	for line in ordered_set_constructor_record_trait.silica heap_constructor_record_trait.silica directed_graph_trait.silica btree_set_nodeid_constructor_record.silica btree_nodeid_map_trait_names.silica ordered_map_btree_shape_trait.silica ordered_set_nodeid_size_trait.silica ordered_map_compare_value_trait.silica ordered_set_csr_compare_item_trait.silica directed_graph_adj_empty_trait.silica directed_graph_adj_lookup.silica directed_graph_adj_add_edge.silica undirected_graph_adj_add_edge.silica undirected_graph_adj_self_edge.silica directed_graph_adj_weight_add.silica directed_graph_adj_weight_missing.silica directed_graph_adj_validate_pass.silica directed_graph_adj_validate_bad_edge_count.silica directed_graph_adj_validate_bad_neighbor.silica undirected_graph_adj_validate_pass.silica undirected_graph_adj_validate_mirror_fail.silica; do \
+	for line in $(RUN_TRIAL_SOURCES); do \
 		base=$${line%.silica}; \
 		if [ -x "$$base" ]; then \
 			{ ./"$$base" 2>&1; echo $$?; } > "$$base.sout"; \
@@ -202,7 +238,7 @@ integrate: clean silica.config
 	exit $$failed
 
 clean:
-	@cd "$(THIS_DIR)" && rm -f *.sout lib/*.sams lib/*.o lib/*.silica *.sams *.o __silica_runtime.o ordered_set_constructor_record_trait heap_constructor_record_trait directed_graph_trait btree_set_nodeid_constructor_record btree_nodeid_map_trait_names ordered_map_btree_shape_trait ordered_set_nodeid_size_trait ordered_map_compare_value_trait ordered_set_csr_compare_item_trait directed_graph_adj_empty_trait directed_graph_adj_lookup directed_graph_adj_add_edge undirected_graph_adj_add_edge undirected_graph_adj_self_edge directed_graph_adj_weight_add directed_graph_adj_weight_missing directed_graph_adj_validate_pass directed_graph_adj_validate_bad_edge_count directed_graph_adj_validate_bad_neighbor undirected_graph_adj_validate_pass undirected_graph_adj_validate_mirror_fail silica.config .integrate_counts
+	@cd "$(THIS_DIR)" && rm -f *.sout lib/*.sams lib/*.o lib/*.silica *.sams *.o __silica_runtime.o $(TRIAL_BINARIES) silica.config .integrate_counts
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:

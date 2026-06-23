@@ -9,7 +9,7 @@ Call sites use **`module@operation[brackets](args)`** with short operation names
 
 ## Layout
 
-- **`lib/`** — symlinks to `src/standard_data_structures/` modules.
+- **`lib/`** — symlinks to `stdlib/data_structures/` modules.
 - **Trial drivers** — `btree_set_<repr>_<scenario>.silica`.
 
 ## Phase 5 (`NodeIDBTreeSet[int64, mem(normal)]`)

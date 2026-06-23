@@ -1,6 +1,6 @@
 # Standard data structures — Phase 0 trials
 
-Foundation trials for the generator in `src/standard_data_structures/`:
+Foundation trials for the generator in `stdlib/data_structures/`:
 
 | File | Role |
 |------|------|

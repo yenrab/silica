@@ -1,12 +1,33 @@
+.bss
+.balign 8
+.lcomm _silica_frame_depth, 8
+.lcomm _silica_frame_max, 8
+.lcomm _silica_fuel, 8
+.lcomm _silica_saved_pc, 8
+
 .text
     ; use btree_csr_map
 .global ordered_map_csr_adapter_contains_key_csr
 .global ordered_map_csr_adapter_get_csr
+.global ordered_map_csr_adapter_size_csr
+.global ordered_map_csr_adapter_find_value_csr
+.global ordered_map_csr_adapter_fold_csr
 .extern _silica_rt_ffi_guarded_enter
 .extern _silica_rt_ffi_guarded_exit
 .extern _silica_rt_ffi_guarded_setjmp
 .extern _silica_rt_ffi_guarded_fault_finish
 .extern _silica_rt_ffi_arena_bump
+
+    ; --- recursion phases (recursion_implementation.jsonld) ---
+    ; p1: explicit frame fields; p2: push/dispatch/pop; p3: fuel on back-edges
+    ; p4: PC/source map hooks; p5: tail BR (see emit_tail_call_body); p6: trampoline fallback
+
+    ; p4 observability: frame -> (fn id, source id) map; filter trampoline frames
+
+    ; p6 trampoline fallback (optional):
+    ; _silica_trampoline_dispatch: load target from frame / BR X8
+    ; never rely on unbounded native recursion for general calls
+
 
 
 ordered_map_csr_adapter_contains_key_csr:     STP X29, X30, [SP, #-16]!
@@ -17,26 +38,26 @@ ordered_map_csr_adapter_contains_key_csr:     STP X29, X30, [SP, #-16]!
     MOV X0, X20
 
 
-    ; effects []|sir_rec:o836|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
-    ADRP X9, btree_csr_map_contains_key@PAGE
-    ADD X9, X9, btree_csr_map_contains_key@PAGEOFF
+    ; effects []|sir_rec:o899|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, btree_csr_map_contains_key_csr@PAGE
+    ADD X9, X9, btree_csr_map_contains_key_csr@PAGEOFF
     BLR X9
     MOV X19, X0
     MOV X2, X19
-L_case_o901_br_0:
+L_case_o968_br_0:
     MOV X3, #0
     CMP X2, X3
-    B.NE L_case_o901_br_1
+    B.NE L_case_o968_br_1
     MOV X0, #0
-    B L_case_o901_done
-L_case_o901_br_1:
+    B L_case_o968_done
+L_case_o968_br_1:
     MOV X0, #1
-    B L_case_o901_done
-L_case_o901_fb:
+    B L_case_o968_done
+L_case_o968_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o901_done
-L_case_o901_done:
+    B L_case_o968_done
+L_case_o968_done:
     MOV X21, X0
     MOV X0, X21
     LDP X21, X22, [SP], #16
@@ -51,7 +72,7 @@ ordered_map_csr_adapter_get_csr:     STP X29, X30, [SP, #-16]!
     MOV X0, X20
 
 
-    ; effects []|sir_rec:o1852|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o1919|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, btree_csr_map_get_int64_int64_mem_normal__@PAGE
     ADD X9, X9, btree_csr_map_get_int64_int64_mem_normal__@PAGEOFF
     BLR X9
@@ -60,6 +81,46 @@ ordered_map_csr_adapter_get_csr:     STP X29, X30, [SP, #-16]!
     LDP X19, X20, [SP], #16
     LDP X29, X30, [SP], #16
     RET
+
+ordered_map_csr_adapter_size_csr:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    MOV X11, X0
+
+    LDR X0, [X11, #24]
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+ordered_map_csr_adapter_find_value_csr:     STP X29, X30, [SP, #-16]!
+    MOV X11, X0
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X0, X11
+
+
+    ; effects []|sir_rec:o3510|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, btree_csr_map_ordered_map_find_value@PAGE
+    ADD X9, X9, btree_csr_map_ordered_map_find_value@PAGEOFF
+    BR X9
+
+
+ordered_map_csr_adapter_fold_csr:     STP X29, X30, [SP, #-16]!
+    MOV X11, X0
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X0, X11
+
+
+
+    ; effects []|sir_rec:o4353|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, btree_csr_map_ordered_map_fold@PAGE
+    ADD X9, X9, btree_csr_map_ordered_map_fold@PAGEOFF
+    BR X9
+
 L_pa_helper:
     CMP X0, #0
     B.lt L_pa_oob

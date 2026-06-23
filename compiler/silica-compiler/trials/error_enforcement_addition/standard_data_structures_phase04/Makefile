@@ -1,7 +1,10 @@
 THIS_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 SILICA_COMPILER := $(THIS_DIR)../../../src/silica-compiler
 MSG_PREFIX := error_enforcement_addition/standard_data_structures_phase04/
-LIB_SRC := ../../../src/standard_data_structures
+LIB_SRC := ../../../stdlib/data_structures
+
+STDLIB_PREREQ_MK := $(firstword $(wildcard $(THIS_DIR)../stdlib_prereq.mk $(THIS_DIR)../../stdlib_prereq.mk $(THIS_DIR)../../../stdlib_prereq.mk))
+include $(STDLIB_PREREQ_MK)
 
 TRIALS := \
 	constructor_record_wrong_return \
@@ -14,11 +17,11 @@ TRIALS := \
 	trait_impl_return_mismatch \
 	trait_call_item_type_mismatch
 
-.PHONY: all integrate check clean silica.config lib-sources help check-one $(TRIALS)
+.PHONY: all integrate check clean silica.config lib-sources help check-one stdlib-data-structures $(TRIALS)
 
 all: integrate
 
-lib-sources:
+lib-sources: stdlib-data-structures
 	@mkdir -p "$(THIS_DIR)lib"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_phase04.silica)" "$(THIS_DIR)lib/btree_set_phase04.silica"
 

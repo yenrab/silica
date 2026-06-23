@@ -12,7 +12,7 @@ TARGET ?= apple_silicon
 
 SILICA_COMPILER := ../../silica-bootstrap-compiler/target/release/silica-boot
 RUNTIME_LIB := ../../silica-bootstrap-compiler/target/release/libsilica_compiler.a
-SEARCH_PATHS := -I lexer -I parser -I parser/capabilities -I parser/declarations -I parser/expressions -I parser/patterns -I parser/types -I parser/effects -I type_checker -I type_checker/declarations -I type_checker/expressions -I type_checker/traits -I module_checker -I trait_checker -I effect_checker -I ffi -I sir_generator -I sir_generator/declarations -I sir_generator/terms -I sir_generator/types -I sir_generator/patterns -I sir_generator/effects -I emitter -I emitter/$(TARGET) -I emitter/$(TARGET)/atoms -I emitter/$(TARGET)/constraints -I emitter/$(TARGET)/terms -I emitter/$(TARGET)/terms/prims -I emitter/$(TARGET)/terms/const -I emitter/$(TARGET)/terms/let -I emitter/$(TARGET)/terms/call -I emitter/$(TARGET)/shared -I emitter/$(TARGET)/control -I emitter/$(TARGET)/effects -I emitter/$(TARGET)/recursion -I data_structures -I standard_data_structures -I build_output -I diagnostics -I ../stdlib
+SEARCH_PATHS := -I lexer -I parser -I parser/capabilities -I parser/declarations -I parser/expressions -I parser/patterns -I parser/types -I parser/effects -I type_checker -I type_checker/declarations -I type_checker/expressions -I type_checker/traits -I module_checker -I trait_checker -I effect_checker -I ffi -I sir_generator -I sir_generator/declarations -I sir_generator/terms -I sir_generator/types -I sir_generator/patterns -I sir_generator/effects -I emitter -I emitter/$(TARGET) -I emitter/$(TARGET)/atoms -I emitter/$(TARGET)/constraints -I emitter/$(TARGET)/terms -I emitter/$(TARGET)/terms/prims -I emitter/$(TARGET)/terms/const -I emitter/$(TARGET)/terms/let -I emitter/$(TARGET)/terms/call -I emitter/$(TARGET)/shared -I emitter/$(TARGET)/control -I emitter/$(TARGET)/effects -I emitter/$(TARGET)/recursion -I data_structures -I build_output -I diagnostics -I ../stdlib -I ../stdlib/data_structures
 
 # LLVM toolchain (for .ll -> .o and linking)
 LLVM_AS := $(or $(LLVM_AS), $(shell command -v llvm-as 2> /dev/null || (test -x /opt/homebrew/opt/llvm/bin/llvm-as && echo "/opt/homebrew/opt/llvm/bin/llvm-as") || echo "llvm-as"))
@@ -60,16 +60,15 @@ FFI_LL := $(addsuffix .ll, $(FFI_MODULES))
 TRAIT_CHECKER_LL := $(addsuffix .ll, $(TRAIT_CHECKER_MODULES))
 EFFECT_CHECKER_LL := $(addsuffix .ll, $(EFFECT_CHECKER_MODULES))
 
-# Subdirectories built with silica-boot (.silica -> .ll). standard_data_structures is separate (silica-compiler).
+# Subdirectories built with silica-boot (.silica -> .ll). stdlib/data_structures is built separately.
 SUBDIRS := lexer parser type_checker module_checker ffi effect_checker sir_generator emitter
-STANDARD_DATA_STRUCTURES := standard_data_structures
 
 # Trials: immediate subdirs of ../trials that contain Makefile or makefile (each defines its own integrate)
 TRIALS_ROOT := ../trials
 TRIAL_MAKEFILES := $(wildcard $(TRIALS_ROOT)/*/Makefile $(TRIALS_ROOT)/*/makefile)
 TRIAL_SUBDIRS := $(sort $(foreach mf,$(TRIAL_MAKEFILES),$(notdir $(patsubst %/,%,$(dir $(mf))))))
 
-.PHONY: all clean build executables modules subdirs help integrate $(SUBDIRS) $(STANDARD_DATA_STRUCTURES)
+.PHONY: all clean build executables modules subdirs help integrate $(SUBDIRS)
 
 .DEFAULT_GOAL := all
 
@@ -79,7 +78,7 @@ all: clean build
 
 # Real build target - ensure bootstrap compiler exists, then compile subdirs, modules, and main
 
-build: $(SILICA_COMPILER) subdirs modules executables $(STANDARD_DATA_STRUCTURES)
+build: $(SILICA_COMPILER) subdirs modules executables
 
 # Build all subdirectories with Makefiles (before compiling main.silica)
 # subdirs requires bootstrap compiler to exist first
@@ -88,11 +87,6 @@ subdirs: $(SILICA_COMPILER) $(SUBDIRS)
 $(SUBDIRS):
 	@echo "Building $@..."
 	@$(MAKE) -C $@ QUIET=1 TARGET=$(TARGET)
-
-# Graph/registry modules need full silica-compiler (built above); not silica-boot.
-$(STANDARD_DATA_STRUCTURES): $(EXECUTABLE)
-	@echo "Building $(STANDARD_DATA_STRUCTURES)..."
-	@$(MAKE) -C $(STANDARD_DATA_STRUCTURES) QUIET=$(QUIET)
 
 # Compile lexer, parser, type_checker, and effect_checker modules
 modules: $(LEXER_LL) $(PARSER_LL) $(TYPE_CHECKER_LL) $(MODULE_CHECKER_LL) $(FFI_LL) $(TRAIT_CHECKER_LL) $(EFFECT_CHECKER_LL)
@@ -142,7 +136,10 @@ $(MAIN_OBJ): $(MAIN_BC)
 # (main.silica is compiled as a single unit with all imports, so main.o contains everything)
 $(EXECUTABLE): $(MAIN_OBJ) $(RUNTIME_LIB)
 	@echo "Linking: $(EXECUTABLE)"
-	@-$(LINKER_CLANG) $(MAIN_OBJ) $(RUNTIME_LIB) -o $@
+	@# -stack_size: the self-hosted lexer/parser recurse over the whole source file,
+	@# so the main-thread stack must be larger than the macOS 8MB default for big
+	@# inputs (e.g. stdlib/data_structures/btree_nodeid.silica). 256MB headroom.
+	@-$(LINKER_CLANG) $(MAIN_OBJ) $(RUNTIME_LIB) -Wl,-stack_size,0x10000000 -o $@
 	@echo "✅ Built $(EXECUTABLE)"
 
 # Run each trial area's own integrate target (does not use ../trials/Makefile inline trial runner)
@@ -159,7 +156,6 @@ integrate: $(EXECUTABLE)
 clean:
 	@echo "Cleaning generated files..."
 	@for d in $(SUBDIRS); do $(MAKE) -C $$d clean TARGET=$(TARGET) 2>/dev/null || true; done
-	@$(MAKE) -C $(STANDARD_DATA_STRUCTURES) clean 2>/dev/null || true
 	rm -f *.ll *.bc *.o $(EXECUTABLE)
 	rm -f lexer/*.ll
 	rm -f parser/*.ll parser/*/*.ll

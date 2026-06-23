@@ -18,12 +18,17 @@ ASFLAGS_macos := -mmacosx-version-min=$(MACOS_MIN_VERSION)
 LDFLAGS_rust-lld := -arch arm64 -platform_version macos $(MACOS_MIN_VERSION) $(MACOS_MIN_VERSION) -syslibroot $(MACOS_SDK) -lSystem -e main
 LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 
-LIB_SRC := ../../src/standard_data_structures
+TRIAL_BINARIES := type_expansion_snapshot
+
+LIB_SRC := ../../stdlib/data_structures
+
+STDLIB_PREREQ_MK := $(firstword $(wildcard $(THIS_DIR)../stdlib_prereq.mk $(THIS_DIR)../../stdlib_prereq.mk $(THIS_DIR)../../../stdlib_prereq.mk))
+include $(STDLIB_PREREQ_MK)
 
 .DEFAULT_GOAL := all
-.PHONY: all clean assembly objects executables integrate help silica.config lib-sources
+.PHONY: all clean assembly objects executables integrate help silica.config lib-sources stdlib-data-structures
 
-lib-sources:
+lib-sources: stdlib-data-structures
 	@mkdir -p "$(THIS_DIR)lib"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/structure_registry.silica)" "$(THIS_DIR)lib/structure_registry.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/inline_type_expansion.silica)" "$(THIS_DIR)lib/inline_type_expansion.silica"
@@ -76,7 +81,7 @@ executables: objects
 
 integrate: clean silica.config
 	@rm -f .integrate_counts; ok=0; ko=0; failed=0; \
-	rm -f *.sams lib/*.sams; \
+	rm -f *.sams lib/*.sams $(TRIAL_BINARIES); \
 	echo "Compiling with silica-compiler..."; \
 	if ! $(abspath $(SILICA_COMPILER)); then \
 		echo "FAIL: Compilation failed"; \
@@ -150,7 +155,7 @@ integrate: clean silica.config
 
 clean:
 	@cd "$(THIS_DIR)" && \
-	rm -f *.sout lib/*.sams lib/*.o *.sams __silica_runtime.o type_expansion_snapshot type_expansion_snapshot.o silica.config .integrate_counts
+	rm -f *.sout lib/*.sams lib/*.o *.sams __silica_runtime.o $(TRIAL_BINARIES) $(TRIAL_BINARIES).o silica.config .integrate_counts
 	@echo "✅ $(MSG_PREFIX)Clean complete"
 
 help:

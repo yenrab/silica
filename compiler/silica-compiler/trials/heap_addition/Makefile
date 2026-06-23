@@ -30,12 +30,18 @@ DARY_TRIAL_SOURCES := \
 	heap_dary_min_push_pop.silica \
 	heap_dary_min_validate_invalid.silica
 
-LIB_SRC := ../../src/standard_data_structures
+TRIAL_SOURCES := $(MIN_TRIAL_SOURCES) $(MAX_TRIAL_SOURCES) $(DARY_TRIAL_SOURCES)
+TRIAL_BINARIES := $(TRIAL_SOURCES:.silica=)
+
+LIB_SRC := ../../stdlib/data_structures
+
+STDLIB_PREREQ_MK := $(firstword $(wildcard $(THIS_DIR)../stdlib_prereq.mk $(THIS_DIR)../../stdlib_prereq.mk $(THIS_DIR)../../../stdlib_prereq.mk))
+include $(STDLIB_PREREQ_MK)
 
 .DEFAULT_GOAL := all
-.PHONY: all clean assembly objects executables integrate help lib-sources silica.config.min silica.config.max silica.config.dary
+.PHONY: all clean assembly objects executables integrate help lib-sources silica.config.min silica.config.max silica.config.dary stdlib-data-structures
 
-lib-sources:
+lib-sources: stdlib-data-structures
 	@mkdir -p "$(THIS_DIR)lib"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/heap_binary_min.silica)" "$(THIS_DIR)lib/heap_binary_min.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/heap_binary_max.silica)" "$(THIS_DIR)lib/heap_binary_max.silica"
@@ -142,7 +148,7 @@ executables: objects
 
 integrate: lib-sources silica.config.min silica.config.max silica.config.dary
 	@rm -f .integrate_counts; ok=0; ko=0; failed=0; \
-	rm -f *.sams lib/*.sams; \
+	rm -f *.sams lib/*.sams $(TRIAL_BINARIES); \
 	echo "Compiling min-heap trials..."; \
 	if ! (cd "$(THIS_DIR)" && cp silica.config.min silica.config && $(abspath $(SILICA_COMPILER))); then \
 		echo "FAIL: min-heap compilation failed"; \
@@ -229,9 +235,7 @@ integrate: lib-sources silica.config.min silica.config.max silica.config.dary
 clean:
 	@cd "$(THIS_DIR)" && \
 	rm -f *.sout *.sams *.o __silica_runtime.o __silica_runtime.sams \
-		heap_binary_min_empty heap_binary_min_push_pop heap_binary_min_validate_invalid \
-		heap_binary_min_priority_push_pop heap_binary_max_push_pop \
-		heap_dary_min_empty heap_dary_min_push_pop heap_dary_min_validate_invalid \
+		$(TRIAL_BINARIES) \
 		silica.config silica.config.min silica.config.max silica.config.dary .integrate_counts; \
 	rm -f lib/*.sams lib/*.o lib/heap_dary_min.silica
 	@echo "✅ $(MSG_PREFIX)Clean complete"
