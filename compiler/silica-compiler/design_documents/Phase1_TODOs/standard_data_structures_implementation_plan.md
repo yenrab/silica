@@ -1005,7 +1005,7 @@ Algorithm reference available:
 
 The `.bak` copies of `heap_binary_min.silica` and `heap_binary_max.silica` preserve binary min/max heap and priority/value heap algorithms. The clean rewrite must expose heap behavior through constructor records and `Heap` / `PriorityQueue` traits.
 
-### Step 9.1 - Generate RegionBinaryMinHeap
+### Step 9.1 - Generate RegionBinaryMinHeap — Done
 
 Authority:
 
@@ -1013,18 +1013,18 @@ Authority:
 
 Actions:
 
-1. Generate the binary heap type string.
-2. Generate empty or allocate construction with a `compare_item` constructor function record.
-3. Generate push.
-4. Generate peek.
-5. Generate pop.
-6. Generate validation of heap ordering and capacity metadata.
+1. Generate the binary heap type string. ✅ `stdlib/data_structures/heap_binary_min.silica`.
+2. Generate empty or allocate construction with a `compare_item` constructor function record. ✅ `empty({ compare_item })`.
+3. Generate push. ✅ `min_heap_push` with binary sift-up.
+4. Generate peek. ✅ `min_heap_peek` plus `Heap@peek`.
+5. Generate pop. ✅ `min_heap_pop` with binary sift-down.
+6. Generate validation of heap ordering and capacity metadata. ✅ `min_heap_validate`.
 
 Exit criteria:
 
-- Trials cover empty heap, push, peek, pop, and validation for `RegionBinaryMinHeap[ItemType, mem(normal)]`.
+- Trials cover empty heap, push, peek, pop, and validation for `RegionBinaryMinHeap[ItemType, mem(normal)]`. ✅ `heap_binary_min_compare_item_trait` passes in the phase04 suite (`make integrate` in `trials/standard_data_structures_phase04_addition/` reports 34/0).
 
-### Step 9.2 - Generate RegionBinaryHeap Variants Permitted By Design
+### Step 9.2 - Generate RegionBinaryHeap Variants Permitted By Design — Done
 
 Authority:
 
@@ -1032,15 +1032,15 @@ Authority:
 
 Actions:
 
-1. Generate only variants explicitly described by the design: max heaps and priority/value heaps.
-2. Reuse the same validation structure.
-3. Add trials for each generated variant.
+1. Generate only variants explicitly described by the design: max heaps and priority/value heaps. ✅ `heap_binary_max.silica` (max heap) and the priority-queue wiring through `PriorityQueue`.
+2. Reuse the same validation structure. ✅ Variants share the binary sift/validate shape.
+3. Add trials for each generated variant. ✅ `heap_binary_max_constructor_record_trait` and `heap_priority_queue_constructor_record_trait`.
 
 Exit criteria:
 
-- Trials cover generated binary heap variants without changing the documented heap model.
+- Trials cover generated binary heap variants without changing the documented heap model. ✅ Both variant trials pass in the phase04 suite (34/0).
 
-### Step 9.3 - Generate RegionDaryHeap Only After Binary Heap Stability — Pending
+### Step 9.3 - Generate RegionDaryHeap Only After Binary Heap Stability — Done
 
 Authority:
 
@@ -1048,17 +1048,33 @@ Authority:
 
 Actions:
 
-1. Generate d-ary heap type strings.
-2. Generate construction.
-3. Generate push.
-4. Generate peek.
-5. Generate pop.
-6. Generate validation.
-7. Keep arity handling aligned with the design.
+1. Generate d-ary heap type strings. ✅ `stdlib/data_structures/heap_dary_min.silica` builds the
+   six-field constructor-record shape (`{ compare_item, region, len, capacity, arity, values }`);
+   `inline_type_expansion.silica` expands `expand_region_dary_min_heap_int64` to the fn-first order.
+2. Generate construction. ✅ `empty({ compare_item })` captures the comparator into the record.
+3. Generate push. ✅ `dary_min_heap_push` with d-ary (`D=4`) sift-up.
+4. Generate peek. ✅ `dary_min_heap_peek` plus `Heap@peek`.
+5. Generate pop. ✅ `dary_min_heap_pop` with d-ary sift-down (`dary_smallest_child_*` fold).
+6. Generate validation. ✅ `dary_min_heap_validate`.
+7. Keep arity handling aligned with the design. ✅ `arity()`/`child_index`/`parent_index` use `D=4`.
 
 Exit criteria:
 
-- D-ary heap trials pass after binary heap trials are stable.
+- D-ary heap trials pass after binary heap trials are stable. ✅ `heap_dary_min_compare_item_trait`
+  passes (`make integrate` in `trials/standard_data_structures_phase04_addition/` reports 34/0):
+  it builds via `empty`, pushes `{9,2,7,1,5}`, and verifies the captured comparator drives ordering
+  through the generated ops and the standard `Heap` trait (`peek` / `len` / `compare_priority`),
+  including a fully sorted drain.
+
+Implementation note (resolved): earlier d-ary sift-down helpers bound every parameter to a local
+before any `case` whose scrutinee performs a function call (e.g. `slot < arity()`) to dodge a backend
+register-clobber bug — leaving parameters in their incoming caller-saved registers across such a call
+let the branch bodies read clobbered values. This is now fixed in codegen: the Apple-silicon emitter
+detects this hazard (a `case` scrutinee containing a user call) and, for functions whose parameters
+all fit in callee-saved registers X19–X28, shadows every parameter into callee-saved registers at
+function entry (`use_full_param_shadow` in `emitter_core.silica`). The source-level hoist workarounds
+have been removed from `heap_dary_min.silica` and the `heap_dary_min_compare_item_trait` trial, which
+still pass (34/0).
 
 ## Phase 10 - Cross-Structure Integration
 
@@ -1275,7 +1291,7 @@ Standard data structure families in scope:
 - CsrBTreeMap (`btree_csr_map`)
 - RegionBinaryHeap (`heap_binary_min`, `heap_binary_max`)
 
-Deferred families (add payload trials when the family is generated): RegionDaryHeap. DenseBitsetGraph payload coverage is pending beyond the Phase 1 directed unweighted path.
+Deferred families (add payload trials when the family is generated): none for heaps — RegionDaryHeap is now generated (Step 9.3 complete, min/D=4) and its payload-trial deferral is lifted. DenseBitsetGraph payload coverage is pending beyond the Phase 1 directed unweighted path.
 
 ### Step 10.16 - NodeIdAdjacencyGraph Payload Trials
 
@@ -1458,7 +1474,7 @@ Last updated to reflect Step 1.1 Action 6 decision (unweighted edge payload Opti
 | --------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Shared generator foundation | Partial         | Phase 0.1–0.3 foundation exists in `src/standard_data_structures/structure_registry.silica`, `inline_type_expansion.silica`, and `trials/standard_data_structures_addition/`. `make integrate` passed for `trials/standard_data_structures_addition/`. |
 | Phase 0.4 compiler          | Complete (set/map/heap/graph witnesses) | Items 1–5 done plus `DirectedGraph[…]` bracket witnesses (Step 1.1). Provided-block checking not started. See Phase 0.4 status table. |
-| Phase 0.4 stdlib smoke      | Partial         | Nine trait modules; adapters for set/map; `silica.config.phase04_traits` batch green; phase04 trials integrate. `graph_adj_directed@empty/2` wired through `DirectedGraph` (Step 1.1); `graph_phase04` toy retained until Step 1.4. Toys: `heap_phase04`, `btree_set_phase04`. Trait shape is staging `required`+`impl`, not final `provided`+`fold`. |
+| Phase 0.4 stdlib smoke      | Partial         | Nine trait modules; adapters for set/map; `silica.config.phase04_traits` batch green; phase04 trials integrate. `graph_adj_directed@empty/2` wired through `DirectedGraph` (Step 1.1); `graph_phase04` toy retained until Step 1.4. `heap_phase04` toy is retired from the stdlib build (removed from the `data_structures` Makefile and `silica.config*`); its source file is retained only because the `heap_witness_int64` witness trial still symlinks it. `btree_set_phase04` toy remains. Trait shape is staging `required`+`impl`, not final `provided`+`fold`. |
 | Phase 0.5 stdlib reconciliation | Complete | Comparator delegation fixed in trait impls; nodeid `OrderedSet@size` uses `item_count` (leaf key totals); CSR set/map empty+insert preserve captured comparators; phase04 acceptance trials: `ordered_set_nodeid_size_trait`, `ordered_map_compare_value_trait`, `ordered_set_csr_compare_item_trait`. `{ found: int64 }` vs boolean remains staging debt. |
 | Trait constructor records   | Partial         | Witness checking works for `OrderedSet`, `OrderedMap`, `Heap`, and `DirectedGraph` bracket types. Negative trials: E2017, E2092, E2003 in error_enforcement phase04 suite (graph negative witnesses not yet added). Invalid-atom validation deferred. |
 | NodeIdAdjacencyGraph        | Step 1.1 complete | Step 1.1: `graph_adj_directed@empty/2`, captured comparators in empty value, `DirectedGraph` trait impls, trials `directed_graph_adj_empty_trait`, `directed_graph_trait`, `directed_graph_witness_int64`. Bootstrap width exports coexist (Step 10.26); Steps 1.2–1.7 and 1.4 `graph_phase04` retirement remain. |
@@ -1470,6 +1486,6 @@ Last updated to reflect Step 1.1 Action 6 decision (unweighted edge payload Opti
 | CsrBTreeSet                 | Phase 6 complete (module API) | `btree_set_csr@empty/1` stores `compare_item`; leaf and first split-root shapes support `contains`, `validate`, and functional insert. `btree_set_nodeid@to_csr` finalizes generated NodeID leaf/split trees into CSR; delete and deeper growth remain deferred by design. |
 | NodeIDBTreeMap              | Phase 7 complete (module API) | `btree_nodeid@empty({ compare_key, compare_value })` stores both functions; leaf and first split-root shapes support `get`, functional `insert`, and `validate`. `OrderedMap@size`, `@find_value`, and `@fold` delegate via adapters; nodeid `compare_value` uses captured fn. Trials: `ordered_map_nodeid_size_trait`, `ordered_map_nodeid_find_value_trait`, `ordered_map_nodeid_fold_trait`, `ordered_map_compare_value_trait`, `btree_nodeid_map_to_csr`. Deeper growth beyond first split-root remains deferred by design. |
 | CsrBTreeMap                 | Phase 8 complete (module API) | `btree_csr_map@empty/1` stores `compare_key` and `compare_value`; leaf and first split-root shapes support `from_static_sorted`, `contains`, `get`, functional `insert`, and `validate`. `btree_nodeid@to_csr` finalizes NodeID leaf/split maps. Trials: `btree_csr_map_contains_static`, `btree_csr_map_validate_invalid`, `btree_csr_map_insert`, `btree_csr_map_insert_split`, `btree_nodeid_map_to_csr`, `ordered_map_csr_compare_value_trait`. Deeper growth beyond first split-root remains deferred by design. |
-| RegionBinaryHeap            | Partial         | `heap_phase04` + `heap_constructor_record_trait.silica` smoke only. `heap_binary_min.silica` has no constructor function record; old-design trials are reference material. |
-| RegionDaryHeap              | Partial         | `heap_dary_min.silica` exists; not complete under new design until constructor-record capture and heap/priority-queue trait dispatch. |
+| RegionBinaryHeap            | Steps 9.1–9.2 complete (min, max, priority/value) | `heap_binary_min.silica` / `heap_binary_max.silica` expose `empty({ compare_item })` constructor function records; generated `push`/`peek`/`pop`/`validate` dispatch through the standard `Heap` / `PriorityQueue` traits. Trials `heap_binary_min_compare_item_trait`, `heap_binary_max_constructor_record_trait`, and `heap_priority_queue_constructor_record_trait` are green in the phase04 suite (34/0). The `heap_phase04` toy module is retired from the stdlib build (its source survives only for the `heap_witness_int64` witness trial). |
+| RegionDaryHeap              | Step 9.3 complete (min, D=4) | `heap_dary_min@empty({ compare_item })` captures the comparator into the six-field fn-first record; generated `push`/`peek`/`pop`/`validate` use `D=4` sift logic, and `Heap@peek`/`@len`/`@compare_priority` dispatch over the record. Trial `heap_dary_min_compare_item_trait` (sorted drain) green in the phase04 suite. The earlier source-level register-hoist workaround has been removed now that the backend register-clobber bug is fixed (`use_full_param_shadow`). Max/d-ary-max and priority-queue variants remain future work. |
 | Cross-structure audit       | Not started     | Phase 10 — Payload coverage (Steps 10.1–10.23), immutability (10.24), region ownership (10.25), naming (10.26), documentation (10.27). |

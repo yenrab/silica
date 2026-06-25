@@ -1,0 +1,168 @@
+// Phase 9.3 — RegionDaryMinHeap (D = 4) constructor-record ABI and Heap trait dispatch.
+// Builds a d-ary min heap from an inline { compare_item } record, pushes {9,2,7,1,5},
+// and verifies the captured comparator drives ordering through both the generated
+// operations and the standard Heap trait (peek / len / compare_priority).
+//
+// The pop drain is done in a recursive helper so that only one heap value is live
+// at a time; holding all intermediate heaps in main would inflate register
+// pressure unnecessarily.
+use Heap;
+use heap_dary_min;
+
+fn compare_item_int64(left: int64, right: int64) -> :less | :equal | :greater {
+    case left < right of {
+        true -> :less;
+        false -> case left == right of {
+            true -> :equal;
+            false -> :greater
+        }
+    }
+}
+
+fn push_five(heap0: {
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}) -> {
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+} {
+    sequence
+        h1: {
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L1, normal),
+            len: int64,
+            capacity: int64,
+            arity: int64,
+            values: buf(L1, normal, int64, 8)
+        } <- heap_dary_min@dary_min_heap_push(heap0, 9);
+        h2: {
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L1, normal),
+            len: int64,
+            capacity: int64,
+            arity: int64,
+            values: buf(L1, normal, int64, 8)
+        } <- heap_dary_min@dary_min_heap_push(h1, 2);
+        h3: {
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L1, normal),
+            len: int64,
+            capacity: int64,
+            arity: int64,
+            values: buf(L1, normal, int64, 8)
+        } <- heap_dary_min@dary_min_heap_push(h2, 7);
+        h4: {
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L1, normal),
+            len: int64,
+            capacity: int64,
+            arity: int64,
+            values: buf(L1, normal, int64, 8)
+        } <- heap_dary_min@dary_min_heap_push(h3, 1);
+        h5: {
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L1, normal),
+            len: int64,
+            capacity: int64,
+            arity: int64,
+            values: buf(L1, normal, int64, 8)
+        } <- heap_dary_min@dary_min_heap_push(h4, 5)
+    produces
+        pure h5
+    end
+}
+
+// Recursively pops the heap, checking that each removed minimum is >= the
+// previously removed one (ascending order). Returns 1 when the heap drains in
+// sorted order, 0 otherwise.
+fn drain_sorted(heap: {
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}, prev: int64) -> int64 {
+    case heap_dary_min@dary_min_heap_len(heap) of {
+        0 -> 1;
+        _: int64 -> {
+            top: { ok: int64, value: int64 } <- heap_dary_min@dary_min_heap_peek(heap);
+            case prev <= top.value of {
+                false -> 0;
+                true -> {
+                    rest: {
+                        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                        region: region(L1, normal),
+                        len: int64,
+                        capacity: int64,
+                        arity: int64,
+                        values: buf(L1, normal, int64, 8)
+                    } <- heap_dary_min@dary_min_heap_pop(heap);
+                    drain_sorted(rest, top.value)
+                }
+            }
+        }
+    }
+}
+
+fn main() -> int64 {
+    sequence
+        functions: { compare_item: fn(int64, int64) -> :less | :equal | :greater } <- {
+            compare_item: compare_item_int64
+        };
+        heap0: {
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L1, normal),
+            len: int64,
+            capacity: int64,
+            arity: int64,
+            values: buf(L1, normal, int64, 8)
+        } <- heap_dary_min@empty(functions);
+        heap1: {
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L1, normal),
+            len: int64,
+            capacity: int64,
+            arity: int64,
+            values: buf(L1, normal, int64, 8)
+        } <- push_five(heap0);
+        top_direct: { ok: int64, value: int64 } <- heap_dary_min@dary_min_heap_peek(heap1);
+        top_trait: int64 <- Heap@peek(heap1);
+        heap_len: int64 <- Heap@len(heap1);
+        cmp: atom <- Heap@compare_priority(heap1, 2, 9);
+        validation: { ok: int64, error_code: int64 } <- heap_dary_min@dary_min_heap_validate(heap1);
+        drained: int64 <- drain_sorted(heap1, 0);
+        result: int64 <- case heap_len of {
+            5 -> case top_direct.ok of {
+                0 -> 20;
+                _: int64 -> case top_direct.value of {
+                    1 -> case top_trait of {
+                        1 -> case cmp of {
+                            :less -> case validation.ok of {
+                                1 -> case drained of {
+                                    1 -> 1;
+                                    _: int64 -> 70
+                                };
+                                _: int64 -> validation.error_code + 100
+                            };
+                            _: atom -> 40
+                        };
+                        other_top_trait: int64 -> other_top_trait + 30
+                    };
+                    other_top: int64 -> other_top + 25
+                }
+            };
+            other_len: int64 -> other_len + 21
+        }
+    produces
+        pure result
+    end
+}

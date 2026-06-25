@@ -53,7 +53,8 @@ PHASE04_TRAIT_DEPS_CONFIG_FILES := \
 	ordered_map_nodeid_adapter.silica \
 	ordered_map_csr_adapter.silica \
 	graph_adj_list_helpers.silica \
-	graph_adj_directed.silica
+	graph_adj_directed.silica \
+	heap_binary_min.silica
 
 PHASE04_TRAIT_CONFIG_FILES := \
 	$(PHASE04_TRAIT_DEPS_CONFIG_FILES) \
@@ -67,7 +68,6 @@ PHASE04_TRAIT_CONFIG_FILES := \
 	Tree.silica \
 	SearchTree.silica \
 	btree_set_phase04.silica \
-	heap_phase04.silica \
 	graph_phase04.silica
 
 SILICA_CONFIG_FILES := \

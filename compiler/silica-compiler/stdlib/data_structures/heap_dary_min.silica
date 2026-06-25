@@ -11,6 +11,15 @@ export push[int64, mem(normal)]/2;
 export pop[int64, mem(normal)]/1;
 export validate[int64, mem(normal)]/1;
 
+export empty/1;
+export dary_min_heap_push/2;
+export dary_min_heap_pop/1;
+export dary_min_heap_peek/1;
+export dary_min_heap_validate/1;
+export dary_min_heap_len/1;
+export dary_min_heap_is_empty/1;
+export dary_min_heap_is_full/1;
+
 fn cap() -> int64 {
     8
 }
@@ -570,6 +579,531 @@ fn validate[int64, mem(normal)](heap: {
         shape_error: int64 <- validate_shape(heap);
         order_error: int64 <- case shape_error of {
             0 -> validate_heap_order(values_buf, heap_len);
+            _: int64 -> 0
+        };
+        err: int64 <- case shape_error of {
+            0 -> order_error;
+            _: int64 -> shape_error
+        };
+        ok_value: int64 <- case err of {
+            0 -> 1;
+            _: int64 -> 0
+        };
+        result: { ok: int64, error_code: int64 } <- {
+            ok: ok_value,
+            error_code: err
+        }
+    produces
+        pure result
+    end
+}
+
+// Phase 9.3 — constructor-record RegionDaryMinHeap[int64, mem(normal)] (D = 4).
+// Captures compare_item and reuses it across push, pop, peek, and validate so the
+// heap ordering is defined by the construction-time comparator, not a hardcoded test.
+
+fn dary_read_value(values: buf(L1, normal, int64, 8), index: int64) -> int64 {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    index_saved: int64 <- index;
+    sequence proc[mem(normal)]
+        value: int64 <- read_buf(values_saved, index_saved)
+    produces
+        pure value
+    end
+}
+
+// These constructors register the :less / :equal / :greater atoms in this
+// module's atom table. Without a construction site the atoms get no id and the
+// `case cmp of { :less | :equal | :greater }` matches below silently compare
+// against atom id 0, so the captured comparator's result is never recognised.
+fn dary_compare_less_atom() -> atom {
+    :less
+}
+
+fn dary_compare_equal_atom() -> atom {
+    :equal
+}
+
+fn dary_compare_greater_atom() -> atom {
+    :greater
+}
+
+fn dary_compare_is_less(cmp: atom) -> int64 {
+    case cmp of {
+        :less -> 1;
+        _: atom -> 0
+    }
+}
+
+fn dary_compare_is_greater(cmp: atom) -> int64 {
+    case cmp of {
+        :greater -> 1;
+        _: atom -> 0
+    }
+}
+
+fn dary_sift_up_step_nonroot_cmp(
+    values: buf(L1, normal, int64, 8),
+    index: int64,
+    ctx: { compare_item: fn(int64, int64) -> :less | :equal | :greater }
+) -> int64 {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    index_saved: int64 <- index;
+    ctx_saved: { compare_item: fn(int64, int64) -> :less | :equal | :greater } <- ctx;
+    parent: int64 <- parent_index(index_saved);
+    parent_value: int64 <- dary_read_value(values_saved, parent);
+    child_value: int64 <- dary_read_value(values_saved, index_saved);
+    cmp: fn(int64, int64) -> :less | :equal | :greater <- ctx_saved.compare_item;
+    cmp_result: atom <- cmp(parent_value, child_value);
+    needs_swap: int64 <- dary_compare_is_greater(cmp_result);
+    _: atom <- case needs_swap of {
+        0 -> :ok;
+        _: int64 -> swap_buf_values(values_saved, parent, index_saved)
+    };
+    case needs_swap of {
+        0 -> -1;
+        _: int64 -> parent
+    }
+}
+
+fn dary_sift_up_step_cmp(
+    values: buf(L1, normal, int64, 8),
+    index: int64,
+    ctx: { compare_item: fn(int64, int64) -> :less | :equal | :greater }
+) -> int64 {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    index_saved: int64 <- index;
+    ctx_saved: { compare_item: fn(int64, int64) -> :less | :equal | :greater } <- ctx;
+    case index_saved of {
+        -1 -> -1;
+        0 -> -1;
+        _: int64 -> dary_sift_up_step_nonroot_cmp(values_saved, index_saved, ctx_saved)
+    }
+}
+
+fn dary_sift_up_cmp(
+    values: buf(L1, normal, int64, 8),
+    index: int64,
+    ctx: { compare_item: fn(int64, int64) -> :less | :equal | :greater }
+) -> atom {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    index_saved: int64 <- index;
+    ctx_saved: { compare_item: fn(int64, int64) -> :less | :equal | :greater } <- ctx;
+    i1: int64 <- dary_sift_up_step_cmp(values_saved, index_saved, ctx_saved);
+    i2: int64 <- dary_sift_up_step_cmp(values_saved, i1, ctx_saved);
+    _: int64 <- dary_sift_up_step_cmp(values_saved, i2, ctx_saved);
+    :ok
+}
+
+fn dary_select_smaller_child_cmp(
+    values: buf(L1, normal, int64, 8),
+    heap_len: int64,
+    current_smallest: int64,
+    candidate: int64,
+    ctx: { compare_item: fn(int64, int64) -> :less | :equal | :greater }
+) -> int64 {
+    case candidate < heap_len of {
+        true -> {
+            values_saved: buf(L1, normal, int64, 8) <- values;
+            current_saved: int64 <- current_smallest;
+            candidate_saved: int64 <- candidate;
+            ctx_saved: { compare_item: fn(int64, int64) -> :less | :equal | :greater } <- ctx;
+            current_value: int64 <- dary_read_value(values_saved, current_saved);
+            candidate_value: int64 <- dary_read_value(values_saved, candidate_saved);
+            cmp: fn(int64, int64) -> :less | :equal | :greater <- ctx_saved.compare_item;
+            cmp_result: atom <- cmp(candidate_value, current_value);
+            case dary_compare_is_less(cmp_result) of {
+                1 -> candidate_saved;
+                _: int64 -> current_saved
+            }
+        };
+        false -> current_smallest
+    }
+}
+
+// Fold over child slots one at a time. Recursing over a single slot keeps the
+// live set constant per frame instead of threading D running-best values.
+// Every parameter is bound to a local up front, before the `slot < arity()`
+// case is evaluated: arity() is a function call, so leaving parameters in their
+// incoming (caller-saved) registers across that call lets the branch bodies
+// read clobbered values. Binding first moves them to callee-saved registers.
+fn dary_smallest_child_slot_cmp(
+    values: buf(L1, normal, int64, 8),
+    index: int64,
+    heap_len: int64,
+    ctx: { compare_item: fn(int64, int64) -> :less | :equal | :greater },
+    current_smallest: int64,
+    slot: int64
+) -> int64 {
+    case slot < arity() of {
+        false -> current_smallest;
+        true -> {
+            candidate: int64 <- child_index(index, slot);
+            next_smallest: int64 <- dary_select_smaller_child_cmp(values, heap_len, current_smallest, candidate, ctx);
+            dary_smallest_child_slot_cmp(values, index, heap_len, ctx, next_smallest, slot + 1)
+        }
+    }
+}
+
+fn dary_smallest_child_cmp(
+    values: buf(L1, normal, int64, 8),
+    index: int64,
+    heap_len: int64,
+    ctx: { compare_item: fn(int64, int64) -> :less | :equal | :greater }
+) -> int64 {
+    dary_smallest_child_slot_cmp(values, index, heap_len, ctx, index, 0)
+}
+
+fn dary_sift_down_step_active_cmp(
+    values: buf(L1, normal, int64, 8),
+    index: int64,
+    heap_len: int64,
+    ctx: { compare_item: fn(int64, int64) -> :less | :equal | :greater }
+) -> int64 {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    index_saved: int64 <- index;
+    heap_len_saved: int64 <- heap_len;
+    ctx_saved: { compare_item: fn(int64, int64) -> :less | :equal | :greater } <- ctx;
+    smallest: int64 <- dary_smallest_child_cmp(values_saved, index_saved, heap_len_saved, ctx_saved);
+    needs_swap: int64 <- case smallest == index_saved of {
+        true -> 0;
+        false -> 1
+    };
+    _: atom <- case needs_swap of {
+        0 -> :ok;
+        _: int64 -> swap_buf_values(values_saved, index_saved, smallest)
+    };
+    case needs_swap of {
+        0 -> -1;
+        _: int64 -> smallest
+    }
+}
+
+fn dary_sift_down_step_cmp(
+    values: buf(L1, normal, int64, 8),
+    index: int64,
+    heap_len: int64,
+    ctx: { compare_item: fn(int64, int64) -> :less | :equal | :greater }
+) -> int64 {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    index_saved: int64 <- index;
+    heap_len_saved: int64 <- heap_len;
+    ctx_saved: { compare_item: fn(int64, int64) -> :less | :equal | :greater } <- ctx;
+    case index_saved of {
+        -1 -> -1;
+        _: int64 -> dary_sift_down_step_active_cmp(values_saved, index_saved, heap_len_saved, ctx_saved)
+    }
+}
+
+fn dary_sift_down_cmp(
+    values: buf(L1, normal, int64, 8),
+    index: int64,
+    heap_len: int64,
+    ctx: { compare_item: fn(int64, int64) -> :less | :equal | :greater }
+) -> atom {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    index_saved: int64 <- index;
+    heap_len_saved: int64 <- heap_len;
+    ctx_saved: { compare_item: fn(int64, int64) -> :less | :equal | :greater } <- ctx;
+    i1: int64 <- dary_sift_down_step_cmp(values_saved, index_saved, heap_len_saved, ctx_saved);
+    i2: int64 <- dary_sift_down_step_cmp(values_saved, i1, heap_len_saved, ctx_saved);
+    _: int64 <- dary_sift_down_step_cmp(values_saved, i2, heap_len_saved, ctx_saved);
+    :ok
+}
+
+fn dary_check_order_at_cmp(
+    values: buf(L1, normal, int64, 8),
+    heap_len: int64,
+    index: int64,
+    ctx: { compare_item: fn(int64, int64) -> :less | :equal | :greater }
+) -> int64 {
+    case index >= heap_len of {
+        true -> 0;
+        false -> {
+            values_saved: buf(L1, normal, int64, 8) <- values;
+            index_saved: int64 <- index;
+            ctx_saved: { compare_item: fn(int64, int64) -> :less | :equal | :greater } <- ctx;
+            parent: int64 <- parent_index(index_saved);
+            parent_value: int64 <- dary_read_value(values_saved, parent);
+            child_value: int64 <- dary_read_value(values_saved, index_saved);
+            cmp: fn(int64, int64) -> :less | :equal | :greater <- ctx_saved.compare_item;
+            cmp_result: atom <- cmp(parent_value, child_value);
+            case dary_compare_is_greater(cmp_result) of {
+                1 -> 5;
+                _: int64 -> 0
+            }
+        }
+    }
+}
+
+fn dary_validate_order_cmp(
+    values: buf(L1, normal, int64, 8),
+    heap_len: int64,
+    ctx: { compare_item: fn(int64, int64) -> :less | :equal | :greater }
+) -> int64 {
+    values_saved: buf(L1, normal, int64, 8) <- values;
+    heap_len_saved: int64 <- heap_len;
+    ctx_saved: { compare_item: fn(int64, int64) -> :less | :equal | :greater } <- ctx;
+    e1: int64 <- dary_check_order_at_cmp(values_saved, heap_len_saved, 1, ctx_saved);
+    case e1 of {
+        0 -> {
+            e2: int64 <- dary_check_order_at_cmp(values_saved, heap_len_saved, 2, ctx_saved);
+            case e2 of {
+                0 -> {
+                    e3: int64 <- dary_check_order_at_cmp(values_saved, heap_len_saved, 3, ctx_saved);
+                    case e3 of {
+                        0 -> {
+                            e4: int64 <- dary_check_order_at_cmp(values_saved, heap_len_saved, 4, ctx_saved);
+                            case e4 of {
+                                0 -> {
+                                    e5: int64 <- dary_check_order_at_cmp(values_saved, heap_len_saved, 5, ctx_saved);
+                                    case e5 of {
+                                        0 -> {
+                                            e6: int64 <- dary_check_order_at_cmp(values_saved, heap_len_saved, 6, ctx_saved);
+                                            case e6 of {
+                                                0 -> dary_check_order_at_cmp(values_saved, heap_len_saved, 7, ctx_saved);
+                                                _: int64 -> e6
+                                            }
+                                        };
+                                        _: int64 -> e5
+                                    }
+                                };
+                                _: int64 -> e4
+                            }
+                        };
+                        _: int64 -> e3
+                    }
+                };
+                _: int64 -> e2
+            }
+        };
+        _: int64 -> e1
+    }
+}
+
+fn empty(item_functions: { compare_item: fn(int64, int64) -> :less | :equal | :greater }) -> {
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+} {
+    sequence proc[mem(normal)]
+        L1: lifetime <- fresh_lifetime();
+        r: region(L1, normal) <- alloc_region(normal);
+        values: buf(L1, normal, int64, 8) <- alloc_buf(r, cap());
+        heap: {
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L1, normal),
+            len: int64,
+            capacity: int64,
+            arity: int64,
+            values: buf(L1, normal, int64, 8)
+        } <- {
+            compare_item: item_functions.compare_item,
+            region: r,
+            len: 0,
+            capacity: cap(),
+            arity: arity(),
+            values: values
+        }
+    produces
+        pure heap
+    end
+}
+
+fn dary_min_heap_len(heap: {
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}) -> int64 {
+    heap.len
+}
+
+fn dary_min_heap_is_empty(heap: {
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}) -> int64 {
+    case heap.len of {
+        0 -> 1;
+        _: int64 -> 0
+    }
+}
+
+fn dary_min_heap_is_full(heap: {
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}) -> int64 {
+    case heap.len == heap.capacity of {
+        true -> 1;
+        false -> 0
+    }
+}
+
+fn dary_min_heap_peek(heap: {
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}) -> { ok: int64, value: int64 } {
+    case heap.len of {
+        0 -> { ok: 0, value: 0 };
+        _: int64 -> {
+            values_saved: buf(L1, normal, int64, 8) <- heap.values;
+            top: int64 <- dary_read_value(values_saved, 0);
+            { ok: 1, value: top }
+        }
+    }
+}
+
+// push and pop return the heap record directly (mirrors priority_heap_push / pop).
+// A wrapped { heap, ok } / { heap, ok, value } return of this six-field record
+// triggers an aggregate-return ABI corruption across the module boundary, so the
+// heap value flows back directly and callers read the popped minimum via peek.
+
+fn dary_min_heap_push(
+    heap: {
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L1, normal),
+        len: int64,
+        capacity: int64,
+        arity: int64,
+        values: buf(L1, normal, int64, 8)
+    },
+    value: int64
+) -> {
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+} {
+    case heap.len == heap.capacity of {
+        true -> heap;
+        false -> {
+            pushed_value: int64 <- value;
+            values_saved: buf(L1, normal, int64, 8) <- heap.values;
+            heap_len: int64 <- heap.len;
+            heap_region: region(L1, normal) <- heap.region;
+            heap_capacity: int64 <- heap.capacity;
+            heap_arity: int64 <- heap.arity;
+            insert_index: int64 <- heap_len;
+            _: atom <- sequence proc[mem(normal)]
+                _: atom <- write_buf(values_saved, insert_index, pushed_value)
+            produces
+                pure :ok
+            end;
+            _: atom <- dary_sift_up_cmp(values_saved, insert_index, { compare_item: heap.compare_item });
+            updated: {
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L1, normal),
+                len: int64,
+                capacity: int64,
+                arity: int64,
+                values: buf(L1, normal, int64, 8)
+            } <- {
+                compare_item: heap.compare_item,
+                region: heap_region,
+                len: heap_len + 1,
+                capacity: heap_capacity,
+                arity: heap_arity,
+                values: values_saved
+            };
+            updated
+        }
+    }
+}
+
+fn dary_min_heap_pop(heap: {
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}) -> {
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+} {
+    case heap.len of {
+        0 -> heap;
+        _: int64 -> {
+            values_saved: buf(L1, normal, int64, 8) <- heap.values;
+            heap_len: int64 <- heap.len;
+            heap_region: region(L1, normal) <- heap.region;
+            heap_capacity: int64 <- heap.capacity;
+            heap_arity: int64 <- heap.arity;
+            last_index: int64 <- heap_len - 1;
+            new_len: int64 <- heap_len - 1;
+            _: atom <- sequence proc[mem(normal)]
+                tail: int64 <- read_buf(values_saved, last_index);
+                _: atom <- write_buf(values_saved, 0, tail)
+            produces
+                pure :ok
+            end;
+            _: atom <- case new_len of {
+                0 -> :ok;
+                _: int64 -> dary_sift_down_cmp(values_saved, 0, new_len, { compare_item: heap.compare_item })
+            };
+            updated: {
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L1, normal),
+                len: int64,
+                capacity: int64,
+                arity: int64,
+                values: buf(L1, normal, int64, 8)
+            } <- {
+                compare_item: heap.compare_item,
+                region: heap_region,
+                len: new_len,
+                capacity: heap_capacity,
+                arity: heap_arity,
+                values: values_saved
+            };
+            updated
+        }
+    }
+}
+
+fn dary_min_heap_validate(heap: {
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L1, normal),
+    len: int64,
+    capacity: int64,
+    arity: int64,
+    values: buf(L1, normal, int64, 8)
+}) -> { ok: int64, error_code: int64 } {
+    sequence
+        heap_len: int64 <- heap.len;
+        values_buf: buf(L1, normal, int64, 8) <- heap.values;
+        shape_error: int64 <- validate_shape({
+            region: heap.region,
+            len: heap.len,
+            capacity: heap.capacity,
+            arity: heap.arity,
+            values: heap.values
+        });
+        order_error: int64 <- case shape_error of {
+            0 -> dary_validate_order_cmp(values_buf, heap_len, { compare_item: heap.compare_item });
             _: int64 -> 0
         };
         err: int64 <- case shape_error of {

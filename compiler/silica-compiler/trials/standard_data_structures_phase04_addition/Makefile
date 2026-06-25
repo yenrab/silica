@@ -19,6 +19,10 @@ LDFLAGS_clang := -Wl,-e,main -Wl,-macos_version_min,$(MACOS_MIN_VERSION)
 RUN_TRIAL_SOURCES := \
 	ordered_set_constructor_record_trait.silica \
 	heap_constructor_record_trait.silica \
+	heap_binary_min_compare_item_trait.silica \
+	heap_binary_max_constructor_record_trait.silica \
+	heap_dary_min_compare_item_trait.silica \
+	heap_priority_queue_constructor_record_trait.silica \
 	directed_graph_trait.silica \
 	btree_set_nodeid_constructor_record.silica \
 	btree_nodeid_map_trait_names.silica \
@@ -62,6 +66,7 @@ lib-sources: stdlib-data-structures
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/ordered_map_nodeid_adapter.silica)" "$(THIS_DIR)lib/ordered_map_nodeid_adapter.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/ordered_map_csr_adapter.silica)" "$(THIS_DIR)lib/ordered_map_csr_adapter.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/Heap.silica)" "$(THIS_DIR)lib/Heap.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/PriorityQueue.silica)" "$(THIS_DIR)lib/PriorityQueue.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/DirectedGraph.silica)" "$(THIS_DIR)lib/DirectedGraph.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_nodeid.silica)" "$(THIS_DIR)lib/btree_set_nodeid.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_csr.silica)" "$(THIS_DIR)lib/btree_set_csr.silica"
@@ -69,6 +74,9 @@ lib-sources: stdlib-data-structures
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_csr_map.silica)" "$(THIS_DIR)lib/btree_csr_map.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_phase04.silica)" "$(THIS_DIR)lib/btree_set_phase04.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/heap_phase04.silica)" "$(THIS_DIR)lib/heap_phase04.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/heap_binary_min.silica)" "$(THIS_DIR)lib/heap_binary_min.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/heap_binary_max.silica)" "$(THIS_DIR)lib/heap_binary_max.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/heap_dary_min.silica)" "$(THIS_DIR)lib/heap_dary_min.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_phase04.silica)" "$(THIS_DIR)lib/graph_phase04.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_list_helpers.silica)" "$(THIS_DIR)lib/graph_adj_list_helpers.silica"
 	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/graph_adj_directed.silica)" "$(THIS_DIR)lib/graph_adj_directed.silica"
@@ -83,6 +91,7 @@ silica.config: lib-sources
 		echo 'lib/ordered_map_nodeid_adapter.silica'; \
 		echo 'lib/ordered_map_csr_adapter.silica'; \
 		echo 'lib/Heap.silica'; \
+		echo 'lib/PriorityQueue.silica'; \
 		echo 'lib/DirectedGraph.silica'; \
 		echo 'lib/btree_set_csr.silica'; \
 		echo 'lib/btree_set_nodeid.silica'; \
@@ -90,12 +99,19 @@ silica.config: lib-sources
 		echo 'lib/btree_csr_map.silica'; \
 		echo 'lib/btree_set_phase04.silica'; \
 		echo 'lib/heap_phase04.silica'; \
+		echo 'lib/heap_binary_min.silica'; \
+		echo 'lib/heap_binary_max.silica'; \
+		echo 'lib/heap_dary_min.silica'; \
 		echo 'lib/graph_phase04.silica'; \
 		echo 'lib/graph_adj_list_helpers.silica'; \
 		echo 'lib/graph_adj_directed.silica'; \
 		echo 'lib/graph_adj_undirected.silica'; \
 		echo 'ordered_set_constructor_record_trait.silica'; \
-		echo 'heap_constructor_record_trait.silica'; \
+        echo 'heap_constructor_record_trait.silica'; \
+        echo 'heap_binary_min_compare_item_trait.silica'; \
+        echo 'heap_binary_max_constructor_record_trait.silica'; \
+        echo 'heap_dary_min_compare_item_trait.silica'; \
+        echo 'heap_priority_queue_constructor_record_trait.silica'; \
 		echo 'directed_graph_trait.silica'; \
 		echo 'btree_set_nodeid_constructor_record.silica'; \
 		echo 'btree_nodeid_map_trait_names.silica'; \

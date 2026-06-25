@@ -1103,6 +1103,222 @@ fn count_float_spill_eligible_lets_in_term(term: SIRTerm) -> int64 {
     }
 }
 
+// --- Full parameter shadow (case-scrutinee register-clobber fix) ---
+//
+// The emitter pins parameters to fixed registers at entry. Only the first two int64
+// params (and a string/list first param) are shadowed into callee-saved registers; all
+// other params stay in caller-saved registers (X0–X7). A user call inside a `case`
+// scrutinee (e.g. `slot < arity()`) clobbers those caller-saved registers, corrupting
+// params the branch bodies still need — and with many live params the scrutinee result
+// register can even alias a live param. Both manifest as miscompiles (hangs / wrong
+// results) for functions like the d-ary heap sift-down helpers.
+//
+// Fix: when a function has this hazard and all its params occupy a single GPR, copy every
+// parameter into a callee-saved register (X19+) at entry and bind the body to those
+// registers. This frees all caller-saved registers for scratch (fixing the aliasing) and
+// lets params survive calls (fixing the clobber). The existing let-spill chain picks
+// callee-saved registers after the params, and the prologue/epilogue frame machinery is
+// reused by bumping the spill-pressure count by the shadowed-param count.
+
+// True when subtree contains a user call (kind 4). Mirrors term_emitter@term_subterm_has_user_call.
+fn fs_subtree_has_user_call(t: SIRTerm) -> bool {
+    case t.kind < 0 of {
+        true -> false;
+        false -> case t.kind of {
+            4 -> true;
+            2 -> case fs_subtree_has_user_call(t.inner) of { true -> true; false -> fs_subtree_has_user_call(t.right_expr) };
+            3 -> case fs_subtree_has_user_call(t.inner) of { true -> true; false -> fs_subtree_has_user_call(t.right_expr) };
+            5 -> case fs_subtree_has_user_call(t.inner) of { true -> true; false -> fs_subtree_has_user_call(t.right_expr) };
+            6 -> case fs_subtree_has_user_call(t.inner) of { true -> true; false -> fs_subtree_has_user_call(t.right_expr) };
+            7 -> case fs_subtree_has_user_call(t.inner) of { true -> true; false -> fs_subtree_has_user_call(t.right_expr) };
+            8 -> case fs_subtree_has_user_call(t.inner) of { true -> true; false -> fs_subtree_has_user_call(t.right_expr) };
+            _: int64 -> false
+        }
+    }
+}
+
+// True when the term tree contains a `case` (kind 3) whose scrutinee (inner) performs a user call.
+fn fs_term_has_hazard(t: SIRTerm) -> bool {
+    case t.kind < 0 of {
+        true -> false;
+        false -> case t.kind of {
+            3 -> case fs_subtree_has_user_call(t.inner) of {
+                true -> true;
+                false -> case fs_term_has_hazard(t.inner) of { true -> true; false -> fs_term_has_hazard(t.right_expr) }
+            };
+            2 -> case fs_term_has_hazard(t.inner) of { true -> true; false -> fs_term_has_hazard(t.right_expr) };
+            4 -> fs_term_has_hazard(t.inner);
+            5 -> case fs_term_has_hazard(t.inner) of { true -> true; false -> fs_term_has_hazard(t.right_expr) };
+            6 -> case fs_term_has_hazard(t.inner) of { true -> true; false -> fs_term_has_hazard(t.right_expr) };
+            7 -> case fs_term_has_hazard(t.inner) of { true -> true; false -> fs_term_has_hazard(t.right_expr) };
+            8 -> case fs_term_has_hazard(t.inner) of { true -> true; false -> fs_term_has_hazard(t.right_expr) };
+            _: int64 -> false
+        }
+    }
+}
+
+// A param occupies a single GPR when it is not float, string, list, or a by-value tuple.
+// Inline-struct/record/buffer/region params arrive as a single pointer (one GPR).
+fn fs_param_is_simple_gpr(ptype: string) -> bool {
+    case ptype == "string" of {
+        true -> false;
+        false -> case reg_conventions@is_float64_type(ptype) or reg_conventions@is_float32_type(ptype) or reg_conventions@is_float16_type(ptype) of {
+            true -> false;
+            false -> case term_emitter@type_name_is_list_like(ptype) of {
+                true -> false;
+                false -> case reg_conventions@is_tuple_type(ptype) of {
+                    true -> false;
+                    false -> true
+                }
+            }
+        }
+    }
+}
+
+fn fs_all_params_simple_gpr(param_types: string) -> bool {
+    case len(param_types) == 0 of {
+        true -> true;
+        false -> do
+            pipe: int64 <- find_pipe_in_param_names(param_types, 0);
+            case pipe < 0 of {
+                true -> fs_param_is_simple_gpr(param_types);
+                false -> do
+                    head: string <- substring(param_types, 0, pipe);
+                    rest: string <- substring(param_types, pipe + 1, len(param_types));
+                    case fs_param_is_simple_gpr(head) of {
+                        false -> false;
+                        true -> fs_all_params_simple_gpr(rest)
+                    }
+                end
+            }
+        end
+    }
+}
+
+fn fs_count_params(param_names: string) -> int64 {
+    case len(param_names) == 0 of {
+        true -> 0;
+        false -> do
+            pipe: int64 <- find_pipe_in_param_names(param_names, 0);
+            case pipe < 0 of {
+                true -> 1;
+                false -> 1 + fs_count_params(substring(param_names, pipe + 1, len(param_names)))
+            }
+        end
+    }
+}
+
+fn fs_is_program_main_name(name: string) -> bool {
+    name == "main" or name == "main.main" or name == "main.m"
+}
+
+// Gate: only shadow when the hazard is present, every param fits in one GPR, the function
+// has no float spills / aggregate return / actor-reply-sret / concurrency, and the params
+// plus existing spill pressure fit within the callee-saved register file (X19–X28).
+fn use_full_param_shadow(fn_val: SIRFunction) -> bool {
+    case fn_val.body.kind == 5 of {
+        true -> false;
+        false -> case fs_is_program_main_name(fn_val.name) of {
+            true -> false;
+            false -> case reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type) of {
+                true -> false;
+                false -> case use_actor_reply_sret_buffer(fn_val) of {
+                    true -> false;
+                    false -> case emitter_effects@has_concurrency(fn_val.effects) of {
+                        true -> false;
+                        false -> case count_float_spill_eligible_lets_in_term(fn_val.body) >= 1 of {
+                            true -> false;
+                            false -> do
+                                n: int64 <- fs_count_params(fn_val.param_names);
+                                case n >= 1 and n <= 8 of {
+                                    false -> false;
+                                    true -> case fs_all_params_simple_gpr(fn_val.param_types) of {
+                                        false -> false;
+                                        true -> case fs_term_has_hazard(fn_val.body) of {
+                                            false -> false;
+                                            true -> (n + count_callee_saved_spill_pressure(fn_val.body)) <= 10
+                                        }
+                                    }
+                                }
+                            end
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Extra callee-saved register pressure contributed by shadowed params, so the existing
+// frame predicates save enough X19–X28 pairs to cover both params and let-spills.
+fn full_shadow_pressure_bump(fn_val: SIRFunction) -> int64 {
+    case use_full_param_shadow(fn_val) of {
+        true -> fs_count_params(fn_val.param_names);
+        false -> 0
+    }
+}
+
+fn fs_callee_reg_for_index(i: int64) -> string {
+    concat("X", atom_table@int64_to_decimal_string(19 + i))
+}
+
+// 64-bit view of a param's ABI register (W3 -> X3) so the entry copy moves the full register.
+fn fs_x_view_of_abi(reg: string) -> string {
+    case len(reg) > 1 and substring(reg, 0, 1) == "W" of {
+        true -> concat("X", substring(reg, 1, len(reg)));
+        false -> reg
+    }
+}
+
+fn fs_emit_moves_loop(param_types: string, idx: int64, n: int64) -> string {
+    case idx >= n of {
+        true -> "";
+        false -> do
+            ptype: string <- param_type_at_index(param_types, idx);
+            abi: string <- param_reg_for_index(param_types, idx, ptype);
+            xabi: string <- fs_x_view_of_abi(abi);
+            dest: string <- fs_callee_reg_for_index(idx);
+            mv: string <- case dest == xabi of {
+                true -> "";
+                false -> concat("    MOV ", concat(dest, concat(", ", concat(xabi, "\n"))))
+            };
+            concat(mv, fs_emit_moves_loop(param_types, idx + 1, n))
+        end
+    }
+}
+
+fn fs_emit_moves(param_types: string, n: int64) -> string {
+    fs_emit_moves_loop(param_types, 0, n)
+}
+
+fn fs_name_at_index(param_names: string, idx: int64) -> string {
+    pipe: int64 <- find_pipe_in_param_names(param_names, 0);
+    case pipe < 0 of {
+        true -> param_names;
+        false -> case idx of {
+            0 -> substring(param_names, 0, pipe);
+            _: int64 -> fs_name_at_index(substring(param_names, pipe + 1, len(param_names)), idx - 1)
+        }
+    }
+}
+
+fn fs_build_param_outer_loop(param_names: string, idx: int64, n: int64, acc: string) -> string {
+    case idx >= n of {
+        true -> acc;
+        false -> do
+            nm: string <- fs_name_at_index(param_names, idx);
+            dest: string <- fs_callee_reg_for_index(idx);
+            entry: string <- concat("|%", concat(nm, concat("=", dest)));
+            fs_build_param_outer_loop(param_names, idx + 1, n, concat(acc, entry))
+        end
+    }
+}
+
+// Binding env mapping each param name to its callee-saved register, with X19 as the base reg.
+fn fs_build_param_outer(param_names: string, n: int64) -> string {
+    concat("X19", fs_build_param_outer_loop(param_names, 0, n, ""))
+}
+
 // STP/LDP X21,X22 when spill pressure (lets + weighted list-cons tails) reaches 2, or when X21 holds the second GPR parameter (actor reply sret + int64 shadow).
 fn needs_actor_ref_x21_x22_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
@@ -1111,7 +1327,7 @@ fn needs_actor_ref_x21_x22_frame(fn_val: SIRFunction) -> bool {
             true -> true;
             false -> case needs_second_param_x21_bl_survival(fn_val) of {
                 true -> true;
-                false -> count_callee_saved_spill_pressure(fn_val.body) >= 2
+                false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2
             }
         }
     }
@@ -1121,7 +1337,7 @@ fn needs_actor_ref_x21_x22_frame(fn_val: SIRFunction) -> bool {
 fn needs_callee_x23_x24_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
-        false -> count_callee_saved_spill_pressure(fn_val.body) >= 4
+        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 4
     }
 }
 
@@ -1129,7 +1345,7 @@ fn needs_callee_x23_x24_frame(fn_val: SIRFunction) -> bool {
 fn needs_callee_x25_x26_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
-        false -> count_callee_saved_spill_pressure(fn_val.body) >= 6
+        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 6
     }
 }
 
@@ -1137,7 +1353,7 @@ fn needs_callee_x25_x26_frame(fn_val: SIRFunction) -> bool {
 fn needs_callee_x27_x28_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
-        false -> count_callee_saved_spill_pressure(fn_val.body) >= 8
+        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 8
     }
 }
 
@@ -1216,27 +1432,38 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
             }
         }
     };
+    full_shadow: bool <- use_full_param_shadow(fn_val);
+    full_shadow_n: int64 <- fs_count_params(fn_val.param_names);
     string_shadow: bool <- first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind);
     second_param_shadow: bool <- second_param_shadow_enabled(fn_val.param_types, string_shadow);
     aggregate_first_shadow: bool <- first_param_aggregate_needs_x11_base(fn_val);
     param_outer: string <- build_param_outer_reg(fn_val.param_names, fn_val.param_types, string_shadow, aggregate_first_shadow);
-    use_int64_abi_shadow: bool <- needs_int64_abi_entry_shadow(fn_val);
+    use_int64_abi_shadow: bool <- case full_shadow of { true -> false; false -> needs_int64_abi_entry_shadow(fn_val) };
     reply_sret_second_x21: bool <- actor_reply_sret_second_param_uses_x21(fn_val);
     hold_second_param_in_x21: bool <- needs_second_param_x21_bl_survival(fn_val);
-    param_outer_for_body: string <- case use_int64_abi_shadow of {
-        true -> build_param_outer_reg_int64_abi_shadow(fn_val.param_names, fn_val.param_types, string_shadow, second_param_shadow, reply_sret_second_x21, hold_second_param_in_x21);
-        false -> param_outer
+    param_outer_for_body: string <- case full_shadow of {
+        true -> fs_build_param_outer(fn_val.param_names, full_shadow_n);
+        false -> case use_int64_abi_shadow of {
+            true -> build_param_outer_reg_int64_abi_shadow(fn_val.param_names, fn_val.param_types, string_shadow, second_param_shadow, reply_sret_second_x21, hold_second_param_in_x21);
+            false -> param_outer
+        }
     };
-    int64_abi_shadow_asm: string <- case use_int64_abi_shadow of {
-        true -> emit_int64_abi_shadow_moves(fn_val.param_types, reply_sret_second_x21, hold_second_param_in_x21);
-        false -> ""
+    int64_abi_shadow_asm: string <- case full_shadow of {
+        true -> fs_emit_moves(fn_val.param_types, full_shadow_n);
+        false -> case use_int64_abi_shadow of {
+            true -> emit_int64_abi_shadow_moves(fn_val.param_types, reply_sret_second_x21, hold_second_param_in_x21);
+            false -> ""
+        }
     };
-    aggregate_x11_mov: string <- case first_param_is_aggregate_struct_or_tuple(fn_val) of {
-        true -> case aggregate_first_shadow of {
-            true -> "    MOV X20, X0\n";
-            false -> "    MOV X11, X0\n"
-        };
-        false -> ""
+    aggregate_x11_mov: string <- case full_shadow of {
+        true -> "";
+        false -> case first_param_is_aggregate_struct_or_tuple(fn_val) of {
+            true -> case aggregate_first_shadow of {
+                true -> "    MOV X20, X0\n";
+                false -> "    MOV X11, X0\n"
+            };
+            false -> ""
+        }
     };
     actor_sret_mov: string <- case use_actor_reply_sret_buffer(fn_val) of {
         true -> "    MOV X20, X2\n";
