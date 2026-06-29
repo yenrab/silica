@@ -204,6 +204,12 @@ fn export_trait_name_from_decls(decls: ListDeclaration) -> string {
     }
 }
 
+// `export trait T;` + `required { … }` is a trait definition module; impls live elsewhere (spec §3.4.8).
+// Do not require matching impl fns in the same file — only validate impl signatures when present.
+fn program_is_export_trait_declaration(decls: ListDeclaration) -> bool {
+    len(export_trait_name_from_decls(decls)) > 0
+}
+
 fn check_one_impl_against_required(decls: ListDeclaration, impl_decl: Declaration, trait_name: string, trait_prog: Program, world: ListNamedProgram) -> (int64, string, SourceLocation, string) {
     (found: bool, req: Declaration) <- find_required_by_name(decls, impl_decl.name);
     case found of {
@@ -270,7 +276,10 @@ fn check_trait_module_placeholders(program: Program, trait_name: string, world: 
     case len(trait_name) == 0 of {
         true -> (0, "", parser_ast@zero_location(), "");
         false -> do
-            (st1: int64, ec1: string, loc1: SourceLocation, msg1: string) <- check_required_have_impl_loop(program.declarations, program.declarations, trait_name, program, world);
+            (st1: int64, ec1: string, loc1: SourceLocation, msg1: string) <- case program_is_export_trait_declaration(program.declarations) of {
+                true -> (0, "", parser_ast@zero_location(), "");
+                false -> check_required_have_impl_loop(program.declarations, program.declarations, trait_name, program, world)
+            };
             case st1 == 0 of {
                 false -> (st1, ec1, loc1, msg1);
                 true -> check_impls_match_required_loop(program.declarations, program.declarations, trait_name, program, world)

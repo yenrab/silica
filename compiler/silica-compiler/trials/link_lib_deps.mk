@@ -87,5 +87,38 @@ case "$$lib_objs" in \
 			*lib/graph_adj_directed.o*) ;; \
 			*) [ -f lib/graph_adj_directed.o ] && lib_objs="$$lib_objs lib/graph_adj_directed.o" ;; \
 		esac ;; \
+esac; \
+case "$$lib_objs" in \
+	*lib/DirectedGraph.o*) \
+		case "$$lib_objs" in \
+			*lib/graph_adj_directed.o*) ;; \
+			*) [ -f lib/graph_adj_directed.o ] && lib_objs="$$lib_objs lib/graph_adj_directed.o" ;; \
+		esac; \
+		case "$$lib_objs" in \
+			*lib/graph_adj_list_helpers.o*) ;; \
+			*) [ -f lib/graph_adj_list_helpers.o ] && lib_objs="$$lib_objs lib/graph_adj_list_helpers.o" ;; \
+		esac ;; \
+esac; \
+case "$$lib_objs" in \
+	*lib/Heap.o*) \
+		case "$$lib_objs" in \
+			*lib/heap_binary_min.o*) ;; \
+			*) [ -f lib/heap_binary_min.o ] && lib_objs="$$lib_objs lib/heap_binary_min.o" ;; \
+		esac; \
+		case "$$lib_objs" in \
+			*lib/heap_binary_max.o*) ;; \
+			*) [ -f lib/heap_binary_max.o ] && lib_objs="$$lib_objs lib/heap_binary_max.o" ;; \
+		esac; \
+		case "$$lib_objs" in \
+			*lib/heap_dary_min.o*) ;; \
+			*) [ -f lib/heap_dary_min.o ] && lib_objs="$$lib_objs lib/heap_dary_min.o" ;; \
+		esac ;; \
+esac; \
+case "$$lib_objs" in \
+	*lib/PriorityQueue.o*) \
+		case "$$lib_objs" in \
+			*lib/heap_binary_min.o*) ;; \
+			*) [ -f lib/heap_binary_min.o ] && lib_objs="$$lib_objs lib/heap_binary_min.o" ;; \
+		esac ;; \
 esac
 endef

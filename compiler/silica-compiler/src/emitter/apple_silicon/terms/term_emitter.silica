@@ -83,7 +83,10 @@ fn spill_reg_chain_from_outer(outer_reg: string) -> string {
                                         false -> "X27";
                                         true -> case var@is_reg_bound(outer_reg, "X28") of {
                                             false -> "X28";
-                                            true -> ""
+                                            true -> case var@is_reg_bound(outer_reg, "X29") of {
+                                                false -> "X29";
+                                                true -> ""
+                                            }
                                         }
                                     }
                                 }
@@ -2405,6 +2408,14 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             false -> case term.name == "record_proj" of {
             true -> do
                 rp_var: string <- case term.inner.kind == 1 of { true -> term.inner.name; false -> "" };
+                call_inner_rp: bool <- term.inner.kind == 4 or term.inner.kind == 5;
+                call_inner_asm_rp: string <- case call_inner_rp of {
+                    true -> case debug of {
+                        true -> do term_to_asm_opt_bound_debug(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                        false -> term_to_asm_opt_bound(term.inner, "X0", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                    };
+                    false -> ""
+                };
                 chain_root: string <- record_proj_chain_root_var_name(term);
                 rp_var_use: string <- case len(chain_root) > 0 of {
                     true -> chain_root;
@@ -2415,13 +2426,24 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 var_binding_rp: string <- case len(rp_var_use) > 0 of { true -> var@find_sp_binding(outer_reg, rp_var_use); false -> "" };
                 saved_ptr_reg_rp: string <- case len(rp_var_use) > 0 of { true -> var@find_last_sp_binding(outer_reg, concat("_ptr.", rp_var_use)); false -> "" };
                 tuple_in_reg_rp: bool <- len(var_binding_rp) > 0 and var@is_memory_ref(var_binding_rp) == false;
-                tuple_base_reg_raw_rp: string <- case rp_var_use == bound_name and len(bound_reg) > 0 and var@is_memory_ref(bound_reg) == false of {
-                    true -> bound_reg;
-                    false -> case len(saved_ptr_reg_rp) > 0 of {
-                        true -> saved_ptr_reg_rp;
-                        false -> case tuple_in_reg_rp of {
-                            true -> var_binding_rp;
-                            false -> case rp_var_use == bound_name of { true -> bound_reg; false -> "" }
+                mem_ref_binding_rp: bool <- len(var_binding_rp) > 0 and var@is_memory_ref(var_binding_rp);
+                mem_ref_load_rp: string <- case mem_ref_binding_rp of {
+                    true -> concat(concat("    LDR X11, ", var_binding_rp), "\n");
+                    false -> ""
+                };
+                tuple_base_reg_raw_rp: string <- case call_inner_rp of {
+                    true -> "X0";
+                    false -> case mem_ref_binding_rp of {
+                        true -> "X11";
+                        false -> case rp_var_use == bound_name and len(bound_reg) > 0 and var@is_memory_ref(bound_reg) == false of {
+                            true -> bound_reg;
+                            false -> case len(saved_ptr_reg_rp) > 0 of {
+                                true -> saved_ptr_reg_rp;
+                                false -> case tuple_in_reg_rp of {
+                                    true -> var_binding_rp;
+                                    false -> case rp_var_use == bound_name of { true -> bound_reg; false -> "" }
+                                }
+                            }
                         }
                     }
                 };
@@ -2461,12 +2483,15 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 proj_prefix_rp: string <- prims_tuple@ldr_prefix_for_type(term.type_name);
                 proj_dest_num_rp: string <- case len(dest) > 0 of { true -> substring(dest, 1, len(dest)); false -> "0" };
                 proj_ldr_reg_rp: string <- concat(proj_prefix_rp, proj_dest_num_rp);
-                preserve_base_rp: string <- case base_rp_was_x0 of {
-                    true -> case byte_off == 0 of {
-                        true -> "    MOV X11, X0\n";
+                preserve_base_rp: string <- case call_inner_rp of {
+                    true -> "    MOV X11, X0\n";
+                    false -> case base_rp_was_x0 of {
+                        true -> case byte_off == 0 of {
+                            true -> "    MOV X11, X0\n";
+                            false -> ""
+                        };
                         false -> ""
-                    };
-                    false -> ""
+                    }
                 };
                 root_rec_ty: string <- record_proj_root_record_type(term);
                 root_rec_stripped: string <- prims_record@strip_spaces_rt(root_rec_ty);
@@ -2482,7 +2507,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                 };
                 add_imm_rp: int64 <- eff_byte_off + va_adj_rp;
                 add_imm_s_rp: string <- atom_table@int64_to_decimal_string(add_imm_rp);
-                case use_add_for_embedded_substruct of {
+                proj_asm_rp: string <- case use_add_for_embedded_substruct of {
                     true -> concat(preserve_base_rp, concat("    ADD ", concat(proj_ldr_reg_rp, concat(", ", concat(effective_base_rp, concat(", #", concat(add_imm_s_rp, "\n")))))));
                     false -> concat(preserve_base_rp, concat("    LDR ", concat(proj_ldr_reg_rp, concat(", ", case len(tuple_base_reg_rp) > 0 of {
                         true -> var@reg_offset_for_byte(effective_base_rp, add_imm_rp);
@@ -2497,7 +2522,8 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                             var@sp_offset_for_byte_adj(eff_byte_off, sp_adj_eff)
                         end
                     }))))
-                }
+                };
+                concat(concat(call_inner_asm_rp, mem_ref_load_rp), proj_asm_rp)
             end;
             false -> case term.name == "tuple_proj" of {
             true -> do

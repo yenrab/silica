@@ -111,25 +111,33 @@ How **immutable, Erlang-style lists** are represented and lowered in the **Phase
 
 ---
 
+## [Phase1_TODOs/data_structure_to_algorithms.md](./Phase1_TODOs/data_structure_to_algorithms.md)
+
+**Locked algorithm authority** for standard collections: Adams weight-balanced trees, WBT live graphs + CSR freeze, Brodal–Okasaki heaps, Okasaki skew binary random-access lists. All other design docs defer here for insert/delete algorithms and persistence.
+
+## [Phase1_TODOs/data_structures_as_traits.md](./Phase1_TODOs/data_structures_as_traits.md)
+
+**Trait API specification (not implemented):** maps each trait module to WBT / WBT-graph / Brodal–Okasaki / random-access-list backends per `data_structure_to_algorithms.md`. Constructor function records, `provided` + `fold` surfaces, comparator contracts, views/adapters.
+
 ## [graph_representation_design.md](./graph_representation_design.md)
 
-Graph representation designs for code generation without custom types: named design families for adjacency-list, compressed sparse row, dense matrix, and dense bitset graphs, with **`List`-aligned bracket registry keys** (§2.11), inline Silica shapes, construction/traversal operations, invariants, and when to use each family.
+Graph families for code generation: **WBT live graphs** (vertex WBT + inner neighbor WBT set/map), **CSR snapshots** (freeze from live graph), **dense matrix** (random-access list). Dense bitset graphs are **out of scope**.
 
-## [standard_data_structures_implementation_plan.md](./standard_data_structures_implementation_plan.md)
+## [Phase1_TODOs/standard_data_structures_implementation_plan.md](./Phase1_TODOs/standard_data_structures_implementation_plan.md)
 
-Step-by-step implementation plan for the standard generated data structures described by the graph, balanced tree/heap, and B-tree set design documents. It starts with graph representations and keeps those design documents as the source of truth.
+Step-by-step implementation plan for standard generated data structures. Defers to `data_structure_to_algorithms.md` for algorithms and to the representation design documents for Silica shapes and naming.
 
 ---
 
 ## [balanced_tree_and_heap_design.md](./balanced_tree_and_heap_design.md)
 
-Balanced tree and heap representations for code generation without custom types: `NodeIDBTree` vs. `CsrBTree` guidance, inline B-tree and heap shapes, **`List`-aligned bracket design names** (§2.6), construction/search/update algorithms, invariants, naming rules, and generator requirements.
+**WBT** ordered trees and **Brodal–Okasaki** heaps: inline shapes, path-copying immutability, trait wiring, module naming (`wbt_set`, `wbt_map`, `brodal_okasaki_*`), generator requirements.
 
 ---
 
 ## [btree_set_design.md](./btree_set_design.md)
 
-Generated B-tree set designs using the exact families `NodeIDBTreeSet` and `CsrBTreeSet` with **`List`-aligned bracket registry keys** (§4.1): when to use each, inline set shapes, construction/finalization paths, membership/insert/delete/range operations, invariants, naming rules, and generator requirements.
+Ordered **set and map** design (Adams WBT only): operations, bulk `from_sorted`, validation, and generator exports. Filename retained for navigation; content is WBT, not B-tree.
 
 ---
 

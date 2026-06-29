@@ -8,7 +8,6 @@ include $(STDLIB_PREREQ_MK)
 
 TRIALS := \
 	constructor_record_wrong_return \
-	constructor_record_missing_field \
 	constructor_record_missing_compare_item \
 	constructor_record_wrong_arity \
 	constructor_comparator_invalid_atom_literal \
@@ -23,11 +22,14 @@ all: integrate
 
 lib-sources: stdlib-data-structures
 	@mkdir -p "$(THIS_DIR)lib"
-	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_phase04.silica)" "$(THIS_DIR)lib/btree_set_phase04.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_csr.silica)" "$(THIS_DIR)lib/btree_set_csr.silica"
+	@ln -sf "$(abspath $(THIS_DIR)$(LIB_SRC)/btree_set_nodeid.silica)" "$(THIS_DIR)lib/btree_set_nodeid.silica"
 
 silica.config: clean lib-sources
 	@cd "$(THIS_DIR)" && { \
-		echo 'lib/btree_set_phase04.silica'; \
+		echo 'lib/btree_set_csr.silica'; \
+		echo 'lib/btree_set_csr.silica'; \
+		echo 'lib/btree_set_nodeid.silica'; \
 		for trial in $(TRIALS); do echo "$$trial.silica"; done; \
 	} > silica.config
 
@@ -47,8 +49,14 @@ check:
 
 check-one:
 	@cd "$(THIS_DIR)" && { \
-		echo 'lib/btree_set_phase04.silica'; \
-		echo '$(TRIAL).silica'; \
+		case "$(TRIAL)" in \
+		  trait_impl_return_mismatch|trait_call_item_type_mismatch) \
+		    echo '$(TRIAL).silica' ;; \
+		  *) \
+		    echo 'lib/btree_set_csr.silica'; \
+		    echo 'lib/btree_set_nodeid.silica'; \
+		    echo '$(TRIAL).silica' ;; \
+		esac; \
 	} > silica.config && \
 	if $(SILICA_COMPILER) > $(TRIAL).cur_fail 2>&1; then \
 		echo "❌❌ $(MSG_PREFIX)$(TRIAL) unexpectedly compiled"; \

@@ -15,23 +15,26 @@ value data structures.
 
 ## Phase 1 Dependency
 
-Phase 1 standard data structures are ordinary typed values:
+Phase 1 standard data structures are ordinary typed values with **generic payloads**
+(resolved from declared collection types and constructor function records — see
+[data_structures_implementation_command.md](../Phase1_TODOs/data_structures_implementation_command.md)
+Phase 1 Steps 1.10–1.11):
 
 ```text
-names: OrderedSet[string, mem(normal)] <- btree_set@empty({
+names: OrderedSet[string, mem(normal)] <- wbt_set@empty({
     compare_item: compare_string
 });
 
-users: OrderedMap[string, User, mem(normal)] <- btree_map@empty({
+users: OrderedMap[string, User, mem(normal)] <- wbt_map@empty({
     compare_key: compare_string,
     compare_value: compare_user
 });
 
-g: DirectedGraph[NodeIdType, Edge, mem(normal)] <- graph_adj_directed@empty({
+g: DirectedGraph[NodeIdType, Edge, mem(normal)] <- graph_wbt_directed@empty({
     compare_node: compare_node_id,
     compare_edge: compare_edge,
     edge_target: edge_target
-}, 3);
+});
 ```
 
 The constructor function fields determine and check the relevant collection type

@@ -10,8 +10,8 @@
 - [silica-specification-additional.md](../silica-specification-additional.md) — §3.3 (redundant algebraic ops; already names `&` and `|` in examples)
 - [sir_design_spec.md](../../sir_design_spec.md) — §7 (SIR primitives)
 - [sir_optimization_spec.md](../../sir_optimization_spec.md) — strength reduction (multiply by power of two)
-- [graph_representation_design.md](../graph_representation_design.md) — §6 (`DenseBitsetGraph`; §6.4 gate)
-- [standard_data_structures_implementation_plan.md](standard_data_structures_implementation_plan.md) — Phase 3 Step 3.3 (DenseBitset deferred pending bit ops)
+- [data_structure_to_algorithms.md](data_structure_to_algorithms.md) — dense bitset graph **removed** from stdlib scope (decision #10)
+- [graph_representation_design.md](../graph_representation_design.md) — dense matrix via random-access list (§5)
 - [silica-compiler-code-organization.md](../silica-compiler-code-organization.md) — compiler module layout
 - [cpu_topology_implementation_plan.md](cpu_topology_implementation_plan.md) — phased compiler pipeline template
 
@@ -31,7 +31,7 @@ Add **keyword bitwise operators** to the Silica surface language and compiler pi
 | Left shift | **`shl`** | `mask <- one shl bit_offset` |
 | Right shift | **`shr`** | `tag <- value shr 56` |
 
-**Primary consumer**: `DenseBitsetGraph` in [graph_representation_design.md](../graph_representation_design.md) §6. Until these operators exist end-to-end, Step 3.3 of [standard_data_structures_implementation_plan.md](standard_data_structures_implementation_plan.md) remains deferred and `DenseMatrixGraphDirected[mem(S)]` stays the fallback.
+**Primary consumers:** general `uint64` bit manipulation in user code and compiler internals. **`DenseBitsetGraph` is removed from stdlib scope** ([data_structure_to_algorithms.md](data_structure_to_algorithms.md) decision #10); bitwise operators are no longer a gate for standard graph families. Dense matrix graphs use random-access lists instead.
 
 **Non-goals (this plan)**:
 
@@ -80,7 +80,7 @@ Reusing `\|` or `&` for bitwise ops would collide with type-forming syntax and a
 
 ### 2.4 Operand and result types
 
-**Phase 1 scope (minimum for DenseBitsetGraph):**
+**Phase 1 scope (minimum for compiler integration):**
 
 - **`uint64`** only for `bor`, `band`, `bnot`, `shl`, `shr`.
 - Dense bitset graph word storage must use `uint64` once these operators are available.
@@ -107,7 +107,7 @@ Reusing `\|` or `&` for bitwise ops would collide with type-forming syntax and a
 | `uint64`, `uint32`, `uint16`, `uint8` | Logical left shift | **Logical** right shift (zero-fill high bits) |
 | `int64`, `int32`, `int16`, `int8` | Logical left shift on bit pattern | **Logical** right shift on bit pattern when signed widths are added |
 
-**Rationale**: `DenseBitsetGraph` stores **`uint64` words as unsigned bit bags** (see graph design §6.2). Logical shifts match `read_buf` / `write_buf` word manipulation and match AArch64 `LSL` / `LSR` on `X` registers.
+**Rationale**: Bitwise operators support packed `uint64` word manipulation (e.g. flags, masks) in generated code and trials. Logical shifts match `read_buf` / `write_buf` word manipulation and match AArch64 `LSL` / `LSR` on `X` registers.
 
 **Future**: If signed arithmetic shift (`ASR`) is needed, add a separate keyword (e.g. `sar`) in a follow-on plan — do not overload `shr` silently.
 
@@ -152,7 +152,7 @@ Add to [silica-specification.md](../silica-specification.md) §2.2.4:
 "bor"  "band"  "bnot"  "shl"  "shr"
 ```
 
-**Informative examples** (DenseBitsetGraph-style):
+**Informative examples** (packed `uint64` word manipulation):
 
 ```silica
 bit_index: int64 <- from * node_count + to;
@@ -200,7 +200,7 @@ SIR term shape: same as existing binary arithmetic prims (`kind: 6`, `name: "bor
 | SIR generator | `uint64_binary_ops.silica` — no `bor` / `band` / `bnot` / `shl` / `shr` |
 | Emitter | `logical.silica` lowers `and` / `or` to **boolean**; no integral `ORR`/`AND`/shift helpers for user prims |
 | Trials | No `bitwise_addition` trial directory |
-| Stdlib graphs | `DenseBitsetGraph` type expansion exists; operations not generated |
+| Stdlib graphs | Dense bitset family **removed**; dense matrix uses random-access list |
 
 ---
 
@@ -409,7 +409,7 @@ Follow the same pipeline order as [cpu_topology_implementation_plan.md](cpu_topo
 
 ### Phase H — Trials and integration
 
-**Goal**: Lock behavior with integrate-ready trials before stdlib `DenseBitsetGraph` codegen.
+**Goal**: Lock behavior with integrate-ready trials before stdlib consumers rely on bitwise ops in generated code.
 
 **Tasks**
 
@@ -444,7 +444,7 @@ Follow the same pipeline order as [cpu_topology_implementation_plan.md](cpu_topo
 
 1. Add `graph_dense_bitset_directed.silica` (and undirected variant if required) using `bor` / `band` / `bnot` / `shl` / `shr`.
 2. Add `trials/graph_addition/graph_dense_bitset_*_trial.silica`.
-3. Update completion table: `DenseBitsetGraph` → Partial / Complete when trials pass.
+3. Update completion table when compiler bitwise trials pass (no stdlib bitset graph gate).
 4. Retarget `graph_representation_design.md` §6 pseudocode in generated sources only (design doc already updated in Phase A).
 
 **Exit criteria**
@@ -464,7 +464,7 @@ A (spec + SIR freeze)
   → F (SIR generator)
   → G (emitter)
   → H (trials)
-  → I (DenseBitsetGraph stdlib — optional separate PR)
+  → I (optional stdlib bit-manipulation helpers — not DenseBitsetGraph)
 ```
 
 Phases **B–G** must land together for a coherent compiler; partial merges will produce parse-without-codegen or codegen-without-typecheck failures.
@@ -525,6 +525,6 @@ Phases **B–G** must land together for a coherent compiler; partial merges will
 | F | SIR generator | Not started |
 | G | Emitter (AArch64) | Not started |
 | H | Trials | Not started |
-| I | DenseBitsetGraph stdlib | Blocked on H |
+| I | Optional stdlib bit helpers | Independent of graph families |
 
 **Last updated**: June 19, 2026

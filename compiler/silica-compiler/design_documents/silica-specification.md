@@ -3265,11 +3265,14 @@ ref(L1, normal, int)                  // reference to int in region with lifetim
 ```
 
 #### 4.4.4 Buffer Types
-Buffer types represent contiguous arrays: `buf(L, Space, T, N)`.
+Buffer types represent contiguous arrays: `buf(L, Space, T, N)`. `N` may be either a non-negative integer literal or a runtime-sized identifier whose value has type `int64` in the current type-checking context. Runtime-sized buffers are useful for region-backed collections whose capacity is chosen by a constructor argument.
 
 ```
 buf(L1, normal, int, 1024)            // buffer of 1024 ints
+buf(L1, normal, int64, capacity)      // buffer sized by runtime int64 value `capacity`
 ```
+
+Region-backed collections grow functionally: allocate a fresh region and larger `buf`, copy the live elements, and return a record containing the new region handle, capacity, and buffer. Code that needs a runtime size after effectful buffer operations should bind the size to a local value before the operations and use that saved value in the returned record.
 
 #### 4.4.5 Atomic memory space
 
@@ -4169,7 +4172,7 @@ keys: List[(int32, string), mem(normal)]
 
 **When to use concrete `T` vs placeholder:** Use **`List[T, S]`** with concrete `T` when the element type is known at the write site. Use **`List[Collectable, S]`** in **shared list stdlib** modules and list type schemas where the same source must serve all `Collectable` instantiations without duplicating functions per element type. Bracket specialization at list call sites (`operation[T, mem(S)](...)`) remains valid but is **not required** when context resolution applies.
 
-**Standard generated structures:** Graph, B-tree, B-tree set, heap, and map families use the Phase 1 trait-oriented constructor function-record model rather than public `Collectable` placeholders for construction. Collection variables declare explicit collection types, including memory effects; constructors take inline records whose comparator/extractor fields witness node id, key, value, item, priority, edge payload, and weight types (see `Phase1_TODOs/data_structures_as_traits.md`, `graph_representation_design.md`, `balanced_tree_and_heap_design.md`, `btree_set_design.md`). Generated representation records should store concrete inline payload/list types after constructor-record checking. Ordered comparators return `atom` values `:less`, `:equal`, or `:greater`.
+**Standard generated structures:** Graph, ordered set/map, heap, and priority-queue families use the Phase 1 trait-oriented constructor function-record model rather than public `Collectable` placeholders for construction. Collection variables declare explicit collection types, including memory effects; constructors take inline records whose comparator/extractor fields witness node id, key, value, item, priority, edge payload, and weight types. **Algorithm authority (locked):** [Phase1_TODOs/data_structure_to_algorithms.md](Phase1_TODOs/data_structure_to_algorithms.md) — Adams weight-balanced trees for ordered collections and live graphs; Brodal–Okasaki heaps for `Heap` and `PriorityQueue`; Okasaki skew binary random-access lists for dense matrix graphs and tree child sequences; CSR graphs as O(V+E) snapshots from live WBT graphs. Trait API authority: `Phase1_TODOs/data_structures_as_traits.md`. Representation shapes and naming: `graph_representation_design.md`, `balanced_tree_and_heap_design.md`, `btree_set_design.md` (ordered set/map). Generated representation records store concrete inline payload/list types after constructor-record checking. All public mutators return new values (functional persistence); ordered comparators return `atom` values `:less`, `:equal`, or `:greater`.
 
 **Note**: While many types implement `Collectable`, a list can only contain elements of a single, specific type after resolution. For example, a resolved `List[string]` cannot contain `int64` values, even though both `string` and `int64` implement `Collectable`.
 
@@ -6998,6 +7001,8 @@ Buffers represent contiguous memory arrays:
 buf(R, Space, T, N)    // buffer of N elements of type T
 ```
 
+`N` is accepted as either a non-negative integer literal or a simple runtime identifier bound to an `int64` value in the current context. `alloc_buf(region, n)` allocates using the runtime `n` operand; the buffer type records the same size parameter for type checking and bounds-checking metadata.
+
 #### 12.3.2 Buffer Operations
 Buffers support indexed access:
 
@@ -7014,6 +7019,7 @@ Buffer access is bounds-checked. The compiler emits bounds checks before every `
 
 ```
 buf: buf(L1, normal, int, 10) <- alloc_buf(region, 10)  // buffer of size 10
+dynamic: buf(L1, normal, int64, capacity) <- alloc_buf(region, capacity)
 x: int <- read_buf(buf, 5)           // ✓ valid index
 y: int <- read_buf(buf, 15)          // ✗ runtime bounds error (traps)
 ```
