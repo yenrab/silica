@@ -5477,3 +5477,175 @@ L_silica_foreign_fault_msg:
 	.asciz	"foreign_fault\n"
 	.section	__TEXT,__text,regular,pure_instructions
 
+	.section	__DATA,__bss
+	.p2align	3
+	.globl	_silica_rt_canonical_arena_table
+_silica_rt_canonical_arena_table:
+	.space	8192
+	.globl	_silica_rt_canonical_arena_count
+_silica_rt_canonical_arena_count:
+	.space	8
+	.section	__TEXT,__text,regular,pure_instructions
+	.globl	_silica_rt_canonical_arena_lookup
+	.p2align	2
+_silica_rt_canonical_arena_lookup:
+	.cfi_startproc
+; X0 = stable specialization key (non-zero) -> X0 = region base pointer
+	stp	x21, x20, [sp, #-48]!
+	stp	x19, x30, [sp, #16]
+	.cfi_offset w30, -8
+	.cfi_offset w19, -16
+	.cfi_offset w20, -24
+	.cfi_offset w21, -32
+	mov	x19, x0
+	cbz	x19, Lcal_abort
+	mov	w20, #512
+	mov	w9, w20
+	udiv	w10, w19, w9
+	msub	w8, w10, w9, w19
+	mov	w21, wzr
+Lcal_probe:
+	cmp	w21, w20
+	b.hs	Lcal_abort
+	ubfiz	x11, x8, #4, #32
+	adrp	x12, _silica_rt_canonical_arena_table@PAGE
+	add	x12, x12, _silica_rt_canonical_arena_table@PAGEOFF
+	add	x12, x12, x11
+	ldr	x13, [x12]
+	cbz	x13, Lcal_insert
+	cmp	x13, x19
+	b.eq	Lcal_found
+	add	w8, w8, #1
+	cmp	w8, w20
+	csel	w8, wzr, w8, eq
+	add	w21, w21, #1
+	b	Lcal_probe
+Lcal_found:
+	ldr	x0, [x12, #8]
+	ldp	x19, x30, [sp, #16]
+	ldp	x21, x20, [sp], #48
+	ret
+Lcal_insert:
+	stp	x12, x13, [sp, #-16]!
+	mov	x0, #4112
+	bl	_malloc
+	ldp	x12, x13, [sp], #16
+	cbz	x0, Lcal_abort
+	add	x14, x0, #16
+	str	x14, [x0]
+	mov	x15, #4112
+	add	x14, x0, x15
+	str	x14, [x0, #8]
+	str	x19, [x12]
+	str	x0, [x12, #8]
+	adrp	x13, _silica_rt_canonical_arena_count@PAGE
+	add	x13, x13, _silica_rt_canonical_arena_count@PAGEOFF
+	ldr	x14, [x13]
+	add	x14, x14, #1
+	str	x14, [x13]
+	ldp	x19, x30, [sp, #16]
+	ldp	x21, x20, [sp], #48
+	ret
+Lcal_abort:
+	bl	_abort
+	.cfi_endproc
+	.globl	_silica_rt_canonical_arena_same
+	.p2align	2
+_silica_rt_canonical_arena_same:
+	.cfi_startproc
+; X0 = region A, X1 = region B -> X0 = 1 if same identity else 0
+	cmp	x0, x1
+	cset	w0, eq
+	and	x0, x0, #1
+	ret
+	.cfi_endproc
+
+	.section	__DATA,__bss
+	.p2align	3
+	.globl	_silica_rt_ordering_env_next
+_silica_rt_ordering_env_next:
+	.space	8
+	.section	__TEXT,__text,regular,pure_instructions
+	.globl	_silica_rt_ordering_env_fresh
+	.p2align	2
+_silica_rt_ordering_env_fresh:
+	.cfi_startproc
+; -> X0 = fresh non-zero environment instance id
+	adrp	x8, _silica_rt_ordering_env_next@PAGE
+	add	x8, x8, _silica_rt_ordering_env_next@PAGEOFF
+	ldr	x0, [x8]
+	add	x1, x0, #1
+	str	x1, [x8]
+	cbnz	x0, Loid_ret
+	mov	x0, #1
+Loid_ret:
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_ordering_identity_make
+	.p2align	2
+_silica_rt_ordering_identity_make:
+	.cfi_startproc
+; X0 = code pointer, X1 = environment instance id -> X0 = opaque int64 token
+	eor	x2, x0, x1, lsl #32
+	movz	x3, #0x7c15
+	movk	x3, #0x7f4a, lsl #16
+	movk	x3, #0x9b97, lsl #32
+	movk	x3, #0x9e37, lsl #48
+	mul	x4, x1, x3
+	eor	x0, x2, x4
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_ordering_identity_same
+	.p2align	2
+_silica_rt_ordering_identity_same:
+	.cfi_startproc
+; X0 = token A, X1 = token B -> X0 = 1 if equal else 0
+	cmp	x0, x1
+	cset	w0, eq
+	and	x0, x0, #1
+	ret
+	.cfi_endproc
+	.globl	_silica_rt_ordering_bundle_make
+	.p2align	2
+_silica_rt_ordering_bundle_make:
+	.cfi_startproc
+; X0 = function token, X1 = orientation atom (int64) -> X0 = bundle token
+	movz	x2, #0x0a95
+	movk	x2, #0x2722, lsl #16
+	movk	x2, #0xc1b7, lsl #32
+	movk	x2, #0x517c, lsl #48
+	mul	x3, x1, x2
+	eor	x0, x0, x3
+	ret
+	.cfi_endproc
+    .globl _silica_rt_checked_i64_add
+_silica_rt_checked_i64_add:
+    ADDS X2, X0, X1
+    CSET W0, VS
+    EOR W0, W0, #1
+    CSEL X1, XZR, X2, NE
+    RET
+    .globl _silica_rt_checked_i64_add1
+_silica_rt_checked_i64_add1:
+    ADDS X2, X0, #1
+    CSET W0, VS
+    EOR W0, W0, #1
+    CSEL X1, XZR, X2, NE
+    RET
+    .globl _silica_rt_checked_i64_mul
+_silica_rt_checked_i64_mul:
+    MUL X2, X0, X1
+    CMP X0, #0
+    CSET W3, EQ
+    CBNZ W3, L_ci64_mul_zero
+    SDIV X4, X2, X0
+    CMP X4, X1
+    CSET W5, NE
+    EOR W0, W5, #1
+    CSEL X1, XZR, X2, EQ
+    RET
+L_ci64_mul_zero:
+    MOV W0, #1
+    MOV X1, X2
+    RET
+

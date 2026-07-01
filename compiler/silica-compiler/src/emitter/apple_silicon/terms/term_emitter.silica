@@ -28,6 +28,9 @@ use prims;
 use prims_tuple;
 use prims_record;
 use prims_memory;
+use prims_ordering_identity;
+use prims_collection_result;
+use prims_checked_int64;
 use prims_actors;
 use ffi_foreign;
 use prims_list;
@@ -2658,8 +2661,21 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             false -> case prims_memory@is_memory_prim(term.name) of {
             true -> case term.name == "fresh_lifetime" of {
                 true -> prims@emit_prim_op(term, dest);
-                false -> case term.name == "alloc_region" of {
-                    true -> prims@emit_prim_op(term, dest);
+                false -> case term.name == "alloc_region" or term.name == "canonical_arena_lookup" of {
+                    true -> do
+                        arg_asm: string <- case term.name == "canonical_arena_lookup" of {
+                            true -> case debug of {
+                                true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                                false -> term_to_asm_opt_bound(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                            };
+                            false -> ""
+                        };
+                        op_asm: string <- prims@emit_prim_op(term, dest);
+                        case term.name == "canonical_arena_lookup" of {
+                            true -> concat(concat(arg_asm, "\n"), op_asm);
+                            false -> op_asm
+                        }
+                    end;
                     false -> case term.name == "read_ref" of {
                     true -> do
                         arg_asm: string <- case debug of {
@@ -2669,7 +2685,7 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                         op_asm: string <- prims@emit_prim_op(term, dest);
                         concat(concat(arg_asm, "\n"), op_asm)
                     end;
-                    false -> case term.name == "alloc_ref" or term.name == "alloc_rec" or term.name == "alloc_buf" or term.name == "write_ref" or term.name == "buf_load" or term.name == "read_buf" of {
+                    false -> case term.name == "alloc_ref" or term.name == "alloc_rec" or term.name == "alloc_buf" or term.name == "write_ref" or term.name == "buf_load" or term.name == "read_buf" or term.name == "canonical_arena_same" of {
                         true -> do
                             arg1_asm: string <- case debug of {
                                 true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
@@ -2678,6 +2694,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                             arg2_asm: string <- case debug of {
                                 true -> do term_to_asm_opt_bound_debug(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                 false -> term_to_asm_opt_bound(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                            };
+                            bounds_asm: string <- case term.name == "buf_load" or term.name == "read_buf" of {
+                                true -> prims_memory@emit_buf_bounds_check(term, outer_reg, dest);
+                                false -> ""
                             };
                             op_asm: string <- prims@emit_prim_op(term, dest);
                             // tuple_make for arg2 uses SUB SP; restore before later ops / return. write_ref leaves ref in X1; bindings expect ref in X2.
@@ -2691,7 +2711,9 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                 false -> ""
                             };
                             after_op: string <- concat(op_asm, concat(tuple_sp_restore, write_ref_recover));
-                            concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), "\n"), after_op)
+                            part_a: string <- concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n"));
+                            part_b: string <- concat(concat(part_a, "\n"), bounds_asm);
+                            concat(part_b, after_op)
                         end;
                         false -> case term.name == "buf_store" of {
                             true -> do
@@ -2708,7 +2730,10 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                                     true -> do term_to_asm_opt_bound_debug(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
                                     false -> term_to_asm_opt_bound(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
                                 };
-                                op_asm: string <- prims@emit_prim_op(term, dest);
+                                op_asm: string <- do
+                                    store_asm: string <- prims_memory@emit_buf_store(term, dest, outer_reg);
+                                    store_asm
+                                end;
                                 // tuple_make did SUB SP (possibly multiple for nested tuple_make); restore SP before return / next ops.
                                 tuple_bytes: int64 <- flat_tuple_dealloc_size(term.right_expr);
                                 tuple_sp_adj: string <- concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(tuple_bytes), "\n"));
@@ -2723,6 +2748,48 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
                     }
                 }
             }
+            false -> case prims_collection_result@is_collection_result_prim(term.name) of {
+            true -> do
+                arg_asm: string <- case debug of {
+                    true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                    false -> term_to_asm_opt_bound(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                };
+                mov_arg: string <- "    MOV X0, X1\n";
+                op_asm: string <- prims_collection_result@emit_prim_op_with_table(term, dest, table);
+                concat(concat(concat(arg_asm, "\n"), mov_arg), op_asm)
+            end;
+            false -> case prims_checked_int64@is_checked_int64_prim(term.name) of {
+            true -> do
+                arg1_asm: string <- case debug of {
+                    true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                    false -> term_to_asm_opt_bound(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                };
+                arg2_asm: string <- case prims_checked_int64@is_checked_int64_unary_prim(term.name) of {
+                    true -> "";
+                    false -> case debug of {
+                        true -> do term_to_asm_opt_bound_debug(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                        false -> term_to_asm_opt_bound(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                    }
+                };
+                op_asm: string <- prims_checked_int64@emit_prim_op(term, dest);
+                concat(concat(concat(concat(arg1_asm, "\n"), arg2_asm), "\n"), op_asm)
+            end;
+            false -> case prims_ordering_identity@is_ordering_identity_prim(term.name) of {
+            true -> case term.name == "ordering_identity_fresh_env" of {
+                true -> prims@emit_prim_op(term, dest);
+                false -> do
+                    arg1_asm: string <- case debug of {
+                        true -> do term_to_asm_opt_bound_debug(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                        false -> term_to_asm_opt_bound(term.inner, "X1", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                    };
+                    arg2_asm: string <- case debug of {
+                        true -> do term_to_asm_opt_bound_debug(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true) end;
+                        false -> term_to_asm_opt_bound(term.right_expr, "X2", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+                    };
+                    op_asm: string <- prims@emit_prim_op(term, dest);
+                    concat(concat(concat(concat(arg1_asm, "\n"), concat(arg2_asm, "\n")), "\n"), op_asm)
+                end
+            };
             false -> case prims_actors@is_actor_prim(term.name) of {
                 true -> case prims_actors@actor_prim_is_nullary(term.name) of {
                     true -> prims_actors@emit_prim_op(term, dest);
@@ -3263,6 +3330,9 @@ fn term_to_asm_opt_bound(term: SIRTerm, dest: string, table: AtomTable, int64_ta
             }
             }
             end
+            }
+            }
+            }
             }
             }
             }

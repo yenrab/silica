@@ -6,7 +6,7 @@
 
 ## Purpose
 
-This directory turns the two parent decisions into construction-grade designs for Silica's purely functional standard data structures. Each public data structure has its own file. Shared representation files define the algorithms and invariants once so that public designs cannot silently choose different balancing rules, index conventions, or persistence semantics.
+This directory turns the two parent decisions into construction-grade designs for Silica's purely functional standard data structures. Each public **trait** has its own `*_trait.md` file. Shared **representation** designs use descriptive names without the `_trait` suffix so algorithm and invariant rules are defined once.
 
 These documents describe:
 
@@ -22,6 +22,12 @@ They intentionally do **not** prescribe implementation phases, source-file order
 
 Every file inherits [`common_contract.md`](common_contract.md), which defines constructor resolution, comparator law, ordering provenance, region/arena ownership, integer safety, result conventions, and validation result shape.
 
+Implementation coverage is tracked in [`../standard_data_structures_baseline/requirements_to_trials_ledger.md`](../standard_data_structures_baseline/requirements_to_trials_ledger.md).
+
+CSR and dense snapshot representations are governed by the closed contract in [`../standard_data_structures_baseline/csr_dense_representation_contract.md`](../standard_data_structures_baseline/csr_dense_representation_contract.md).
+
+In particular, every design and implementation is governed by the common contract's [overriding genericity rule](common_contract.md#overriding-genericity-rule). All payload and callback placeholders may resolve to any valid programmer-declared Silica type, and `SpaceType` may resolve to any valid programmer-declared memory-space type. Concrete types in examples and internal layouts are never public type restrictions.
+
 ## Authority and conflict rule
 
 1. `data_structure_to_algorithms.md` controls algorithm-family choices.
@@ -29,21 +35,23 @@ Every file inherits [`common_contract.md`](common_contract.md), which defines co
 3. This directory controls detailed behavior and representation invariants.
 4. If an example in an older design document conflicts with these three levels, the older example is non-normative.
 
+The overriding genericity rule is part of the trait architecture and takes precedence over any contrary concrete type in this suite.
+
 All Silica snippets are normative as interface shape but may use `TypeName` placeholders and expository recursive aliases for readability. Silica source remains structurally typed and writes composite types inline.
 
-## Public structure designs
+## Public trait structure designs
 
 | Structure | Design | Primary representation |
 |---|---|---|
-| `OrderedSet` | [`ordered_set.md`](ordered_set.md) | Adams-family WBT |
-| `OrderedMap` | [`ordered_map.md`](ordered_map.md) | Adams-family WBT map |
-| `SearchTree` | [`search_tree.md`](search_tree.md) | same value as `OrderedSet` |
-| `DirectedGraph` | [`directed_graph.md`](directed_graph.md) | live WBT; CSR/dense query backends |
-| `UndirectedGraph` | [`undirected_graph.md`](undirected_graph.md) | symmetric live WBT; CSR/dense query backends |
-| `WeightedGraph` | [`weighted_graph.md`](weighted_graph.md) | WBT target-to-payload maps |
-| `Heap` | [`heap.md`](heap.md) | Brodal–Okasaki bootstrapped skew-binomial queue |
-| `PriorityQueue` | [`priority_queue.md`](priority_queue.md) | same core over priority/value entries |
-| `Tree` | [`tree.md`](tree.md) | rose tree with skew-binary child sequences |
+| `OrderedSet` | [`ordered_set_trait.md`](ordered_set_trait.md) | Adams-family WBT |
+| `OrderedMap` | [`ordered_map_trait.md`](ordered_map_trait.md) | Adams-family WBT map |
+| `SearchTree` | [`search_tree_trait.md`](search_tree_trait.md) | same value as `OrderedSet` |
+| `DirectedGraph` | [`directed_graph_trait.md`](directed_graph_trait.md) | live WBT; CSR/dense query backends |
+| `UndirectedGraph` | [`undirected_graph_trait.md`](undirected_graph_trait.md) | symmetric live WBT; CSR/dense query backends |
+| `WeightedGraph` | [`weighted_graph_trait.md`](weighted_graph_trait.md) | WBT target-to-payload maps |
+| `Heap` | [`heap_trait.md`](heap_trait.md) | Brodal–Okasaki bootstrapped skew-binomial queue |
+| `PriorityQueue` | [`priority_queue_trait.md`](priority_queue_trait.md) | same core over priority/value entries |
+| `Tree` | [`tree_trait.md`](tree_trait.md) | rose tree with skew-binary child sequences |
 
 ## Representation designs
 
@@ -65,13 +73,14 @@ All Silica snippets are normative as interface shape but may use `TypeName` plac
 - Comparators define identity as well as order: `:equal` means the two values occupy one ordered-key position.
 - Comparator results other than `:less`, `:equal`, or `:greater` are invalid behavior and produce a deterministic collection error; they are never treated as an ordering branch.
 - Counts and internal indexes are non-negative `int64`. Arithmetic that would overflow is rejected before allocation.
+- User-stored items, keys, values, priorities, node IDs, edge data, and weights are type parameters; concrete scalar types in examples do not constrain the public designs.
 - Lookup status is expressed only by the atoms `:not_found | :found`; no named option type is introduced.
 - Ordering compatibility uses exact function-value identity; separately created closures are incompatible even when behaviorally equivalent.
 - A generated module name is representation-based, never type-width-based.
 - Traits expose behavior. Representation modules expose construction and persistent updates.
 - Graph algorithms use public graph traits, not WBT, CSR, or dense record fields.
-- Phase 1 graph vertex IDs are `int64` in every public and concrete representation.
-- CSR/dense slots and indexes are also `int64`, but a public vertex ID and an assigned dense slot are distinct domains and are never implicitly interchangeable.
+- Graph vertex IDs use the public `NodeIdType` parameter and may be any valid Silica type accepted by the captured node comparator.
+- CSR/dense slots and indexes are `int64`; a public `NodeIdType` value and an assigned dense slot are distinct domains and are never implicitly interchangeable.
 - CSR/dense structural layouts are private to one compiler/standard-library version. They are not a stable source, FFI, serialization, or cross-version ABI.
 - CSR buffer extents and dense cell counts are runtime-sized internal values, not public graph type parameters.
 - CSR attributed/weighted forms use parallel neighbor and edge-data buffers. Dense unweighted forms use one boolean cell sequence; dense attributed/weighted forms use one tagged optional-data cell sequence.

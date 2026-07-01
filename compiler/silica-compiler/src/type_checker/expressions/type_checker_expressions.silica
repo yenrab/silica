@@ -30,6 +30,7 @@ use boolean_type_checker_expressions;
 use type_checker_supervisor;
 use type_checker_tuple_decompose_helpers;
 use type_checker_memory_regions;
+use type_checker_recursive_tuples;
 use type_checker_lists;
 use type_checker_collections;
 use instantiated_fn_name;
@@ -415,14 +416,35 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                     end
                 }
             end;
-            false -> case expr.name == "read_ref" of {
+            false -> case expr.name == "alloc_rec" of {
+                true -> do
+                    region_type: string <- type_checker_memory_regions@ref_type_to_region_type(expected_type);
+                    elem_type: string <- type_checker_memory_regions@extract_element_type_from_ref(expected_type);
+                    case len(region_type) == 0 of {
+                        true -> type_checker_core@type_check_err("E2010", expr.location, concat("alloc_rec result must be ref(R, Space, T), got ", expected_type), "recursive_tuple§2.3");
+                        false -> do
+                            rec_result: TypeCheckResult <- type_checker_recursive_tuples@validate_alloc_rec_element_type(elem_type, expr.location);
+                            case rec_result.is_ok of {
+                                false -> rec_result;
+                                true -> do
+                                    r1: TypeCheckResult <- check_expr(expr.inner, region_type, context, world);
+                                    case r1.is_ok of { false -> r1; true -> check_expr(call_second_arg_expr(expr), elem_type, context, world) }
+                                end
+                            }
+                        end
+                    }
+                end;
+                false -> case expr.name == "read_ref" of {
                 true -> do
                     ref_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
                     elem_type: string <- type_checker_memory_regions@extract_element_type_from_ref(ref_type);
                     case len(elem_type) == 0 of {
                         true -> type_checker_core@type_check_err("E2010", expr.location, "read_ref: argument must have ref(R, Space, T) type", "sect4.4.2");
                         false -> case elem_type == expected_type of {
-                            false -> type_checker_core@type_check_err("E2010", expr.location, concat(concat("read_ref: element type ", elem_type), concat(" does not match expected ", expected_type)), "sect4.4.2");
+                            false -> case type_checker_tuple_decompose_helpers@types_equal(elem_type, expected_type) of {
+                                false -> type_checker_core@type_check_err("E2010", expr.location, concat(concat("read_ref: element type ", elem_type), concat(" does not match expected ", expected_type)), "sect4.4.2");
+                                true -> check_expr(expr.inner, ref_type, context, world)
+                            };
                             true -> check_expr(expr.inner, ref_type, context, world)
                         }
                     }
@@ -515,7 +537,40 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                                             true -> type_checker_core@type_check_ok();
                                             false -> type_checker_core@type_check_err("E2003", expr.location, concat("fresh_lifetime returns lifetime, got ", expected_type), "sect22.1")
                                         };
-                                        false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown region built-in: ", expr.name), "sect22")
+                                        false -> case expr.name == "canonical_arena_lookup" of {
+                                            true -> do
+                                                mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(expected_type, expr.location);
+                                                case mem_result.is_ok of {
+                                                    false -> mem_result;
+                                                    true -> check_expr(expr.inner, "int64", context, world)
+                                                }
+                                            end;
+                                            false -> case expr.name == "canonical_arena_same" of {
+                                                true -> do
+                                                    r1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                                                    r2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(call_second_arg_expr(expr), context);
+                                                    space1: string <- type_checker_memory_regions@get_space_from_region_type(r1_type);
+                                                    space2: string <- type_checker_memory_regions@get_space_from_region_type(r2_type);
+                                                    case len(space1) == 0 or len(space2) == 0 of {
+                                                        true -> type_checker_core@type_check_err("E2010", expr.location, "canonical_arena_same: both arguments must be region(R, Space) values", "common_contract§7");
+                                                        false -> case space1 == space2 of {
+                                                            false -> type_checker_core@type_check_err("E2010", expr.location, concat(concat("canonical_arena_same: memory spaces must match (", space1), concat(" vs ", concat(space2, ")"))), "common_contract§7");
+                                                            true -> case expected_type == "boolean" of {
+                                                                false -> type_checker_core@type_check_err("E2003", expr.location, "canonical_arena_same returns boolean", "common_contract§7");
+                                                                true -> do
+                                                                    r1: TypeCheckResult <- check_expr(expr.inner, r1_type, context, world);
+                                                                    case r1.is_ok of {
+                                                                        false -> r1;
+                                                                        true -> check_expr(call_second_arg_expr(expr), r2_type, context, world)
+                                                                    }
+                                                                end
+                                                            }
+                                                        }
+                                                    }
+                                                end;
+                                                false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown region built-in: ", expr.name), "sect22")
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -524,6 +579,7 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                 }
             }
         }
+    }
 }
 
 // Built-in: print_int64/32/16/8, print_uint64/32/16/8 - arg matches type, returns atom
@@ -2151,12 +2207,148 @@ fn check_float_predicate_call(expr: Expr, expected_type: string, context: TypeCo
     end
 }
 
+// Ordering identity built-ins (Layer 1 §7.2).
+fn is_ordering_identity_builtin_call(call_name: string) -> bool {
+    call_name == "ordering_identity_fresh_env" or call_name == "ordering_identity_materialize" or call_name == "ordering_identity_same" or call_name == "ordering_identity_bundle_make"
+}
+
+fn is_collection_result_builtin_call(call_name: string) -> bool {
+    call_name == "comparator_result_valid" or call_name == "comparator_result_validate"
+}
+
+fn is_checked_int64_builtin_call(call_name: string) -> bool {
+    call_name == "checked_int64_add" or call_name == "checked_int64_mul" or call_name == "checked_int64_add1" or call_name == "checked_int64_byte_size"
+}
+
+fn checked_int64_result_type_ok(expected_type: string) -> bool {
+    expected_type == "(boolean, int64)"
+}
+
+fn check_checked_int64_builtin_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    case checked_int64_result_type_ok(expected_type) of {
+        false -> type_checker_core@type_check_err("E2003", expr.location, concat("checked int64 built-in returns (boolean, int64), got ", expected_type), "common_contract§9");
+        true -> case expr.name of {
+            "checked_int64_add1" -> check_expr(expr.inner, "int64", context, world);
+            "checked_int64_byte_size" -> do
+                r1: TypeCheckResult <- check_expr(expr.inner, "int64", context, world);
+                case r1.is_ok of {
+                    false -> r1;
+                    true -> check_expr(call_second_arg_expr(expr), "int64", context, world)
+                }
+            end;
+            _: string -> do
+                r1: TypeCheckResult <- check_expr(expr.inner, "int64", context, world);
+                case r1.is_ok of {
+                    false -> r1;
+                    true -> check_expr(call_second_arg_expr(expr), "int64", context, world)
+                }
+            end
+        }
+    }
+}
+
+fn check_collection_result_builtin_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    arg_result: TypeCheckResult <- check_expr(expr.inner, "atom", context, world);
+    case arg_result.is_ok of {
+        false -> arg_result;
+        true -> case expr.name of {
+            "comparator_result_valid" -> case expected_type == "boolean" of {
+                true -> type_checker_core@type_check_ok();
+                false -> type_checker_core@type_check_err("E2003", expr.location, concat("comparator_result_valid returns boolean, got ", expected_type), "common_contract§4")
+            };
+            "comparator_result_validate" -> case expected_type == "atom" of {
+                true -> type_checker_core@type_check_ok();
+                false -> type_checker_core@type_check_err("E2003", expr.location, concat("comparator_result_validate returns atom, got ", expected_type), "common_contract§4")
+            };
+            _: string -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown collection result built-in: ", expr.name), "common_contract§4")
+        }
+    }
+}
+
+fn type_str_has_arrow_token(s: string, i: int64) -> bool {
+    case i + 4 > len(s) of {
+        true -> false;
+        false -> case substring(s, i, i + 4) == " -> " of {
+            true -> true;
+            false -> type_str_has_arrow_token(s, i + 1)
+        }
+    }
+}
+
+fn is_fn_type_string(type_str: string) -> bool {
+    case len(type_str) >= 3 and substring(type_str, 0, 3) == "fn(" of {
+        true -> true;
+        false -> case len(type_str) >= 4 and substring(type_str, 0, 4) == "fn (" of {
+            true -> true;
+            false -> type_str_has_arrow_token(type_str, 0)
+        }
+    }
+}
+
+fn check_ordering_identity_builtin_call(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    case expr.name of {
+        "ordering_identity_fresh_env" -> case expected_type == "int64" of {
+            true -> type_checker_core@type_check_ok();
+            false -> type_checker_core@type_check_err("E2003", expr.location, concat("ordering_identity_fresh_env returns int64, got ", expected_type), "common_contract§5")
+        };
+        "ordering_identity_materialize" -> do
+            fn_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+            case is_fn_type_string(fn_type) of {
+                false -> type_checker_core@type_check_err("E2010", expr.location, concat("ordering_identity_materialize: argument must be a function value, got ", fn_type), "common_contract§5");
+                true -> case expected_type == "int64" of {
+                    false -> type_checker_core@type_check_err("E2003", expr.location, "ordering_identity_materialize returns int64", "common_contract§5");
+                    true -> check_expr(expr.inner, fn_type, context, world)
+                }
+            }
+        end;
+        "ordering_identity_same" -> do
+            r1: TypeCheckResult <- check_expr(expr.inner, "int64", context, world);
+            case r1.is_ok of {
+                false -> r1;
+                true -> do
+                    r2: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "int64", context, world);
+                    case r2.is_ok of {
+                        false -> r2;
+                        true -> case expected_type == "boolean" of {
+                            false -> type_checker_core@type_check_err("E2003", expr.location, "ordering_identity_same returns boolean", "common_contract§5");
+                            true -> type_checker_core@type_check_ok()
+                        }
+                    }
+                end
+            }
+        end;
+        "ordering_identity_bundle_make" -> do
+            r1: TypeCheckResult <- check_expr(expr.inner, "int64", context, world);
+            case r1.is_ok of {
+                false -> r1;
+                true -> do
+                    r2: TypeCheckResult <- check_expr(call_second_arg_expr(expr), "atom", context, world);
+                    case r2.is_ok of {
+                        false -> r2;
+                        true -> case expected_type == "int64" of {
+                            false -> type_checker_core@type_check_err("E2003", expr.location, "ordering_identity_bundle_make returns int64", "common_contract§5");
+                            true -> type_checker_core@type_check_ok()
+                        }
+                    }
+                end
+            }
+        end;
+        _: string -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown ordering identity built-in: ", expr.name), "common_contract§5")
+    }
+}
+
 fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     case is_float_special_const_name(expr.name) of {
         true -> check_float_special_const_call(expr, expected_type);
         false -> case is_float_predicate_name(expr.name) of {
             true -> check_float_predicate_call(expr, expected_type, context, world);
-            false -> case type_checker_memory_regions@is_region_builtin_call(expr.name) of {
+            false -> case is_checked_int64_builtin_call(expr.name) of {
+        true -> check_checked_int64_builtin_call(expr, expected_type, context, world);
+        false -> case is_collection_result_builtin_call(expr.name) of {
+        true -> check_collection_result_builtin_call(expr, expected_type, context, world);
+        false -> case is_ordering_identity_builtin_call(expr.name) of {
+        true -> check_ordering_identity_builtin_call(expr, expected_type, context, world);
+        false -> case type_checker_memory_regions@is_region_builtin_call(expr.name) of {
         true -> check_region_builtin_call(expr, expected_type, context, world);
         false -> case is_actor_concurrency_builtin(expr.name) of {
             true -> check_actor_concurrency_call(expr, expected_type, context, world);
@@ -2339,6 +2531,9 @@ fn check_call_builtins_dispatch(expr: Expr, expected_type: string, context: Type
         }
         }
         }
+    }
+    }
+    }
     }
     }
     }
@@ -2814,16 +3009,68 @@ fn call_site_actual_matches_formal(inferred: string, formal: string, world: List
     fdecl: string <- type_checker_traits@trim_type_text(formal);
     case fin == fdecl of {
         true -> true;
-        false -> case type_checker_collections@is_collection_trait_type(fin) of {
-            true -> type_checker_collections@collection_type_fits_concrete_record(fin, fdecl, world);
-            false -> case type_checker_collections@is_collection_trait_type(fdecl) of {
-                true -> type_checker_collections@collection_type_fits_concrete_record(fdecl, fin, world);
-                false -> case type_checker_tuple_decompose_helpers@types_equal(fin, fdecl) of {
-                    true -> true;
-                    false -> type_checker_traits@actual_type_satisfies_trait_expectation(fin, fdecl, world)
+        false -> case call_site_record_types_compatible(fin, fdecl, world) of {
+            true -> true;
+            false -> case type_checker_collections@is_collection_trait_type(fin) of {
+                true -> type_checker_collections@collection_type_fits_concrete_record(fin, fdecl, world);
+                false -> case type_checker_collections@is_collection_trait_type(fdecl) of {
+                    true -> type_checker_collections@collection_type_fits_concrete_record(fdecl, fin, world);
+                    false -> case type_checker_tuple_decompose_helpers@types_equal(fin, fdecl) of {
+                        true -> true;
+                        false -> case type_checker_expressions_identifiers@function_types_compatible(fin, fdecl) of {
+                            true -> true;
+                            false -> case type_checker_lists@formal_type_accepts_actual(fin, fdecl, world) of {
+                                true -> true;
+                                false -> type_checker_traits@actual_type_satisfies_trait_expectation(fin, fdecl, world)
+                            }
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+fn call_site_record_types_compatible(actual: string, formal: string, world: ListNamedProgram) -> bool {
+    case type_checker_record_types@record_type_starts(actual) of {
+        false -> false;
+        true -> case type_checker_record_types@record_type_starts(formal) of {
+            false -> false;
+            true -> do
+                nformal: int64 <- type_checker_record_types@count_record_fields(formal);
+                nactual: int64 <- type_checker_record_types@count_record_fields(actual);
+                case nformal == nactual of {
+                    false -> false;
+                    true -> do
+                        inner: string <- type_checker_record_types@record_case_inner_body(formal);
+                        call_site_record_fields_match_loop(inner, actual, world)
+                    end
+                }
+            end
+        }
+    }
+}
+
+fn call_site_record_fields_match_loop(rem: string, actual: string, world: ListNamedProgram) -> bool {
+    case len(rem) == 0 of {
+        true -> true;
+        false -> do
+            (seg: string, rest: string) <- type_checker_record_types@record_case_field_step(rem);
+            (fname: string, ftype: string) <- type_checker_record_types@record_field_segment_name_sub(seg);
+            case len(fname) == 0 of {
+                true -> false;
+                false -> do
+                    atype: string <- type_checker_record_types@find_field_type_in_record(actual, fname);
+                    case len(atype) == 0 of {
+                        true -> false;
+                        false -> case type_checker_lists@formal_type_accepts_actual(atype, ftype, world) of {
+                            false -> false;
+                            true -> call_site_record_fields_match_loop(rest, actual, world)
+                        }
+                    }
+                end
+            }
+        end
     }
 }
 
@@ -2863,7 +3110,10 @@ fn dispatch_actual_fits_impl_parameter(actual: string, impl_param: string, world
                 true -> type_checker_collections@collection_type_fits_impl_parameter(a, p, world);
                 false -> case a == "int64" of {
                     true -> p == "int8" or p == "int16" or p == "int32" or p == "uint8" or p == "uint16" or p == "uint32";
-                    false -> struct_literal_inferred_matches_impl_record(actual, impl_param)
+                    false -> case type_checker_lists@formal_type_accepts_actual(a, p, world) of {
+                        true -> true;
+                        false -> struct_literal_inferred_matches_impl_record(actual, impl_param)
+                    }
                 }
             }
         end
@@ -3446,8 +3696,158 @@ fn check_user_call_two_args_as_tuple(expr: Expr, tuple_param: string, expected_t
     }
 }
 
-fn is_empty_constructor_call(expr: Expr) -> bool {
-    type_checker_core@user_call_base_function_name(expr.name) == "empty"
+fn is_collection_constructor_call(expr: Expr) -> bool {
+    type_checker_collections@is_collection_constructor_base_name(expr.name)
+}
+
+fn constructor_functions_record_expr(rhs: Expr) -> Expr {
+    case type_checker_core@user_call_base_function_name(rhs.name) of {
+        "empty" -> rhs.inner;
+        "with_root" -> rhs.inner;
+        _: string -> call_second_arg_expr(rhs)
+    }
+}
+
+fn verify_collection_witness_for_family(bind_type: string, record_e: Expr, context: TypeContext, location: SourceLocation, world: ListNamedProgram, rhs: Expr) -> TypeCheckResult {
+    case type_checker_collections@is_ordered_set_type(bind_type) of {
+        true -> do
+            wit_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_item", context);
+            set_wit: string <- case len(wit_from_arg) > 0 of {
+                true -> wit_from_arg;
+                false -> empty_call_constructor_witness_fn_type(rhs, "compare_item", context, world)
+            };
+            case len(set_wit) == 0 of {
+                true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_item witness", "sect4");
+                false -> type_checker_collections@witness_matches_ordered_set_declaration(bind_type, set_wit, location)
+            }
+        end;
+        false -> case type_checker_collections@is_search_tree_type(bind_type) of {
+            true -> do
+                wit_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_item", context);
+                set_wit: string <- case len(wit_from_arg) > 0 of { true -> wit_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_item", context, world) };
+                case len(set_wit) == 0 of {
+                    true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_item witness", "sect4");
+                    false -> type_checker_collections@witness_matches_search_tree_declaration(bind_type, set_wit, location)
+                }
+            end;
+            false -> case type_checker_collections@is_tree_type(bind_type) of {
+                true -> do
+                    wit_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_item", context);
+                    set_wit: string <- case len(wit_from_arg) > 0 of { true -> wit_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_item", context, world) };
+                    case len(set_wit) == 0 of {
+                        true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_item witness", "sect4");
+                        false -> type_checker_collections@witness_matches_tree_declaration(bind_type, set_wit, location)
+                    }
+                end;
+                false -> case type_checker_collections@is_ordered_map_type(bind_type) of {
+                    true -> do
+                        key_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_key", context);
+                        val_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_value", context);
+                        key_wit: string <- case len(key_from_arg) > 0 of { true -> key_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_key", context, world) };
+                        val_wit: string <- case len(val_from_arg) > 0 of { true -> val_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_value", context, world) };
+                        case len(key_wit) == 0 or len(val_wit) == 0 of {
+                            true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_key or compare_value witness", "sect4");
+                            false -> type_checker_collections@witness_matches_ordered_map_declaration(bind_type, key_wit, val_wit, location)
+                        }
+                    end;
+                    false -> case type_checker_collections@is_heap_type(bind_type) of {
+                        true -> do
+                            item_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_item", context);
+                            heap_wit: string <- case len(item_from_arg) > 0 of { true -> item_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_item", context, world) };
+                            case len(heap_wit) == 0 of {
+                                true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_item witness", "sect4");
+                                false -> type_checker_collections@witness_matches_heap_declaration(bind_type, heap_wit, location)
+                            }
+                        end;
+                        false -> case type_checker_collections@is_priority_queue_type(bind_type) of {
+                            true -> do
+                                pri_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_priority", context);
+                                item_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_item", context);
+                                pri_wit: string <- case len(pri_from_arg) > 0 of { true -> pri_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_priority", context, world) };
+                                item_wit: string <- case len(item_from_arg) > 0 of { true -> item_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_item", context, world) };
+                                case len(pri_wit) == 0 or len(item_wit) == 0 of {
+                                    true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_priority or compare_item witness", "sect4");
+                                    false -> type_checker_collections@witness_matches_priority_queue_declaration(bind_type, pri_wit, item_wit, location)
+                                }
+                            end;
+                            false -> case type_checker_collections@is_directed_graph_type(bind_type) of {
+                                true -> do
+                                    node_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_node", context);
+                                    edge_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_edge", context);
+                                    target_from_arg: string <- constructor_record_field_fn_type(record_e, "edge_target", context);
+                                    node_wit: string <- case len(node_from_arg) > 0 of { true -> node_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_node", context, world) };
+                                    edge_wit: string <- case len(edge_from_arg) > 0 of { true -> edge_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_edge", context, world) };
+                                    target_wit: string <- case len(target_from_arg) > 0 of { true -> target_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "edge_target", context, world) };
+                                    case len(node_wit) == 0 or len(edge_wit) == 0 or len(target_wit) == 0 of {
+                                        true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_node, compare_edge, or edge_target witness", "sect4");
+                                        false -> type_checker_collections@witness_matches_directed_graph_declaration(bind_type, node_wit, edge_wit, target_wit, location)
+                                    }
+                                end;
+                                false -> case type_checker_collections@is_undirected_graph_type(bind_type) of {
+                                    true -> do
+                                        node_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_node", context);
+                                        edge_data_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_edge_data", context);
+                                        node_wit: string <- case len(node_from_arg) > 0 of { true -> node_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_node", context, world) };
+                                        edge_data_wit: string <- case len(edge_data_from_arg) > 0 of { true -> edge_data_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_edge_data", context, world) };
+                                        case len(node_wit) == 0 or len(edge_data_wit) == 0 of {
+                                            true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_node or compare_edge_data witness", "sect4");
+                                            false -> type_checker_collections@witness_matches_undirected_graph_declaration(bind_type, node_wit, edge_data_wit, location)
+                                        }
+                                    end;
+                                    false -> case type_checker_collections@is_weighted_graph_type(bind_type) of {
+                                        true -> do
+                                            node_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_node", context);
+                                            edge_data_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_edge_data", context);
+                                            weight_from_arg: string <- constructor_record_field_fn_type(record_e, "edge_weight", context);
+                                            cmp_weight_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_weight", context);
+                                            node_wit: string <- case len(node_from_arg) > 0 of { true -> node_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_node", context, world) };
+                                            edge_data_wit: string <- case len(edge_data_from_arg) > 0 of { true -> edge_data_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_edge_data", context, world) };
+                                            weight_wit: string <- case len(weight_from_arg) > 0 of { true -> weight_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "edge_weight", context, world) };
+                                            cmp_weight_wit: string <- case len(cmp_weight_from_arg) > 0 of { true -> cmp_weight_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_weight", context, world) };
+                                            case len(node_wit) == 0 or len(edge_data_wit) == 0 or len(weight_wit) == 0 or len(cmp_weight_wit) == 0 of {
+                                                true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_node, compare_edge_data, edge_weight, or compare_weight witness", "sect4");
+                                                false -> type_checker_collections@witness_matches_weighted_graph_declaration(bind_type, node_wit, edge_data_wit, weight_wit, cmp_weight_wit, location)
+                                            }
+                                        end;
+                                        false -> type_checker_core@type_check_err("E2017", location, "unsupported collection constructor binding type", "sect4")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn verify_collection_constructor_witness(bind_type: string, rhs: Expr, context: TypeContext, location: SourceLocation, world: ListNamedProgram) -> TypeCheckResult {
+    case rhs.kind == 4 of {
+        false -> type_checker_core@type_check_err("E2017", location, "collection constructor binding requires a call to empty/1 or with_root/2", "sect4");
+        true -> case is_collection_constructor_call(rhs) of {
+            false -> type_checker_core@type_check_err("E2017", location, "collection constructor binding requires a call to empty/1 or with_root/2", "sect4");
+            true -> do
+                mod_name: string <- type_checker_collections@module_name_from_qualified_call(rhs.name);
+                case len(mod_name) == 0 of {
+                    true -> type_checker_core@type_check_err("E2017", location, "collection constructor requires qualified module@empty or module@with_root call", "sect4");
+                    false -> case type_checker_collections@is_registered_construction_module(mod_name) of {
+                        false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("module ", mod_name), " is not a registered collection construction module for binding type "), bind_type), ""), "sect4");
+                        true -> case type_checker_collections@collection_trait_accepts_module(bind_type, mod_name) of {
+                            false -> type_checker_core@type_check_err("E2017", location, concat(concat(concat(concat("module ", mod_name), " does not match collection binding type "), bind_type), ""), "sect4");
+                            true -> do
+                                record_e: Expr <- constructor_functions_record_expr(rhs);
+                                fields_ok: TypeCheckResult <- type_checker_collections@validate_constructor_record_field_names(bind_type, record_e, location);
+                                case fields_ok.is_ok of {
+                                    false -> fields_ok;
+                                    true -> verify_collection_witness_for_family(bind_type, record_e, context, location, world, rhs)
+                                }
+                            end
+                        }
+                    }
+                }
+            end
+        }
+    }
 }
 
 fn constructor_record_field_fn_type(record_expr: Expr, field: string, context: TypeContext) -> string {
@@ -3491,69 +3891,6 @@ fn empty_call_constructor_witness_fn_type(rhs: Expr, field: string, context: Typ
     }
 }
 
-fn verify_collection_constructor_witness(bind_type: string, rhs: Expr, context: TypeContext, location: SourceLocation, world: ListNamedProgram) -> TypeCheckResult {
-    case rhs.kind == 4 of {
-        false -> type_checker_core@type_check_err("E2017", location, "collection constructor binding requires a call to empty/1", "sect4");
-        true -> case is_empty_constructor_call(rhs) of {
-            false -> type_checker_core@type_check_err("E2017", location, "collection constructor binding requires a call to empty/1", "sect4");
-            true -> do
-                arg_e: Expr <- call_second_arg_expr(rhs);
-                case type_checker_collections@is_ordered_set_type(bind_type) of {
-                    true -> do
-                        wit_from_arg: string <- constructor_record_field_fn_type(arg_e, "compare_item", context);
-                        set_wit: string <- case len(wit_from_arg) > 0 of {
-                            true -> wit_from_arg;
-                            false -> empty_call_constructor_witness_fn_type(rhs, "compare_item", context, world)
-                        };
-                        case len(set_wit) == 0 of {
-                            true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_item witness", "sect4");
-                            false -> type_checker_collections@witness_matches_ordered_set_declaration(bind_type, set_wit, location)
-                        }
-                    end;
-                    false -> case type_checker_collections@is_ordered_map_type(bind_type) of {
-                        true -> do
-                            key_from_arg: string <- constructor_record_field_fn_type(arg_e, "compare_key", context);
-                            val_from_arg: string <- constructor_record_field_fn_type(arg_e, "compare_value", context);
-                            key_wit: string <- case len(key_from_arg) > 0 of { true -> key_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_key", context, world) };
-                            val_wit: string <- case len(val_from_arg) > 0 of { true -> val_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_value", context, world) };
-                            case len(key_wit) == 0 or len(val_wit) == 0 of {
-                                true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_key or compare_value witness", "sect4");
-                                false -> type_checker_collections@witness_matches_ordered_map_declaration(bind_type, key_wit, val_wit, location)
-                            }
-                        end;
-                        false -> case type_checker_collections@is_heap_type(bind_type) of {
-                            true -> do
-                                pri_from_arg: string <- constructor_record_field_fn_type(arg_e, "compare_priority", context);
-                                heap_wit: string <- case len(pri_from_arg) > 0 of { true -> pri_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_priority", context, world) };
-                                case len(heap_wit) == 0 of {
-                                    true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_priority witness", "sect4");
-                                    false -> type_checker_collections@witness_matches_heap_declaration(bind_type, heap_wit, location)
-                                }
-                            end;
-                            false -> case type_checker_collections@is_directed_graph_type(bind_type) of {
-                                true -> do
-                                    record_e: Expr <- rhs.inner;
-                                    node_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_node", context);
-                                    edge_from_arg: string <- constructor_record_field_fn_type(record_e, "compare_edge", context);
-                                    target_from_arg: string <- constructor_record_field_fn_type(record_e, "edge_target", context);
-                                    node_wit: string <- case len(node_from_arg) > 0 of { true -> node_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_node", context, world) };
-                                    edge_wit: string <- case len(edge_from_arg) > 0 of { true -> edge_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "compare_edge", context, world) };
-                                    target_wit: string <- case len(target_from_arg) > 0 of { true -> target_from_arg; false -> empty_call_constructor_witness_fn_type(rhs, "edge_target", context, world) };
-                                    case len(node_wit) == 0 or len(edge_wit) == 0 or len(target_wit) == 0 of {
-                                        true -> type_checker_core@type_check_err("E2017", location, "constructor record missing compare_node, compare_edge, or edge_target witness", "sect4");
-                                        false -> type_checker_collections@witness_matches_directed_graph_declaration(bind_type, node_wit, edge_wit, target_wit, location)
-                                    }
-                                end;
-                                false -> type_checker_core@type_check_ok()
-                            }
-                        }
-                    }
-                }
-            end
-        }
-    }
-}
-
 fn check_collection_trait_let(expr: Expr, expected_type: string, context: TypeContext, bind_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
     rhs_result: TypeCheckResult <- check_expr(expr.inner, "discard", context, world);
     case rhs_result.is_ok of {
@@ -3586,13 +3923,25 @@ fn check_let(expr: Expr, expected_type: string, context: TypeContext, world: Lis
             col_result: TypeCheckResult <- type_checker_collections@validate_collection_type_declaration(bind_type, expr.location);
             case col_result.is_ok of {
                 false -> col_result;
-                true -> case type_checker_memory_regions@is_memory_region_type(bind_type) of {
-                    true -> check_let_memory_region(expr, expected_type, context, bind_type, world);
-                    false -> case type_checker_collections@is_collection_trait_type(bind_type) of {
-                        true -> check_collection_trait_let(expr, expected_type, context, bind_type, world);
-                        false -> check_let_after_validation(expr, expected_type, context, bind_type, world)
+                true -> do
+                    result_result: TypeCheckResult <- type_checker_collections@validate_collection_result_type_declaration(bind_type, expr.location);
+                    case result_result.is_ok of {
+                        false -> result_result;
+                        true -> do
+                            rec_result: TypeCheckResult <- type_checker_recursive_tuples@validate_recursive_type_declaration(bind_type, expr.location);
+                            case rec_result.is_ok of {
+                                false -> rec_result;
+                                true -> case type_checker_memory_regions@is_memory_region_type(bind_type) of {
+                                    true -> check_let_memory_region(expr, expected_type, context, bind_type, world);
+                                    false -> case type_checker_collections@is_collection_trait_type(bind_type) of {
+                                        true -> check_collection_trait_let(expr, expected_type, context, bind_type, world);
+                                        false -> check_let_after_validation(expr, expected_type, context, bind_type, world)
+                                    }
+                                }
+                            }
+                        end
                     }
-                }
+                end
             }
         end
     }
@@ -4434,7 +4783,13 @@ fn check_field_access_expr(expr: Expr, expected_type: string, context: TypeConte
                                     true -> type_checker_core@type_check_ok();
                                     false -> case type_checker_tuple_decompose_helpers@types_equal(ft, expected_type) of {
                                         true -> type_checker_core@type_check_ok();
-                                        false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("field has type ", ft), ", expected "), expected_type), ""), "sect3")
+                                        false -> case type_checker_expressions_identifiers@function_types_compatible(ft, expected_type) of {
+                                            true -> type_checker_core@type_check_ok();
+                                            false -> case type_checker_lists@formal_type_accepts_actual(ft, expected_type, world) of {
+                                                true -> type_checker_core@type_check_ok();
+                                                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat("field has type ", ft), ", expected "), expected_type), ""), "sect3")
+                                            }
+                                        }
                                     }
                                 }
                             }

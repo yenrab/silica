@@ -11,19 +11,47 @@ Public collection types use bracket parameters:
 OrderedSet[ItemType, mem(SpaceType)]
 OrderedMap[KeyType, ValueType, mem(SpaceType)]
 SearchTree[ItemType, mem(SpaceType)]
-DirectedGraph[EdgePayloadType, mem(SpaceType)]
-UndirectedGraph[EdgeDataType, mem(SpaceType)]
-WeightedGraph[EdgeDataType, WeightType, mem(SpaceType)]
+DirectedGraph[NodeIdType, EdgePayloadType, mem(SpaceType)]
+UndirectedGraph[NodeIdType, EdgeDataType, mem(SpaceType)]
+WeightedGraph[NodeIdType, EdgeDataType, WeightType, mem(SpaceType)]
 Heap[ItemType, mem(SpaceType)]
 PriorityQueue[PriorityType, ItemType, mem(SpaceType)]
 Tree[ItemType, mem(SpaceType)]
 ```
 
-`TypeName` and `SpaceType` are specification placeholders. After constructor resolution and monomorphization, generated records contain concrete inline Silica types.
+### Overriding genericity rule
+
+This rule is normative and overrides every concrete type shown in an example, sketch, trial suggestion, internal layout, or older design statement:
+
+> `ItemType`, `KeyType`, `ValueType`, `PriorityType`, `NodeIdType`, `EdgePayloadType`, `EdgeDataType`, `WeightType`, and `AccType` may each be any valid Silica value type that is legal in the declared memory and ownership context. `SpaceType` may be any valid Silica memory-space type. The programmer determines every one of these types through explicit collection, binding, return, argument, callback, and constructor-function declarations.
+
+An implementation—including one produced by an AI—must infer these placeholders from programmer declarations and must preserve the inferred concrete types through parsing, type checking, specialization, storage, operations, trait dispatch, and code generation. It must never:
+
+- hard-code a placeholder to a scalar type used by an example;
+- infer a payload type from an internal count, slot, offset, rank, or buffer index;
+- restrict a placeholder because one representation uses a concrete structural type internally; or
+- silently choose a default type when the programmer's declarations are missing or contradictory.
+
+Missing or contradictory declaration evidence is a compile-time error, not permission to select a concrete type.
+
+| Placeholder | May resolve to | Determined from programmer declarations |
+|---|---|---|
+| `ItemType` | any valid Silica value type | `OrderedSet`, `SearchTree`, `Heap`, `PriorityQueue`, or `Tree` type plus comparator/callback signatures |
+| `KeyType` | any valid Silica value type | `OrderedMap` type plus key comparator and operation signatures |
+| `ValueType` | any valid Silica value type | `OrderedMap` type plus value comparator and operation signatures |
+| `PriorityType` | any valid Silica value type | `PriorityQueue` type plus priority comparator or extractor signatures |
+| `NodeIdType` | any valid Silica value type | graph type plus node comparator, endpoint, and traversal signatures |
+| `EdgePayloadType` | any valid Silica value type | directed-graph type plus edge comparator and target-extractor signatures |
+| `EdgeDataType` | any valid Silica value type | attributed/weighted graph type plus edge-data comparator and operation signatures |
+| `WeightType` | any valid Silica value type | weighted-graph type plus weight extractor, comparator, and algorithm-record signatures |
+| `AccType` | any valid Silica value type | fold initial-value declaration and callback parameter/return declarations |
+| `SpaceType` | any valid Silica memory-space type | the programmer's explicit `mem(SpaceType)` collection and list declarations |
+
+After constructor resolution and monomorphization, generated records contain the concrete inline Silica types selected by those declarations.
 
 The memory argument is part of the public type. Values with different spaces are not structurally interchangeable even when hosted platforms map both spaces to ordinary virtual memory.
 
-Phase 1 graph vertex IDs are always `int64`; node identity is therefore not a graph type parameter. CSR and dense representations also use `int64` for dense slots, offsets, and cell indexes. Public vertex IDs and internal dense slots remain different semantic domains: an implementation must translate through its node-to-slot index and must not treat a public ID as a slot merely because both have the same machine type.
+Graph vertex identity is represented by the public `NodeIdType` parameter, which may be any valid Silica type accepted by the captured node comparator. CSR and dense representations use `int64` only for dense slots, offsets, and cell indexes. Public vertex IDs and internal dense slots remain different semantic domains: an implementation must translate through its node-to-slot index and must never treat a public ID as a slot.
 
 ## 2. No custom surface types
 
@@ -54,11 +82,13 @@ The comparator is stored in the value's ordering bundle unless the generated spe
 
 ## 4. Comparator law
 
-A comparator `compare(a, b)` returns one of:
+Every compare function in a constructor record or exported trait dispatch (`compare_item`, `compare_key`, `compare_node`, `compare_edge`, `compare_priority`, …) has return type:
 
 ```text
-:less | :equal | :greater
+(:less | :equal | :greater)
 ```
+
+A comparator `compare(a, b)` returns one of those three atoms and no other:
 
 It must define a total preorder suitable for key identity:
 

@@ -1,6 +1,6 @@
 .PHONY: all src integrate clean
 
-all: src integrate
+all: src
 
 src:
 	$(MAKE) -C src

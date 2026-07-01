@@ -199,16 +199,22 @@ fn validate_params_loop(params: ListParam) -> TypeCheckResult proc[DeviceIO] {
                             col_result: TypeCheckResult <- type_checker_collections@validate_collection_type_declaration(params.head.type_name, params.head.location);
                             case col_result.is_ok of {
                                 false -> col_result;
-                                true -> case type_checker_memory_regions@is_memory_region_type(params.head.type_name) of {
-                                    true -> do
-                                        mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(params.head.type_name, params.head.location);
-                                        case mem_result.is_ok of {
-                                            false -> mem_result;
-                                            true -> validate_params_loop(params.tail)
+                                true -> do
+                                    result_result: TypeCheckResult <- type_checker_collections@validate_collection_result_type_declaration(params.head.type_name, params.head.location);
+                                    case result_result.is_ok of {
+                                        false -> result_result;
+                                        true -> case type_checker_memory_regions@is_memory_region_type(params.head.type_name) of {
+                                            true -> do
+                                                mem_result: TypeCheckResult <- type_checker_memory_regions@validate_memory_region_type(params.head.type_name, params.head.location);
+                                                case mem_result.is_ok of {
+                                                    false -> mem_result;
+                                                    true -> validate_params_loop(params.tail)
+                                                }
+                                            end;
+                                            false -> validate_params_loop(params.tail)
                                         }
-                                    end;
-                                    false -> validate_params_loop(params.tail)
-                                }
+                                    }
+                                end
                             }
                         end
                     }
@@ -257,25 +263,31 @@ fn check_body_after_params(decl: Declaration, context: TypeContext, world: ListN
                             ret_col: TypeCheckResult <- type_checker_collections@validate_collection_type_declaration(decl.return_type_name, decl.return_type_location);
                             case ret_col.is_ok of {
                                 false -> ret_col;
-                                true -> case decl.return_type_name == "unit" of {
-        true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
-        false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
-            true -> check_body_memory_region_return(decl, body_ctx, world);
-            false -> do
-                body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, body_ctx, world);
-                case body_result.is_ok of {
-                    false -> body_result;
-                    true -> do
-                        rec_result: TypeCheckResult <- type_checker_recursion@recursion_analyze_body(decl.body, decl.name);
-                        case rec_result.is_ok of {
-                            false -> rec_result;
-                            true -> type_checker_expressions_actors@check_behavior_no_self_recursion(decl)
-                        }
-                    end
-                }
-            end
-        }
-                                }
+                                true -> do
+                                    ret_result: TypeCheckResult <- type_checker_collections@validate_collection_result_type_declaration(decl.return_type_name, decl.return_type_location);
+                                    case ret_result.is_ok of {
+                                        false -> ret_result;
+                                        true -> case decl.return_type_name == "unit" of {
+                                            true -> type_checker_core@type_check_err("E2006", decl.return_type_location, "unit is not a valid return type", "sect4");
+                                            false -> case type_checker_memory_regions@is_memory_region_type(decl.return_type_name) of {
+                                                true -> check_body_memory_region_return(decl, body_ctx, world);
+                                                false -> do
+                                                    body_result: TypeCheckResult <- type_checker_expressions@check_expr(decl.body, decl.return_type_name, body_ctx, world);
+                                                    case body_result.is_ok of {
+                                                        false -> body_result;
+                                                        true -> do
+                                                            rec_result: TypeCheckResult <- type_checker_recursion@recursion_analyze_body(decl.body, decl.name);
+                                                            case rec_result.is_ok of {
+                                                                false -> rec_result;
+                                                                true -> type_checker_expressions_actors@check_behavior_no_self_recursion(decl)
+                                                            }
+                                                        end
+                                                    }
+                                                end
+                                            }
+                                        }
+                                    }
+                                end
                             }
                         end
                     }

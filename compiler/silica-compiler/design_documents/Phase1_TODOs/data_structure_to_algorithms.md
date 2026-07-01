@@ -10,23 +10,25 @@
 
 ## Locked decisions
 
-| # | Topic | Decision |
-|---|--------|----------|
-| 1 | `OrderedSet` | Adams **weight-balanced tree (WBT)** [Ada93] for **all** key types |
-| 2 | Integer key specialization | **None** — no Patricia / crit-bit trie |
-| 3 | `OrderedMap` | **WBT map** (same rule as set) |
-| 4 | `SearchTree` | Same as `OrderedSet` (WBT) |
-| 5 | Graph vertex index | **WBT** keyed by `compare_node` |
-| 6 | Graph neighbors (unweighted) | **WBT set** of target node ids |
-| 7 | Graph neighbors (weighted / attributed) | **WBT map** `to → edge data` (one edge per `(from, to)`); `{to,data}` neighbor wrappers are generated views |
-| 8 | CSR graph | **WBT live adjacency** + optional **CSR freeze** O(V + E) |
-| 9 | Dense matrix graph | **One skew binary random-access-list cell sequence** [Oka95, Oka98 §5]: boolean cells when unweighted; `:none | (:some, EdgeDataType)` cells when attributed/weighted |
-| 10 | Dense bitset graph | **Not in scope** — family removed |
-| 11 | `Tree` child sequences | **Skew binary random-access list** |
-| 12 | `Heap` | **Brodal–Okasaki** optimal queue [BO96] |
-| 13 | `PriorityQueue` | **Brodal–Okasaki** on `(priority, value)` pairs; shared implementation with `Heap` |
-| 14 | Decrease-key | **Not in the Phase 1 `PriorityQueue` API**; no arbitrary-entry deletion, handles, or priority-search queue |
-| 15 | Bulk WBT construction | **Fold insert** (default) + optional **`from_sorted`** O(n) linear builder |
+
+| #   | Topic                                   | Decision                                                                                                      |
+| --- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| 1   | `OrderedSet`                            | Adams **weight-balanced tree (WBT)** [Ada93] for **all** key types                                            |
+| 2   | Integer key specialization              | **None** — no Patricia / crit-bit trie                                                                        |
+| 3   | `OrderedMap`                            | **WBT map** (same rule as set)                                                                                |
+| 4   | `SearchTree`                            | Same as `OrderedSet` (WBT)                                                                                    |
+| 5   | Graph vertex index                      | **WBT** keyed by `compare_node`                                                                               |
+| 6   | Graph neighbors (unweighted)            | **WBT set** of target node ids                                                                                |
+| 7   | Graph neighbors (weighted / attributed) | **WBT map** `to → edge data` (one edge per `(from, to)`); `{to,data}` neighbor wrappers are generated views   |
+| 8   | CSR graph                               | **WBT live adjacency** + optional **CSR freeze** O(V + E)                                                     |
+| 9   | Dense matrix graph                      | **One skew binary random-access-list cell sequence** [Oka95, Oka98 §5]: boolean cells when unweighted; `:none |
+| 10  | Dense bitset graph                      | **Not in scope** — family removed                                                                             |
+| 11  | `Tree` child sequences                  | **Skew binary random-access list**                                                                            |
+| 12  | `Heap`                                  | **Brodal–Okasaki** optimal queue [BO96]                                                                       |
+| 13  | `PriorityQueue`                         | **Brodal–Okasaki** on `(priority, value)` pairs; shared implementation with `Heap`                            |
+| 14  | Decrease-key                            | **Not in the Phase 1 `PriorityQueue` API**; no arbitrary-entry deletion, handles, or priority-search queue    |
+| 15  | Bulk WBT construction                   | **Fold insert** (default) + optional `**from_sorted`** O(n) linear builder                                    |
+
 
 ### Architecture (summary)
 
@@ -54,21 +56,25 @@ Finger trees [HP06], Patricia / crit-bit tries [Hin01, Ber13], HAMT maps [Bag00]
 
 ## Literature used in this map
 
-| Structure | Typical bounds | References |
-| --------- | -------------- | ---------- |
-| **Weight-balanced tree (WBT)** | O(log n) insert / delete / lookup | [Ada93] |
-| **Skew binary random-access list** | O(log n) index update | [Oka95, Oka98] |
-| **Brodal–Okasaki heap** | O(1) worst insert / find-min / meld; O(log n) delete-min | [BO96, Bro95, Vui78] |
-| **Functional graph (WBT + WBT adjacency)** | O(log V + log degree) edge update | [KL95, Erw97, Ada93] |
-| **CSR snapshot** | O(V + E) batch build from live graph | [KL95, Erw97] |
+
+| Structure                                  | Typical bounds                                           | References           |
+| ------------------------------------------ | -------------------------------------------------------- | -------------------- |
+| **Weight-balanced tree (WBT)**             | O(log n) insert / delete / lookup                        | [Ada93]              |
+| **Skew binary random-access list**         | O(log n) index update                                    | [Oka95, Oka98]       |
+| **Brodal–Okasaki heap**                    | O(1) worst insert / find-min / meld; O(log n) delete-min | [BO96, Bro95, Vui78] |
+| **Functional graph (WBT + WBT adjacency)** | O(log V + log degree) edge update                        | [KL95, Erw97, Ada93] |
+| **CSR snapshot**                           | O(V + E) batch build from live graph                     | [KL95, Erw97]        |
+
 
 ### Okasaki (*Purely Functional Data Structures*, 1998) [Oka98] — chapters referenced
 
-| Chapter | Use in this map |
-| ------- | ---------------- |
-| §5 | Skew binary random-access lists (dense matrix, tree children) |
-| §6 | Amortized analysis background |
-| §8 | Data-structural bootstrapping (internal to Brodal–Okasaki [BO96]) |
+
+| Chapter | Use in this map                                                   |
+| ------- | ----------------------------------------------------------------- |
+| §5      | Skew binary random-access lists (dense matrix, tree children)     |
+| §6      | Amortized analysis background                                     |
+| §8      | Data-structural bootstrapping (internal to Brodal–Okasaki [BO96]) |
+
 
 ---
 
@@ -76,27 +82,31 @@ Finger trees [HP06], Patricia / crit-bit tries [Hin01, Ber13], HAMT maps [Bag00]
 
 All mutators return a **new value**; prior bindings remain valid.
 
-| Technique | Used by | References |
-| --------- | ------- | ---------- |
-| **Path copying** | WBT; skew binary random-access lists | [Driscoll86, Oka98] |
-| **Data-structural bootstrapping** | Brodal–Okasaki queue (nested queues, global min) | [Oka98, BO96] |
-| **Recursive slowdown** | Brodal–Okasaki worst-case analysis (Kaplan–Tarjan lineage) | [KT95, BO96] |
-| **Batch rebuild** | CSR freeze from WBT adjacency | [KL95] |
+
+| Technique                         | Used by                                                    | References          |
+| --------------------------------- | ---------------------------------------------------------- | ------------------- |
+| **Path copying**                  | WBT; skew binary random-access lists                       | [Driscoll86, Oka98] |
+| **Data-structural bootstrapping** | Brodal–Okasaki queue (nested queues, global min)           | [Oka98, BO96]       |
+| **Recursive slowdown**            | Brodal–Okasaki worst-case analysis (Kaplan–Tarjan lineage) | [KT95, BO96]        |
+| **Batch rebuild**                 | CSR freeze from WBT adjacency                              | [KL95]              |
+
 
 ---
 
 ## Trait modules → functional representations
 
-| Trait module | Representation | References |
-| ------------ | -------------- | ---------- |
-| `OrderedSet` | Adams WBT | [Ada93] |
-| `OrderedMap` | Adams WBT map | [Ada93] |
-| `SearchTree` | Adams WBT (same as `OrderedSet`) | [Ada93] |
-| `DirectedGraph` / `UndirectedGraph` | WBT vertex map + WBT neighbor set | [Ada93, KL95, Erw97] |
-| `WeightedGraph` | WBT vertex map + WBT neighbor map (`to → edge data`) | [Ada93, KL95, Erw97] |
-| `Heap` | Brodal–Okasaki min/max queue | [BO96] |
-| `PriorityQueue` | Brodal–Okasaki on `(priority, value)` pairs | [BO96] |
-| `Tree` | Rose tree; children in skew binary random-access list | [Oka95, Oka98] |
+
+| Trait module                        | Representation                                        | References           |
+| ----------------------------------- | ----------------------------------------------------- | -------------------- |
+| `OrderedSet`                        | Adams WBT                                             | [Ada93]              |
+| `OrderedMap`                        | Adams WBT map                                         | [Ada93]              |
+| `SearchTree`                        | Adams WBT (same as `OrderedSet`)                      | [Ada93]              |
+| `DirectedGraph` / `UndirectedGraph` | WBT vertex map + WBT neighbor set                     | [Ada93, KL95, Erw97] |
+| `WeightedGraph`                     | WBT vertex map + WBT neighbor map (`to → edge data`)  | [Ada93, KL95, Erw97] |
+| `Heap`                              | Brodal–Okasaki min/max queue                          | [BO96]               |
+| `PriorityQueue`                     | Brodal–Okasaki on `(priority, value)` pairs           | [BO96]               |
+| `Tree`                              | Rose tree; children in skew binary random-access list | [Oka95, Oka98]       |
+
 
 ---
 
@@ -106,37 +116,45 @@ All ordered collections use **Adams WBT** [Ada93] with path copying. Keys are or
 
 ### `OrderedSet`
 
-| Operation | Algorithm | Persistence | Complexity | References |
-| --------- | --------- | ----------- | ---------- | ---------- |
-| **Insert** | Descend by compare; insert at leaf; Adams single/double rotation rebalance | Path copying | O(log n) | [Ada93] |
-| **Delete** | Locate key; delete or successor swap; Adams rebalance | Path copying | O(log n) | [Ada93] |
-| **Contains** | BST search | Read-only | O(log n) | [Ada93] |
-| **Fold** | In-order traversal | Read-only | O(n) | [Ada93] |
+
+| Operation    | Algorithm                                                                  | Persistence  | Complexity | References |
+| ------------ | -------------------------------------------------------------------------- | ------------ | ---------- | ---------- |
+| **Insert**   | Descend by compare; insert at leaf; Adams single/double rotation rebalance | Path copying | O(log n)   | [Ada93]    |
+| **Delete**   | Locate key; delete or successor swap; Adams rebalance                      | Path copying | O(log n)   | [Ada93]    |
+| **Contains** | BST search                                                                 | Read-only    | O(log n)   | [Ada93]    |
+| **Fold**     | In-order traversal                                                         | Read-only    | O(n)       | [Ada93]    |
+
 
 **Duplicate policy:** key present → unchanged tree, `inserted = false`.
 
 **Bulk construction:**
 
-| Constructor | Algorithm | Complexity | References |
-| ----------- | --------- | ---------- | ---------- |
-| **Default** (`from_list`, fold) | Repeated `insert` in fold order | O(n log n) | [Ada93] |
-| **`from_sorted`** | Linear balanced build from sorted unique keys (divide on median, recurse) | O(n) when pre-sorted | [Ada93] |
+
+| Constructor                     | Algorithm                                                                 | Complexity           | References |
+| ------------------------------- | ------------------------------------------------------------------------- | -------------------- | ---------- |
+| **Default** (`from_list`, fold) | Repeated `insert` in fold order                                           | O(n log n)           | [Ada93]    |
+| `**from_sorted`**               | Linear balanced build from sorted unique keys (divide on median, recurse) | O(n) when pre-sorted | [Ada93]    |
+
 
 ### `OrderedMap`
 
-| Operation | Algorithm | Persistence | Complexity | References |
-| --------- | --------- | ----------- | ---------- | ---------- |
-| **Insert / update** | WBT insert; **replace** value on duplicate key | Path copying | O(log n) | [Ada93] |
-| **Delete** | WBT delete on key | Path copying | O(log n) | [Ada93] |
-| **Get** | WBT search | Read-only | O(log n) | [Ada93] |
 
-Bulk construction: same **fold insert** + **`from_sorted`** policy as `OrderedSet`.
+| Operation           | Algorithm                                      | Persistence  | Complexity | References |
+| ------------------- | ---------------------------------------------- | ------------ | ---------- | ---------- |
+| **Insert / update** | WBT insert; **replace** value on duplicate key | Path copying | O(log n)   | [Ada93]    |
+| **Delete**          | WBT delete on key                              | Path copying | O(log n)   | [Ada93]    |
+| **Get**             | WBT search                                     | Read-only    | O(log n)   | [Ada93]    |
+
+
+Bulk construction: same **fold insert** + `**from_sorted`** policy as `OrderedSet`.
 
 ### `SearchTree`
 
-| Operation | Algorithm | References |
-| --------- | --------- | ---------- |
-| **Insert / delete / contains** | Identical to `OrderedSet` WBT | [Ada93] |
+
+| Operation                      | Algorithm                     | References |
+| ------------------------------ | ----------------------------- | ---------- |
+| **Insert / delete / contains** | Identical to `OrderedSet` WBT | [Ada93]    |
+
 
 ---
 
@@ -145,35 +163,41 @@ Bulk construction: same **fold insert** + **`from_sorted`** policy as `OrderedSe
 ### Live model (King–Launchbury / Erwig)
 
 ```text
-adj : WBT<int64, WBT<int64, Unit>>              -- unweighted (inner set as WBT)
-adj : WBT<int64, WBT<int64, EdgeData>>          -- weighted / attributed
+adj : WBTMap<NodeIdType, WBTSet<NodeIdType>>               -- unweighted
+adj : WBTMap<NodeIdType, WBTMap<NodeIdType, EdgeData>>     -- weighted / attributed
 ```
 
 Outer and inner maps/sets use **WBT** with `compare_node`. Undirected graphs: symmetric update on `(u,v)` and `(v,u)`.
 
-| Operation | Algorithm | Persistence | Complexity | References |
-| --------- | --------- | ----------- | ---------- | ---------- |
-| **Add edge (unweighted)** | Update outer WBT; insert `to` in inner WBT set at `from` | Path copying | O(log V + log degree) | [Ada93, KL95, Erw97] |
-| **Add edge (weighted)** | Update outer WBT; insert/replace `(to, edge_data)` in inner WBT map | Path copying | O(log V + log degree) | [Ada93, KL95, Erw97] |
-| **Remove edge** | Delete from inner WBT; remove outer entry if inner empty | Path copying | O(log V + log degree) | [Ada93, KL95] |
-| **Add vertex** | Insert `id ↦ empty` inner WBT into outer WBT | Path copying | O(log V) | [Ada93] |
-| **Has edge** | Inner WBT lookup at `from` | Read-only | O(log degree) | [Ada93] |
-| **From edge list** | Fold **add edge** | Persistent fold | O(E · (log V + log degree)) | [KL95, Erw97] |
+
+| Operation                 | Algorithm                                                           | Persistence     | Complexity                  | References           |
+| ------------------------- | ------------------------------------------------------------------- | --------------- | --------------------------- | -------------------- |
+| **Add edge (unweighted)** | Update outer WBT; insert `to` in inner WBT set at `from`            | Path copying    | O(log V + log degree)       | [Ada93, KL95, Erw97] |
+| **Add edge (weighted)**   | Update outer WBT; insert/replace `(to, edge_data)` in inner WBT map | Path copying    | O(log V + log degree)       | [Ada93, KL95, Erw97] |
+| **Remove edge**           | Delete from inner WBT; remove outer entry if inner empty            | Path copying    | O(log V + log degree)       | [Ada93, KL95]        |
+| **Add vertex**            | Insert `id ↦ empty` inner WBT into outer WBT                        | Path copying    | O(log V)                    | [Ada93]              |
+| **Has edge**              | Inner WBT lookup at `from`                                          | Read-only       | O(log degree)               | [Ada93]              |
+| **From edge list**        | Fold **add edge**                                                   | Persistent fold | O(E · (log V + log degree)) | [KL95, Erw97]        |
+
 
 ### CSR graph — snapshot only
 
-| Operation | Algorithm | Complexity | References |
-| --------- | --------- | ---------- | ---------- |
-| **Freeze** | Two-pass build from live WBT adjacency: degree count → prefix-sum → scatter into fresh offsets/neighbors (and weight buffers if weighted) | O(V + E) | [KL95, Erw97] |
+
+| Operation  | Algorithm                                                                                                                                 | Complexity | References    |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------- |
+| **Freeze** | Two-pass build from live WBT adjacency: degree count → prefix-sum → scatter into fresh offsets/neighbors (and weight buffers if weighted) | O(V + E)   | [KL95, Erw97] |
+
 
 The live WBT graph is unchanged after freeze. CSR is for read-heavy traversal, not incremental edge updates.
 
 ### Dense matrix graph (specialized, small V)
 
-| Operation | Algorithm | Persistence | Complexity | References |
-| --------- | --------- | ----------- | ---------- | ---------- |
-| **Set / clear edge** | Skew binary random-access list over index `from * V + to` | Path copying | O(log V) | [Oka95, Oka98] |
-| **Weighted edge data** | One tagged optional-data random-access-list cell, replacing `:none` or `(:some, data)` | Path copying | O(log V) | [Oka95, Oka98] |
+
+| Operation              | Algorithm                                                                              | Persistence  | Complexity | References     |
+| ---------------------- | -------------------------------------------------------------------------------------- | ------------ | ---------- | -------------- |
+| **Set / clear edge**   | Skew binary random-access list over index `from * V + to`                              | Path copying | O(log V)   | [Oka95, Oka98] |
+| **Weighted edge data** | One tagged optional-data random-access-list cell, replacing `:none` or `(:some, data)` | Path copying | O(log V)   | [Oka95, Oka98] |
+
 
 ---
 
@@ -183,21 +207,25 @@ Single **Brodal–Okasaki** implementation [BO96] serves both `Heap` and `Priori
 
 ### `Heap`
 
-| Operation | Algorithm | Persistence | Complexity | References |
-| --------- | --------- | ----------- | ---------- | ---------- |
-| **Insert (push)** | Skew binomial insert; global min root; bootstrapped meld | Path copying + strict bootstrapping | O(1) worst-case | [BO96, Vui78] |
-| **Delete-min (pop)** | Remove global min; skew binomial forest fixup; bootstrapped meld of children | Path copying | O(log n) worst-case | [BO96] |
-| **Peek** | Read global root | Read-only | O(1) | [BO96] |
-| **Meld** | Bootstrapped queue meld | Path copying | O(1) worst-case | [BO96] |
 
-Max-heap: reverse comparison or negated keys [BO96].
+| Operation            | Algorithm                                                                    | Persistence                         | Complexity          | References    |
+| -------------------- | ---------------------------------------------------------------------------- | ----------------------------------- | ------------------- | ------------- |
+| **Insert (push)**    | Skew binomial insert; global min root; bootstrapped meld                     | Path copying + strict bootstrapping | O(1) worst-case     | [BO96, Vui78] |
+| **Delete-min (pop)** | Remove global min; skew binomial forest fixup; bootstrapped meld of children | Path copying                        | O(log n) worst-case | [BO96]        |
+| **Peek**             | Read global root                                                             | Read-only                           | O(1)                | [BO96]        |
+| **Meld**             | Bootstrapped queue meld                                                      | Path copying                        | O(1) worst-case     | [BO96]        |
+
+
+Max-heap uses an orientation adapter that reverses comparator results (`:less` ↔ `:greater`, preserving `:equal`). Stored values are never negated.
 
 ### `PriorityQueue`
 
-| Operation | Algorithm | Complexity | References |
-| --------- | --------- | ---------- | ---------- |
-| **Push** | Brodal–Okasaki insert on `(priority, value)` with lexicographic compare | O(1) worst-case | [BO96] |
-| **Pop** | Delete-min; return pair | O(log n) worst-case | [BO96] |
+
+| Operation | Algorithm                                                               | Complexity          | References |
+| --------- | ----------------------------------------------------------------------- | ------------------- | ---------- |
+| **Push**  | Brodal–Okasaki insert on `(priority, value)` with lexicographic compare | O(1) worst-case     | [BO96]     |
+| **Pop**   | Delete-min; return pair                                                 | O(log n) worst-case | [BO96]     |
+
 
 ---
 
@@ -205,26 +233,32 @@ Max-heap: reverse comparison or negated keys [BO96].
 
 ### `Tree` — rose tree
 
-| Operation | Algorithm | Persistence | Complexity | References |
-| --------- | --------- | ----------- | ---------- | ---------- |
-| **Add child** | Append at child index in skew binary random-access list | Path copying | O(log n) | [Oka95, Oka98] |
-| **Remove child** | Update child slot in random-access list | Path copying | O(log n) | [Oka95, Oka98] |
+
+| Operation        | Algorithm                                                                | Persistence  | Complexity                           | References     |
+| ---------------- | ------------------------------------------------------------------------ | ------------ | ------------------------------------ | -------------- |
+| **Add child**    | Append at child index and path-copy every ancestor child sequence        | Path copying | O(Σ log b_i + h) at target depth `h` | [Oka95, Oka98] |
+| **Remove child** | Vacate the stable child slot and path-copy every ancestor child sequence | Path copying | O(Σ log b_i + h) at target depth `h` | [Oka95, Oka98] |
+
+
+Here `b_i` is the child-slot count at ancestor `i`; these whole-tree updates are not generally `O(log n)`.
 
 ---
 
 ## Collection families → algorithm map
 
-| Family | Insert / add | Delete / remove | References |
-| ------ | ------------ | --------------- | ---------- |
-| Ordered set / map | WBT insert | WBT delete | [Ada93] |
-| Search tree | WBT insert | WBT delete | [Ada93] |
-| Adjacency-list graph (unweighted) | WBT + WBT set edge insert | WBT + WBT set edge delete | [Ada93, KL95, Erw97] |
-| Weighted adjacency-list graph | WBT + WBT map insert/replace | WBT + WBT map edge delete | [Ada93, KL95, Erw97] |
-| CSR graph (snapshot) | O(V+E) freeze from WBT adjacency | Re-freeze after live-graph edits | [KL95, Erw97] |
-| Dense matrix graph | Random-access list cell set | Random-access list cell clear | [Oka95, Oka98] |
-| Min / max heap | Brodal–Okasaki insert | Brodal–Okasaki delete-min | [BO96] |
-| Priority queue | Brodal–Okasaki insert (pair) | Brodal–Okasaki delete-min | [BO96] |
-| Tree (rose) | Random-access list child append | Random-access list child remove | [Oka95, Oka98] |
+
+| Family                            | Insert / add                     | Delete / remove                  | References           |
+| --------------------------------- | -------------------------------- | -------------------------------- | -------------------- |
+| Ordered set / map                 | WBT insert                       | WBT delete                       | [Ada93]              |
+| Search tree                       | WBT insert                       | WBT delete                       | [Ada93]              |
+| Adjacency-list graph (unweighted) | WBT + WBT set edge insert        | WBT + WBT set edge delete        | [Ada93, KL95, Erw97] |
+| Weighted adjacency-list graph     | WBT + WBT map insert/replace     | WBT + WBT map edge delete        | [Ada93, KL95, Erw97] |
+| CSR graph (snapshot)              | O(V+E) freeze from WBT adjacency | Re-freeze after live-graph edits | [KL95, Erw97]        |
+| Dense matrix graph                | Random-access list cell set      | Random-access list cell clear    | [Oka95, Oka98]       |
+| Min / max heap                    | Brodal–Okasaki insert            | Brodal–Okasaki delete-min        | [BO96]               |
+| Priority queue                    | Brodal–Okasaki insert (pair)     | Brodal–Okasaki delete-min        | [BO96]               |
+| Tree (rose)                       | Random-access list child append  | Random-access list child remove  | [Oka95, Oka98]       |
+
 
 **Not in scope:** dense bitset graph.
 
@@ -232,25 +266,29 @@ Max-heap: reverse comparison or negated keys [BO96].
 
 ## Cross-representation pipelines
 
-| Pipeline | Algorithms | References |
-| -------- | ---------- | ---------- |
-| Edge list → live graph | Fold **add edge** over WBT + WBT adjacency | [KL95, Erw97, Ada93] |
-| Live graph → CSR snapshot | O(V + E) degree count + prefix-sum + scatter | [KL95] |
-| Ordered set → sorted sequence | In-order fold on WBT | [Ada93] |
-| Static sorted keys → WBT | **`from_sorted`** O(n) or fold insert O(n log n) | [Ada93] |
-| Multiple heaps → one | Brodal–Okasaki **meld** O(1) | [BO96] |
+
+| Pipeline                      | Algorithms                                       | References           |
+| ----------------------------- | ------------------------------------------------ | -------------------- |
+| Edge list → live graph        | Fold **add edge** over WBT + WBT adjacency       | [KL95, Erw97, Ada93] |
+| Live graph → CSR snapshot     | O(V + E) degree count + prefix-sum + scatter     | [KL95]               |
+| Ordered set → sorted sequence | In-order fold on WBT                             | [Ada93]              |
+| Static sorted keys → WBT      | `**from_sorted`** O(n) or fold insert O(n log n) | [Ada93]              |
+| Multiple heaps → one          | Brodal–Okasaki **meld** O(1)                     | [BO96]               |
+
 
 ---
 
 ## Complexity summary (single operation)
 
-| Family | Insert / add | Delete / remove | References |
-| ------ | ------------ | --------------- | ---------- |
-| WBT set / map | O(log n) | O(log n) | [Ada93] |
-| WBT graph edge | O(log V + log deg) | O(log V + log deg) | [Ada93, KL95] |
-| Random-access list (dense / tree) | O(log n) | O(log n) | [Oka95, Oka98] |
-| Brodal–Okasaki heap / PQ | O(1) worst | O(log n) worst | [BO96] |
-| CSR freeze | — | — | O(V + E) batch [KL95] |
+
+| Family                            | Insert / add       | Delete / remove    | References            |
+| --------------------------------- | ------------------ | ------------------ | --------------------- |
+| WBT set / map                     | O(log n)           | O(log n)           | [Ada93]               |
+| WBT graph edge                    | O(log V + log deg) | O(log V + log deg) | [Ada93, KL95]         |
+| Random-access list (dense / tree) | O(log n)           | O(log n)           | [Oka95, Oka98]        |
+| Brodal–Okasaki heap / PQ          | O(1) worst         | O(log n) worst     | [BO96]                |
+| CSR freeze                        | —                  | —                  | O(V + E) batch [KL95] |
+
 
 No single insert/delete is O(n) in structure size except batch CSR freeze or explicit full traversal (fold).
 
@@ -284,6 +322,6 @@ Citation keys appear in square brackets throughout this document.
 ### Functional graphs
 
 - **[KL95]** King, D. J., & Launchbury, J. (1995). Graph Algorithms in a Lazy Functional Language. *Journal of Functional Programming*, 5(1), 81–110. DOI: 10.1017/S0956796800000149.
-- **[Erw97]** Erwig, M. (1997). Functional Graphs. *Technical Report 97-9*, Department of Computing Science, Chalmers University of Technology. https://www.cs.tufts.edu/~nr/cs257/archive/martin-erwig/functional-graphs.pdf
+- **[Erw97]** Erwig, M. (1997). Functional Graphs. *Technical Report 97-9*, Department of Computing Science, Chalmers University of Technology. [https://www.cs.tufts.edu/~nr/cs257/archive/martin-erwig/functional-graphs.pdf](https://www.cs.tufts.edu/~nr/cs257/archive/martin-erwig/functional-graphs.pdf)
 
 When implementing, use the primary sources above. Background papers cited only in the rejected-alternatives list are intentionally omitted from the bibliography.

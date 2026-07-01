@@ -74,9 +74,13 @@ fn trait_name_exported(decls: ListDeclaration, name: string) -> bool {
     }
 }
 
-// First-param type text (trimmed). Callers must ensure parameters is non-empty.
+// First-param type text (trimmed). ListParam is stored head=last formal; reverse to source order.
 fn first_param_type(params: ListParam) -> string {
-    type_checker_traits@trim_type_text(params.head.type_name)
+    source_params: ListParam <- parser_ast@list_param_reverse_with_acc(params, parser_ast@nil_list_param());
+    case source_params.is_nil of {
+        true -> "";
+        false -> type_checker_traits@trim_type_text(source_params.head.type_name)
+    }
 }
 
 // True if decl is a provided method: tag 0, first param exists, first-param type is an exported trait name here.
@@ -173,15 +177,48 @@ fn clone_decl_with_first_param_type(d: Declaration, new_type: string) -> Declara
     }
 }
 
+// First-param type when decl is a concrete impl (not trait-typed receiver).
+fn impl_concrete_first_param(trait_self: string, d: Declaration) -> string {
+    case d.tag == 0 of {
+        false -> "";
+        true -> case d.parameters.is_nil of {
+            true -> "";
+            false -> do
+                source_params: ListParam <- parser_ast@list_param_reverse_with_acc(d.parameters, parser_ast@nil_list_param());
+                p0: string <- type_checker_traits@trim_type_text(source_params.head.type_name);
+                ts: string <- type_checker_traits@trim_type_text(trait_self);
+                case p0 == ts of { true -> ""; false -> p0 }
+            end
+        }
+    }
+}
+
+// True when an explicit impl fn already covers this method at the concrete receiver type (override).
+fn has_explicit_impl_for_concrete(decls: ListDeclaration, method_name: string, concrete_type: string, trait_self: string) -> bool {
+    case decls.is_nil of {
+        true -> false;
+        false -> case decls.head.tag == 0 and decls.head.name == method_name of {
+            true -> case impl_concrete_first_param(trait_self, decls.head) == concrete_type of {
+                true -> true;
+                false -> has_explicit_impl_for_concrete(decls.tail, method_name, concrete_type, trait_self)
+            };
+            false -> has_explicit_impl_for_concrete(decls.tail, method_name, concrete_type, trait_self)
+        }
+    }
+}
+
 // Given a provided method decl and the list of concrete impl types for its trait,
-// emit one specialized copy per concrete type. Prepends specialized copies onto `rest`.
-fn emit_specialized_copies(d: Declaration, concretes: TypeNameList, rest: ListDeclaration) -> ListDeclaration {
+// emit one specialized copy per concrete type unless an explicit impl fn overrides it.
+fn emit_specialized_copies(d: Declaration, concretes: TypeNameList, all_decls: ListDeclaration, trait_self: string, rest: ListDeclaration) -> ListDeclaration {
     case concretes.is_nil of {
         true -> rest;
-        false -> do
-            clone: Declaration <- clone_decl_with_first_param_type(d, concretes.head);
-            parser_ast@cons_declaration(clone, emit_specialized_copies(d, concretes.tail, rest))
-        end
+        false -> case has_explicit_impl_for_concrete(all_decls, d.name, concretes.head, trait_self) of {
+            true -> emit_specialized_copies(d, concretes.tail, all_decls, trait_self, rest);
+            false -> do
+                clone: Declaration <- clone_decl_with_first_param_type(d, concretes.head);
+                parser_ast@cons_declaration(clone, emit_specialized_copies(d, concretes.tail, all_decls, trait_self, rest))
+            end
+        }
     }
 }
 
@@ -197,7 +234,7 @@ fn specialize_decls(decls: ListDeclaration, all_decls: ListDeclaration) -> ListD
                     trait_nm: string <- first_param_type(decls.head.parameters);
                     req_names: TypeNameList <- required_method_names(all_decls, trait_nm, empty_string_list());
                     concretes: TypeNameList <- concrete_impl_types(all_decls, all_decls, req_names, empty_string_list());
-                    emit_specialized_copies(decls.head, concretes, rest)
+                    emit_specialized_copies(decls.head, concretes, all_decls, trait_nm, rest)
                 end
             }
         end

@@ -20,6 +20,7 @@
 
 use parser_ast;
 use type_checker_core;
+use type_checker_recursive_tuples;
 use type_checker_lists;
 use type_checker_record_types;
 use type_checker_expressions_actors;
@@ -867,7 +868,15 @@ fn normalize_type_equal_text(s: string) -> string {
 }
 
 fn types_equal(a: string, b: string) -> bool {
-    normalize_type_equal_text(a) == normalize_type_equal_text(b)
+    na: string <- normalize_type_equal_text(a);
+    nb: string <- normalize_type_equal_text(b);
+    case na == nb of {
+        true -> true;
+        false -> case type_checker_recursive_tuples@needs_recursive_compare(na, nb) of {
+            true -> type_checker_recursive_tuples@recursive_types_equal(na, nb);
+            false -> false
+        }
+    }
 }
 
 fn normalize_mem_normal_alias(s: string) -> string {
@@ -926,20 +935,54 @@ fn case_flip_bool(b: bool) -> bool {
     }
 }
 
-fn case_find_colon_outside_string(s: string, i: int64, in_string: bool) -> int64 {
+fn case_find_colon_outside_string_depth(s: string, i: int64, in_string: bool, pdepth: int64, bdepth: int64, sdepth: int64) -> int64 {
     case i >= len(s) of {
         true -> -1;
         false -> case substring(s, i, i + 1) == "\"" of {
-            true -> case_find_colon_outside_string(s, i + 1, case_flip_bool(in_string));
+            true -> case_find_colon_outside_string_depth(s, i + 1, case_flip_bool(in_string), pdepth, bdepth, sdepth);
             false -> case in_string of {
-                true -> case_find_colon_outside_string(s, i + 1, in_string);
+                true -> case_find_colon_outside_string_depth(s, i + 1, in_string, pdepth, bdepth, sdepth);
                 false -> case substring(s, i, i + 1) == ":" of {
-                    true -> i;
-                    false -> case_find_colon_outside_string(s, i + 1, false)
+                    true -> case pdepth == 0 and bdepth == 0 and sdepth == 0 of {
+                        true -> i;
+                        false -> case_find_colon_outside_string_depth(s, i + 1, false, pdepth, bdepth, sdepth)
+                    };
+                    false -> case substring(s, i, i + 1) == "(" of {
+                        true -> case_find_colon_outside_string_depth(s, i + 1, false, pdepth + 1, bdepth, sdepth);
+                        false -> case substring(s, i, i + 1) == ")" of {
+                            true -> do
+                                new_p: int64 <- case pdepth > 0 of { true -> pdepth - 1; false -> 0 };
+                                case_find_colon_outside_string_depth(s, i + 1, false, new_p, bdepth, sdepth)
+                            end;
+                            false -> case substring(s, i, i + 1) == "{" of {
+                                true -> case_find_colon_outside_string_depth(s, i + 1, false, pdepth, bdepth + 1, sdepth);
+                                false -> case substring(s, i, i + 1) == "}" of {
+                                    true -> do
+                                        new_b: int64 <- case bdepth > 0 of { true -> bdepth - 1; false -> 0 };
+                                        case_find_colon_outside_string_depth(s, i + 1, false, pdepth, new_b, sdepth)
+                                    end;
+                                    false -> case substring(s, i, i + 1) == "[" of {
+                                        true -> case_find_colon_outside_string_depth(s, i + 1, false, pdepth, bdepth, sdepth + 1);
+                                        false -> case substring(s, i, i + 1) == "]" of {
+                                            true -> do
+                                                new_s: int64 <- case sdepth > 0 of { true -> sdepth - 1; false -> 0 };
+                                                case_find_colon_outside_string_depth(s, i + 1, false, pdepth, bdepth, new_s)
+                                            end;
+                                            false -> case_find_colon_outside_string_depth(s, i + 1, false, pdepth, bdepth, sdepth)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+fn case_find_colon_outside_string(s: string, i: int64, in_string: bool) -> int64 {
+    case_find_colon_outside_string_depth(s, i, in_string, 0, 0, 0)
 }
 
 fn case_close_quote_index(s: string, i: int64) -> int64 {
@@ -1185,19 +1228,22 @@ fn case_pattern_matches_scrutinee(pi: CasePatternInfo, scrutinee_type: string) -
         true -> case pi.pattern_kind of {
             0 -> types_equal(scrutinee_type, "boolean");
             1 -> types_equal(scrutinee_type, "string");
-            2 -> types_equal(scrutinee_type, pi.bind_type) or (types_equal(scrutinee_type, "failure_reason") and types_equal(pi.bind_type, "atom"));
+            2 -> types_equal(scrutinee_type, pi.bind_type) or (types_equal(scrutinee_type, "failure_reason") and types_equal(pi.bind_type, "atom")) or type_checker_recursive_tuples@case_pattern_matches_ref_optional(scrutinee_type, pi.bind_type);
             3 -> case len(pi.bind_type) == 0 of {
                 true -> pi.bind_name == "_";
                 false -> case types_equal(scrutinee_type, pi.bind_type) of {
                     true -> true;
-                    false -> case types_equal(pi.bind_type, "atom") and case_type_is_atom_union(scrutinee_type) of {
+                    false -> case type_checker_recursive_tuples@case_pattern_matches_ref_optional(scrutinee_type, pi.bind_type) of {
                         true -> true;
-                        false -> case len(pi.bind_type) >= 5 of {
-                            true -> case substring(pi.bind_type, 0, 5) == "List[" of {
-                                true -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
+                        false -> case types_equal(pi.bind_type, "atom") and case_type_is_atom_union(scrutinee_type) of {
+                            true -> true;
+                            false -> case len(pi.bind_type) >= 5 of {
+                                true -> case substring(pi.bind_type, 0, 5) == "List[" of {
+                                    true -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
+                                    false -> false
+                                };
                                 false -> false
-                            };
-                            false -> false
+                            }
                         }
                     }
                 }
@@ -1205,7 +1251,7 @@ fn case_pattern_matches_scrutinee(pi: CasePatternInfo, scrutinee_type: string) -
             4 -> is_primitive_numeric_type_name(scrutinee_type);
             5 -> type_checker_lists@list_types_compatible(scrutinee_type, pi.bind_type);
             6 -> case_list_cons_matches(pi, scrutinee_type);
-            7 -> types_equal(scrutinee_type, "atom") or types_equal(scrutinee_type, "failure_reason") or case_atom_union_contains(scrutinee_type, pi.str_lit);
+            7 -> types_equal(scrutinee_type, "atom") or types_equal(scrutinee_type, "failure_reason") or case_atom_union_contains(scrutinee_type, pi.str_lit) or (type_checker_recursive_tuples@is_ref_optional_type(scrutinee_type) and pi.str_lit == "none");
             8 -> case_record_pat_matches_full(pi.bind_type, scrutinee_type);
             _: int64 -> false
         }

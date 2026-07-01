@@ -141,10 +141,11 @@ fn list_string_nth(lst: ListString, n: int64) -> string {
 // True if type string is a memory region type (ref, region, buf, atomic_ref)
 fn is_memory_region_type(type_str: string) -> bool {
     is_ref: bool <- len(type_str) >= 4 and substring(type_str, 0, 3) == "ref" and substring(type_str, 3, 4) == "(";
+    is_ref_q: bool <- len(type_str) >= 5 and substring(type_str, 0, 4) == "ref?" and substring(type_str, 4, 5) == "(";
     is_region: bool <- len(type_str) >= 7 and substring(type_str, 0, 6) == "region" and substring(type_str, 6, 7) == "(";
     is_buf: bool <- len(type_str) >= 4 and substring(type_str, 0, 3) == "buf" and substring(type_str, 3, 4) == "(";
     is_atomic: bool <- len(type_str) >= 11 and substring(type_str, 0, 10) == "atomic_ref" and substring(type_str, 10, 11) == "(";
-    is_ref or is_region or is_buf or is_atomic
+    is_ref or is_ref_q or is_region or is_buf or is_atomic
 }
 
 // Extract constructor name (ref, region, buf, atomic_ref) and inner params
@@ -164,12 +165,18 @@ fn parse_memory_region_type(type_str: string) -> (string, string) {
                     true -> ("buf", substring(type_str, 4, len(type_str) - 1));
                     false -> ("", "")
                 };
-                false -> case len(type_str) >= 3 and substring(type_str, 0, 3) == "ref" of {
-                    true -> case len(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
-                        true -> ("ref", substring(type_str, 4, len(type_str) - 1));
+                false -> case len(type_str) >= 4 and substring(type_str, 0, 4) == "ref?" and substring(type_str, 4, 5) == "(" of {
+                    true -> case substring(type_str, len(type_str) - 1, len(type_str)) == ")" of {
+                        true -> ("ref?", substring(type_str, 5, len(type_str) - 1));
                         false -> ("", "")
                     };
-                    false -> ("", "")
+                    false -> case len(type_str) >= 3 and substring(type_str, 0, 3) == "ref" of {
+                        true -> case len(type_str) >= 4 and substring(type_str, 3, 4) == "(" of {
+                            true -> ("ref", substring(type_str, 4, len(type_str) - 1));
+                            false -> ("", "")
+                        };
+                        false -> ("", "")
+                    }
                 }
             }
         }
@@ -188,6 +195,10 @@ fn validate_memory_region_type(type_str: string, location: SourceLocation) -> Ty
                 "ref" -> case n == 3 of {
                     true -> validate_ref_params(params, location);
                     false -> type_checker_core@type_check_err("E2010", location, "ref(R, Space, T) requires 3 parameters", "sect4.4.2")
+                };
+                "ref?" -> case n == 3 of {
+                    true -> validate_ref_params(params, location);
+                    false -> type_checker_core@type_check_err("E2010", location, "ref?(R, Space, T) requires 3 parameters", "recursive_tuple§2")
                 };
                 "region" -> case n == 2 of {
                     true -> validate_region_params(params, location);
@@ -513,7 +524,7 @@ fn get_space_from_region_type(region_type: string) -> string {
 
 // True if call_name is a region built-in (alloc_region, alloc_ref, read_ref, write_ref, alloc_buf, buf_load, buf_store, read_buf, write_buf, fresh_lifetime)
 fn is_region_builtin_call(call_name: string) -> bool {
-    call_name == "alloc_region" or call_name == "alloc_ref" or call_name == "read_ref" or call_name == "write_ref" or call_name == "alloc_buf" or call_name == "buf_load" or call_name == "buf_store" or call_name == "read_buf" or call_name == "write_buf" or call_name == "fresh_lifetime"
+    call_name == "alloc_region" or call_name == "alloc_ref" or call_name == "alloc_rec" or call_name == "read_ref" or call_name == "write_ref" or call_name == "alloc_buf" or call_name == "buf_load" or call_name == "buf_store" or call_name == "read_buf" or call_name == "write_buf" or call_name == "fresh_lifetime" or call_name == "canonical_arena_lookup" or call_name == "canonical_arena_same"
 }
 
 // Phase A: Static Region Lifetime Analysis (single scope)

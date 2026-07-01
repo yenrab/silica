@@ -24,7 +24,7 @@ use sir_ast;
 use types;
 
 export is_region_builtin/1;
-export build_region_prim_from_sir/4;
+export build_region_prim_from_sir/5;
 
 // Valid memory spaces per spec §4.4.1
 fn is_valid_memory_space(space: string) -> bool {
@@ -33,7 +33,7 @@ fn is_valid_memory_space(space: string) -> bool {
 
 // True if call_name is a region built-in
 fn is_region_builtin(call_name: string) -> bool {
-    call_name == "alloc_region" or call_name == "alloc_ref" or call_name == "alloc_rec" or call_name == "read_ref" or call_name == "write_ref" or call_name == "alloc_buf" or call_name == "buf_load" or call_name == "buf_store" or call_name == "read_buf" or call_name == "write_buf" or call_name == "fresh_lifetime"
+    call_name == "alloc_region" or call_name == "alloc_ref" or call_name == "alloc_rec" or call_name == "read_ref" or call_name == "write_ref" or call_name == "alloc_buf" or call_name == "buf_load" or call_name == "buf_store" or call_name == "read_buf" or call_name == "write_buf" or call_name == "fresh_lifetime" or call_name == "canonical_arena_lookup" or call_name == "canonical_arena_same"
 }
 
 // Map source call name to SIR prim name (read_buf->buf_load, write_buf->buf_store)
@@ -135,18 +135,46 @@ fn mem_effect(space: string) -> string {
     concat("[mem(", concat(space, ")]"))
 }
 
-// Build SIR prim term for region built-in. context/expr_to_sir used for recursive conversion.
-// expected_type: result type for effect extraction (region(R, Space), ref(R, Space, T), etc.)
-fn build_region_prim_from_sir(call_name: string, arg1: SIRTerm, arg2: SIRTerm, expected_type: string) -> SIRTerm {
-    prim: string <- sir_prim_name(call_name);
-    eff: string <- effect_for_prim(call_name, expected_type);
-    sir_type: string <- types@type_name_to_sir(result_type_for_prim(call_name, expected_type));
-    SIRTerm { kind: 6, type_name: sir_type, value: eff, name: prim, inner: arg1, right_expr: arg2 }
+fn append_buf_bounds_meta(eff: string, call_name: string, buf_type: string) -> string {
+    case call_name == "buf_load" or call_name == "read_buf" or call_name == "buf_store" or call_name == "write_buf" of {
+        true -> do
+            cap_param: string <- extract_length_from_buf_type(buf_type);
+            case len(cap_param) == 0 of {
+                true -> eff;
+                false -> concat(eff, concat("|bounds:", cap_param))
+            }
+        end;
+        false -> eff
+    }
 }
 
-// Effect set for prim: fresh_lifetime has []; alloc_ref/alloc_buf/alloc_rec into atomic space have [mem(atomic), atomic]; else [mem(Space)]
+fn extract_length_from_buf_type(buf_type: string) -> string {
+    case len(buf_type) >= 4 and substring(buf_type, 0, 3) == "buf" of {
+        true -> case len(buf_type) >= 5 and substring(buf_type, 3, 4) == "(" of {
+            true -> do
+                inner: string <- substring(buf_type, 4, len(buf_type) - 1);
+                trim_space(nth_param(inner, 3))
+            end;
+            false -> ""
+        };
+        false -> ""
+    }
+}
+
+// Build SIR prim term for region built-in. context/expr_to_sir used for recursive conversion.
+// expected_type: result type for effect extraction (region(R, Space), ref(R, Space, T), etc.)
+// buf_type_for_bounds: full buf(R, Space, T, N) when lowering buffer access ops; else "".
+fn build_region_prim_from_sir(call_name: string, arg1: SIRTerm, arg2: SIRTerm, expected_type: string, bounds_buf_type: string) -> SIRTerm {
+    prim: string <- sir_prim_name(call_name);
+    eff: string <- effect_for_prim(call_name, expected_type);
+    meta: string <- append_buf_bounds_meta(eff, call_name, bounds_buf_type);
+    sir_type: string <- types@type_name_to_sir(result_type_for_prim(call_name, expected_type));
+    SIRTerm { kind: 6, type_name: sir_type, value: meta, name: prim, inner: arg1, right_expr: arg2 }
+}
+
+// Effect set for prim: fresh_lifetime has []; canonical_arena_same has []; else [mem(Space)]
 fn effect_for_prim(call_name: string, expected_type: string) -> string {
-    case call_name == "fresh_lifetime" of {
+    case call_name == "fresh_lifetime" or call_name == "canonical_arena_same" of {
         true -> "[]";
         false -> do
             space: string <- extract_space_from_expected(expected_type);
@@ -182,6 +210,8 @@ fn result_type_for_prim(call_name: string, expected_type: string) -> string {
         "buf_store" -> "unit";
         "write_buf" -> "unit";
         "fresh_lifetime" -> "lifetime";
+        "canonical_arena_lookup" -> expected_type;
+        "canonical_arena_same" -> "boolean";
         _: string -> expected_type
     }
 }

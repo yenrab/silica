@@ -46,7 +46,7 @@ PriorityQueue                         →  brodal_okasaki_min (pairs)    →  Br
 1. Traits are not inheritable; a concrete type may implement multiple traits.
 2. Behavior traits dispatch from a receiver-like first argument (`OrderedSet@contains(set, key)`).
 3. All mutators return **new values** (functional persistence); captured comparators are preserved on every update path.
-4. Node ids, keys, values, priorities, directed edge payloads, direction-independent edge data, and weights are **typed collection parameters** — not assumed `int64`.
+4. Node IDs, keys, values, priorities, directed edge payloads, direction-independent edge data, and weights are **typed collection parameters**.
 5. Counts, capacities, and internal indices may remain `int64`.
 6. Generated constructors take **inline function records** (no named struct aliases for those records).
 7. Collection variables declare explicit collection types including memory effects (`mem(normal)`, `mem(writethrough)`).
@@ -56,19 +56,25 @@ PriorityQueue                         →  brodal_okasaki_min (pairs)    →  Br
 11. Every constructor uses the canonical application-lifetime arena for its generated representation specialization and memory space.
 12. Query status uses the atoms `:not_found | :found`; no named option type is introduced.
 
+### Overriding placeholder rule
+
+`ItemType`, `KeyType`, `ValueType`, `PriorityType`, `NodeIdType`, `EdgePayloadType`, `EdgeDataType`, `WeightType`, and `AccType` may each be any valid Silica value type legal in the declared memory and ownership context. `SpaceType` may be any valid Silica memory-space type.
+
+The programmer determines every placeholder through explicit collection, binding, return, argument, callback, and constructor-function declarations. Compiler and standard-library implementations—including AI-generated implementations—must resolve and preserve those declared types. Concrete types appearing in examples, internal counts, slots, ranks, offsets, indexes, or representation sketches never constrain a placeholder. Missing or contradictory declaration evidence is a compile-time error; an implementation must not choose a default concrete type.
+
+The detailed per-placeholder declaration mapping and implementation prohibitions are normative in the [common contract's overriding genericity rule](data_structure_designs/common_contract.md#overriding-genericity-rule).
+
 ---
 
 ## Comparator contract
 
-Ordering comparators return `**atom`** with valid results `:less`, `:equal`, and `:greater`.
+Ordering comparators return exactly the atom union `(:less | :equal | :greater)`.
 
 ```text
-fn compare_string(a: string, b: string) -> atom { ... }
+fn compare_string(a: string, b: string) -> (:less | :equal | :greater) { ... }
 ```
 
-Any other atom is **invalid comparator behavior** and must be rejected (runtime validation in generated modules until stricter static checking exists).
-
-**Generated spelling:** trait and generated signatures may use the sum type `:less | :equal | :greater` as a stricter witness until bare-`atom` validation is implemented.
+No constructor, trait, or generated-module signature may widen this return type to bare `atom`.
 
 ---
 
@@ -77,7 +83,7 @@ Any other atom is **invalid comparator behavior** and must be rejected (runtime 
 Every standard collection constructor takes an inline function record. The compiler:
 
 1. Checks the binding's declared collection type (e.g. `OrderedSet[string, mem(normal)]`).
-2. Witnesses payload types from function-field signatures (e.g. `compare_item: fn(string, string) -> atom`).
+2. Witnesses payload types from function-field signatures (e.g. `compare_item: fn(string, string) -> (:less | :equal | :greater)`).
 3. Specializes the generated representation and trait dispatch to those concrete types.
 4. Stores captured functions in the generated value for use by trait `provided` algorithms and representation updates.
 5. Resolves the canonical application-lifetime arena for the generated specialization and memory space.
@@ -99,11 +105,12 @@ names2: OrderedSet[string, mem(normal)] <- wbt_set@insert(names, "Ada");
 
 ```text
 names: OrderedSet[string, mem(normal)] <- wbt_set@empty({
-    compare_item: fn(a: int64, b: int64) -> atom { ... }  // wrong: not fn(string, string)
+    compare_item: fn(a: int64, b: int64) -> (:less | :equal | :greater) { ... }
+        // wrong: not fn(string, string) -> (:less | :equal | :greater)
 });
 ```
 
-**Assoc-type placeholders:** trait signatures use `ItemType`, `KeyType`, `ValueType`, `EdgePayloadType`, `EdgeDataType`, `WeightType`, and `SpaceType` (via `mem(SpaceType)`). The compiler resolves them from declared bracket types and constructor-record witnesses. Phase 1 graph vertex IDs are fixed to `int64` and therefore do not introduce a `NodeIdType` placeholder.
+**Assoc-type placeholders:** trait signatures use `ItemType`, `KeyType`, `ValueType`, `NodeIdType`, `EdgePayloadType`, `EdgeDataType`, `WeightType`, and `SpaceType` (via `mem(SpaceType)`). The compiler resolves them from declared bracket types and constructor-record witnesses.
 
 ---
 
@@ -153,7 +160,7 @@ Thin **adapter modules** (`ordered_set_wbt_adapter`, `ordered_map_wbt_adapter`, 
 **Constructor function record:**
 
 ```text
-{ compare_item: fn(ItemType, ItemType) -> atom }
+{ compare_item: fn(ItemType, ItemType) -> (:less | :equal | :greater) }
 ```
 
 **Trait surface:**
@@ -166,11 +173,16 @@ export size/1;
 export fold/3;
 export compare_item/3;
 
-provided {
-    fn compare_item[SetType, ItemType](set: SetType, a: ItemType, b: ItemType) -> atom;
+required {
+    fn compare_item[SetType, ItemType](
+        set: SetType, a: ItemType, b: ItemType
+    ) -> (:less | :equal | :greater);
     fn fold[SetType, ItemType, AccType](
         set: SetType, init: AccType, step: fn(AccType, ItemType) -> AccType
     ) -> AccType;
+}
+
+provided {
     fn contains[SetType, ItemType](set: SetType, item: ItemType) -> boolean;
     fn size[SetType](set: SetType) -> int64;
 }
@@ -184,11 +196,13 @@ provided {
 export empty/1;
 export insert/2;
 export delete/2;
-export fold/3;           // required for trait provided block
-export from_sorted/1;    // optional O(n) bulk build from sorted unique keys
+export fold/3;           // required trait hook
+export from_sorted/2;    // comparator record plus sorted unique item list
 
 fn empty[ItemType, SpaceType](
-    item_functions: { compare_item: fn(ItemType, ItemType) -> atom }
+    item_functions: {
+        compare_item: fn(ItemType, ItemType) -> (:less | :equal | :greater)
+    }
 ) -> OrderedSet[ItemType, SpaceType];
 
 fn insert[ItemType, SpaceType](
@@ -212,8 +226,8 @@ fn delete[ItemType, SpaceType](
 
 ```text
 {
-    compare_key: fn(KeyType, KeyType) -> atom,
-    compare_value: fn(ValueType, ValueType) -> atom
+    compare_key: fn(KeyType, KeyType) -> (:less | :equal | :greater),
+    compare_value: fn(ValueType, ValueType) -> (:less | :equal | :greater)
 }
 ```
 
@@ -232,15 +246,22 @@ export fold/3;
 export compare_key/3;
 export compare_value/3;
 
-provided {
-    fn compare_key[MapType, KeyType](map: MapType, a: KeyType, b: KeyType) -> atom;
-    fn compare_value[MapType, ValueType](map: MapType, a: ValueType, b: ValueType) -> atom;
+required {
+    fn compare_key[MapType, KeyType](
+        map: MapType, a: KeyType, b: KeyType
+    ) -> (:less | :equal | :greater);
+    fn compare_value[MapType, ValueType](
+        map: MapType, a: ValueType, b: ValueType
+    ) -> (:less | :equal | :greater);
     fn fold[MapType, KeyType, ValueType, AccType](
         map: MapType, init: AccType,
         step: fn(AccType, KeyType, ValueType) -> AccType
     ) -> AccType;
     fn get[MapType, KeyType, ValueType](map: MapType, key: KeyType)
         -> { status: :not_found | :found, value: ValueType };
+}
+
+provided {
     fn contains_key[MapType, KeyType, ValueType](map: MapType, key: KeyType) -> boolean;
     fn find_value[MapType, KeyType, ValueType](map: MapType, value: ValueType)
         -> { status: :not_found | :found, key: KeyType };
@@ -260,8 +281,8 @@ export from_sorted/2;    // optional O(n) from sorted unique keys + parallel val
 
 fn empty[KeyType, ValueType, SpaceType](
     map_functions: {
-        compare_key: fn(KeyType, KeyType) -> atom,
-        compare_value: fn(ValueType, ValueType) -> atom
+        compare_key: fn(KeyType, KeyType) -> (:less | :equal | :greater),
+        compare_value: fn(ValueType, ValueType) -> (:less | :equal | :greater)
     }
 ) -> OrderedMap[KeyType, ValueType, SpaceType];
 
@@ -290,13 +311,15 @@ export trait SearchTree;
 export contains_key/2;
 export compare_item/3;
 
-provided {
+required {
+    fn compare_item[TreeType, ItemType](
+        tree: TreeType, a: ItemType, b: ItemType
+    ) -> (:less | :equal | :greater);
     fn contains_key[TreeType, ItemType](tree: TreeType, key: ItemType) -> boolean;
-    // Delegates to OrderedSet@contains when backing store is wbt_set-compatible.
 }
 ```
 
-No separate B-tree or node-id tree representation.
+The standard implementation delegates `contains_key` to direct WBT search. No separate B-tree or node-id tree representation exists.
 
 ---
 
@@ -305,17 +328,17 @@ No separate B-tree or node-id tree representation.
 ### Live model (WBT + WBT adjacency)
 
 ```text
-adj : WBT<int64, WBT<int64, Unit>>              -- unweighted (inner set as WBT)
-adj : WBT<int64, WBT<int64, EdgeData>>           -- weighted / attributed
+adj : WBTMap<NodeIdType, WBTSet<NodeIdType>>               -- unweighted
+adj : WBTMap<NodeIdType, WBTMap<NodeIdType, EdgeData>>     -- weighted / attributed
 ```
 
 Outer and inner structures use WBT with `compare_node`. Undirected graphs: symmetric update on `(u, v)` and `(v, u)`.
 
-**Vertex identity:** public vertex IDs are `int64` in every Phase 1 graph representation. Internal CSR/dense slots are also `int64`, but remain a distinct domain reached through an explicit node-to-slot map.
+**Vertex identity:** public vertex IDs use `NodeIdType`, which may be any valid Silica type. Internal CSR/dense slots remain `int64` and are reached through an explicit node-to-slot map.
 
-**Unweighted directed edge payload:** `EdgePayloadType = int64`.
+**Unweighted directed edge payload:** `EdgePayloadType = NodeIdType`.
 
-**Weighted / attributed edge data:** target and direction-independent `EdgeDataType` are separate inputs. Generated neighbor views use the inline wrapper `{to: int64, data: EdgeDataType}`. Undirected graphs store two generated directional wrappers over one logical edge datum; programmers do not provide reverse-edge or retarget functions.
+**Weighted / attributed edge data:** target and direction-independent `EdgeDataType` are separate inputs. Generated neighbor views use the inline wrapper `{to: NodeIdType, data: EdgeDataType}`. Undirected graphs store two generated directional wrappers over one logical edge datum; programmers do not provide reverse-edge or retarget functions.
 
 ### DirectedGraph
 
@@ -323,9 +346,9 @@ Outer and inner structures use WBT with `compare_node`. Undirected graphs: symme
 
 ```text
 {
-    compare_node: fn(int64, int64) -> atom,
-    compare_edge: fn(EdgePayloadType, EdgePayloadType) -> atom,
-    edge_target: fn(EdgePayloadType) -> int64
+    compare_node: fn(NodeIdType, NodeIdType) -> (:less | :equal | :greater),
+    compare_edge: fn(EdgePayloadType, EdgePayloadType) -> (:less | :equal | :greater),
+    edge_target: fn(EdgePayloadType) -> NodeIdType
 }
 ```
 
@@ -349,23 +372,23 @@ export reachable/3;
 required {
     fn node_count(g: DirectedGraph) -> int64;
     fn edge_count(g: DirectedGraph) -> int64;
-    fn has_vertex(g: DirectedGraph, id: int64) -> boolean;
-    fn neighbors[GraphType, EdgePayloadType, SpaceType](
-        g: GraphType, node_id: int64
+    fn has_vertex(g: DirectedGraph, id: NodeIdType) -> boolean;
+    fn neighbors[GraphType, NodeIdType, EdgePayloadType, SpaceType](
+        g: GraphType, node_id: NodeIdType
     ) -> List[EdgePayloadType, SpaceType];
-    fn fold_neighbors(g: DirectedGraph, id: int64, init: AccType,
+    fn fold_neighbors(g: DirectedGraph, id: NodeIdType, init: AccType,
         step: fn(AccType, EdgePayloadType) -> AccType) -> AccType;
-    fn compare_node(g: DirectedGraph, a: int64, b: int64) -> atom;
-    fn compare_edge(g: DirectedGraph, a: EdgePayloadType, b: EdgePayloadType) -> atom;
-    fn edge_target(g: DirectedGraph, edge: EdgePayloadType) -> int64;
+    fn compare_node(g: DirectedGraph, a: NodeIdType, b: NodeIdType)
+        -> (:less | :equal | :greater);
+    fn compare_edge(g: DirectedGraph, a: EdgePayloadType, b: EdgePayloadType)
+        -> (:less | :equal | :greater);
+    fn edge_target(g: DirectedGraph, edge: EdgePayloadType) -> NodeIdType;
 }
 
 provided {
     fn out_degree(...);
     fn has_edge(...);
     fn reachable(...);
-    fn max_out_degree/1;
-    fn total_out_degree_sum/1;
 }
 ```
 
@@ -377,38 +400,38 @@ export add_edge/3;
 export remove_edge/3;
 export add_vertex/2;
 
-fn empty[EdgePayloadType, SpaceType](
+fn empty[NodeIdType, EdgePayloadType, SpaceType](
     graph_functions: {
-        compare_node: fn(int64, int64) -> atom,
-        compare_edge: fn(EdgePayloadType, EdgePayloadType) -> atom,
-        edge_target: fn(EdgePayloadType) -> int64
+        compare_node: fn(NodeIdType, NodeIdType) -> (:less | :equal | :greater),
+        compare_edge: fn(EdgePayloadType, EdgePayloadType) -> (:less | :equal | :greater),
+        edge_target: fn(EdgePayloadType) -> NodeIdType
     }
-) -> DirectedGraph[EdgePayloadType, mem(SpaceType)];
+) -> DirectedGraph[NodeIdType, EdgePayloadType, mem(SpaceType)];
 
-fn add_edge[EdgePayloadType, SpaceType](
-    g: DirectedGraph[EdgePayloadType, mem(SpaceType)],
-    from_id: int64,
+fn add_edge[NodeIdType, EdgePayloadType, SpaceType](
+    g: DirectedGraph[NodeIdType, EdgePayloadType, mem(SpaceType)],
+    from_id: NodeIdType,
     edge: EdgePayloadType
 ) -> {
-    graph: DirectedGraph[EdgePayloadType, mem(SpaceType)],
+    graph: DirectedGraph[NodeIdType, EdgePayloadType, mem(SpaceType)],
     inserted: boolean,
     replaced: boolean
 };
 
-fn add_vertex[EdgePayloadType, SpaceType](
-    g: DirectedGraph[EdgePayloadType, mem(SpaceType)],
-    id: int64
+fn add_vertex[NodeIdType, EdgePayloadType, SpaceType](
+    g: DirectedGraph[NodeIdType, EdgePayloadType, mem(SpaceType)],
+    id: NodeIdType
 ) -> {
-    graph: DirectedGraph[EdgePayloadType, mem(SpaceType)],
+    graph: DirectedGraph[NodeIdType, EdgePayloadType, mem(SpaceType)],
     inserted: boolean
 };
 
-fn remove_edge[EdgePayloadType, SpaceType](
-    g: DirectedGraph[EdgePayloadType, mem(SpaceType)],
-    from_id: int64,
-    to_id: int64
+fn remove_edge[NodeIdType, EdgePayloadType, SpaceType](
+    g: DirectedGraph[NodeIdType, EdgePayloadType, mem(SpaceType)],
+    from_id: NodeIdType,
+    to_id: NodeIdType
 ) -> {
-    graph: DirectedGraph[EdgePayloadType, mem(SpaceType)],
+    graph: DirectedGraph[NodeIdType, EdgePayloadType, mem(SpaceType)],
     removed: boolean
 };
 ```
@@ -417,36 +440,36 @@ Vertices may be added dynamically when an edge references a new id (path-copying
 
 ### UndirectedGraph
 
-`UndirectedGraph[EdgeDataType, mem(SpaceType)]` stores direction-independent edge data and generates directional neighbor wrappers internally.
+`UndirectedGraph[NodeIdType, EdgeDataType, mem(SpaceType)]` stores direction-independent edge data and generates directional neighbor wrappers internally.
 
 Constructor record:
 
 ```text
 {
-    compare_node: fn(int64, int64) -> atom,
-    compare_edge_data: fn(EdgeDataType, EdgeDataType) -> atom
+    compare_node: fn(NodeIdType, NodeIdType) -> (:less | :equal | :greater),
+    compare_edge_data: fn(EdgeDataType, EdgeDataType) -> (:less | :equal | :greater)
 }
 ```
 
 Its trait surface mirrors `DirectedGraph`, with `degree/2` and `connected/3`, and uses:
 
 ```text
-neighbors(g, id: int64) -> List[{to: int64, data: EdgeDataType}, SpaceType]
-edge_target(g, edge: {to: int64, data: EdgeDataType}) -> int64
+neighbors(g, id: NodeIdType) -> List[{to: NodeIdType, data: EdgeDataType}, SpaceType]
+edge_target(g, edge: {to: NodeIdType, data: EdgeDataType}) -> NodeIdType
 ```
 
 The general generated update is `add_edge(g, from, to, data)`. The unweighted `EdgeDataType = unit` specialization also exports `add_edge(g, from, to)`.
 
 ### WeightedGraph
 
-`WeightedGraph[EdgeDataType, WeightType, mem(SpaceType)]` is an independent capability implemented alongside `DirectedGraph` or `UndirectedGraph`. Its constructor record is:
+`WeightedGraph[NodeIdType, EdgeDataType, WeightType, mem(SpaceType)]` is an independent capability implemented alongside `DirectedGraph` or `UndirectedGraph`. Its constructor record is:
 
 ```text
 {
-    compare_node: fn(int64, int64) -> atom,
-    compare_edge_data: fn(EdgeDataType, EdgeDataType) -> atom,
+    compare_node: fn(NodeIdType, NodeIdType) -> (:less | :equal | :greater),
+    compare_edge_data: fn(EdgeDataType, EdgeDataType) -> (:less | :equal | :greater),
     edge_weight: fn(EdgeDataType) -> WeightType,
-    compare_weight: fn(WeightType, WeightType) -> atom
+    compare_weight: fn(WeightType, WeightType) -> (:less | :equal | :greater)
 }
 ```
 
@@ -460,7 +483,7 @@ Algorithm-specific fields (`zero_weight`, `add_weight`) belong in algorithm func
 
 Implements the same graph traits for query operations (`neighbors`, `has_edge`, …) on immutable snapshot values.
 
-CSR stores public `int64` node IDs and internal `int64` dense slots as distinct domains. Runtime-sized internal buffers hold node IDs, offsets, neighbors, and—only for attributed/weighted specializations—a parallel edge-data buffer.
+CSR stores public `NodeIdType` values and internal `int64` dense slots as distinct domains. Runtime-sized internal buffers hold node IDs, offsets, neighbors, and—only for attributed/weighted specializations—a parallel edge-data buffer.
 
 ### Dense matrix graph (specialized)
 
@@ -481,7 +504,7 @@ CSR/dense extents are runtime-sized internal values and are not public graph typ
 **Constructor function record:**
 
 ```text
-{ compare_item: fn(ItemType, ItemType) -> atom }
+{ compare_item: fn(ItemType, ItemType) -> (:less | :equal | :greater) }
 ```
 
 **Trait surface:**
@@ -498,6 +521,8 @@ required {
     fn len(heap: Heap) -> int64;
     fn peek[HeapType, ItemType](heap: HeapType)
         -> { status: :not_found | :found, value: ItemType };
+    fn compare_item(heap: Heap, a: ItemType, b: ItemType)
+        -> (:less | :equal | :greater);
 }
 
 provided {
@@ -514,7 +539,9 @@ export pop/1;
 export meld/2;
 
 fn empty[ItemType, SpaceType](
-    item_functions: { compare_item: fn(ItemType, ItemType) -> atom }
+    item_functions: {
+        compare_item: fn(ItemType, ItemType) -> (:less | :equal | :greater)
+    }
 ) -> Heap[ItemType, SpaceType];
 
 fn push[ItemType, SpaceType](
@@ -524,9 +551,9 @@ fn push[ItemType, SpaceType](
 fn pop[ItemType, SpaceType](
     heap: Heap[ItemType, SpaceType]
 ) -> {
+    heap: Heap[ItemType, SpaceType],
     status: :not_found | :found,
-    value: ItemType,
-    heap: Heap[ItemType, SpaceType]
+    value: ItemType
 };
 ```
 
@@ -536,8 +563,8 @@ fn pop[ItemType, SpaceType](
 
 ```text
 {
-    compare_item: fn(ItemType, ItemType) -> atom,
-    compare_priority: fn(PriorityType, PriorityType) -> atom
+    compare_priority: fn(PriorityType, PriorityType) -> (:less | :equal | :greater),
+    compare_item: fn(ItemType, ItemType) -> (:less | :equal | :greater)
 }
 ```
 
@@ -580,6 +607,14 @@ provided {
 
 **Representation:** rose tree — each node holds a label and a **child sequence** stored in a skew binary random-access list [Oka95, Oka98 §5].
 
+**Constructor function record:**
+
+```text
+{ compare_item: fn(ItemType, ItemType) -> (:less | :equal | :greater) }
+```
+
+Root construction is `tree_rose@with_root(functions, root_item)`.
+
 **Trait surface:**
 
 ```text
@@ -595,7 +630,7 @@ export fold_preorder/3;
 export compare_item/3;
 ```
 
-**Generated module `tree_rose`:** `singleton`, `replace_item`, `add_child`, `add_subtree`, `remove_child`, `get`, `child_at`, `find_first`, `fold_preorder`, and `validate`. Updates use stable child slots and path copying; child slots are never compacted, reused, or renumbered. `node_count` counts logical rose-tree nodes, not WBT or random-access-list internal nodes.
+**Generated module `tree_rose`:** `with_root`, `replace_item`, `add_child`, `add_subtree`, `remove_child`, `get`, `child_at`, `find_first`, `fold_preorder`, and `validate`. Updates use stable child slots and path copying; child slots are never compacted, reused, or renumbered. `node_count` counts logical rose-tree nodes, not WBT or random-access-list internal nodes.
 
 **SearchTree** is documented above; it is not a separate rose-tree search structure.
 
@@ -608,7 +643,7 @@ Views let custom storage participate in trait algorithms without exposing the ge
 ```text
 view: {
     graph: GraphType,
-    neighbors_of: fn(GraphType, int64) -> List[EdgePayloadType, SpaceType]
+    neighbors_of: fn(GraphType, NodeIdType) -> List[EdgePayloadType, SpaceType]
 } <- DirectedGraph@view(
     graph,
     {
@@ -648,7 +683,7 @@ frontier: Heap[int64, mem(normal)] <- brodal_okasaki_min@empty({
     compare_item: compare_node_id
 });
 
-g: DirectedGraph[Edge, mem(normal)] <- graph_wbt_directed@empty({
+g: DirectedGraph[NodeId, Edge, mem(normal)] <- graph_wbt_directed@empty({
     compare_node: compare_node_id,
     compare_edge: compare_edge,
     edge_target: edge_target
@@ -693,7 +728,7 @@ Required compiler support before stdlib acceptance:
 | 4   | Bracket-type witnesses for all collection families                                      | `OrderedSet`, `OrderedMap`, `Heap`, `DirectedGraph`, … |
 | 5   | Checking / codegen for `provided` trait block bodies                                    |                                                        |
 | 6   | Link-name mangling from resolved concrete trait impl types                              |                                                        |
-| 7   | Invalid comparator atom enforcement                                                     | runtime or static                                      |
+| 7   | Closed comparator return-type enforcement                                               | statically require `:less | :equal | :greater`         |
 
 
 `Collectable` placeholder resolution remains **list-specific**; standard structures use constructor function records, not public `Collectable` construction.
@@ -719,7 +754,7 @@ Required compiler support before stdlib acceptance:
 The CSR/dense decision is closed:
 
 1. layouts are compiler-version-private structural records;
-2. public vertex IDs and internal slots are both `int64`, but remain distinct domains;
+2. public vertex IDs use `NodeIdType`; internal slots use `int64`, and the domains remain distinct;
 3. extents are runtime-sized internal values, not public graph type parameters;
 4. CSR uses parallel neighbor/edge-data buffers, while dense uses boolean cells for unweighted graphs and one tagged optional-data sequence for attributed/weighted graphs;
 5. WBT, CSR, and dense module families are distinct concrete generated types with additional attributed/weighted specializations.
@@ -730,7 +765,7 @@ The CSR/dense decision is closed:
 
 - Algorithms written once per trait, shared across WBT, CSR snapshot, and dense matrix graph backends where applicable.
 - Custom user structures participate via views or direct impls.
-- Payload types are explicit at construction; Phase 1 vertex IDs are deliberately fixed to `int64`.
+- Payload and vertex-ID types are explicit at construction; graph IDs may use any valid Silica type.
 - Representation modules become implementation details behind traits.
 
 ---

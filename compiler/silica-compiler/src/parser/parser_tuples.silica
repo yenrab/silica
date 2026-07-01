@@ -72,7 +72,7 @@ fn skip_leading_whitespace_slots_for_types(slots: ListTokenSlot) -> ListTokenSlo
 }
 
 fn is_type_keyword(kinds: TokenKinds, token_kind: int64) -> bool {
-    token_kind == kinds.int8_keyword or token_kind == kinds.int16_keyword or token_kind == kinds.int32_keyword or token_kind == kinds.int64_keyword or token_kind == kinds.uint8_keyword or token_kind == kinds.uint16_keyword or token_kind == kinds.uint32_keyword or token_kind == kinds.uint64_keyword or token_kind == kinds.float16_keyword or token_kind == kinds.float32_keyword or token_kind == kinds.float64_keyword or token_kind == kinds.bool_keyword or token_kind == kinds.char_keyword or token_kind == kinds.string_keyword or token_kind == kinds.bytes_keyword or token_kind == kinds.unit_keyword or token_kind == kinds.atom_keyword or token_kind == kinds.ref_keyword or token_kind == kinds.region_keyword or token_kind == kinds.buf_keyword or token_kind == kinds.atomic_keyword or token_kind == kinds.normal_keyword or token_kind == kinds.normal_writeback_keyword or token_kind == kinds.normal_writethrough_keyword or token_kind == kinds.normal_noncacheable_keyword or token_kind == kinds.device_keyword or token_kind == kinds.actor_ref_keyword or token_kind == kinds.supervisor_ref_keyword or token_kind == kinds.failure_reason_keyword
+    token_kind == kinds.int8_keyword or token_kind == kinds.int16_keyword or token_kind == kinds.int32_keyword or token_kind == kinds.int64_keyword or token_kind == kinds.uint8_keyword or token_kind == kinds.uint16_keyword or token_kind == kinds.uint32_keyword or token_kind == kinds.uint64_keyword or token_kind == kinds.float16_keyword or token_kind == kinds.float32_keyword or token_kind == kinds.float64_keyword or token_kind == kinds.bool_keyword or token_kind == kinds.char_keyword or token_kind == kinds.string_keyword or token_kind == kinds.bytes_keyword or token_kind == kinds.unit_keyword or token_kind == kinds.atom_keyword or token_kind == kinds.ref_keyword or token_kind == kinds.rec_keyword or token_kind == kinds.region_keyword or token_kind == kinds.buf_keyword or token_kind == kinds.atomic_keyword or token_kind == kinds.normal_keyword or token_kind == kinds.normal_writeback_keyword or token_kind == kinds.normal_writethrough_keyword or token_kind == kinds.normal_noncacheable_keyword or token_kind == kinds.device_keyword or token_kind == kinds.actor_ref_keyword or token_kind == kinds.supervisor_ref_keyword or token_kind == kinds.failure_reason_keyword
 }
 
 fn is_memory_region_type_binding_start(slots: ListTokenSlot) -> bool {
@@ -225,6 +225,12 @@ fn slots_tail_has_left_bracket(slots: ListTokenSlot, kinds: TokenKinds) -> bool 
     }
 }
 
+fn is_collection_trait_type_lexeme(lex: string) -> bool {
+    lex == "OrderedSet" or lex == "OrderedMap" or lex == "Heap" or lex == "DirectedGraph"
+        or lex == "SearchTree" or lex == "UndirectedGraph" or lex == "WeightedGraph"
+        or lex == "PriorityQueue" or lex == "Tree"
+}
+
 fn slots_start_bracketed_collection_type(slots: ListTokenSlot, kinds: TokenKinds) -> bool {
     trimmed: ListTokenSlot <- skip_leading_whitespace_slots_for_types(slots);
     case trimmed.is_nil of {
@@ -232,7 +238,7 @@ fn slots_start_bracketed_collection_type(slots: ListTokenSlot, kinds: TokenKinds
         false -> case token_is_bracketed_collection_type_name(trimmed.head.token, kinds) of {
             true -> slots_tail_has_left_bracket(trimmed.tail, kinds);
             false -> case trimmed.head.token.kind == kinds.identifier of {
-                true -> case trimmed.head.token.lexeme == "OrderedSet" or trimmed.head.token.lexeme == "OrderedMap" or trimmed.head.token.lexeme == "Heap" or trimmed.head.token.lexeme == "DirectedGraph" of {
+                true -> case is_collection_trait_type_lexeme(trimmed.head.token.lexeme) of {
                     false -> false;
                     true -> slots_tail_has_left_bracket(trimmed.tail, kinds)
                 };
@@ -549,15 +555,29 @@ fn extract_parametrized_type_from_slots(slots: ListTokenSlot) -> TupleTypeResult
             false -> case slots.head.token.kind == kinds.ref_keyword or slots.head.token.kind == kinds.region_keyword or slots.head.token.kind == kinds.buf_keyword of {
                 true -> case slots.tail.is_nil of {
                     true -> TupleTypeResult { type_str: "", rest_slots: slots };
-                    false -> case slots.tail.head.token.kind == kinds.left_paren of {
-                        true -> do
-                            prefix: string <- slots.head.token.lexeme;
-                            tr: TupleTypeResult <- extract_tuple_type_from_slots(slots.tail);
-                            full: string <- concat(prefix, tr.type_str);
-                            rest: ListTokenSlot <- tr.rest_slots;
-                            TupleTypeResult { type_str: full, rest_slots: rest }
-                        end;
-                        false -> TupleTypeResult { type_str: "", rest_slots: slots }
+                    false -> case slots.head.token.kind == kinds.ref_keyword and slots.tail.head.token.lexeme == "?" of {
+                        true -> case slots.tail.tail.is_nil of {
+                            true -> TupleTypeResult { type_str: "", rest_slots: slots };
+                            false -> case slots.tail.tail.head.token.kind == kinds.left_paren of {
+                                true -> do
+                                    tr: TupleTypeResult <- extract_tuple_type_from_slots(slots.tail.tail);
+                                    full: string <- concat("ref?", tr.type_str);
+                                    rest: ListTokenSlot <- tr.rest_slots;
+                                    TupleTypeResult { type_str: full, rest_slots: rest }
+                                end;
+                                false -> TupleTypeResult { type_str: "", rest_slots: slots }
+                            }
+                        };
+                        false -> case slots.tail.head.token.kind == kinds.left_paren of {
+                            true -> do
+                                prefix: string <- slots.head.token.lexeme;
+                                tr: TupleTypeResult <- extract_tuple_type_from_slots(slots.tail);
+                                full: string <- concat(prefix, tr.type_str);
+                                rest: ListTokenSlot <- tr.rest_slots;
+                                TupleTypeResult { type_str: full, rest_slots: rest }
+                            end;
+                            false -> TupleTypeResult { type_str: "", rest_slots: slots }
+                        }
                     }
                 };
                 false -> TupleTypeResult { type_str: "", rest_slots: slots }
@@ -585,7 +605,7 @@ fn extract_fn_type_from_slots(slots: ListTokenSlot) -> (string, ListTokenSlot) p
 fn extract_fn_type_after_fn_kw(slots: ListTokenSlot, acc: string, kinds: TokenKinds) -> (string, ListTokenSlot) proc[DeviceIO] {
     case slots.is_nil of {
         true -> ("", slots);
-        false -> case slots.head.token.kind == kinds.left_paren of {
+        false -> case slots.head.token.lexeme == "(" of {
             true -> do
                 acc2: string <- append_type_to_tuple_string(acc, slots.head.token);
                 extract_fn_type_param_balanced(slots.tail, acc2, 1, kinds)
@@ -598,12 +618,12 @@ fn extract_fn_type_after_fn_kw(slots: ListTokenSlot, acc: string, kinds: TokenKi
 fn extract_fn_type_param_balanced(slots: ListTokenSlot, acc: string, depth: int64, kinds: TokenKinds) -> (string, ListTokenSlot) proc[DeviceIO] {
     case slots.is_nil of {
         true -> ("", slots);
-        false -> case slots.head.token.kind == kinds.left_paren of {
+        false -> case slots.head.token.lexeme == "(" of {
             true -> do
                 acc_lp: string <- append_type_to_tuple_string(acc, slots.head.token);
                 extract_fn_type_param_balanced(slots.tail, acc_lp, depth + 1, kinds)
             end;
-            false -> case slots.head.token.kind == kinds.right_paren of {
+            false -> case slots.head.token.lexeme == ")" of {
                 true -> do
                     acc_rp: string <- append_type_to_tuple_string(acc, slots.head.token);
                     new_depth: int64 <- depth - 1;
@@ -624,7 +644,7 @@ fn extract_fn_type_param_balanced(slots: ListTokenSlot, acc: string, depth: int6
 fn extract_fn_type_after_arrow_expect(slots: ListTokenSlot, acc: string, kinds: TokenKinds) -> (string, ListTokenSlot) proc[DeviceIO] {
     case slots.is_nil of {
         true -> ("", slots);
-        false -> case slots.head.token.kind == kinds.right_arrow of {
+        false -> case slots.head.token.kind == kinds.right_arrow or slots.head.token.lexeme == "->" of {
             true -> do
                 acc_a: string <- append_type_to_tuple_string(acc, slots.head.token);
                 extract_fn_type_return_type(slots.tail, acc_a, kinds)
@@ -699,21 +719,21 @@ fn extract_tuple_type_loop(slots: ListTokenSlot, acc: string) -> TupleTypeResult
                                     new_acc: string <- append_type_text_to_tuple_string(acc, tr_at.type_str);
                                     extract_tuple_type_loop(tr_at.rest_slots, new_acc)
                                 end;
-                                false -> case is_type_keyword(kinds, trimmed.head.token.kind) or trimmed.head.token.kind == kinds.integer_literal of {
+                                false -> case token_introduces_fn_type(trimmed.head.token, kinds) of {
                                     true -> do
-                                        new_acc2: string <- append_type_to_tuple_string(acc, trimmed.head.token);
-                                        extract_tuple_type_loop(trimmed.tail, new_acc2)
+                                        (fn_s: string, fn_r: ListTokenSlot) <- extract_fn_type_from_slots(trimmed);
+                                        new_acc_fn: string <- concat(acc, fn_s);
+                                        extract_tuple_type_loop(fn_r, new_acc_fn)
                                     end;
-                                    false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, trimmed.head.token.kind) of {
+                                    false -> case is_type_keyword(kinds, trimmed.head.token.kind) or trimmed.head.token.kind == kinds.integer_literal of {
                                         true -> do
-                                            new_acc_id: string <- append_type_to_tuple_string(acc, trimmed.head.token);
-                                            extract_tuple_type_loop(trimmed.tail, new_acc_id)
+                                            new_acc2: string <- append_type_to_tuple_string(acc, trimmed.head.token);
+                                            extract_tuple_type_loop(trimmed.tail, new_acc2)
                                         end;
-                                        false -> case token_introduces_fn_type(trimmed.head.token, kinds) of {
+                                        false -> case lexer_token_kind@is_identifier_lexeme_token(kinds, trimmed.head.token.kind) of {
                                             true -> do
-                                                (fn_s: string, fn_r: ListTokenSlot) <- extract_fn_type_from_slots(trimmed);
-                                                new_acc_fn: string <- concat(acc, fn_s);
-                                                extract_tuple_type_loop(fn_r, new_acc_fn)
+                                                new_acc_id: string <- append_type_to_tuple_string(acc, trimmed.head.token);
+                                                extract_tuple_type_loop(trimmed.tail, new_acc_id)
                                             end;
                                             false -> do
                                                 // Colon (param labels), `|` (lexed as unknown_char), `->`, etc. —

@@ -83,11 +83,37 @@ fn int64_literal_value_to_index(table: Int64LiteralTable, value: string) -> int6
     }
 }
 
+fn collect_int64_literal_from_case_branch(branch: SIRTerm, table: Int64LiteralTable, next_index: int64) -> (Int64LiteralTable, int64) {
+    case branch.kind < 0 of {
+        true -> (table, next_index);
+        false -> case branch.kind == 8 of {
+            true -> do
+                (t1: Int64LiteralTable, i1: int64) <- collect_int64_literal_from_term(branch.inner, table, next_index);
+                collect_int64_literal_from_term(branch.right_expr, t1, i1)
+            end;
+            false -> collect_int64_literal_from_term(branch, table, next_index)
+        }
+    }
+}
+
+fn collect_int64_literal_from_case_branch_list(seq: SIRTerm, table: Int64LiteralTable, next_index: int64) -> (Int64LiteralTable, int64) {
+    case seq.kind < 0 of {
+        true -> (table, next_index);
+        false -> case seq.kind == 7 of {
+            true -> do
+                (t1: Int64LiteralTable, i1: int64) <- collect_int64_literal_from_case_branch(seq.inner, table, next_index);
+                collect_int64_literal_from_case_branch_list(seq.right_expr, t1, i1)
+            end;
+            false -> (table, next_index)
+        }
+    }
+}
+
 fn collect_int64_literal_from_term(term: SIRTerm, table: Int64LiteralTable, next_index: int64) -> (Int64LiteralTable, int64) {
     case term.kind < 0 of {
         true -> (table, next_index);
         false -> case term.kind of {
-            0 -> case term.type_name == "int64" or term.type_name == "uint64"
+            0 -> case term.type_name == "int64" or term.type_name == "i64" or term.type_name == "uint64" or term.type_name == "u64"
                 or term.type_name == "int32" or term.type_name == "uint32"
                 or term.type_name == "int16" or term.type_name == "uint16"
                 or term.type_name == "int8" or term.type_name == "uint8" of {
@@ -109,6 +135,10 @@ fn collect_int64_literal_from_term(term: SIRTerm, table: Int64LiteralTable, next
                 (t1: Int64LiteralTable, i1: int64) <- collect_int64_literal_from_term(term.inner, table, next_index);
                 (t2: Int64LiteralTable, i2: int64) <- collect_int64_literal_from_term(term.right_expr, t1, i1);
                 (t2, i2)
+            end;
+            3 -> do
+                (t1: Int64LiteralTable, i1: int64) <- collect_int64_literal_from_term(term.inner, table, next_index);
+                collect_int64_literal_from_case_branch_list(term.right_expr, t1, i1)
             end;
             4 -> do
                 (t1: Int64LiteralTable, i1: int64) <- collect_int64_literal_from_term(term.inner, table, next_index);

@@ -2,7 +2,8 @@
 # Compiles the compiler source code in src/, lexer/, and parser/ using the Silica bootstrap compiler
 #
 # Usage:
-#   make                        # builds emitter for default target (apple_silicon)
+#   make                        # compile silica-compiler (default; no trial integration)
+#   make all                    # clean, then compile
 #   make TARGET=esp32-s3        # builds emitter for ESP32-S3
 #   make TARGET=apple_silicon   # builds emitter for Apple Silicon
 #   make integrate              # build compiler, then `make integrate` in each trials/*/ Makefile
@@ -70,9 +71,9 @@ TRIAL_SUBDIRS := $(sort $(foreach mf,$(TRIAL_MAKEFILES),$(notdir $(patsubst %/,%
 
 .PHONY: all clean build executables modules subdirs help integrate $(SUBDIRS)
 
-.DEFAULT_GOAL := all
+.DEFAULT_GOAL := build
 
-# Default target - clean first, then build
+# Default `make` compiles only. Use `make all` for clean + build; `make integrate` for trials.
 
 all: clean build
 
@@ -173,14 +174,16 @@ help:
 	@echo "This Makefile compiles the Phase 2 Silica compiler source code using the bootstrap compiler."
 	@echo ""
 	@echo "Usage:"
-	@echo "  make                        # default emitter target (apple_silicon)"
+	@echo "  make                        # compile silica-compiler (default; no trials)"
+	@echo "  make all                    # clean, then compile"
 	@echo "  make TARGET=esp32-s3        # build emitter for ESP32-S3"
 	@echo ""
 	@echo "Available emitter targets: $(patsubst %/,%,$(wildcard emitter/*/))"
 	@echo "Current target:            $(TARGET)"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all              - Compile all files (default)"
+	@echo "  build            - Compile silica-compiler (default goal)"
+	@echo "  all              - clean, then build"
 	@echo "  subdirs          - Build lexer, parser, type_checker, sir_generator, emitter"
 	@echo "  executables      - Compile main.silica to LLVM IR"
 	@echo "  modules          - Compile lexer and parser module files to LLVM IR"

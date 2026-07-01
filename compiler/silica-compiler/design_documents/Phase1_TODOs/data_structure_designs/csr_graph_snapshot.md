@@ -12,7 +12,7 @@ CSR modules expose query and traversal operations only. There is no `add_edge`, 
 
 ## 2. Deterministic dense slot assignment
 
-Public vertex IDs and internal dense slots are both represented as `int64`, but they are distinct domains. A public ID is never used directly as a buffer index. Live vertex IDs are visited in ascending `compare_node` order and assigned:
+Public vertex IDs use `NodeIdType`; internal dense slots use `int64`. They are distinct domains, and a public ID is never used directly as a buffer index. Live vertex IDs are visited in ascending `compare_node` order and assigned:
 
 ```text
 slot 0 .. V-1
@@ -20,10 +20,10 @@ slot 0 .. V-1
 
 The snapshot stores both:
 
-- `node_ids[slot] -> int64` public vertex ID;
+- `node_ids[slot] -> NodeIdType` public vertex ID;
 - a WBT map `node_to_slot` built linearly from the already sorted ids.
 
-This allows arbitrary `int64` public IDs, including negative and sparse IDs, without requiring that public IDs equal dense slots.
+This allows any valid Silica `NodeIdType` without requiring that public IDs equal dense slots.
 
 ## 3. Physical shape
 
@@ -35,13 +35,13 @@ The exact field order, padding, and compiler spelling are private to one compile
     node_count: int64,
     edge_count: int64,
     adjacency_entry_count: int64,
-    node_ids: buf(R, SpaceType, int64, V),
+    node_ids: buf(R, SpaceType, NodeIdType, V),
     offsets: buf(R, SpaceType, int64, V_PLUS_ONE),
-    neighbors: buf(R, SpaceType, int64, A),
+    neighbors: buf(R, SpaceType, NodeIdType, A),
     edge_data: OptionalBuffer[EdgeDataType, A],
-    node_to_slot: WbtMap[int64, int64],
-    compare_node: fn(int64, int64) -> atom,
-    compare_edge_data: fn(EdgeDataType, EdgeDataType) -> atom,
+    node_to_slot: WbtMap[NodeIdType, int64],
+    compare_node: fn(NodeIdType, NodeIdType) -> (:less | :equal | :greater),
+    compare_edge_data: fn(EdgeDataType, EdgeDataType) -> (:less | :equal | :greater),
     ordering_identity: OpaqueToken,
     directedness: :directed | :undirected
 }

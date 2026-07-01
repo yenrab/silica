@@ -1268,7 +1268,7 @@ fn find_type_and_semicolon(slots: ListTokenSlot) -> (string, SourceLocation, Lis
     end
 }
 
-// True when token is `List` / `OrderedSet` / `OrderedMap` / `Heap` / `DirectedGraph` with trailing `[...]` type params.
+// True when token is a public collection trait type name with trailing `[...]` type params.
 fn token_is_bracketed_collection_type_name(tok: Token, kinds: TokenKinds) -> bool {
     tok.kind == kinds.list_keyword
 }
@@ -2807,58 +2807,100 @@ fn take_suffix_from_role_or_of_keyword(slots: ListTokenSlot, target_role: int64,
     }
 }
 
-// Split case branch pattern from RHS using lexer `->` (right_arrow). Role-based split can fail if slot_role disagrees with surface token.
 fn take_prefix_before_branch_arrow(slots: ListTokenSlot, kinds: TokenKinds) -> ListTokenSlot proc[DeviceIO] {
-    take_prefix_before_branch_arrow_balanced(slots, kinds, 0)
+    take_prefix_before_branch_arrow_balanced(slots, kinds, 0, 0, 0)
 }
 
 fn take_suffix_from_branch_arrow(slots: ListTokenSlot, kinds: TokenKinds) -> ListTokenSlot proc[DeviceIO] {
-    take_suffix_from_branch_arrow_balanced(slots, kinds, 0)
+    take_suffix_from_branch_arrow_balanced(slots, kinds, 0, 0, 0)
 }
 
-// Only treat `->` as the branch arrow at brace depth 0 so `{ x: T } -> rhs` does not stop at a spurious `->`
-// inside nested `{ ... }` (e.g. closing case `}` vs record pattern `}` is handled by depth).
-fn take_prefix_before_branch_arrow_balanced(slots: ListTokenSlot, kinds: TokenKinds, brace_depth: int64) -> ListTokenSlot proc[DeviceIO] {
+// Only treat `->` as the branch arrow at brace/paren/bracket depth 0 so `fn(...) -> T` inside patterns does not split early.
+fn take_prefix_before_branch_arrow_balanced(slots: ListTokenSlot, kinds: TokenKinds, brace_depth: int64, pdepth: int64, sdepth: int64) -> ListTokenSlot proc[DeviceIO] {
     case slots.is_nil of {
         true -> constraint_core@empty_list_slot();
-        false -> case (slots.head.token.kind == kinds.right_arrow or slots.head.token.lexeme == "->") and brace_depth == 0 of {
+        false -> case (slots.head.token.kind == kinds.right_arrow or slots.head.token.lexeme == "->") and brace_depth == 0 and pdepth == 0 and sdepth == 0 of {
             true -> constraint_core@empty_list_slot();
             false -> case slots.head.token.kind == kinds.left_brace or slots.head.token.lexeme == "{" of {
                 true -> do
-                    tail_p: ListTokenSlot <- take_prefix_before_branch_arrow_balanced(slots.tail, kinds, brace_depth + 1);
+                    tail_p: ListTokenSlot <- take_prefix_before_branch_arrow_balanced(slots.tail, kinds, brace_depth + 1, pdepth, sdepth);
                     constraint_core@cons_slot(slots.head, tail_p)
                 end;
                 false -> case slots.head.token.kind == kinds.right_brace or slots.head.token.lexeme == "}" of {
                     true -> do
                         nd: int64 <- brace_depth - 1;
                         d2: int64 <- case nd < 0 of { true -> 0; false -> nd };
-                        tail_p2: ListTokenSlot <- take_prefix_before_branch_arrow_balanced(slots.tail, kinds, d2);
+                        tail_p2: ListTokenSlot <- take_prefix_before_branch_arrow_balanced(slots.tail, kinds, d2, pdepth, sdepth);
                         constraint_core@cons_slot(slots.head, tail_p2)
                     end;
-                    false -> do
-                        tail_p3: ListTokenSlot <- take_prefix_before_branch_arrow_balanced(slots.tail, kinds, brace_depth);
-                        constraint_core@cons_slot(slots.head, tail_p3)
-                    end
+                    false -> case slots.head.token.kind == kinds.left_paren or slots.head.token.lexeme == "(" of {
+                        true -> do
+                            tail_p3: ListTokenSlot <- take_prefix_before_branch_arrow_balanced(slots.tail, kinds, brace_depth, pdepth + 1, sdepth);
+                            constraint_core@cons_slot(slots.head, tail_p3)
+                        end;
+                        false -> case slots.head.token.kind == kinds.right_paren or slots.head.token.lexeme == ")" of {
+                            true -> do
+                                np: int64 <- case pdepth > 0 of { true -> pdepth - 1; false -> 0 };
+                                tail_p4: ListTokenSlot <- take_prefix_before_branch_arrow_balanced(slots.tail, kinds, brace_depth, np, sdepth);
+                                constraint_core@cons_slot(slots.head, tail_p4)
+                            end;
+                            false -> case slots.head.token.kind == kinds.left_bracket or slots.head.token.lexeme == "[" of {
+                                true -> do
+                                    tail_p5: ListTokenSlot <- take_prefix_before_branch_arrow_balanced(slots.tail, kinds, brace_depth, pdepth, sdepth + 1);
+                                    constraint_core@cons_slot(slots.head, tail_p5)
+                                end;
+                                false -> case slots.head.token.kind == kinds.right_bracket or slots.head.token.lexeme == "]" of {
+                                    true -> do
+                                        ns: int64 <- case sdepth > 0 of { true -> sdepth - 1; false -> 0 };
+                                        tail_p6: ListTokenSlot <- take_prefix_before_branch_arrow_balanced(slots.tail, kinds, brace_depth, pdepth, ns);
+                                        constraint_core@cons_slot(slots.head, tail_p6)
+                                    end;
+                                    false -> do
+                                        tail_p7: ListTokenSlot <- take_prefix_before_branch_arrow_balanced(slots.tail, kinds, brace_depth, pdepth, sdepth);
+                                        constraint_core@cons_slot(slots.head, tail_p7)
+                                    end
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-fn take_suffix_from_branch_arrow_balanced(slots: ListTokenSlot, kinds: TokenKinds, brace_depth: int64) -> ListTokenSlot proc[DeviceIO] {
+fn take_suffix_from_branch_arrow_balanced(slots: ListTokenSlot, kinds: TokenKinds, brace_depth: int64, pdepth: int64, sdepth: int64) -> ListTokenSlot proc[DeviceIO] {
     case slots.is_nil of {
         true -> constraint_core@empty_list_slot();
-        false -> case (slots.head.token.kind == kinds.right_arrow or slots.head.token.lexeme == "->") and brace_depth == 0 of {
+        false -> case (slots.head.token.kind == kinds.right_arrow or slots.head.token.lexeme == "->") and brace_depth == 0 and pdepth == 0 and sdepth == 0 of {
             true -> slots;
             false -> case slots.head.token.kind == kinds.left_brace or slots.head.token.lexeme == "{" of {
-                true -> take_suffix_from_branch_arrow_balanced(slots.tail, kinds, brace_depth + 1);
+                true -> take_suffix_from_branch_arrow_balanced(slots.tail, kinds, brace_depth + 1, pdepth, sdepth);
                 false -> case slots.head.token.kind == kinds.right_brace or slots.head.token.lexeme == "}" of {
                     true -> do
                         nd: int64 <- brace_depth - 1;
                         d2: int64 <- case nd < 0 of { true -> 0; false -> nd };
-                        take_suffix_from_branch_arrow_balanced(slots.tail, kinds, d2)
+                        take_suffix_from_branch_arrow_balanced(slots.tail, kinds, d2, pdepth, sdepth)
                     end;
-                    false -> take_suffix_from_branch_arrow_balanced(slots.tail, kinds, brace_depth)
+                    false -> case slots.head.token.kind == kinds.left_paren or slots.head.token.lexeme == "(" of {
+                        true -> take_suffix_from_branch_arrow_balanced(slots.tail, kinds, brace_depth, pdepth + 1, sdepth);
+                        false -> case slots.head.token.kind == kinds.right_paren or slots.head.token.lexeme == ")" of {
+                            true -> do
+                                np: int64 <- case pdepth > 0 of { true -> pdepth - 1; false -> 0 };
+                                take_suffix_from_branch_arrow_balanced(slots.tail, kinds, brace_depth, np, sdepth)
+                            end;
+                            false -> case slots.head.token.kind == kinds.left_bracket or slots.head.token.lexeme == "[" of {
+                                true -> take_suffix_from_branch_arrow_balanced(slots.tail, kinds, brace_depth, pdepth, sdepth + 1);
+                                false -> case slots.head.token.kind == kinds.right_bracket or slots.head.token.lexeme == "]" of {
+                                    true -> do
+                                        ns: int64 <- case sdepth > 0 of { true -> sdepth - 1; false -> 0 };
+                                        take_suffix_from_branch_arrow_balanced(slots.tail, kinds, brace_depth, pdepth, ns)
+                                    end;
+                                    false -> take_suffix_from_branch_arrow_balanced(slots.tail, kinds, brace_depth, pdepth, sdepth)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

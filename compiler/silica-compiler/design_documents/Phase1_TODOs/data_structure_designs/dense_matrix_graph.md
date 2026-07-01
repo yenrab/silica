@@ -14,12 +14,12 @@ The representation is not a bitset. An unweighted graph uses one boolean random-
 
 Construction receives a strictly ascending unique list of node ids. It builds:
 
-- `slot_to_node`, a random-access sequence in slot order;
-- `node_to_slot`, a WBT map built with `from_sorted`.
+- `slot_to_node`, a `SkewRAL[NodeIdType]` in slot order;
+- `node_to_slot`, a `WBTMap[NodeIdType, int64]` built with `from_sorted`.
 
 The vertex universe and slot assignment never change. `add_edge` rejects an endpoint not in the universe; it never auto-adds a vertex.
 
-Public IDs and dense slots are both represented as `int64`, but are distinct domains. Public IDs may be negative, sparse, or otherwise unrelated to `0..V-1`; every public operation resolves an ID through `node_to_slot` before indexing a cell.
+Public IDs use `NodeIdType`; dense slots use `int64`, and the domains are distinct. Every public operation resolves an ID through `node_to_slot` before indexing a cell.
 
 ## 3. Cell indexing
 

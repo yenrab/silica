@@ -16,22 +16,43 @@
 -}
 
 // Memory region prim emission: alloc_region, alloc_ref, alloc_rec, read_ref, write_ref,
-// alloc_buf, buf_load, buf_store, read_buf, write_buf, fresh_lifetime
+// alloc_buf, buf_load, buf_store, read_buf, write_buf, fresh_lifetime,
+// canonical_arena_lookup, canonical_arena_same
 // sir_design_spec §7.4, §7.5; silica-specification §12.1.2
 // Heap-based allocation per spec: regions are heap-allocated with scope-tied deallocation.
 // Arena layout: [0:8]=bump, [8:16]=end; data at offset 16. Size 4096+16=4112 bytes.
 // If allocation would exceed arena capacity, raise runtime error (BL _abort).
 
 use sir_ast;
+use var;
 
 export is_memory_prim/1;
 export emit_prim_op/2;
+export emit_buf_bounds_check/3;
+export emit_buf_store/3;
 export module_uses_region_allocation/1;
 export module_uses_alloc_region/1;
 export emit_region_overflow_helper/0;
 
 fn is_memory_prim(name: string) -> bool {
-    name == "alloc_region" or name == "alloc_ref" or name == "alloc_rec" or name == "read_ref" or name == "write_ref" or name == "alloc_buf" or name == "buf_load" or name == "buf_store" or name == "read_buf" or name == "write_buf" or name == "fresh_lifetime"
+    name == "alloc_region" or name == "alloc_ref" or name == "alloc_rec" or name == "read_ref" or name == "write_ref" or name == "alloc_buf" or name == "buf_load" or name == "buf_store" or name == "read_buf" or name == "write_buf" or name == "fresh_lifetime" or name == "canonical_arena_lookup" or name == "canonical_arena_same"
+}
+
+// canonical_arena_lookup(key): X1 = int64 specialization key -> region base in dest.
+fn emit_canonical_arena_lookup(dest: string) -> string {
+    mov_key: string <- "    MOV X0, X1\n";
+    bl_lookup: string <- "    BL _silica_rt_canonical_arena_lookup\n";
+    mov_dest: string <- concat(concat("    MOV ", dest), ", X0");
+    concat(concat(mov_key, bl_lookup), mov_dest)
+}
+
+// canonical_arena_same(r1, r2): X1 = region A, X2 = region B -> boolean in dest.
+fn emit_canonical_arena_same(dest: string) -> string {
+    mov_a: string <- "    MOV X0, X1\n";
+    mov_b: string <- "    MOV X1, X2\n";
+    bl_same: string <- "    BL _silica_rt_canonical_arena_same\n";
+    mov_dest: string <- concat(concat("    MOV ", dest), ", X0");
+    concat(concat(concat(concat(mov_a, mov_b), bl_same), "\n"), mov_dest)
 }
 
 // alloc_region(space): allocate arena on heap via malloc, return region base.
@@ -87,24 +108,129 @@ fn emit_write_ref(dest: string) -> string {
     concat("    STR X2, [X1]", "")
 }
 
-// alloc_buf(region, N): bump-allocate buffer of N int64 elements within region
-// Operands: X1 = region, X2 = N (element count). Size = N * 8 bytes.
-// Bounds check: if bump+(N*8) > end, branch to L_region_overflow (runtime error).
-fn emit_alloc_buf(dest: string) -> string {
+// alloc_buf(region, N): bump-allocate buffer of N elements within region.
+// Operands: X1 = region, X2 = N (element count). Rejects negative N, byte-size overflow, and arena overflow.
+fn elem_size_shift_from_buf_type(buf_type: string) -> int64 {
+    case memory_type_contains(buf_type, "int8") of {
+        true -> 0;
+        false -> case memory_type_contains(buf_type, "uint8") of {
+            true -> 0;
+            false -> case memory_type_contains(buf_type, "int16") of {
+                true -> 1;
+                false -> case memory_type_contains(buf_type, "uint16") of {
+                    true -> 1;
+                    false -> case memory_type_contains(buf_type, "int32") of {
+                        true -> 2;
+                        false -> case memory_type_contains(buf_type, "uint32") of {
+                            true -> 2;
+                            false -> 3
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn elem_size_bytes_from_buf_type(buf_type: string) -> int64 {
+    shift: int64 <- elem_size_shift_from_buf_type(buf_type);
+    case shift of {
+        0 -> 1;
+        1 -> 2;
+        2 -> 4;
+        _: int64 -> 8
+    }
+}
+
+fn emit_alloc_buf(term: SIRTerm, dest: string) -> string {
+    elem_bytes: int64 <- elem_size_bytes_from_buf_type(term.type_name);
+    shift: int64 <- elem_size_shift_from_buf_type(term.type_name);
+    eb: string <- int64_to_str(elem_bytes);
+    neg_check: string <- "    CMP X2, #0\n    B.LT L_buf_invalid\n";
     ldr_bump: string <- "    LDR X3, [X1]\n";
     ldr_end: string <- "    LDR X4, [X1, #8]\n";
-    add_new: string <- "    ADD X5, X3, X2, LSL #3\n";
+    mov_elem: string <- concat(concat("    MOV X8, #", eb), "\n");
+    mul_bytes: string <- "    MUL X7, X2, X8\n";
+    mul_ov: string <- "    CMP X8, #0\n    B.EQ L_ab_mul_done\n    SDIV X9, X7, X8\n    CMP X9, X2\n    B.NE L_buf_invalid\nL_ab_mul_done:\n";
+    add_new: string <- "    ADD X5, X3, X7\n";
     cmp: string <- "    CMP X5, X4\n";
     b_overflow: string <- "    B.HI L_region_overflow\n";
     mov_buf: string <- "    MOV X4, X3\n";
-    add_bump: string <- "    ADD X3, X3, X2, LSL #3\n";
+    add_bump: string <- case shift of {
+        3 -> "    ADD X3, X3, X2, LSL #3\n";
+        _: int64 -> "    ADD X3, X3, X7\n"
+    };
     str_bump: string <- "    STR X3, [X1]\n";
     mov_dest: string <- concat(concat("    MOV ", dest), ", X4");
-    check1: string <- concat(concat(ldr_bump, ldr_end), add_new);
-    check: string <- concat(concat(check1, cmp), b_overflow);
+    check1: string <- concat(neg_check, ldr_bump);
+    check2: string <- concat(check1, ldr_end);
+    check3: string <- concat(check2, mov_elem);
+    check4: string <- concat(check3, mul_bytes);
+    check5: string <- concat(check4, mul_ov);
+    check6: string <- concat(check5, add_new);
+    check: string <- concat(concat(check6, cmp), b_overflow);
     alloc1: string <- concat(concat(mov_buf, add_bump), str_bump);
     alloc: string <- concat(alloc1, mov_dest);
     concat(check, alloc)
+}
+
+fn int64_to_str(n: int64) -> string {
+    case n of {
+        0 -> "0";
+        1 -> "1";
+        2 -> "2";
+        3 -> "3";
+        4 -> "4";
+        8 -> "8";
+        _: int64 -> "8"
+    }
+}
+
+fn bounds_len_from_prim_value(value: string) -> string {
+    marker: string <- "|bounds:";
+    case len(value) >= len(marker) of {
+        true -> case substring(value, 0, len(marker)) == marker of {
+            true -> substring(value, len(marker), len(value));
+            false -> ""
+        };
+        false -> ""
+    }
+}
+
+fn is_decimal_literal(s: string, i: int64) -> bool {
+    case i >= len(s) of {
+        true -> len(s) > 0;
+        false -> case substring(s, i, i + 1) of {
+            "0" -> is_decimal_literal(s, i + 1);
+            "1" -> is_decimal_literal(s, i + 1);
+            "2" -> is_decimal_literal(s, i + 1);
+            "3" -> is_decimal_literal(s, i + 1);
+            "4" -> is_decimal_literal(s, i + 1);
+            "5" -> is_decimal_literal(s, i + 1);
+            "6" -> is_decimal_literal(s, i + 1);
+            "7" -> is_decimal_literal(s, i + 1);
+            "8" -> is_decimal_literal(s, i + 1);
+            "9" -> is_decimal_literal(s, i + 1);
+            _: string -> false
+        }
+    }
+}
+
+fn emit_buf_bounds_check(term: SIRTerm, outer_reg: string, _label_sfx: string) -> string {
+    len_param: string <- bounds_len_from_prim_value(term.value);
+    case len(len_param) == 0 of {
+        true -> "";
+        false -> case is_decimal_literal(len_param, 0) of {
+            true -> concat(concat("    CMP X2, #", len_param), "\n    B.GE L_buf_bounds\n");
+            false -> do
+                binding: string <- var@find_sp_binding(outer_reg, len_param);
+                case len(binding) == 0 of {
+                    true -> "";
+                    false -> concat(concat("    CMP X2, ", binding), "\n    B.GE L_buf_bounds\n")
+                }
+            end
+        }
+    }
 }
 
 fn memory_type_contains_from(h: string, needle: string, i: int64) -> bool {
@@ -134,8 +260,7 @@ fn w_reg_from_gpr(reg: string) -> string {
     }
 }
 
-// buf_load(buf, index): load from buf[index]
-// Operands: X1 = buf base, X2 = index.
+// buf_load(buf, index): load from buf[index] after optional bounds check in caller wrapper.
 fn emit_buf_load(term: SIRTerm, dest: string) -> string {
     wd: string <- w_reg_from_gpr(dest);
     case term.type_name of {
@@ -173,7 +298,7 @@ fn buf_store_value_type(tuple_type: string) -> string {
 
 // buf_store(buf, index, value): store value at buf[index]
 // Operands: X1 = buf, X2 = pointer to tuple(index, value) from tuple_make.
-fn emit_buf_store(term: SIRTerm, dest: string) -> string {
+fn emit_buf_store(term: SIRTerm, dest: string, outer_reg: string) -> string {
     value_type: string <- buf_store_value_type(term.right_expr.type_name);
     ldr_val: string <- case value_type of {
         "int8" -> "    LDRSB W3, [X2, #8]\n";
@@ -185,6 +310,7 @@ fn emit_buf_store(term: SIRTerm, dest: string) -> string {
         _: string -> "    LDR X3, [X2, #8]\n"
     };
     ldr_idx: string <- "    LDR X2, [X2]\n";
+    bounds: string <- emit_buf_bounds_check(term, outer_reg, dest);
     str_asm: string <- case value_type of {
         "int8" -> "    STRB W3, [X1, X2]";
         "uint8" -> "    STRB W3, [X1, X2]";
@@ -194,7 +320,7 @@ fn emit_buf_store(term: SIRTerm, dest: string) -> string {
         "uint32" -> "    STR W3, [X1, X2, LSL #2]";
         _: string -> "    STR X3, [X1, X2, LSL #3]"
     };
-    concat(concat(ldr_val, ldr_idx), str_asm)
+    concat(concat(concat(ldr_val, ldr_idx), bounds), str_asm)
 }
 
 // fresh_lifetime(): returns unique lifetime value. No args.
@@ -303,7 +429,7 @@ fn module_uses_alloc_region(sir_module: SIRModule) -> bool {
 }
 
 fn emit_region_overflow_helper() -> string {
-    "L_region_overflow:\n    BL _abort\n"
+    "L_region_overflow:\n    BL _abort\nL_buf_invalid:\n    BL _abort\nL_buf_bounds:\n    BL _abort\n"
 }
 
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
@@ -313,12 +439,14 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
         "alloc_rec" -> emit_alloc_rec(dest);
         "read_ref" -> emit_read_ref(dest);
         "write_ref" -> emit_write_ref(dest);
-        "alloc_buf" -> emit_alloc_buf(dest);
+        "alloc_buf" -> emit_alloc_buf(term, dest);
         "buf_load" -> emit_buf_load(term, dest);
-        "buf_store" -> emit_buf_store(term, dest);
+        "buf_store" -> emit_buf_store(term, dest, "");
         "read_buf" -> emit_buf_load(term, dest);
-        "write_buf" -> emit_buf_store(term, dest);
+        "write_buf" -> emit_buf_store(term, dest, "");
         "fresh_lifetime" -> emit_fresh_lifetime(dest);
+        "canonical_arena_lookup" -> emit_canonical_arena_lookup(dest);
+        "canonical_arena_same" -> emit_canonical_arena_same(dest);
         _: string -> concat(concat("    ; unsupported memory prim: ", term.name), "")
     }
 }

@@ -21,6 +21,7 @@
 use parser_ast;
 use type_checker_core;
 use type_checker_traits;
+use type_checker_record_types;
 
 export ListEmptyPat/0;
 export ListConsPat/0;
@@ -329,7 +330,29 @@ fn function_type_texts_compatible_list(actual: string, formal: string) -> bool {
 }
 
 fn struct_collectable_types_compatible(actual: string, formal: string, world: ListNamedProgram) -> bool {
-    struct_fields_compatible_loop(actual, formal, 1, 1, world)
+    struct_formal_fields_all_match(actual, formal, 1, world)
+}
+
+fn struct_formal_fields_all_match(actual: string, formal: string, fi: int64, world: ListNamedProgram) -> bool {
+    case fi >= len(formal) - 1 of {
+        true -> true;
+        false -> do
+            (ok_f: bool, fname_f: string, ftype_f: string, fi2: int64) <- struct_read_field(formal, fi);
+            case ok_f of {
+                false -> false;
+                true -> do
+                    ftype_a: string <- type_checker_record_types@find_field_type_in_record(actual, fname_f);
+                    case len(ftype_a) == 0 of {
+                        true -> false;
+                        false -> case collectable_types_compatible(ftype_a, ftype_f, world) of {
+                            false -> false;
+                            true -> struct_formal_fields_all_match(actual, formal, fi2, world)
+                        }
+                    }
+                end
+            }
+        end
+    }
 }
 
 fn struct_field_pair_collectable_compatible(actual: string, formal: string, ai: int64, fi: int64, world: ListNamedProgram) -> bool {

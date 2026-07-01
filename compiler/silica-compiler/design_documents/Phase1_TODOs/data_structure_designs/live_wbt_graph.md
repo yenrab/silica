@@ -8,13 +8,13 @@
 Unweighted:
 
 ```text
-vertices : WBTMap<int64, WBTSet<int64>>
+vertices : WBTMap<NodeIdType, WBTSet<NodeIdType>>
 ```
 
 Weighted or attributed:
 
 ```text
-vertices : WBTMap<int64, WBTMap<int64, EdgeData>>
+vertices : WBTMap<NodeIdType, WBTMap<NodeIdType, EdgeData>>
 ```
 
 Both outer and inner WBTs use `compare_node` for key order. There is exactly one adjacency position for a `(from, to)` pair.
@@ -22,7 +22,7 @@ Both outer and inner WBTs use `compare_node` for key order. There is exactly one
 An unweighted public edge payload is the target node id itself. Thus the generated unweighted directed graph specializes:
 
 ```text
-EdgePayloadType = int64
+EdgePayloadType = NodeIdType
 edge_target(x) = x
 compare_edge = compare_node
 ```
@@ -40,8 +40,8 @@ Conceptually:
     node_count: int64,
     edge_count: int64,
     adjacency_entry_count: int64,
-    compare_node: fn(int64, int64) -> atom,
-    compare_edge_data: fn(EdgeDataType, EdgeDataType) -> atom,
+    compare_node: fn(NodeIdType, NodeIdType) -> (:less | :equal | :greater),
+    compare_edge_data: fn(EdgeDataType, EdgeDataType) -> (:less | :equal | :greater),
     ordering_identity: OpaqueToken,
     directedness: :directed | :undirected,
     payload_kind: :unweighted | :attributed | :weighted
@@ -116,7 +116,7 @@ For undirected graphs, `degree` counts a self-loop according to graph-theoretic 
 
 Vertex iteration is ascending `compare_node` order. Neighbor iteration is ascending target-node order.
 
-`compare_edge_data` does not control adjacency placement. It supports trait-level data comparison and undirected reverse-entry validation. Neighbor views are generated as `{to: int64, data: EdgeDataType}`, so target extraction is structural and cannot disagree with the inner key.
+`compare_edge_data` does not control adjacency placement. It supports trait-level data comparison and undirected reverse-entry validation. Neighbor views are generated as `{to: NodeIdType, data: EdgeDataType}`, so target extraction is structural and cannot disagree with the inner key.
 
 ## 9. Count invariants
 
