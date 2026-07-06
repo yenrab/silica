@@ -27,6 +27,8 @@ export collection_space_from_type/1;
 export infer_collection_decl_from_receiver/3;
 export resolve_trait_formal_type/3;
 export resolve_trait_formal_with_contexts/4;
+export resolve_constructor_call_formal/2;
+export resolve_accumulator_call_formal/2;
 export witness_matches_ordered_set_declaration/3;
 export witness_matches_ordered_map_declaration/4;
 export witness_matches_heap_declaration/3;
@@ -1157,6 +1159,59 @@ fn resolve_trait_formal_with_contexts(formal: string, collection_type: string, r
     }
 }
 
+fn replace_assoc_token_in_type(s: string, token: string, replacement: string) -> string {
+    case len(replacement) == 0 or len(token) == 0 of {
+        true -> s;
+        false -> replace_assoc_token_scan(s, token, replacement, 0, "")
+    }
+}
+
+fn replace_assoc_token_scan(s: string, token: string, replacement: string, i: int64, acc: string) -> string {
+    case i >= len(s) of {
+        true -> acc;
+        false -> case i + len(token) <= len(s) and substring(s, i, i + len(token)) == token of {
+            true -> replace_assoc_token_scan(s, token, replacement, i + len(token), concat(acc, replacement));
+            false -> replace_assoc_token_scan(s, token, replacement, i + 1, concat(acc, substring(s, i, i + 1)))
+        }
+    }
+}
+
+fn constructor_witness_type_for_placeholder(bind_type: string, placeholder: string) -> string {
+    case is_collection_trait_type(bind_type) of {
+        true -> resolve_assoc_type_placeholder(placeholder, bind_type, 1);
+        false -> case bind_type_has_collection_runtime_fields(bind_type) of {
+            true -> assoc_type_from_record_witness(placeholder, bind_type);
+            false -> ""
+        }
+    }
+}
+
+fn resolve_constructor_call_formal(bind_type: string, formal: string) -> string {
+    case len(formal) == 0 of {
+        true -> formal;
+        false -> do
+            item_t: string <- constructor_witness_type_for_placeholder(bind_type, "ItemType");
+            key_t: string <- constructor_witness_type_for_placeholder(bind_type, "KeyType");
+            val_t: string <- constructor_witness_type_for_placeholder(bind_type, "ValueType");
+            s1: string <- replace_assoc_token_in_type(formal, "ItemType", item_t);
+            s2: string <- replace_assoc_token_in_type(s1, "KeyType", key_t);
+            replace_assoc_token_in_type(s2, "ValueType", val_t)
+        end
+    }
+}
+
+// AccType is not witnessed by a collection receiver.  It is bound by the
+// expected result of fold-like calls, so keep this substitution separate from
+// constructor witness resolution (which may receive a function or record type
+// as its bind_type for unrelated reasons).
+fn resolve_accumulator_call_formal(expected_type: string, formal: string) -> string {
+    e: string <- strip_spaces_col(expected_type);
+    case len(e) == 0 or e == "discard" or e == "AccType" of {
+        true -> formal;
+        false -> replace_assoc_token_in_type(formal, "AccType", expected_type)
+    }
+}
+
 fn infer_collection_decl_from_receiver(inferred: string, arg_expr: Expr, context_env: ListSymbolEntry) -> string {
     inf: string <- strip_all_spaces_col(inferred);
     case is_collection_trait_type(inf) of {
@@ -1836,6 +1891,64 @@ fn collection_type_param_tag(bind_type: string) -> int64 {
     }
 }
 
+fn record_binary_field_param_tag(bind_type: string, field_name: string) -> int64 {
+    fn_type: string <- type_checker_record_types@find_field_type_in_record(bind_type, field_name);
+    (ok: bool, left: string, _: string) <- parse_fn_binary_param_types(fn_type);
+    case ok of {
+        true -> type_param_tag(left);
+        false -> 0
+    }
+}
+
+fn record_collection_type_param_tag(bind_type: string, rep: int64) -> int64 {
+    case rep of {
+        1 -> record_binary_field_param_tag(bind_type, "compare_item");
+        2 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_key"),
+            record_binary_field_param_tag(bind_type, "compare_value")
+        );
+        3 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_node"),
+            record_binary_field_param_tag(bind_type, "compare_edge")
+        );
+        4 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_node"),
+            record_binary_field_param_tag(bind_type, "compare_edge_data")
+        );
+        5 -> combine_type_param_tags(
+            combine_type_param_tags(
+                record_binary_field_param_tag(bind_type, "compare_node"),
+                record_binary_field_param_tag(bind_type, "compare_edge_data")
+            ),
+            record_binary_field_param_tag(bind_type, "compare_weight")
+        );
+        6 -> record_binary_field_param_tag(bind_type, "compare_item");
+        7 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_priority"),
+            record_binary_field_param_tag(bind_type, "compare_item")
+        );
+        8 -> record_binary_field_param_tag(bind_type, "compare_item");
+        9 -> record_binary_field_param_tag(bind_type, "compare_item");
+        10 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_node"),
+            record_binary_field_param_tag(bind_type, "compare_edge")
+        );
+        11 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_node"),
+            record_binary_field_param_tag(bind_type, "compare_edge_data")
+        );
+        12 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_node"),
+            record_binary_field_param_tag(bind_type, "compare_edge")
+        );
+        13 -> combine_type_param_tags(
+            record_binary_field_param_tag(bind_type, "compare_node"),
+            record_binary_field_param_tag(bind_type, "compare_edge_data")
+        );
+        _: int64 -> 0
+    }
+}
+
 fn collection_specialization_key(bind_type: string, module_name: string) -> int64 {
     rep: int64 <- representation_id_from_module(module_name);
     case rep == 0 of {
@@ -1848,7 +1961,11 @@ fn collection_specialization_key(bind_type: string, module_name: string) -> int6
                 true -> 1;
                 false -> space_tag_from_mem_space(space)
             };
-            tp: int64 <- collection_type_param_tag(bind_type);
+            public_tp: int64 <- collection_type_param_tag(bind_type);
+            tp: int64 <- case public_tp == 0 of {
+                true -> record_collection_type_param_tag(bind_type, rep);
+                false -> public_tp
+            };
             tp_use: int64 <- case tp == 0 of { true -> 1; false -> tp };
             (family_use * 16777216) + (rep * 65536) + (st * 256) + tp_use
         end

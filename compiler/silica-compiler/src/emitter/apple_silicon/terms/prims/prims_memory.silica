@@ -25,6 +25,8 @@
 
 use sir_ast;
 use var;
+use prims_tuple;
+use atom_table;
 
 export is_memory_prim/1;
 export emit_prim_op/2;
@@ -329,9 +331,38 @@ fn emit_fresh_lifetime(dest: string) -> string {
     concat(concat("    MOV ", dest), ", SP")
 }
 
-// alloc_rec(region, tuple_value): same as alloc_ref - allocate one cell, store value
-fn emit_alloc_rec(dest: string) -> string {
-    emit_alloc_ref(dest)
+fn emit_alloc_rec_copy_words(word_index: int64, word_count: int64) -> string {
+    case word_index >= word_count of {
+        true -> "";
+        false -> do
+            offset: string <- atom_table@int64_to_decimal_string(word_index * 8);
+            load: string <- concat(concat("    LDR X7, [X2, #", offset), "]\n");
+            store: string <- concat(concat("    STR X7, [X6, #", offset), "]\n");
+            concat(concat(load, store), emit_alloc_rec_copy_words(word_index + 1, word_count))
+        end
+    }
+}
+
+// alloc_rec(region, tuple_value): reserve one ref cell plus a stable copy of the
+// complete tuple in the region. The ref cell contains the tuple address, so
+// read_ref retains the same one-load representation as alloc_ref. tuple_value
+// is a temporary stack slab and must never escape directly.
+fn emit_alloc_rec(term: SIRTerm, dest: string) -> string {
+    tuple_count: int64 <- prims_tuple@count_type_elements(term.right_expr.type_name);
+    tuple_bytes: int64 <- prims_tuple@flat_alloc_size(tuple_count);
+    allocation_bytes: int64 <- tuple_bytes + 8;
+    allocation_text: string <- atom_table@int64_to_decimal_string(allocation_bytes);
+    ldr_bump: string <- "    LDR X3, [X1]\n";
+    ldr_end: string <- "    LDR X4, [X1, #8]\n";
+    mov_size: string <- concat(concat("    MOV X5, #", allocation_text), "\n");
+    add_new: string <- "    ADD X5, X3, X5\n";
+    bounds: string <- "    CMP X5, X4\n    B.HI L_region_overflow\n";
+    retain_ref: string <- "    MOV X4, X3\n";
+    payload: string <- "    ADD X6, X3, #8\n    STR X6, [X4]\n";
+    copy: string <- emit_alloc_rec_copy_words(0, tuple_bytes / 8);
+    publish_bump: string <- "    STR X5, [X1]\n";
+    mov_dest: string <- concat(concat("    MOV ", dest), ", X4");
+    concat(concat(concat(concat(concat(concat(concat(concat(concat(ldr_bump, ldr_end), mov_size), add_new), bounds), retain_ref), payload), copy), publish_bump), mov_dest)
 }
 
 fn term_has_region_allocation(term: SIRTerm) -> bool {
@@ -436,7 +467,7 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     case term.name of {
         "alloc_region" -> emit_alloc_region(dest);
         "alloc_ref" -> emit_alloc_ref(dest);
-        "alloc_rec" -> emit_alloc_rec(dest);
+        "alloc_rec" -> emit_alloc_rec(term, dest);
         "read_ref" -> emit_read_ref(dest);
         "write_ref" -> emit_write_ref(dest);
         "alloc_buf" -> emit_alloc_buf(term, dest);

@@ -1,0 +1,195 @@
+// Trial-only int64 search/fold with injectable atom comparator (invalid-comparator trials).
+
+export search_status_i64/3;
+export fold_set_i64/3;
+export fold_map_i64/3;
+
+fn fold_set_after_left_i64(
+    step: fn(int64, int64) -> int64,
+    left_acc: int64,
+    node_key: int64,
+    right: ref?(L, normal, rec)
+) -> int64 {
+    sequence
+        mid: int64 <- step(left_acc, node_key)
+    produces
+        pure fold_set_subtree_i64(step, mid, right)
+    end
+}
+
+fn fold_set_node_done_i64(
+    step: fn(int64, int64) -> int64,
+    acc: int64,
+    node_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> int64 {
+    sequence proc[mem(normal)]
+        node: (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (node_key, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node;
+        left_acc: int64 <- fold_set_subtree_i64(step, acc, left)
+    produces
+        pure fold_set_after_left_i64(step, left_acc, node_key, right)
+    end
+}
+
+fn fold_set_walk_i64(
+    step: fn(int64, int64) -> int64,
+    acc: int64,
+    node_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> int64 {
+    fold_set_node_done_i64(step, acc, node_ref)
+}
+
+fn fold_set_subtree_i64(
+    step: fn(int64, int64) -> int64,
+    acc: int64,
+    subtree: ref?(L, normal, rec)
+) -> int64 {
+    case subtree of {
+        :none -> acc;
+        node_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> fold_set_walk_i64(step, acc, node_ref)
+    }
+}
+
+fn fold_set_i64(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    init: int64,
+    step: fn(int64, int64) -> int64
+) -> int64 {
+    case set.root of {
+        :none -> init;
+        root_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> fold_set_walk_i64(step, init, root_ref)
+    }
+}
+
+fn fold_map_after_left_i64(
+    step: fn(int64, int64, int64) -> int64,
+    left_acc: int64,
+    node_key: int64,
+    node_value: int64,
+    right: ref?(L, normal, rec)
+) -> int64 {
+    sequence
+        mid: int64 <- step(left_acc, node_key, node_value)
+    produces
+        pure fold_map_subtree_i64(step, mid, right)
+    end
+}
+
+fn fold_map_node_done_i64(
+    step: fn(int64, int64, int64) -> int64,
+    acc: int64,
+    node_ref: ref(L, normal, (int64, int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> int64 {
+    sequence proc[mem(normal)]
+        node: (int64, int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (node_key, node_value, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node;
+        left_acc: int64 <- fold_map_subtree_i64(step, acc, left)
+    produces
+        pure fold_map_after_left_i64(step, left_acc, node_key, node_value, right)
+    end
+}
+
+fn fold_map_walk_i64(
+    step: fn(int64, int64, int64) -> int64,
+    acc: int64,
+    node_ref: ref(L, normal, (int64, int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> int64 {
+    fold_map_node_done_i64(step, acc, node_ref)
+}
+
+fn fold_map_subtree_i64(
+    step: fn(int64, int64, int64) -> int64,
+    acc: int64,
+    subtree: ref?(L, normal, rec)
+) -> int64 {
+    case subtree of {
+        :none -> acc;
+        node_ref: ref(L, normal, (int64, int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> fold_map_walk_i64(step, acc, node_ref)
+    }
+}
+
+fn fold_map_i64(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    init: int64,
+    step: fn(int64, int64, int64) -> int64
+) -> int64 {
+    case tree.root of {
+        :none -> init;
+        root_ref: ref(L, normal, (int64, int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> fold_map_walk_i64(step, init, root_ref)
+    }
+}
+
+fn walk_search_cmp_i64(
+    cmp: fn(int64, int64) -> atom,
+    item: int64,
+    node_key: int64,
+    left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> atom {
+    sequence
+        valid: atom <- comparator_result_validate(cmp(item, node_key))
+    produces
+        pure case valid of {
+            :less -> walk_search_i64(cmp, item, left);
+            :equal -> :found;
+            :greater -> walk_search_i64(cmp, item, right);
+            _: atom -> :invalid_comparator_result
+        }
+    end
+}
+
+fn walk_search_i64(
+    cmp: fn(int64, int64) -> atom,
+    item: int64,
+    subtree: ref?(L, normal, rec)
+) -> atom {
+    case subtree of {
+        :none -> :not_found;
+        node_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+            sequence proc[mem(normal)]
+                node: (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+                (node_key, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node
+            produces
+                pure walk_search_cmp_i64(cmp, item, node_key, left, right)
+            end
+        }
+    }
+}
+
+fn search_status_i64(
+    cmp: fn(int64, int64) -> atom,
+    item: int64,
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> atom {
+    case set.root of {
+        :none -> :not_found;
+        root_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+            sequence proc[mem(normal)]
+                node: (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(root_ref);
+                (node_key, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node
+            produces
+                pure walk_search_cmp_i64(cmp, item, node_key, left, right)
+            end
+        }
+    }
+}

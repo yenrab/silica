@@ -1,6 +1,6 @@
 # Phase 1 Standard Data Structures — Dependency-Ordered Implementation Plan
 
-**Date:** 2026-06-29
+**Date:** 2026-06-29; BinaryTree amendment 2026-07-02
 **Status:** Implementation sequencing authority
 **Design authority:** `[data_structure_designs/README.md](data_structure_designs/README.md)` and every design linked from it
 
@@ -23,8 +23,8 @@ This is a topological plan, not a list ordered by perceived API simplicity. A sm
 - exact function-value ordering identity;
 - recursive tuple allocation and references;
 - trait and constructor-record support for all Phase 1 collection families;
-- the WBT, skew binary random-access-list, and Brodal–Okasaki cores;
-- all nine public data-structure traits;
+- the WBT, skew binary random-access-list, Brodal–Okasaki, and persistent binary-tree cores;
+- all ten public data-structure traits;
 - live WBT, CSR snapshot, and dense graph representations;
 - generated module registration, build integration, new trials, validation, and cross-representation conformance.
 
@@ -35,6 +35,7 @@ This is a topological plan, not a list ordered by perceived API simplicity. A sm
 - compatibility wrappers for removed modules;
 - priority-queue arbitrary deletion or decrease-key;
 - rose-tree compaction or child-slot reuse;
+- compiler-wide adoption of `BinaryTree` as the parser AST representation (downstream migration tracked in `bootstrap_retirement_and_self_host_plan.md`, not a standard BinaryTree acceptance prerequisite);
 - graph vertex removal;
 - algorithms not explicitly part of the detailed design suite.
 
@@ -97,6 +98,8 @@ The following are terminal leaves in the Phase 1 dependency graph and must not b
 
 Their trait declarations may be parsed earlier as compiler fixtures, but their complete generated modules and conformance trials belong in the terminal layers.
 
+`BinaryTree` is not scheduled as a terminal unit here because its accepted backend unlocks the separately gated compiler-AST migration. That downstream migration does not gate standard BinaryTree acceptance.
+
 ## 4. Dependency graph
 
 ```text
@@ -122,9 +125,13 @@ Language/runtime substrate
     │   ├── Tree                                                     [leaf]
     │   └── dense graph modules                                     [leaf]
     │
-    └── immutable List + Brodal–Okasaki core
-        ├── Heap
-        └── PriorityQueue                                           [leaf]
+    ├── immutable List + Brodal–Okasaki core
+    │   ├── Heap
+    │   └── PriorityQueue                                           [leaf]
+    │
+    └── persistent fixed-arity binary-tree core
+        └── tree_binary ── BinaryTree
+            └── compiler AST bridge / migration                     [separate bootstrap-retirement plan]
 
 WBT indexes + graph traits + random-access-list core
 └── dense graph modules                                             [leaf]
@@ -153,8 +160,8 @@ These decisions are implementation inputs, not an additional scheduling barrier.
 | ----- | ------------------------------------------------------ | ------------------------------- | -------------------------------------- |
 | 0     | baseline, design freeze, trial harness                 | detailed designs                | controlled implementation              |
 | 1     | compiler/runtime substrate                             | Layer 0                         | every representation                   |
-| 2     | WBT, skew RAL, Brodal–Okasaki cores                    | Layer 1                         | all generated backends                 |
-| 3     | `wbt_set`, `wbt_map`, `OrderedSet`, `OrderedMap`, Heap | relevant Layer 2 core           | search adapter, graphs, priority queue |
+| 2     | WBT, skew RAL, Brodal–Okasaki, binary-tree cores       | Layer 1                         | all generated backends                 |
+| 3     | `wbt_set`, `wbt_map`, ordered traits, Heap, BinaryTree | relevant Layer 2 core           | search, graphs, PQ, AST migration      |
 | 4     | live WBT graph core and graph traits/modules           | WBT set/map                     | weighted and snapshot graphs           |
 | 5     | `SearchTree`, `PriorityQueue`, `Tree`                  | their complete branches         | terminal API completion                |
 | 6     | CSR and dense graph modules                            | graph/index/buffer dependencies | representation completion              |
@@ -190,6 +197,8 @@ trials/standard_data_structures_phase1/
 ├── wbt_core/
 ├── skew_ral_core/
 ├── brodal_okasaki_core/
+├── binary_tree_core/
+├── binary_tree/
 ├── ordered_collections/
 ├── live_graphs/
 ├── terminal_structures/
@@ -217,6 +226,8 @@ For every numbered design section, record at least one of:
 - out-of-scope marker copied from the design.
 
 The ledger prevents apparently complete modules from omitting failure or compatibility behavior.
+
+The 2026-07-02 BinaryTree amendment adds coverage for `persistent_binary_tree.md` and `binary_tree_trait.md`. Its planned trial leaves are `binary_tree_core/` for Layer 2 invariants and `binary_tree/` for Layer 3 trait/module acceptance. This amendment does not change the recorded 2026-06-29 baseline snapshot.
 
 ### 6.4 Record the closed CSR/dense representation contract
 
@@ -366,7 +377,8 @@ Cover all public families:
 - `WeightedGraph`;
 - `Heap`;
 - `PriorityQueue`;
-- `Tree`.
+- `Tree`;
+- `BinaryTree` (added by the §7.10 empty-record delta).
 
 Acceptance trials:
 
@@ -455,53 +467,422 @@ Acceptance trials (`compiler_substrate/`):
 
 **§7.9 status (2026-07-01):** Complete — `collection_constructor_calls.silica` lowers registered constructor lets through `build_collection_constructor_lets` (key → arena → raw → bundle side-lets → merge → bind); arena lookup uses keyed `var_ref`; bundles materialize via `{field}_ordering_bundle` side bindings with raw/key re-anchor lets (named bindings only; `_` discard skips bundle injection); module-scoped ordering-field list when bind type is an explicit runtime record. Positive trials in `compiler_substrate/`: `constructor_canonical_arena_lowering`, `constructor_record_field_order`, `constructor_record_resolution` (runnable end-to-end); `constructor_stub_empty_run` (all nine stub `@empty` paths); `constructor_ordering_bundle` (bundle field observable on merged records). **Integrate verified:** `compiler_substrate/` `60 0`. **Layer 1 exit gate** satisfied for §7.1–§7.9 substrate criteria; proceed to Layer 2 §8.
 
+### 7.10 BinaryTree family registration delta
+
+**Amendment date:** 2026-07-02.
+**Dependencies:** completed §§7.1, 7.3–7.9.
+**Blocks:** BinaryTree core §8D and public backend §9D only. It does not invalidate the accepted nine-family substrate or block their already-ready representation tracks.
+
+Extend the completed collection substrate for the tenth public family:
+
+- parse and validate `BinaryTree[ItemType, mem(SpaceType)]`;
+- recognize `BinaryTreeType` where trait associated placeholders require a receiver-family witness;
+- register the `tree_binary` generated module and a `StubBinaryTree` substrate module;
+- allocate distinct family and representation IDs without changing any existing ID;
+- include item specialization and memory space in the stable specialization key;
+- accept the exact empty constructor record `{}` for `empty` and `with_root`;
+- witness `ItemType` from the declared result type and, for `with_root`, the explicit root item;
+- reject `empty({})` when the expected collection type does not determine `ItemType` and `SpaceType`;
+- reject every extra field in the empty record;
+- lower constructor lets through the canonical arena/spec-key merge path;
+- carry no comparator, extractor, orientation, or ordering-identity bundle for this unordered family; and
+- preserve the rule that an unrelated coincidentally shaped record or unregistered module does not acquire BinaryTree behavior.
+
+The empty record is a deliberate extension of the common constructor-function-record rule, not an exception that permits omitting required fields from another family. Existing ordered-family lowering and bundle materialization must remain byte-for-byte behaviorally unchanged.
+
+Acceptance trials (`compiler_substrate/`):
+
+- `binary_tree_bracket_type_parse`: every supported item shape and memory space parses and type-checks;
+- `binary_tree_empty_constructor_record`: `empty({})` resolves from its binding type and `with_root({}, item)` agrees with the explicit item witness;
+- `binary_tree_registry_specialization_distinct`: item and space specializations receive distinct keys while repeated construction reuses one canonical arena;
+- `binary_tree_stub_run`: runnable `StubBinaryTree@empty` and `@with_root` paths traverse parse → typecheck → SIR → emit → link → run;
+- `binary_tree_constructor_no_ordering_bundle`: the merged record contains arena/spec-key fields and no fabricated comparator or ordering token;
+- existing nine-family constructor, bundle, registry, and link-mangling trials remain unchanged and green.
+
+Compile-fail trials (`error_enforcement/`):
+
+- `trial_compile_fail_binary_tree_empty_unwitnessed`;
+- `trial_compile_fail_binary_tree_constructor_extra_field`;
+- `trial_compile_fail_binary_tree_item_witness_mismatch`;
+- `trial_compile_fail_binary_tree_wrong_module`;
+- `trial_compile_fail_binary_tree_missing_mem`.
+
+**§7.10 exit gate:** BinaryTree has a stable bracket witness, family/representation identity, exact empty-record constructor resolution, runnable canonical-arena lowering, and deterministic negative diagnostics; the full Phase 1 root integrates with all prior Layer 1 trials.
+
+**§7.10 status:** Planned — required before §8D starts.
+
 ### Layer 1 exit gate
 
-Layer 1 is complete only after §7.1–§7.9 all pass their acceptance trials and the criteria below hold:
+The historical nine-family Layer 1 gate is complete after §§7.1–§7.9. The amended ten-family suite is complete only after §7.10 also passes and the criteria below hold:
 
 - Every substrate acceptance trial passes in each supported memory space.
 - At least one minimal hand-written recursive fixture passes through parse, type check, SIR, emission, link, and run.
 - Exact function identity and canonical arena identity are independently observable through test-only assertions.
-- All nine constructor-record shapes resolve against stub concrete modules at type-check time.
+- All original nine constructor-record shapes resolve against stub concrete modules at type-check time.
+- The historical nine-family gate remains accepted; the amended ten-family suite is complete only after §7.10 adds runnable `StubBinaryTree` construction and exact empty-record enforcement.
 - **§7.9:** at least one runnable `@empty` trial per stub family; no registered constructor let falls back to plain let when merge lowering applies; merged constructor records carry ordering-identity bundles for ordering-relevant fields (completes §7.2 bundle embedding on the compiler path).
 - No representation algorithm has been used to compensate for missing compiler support.
 
-## 8. Layer 2 — Implement the three representation cores
+## 8. Layer 2 — Implement the four representation cores
 
-The three tracks in this layer are independent after Layer 1 and may proceed in parallel. Their shared rule is to expose internal operations first and public trait wiring later.
+The WBT, skew RAL, and Brodal–Okasaki tracks are independent after the original Layer 1 gate. The BinaryTree track is independently ready after the §7.10 amendment gate. All four expose internal operations first and public trait wiring later.
 
 ## 8A. Corrected Adams-family WBT core
 
 **Dependencies:** canonical arenas, exact comparator identity, recursive tuples, checked arithmetic.
 **Downstream consumers:** set, map, search tree, every graph family, CSR/dense node indexes.
 
-Implement in this order:
+**Normative design:** `[data_structure_designs/weight_balanced_tree.md](data_structure_designs/weight_balanced_tree.md)`.
+**Coverage ledger:** `[standard_data_structures_baseline/requirements_to_trials_ledger.md](standard_data_structures_baseline/requirements_to_trials_ledger.md)` rows for `weight_balanced_tree.md` §§1–16.
+**Trial leaf:** `[trials/standard_data_structures_phase1/wbt_core/](../../trials/standard_data_structures_phase1/wbt_core/)`.
+**Implementation boundary:** compiler-private WBT implementation unit(s) under `stdlib/data_structures/`; public `wbt_set`, `wbt_map`, `OrderedSet`, `OrderedMap`, and trait wiring remain Layer 3 work.
 
-1. empty/reference representation and cached subtree size; internal generated record carries ordering-identity bundle and canonical arena identity where the WBT design requires them (completes §7.2 bundle embedding on the representation path for this core);
-2. read-only helpers: `size`, `weight`, search, minimum, ordered fold;
-3. the one smart-node constructor that checks arithmetic and recomputes size;
-4. `(DELTA, GAMMA) = (3, 2)` balance predicates;
-5. single and double rotations;
-6. set insertion;
-7. map insertion/replacement;
-8. deletion, successor/minimum extraction, and rebalancing;
-9. deterministic linear `from_sorted`;
-10. optional internal join/split only if a Phase 1 consumer actually requires them;
-11. full validation.
+The implementation is split into the gated work packages below. Complete them in order. A later package may add a trial for an earlier helper, but it may not compensate for an earlier gate that is still failing.
 
-Required trials:
+For each completed package:
 
-- empty, singleton, ascending, descending, and adversarial insertion;
-- duplicate set insertion is a semantic no-op;
-- comparator-equal map insertion replaces the value at one key position;
-- deletion of absent, leaf, one-child, two-child, and root entries;
-- persistence across every operation;
-- cached-size, order, balance, and arena validation;
-- invalid comparator result at every comparator call site;
-- `from_sorted` accepts strict order and rejects disorder or duplicate equivalence classes;
-- randomized operation traces checked against a simple test oracle.
+1. add its positive, runtime-error, and malformed-fixture trials;
+2. run `make record-golden` and `make integrate` in `trials/standard_data_structures_phase1/wbt_core/`;
+3. run the Phase 1 root `make integrate` before marking the package complete;
+4. replace the package's planned status with a dated `**§8A.n status:** Complete — ...` record in the same style as Layer 1; and
+5. replace the corresponding planned entries in the requirements-to-trials ledger with the landed artifact names.
 
-The WBT core is accepted before `wbt_set`, `wbt_map`, or any graph module is started.
+Do not import an implementation from a removed standard-data-structure trial or from the obsolete B-tree families. The detailed WBT design, not historical source, is authoritative.
+
+### 8A.1 Representation, empty roots, and specialization state
+
+Implement the two logical recursive node shapes:
+
+- set node: `(key, size, left, right)`;
+- map node: `(key, value, size, left, right)`.
+
+At every actual Silica boundary, repeat the complete inline recursive tuple shape; the expository names above do not create aliases or named node types. Both child positions are `ref?` values in the collection's canonical arena, and `:none` is the only empty-root/empty-child representation.
+
+Define the compiler-private owning records used by the core trials. They must preserve:
+
+- the canonical `region` supplied by Layer 1 constructor lowering;
+- the optional root;
+- the exact placement comparator function value;
+- its materialized ordering-identity bundle;
+- every specialization field required by the representation registry; and
+- no public trait vtable or alternate mutable root.
+
+Set and map shapes must remain distinct specializations. `ItemType`, `KeyType`, `ValueType`, and `SpaceType` remain inferred parameters; no example scalar type may leak into the implementation. Empty construction has logical size zero and allocates no WBT node. Singleton construction uses the smart constructor delivered in §8A.3 rather than writing a cached size directly.
+
+Acceptance trials:
+
+- `wbt_empty_representation`: set and map roots are `:none`, report size zero, retain the constructor's arena and exact ordering bundle, and allocate no node;
+- `wbt_representation_specializations`: set versus map, different key/value types, and different memory spaces retain distinct concrete specialization identity while repeated construction of one specialization reuses its canonical arena;
+- `wbt_generic_payload_shapes`: instantiate at least scalar, `string`, and non-scalar tuple/record payloads without changing the node algorithm;
+- extend Layer 1's constructor bundle trial to prove that the bundle entering the real WBT owning record is the bundle produced for the exact comparator value.
+
+**§8A.1 exit gate:** empty set and map core values compile, link, and run through the normal library path; their runtime records carry the Layer 1 arena and ordering state; there is no public leaf module or test-only replacement node representation.
+
+**§8A.1 status (2026-07-02):** Complete — compiler-private `wbt_set.silica` and `wbt_map.silica` in `stdlib/data_structures/` with inline set node `(ItemType, int64, ref?, ref?)`, map node `(KeyType, ValueType, int64, ref?, ref?)`, empty root `:none`, and Layer 1 constructor fields (canonical `region`, `specialization_key`, materialized ordering bundles). Positive trials in `wbt_core/`: `wbt_empty_representation`, `wbt_representation_specializations`, `wbt_representation_string_specialization`, `wbt_generic_payload_shapes`, `wbt_generic_tuple_map_empty`, `wbt_constructor_ordering_bundle`. **Integrate verified:** `wbt_core/` `16 0`; phase-1 root after Layer 1 constructor golden refresh (`compiler_substrate/` `60 0`). **Known deferrals:** runtime `ref?` root `case` emission (trials avoid direct root tag checks).
+
+### 8A.2 Read-only primitives
+
+Implement allocation-free helpers before any update:
+
+- `size(:none) = 0` and `size(node) = node.size`;
+- `weight(tree) = size(tree) + 1`, using checked arithmetic even though a valid node cannot have `size = int64.max`;
+- set search/contains and map search/get by the placement comparator;
+- minimum and maximum binding lookup for non-empty roots;
+- ascending left-node-right fold for both node shapes; and
+- any early-exit fold needed by later consumers, with the same ascending visitation order.
+
+Every comparator result is validated at the call site before a branch is chosen. `:less`, `:equal`, and `:greater` are the only accepted results; another atom produces deterministic `:invalid_comparator_result`. Empty search, minimum, and maximum must take their specified empty path without invoking the comparator.
+
+Traversal may be expressed recursively, but a valid balanced tree must not require more than `O(log n)` machine-stack depth. Read-only helpers do not allocate WBT nodes, change the root, or materialize an intermediate collection.
+
+Acceptance trials:
+
+- `wbt_search_contains`: hit and miss at the root, leftmost, rightmost, and internal positions for set and map roots;
+- `wbt_minimum_maximum`: correct empty/singleton/multi-node behavior and key/value pairing;
+- `wbt_fold_ascending`: exact ascending output, one callback per logical binding, empty-fold identity, and preservation of map values with their keys;
+- `trial_collection_error_wbt_search_invalid_comparator`: force an invalid atom on root, left-branch, and right-branch comparisons;
+- test-only allocation observations show zero new WBT nodes for successful and unsuccessful searches, min/max, `size`, and folds.
+
+**§8A.2 exit gate:** all read-only helpers pass for both node shapes, visit the required order, reject invalid comparator atoms deterministically, and allocate no WBT node.
+
+**§8A.2 status (2026-06-29):** Partial — read-only helpers implemented and exported in `wbt_set.silica` / `wbt_map.silica`: `size/1`, `weight/1`, `search_status/2`, set `contains/2` and map `get/3` / `contains_key/2`, ascending `fold/3`, `minimum` / `maximum`, and `comparator_result_validate` at every compare site (`contains` / `get` halt on invalid comparator). Positive trial `wbt_read_only_empty` verifies empty-root search, min/max, get, and size without invoking comparators. **Integrate verified:** `wbt_core/` `16 0` (includes §8A.1 + `wbt_read_only_empty`). **Known deferrals (exit gate incomplete):** non-empty acceptance trials (`wbt_search_contains`, `wbt_minimum_maximum`, `wbt_fold_ascending`, `trial_collection_error_wbt_search_invalid_comparator`, allocation observation) blocked until §8A.3 smart constructor or compiler fix for assigning `ref(L, normal, node-tuple)` into owning-record field `root: ref?(L, normal, rec)` (`E2003`); cross-module generic `fold/3` step functions and `weight/1` tuple returns blocked at trial call sites (`E2001`/`E2005`).
+
+### 8A.3 The sole smart-node construction path
+
+Implement exactly one smart constructor per physical node shape, sharing one size-computation rule:
+
+1. read each child size, using zero for `:none`;
+2. compute `left_size + right_size` with `checked_int64_add`;
+3. compute the final `+ 1` with `checked_int64_add1`;
+4. reject overflow before calling `alloc_rec`; and
+5. allocate the immutable tuple in the owning collection's canonical arena.
+
+No insert, replacement, deletion, extraction, rotation, or bulk builder may allocate a WBT node directly. Map construction must move `(key, value)` as one binding. The constructor does not accept a caller-selected cached size.
+
+Add a narrow trial-only malformed-root fixture builder outside the standard library. It may construct impossible cached-size and wrong-arena inputs needed for negative validation and overflow trials; production operations must never call it.
+
+Acceptance trials:
+
+- `wbt_smart_node_size`: leaf and unequal-depth child combinations compute exact cached sizes for set and map nodes;
+- `wbt_smart_node_arena`: every new node belongs to the supplied canonical arena and both old children remain readable and unchanged;
+- `trial_collection_error_wbt_smart_node_overflow`: synthetic `int64.max` child metadata fails before allocation and publishes no new root;
+- emitted SIR/assembly or a test-only allocator observation establishes that every production WBT node allocation is reached through the smart constructor.
+
+**§8A.3 exit gate:** direct production `alloc_rec` sites for WBT nodes exist only inside the smart constructors, overflow is checked before allocation, and cached size cannot be selected by a caller.
+
+**§8A.3 status:** Planned.
+
+### 8A.4 `(DELTA, GAMMA) = (3, 2)` balance predicates and rotations
+
+Implement the original WBT weight law exactly:
+
+```text
+weight(tree) = size(tree) + 1
+balanced iff
+    weight(left)  <= 3 * weight(right) and
+    weight(right) <= 3 * weight(left)
+```
+
+Use an overflow-safe comparison for `a <= 3*b`; wrapped multiplication is not an acceptable predicate. Do not substitute the Adams `ratio = 5` presentation, node-size comparisons, AVL height, or a different WBT parameter pair.
+
+Implement mirrored `balance_left` and `balance_right` paths. For a right-heavy node:
+
+- choose a single left rotation only when `weight(rl) < 2 * weight(rr)`;
+- choose a double left rotation when the weights are equal or the inner side is larger.
+
+Use the exact mirror for left-heavy nodes. Equality choosing the double rotation is a normative edge case. Missing heavy children, or missing inner children required by a selected double rotation, are representation violations; do not silently select a different rotation. Every rebuilt node must go through §8A.3.
+
+Acceptance trials:
+
+- `wbt_balance_boundaries`: both balance inequalities immediately below, at, and above the `DELTA = 3` boundary, including synthetic near-overflow sizes;
+- `wbt_rotation_single_left` and `wbt_rotation_single_right`: exact root/binding order, cached sizes, and untouched subtree sharing;
+- `wbt_rotation_double_left` and `wbt_rotation_double_right`: exact root/binding order, cached sizes, and key/value pairing;
+- `wbt_rotation_gamma_equality`: `weight(inner) == 2 * weight(outer)` selects the double rotation in both directions;
+- `wbt_rebalance_adversarial`: repeated rotations preserve ascending fold output and pass direct cached-size/balance assertions; §8A.10 later re-runs these fixtures through the production validator;
+- malformed fixtures with an absent required heavy/inner child fail deterministically instead of returning a plausibly shaped tree.
+
+**§8A.4 exit gate:** each of the four rotation branches and the `GAMMA` equality edge is directly exercised for set and map bindings; targeted assertions establish cached-size, strict-order, and `(3,2)` balance behavior pending the full-validator recheck in §8A.10.
+
+**§8A.4 status:** Planned.
+
+### 8A.5 Persistent set insertion
+
+Implement insertion returning `{root, inserted}`:
+
+- `:none` allocates one singleton and returns `inserted = true`;
+- `:equal` returns the original node and `inserted = false`;
+- `:less` and `:greater` recurse into exactly one child;
+- a no-change child result returns the original ancestor unchanged; and
+- a changed child result rebuilds and rebalances on unwind.
+
+The stored item is canonical for its comparator-equivalence class. A later comparator-equal item must not replace it. Preserve the comparator function, ordering bundle, arena, and registry state when the core operation is wrapped back into an owning test value.
+
+Acceptance trials:
+
+- `wbt_set_insert_duplicate`: duplicate and representationally distinct comparator-equal insertion return `inserted = false`, preserve the canonical stored item, preserve root identity, and allocate no WBT node;
+- `wbt_set_insert_orders`: empty, singleton, ascending, descending, alternating-extremes, and median-first input;
+- `wbt_set_insert_adversarial`: sequences chosen to exercise every rotation repeatedly and sizes around balance-boundary transitions;
+- `wbt_set_insert_persistence`: retain every prior root, then verify its size, fold output, and search results after later updates; §8A.10 later validates the same retained-root fixtures;
+- `wbt_set_insert_sharing`: changed paths are copied while untouched child references remain shared;
+- `trial_collection_error_wbt_set_insert_invalid_comparator`: invalid results at root and deeper descent publish no result root.
+
+Run the insertion matrix for more than one payload shape and every supported `SpaceType`.
+
+**§8A.5 exit gate:** all insertion shapes pass the directed size/order/balance assertions; duplicate insertion is an identity-preserving zero-node no-op; old roots retain their observable contents; §8A.10 remains responsible for the final full-validator gate.
+
+**§8A.5 status:** Planned.
+
+### 8A.6 Persistent map insertion and replacement
+
+Implement map insertion returning `{root, inserted, replaced}`:
+
+- an empty position inserts one `(key, value)` binding with `inserted = true`, `replaced = false`;
+- comparator equality retains the old key representation, installs the new value, preserves both children, keeps the same logical size, and returns `inserted = false`, `replaced = true`;
+- unequal descent and rebalancing use the same structural path as set insertion.
+
+Do not call `compare_value` during placement, replacement, rotation, or validation of key order. Even when the old and new values are observationally equal, replacement is not suppressed. The replacement node and every copied ancestor use §8A.3.
+
+Acceptance trials:
+
+- `wbt_map_insert_replace`: both valid result-flag combinations—`{inserted=true, replaced=false}` and `{inserted=false, replaced=true}`—and an unchanged logical size on replacement;
+- `wbt_map_canonical_key`: comparator-equal but representationally distinct keys preserve the first stored key while replacing its value;
+- `wbt_map_value_pairing`: single/double rotations and deep path copies never detach a value from its key;
+- `wbt_map_compare_value_not_called`: a value comparator that would fail if invoked is not called by any key-placement path;
+- `wbt_map_replace_persistence`: the old root retains the old value, the new root has the replacement, and both subtrees of the matched node are shared;
+- `trial_collection_error_wbt_map_insert_invalid_comparator`: failure at each descent direction leaves the input root valid and unpublished output inaccessible.
+
+Instantiate keys and values with different concrete types, including at least one non-scalar value.
+
+**§8A.6 exit gate:** map insertion and replacement preserve canonical keys and key/value pairing, report exact flags, never use value comparison for placement, and preserve every old version.
+
+**§8A.6 status:** Planned.
+
+### 8A.7 Deletion, extreme extraction, and deletion-side rebalancing
+
+Implement `delete_min` and `delete_max` first. Each returns the extracted complete binding and residual root, copies and rebalances every changed ancestor, and never separates map keys from values.
+
+Then implement deletion returning `{root, removed}`:
+
+- empty/absent returns the original root and `removed = false`;
+- unequal descent copies nothing when the recursive result reports absence;
+- equal with zero or one non-empty child returns the surviving child;
+- equal with two children extracts the maximum from the left exactly when `size(left) > size(right)`;
+- a size tie and every right-heavier case extracts the minimum from the right; and
+- the replacement root is rebuilt and deletion-balanced through the smart constructor.
+
+Acceptance trials:
+
+- `wbt_delete_absent`: empty and non-empty absence preserve root identity and allocate no WBT node;
+- `wbt_delete_leaf`, `wbt_delete_one_child`, `wbt_delete_two_child`, and `wbt_delete_root`: cover each structural case for set and map roots;
+- `wbt_delete_extreme`: minimum/maximum extraction at depth zero and multiple levels, with direct residual-tree size/order/balance assertions;
+- `wbt_delete_heavier_side`: left-heavier, right-heavier, and equal-size children prove the deterministic predecessor/successor rule;
+- `wbt_delete_rebalance`: deletion sequences that exercise single and double rotations in both directions, including `GAMMA` equality;
+- `wbt_delete_persistence`: all roots before and after repeated deletion remain searchable and fold correctly; §8A.10 later validates every retained root;
+- `trial_collection_error_wbt_delete_invalid_comparator`: invalid comparator results at root and deeper paths publish no changed root.
+
+Add a deterministic delete-all permutation test: insert a known adversarial set, delete every key in several orders, check size/order/balance observations after every deletion, and finish at `:none`. Amend this trial in §8A.10 to invoke the production validator after every deletion.
+
+**§8A.7 exit gate:** every structural and rebalancing branch is covered, absent deletion is a zero-node identity no-op, the heavier-side/tie rule is proven, and all retained versions preserve their observable contents pending the §8A.10 validator recheck.
+
+**§8A.7 status:** Planned.
+
+### 8A.8 Deterministic linear `from_sorted`
+
+Implement sorted construction without routing through insertion:
+
+1. count the input with checked `int64` arithmetic;
+2. preflight adjacent keys with the placement comparator, rejecting descending order, comparator equality, and invalid result atoms before publishing a root;
+3. recursively consume exactly `n` bindings from a list cursor;
+4. choose `left_count = n / 2`;
+5. consume the root binding after the left subtree;
+6. build `right_count = n - left_count - 1`; and
+7. use §8A.3 bottom-up so every cached size is derived, not copied from input.
+
+The internal counted builder must reject negative counts, early exhaustion, and unconsumed trailing input. The list-facing core path derives the count itself, but the counted helper still needs direct mismatch trials. A failed build returns an invalid bulk result with no partial root published; it must not sort or deduplicate the input.
+
+Acceptance trials:
+
+- `wbt_from_sorted_shape`: lengths `0` through at least `32`, plus values around powers of two, produce the exact deterministic median shape and pass direct size/order/balance assertions; §8A.10 later rechecks all shapes with the production validator;
+- `wbt_from_sorted_set_map`: set items and map bindings have equivalent key shapes, with map values kept attached;
+- `wbt_from_sorted_valid_invalid`: strict ascending input succeeds; one descending adjacency and one comparator-equal adjacency at beginning, middle, and end fail;
+- `wbt_from_sorted_count_mismatch`: negative, short, and long counted-helper inputs fail without publishing a partial root;
+- `trial_collection_error_wbt_from_sorted_invalid_comparator`: invalid atoms at each preflight position fail deterministically;
+- `wbt_from_sorted_linear`: comparator-call and node-allocation observations are bounded by a linear function and show exactly `n` WBT nodes on success, distinguishing this path from fold-insert;
+- `wbt_from_sorted_persistence`: the input list remains readable and unchanged after success and failure.
+
+**§8A.8 exit gate:** valid input produces the specified deterministic shape in `O(n)` time and `O(n)` nodes; every malformed-input class is rejected; no insertion loop, sorting pass, or deduplication is hidden in the builder.
+
+**§8A.8 status:** Planned.
+
+### 8A.9 Join/split scope decision
+
+Audit every Phase 1 downstream consumer before adding `join`, `concat`, or `split`. The current public set/map designs, live graphs, and snapshot index builders do not require them, so the default decision is **deferred—not implemented in Phase 1 Layer 2A**.
+
+If a concrete Phase 1 consumer later proves one is required:
+
+- record that consumer and operation in this section and the requirements ledger;
+- implement it only in terms of the same smart constructor and `(3,2)` balance functions;
+- check ordering and arena preconditions before allocating a result that can reference both inputs;
+- add direct valid, invalid-precondition, persistence, sharing, and randomized-oracle trials; and
+- satisfy a separate dated mini-gate before the consumer uses it.
+
+Do not add a second balancing algorithm or speculative public API.
+
+**§8A.9 exit gate:** either the deferral is recorded after the consumer audit, or every required primitive has its own accepted mini-gate. An untested optional primitive may not ship in the internal module.
+
+**§8A.9 status:** Planned consumer audit; join/split/concat deferred unless proven necessary.
+
+### 8A.10 Full structural validation
+
+Implement one postorder validation pass for each node shape. For every reachable subtree it computes checked logical size and optional minimum/maximum binding information, then verifies:
+
+- every child reference belongs to the owning canonical arena;
+- no node is reached twice within one root and no cycle exists, when reference identity support is available;
+- cached size is positive and equals `1 + left + right`;
+- left maximum is strictly less than the node key and the node key is strictly less than right minimum;
+- both `(DELTA, GAMMA) = (3, 2)` balance inequalities hold;
+- map nodes retain exactly one value paired with each key;
+- the root's computed count equals its cached size; and
+- all comparator calls return a valid ordering atom.
+
+Return the common `{valid, error, logical_count}` shape. Choose one deterministic error precedence and keep it stable in golden trials so a malformed tree does not report whichever violation happens to be noticed by incidental traversal changes. Validation must terminate on a malformed cycle by using a trial/implementation-appropriate visited-reference set; a valid tree retains `O(log n)` traversal stack.
+
+Acceptance trials:
+
+- `wbt_validate_invariants`: every successful fixture from §§8A.1–8A.8 validates with the exact logical count;
+- `wbt_validate_malformed_fixture`: independently detect wrong arena, cycle/repeated child, zero or incorrect cached size (including at the root), left/right order violation, and balance violation;
+- `wbt_validate_error_precedence`: multi-fault fixtures prove the documented deterministic diagnostic order;
+- `wbt_validate_map_pairing`: map validation and fold observe each original key/value binding after rotations, replacement, deletion, and bulk build;
+- `trial_collection_error_wbt_validate_invalid_comparator`: invalid comparison during bound checking produces `:invalid_comparator_result`;
+- validation itself does not mutate or repair malformed or valid input.
+
+Malformed fixture construction remains trial-only. No production constructor may expose caller-selected child references or cached sizes merely to make validation tests convenient.
+
+**§8A.10 exit gate:** the validator accepts every valid operation result, rejects every independently injectable invariant violation, terminates on cycles, reports deterministic diagnostics, and returns the exact logical count.
+
+**§8A.10 status:** Planned.
+
+### 8A.11 Deterministic exhaustive and randomized trace hardening
+
+After the directed trials pass, add test-only list-based mathematical oracles. The oracle may use simple linear search and sorted insertion/deletion, but must not become a standard-library implementation or share balancing code with the WBT.
+
+Run:
+
+- bounded exhaustive set traces over a small key domain, covering every insert/delete/search sequence to a documented depth;
+- bounded exhaustive map traces including new insertion, replacement, lookup, and deletion;
+- fixed-seed randomized traces with ascending, descending, duplicate-heavy, and uniformly shuffled key distributions;
+- a persistence fan-out trace that updates many descendants from one old root rather than only a linear version chain;
+- periodic `from_sorted` rebuilds compared with the incrementally maintained oracle;
+- validation after every mutating operation, not only at trace completion; and
+- invalid-comparator schedules that fail on the first, middle, and last comparison of search, insert, replace, delete, sorted preflight, and validation.
+
+For every step compare:
+
+- logical size;
+- ascending set items or map bindings;
+- search/get presence and payload;
+- update flags;
+- retained old-version contents; and
+- validator result.
+
+Use fixed seeds checked into the trial source or scout output. On failure, print the seed and the shortest known operation prefix so the result is reproducible. Add coarse comparator-call, allocation, and height bounds sufficient to catch accidental linear search, insertion-based `from_sorted`, whole-tree copying, or failure to balance; do not make wall-clock timing the gate.
+
+Required aggregate artifacts:
+
+- `wbt_set_exhaustive_trace`;
+- `wbt_map_exhaustive_trace`;
+- `wbt_set_randomized_oracle`;
+- `wbt_map_randomized_oracle`;
+- `wbt_persistence_fanout`;
+- `wbt_complexity_observations`.
+
+Run the aggregate suite for every supported memory space and for enough distinct payload specializations to catch hard-coded type assumptions. Keep trial sizes bounded so `make integrate` remains a deterministic regression suite rather than a benchmark.
+
+**§8A.11 exit gate:** exhaustive and fixed-seed randomized traces agree with their independent oracles at every operation; every intermediate and retained root validates; complexity observations match the design's asymptotic table.
+
+**§8A.11 status:** Planned.
+
+### 8A exit gate
+
+The corrected Adams-family WBT core is accepted only when all of the following hold:
+
+- §§8A.1–8A.11 have dated complete status records, and every landed artifact is reflected in the requirements-to-trials ledger.
+- `make integrate` passes in `wbt_core/` and at the Phase 1 trial root from a clean golden baseline.
+- Set and map recursive shapes compile from `stdlib/data_structures/` without a trial-only runtime dependency and without registering the Layer 3 public modules early.
+- Every production node is allocated by the checked smart constructor in the owning canonical arena.
+- Search, min/max, size, and fold allocate no WBT nodes.
+- Duplicate set insertion and absent deletion return the identical root and allocate no WBT nodes.
+- Map replacement retains the canonical key, preserves key/value pairing, and does not invoke `compare_value`.
+- All single/double rotation directions, the strict `GAMMA` choice, and the equality-to-double edge are directly covered.
+- Insertion, replacement, deletion, extraction, and `from_sorted` preserve old roots and share untouched subtrees.
+- `from_sorted` has deterministic shape, rejects every specified malformed input, and meets the linear comparison/allocation gate.
+- Invalid comparator results are exercised at every comparator-using operation and never publish a changed root.
+- Full validation covers arena, acyclicity/non-duplication, cached size, strict order, `(3,2)` balance, map pairing, and root logical count.
+- Exhaustive and fixed-seed randomized set/map traces agree with independent test oracles after every operation.
+- The §8A.9 consumer audit records join/split/concat as deferred or separately accepts each primitive that is actually required.
+- No public `wbt_set`, `wbt_map`, `OrderedSet`, `OrderedMap`, SearchTree, or graph implementation has been used to hide a missing core behavior.
+
+Only after this gate passes may Layer 3 §9A/§9B or any WBT-dependent graph/index work begin.
 
 ## 8B. Skew binary random-access-list core
 
@@ -566,13 +947,111 @@ Required trials:
 - strictness: no hidden deferred thunk representation;
 - rank, heap-order, cached-minimum, size, list-spine, and arena validation.
 
+## 8D. Persistent fixed-arity binary-tree core
+
+**Dependencies:** §7.10 BinaryTree registration delta, canonical arenas, recursive tuples, checked arithmetic, immutable Silica `List` for paths and zipper breadcrumbs.
+**Downstream consumers:** `tree_binary` / `BinaryTree` in §9D; compiler-wide AST bridge and migration in the separate bootstrap-retirement plan.
+**Normative design:** `[data_structure_designs/persistent_binary_tree.md](data_structure_designs/persistent_binary_tree.md)`.
+**Trial leaf:** planned `trials/standard_data_structures_phase1/binary_tree_core/`.
+
+The core is unordered. It carries no comparator or ordering identity and does not depend on WBT, skew RAL, Brodal–Okasaki, rose-tree slots, or public trait dispatch.
+
+Implement and gate these packages in order:
+
+1. **Representation and smart construction**
+   - inline recursive tuple `(item, subtree_node_count, left, right)`;
+   - `:none` empty root/child;
+   - private owning record with canonical arena, root, and specialization key;
+   - one smart constructor deriving `1 + left_count + right_count` with checked arithmetic;
+   - no production node allocation outside that constructor.
+2. **Read-only root, child, and path navigation**
+   - constant-time root/left/right helpers;
+   - `List[:left | :right, SpaceType]` path traversal;
+   - exact `:not_found | :found` behavior;
+   - no binary-tree node allocation.
+3. **Persistent item replacement**
+   - rebuild target and root path;
+   - preserve both target children;
+   - share every unselected ancestor subtree;
+   - return the identical root on a missing path.
+4. **Persistent left/right subtree replacement**
+   - preserve fixed child role and opposite sibling;
+   - accept empty subtree as clear;
+   - recompute checked counts at every copied ancestor;
+   - reject incompatible arena before allocating a result path.
+5. **Construction from child trees**
+   - build one root over compatible left/right whole-tree operands;
+   - verify both operands before allocation;
+   - permit repeated physical subtree sharing and count each logical occurrence.
+6. **Traversal and shape-preserving mapping**
+   - preorder, inorder, and postorder folds;
+   - callback paths in fixed-role order;
+   - preorder/postorder maps that preserve shape;
+   - no implicit equality calls to suppress rebuilt nodes.
+7. **Inline functional zipper**
+   - focus plus tagged left/right breadcrumbs with parent item and untouched sibling;
+   - `open`, down-left/right, replace-focus-item/subtree, `up`, and `close`;
+   - no named zipper/frame type;
+   - downward movement allocates breadcrumb storage but no binary-tree node;
+   - upward reconstruction uses only the smart constructor.
+8. **Full validation**
+   - arena, active-path acyclicity, cached counts, checked arithmetic, root count, and left/right role preservation;
+   - legal repeated physical subtree references are not mistaken for cycles;
+   - deterministic error precedence.
+9. **Exhaustive and randomized hardening**
+   - fixed-seed path update and zipper traces against a simple test-only binary-tree oracle;
+   - validation after every update and on retained old roots;
+   - operation counters for `O(h)` path updates and `O(n)` traversal/map;
+   - scalar and composite item specializations across supported spaces.
+
+Required directed artifacts:
+
+- `binary_tree_inline_recursive_shape`;
+- `binary_tree_arena_specialization`;
+- `binary_tree_smart_node_count`;
+- `trial_collection_error_binary_tree_count_overflow`;
+- `binary_tree_direct_child_queries`;
+- `binary_tree_path_lookup`;
+- `binary_tree_path_copy`;
+- `binary_tree_graft_compatibility`;
+- `binary_tree_fold_orders`;
+- `binary_tree_map_shape`;
+- `binary_tree_zipper_roundtrip`;
+- `binary_tree_sharing_multiplicity`;
+- `binary_tree_missing_path_noop`;
+- `binary_tree_validate_invariants`;
+- `binary_tree_validate_cycle_and_shared_subtree`;
+- `binary_tree_randomized_oracle`;
+- `binary_tree_complexity_observations`.
+
+Each package must run leaf `make record-golden` / `make integrate` and the Phase 1 root `make integrate` before receiving a dated completion record. Update the requirements ledger as artifacts land.
+
+### 8D exit gate
+
+- §7.10 has passed; no test bypasses registered constructor/arena lowering.
+- Empty, leaf, unary, and binary shapes compile, link, run, and validate.
+- Every production node uses the checked smart constructor in the canonical arena.
+- Root/child/path queries allocate no binary-tree nodes.
+- Item and child replacement path-copy only the selected route and preserve old roots.
+- Missing-path updates return the prior root.
+- Subtree compatibility is checked before result allocation.
+- Left and right roles are preserved through construction, replacement, mapping, zipper reconstruction, and validation.
+- Preorder, inorder, and postorder match their independent oracle sequences.
+- Zipper down/up/close round trips reproduce the source tree; focused changes rebuild only breadcrumbs.
+- Repeated physical subtree sharing is accepted and counted by logical occurrence; cycles are rejected.
+- Fixed-seed traces and complexity counters match the detailed design.
+- The core compiles into the standard library without public `BinaryTree` trait wiring or compiler-AST-specific logic.
+
+**§8D status:** Planned.
+
 ### Layer 2 exit gate
 
 - Each core passes its complete invariant and randomized trace suite.
 - Each core has a stable internal generated-type shape matching its detailed design, including ordering bundle and arena identity fields where the detailed design requires them (§7.2 representation-path completion).
 - **§8C:** primitive and bootstrapped meld reject incompatible ordering or arena identity before allocating a merged result; required trial above passes in `brodal_okasaki_core/`.
+- **§8D:** the persistent binary-tree core passes path-copy, zipper, logical-sharing, and active-path cycle validation suites after the §7.10 branch gate.
 - No public leaf structure has been implemented.
-- WBT, skew RAL, and Brodal–Okasaki values can be compiled into the standard library without test-only runtime support.
+- WBT, skew RAL, Brodal–Okasaki, and persistent binary-tree values can be compiled into the standard library without test-only runtime support.
 
 ## 9. Layer 3 — Build reusable backends and nonterminal public foundations
 
@@ -626,12 +1105,59 @@ Implement:
 
 Acceptance must run identical abstract traces against min and max orientations and verify opposite pop order, including meld incompatibility trials aligned with `heap_trait.md`.
 
+## 9D. `tree_binary` and `BinaryTree`
+
+**Dependencies:** accepted §8D core, §7.10 family registration, trait substrate.
+**Downstream consumer:** optional compiler-wide AST bridge/migration in `bootstrap_retirement_and_self_host_plan.md`; that migration is not part of this structure's acceptance gate.
+**Normative design:** `[data_structure_designs/binary_tree_trait.md](data_structure_designs/binary_tree_trait.md)`.
+**Trial leaf:** planned `trials/standard_data_structures_phase1/binary_tree/`.
+
+Implement:
+
+- exact `BinaryTree[ItemType, mem(SpaceType)]` generated family;
+- exact empty constructor record `{}` for `empty`, `with_root`, and `node`;
+- `tree_binary@empty`, `@with_root`, and compatible left/right node construction;
+- required trait methods for count, empty, root/path/child queries, and three fold orders;
+- representation-module item, left, and right replacement/clear operations;
+- shape-preserving preorder/postorder maps;
+- inline zipper operations with no named zipper or frame type;
+- validation export and deterministic failure records;
+- specialization-safe link names and trait implementations.
+
+Acceptance trials:
+
+- `binary_tree_trait_dispatch`: required/provided dispatch and specialization separation;
+- `binary_tree_empty_root_children`: empty, leaf, left-only, right-only, and binary cases;
+- `binary_tree_node_graft`: compatible independently constructed subtrees and before-allocation mismatch rejection;
+- `binary_tree_replace_item` and `binary_tree_replace_children`: flags, counts, fixed roles, sharing, and old-root persistence;
+- `binary_tree_fold_map`: exact preorder/inorder/postorder and shape-preserving maps;
+- `binary_tree_zipper_public_surface`: inline zipper type flows through all exported operations and closes correctly;
+- `binary_tree_inline_surface_compile`: no user-defined node/path/frame/zipper alias is required or emitted;
+- `binary_tree_failure_matrix`: empty/missing paths, empty child descent, incompatible graft, and overflow;
+- `binary_tree_validate`: valid and malformed fixtures, including legal shared subtrees versus cycles;
+- `binary_tree_string_example`: detailed-design example through normal trait/module syntax;
+- generic payload matrix with scalar, string, tuple/record, function-containing, and supported-space witnesses where legal.
+
+### 9D exit gate
+
+- The complete `binary_tree_trait.md` ledger section has landed artifacts.
+- `tree_binary` builds through the normal standard-library path with no test-only runtime dependency.
+- Empty-record construction is unambiguous only with sufficient declared/argument witnesses and never creates an ordering bundle.
+- Trait methods and generated operations preserve the exact inline recursive representation contract.
+- All persistent updates and zipper reconstruction preserve old roots and untouched subtree sharing.
+- Public surface source contains no named node, path, option, result, frame, or zipper type.
+- `BinaryTree` and rose `Tree` have distinct type, module, trait, path, update, and invariant behavior.
+- BinaryTree acceptance is complete without converting the compiler parser AST.
+
+**§9D status:** Planned.
+
 ### Layer 3 exit gate
 
-- `OrderedSet`, `OrderedMap`, and `Heap` pass their complete detailed-design suites.
+- `OrderedSet`, `OrderedMap`, `Heap`, and `BinaryTree` pass their complete detailed-design suites.
 - Their generated records and methods link without specialization collisions.
 - **§9C:** public `Heap@meld` incompatibility behavior matches §8C before-allocation rejection (left heap unchanged, `compatible=false`).
 - WBT set/map backends are usable internally without dispatching through public traits where representation code requires direct operations.
+- The accepted BinaryTree backend is available to the downstream bootstrap-retirement AST bridge without making that bridge part of the standard-structure gate.
 - Search, priority-queue, tree, and graph leaves remain unimplemented.
 
 ## 10. Layer 4 — Implement live graph foundations
@@ -765,6 +1291,8 @@ Implement:
 
 Do not reuse, compact, or renumber vacant child slots.
 
+`Tree` remains the arbitrary-arity stable-slot rose tree. It does not reuse the fixed-role BinaryTree core, and `BinaryTree` does not implement or replace this trait.
+
 ### Layer 5 exit gate
 
 - All three terminal structures pass their detailed-design trials.
@@ -894,6 +1422,7 @@ Compile and run representative specializations across:
 - primitive and structural keys/items;
 - top-level and closure comparators;
 - multiple memory spaces supported in Phase 1;
+- BinaryTree scalar/composite payloads, empty-record construction, and zipper signatures;
 - min and max heaps;
 - directed and undirected graphs;
 - unweighted and separate edge-data types;
@@ -924,7 +1453,8 @@ For every persistent update family:
 - re-query every retained root;
 - validate structural sharing where observable through test-only instrumentation;
 - verify allocations occur only in the canonical arena;
-- verify semantic no-ops return the prior root where the detailed design promises that optimization.
+- verify semantic no-ops return the prior root where the detailed design promises that optimization;
+- for BinaryTree, distinguish legal repeated physical subtree sharing from cycles and count repeated logical occurrences correctly.
 
 ## 13.5 Negative and diagnostic suite
 
@@ -944,7 +1474,9 @@ Cover:
 - integer overflow;
 - malformed CSR offsets;
 - dense-capacity overflow;
-- graph endpoint and representation misuse.
+- graph endpoint and representation misuse;
+- ambiguous or field-bearing BinaryTree empty constructor records;
+- BinaryTree missing paths, incompatible subtree arenas, count overflow, and malformed cycles.
 
 Diagnostics must be deterministic and must not depend on allocator addresses.
 
@@ -958,7 +1490,9 @@ Use operation counters or bounded stress thresholds rather than wall-clock micro
 - accidental sorting during WBT `from_sorted`;
 - repeated-growth CSR construction instead of exact allocation;
 - full-matrix traversal for a query whose design promises a narrower bound;
-- heap operations that flatten and rebuild the entire queue.
+- heap operations that flatten and rebuild the entire queue;
+- BinaryTree path updates that copy nodes outside the selected route;
+- BinaryTree zipper movement that re-traverses from the root or rebuilds more than one ancestor per `up`.
 
 These guardrails verify algorithm shape; they are not a performance-tuning project.
 
@@ -970,7 +1504,8 @@ Before declaring completion:
 - ensure every generated module name matches the detailed designs;
 - ensure examples compile against the final trait and constructor syntax;
 - update design status only after its acceptance gate passes;
-- leave exclusions explicit rather than creating placeholder APIs.
+- leave exclusions explicit rather than creating placeholder APIs;
+- cross-link BinaryTree's downstream compiler-AST migration to `bootstrap_retirement_and_self_host_plan.md` without making that migration a standard-structure acceptance gate.
 
 ### Layer 7 exit gate
 
@@ -978,11 +1513,12 @@ Phase 1 is complete only when:
 
 - the normal compiler and standard-library build succeed from a clean checkout;
 - every new trial passes;
-- all nine public traits have accepted implementations;
+- all ten public traits have accepted implementations;
 - WBT live, CSR, and dense graph answers agree through public traits;
 - all invariants and compatibility failures are covered;
 - no source, build entry, documentation link, or trial depends on the removed implementation;
-- the requirements-to-trials ledger has no unexplained gaps.
+- the requirements-to-trials ledger has no unexplained gaps;
+- standard BinaryTree is accepted independently of whether the compiler-wide parser AST migration has begun.
 
 ## 14. Concrete execution queue
 
@@ -996,25 +1532,28 @@ The following is the default work queue. A later item may begin early only if it
 6. Constructor-record resolution and all collection type witnesses.
 7. Common status/error conventions and checked arithmetic.
 8. Runtime-sized buffer hardening.
-9. WBT core.
-10. Skew binary random-access-list core.
-11. Brodal–Okasaki core.
-12. `wbt_set` and `OrderedSet`.
-13. `wbt_map` and `OrderedMap`.
-14. `Heap`.
-15. Generic live WBT graph core.
-16. Directed live graph.
-17. Undirected live graph.
-18. Weighted live graph variants.
-19. `SearchTree`.
-20. `PriorityQueue`.
-21. `Tree`.
-22. Shared graph node-slot assignment.
-23. CSR snapshot variants.
-24. Dense graph variants.
-25. Full integration, negative matrix, persistence stress, and cross-representation conformance.
+9. BinaryTree family-registration and empty-record lowering delta (§7.10).
+10. WBT core.
+11. Skew binary random-access-list core.
+12. Brodal–Okasaki core.
+13. Persistent binary-tree core.
+14. `wbt_set` and `OrderedSet`.
+15. `wbt_map` and `OrderedMap`.
+16. `Heap`.
+17. `tree_binary` and `BinaryTree`.
+18. Generic live WBT graph core.
+19. Directed live graph.
+20. Undirected live graph.
+21. Weighted live graph variants.
+22. `SearchTree`.
+23. `PriorityQueue`.
+24. `Tree`.
+25. Shared graph node-slot assignment.
+26. CSR snapshot variants.
+27. Dense graph variants.
+28. Full integration, negative matrix, persistence stress, and cross-representation conformance.
 
-Items 2–8 are one hard substrate gate. Items 9–11 can run in parallel after that gate. Items 12–14 can run in parallel after their respective cores. Items 19–21 are deliberately delayed leaf work. Items 23–24 are the final representation leaves.
+Items 2–8 are the historical nine-family substrate gate. Item 9 is the branch-specific BinaryTree substrate gate and may run while items 10–12 proceed. Items 10–13 can run in parallel after their own substrate gates. Items 14–17 can run in parallel after their respective cores. Items 22–24 are deliberately delayed leaf work. Items 26–27 are the final graph-representation leaves. Compiler-wide AST migration begins only under the separate bootstrap-retirement plan after item 17; it is not item 28's prerequisite.
 
 ## 15. Definition of done by structure
 
@@ -1030,6 +1569,7 @@ Items 2–8 are one hard substrate gate. Items 9–11 can run in parallel after 
 | `SearchTree`      | accepted `OrderedSet` representation and multi-trait support   | trait adapter over identical WBT-set value                          |
 | `PriorityQueue`   | accepted Brodal–Okasaki core and ordering bundle               | trait + priority/value module, without decrease-key                 |
 | `Tree`            | accepted skew RAL and stable-slot semantics                    | trait + `tree_rose`, without compaction                             |
+| `BinaryTree`      | §7.10 delta and accepted persistent binary-tree core            | trait + `tree_binary` + zipper and full design trials               |
 
 
 For graph traits, public-trait completion and representation-family completion are tracked separately. A live implementation can be accepted before CSR/dense, but the graph representation family is not complete until Layer 6 passes.
@@ -1046,5 +1586,6 @@ Stop downstream implementation and return to the failed dependency when:
 - a consumer needs an operation excluded from its dependency's design;
 - a proposed CSR/dense layout violates the closed compiler-version-private representation contract;
 - a proposed convenience API would add behavior excluded by the detailed designs.
+- BinaryTree empty-record construction cannot be witnessed without weakening constructor ambiguity checks.
 
 The remedy is to correct or explicitly revise the authoritative design, then resume from the affected gate. It is not to hide the discrepancy inside a generated module.

@@ -1,0 +1,185 @@
+// Layer 2 §8A.2: empty, singleton, and multi-node minimum/maximum with map key/value pairing.
+
+use wbt_set;
+use wbt_map;
+use wbt_trial_fixture;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn set_min_is(
+    set0: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    expected: int64,
+    found: boolean
+) -> boolean {
+    result: { status: :not_found | :found, item: int64 } <- wbt_set@minimum(set0, 0);
+    case result of {
+        { status: :found, item: item } -> case found of {
+            false -> false;
+            true -> item == expected
+        };
+        { status: :not_found, item: _ } -> found == false
+    }
+}
+
+fn set_max_is(
+    set0: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    expected: int64
+) -> boolean {
+    result: { status: :not_found | :found, item: int64 } <- wbt_set@maximum(set0, 0);
+    case result of {
+        { status: :found, item: item } -> item == expected;
+        { status: :not_found, item: _ } -> false
+    }
+}
+
+fn map_min_is(
+    map0: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    expected_key: int64,
+    expected_value: int64,
+    found: boolean
+) -> boolean {
+    result: { status: :not_found | :found, key: int64, value: int64 } <- wbt_map@minimum(map0, 0, 0);
+    case result of {
+        { status: :found, key: key, value: value } -> case found of {
+            false -> false;
+            true -> case key == expected_key of {
+                false -> false;
+                true -> value == expected_value
+            }
+        };
+        { status: :not_found, key: _, value: _ } -> found == false
+    }
+}
+
+fn map_max_is(
+    map0: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    expected_key: int64,
+    expected_value: int64
+) -> boolean {
+    result: { status: :not_found | :found, key: int64, value: int64 } <- wbt_map@maximum(map0, 0, 0);
+    case result of {
+        { status: :found, key: key, value: value } -> case key == expected_key of {
+            false -> false;
+            true -> value == expected_value
+        };
+        { status: :not_found, key: _, value: _ } -> false
+    }
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        r: region(L, normal) <- alloc_region(normal);
+        empty_set: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: cmp_i64 });
+        empty_map: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_map@empty({ compare_key: cmp_i64, compare_value: cmp_i64 });
+        single_set: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_set_singleton_i64(cmp_i64, r, 42);
+        single_map: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_map_singleton_i64(cmp_i64, r, 42, 420);
+        multi_set: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_set_i64(cmp_i64, r);
+        multi_map: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_map_i64(cmp_i64, r);
+        exit_code: int64 <- case set_min_is(empty_set, 0, false) of {
+            false -> 1;
+            true -> case map_min_is(empty_map, 0, 0, false) of {
+                false -> 2;
+                true -> case set_min_is(single_set, 42, true) of {
+                    false -> 3;
+                    true -> case set_max_is(single_set, 42) of {
+                        false -> 4;
+                        true -> case map_min_is(single_map, 42, 420, true) of {
+                            false -> 5;
+                            true -> case map_max_is(single_map, 42, 420) of {
+                                false -> 6;
+                                true -> case set_min_is(multi_set, 10, true) of {
+                                    false -> 7;
+                                    true -> case set_max_is(multi_set, 90) of {
+                                        false -> 8;
+                                        true -> case map_min_is(multi_map, 10, 100, true) of {
+                                            false -> 9;
+                                            true -> case map_max_is(multi_map, 90, 900) of {
+                                                false -> 10;
+                                                true -> 0
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    produces
+        pure exit_code
+    end
+}

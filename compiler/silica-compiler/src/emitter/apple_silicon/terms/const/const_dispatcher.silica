@@ -29,6 +29,7 @@ use const_atom;
 use const_unit;
 use const_default;
 use module_linkage;
+use var;
 
 export emit_const/7;
 
@@ -68,22 +69,28 @@ fn emit_const(term: SIRTerm, dest: string, table: AtomTable, literal_table: Int6
         "atom" -> const_atom@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
         "unit" -> const_unit@emit_const(term, dest, table, literal_table, float64_literal_table, float32_literal_table, outer_reg);
         "fn_ptr" -> do
-            label: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.value);
-            // ADRP/ADD only accept X/W general-purpose regs, never D/S — load address in X8 then copy to dest.
-            addr_reg: string <- case len(dest) > 0 and substring(dest, 0, 1) == "X" of {
-                true -> dest;
-                false -> "X8"
-            };
-            adrp: string <- concat(concat(concat("    ADRP ", addr_reg), concat(", ", label)), concat("@PAGE", "\n"));
-            add_line: string <- concat(concat(concat(concat("    ADD ", addr_reg), concat(", ", addr_reg)), concat(", ", label)), concat("@PAGEOFF", "\n"));
-            core: string <- concat(adrp, add_line);
-            case dest == addr_reg of {
-                true -> core;
+            param_reg: string <- var@find_sp_binding_bare_or_percent_param(outer_reg, term.value);
+            case len(param_reg) > 0 and var@binding_is_physical_int_reg(param_reg) of {
+                true -> var@emit_var_reg(term, dest, param_reg);
                 false -> do
-                    d0: string <- substring(dest, 0, 1);
-                    case d0 == "D" or d0 == "S" of {
-                        true -> concat(core, concat(concat("    FMOV ", dest), ", X8\n"));
-                        false -> concat(core, concat(concat("    MOV ", dest), ", X8\n"))
+                    label: string <- module_linkage@asm_linkage_symbol_for_call(outer_reg, term.value);
+                    // ADRP/ADD only accept X/W general-purpose regs, never D/S — load address in X8 then copy to dest.
+                    addr_reg: string <- case len(dest) > 0 and substring(dest, 0, 1) == "X" of {
+                        true -> dest;
+                        false -> "X8"
+                    };
+                    adrp: string <- concat(concat(concat("    ADRP ", addr_reg), concat(", ", label)), concat("@PAGE", "\n"));
+                    add_line: string <- concat(concat(concat(concat("    ADD ", addr_reg), concat(", ", addr_reg)), concat(", ", label)), concat("@PAGEOFF", "\n"));
+                    core: string <- concat(adrp, add_line);
+                    case dest == addr_reg of {
+                        true -> core;
+                        false -> do
+                            d0: string <- substring(dest, 0, 1);
+                            case d0 == "D" or d0 == "S" of {
+                                true -> concat(core, concat(concat("    FMOV ", dest), ", X8\n"));
+                                false -> concat(core, concat(concat("    MOV ", dest), ", X8\n"))
+                            }
+                        end
                     }
                 end
             }

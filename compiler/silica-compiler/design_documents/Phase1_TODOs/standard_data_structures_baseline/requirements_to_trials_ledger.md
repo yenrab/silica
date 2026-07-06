@@ -1,7 +1,7 @@
 # Layer 0 §6.3 — Requirements-to-Trials Ledger
 
 **Recorded:** 2026-06-29  
-**Status:** Initial coverage map (Layer 0); trial stems are planned until Layer 1+ acceptance gates pass  
+**Status:** Initial coverage map (Layer 0), amended 2026-07-02 for BinaryTree; trial stems are planned until their acceptance gates pass
 **Authority:** [`standard_data_structures_implementation_plan.md`](../standard_data_structures_implementation_plan.md) §6.3–§6.4  
 **Trial root:** [`trials/standard_data_structures_phase1/`](../../trials/standard_data_structures_phase1/)
 
@@ -43,6 +43,7 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 | 13 | `PriorityQueue` = Brodal–Okasaki on pairs | T | `terminal_structures/` → `pq_lexicographic_order` (planned) |
 | 14 | No decrease-key / arbitrary PQ deletion in Phase 1 | O | "Decrease-key — not in Phase 1 PriorityQueue API" |
 | 15 | Bulk WBT: fold insert + optional `from_sorted` O(n) | T | `wbt_core/` → `wbt_from_sorted_linear` (planned) |
+| 16 | `BinaryTree` = fixed left/right persistent tree + zipper | T | `binary_tree_core/` → `binary_tree_path_copy`, `binary_tree_zipper_roundtrip` (planned) |
 
 ---
 
@@ -50,10 +51,10 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 
 | Sec | Summary | Kind | Artifact |
 |---|---|---|---|
-| 1 | Public bracket types for nine collection families | C | `compiler_substrate/` → `collection_bracket_type_parse` (**§7.6 pass, integrate verified**) |
+| 1 | Public bracket types for ten collection families | C | nine-family `collection_bracket_type_parse` (**§7.6 pass**); `BinaryTree` extension → `binary_tree_bracket_type_parse` (§7.10 planned) |
 | 1.1 | Overriding genericity rule — no hard-coded payload types | C | `error_enforcement/` → `constructor_witness_item_mismatch` (planned) |
 | 2 | No user-defined surface aliases; inline shapes only | I | Design §2; emitter uses inline records only |
-| 3 | Constructor resolves from binding type + function record | C | `compiler_substrate/` → `constructor_record_resolution`, `constructor_record_field_order`, `constructor_canonical_arena_lowering`; `error_enforcement/` → `trial_compile_fail_constructor_missing_field`, `trial_compile_fail_constructor_extra_field`, `trial_compile_fail_constructor_witness_mismatch`, `trial_compile_fail_constructor_wrong_module` (**§7.5 pass, integrate verified**) |
+| 3 | Constructor resolves from binding type + possibly-empty function record + explicit value witnesses | C | nine-family constructor trials (**§7.5 pass**); BinaryTree `{}` trials → `binary_tree_empty_constructor_record`, `trial_compile_fail_binary_tree_empty_unwitnessed` (§7.10 planned) |
 | 4 | Comparator returns only `:less \| :equal \| :greater` | T | `error_enforcement/` → `comparator_invalid_atom` (planned) |
 | 5 | Exact function-value ordering identity; no override | T | `compiler_substrate/` → `ordering_identity_top_level`, `ordering_identity_closure_copy`, `ordering_identity_closures`, `ordering_identity_orientation`, `ordering_identity_meld_reject` (**§7.2 pass**) |
 | 6 | Query status `{status, value}`; update result shapes | T | `ordered_collections/` → `lookup_status_not_found` (planned) |
@@ -62,10 +63,11 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 | 7.4 | Trait dispatch; required/provided; link-name mangling | T | `compiler_substrate/` → `trait_dispatch_provided_fold_contains`, `trait_dispatch_dual_trait_record`, `trait_dispatch_override_provided`, `trait_dispatch_link_mangle_specializations`; `error_enforcement/` → `trial_compile_fail_trait_dispatch_no_impl`, `trial_compile_fail_trait_assoc_unresolved`, `trial_compile_fail_trait_missing_required_impl` (**§7.4 pass**) |
 | 7.6 | Collection type witnesses and representation registry | C | `compiler_substrate/` → `collection_bracket_type_parse`, `collection_registry_specialization_distinct`, `collection_record_not_collection`; `error_enforcement/` → `trial_compile_fail_collection_bracket_missing_mem`, `trial_compile_fail_collection_unregistered_module` (**§7.6 pass, integrate verified**) |
 | 9 | Checked `int64` arithmetic rejects overflow | T | `compiler_substrate/` → `checked_int64_overflow`, `runtime_buf_dynamic_size` (**§7.8 pass, integrate verified**) |
-| 7.9 | Constructor runtime lowering; ordering bundles on merge | C | `compiler_substrate/` → `constructor_canonical_arena_lowering`, `constructor_record_field_order`, `constructor_record_resolution`, `constructor_stub_empty_run`, `constructor_ordering_bundle` (**§7.9 pass, integrate verified `60 0`**) |
+| 7.9 | Constructor runtime lowering; ordering bundles on merge | C | `compiler_substrate/` → `constructor_canonical_arena_lowering`, `constructor_record_field_order`, `constructor_record_resolution`, `constructor_stub_empty_run`, `constructor_ordering_bundle` (**§7.9 pass, integrate verified `60 0`**; goldens re-recorded 2026-07-02 after constructor-arg marshaling fix) |
+| 7.10 | BinaryTree family registration; empty-record lowering without ordering bundle | C | `compiler_substrate/` → `binary_tree_bracket_type_parse`, `binary_tree_empty_constructor_record`, `binary_tree_stub_run`; `error_enforcement/` → `trial_compile_fail_binary_tree_empty_unwitnessed`, `trial_compile_fail_binary_tree_constructor_extra_field` (planned) |
 | 10 | Trait vs generated-module separation | I | Design §10; stdlib module layout review |
 | 11 | Materialization policy; internal fold hooks | T | `live_graphs/` → `neighbors_fold_no_temp` (planned) |
-| 12 | `validate` result shape `{valid, error, logical_count}` | T | `wbt_core/` → `validate_malformed_fixture` (planned) |
+| 12 | `validate` result shape `{valid, error, logical_count}` | T | `wbt_core/` → `validate_malformed_fixture`; `binary_tree/` → `binary_tree_validate` (planned) |
 
 ---
 
@@ -73,23 +75,47 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 
 | Sec | Summary | Kind | Artifact |
 |---|---|---|---|
-| 1 | WBT core boundary (shared set/map/graph index) | I | Design §1 |
+| 1 | WBT core boundary (shared set/map/graph index) | T | `stdlib/data_structures/wbt_set.silica`, `wbt_map.silica`; `wbt_core/` → `wbt_empty_representation`, `wbt_constructor_ordering_bundle` (**§8A.1 pass**) |
 | 2 | Mathematical BST model with cached size | I | Design §2 |
 | 3 | `(DELTA, GAMMA) = (3, 2)` balance definition | I | Design §3; HY11 reference |
-| 4 | Logical node shapes (set vs map) | I | Design §4 |
+| 4 | Logical node shapes (set vs map) | T | `wbt_core/` → `wbt_representation_specializations`, `wbt_representation_string_specialization`, `wbt_generic_payload_shapes`, `wbt_generic_tuple_map_empty` (**§8A.1 pass**) |
 | 5 | Smart constructor with overflow-safe size | T | `wbt_core/` → `wbt_smart_node_size` (planned) |
-| 6 | Search helpers | T | `wbt_core/` → `wbt_search_contains` (planned) |
+| 6 | Search helpers | T | `stdlib/data_structures/wbt_set.silica`, `wbt_map.silica` (read-only exports); `wbt_core/` → `wbt_read_only_empty` (**§8A.2 partial** — empty paths); `wbt_search_contains` (planned, blocked on §8A.3 / `E2003`) |
 | 7 | `balance_left` / `balance_right` contract | T | `wbt_core/` → `wbt_rebalance_adversarial` (planned) |
 | 8 | Set insertion + duplicate no-op | T | `wbt_core/` → `wbt_set_insert_duplicate` (planned) |
 | 9 | Map insert/replace on duplicate key | T | `wbt_core/` → `wbt_map_insert_replace` (planned) |
 | 10 | Deletion + successor/min extraction | T | `wbt_core/` → `wbt_delete_two_child` (planned) |
-| 11 | Ordered fold / early-exit fold order | T | `wbt_core/` → `wbt_fold_ascending` (planned) |
+| 11 | Ordered fold / early-exit fold order | T | `wbt_core/` → `wbt_fold_ascending` (planned; §8A.2 read-only `fold/3` in stdlib, trial blocked on non-empty fixture) |
 | 12 | `from_sorted` linear O(n) builder | T | `wbt_core/` → `wbt_from_sorted_valid_invalid` (planned) |
 | 13 | Optional join/split (same balance law) | O | "Public set/map APIs do not initially require union or split" |
 | 14 | Structural invariants (size, order, balance) | T | `wbt_core/` → `wbt_validate_invariants` (planned) |
 | 15 | Postorder validation algorithm | T | `wbt_core/` → `wbt_validate_detect_cycle` (planned) |
 | 16 | Complexity table | I | Design §16 bounds |
 | 17 | References | I | Bibliography only |
+
+---
+
+## `persistent_binary_tree.md`
+
+| Sec | Summary | Kind | Artifact |
+|---|---|---|---|
+| 1 | Fixed-role persistent binary-tree boundary | I | Design §1 |
+| 2 | Empty/node mathematical model and logical counts | I | Design §2 |
+| 3 | Inline recursive tuple; no node alias | C | `binary_tree_core/` → `binary_tree_inline_recursive_shape` (planned) |
+| 4 | Canonical arena + specialization owning record | T | `binary_tree_core/` → `binary_tree_arena_specialization` (planned) |
+| 5 | Sole smart constructor with checked counts | T | `binary_tree_core/` → `binary_tree_smart_node_count`, `trial_collection_error_binary_tree_count_overflow` (planned) |
+| 6 | Constant-time root/child queries | T | `binary_tree_core/` → `binary_tree_direct_child_queries` (planned) |
+| 7 | `:left \| :right` path model | T | `binary_tree_core/` → `binary_tree_path_lookup` (planned) |
+| 8 | Persistent item/child replacement | T | `binary_tree_core/` → `binary_tree_path_copy` (planned) |
+| 9 | Subtree graft arena compatibility | T | `binary_tree_core/` → `binary_tree_graft_compatibility` (planned) |
+| 10 | Pre/in/postorder folds and shape-preserving maps | T | `binary_tree_core/` → `binary_tree_fold_orders`, `binary_tree_map_shape` (planned) |
+| 11 | Inline functional zipper | T | `binary_tree_core/` → `binary_tree_zipper_roundtrip` (planned) |
+| 12 | Structural sharing and logical multiplicity | T | `binary_tree_core/` → `binary_tree_sharing_multiplicity` (planned) |
+| 13 | Failure behavior | T | `binary_tree_core/` → `binary_tree_missing_path_noop` (planned) |
+| 14 | Structural invariants | T | `binary_tree_core/` → `binary_tree_validate_invariants` (planned) |
+| 15 | Active-path cycle validation | T | `binary_tree_core/` → `binary_tree_validate_cycle_and_shared_subtree` (planned) |
+| 16 | Complexity bounds | I | Design §16; operation-counter trial `binary_tree_complexity_observations` (planned) |
+| 17 | Exclusions + Huet zipper reference | O | Design §17 exclusion list; bibliography |
 
 ---
 
@@ -372,6 +398,32 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 
 ---
 
+## `binary_tree_trait.md`
+
+| Sec | Summary | Kind | Artifact |
+|---|---|---|---|
+| 1 | Possibly empty fixed-role binary-tree abstract value | I | Design §1 |
+| 2 | `BinaryTree[...]` + exact empty constructor record `{}` | C | `compiler_substrate/` → `binary_tree_empty_constructor_record`; compile-fail unwitnessed/extra-field trials (planned §7.10) |
+| 3 | No named node/path/frame/zipper surface types | C | `binary_tree/` → `binary_tree_inline_surface_compile` (planned) |
+| 4 | Private owning record + recursive node | T | `binary_tree/` → `binary_tree_runtime_shape` (planned) |
+| 5 | `List[:left \| :right, SpaceType]` paths | T | `binary_tree/` → `binary_tree_get_path` (planned) |
+| 6 | Trait required/provided contract | T | `binary_tree/` → `binary_tree_trait_dispatch` (planned) |
+| 7 | `tree_binary` module surface | T | `binary_tree/` → `binary_tree_module_surface` (planned) |
+| 8 | Empty/root/direct-child behavior | T | `binary_tree/` → `binary_tree_empty_root_children` (planned) |
+| 9 | Node construction and graft compatibility | T | `binary_tree/` → `binary_tree_node_graft` (planned) |
+| 10 | Item replacement | T | `binary_tree/` → `binary_tree_replace_item` (planned) |
+| 11 | Left/right replacement and clearing | T | `binary_tree/` → `binary_tree_replace_children` (planned) |
+| 12 | Fold orders and shape-preserving maps | T | `binary_tree/` → `binary_tree_fold_map` (planned) |
+| 13 | Inline zipper operations | T | `binary_tree/` → `binary_tree_zipper_public_surface` (planned) |
+| 14 | Result/failure conventions | T | `binary_tree/` → `binary_tree_failure_matrix` (planned) |
+| 15 | Invariants and validation | T | `binary_tree/` → `binary_tree_validate` (planned) |
+| 16 | Persistence and memory effects | T | `binary_tree/` → `binary_tree_persistence` (planned) |
+| 17 | Complexity | I | Design §17; operation counters in `binary_tree_complexity_observations` (planned) |
+| 18 | Example | T | `binary_tree/` → `binary_tree_string_example` (planned) |
+| 19 | Exclusions; AST migration is downstream | O | Design §19 exclusion list; bootstrap plan Phase 7 |
+
+---
+
 ## 6.4 Closed CSR/dense representation contract
 
 **Normative contract:** [`csr_dense_representation_contract.md`](csr_dense_representation_contract.md)  
@@ -397,6 +449,8 @@ Source: implementation plan §6.4; designs `csr_graph_snapshot.md`, `dense_matri
 | `wbt_core/` | `weight_balanced_tree.md` |
 | `skew_ral_core/` | `skew_binary_random_access_list.md` |
 | `brodal_okasaki_core/` | `brodal_okasaki_queue.md` |
+| `binary_tree_core/` | `persistent_binary_tree.md` |
+| `binary_tree/` | `binary_tree_trait.md` |
 | `ordered_collections/` | `ordered_set_trait`, `ordered_map_trait`, `heap_trait` |
 | `live_graphs/` | `live_wbt_graph`, `directed_graph_trait`, `undirected_graph_trait`, `weighted_graph_trait` |
 | `terminal_structures/` | `search_tree_trait`, `priority_queue_trait`, `tree_trait` |
@@ -409,9 +463,9 @@ Source: implementation plan §6.4; designs `csr_graph_snapshot.md`, `dense_matri
 ## §6.3 acceptance checklist
 
 - [x] Every numbered section in `data_structure_designs/*.md` has a ledger row  
-- [x] Algorithm map locked decisions (1–15) recorded  
+- [x] Algorithm map locked decisions (1–16) recorded
 - [x] Closed CSR/dense contract (§6.4) recorded in ledger  
 - [x] Each row uses exactly one coverage kind (`T`, `C`, `I`, or `O`)  
 - [x] Trial leaf assignment for all `T` and `C` rows  
 
-**Next step:** Layer 1 §7.1–§7.9 complete (2026-07-01); **Layer 1 exit gate** satisfied for compiler substrate. Proceed to **Layer 2 §8** (WBT, skew RAL, Brodal–Okasaki representation cores). §7.2 meld before-allocation rejection — Layer 2 §8C exit gate, Layer 3 §9C re-verification.
+**Next step:** Layer 1 §§7.1–§7.9 re-verified (2026-07-02 golden refresh); WBT §8A.1 complete; §8A.2 read-only stdlib landed with empty-root trial — proceed to §8A.3 smart constructor (unblocks non-empty §8A.2 acceptance). Skew RAL and Brodal–Okasaki may proceed in parallel on Layer 2. BinaryTree requires §7.10 before §8D. §7.2 meld before-allocation rejection — Layer 2 §8C exit gate, Layer 3 §9C re-verification.

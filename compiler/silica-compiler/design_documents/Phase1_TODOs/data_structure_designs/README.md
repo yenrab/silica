@@ -1,6 +1,6 @@
 # Silica Standard Data-Structure Design Suite
 
-**Date:** 2026-06-29
+**Date:** 2026-06-29; BinaryTree amendment 2026-07-02
 **Status:** Normative detailed design; no implementation sequencing
 **Parent authorities:** [`../data_structures_as_traits.md`](../data_structures_as_traits.md) and [`../data_structure_to_algorithms.md`](../data_structure_to_algorithms.md)
 
@@ -52,6 +52,7 @@ All Silica snippets are normative as interface shape but may use `TypeName` plac
 | `Heap` | [`heap_trait.md`](heap_trait.md) | Brodal–Okasaki bootstrapped skew-binomial queue |
 | `PriorityQueue` | [`priority_queue_trait.md`](priority_queue_trait.md) | same core over priority/value entries |
 | `Tree` | [`tree_trait.md`](tree_trait.md) | rose tree with skew-binary child sequences |
+| `BinaryTree` | [`binary_tree_trait.md`](binary_tree_trait.md) | persistent fixed-role left/right tree |
 
 ## Representation designs
 
@@ -60,6 +61,7 @@ All Silica snippets are normative as interface shape but may use `TypeName` plac
 | Corrected Adams-family WBT | [`weight_balanced_tree.md`](weight_balanced_tree.md) | set, map, search tree, live graph, dense/CSR indexes |
 | Skew binary random-access list | [`skew_binary_random_access_list.md`](skew_binary_random_access_list.md) | dense graph, rose-tree children |
 | Brodal–Okasaki queue | [`brodal_okasaki_queue.md`](brodal_okasaki_queue.md) | heap, priority queue |
+| Persistent fixed-arity binary tree | [`persistent_binary_tree.md`](persistent_binary_tree.md) | `BinaryTree`, downstream compiler AST bridge |
 | Live WBT graph | [`live_wbt_graph.md`](live_wbt_graph.md) | directed, undirected, weighted graphs |
 | CSR graph snapshot | [`csr_graph_snapshot.md`](csr_graph_snapshot.md) | frozen directed/undirected/weighted graphs |
 | Dense matrix graph | [`dense_matrix_graph.md`](dense_matrix_graph.md) | fixed-vertex directed/undirected/weighted graphs |
@@ -69,6 +71,7 @@ All Silica snippets are normative as interface shape but may use `TypeName` plac
 - All updates are persistent. A successful update returns a new root value; the old root and every node not on a changed path remain usable.
 - Recursive nodes are region-allocated and referenced through optional recursive references. `:none` is the empty recursive position.
 - Every constructor uses the canonical application-lifetime arena for its generated representation specialization and memory space.
+- A constructor function record may be the exact empty record `{}` only when its detailed design requires no comparator, extractor, or other behavior function; the declared collection type and explicit value arguments must still determine every specialization parameter.
 - The collection value carries the canonical arena capability needed by its nodes.
 - Comparators define identity as well as order: `:equal` means the two values occupy one ordered-key position.
 - Comparator results other than `:less`, `:equal`, or `:greater` are invalid behavior and produce a deterministic collection error; they are never treated as an ordering branch.
@@ -90,6 +93,8 @@ All Silica snippets are normative as interface shape but may use `TypeName` plac
 - Rose-tree child removal vacates a stable child slot; it does not renumber siblings.
 - Priority queues do not expose arbitrary-entry deletion or decrease-key.
 - Rose trees do not compact or renumber child slots.
+- Binary trees preserve fixed left/right child roles, use `:none` for empty children, and carry no comparator or ordering identity.
+- The BinaryTree zipper is an inline representation-module traversal value, not a named public collection family.
 
 ## Shared terminology
 
@@ -105,5 +110,6 @@ All Silica snippets are normative as interface shape but may use `TypeName` plac
 The parent algorithm map remains the bibliography authority. The WBT detail additionally relies on:
 
 - **[HY11]** Hirai, Y., & Yamamoto, K. (2011). *Balancing Weight-Balanced Trees*. Journal of Functional Programming, 21(3), 287–307.
+- **[Hue97]** Huet, G. (1997). *The Zipper*. Journal of Functional Programming, 7(5), 549–554.
 
 [HY11] proves valid parameter ranges and identifies `(DELTA, GAMMA) = (3, 2)` as the unique integer pair for the original `size + 1` WBT formulation.

@@ -1,6 +1,6 @@
 # Standard Data Structures As Traits
 
-**Date:** 2026-06-29
+**Date:** 2026-06-29; BinaryTree amendment 2026-07-02
 **Status:** **Not implemented** — trait API and representation wiring specification only.
 **Algorithm authority (locked):** [data_structure_to_algorithms.md](data_structure_to_algorithms.md)
 **Detailed API and representation authority:** [data_structure_designs/README.md](data_structure_designs/README.md)
@@ -31,6 +31,7 @@ WeightedGraph                         →  graph_wbt_* (weighted)        →  WB
 CSR graph (snapshot)                    →  graph_csr_*                 →  O(V+E) freeze from live WBT [KL95]
 Dense matrix graph                    →  graph_dense_*                 →  Skew binary random-access list [Oka95]
 Tree                                  →  tree_rose                    →  Rose tree; random-access child list [Oka95]
+BinaryTree                            →  tree_binary                  →  Fixed left/right persistent tree + zipper [Hue97]
 Heap                                  →  brodal_okasaki_min / max      →  Brodal–Okasaki [BO96]
 PriorityQueue                         →  brodal_okasaki_min (pairs)    →  Brodal–Okasaki [BO96]
 ```
@@ -48,7 +49,7 @@ PriorityQueue                         →  brodal_okasaki_min (pairs)    →  Br
 3. All mutators return **new values** (functional persistence); captured comparators are preserved on every update path.
 4. Node IDs, keys, values, priorities, directed edge payloads, direction-independent edge data, and weights are **typed collection parameters**.
 5. Counts, capacities, and internal indices may remain `int64`.
-6. Generated constructors take **inline function records** (no named struct aliases for those records).
+6. Generated constructors take **inline function records** (no named struct aliases for those records); the exact record may be `{}` when a design requires no behavior function.
 7. Collection variables declare explicit collection types including memory effects (`mem(normal)`, `mem(writethrough)`).
 8. **One exported function per operation** per generated module (`export insert/2`, not per-width duplicates).
 9. Algorithms in user code and stdlib should depend on **traits**, not generated module names.
@@ -60,7 +61,7 @@ PriorityQueue                         →  brodal_okasaki_min (pairs)    →  Br
 
 `ItemType`, `KeyType`, `ValueType`, `PriorityType`, `NodeIdType`, `EdgePayloadType`, `EdgeDataType`, `WeightType`, and `AccType` may each be any valid Silica value type legal in the declared memory and ownership context. `SpaceType` may be any valid Silica memory-space type.
 
-The programmer determines every placeholder through explicit collection, binding, return, argument, callback, and constructor-function declarations. Compiler and standard-library implementations—including AI-generated implementations—must resolve and preserve those declared types. Concrete types appearing in examples, internal counts, slots, ranks, offsets, indexes, or representation sketches never constrain a placeholder. Missing or contradictory declaration evidence is a compile-time error; an implementation must not choose a default concrete type.
+The programmer determines every placeholder through explicit collection, binding, return, argument, callback, constructor-record, and constructor-value declarations. Compiler and standard-library implementations—including AI-generated implementations—must resolve and preserve those declared types. Concrete types appearing in examples, internal counts, slots, ranks, offsets, indexes, or representation sketches never constrain a placeholder. Missing or contradictory declaration evidence is a compile-time error; an implementation must not choose a default concrete type.
 
 The detailed per-placeholder declaration mapping and implementation prohibitions are normative in the [common contract's overriding genericity rule](data_structure_designs/common_contract.md#overriding-genericity-rule).
 
@@ -84,13 +85,16 @@ Every standard collection constructor takes an inline function record. The compi
 
 1. Checks the binding's declared collection type (e.g. `OrderedSet[string, mem(normal)]`).
 2. Witnesses payload types from function-field signatures (e.g. `compare_item: fn(string, string) -> (:less | :equal | :greater)`).
-3. Specializes the generated representation and trait dispatch to those concrete types.
-4. Stores captured functions in the generated value for use by trait `provided` algorithms and representation updates.
-5. Resolves the canonical application-lifetime arena for the generated specialization and memory space.
+3. Uses explicit non-record constructor arguments as additional type witnesses where the detailed design permits them.
+4. Specializes the generated representation and trait dispatch to those concrete types.
+5. Stores captured functions, when present, in the generated value for use by trait `provided` algorithms and representation updates.
+6. Resolves the canonical application-lifetime arena for the generated specialization and memory space.
 
 Memory space comes from the declared collection type, not from the function record.
 
 Ordering compatibility is based on exact function-value identity. A top-level function symbol has one canonical identity; a closure identity includes its exact captured-environment instance, so separately created closures are incompatible even if behaviorally equivalent. Function-type equality is insufficient, and programmers cannot override identity with a declared token.
+
+An unordered family whose exact constructor record is `{}`, such as `BinaryTree`, carries no ordering bundle. Its specialization is determined from the declared collection type and explicit item arguments.
 
 **Example (ordered set):**
 
@@ -110,7 +114,7 @@ names: OrderedSet[string, mem(normal)] <- wbt_set@empty({
 });
 ```
 
-**Assoc-type placeholders:** trait signatures use `ItemType`, `KeyType`, `ValueType`, `NodeIdType`, `EdgePayloadType`, `EdgeDataType`, `WeightType`, and `SpaceType` (via `mem(SpaceType)`). The compiler resolves them from declared bracket types and constructor-record witnesses.
+**Assoc-type placeholders:** trait signatures use `ItemType`, `KeyType`, `ValueType`, `NodeIdType`, `EdgePayloadType`, `EdgeDataType`, `WeightType`, and `SpaceType` (via `mem(SpaceType)`), plus receiver placeholders such as `BinaryTreeType`. The compiler resolves them from declared bracket types, constructor-record fields when present, and explicit constructor value arguments where the detailed design permits them.
 
 ---
 
@@ -147,6 +151,7 @@ Factory and mutator functions on representation modules (`wbt_set@empty`, `wbt_s
 | `Heap`            | `brodal_okasaki_min`, `brodal_okasaki_max`                               | Brodal–Okasaki [BO96]              |
 | `PriorityQueue`   | `brodal_okasaki_min` (pair compare)                                      | Brodal–Okasaki [BO96]              |
 | `Tree`            | `tree_rose`                                                              | Random-access child list [Oka95]   |
+| `BinaryTree`      | `tree_binary`                                                            | Fixed binary tree + zipper [Hue97] |
 
 
 Thin **adapter modules** (`ordered_set_wbt_adapter`, `ordered_map_wbt_adapter`, …) may forward trait `impl fn` bodies to generated `@` operations on inner record shapes. Adapters are stdlib glue, not a separate public constructor style.
@@ -603,6 +608,44 @@ provided {
 
 ---
 
+## BinaryTree
+
+**Representation:** persistent fixed-arity binary tree with one optional left and one optional right recursive child. A Huet-style zipper is available through representation-module operations for focused traversal and reconstruction.
+
+**Constructor function record:**
+
+```text
+{}
+```
+
+The record is exactly empty because item ordering, equality, and extraction do not control this representation. Expected collection type and explicit item arguments witness `ItemType` and `SpaceType`.
+
+**Trait surface:**
+
+```text
+export trait BinaryTree;
+
+export node_count/1;
+export is_empty/1;
+export root_item/1;
+export get/2;
+export left_item/2;
+export right_item/2;
+export fold_preorder/3;
+export fold_inorder/3;
+export fold_postorder/3;
+```
+
+Paths are inline `List[:left | :right, SpaceType]` values. `:none` represents an empty root or child; no cyclic dummy node is part of the representation.
+
+**Generated module `tree_binary`:** `empty`, `with_root`, `node`, `replace_item`, `replace_left`, `replace_right`, `clear_left`, `clear_right`, root/child queries, preorder/inorder/postorder folds, shape-preserving maps, inline zipper operations, and `validate`.
+
+Updates path-copy only the selected route and share every untouched subtree. The concrete value carries a canonical arena and specialization key but no comparator or ordering bundle. The zipper is an inline representation-module value, not a named public collection family.
+
+`BinaryTree` does not replace `Tree`, `SearchTree`, or their representations.
+
+---
+
 ## Tree
 
 **Representation:** rose tree — each node holds a label and a **child sequence** stored in a skew binary random-access list [Oka95, Oka98 §5].
@@ -664,7 +707,7 @@ Stdlib adapters (`ordered_set_wbt_adapter`, …) are the same pattern wired as `
 ## What programmers supply
 
 - Explicit collection type declarations at bindings and function returns.
-- Inline constructor function records with comparators (and extractors where required).
+- Inline constructor function records with comparators/extractors where required, or the exact empty record `{}` for BinaryTree.
 - For custom structures: either direct trait `impl fn` or a view/adaptor value.
 
 **Examples:**
@@ -682,6 +725,8 @@ users: OrderedMap[string, User, mem(normal)] <- wbt_map@empty({
 frontier: Heap[int64, mem(normal)] <- brodal_okasaki_min@empty({
     compare_item: compare_node_id
 });
+
+syntax: BinaryTree[string, mem(normal)] <- tree_binary@with_root({}, "root");
 
 g: DirectedGraph[NodeId, Edge, mem(normal)] <- graph_wbt_directed@empty({
     compare_node: compare_node_id,
@@ -711,6 +756,7 @@ Example responsibilities:
 | `graph_wbt_directed` | `DirectedGraph@neighbors`, `@node_count`, …              | `@empty`, `@add_edge`                          |
 | `graph_csr_directed` | query ops on frozen snapshot                             | `@freeze_from_wbt`                             |
 | `brodal_okasaki_min` | `Heap@peek`, `@len`                                      | `@empty`, `@push`, `@pop`, `@meld`             |
+| `tree_binary`        | `BinaryTree@root_item`, child queries, folds              | construction, replacement, map, zipper, validate |
 
 
 ---
@@ -729,6 +775,7 @@ Required compiler support before stdlib acceptance:
 | 5   | Checking / codegen for `provided` trait block bodies                                    |                                                        |
 | 6   | Link-name mangling from resolved concrete trait impl types                              |                                                        |
 | 7   | Closed comparator return-type enforcement                                               | statically require `:less | :equal | :greater`         |
+| 8   | Exact empty constructor-record resolution for unordered families                        | BinaryTree `{}`; declared/argument witnesses required   |
 
 
 `Collectable` placeholder resolution remains **list-specific**; standard structures use constructor function records, not public `Collectable` construction.
@@ -745,6 +792,7 @@ Required compiler support before stdlib acceptance:
 | Sorted keys → WBT set  | `wbt_set@from_sorted` or fold `@insert` |
 | Multiple heaps → one   | `brodal_okasaki_*@meld`                 |
 | SearchTree lookup      | `SearchTree@contains_key` → WBT backing |
+| Binary tree rewrite    | `tree_binary` zipper or postorder map   |
 
 
 ---
@@ -767,6 +815,7 @@ The CSR/dense decision is closed:
 - Custom user structures participate via views or direct impls.
 - Payload and vertex-ID types are explicit at construction; graph IDs may use any valid Silica type.
 - Representation modules become implementation details behind traits.
+- BinaryTree offers fixed-role persistent rewrites and zipper traversal without weakening or replacing rose `Tree`.
 
 ---
 
@@ -775,6 +824,7 @@ The CSR/dense decision is closed:
 - `provided` algorithms that default to `fold` may be asymptotically fine but allocation-heavy if `neighbors` materializes large lists every call.
 - Error messages must distinguish trait dispatch, constructor resolution, function-record mismatch, and payload mismatch.
 - Brodal–Okasaki and WBT codegen complexity is higher than array-backed bootstrap modules.
+- BinaryTree `empty({})` requires sufficient declared result context; accepting it without a complete item/space witness would reintroduce ambiguous defaulting.
 
 ---
 
@@ -788,4 +838,7 @@ The CSR/dense decision is closed:
 | [balanced_tree_and_heap_design.md](../balanced_tree_and_heap_design.md)                | WBT and Brodal–Okasaki module design              |
 | [btree_set_design.md](../btree_set_design.md)                                          | Ordered set/map operations (WBT; filename legacy) |
 | [silica-specification.md](../silica-specification.md)                                  | §8.2.4 standard generated structures              |
+| [data_structure_designs/persistent_binary_tree.md](data_structure_designs/persistent_binary_tree.md) | BinaryTree core, zipper, sharing, validation |
+| [data_structure_designs/binary_tree_trait.md](data_structure_designs/binary_tree_trait.md) | Public BinaryTree trait/module contract |
+| [bootstrap_retirement_and_self_host_plan.md](bootstrap_retirement_and_self_host_plan.md) | Downstream compiler AST adoption; not BinaryTree acceptance |
 | [data_structures_implementation_command.md](data_structures_implementation_command.md) | Acceptance trials and phase order                 |

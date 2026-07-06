@@ -2,13 +2,14 @@
 
 **Purpose:** Identify every change needed so `silica-compiler` can build and maintain itself without `silica-bootstrap-compiler`, replacing bootstrap-era internal data structures and workarounds with the standard generated families specified in [data_structures_as_traits.md](data_structures_as_traits.md) and [data_structure_to_algorithms.md](data_structure_to_algorithms.md).
 
-**Scope:** `compiler/silica-compiler/src/` (compiler internals), build system, and compiler-facing trials. Stdlib implementation of WBT / Brodal–Okasaki modules is tracked in [standard_data_structures_implementation_plan.md](standard_data_structures_implementation_plan.md); this plan covers **when and how the compiler adopts** those modules.
+**Scope:** `compiler/silica-compiler/src/` (compiler internals), build system, and compiler-facing trials. Stdlib implementation of WBT / Brodal–Okasaki / BinaryTree modules is tracked in [standard_data_structures_implementation_plan.md](standard_data_structures_implementation_plan.md); this plan covers **when and how the compiler adopts** those modules.
 
 **Authority:**
 
 - [data_structure_to_algorithms.md](data_structure_to_algorithms.md) — **locked algorithms** (Adams WBT for ordered collections; Brodal–Okasaki for heaps; WBT graphs + CSR freeze; no dense bitset)
 - [data_structures_as_traits.md](data_structures_as_traits.md) — trait API specification, constructor function records, trait → module mapping (`wbt_set`, `wbt_map`, …)
 - [standard_data_structures_implementation_plan.md](standard_data_structures_implementation_plan.md) — stdlib build progress and acceptance trials
+- [data_structure_designs/persistent_binary_tree.md](data_structure_designs/persistent_binary_tree.md) and [data_structure_designs/binary_tree_trait.md](data_structure_designs/binary_tree_trait.md) — accepted representation/API contract required before compiler AST adoption
 - [list_implementation_design.md](../list_implementation_design.md) — when `List[T, S]` remains correct (AST chains, token streams)
 
 **Current state (audit):**
@@ -18,6 +19,7 @@
 | Compiler executable | `src/Makefile` builds `main.silica` → `main.ll` via bootstrap; links `libsilica_compiler.a` from Rust | Used by all `trials/*/`, already builds `standard_data_structures/` |
 | Subdir Makefiles | `lexer/`, `parser/`, `type_checker/` (partial), `sir_generator/`, `emitter/`, `effect_checker/` | — |
 | Internal ADTs | `data_structures/bst.silica` (naive unbalanced BST); ~20 custom `List*` cons-cell structs | Bracket-type witnesses for `OrderedSet`/`OrderedMap`/`Heap`/`DirectedGraph` in type checker (trait dispatch not fully wired to WBT backends) |
+| Parser expression AST | Recursive `Expr` struct with direct `inner` / `right_expr` and cyclic `kind=-1` dummy | Standard `BinaryTree` adoption deferred to Phase 7 |
 | Type aliases | `type TokenKind = int64` in `lexer_token_kind.silica` (only `type` alias in `src/`) | — |
 
 This document intentionally contains no Silica source code. It is written as fine-grained work items that an LLM can follow when migrating compiler internals.
@@ -30,6 +32,8 @@ This document intentionally contains no Silica source code. It is written as fin
 4. **No new named constructor-record struct types** (per traits doc Constructor Function Record Rule).
 5. **Each migration step** adds or extends a trial under `trials/` before deleting the old path.
 6. **Retire duplicated logic** only after self-hosted cross-module ABI is verified (see Phase 2).
+7. **BinaryTree acceptance and compiler adoption are separate gates.** Phase 7 may consume only an already accepted `tree_binary`; its completion cannot be used to excuse a missing standard-structure trial.
+8. **No AST aliases or named wrapper types.** BinaryTree payload, path, result, and zipper structures remain inline at Silica boundaries.
 
 ## Implementation Order
 
@@ -40,8 +44,11 @@ This document intentionally contains no Silica source code. It is written as fin
 5. **Phase 4** — Replace linear-scan association lists (symbol/effect tables).
 6. **Phase 5** — Type alias and bootstrap API cleanup.
 7. **Phase 6** — Self-host integrate suite and bootstrap removal.
+8. **Phase 7** — Migrate the complete parser `Expr` AST and all compiler consumers to standard `BinaryTree`.
 
 Phases 3 and 4 can proceed in parallel once Phase 1 stage **`build-selfhost`** exists. Phase 2 should precede deleting duplicated lookup functions (Step 2.2).
+
+Phase 7 is a separately gated downstream adoption. It begins only after standard `BinaryTree` acceptance and a stable self-host compiler. It is not required to accept BinaryTree and is not required to retire bootstrap unless separately promoted to a release gate.
 
 **Phases 3–4 additionally require** `wbt_map` / `wbt_set` stdlib modules (Adams WBT [Ada93]) per the algorithm map. Until those modules pass acceptance trials, compiler map migration stays on `data_structures/bst.silica` or other interim structures—do not adopt legacy `btree_nodeid` as the long-term compiler backend.
 
@@ -55,6 +62,7 @@ Per [data_structure_to_algorithms.md](data_structure_to_algorithms.md) and [data
 | Ordered scalar pools (optional) | `OrderedMap` / `OrderedSet` | `wbt_map` / `wbt_set` | Adams WBT [Ada93] | **Yes** (emitter pools) |
 | Priority worklists | `Heap` | `brodal_okasaki_min` | Brodal–Okasaki [BO96] | **No** (not used in compiler today) |
 | Graph structures | `DirectedGraph` | `graph_wbt_*` | WBT + WBT neighbors | **No** (symbol tables are maps, not graphs) |
+| Parser expression AST | `BinaryTree` | `tree_binary` | Fixed left/right recursive tree + zipper | **No** for initial retirement; **Yes** for Phase 7 modernization |
 
 **Not in scope for compiler or stdlib:** dense bitset graphs, Patricia tries, region binary/d-ary heaps, NodeIDBTree / CsrBTree bootstrap families.
 
@@ -103,7 +111,7 @@ These are compiler/runtime fixes or stdlib gaps that block compiling the full `s
 | W09 | `sir_generator/declarations/qualified_call_mangler.silica`, `trait_specialization.silica` | structural-vs-Named inference for `List`-typed fields | A/B |
 | W10 | `parser_tuples.silica` | token.kind false-matches grouping kinds | A/B |
 | W11 | `type_checker_expressions.silica` | `call_name_is_module_qualified` misclassification; `tc_` prefix collision | A/B |
-| W12 | `parser_ast.silica` | nominal rebuild helpers for structural records | B |
+| W12 | `parser_ast.silica` | nominal rebuild helpers for structural records; legacy recursive Expr representation | B / Phase 7 |
 | W13 | `parser/constraint_extract.silica` | tuple order for bootstrap codegen; stack overflow guard on case branches | A/B |
 | W14 | `sir_generator/terms/identifiers.silica` | nested tuple destructuring codegen | A/B |
 | W15 | `emitter/.../term_emitter.silica` | 6-param `emit_const` issue | B |
@@ -111,7 +119,7 @@ These are compiler/runtime fixes or stdlib gaps that block compiling the full `s
 
 **Exit criteria:**
 
-- Every W-id has an owner phase (2 or 3) and a trial or integrate check.
+- Every W-id has an owner phase (2, 3, or 7) and a trial or integrate check.
 
 ### Step 0.3 — Stdlib readiness for compiler-internal use
 
@@ -420,6 +428,238 @@ Work items map to W-ids from Step 0.2. Fix in `silica-compiler` first where clas
 
 - No `silica-boot` in default build path.
 
+## Phase 7 — Compiler-wide parser AST migration to BinaryTree
+
+**Nature:** downstream compiler adoption after standard-structure acceptance.
+**Standard-library prerequisite:** implementation-plan §9D `tree_binary` / `BinaryTree` exit gate.
+**Non-gating rule:** this phase is not a prerequisite for accepting standard BinaryTree and is not part of the BinaryTree requirements-to-trials ledger.
+
+This phase migrates the parser `Expr` representation and every compiler phase that consumes or rewrites it. It does not silently include `SIRTerm`; the SIR tree remains a separate representation and requires a separate design decision if migration is later desired.
+
+### Phase 7 entry gate
+
+- `BinaryTree[ItemType, mem(SpaceType)]`, `tree_binary`, and inline zipper operations pass their complete standard-data-structure acceptance suite.
+- Phase 1 self-host staging has passed; the migration is tested with a self-host compiler, not only the bootstrap compiler.
+- The current `Expr.kind` contract and the child role of every kind are recorded from `parser_ast.silica`.
+- The old compiler remains available as an equivalence oracle until Phase 7 exits.
+- No change to BinaryTree's standard API is justified solely by an AST convenience without first updating its normative detailed design.
+
+### Step 7.1 — Freeze the AST-to-BinaryTree schema
+
+Record one table for every parser `Expr.kind`:
+
+- payload fields used (`kind`, `value`, `name`, source location, tuple-decomposition bindings, sequence effects);
+- whether `inner` is absent or occupied;
+- whether `right_expr` is absent or occupied;
+- whether either child is a semantic operand, body, continuation, branch-list spine, tuple/list/record spine, error recovery subtree, or opaque holder;
+- whether child visitation changes lexical scope or expected type; and
+- whether the kind may legally occur only during parsing/lowering.
+
+The BinaryTree item is one exact inline payload record/tuple. No `AstNode`, `AstPayload`, `AstPath`, `AstCursor`, or `AstZipper` alias/struct/enum is introduced. Existing payload components may be carried while their independent bootstrap cleanup remains pending, but the tree surface itself repeats its complete structural type.
+
+Mapping rules:
+
+- old `kind = -1` cyclic dummy is represented by `:none`, never by a BinaryTree node;
+- old `inner` maps only to the fixed left role;
+- old `right_expr` maps only to the fixed right role;
+- right-spined call, tuple, list, record, and case-branch encodings initially retain their exact shape;
+- no migration step flattens or reorders those spines;
+- `Program`, declaration lists, parameter lists, effect lists, and named-program lists remain lists/records unless separately authorized.
+
+**Exit criteria:**
+
+- Every current kind, including parse-error markers and lambda/function-type holders, has one unambiguous payload/child schema.
+- The schema identifies all scope-sensitive traversal edges.
+
+### Step 7.2 — Add a bidirectional compatibility bridge
+
+Add temporary compiler-internal functions:
+
+- legacy `Expr` → `BinaryTree[<complete inline Expr payload record>, mem(normal)]`;
+- BinaryTree → legacy `Expr`;
+- legacy dummy ↔ absent child conversion;
+- structural equality/reporting used only by migration trials.
+
+Extend `src/silica.config.compiler_internal` for this phase with `tree_binary`, `BinaryTree`, and their accepted dependencies. Do not add them to the compiler build graph before the Phase 7 entry gate.
+
+The bridge:
+
+- constructs through `tree_binary`, never by forging private node fields;
+- preserves exact source locations and side lists;
+- preserves child roles and right-spine order;
+- checks count overflow and canonical arena behavior;
+- handles every parser error marker; and
+- never becomes a permanent public stdlib adapter.
+
+Trials under `trials/self_host_addition/`:
+
+- `ast_binary_tree_roundtrip_all_kinds`;
+- `ast_binary_tree_roundtrip_nested_calls`;
+- `ast_binary_tree_roundtrip_case_branches`;
+- `ast_binary_tree_roundtrip_sequence_and_let`;
+- `ast_binary_tree_roundtrip_parse_errors`;
+- `ast_binary_tree_no_cyclic_dummy`.
+
+**Exit criteria:**
+
+- Parsing representative valid and invalid sources, converting old → new → old, yields structurally identical legacy ASTs.
+- New → old → new yields identical BinaryTree payload/fold sequences and validates.
+
+### Step 7.3 — Introduce the compiler AST access/rewrite façade
+
+Before migrating consumers, add compiler-internal helpers over `BinaryTree`:
+
+- payload/kind/value/name/location access;
+- optional left/right child access;
+- kind-checked child-role accessors where scope or semantics differ;
+- preorder/postorder traversal;
+- path replacement;
+- zipper open/down/up/close;
+- shallow rebuild from a payload and two optional child subtrees; and
+- AST-specific validation of kind/arity rules layered on `tree_binary@validate`.
+
+All façade signatures use `BinaryTree[...]` and inline result/path/zipper structures. No new named tree wrapper is introduced.
+
+AST validation checks properties outside generic BinaryTree:
+
+- allowed child occupancy for each kind;
+- required continuation/branch-list spine kinds;
+- opaque holder restrictions;
+- parse-error marker shape;
+- no unexpected dummy payload;
+- side-list presence where required.
+
+**Exit criteria:**
+
+- A consumer can inspect, traverse, and rebuild every current expression shape without direct access to BinaryTree private fields.
+- AST-specific validation rejects one malformed fixture for every kind-family rule.
+
+### Step 7.4 — Migrate parser producers
+
+Migrate `parser/constraint_extract.silica` and parser helpers:
+
+1. leaf expressions use `with_root`;
+2. unary expressions construct exactly the left child;
+3. binary/continuation expressions construct fixed left and right children;
+4. old `parser_ast@dummy_expr()` arguments become empty subtrees/absent children;
+5. right-spined argument, tuple, list, record, and branch builders preserve their current order;
+6. lambda lifting performed inside the parser uses the façade/zipper rather than raw node construction; and
+7. parse-error recovery preserves diagnostic locations and recovered subtrees.
+
+Keep the compatibility bridge so parser output can still feed unmigrated consumers during this step.
+
+**Exit criteria:**
+
+- Parser output is natively BinaryTree.
+- Parser golden diagnostics and AST shape trials are unchanged through the bridge.
+- No new legacy `Expr { ... }` construction remains in parser production code.
+
+### Step 7.5 — Migrate read-only compiler consumers
+
+Migrate consumers in bounded groups, running their local integrate suites after each group:
+
+1. module checker and `main.silica` dependency/debug walks;
+2. FFI placement, taint, and ABI checkers;
+3. effect checker;
+4. type checker and recursive/type-specific helpers; and
+5. read-only SIR-generation queries.
+
+Replace:
+
+- `.kind`, `.value`, `.name`, and `.location` access with payload façade calls;
+- `.inner` / `.right_expr` recursion with fixed-role child or zipper traversal;
+- `kind < 0` dummy checks with explicit child absence;
+- manual branch-list and argument-spine walks with kind-checked façade iterators.
+
+**Exit criteria:**
+
+- Each migrated group consumes native BinaryTree without round-tripping to legacy `Expr`.
+- Type errors, effect errors, FFI diagnostics, module resolution, and source locations remain unchanged.
+
+### Step 7.6 — Migrate rewriting and lowering passes
+
+Migrate all passes that currently rebuild `Expr` values:
+
+- lambda lifting and higher-order-function wrapping;
+- compile-only field cleanup;
+- tuple-decomposition and sequence rewriting;
+- argument replacement helpers;
+- actor/supervisor expression rewrites;
+- collection-constructor preprocessing; and
+- AST-to-SIR lowering.
+
+Use:
+
+- path copying for targeted child replacement;
+- zipper reconstruction for focus-oriented rewrites;
+- postorder mapping for whole-tree payload cleanup;
+- explicit scope-sensitive recursion where callbacks require environments.
+
+Do not use repeated root-relative path lookup inside a full traversal when a zipper/cursor provides linear traversal. Do not mutate or inspect `tree_binary` private fields.
+
+Equivalence trials compare:
+
+- diagnostics;
+- emitted SIR text;
+- emitted assembly for a bounded representative corpus;
+- lifted declaration order and names;
+- closure capture lists;
+- source-location-derived labels; and
+- failure behavior on malformed source.
+
+**Exit criteria:**
+
+- No compiler pass converts BinaryTree back to legacy `Expr` for ordinary operation.
+- Targeted rewrites allocate only the changed path; full rewrites remain linear in logical AST nodes.
+
+### Step 7.7 — Remove the legacy recursive Expr representation
+
+After every producer and consumer is native:
+
+1. remove recursive `inner: Expr` and `right_expr: Expr` storage;
+2. remove `dummy_expr()` and all `kind == -1` / `kind < 0` absence checks that referred to it;
+3. remove nominal AST rebuild helpers made obsolete by BinaryTree operations;
+4. remove the temporary bidirectional bridge;
+5. remove bridge-only trials while retaining native equivalence regressions; and
+6. verify there is no named AST node/path/cursor/zipper type introduced as a replacement.
+
+Declaration, parameter, effect, and program-list cleanup is not implied unless those structures independently violate the active self-host rules.
+
+**Exit criteria:**
+
+- `rg` finds no legacy recursive Expr construction or cyclic dummy use.
+- Every compiler phase accepts the same native BinaryTree AST value.
+
+### Step 7.8 — Performance, persistence, and fixed-point gate
+
+Add operation-counter and stress trials:
+
+- deeply nested unary and binary expressions;
+- long call/tuple/list/record/case right spines;
+- large sequence/let continuations;
+- targeted deep argument replacement;
+- whole-tree cleanup/lambda-lift passes;
+- retained old AST roots across rewrites;
+- legal shared subtrees and cycle rejection.
+
+Gate on:
+
+- no repeated root traversal causing accidental `O(nh)` full passes;
+- `O(h)` targeted path/zipper reconstruction;
+- `O(n)` whole-tree folds/maps;
+- unchanged compiler diagnostics and emitted output;
+- full self-host `make integrate`; and
+- hostₙ → hostₙ₊₁ fixed-point equivalence under the migrated AST.
+
+### Phase 7 exit gate
+
+- Standard BinaryTree remains unchanged unless its own design/acceptance process approved a required revision.
+- Parser `Expr` production, all checkers, cleanup/rewriters, and AST-to-SIR lowering use native BinaryTree.
+- The cyclic dummy representation and all legacy bridge code are gone.
+- AST kind/arity validation, persistence, allocation, and complexity suites pass.
+- SIRTerm remains explicitly outside this migration unless a separate accepted plan adds it.
+- Compiler-wide self-host and fixed-point gates pass.
+
 ## Suggested First PR (minimal vertical slice)
 
 1. Step 0.1 inventory + delete stray `src/btree_set_nodeid.silica`
@@ -440,6 +680,8 @@ That sequences build-system flip and workaround fixes before WBT adoption inside
 3. **Compile time / memory:** Full compiler batch may stress host compiler; may need staged `silica.config` shards before monolithic config.
 4. **Scope creep:** Phase 4 parser constraint migration—default **keep lists** unless profiling shows need.
 5. **Trait compiler gaps:** `provided` blocks, graph bracket witnesses, and boolean `found` shapes from traits doc may block clean `OrderedMap@get` adoption until compiler obligations are met.
+6. **AST migration breadth:** Parser `Expr` is consumed across parsing, checking, cleanup, and SIR lowering. Phase 7 uses a bidirectional bridge and bounded consumer groups so representation conversion never becomes a flag-day rewrite.
+7. **Traversal regression:** Replacing direct binary fields with repeated root-relative path lookup can create `O(nh)` passes. Zipper/cursor operation counters are a Phase 7 exit gate.
 
 ## Completion Tracking
 
@@ -453,5 +695,7 @@ That sequences build-system flip and workaround fixes before WBT adoption inside
 | `type TokenKind = int64` | In use | Only type alias in `src/` |
 | `wbt_map` / `wbt_set` stdlib | Not implemented | Blocks Phases 3–4; see Step 0.3 |
 | Compiler trait obligations | Not complete | See traits doc §Compiler obligations |
+| `tree_binary` / `BinaryTree` stdlib | Planned | Standard-plan §§7.10, 8D, 9D; Phase 7 entry gate only |
+| Parser `Expr` BinaryTree migration | Not started | Downstream Phase 7; does not gate standard BinaryTree or initial bootstrap retirement |
 | Stray `src/btree_set_nodeid.silica` | Orphan | Remove in Step 0.1; do not adopt as compiler backend |
 | Bootstrap retirement | Not started | Gate: Phase 1.4 + Phase 6.1 |

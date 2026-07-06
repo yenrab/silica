@@ -102,6 +102,124 @@ fn spill_reg_chain_from_outer(outer_reg: string) -> string {
     }
 }
 
+fn binding_name_matches_ref(binding_name: string, ref_name: string) -> bool {
+    case binding_name == ref_name of {
+        true -> true;
+        false -> case len(binding_name) > 0 and substring(binding_name, 0, 1) == "%" of {
+            true -> substring(binding_name, 1, len(binding_name)) == ref_name;
+            false -> case len(ref_name) > 0 and substring(ref_name, 0, 1) == "%" of {
+                true -> binding_name == substring(ref_name, 1, len(ref_name));
+                false -> false
+            }
+        }
+    }
+}
+
+fn sir_term_references_binding(term: SIRTerm, binding_name: string) -> bool {
+    case term.kind < 0 of {
+        true -> false;
+        false -> do
+            local_ref: bool <- case term.kind of {
+                1 -> binding_name_matches_ref(binding_name, term.name);
+                0 -> case term.type_name == "fn_ptr" of {
+                    true -> binding_name_matches_ref(binding_name, term.value);
+                    false -> false
+                };
+                _: int64 -> false
+            };
+            case local_ref of {
+                true -> true;
+                false -> case sir_term_references_binding(term.inner, binding_name) of {
+                    true -> true;
+                    false -> sir_term_references_binding(term.right_expr, binding_name)
+                }
+            }
+        end
+    }
+}
+
+fn find_equals_from_binding(s: string, i: int64) -> int64 {
+    case i >= len(s) of {
+        true -> -1;
+        false -> case substring(s, i, i + 1) == "=" of {
+            true -> i;
+            false -> find_equals_from_binding(s, i + 1)
+        }
+    }
+}
+
+fn outer_reg_has_live_binding_from(outer_reg: string, reg: string, body: SIRTerm, start: int64) -> bool {
+    pipe: int64 <- var@find_pipe_from(outer_reg, start);
+    case pipe < 0 of {
+        true -> false;
+        false -> do
+            seg_start: int64 <- pipe + 1;
+            next_pipe: int64 <- var@find_pipe_from(outer_reg, seg_start);
+            seg_end: int64 <- case next_pipe < 0 of { true -> len(outer_reg); false -> next_pipe };
+            segment: string <- substring(outer_reg, seg_start, seg_end);
+            eq: int64 <- find_equals_from_binding(segment, 0);
+            live_here: bool <- case eq < 1 of {
+                true -> false;
+                false -> do
+                    binding_name: string <- substring(segment, 0, eq);
+                    binding_value: string <- substring(segment, eq + 1, len(segment));
+                    binding_value == reg
+                        and var@find_last_sp_binding(outer_reg, binding_name) == binding_value
+                        and sir_term_references_binding(body, binding_name)
+                end
+            };
+            case live_here of {
+                true -> true;
+                false -> case next_pipe < 0 of {
+                    true -> false;
+                    false -> outer_reg_has_live_binding_from(outer_reg, reg, body, next_pipe)
+                }
+            }
+        end
+    }
+}
+
+fn outer_reg_has_live_binding(outer_reg: string, reg: string, body: SIRTerm) -> bool {
+    outer_reg_has_live_binding_from(outer_reg, reg, body, 0)
+}
+
+fn spill_reg_chain_for_body(outer_reg: string, body: SIRTerm) -> string {
+    case outer_reg_has_live_binding(outer_reg, "X19", body) of {
+        false -> "X19";
+        true -> case outer_reg_has_live_binding(outer_reg, "X20", body) of {
+            false -> "X20";
+            true -> case outer_reg_has_live_binding(outer_reg, "X21", body) of {
+                false -> "X21";
+                true -> case outer_reg_has_live_binding(outer_reg, "X22", body) of {
+                    false -> "X22";
+                    true -> case outer_reg_has_live_binding(outer_reg, "X23", body) of {
+                        false -> "X23";
+                        true -> case outer_reg_has_live_binding(outer_reg, "X24", body) of {
+                            false -> "X24";
+                            true -> case outer_reg_has_live_binding(outer_reg, "X25", body) of {
+                                false -> "X25";
+                                true -> case outer_reg_has_live_binding(outer_reg, "X26", body) of {
+                                    false -> "X26";
+                                    true -> case outer_reg_has_live_binding(outer_reg, "X27", body) of {
+                                        false -> "X27";
+                                        true -> case outer_reg_has_live_binding(outer_reg, "X28", body) of {
+                                            false -> "X28";
+                                            true -> case outer_reg_has_live_binding(outer_reg, "X29", body) of {
+                                                false -> "X29";
+                                                true -> ""
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn is_float_scalar_type(type_name: string) -> bool {
     type_name == "float64" or type_name == "float32" or type_name == "float16"
 }
@@ -188,7 +306,13 @@ fn type_name_is_memory_handle_like(type_name: string) -> bool {
             true -> true;
             false -> case len(t) >= 4 and substring(t, 0, 4) == "ref(" of {
                 true -> true;
-                false -> len(t) >= 11 and substring(t, 0, 11) == "atomic_ref("
+                false -> case len(t) >= 5 and substring(t, 0, 5) == "ref?(" of {
+                    true -> true;
+                    false -> case len(t) >= 10 and substring(t, 0, 10) == ":none|ref(" of {
+                        true -> true;
+                        false -> len(t) >= 11 and substring(t, 0, 11) == "atomic_ref("
+                    }
+                }
             }
         }
     }
@@ -226,21 +350,33 @@ fn outer_append_id_ret_tuple_sret(term: SIRTerm, partial_outer: string, closure_
 fn let_rhs_type_spills_across_io(type_name: string) -> bool {
     case type_name of {
         "int64" -> true;
+        "i64" -> true;
         "uint64" -> true;
+        "u64" -> true;
         "int32" -> true;
+        "i32" -> true;
         "uint32" -> true;
+        "u32" -> true;
         "int16" -> true;
+        "i16" -> true;
         "uint16" -> true;
+        "u16" -> true;
         "int8" -> true;
+        "i8" -> true;
         "uint8" -> true;
+        "u8" -> true;
         "char" -> true;
         "boolean" -> true;
         "bool" -> true;
+        "i1" -> true;
         "atom" -> true;
         "actor_ref" -> true;
         "supervisor_ref" -> true;
         "string" -> true;
-        _: string -> case type_name_is_list_like(type_name) of {
+        "fn_ptr" -> true;
+        _: string -> case var@type_name_is_function(type_name) of {
+            true -> true;
+            false -> case type_name_is_list_like(type_name) of {
             true -> true;
             false -> case reg_conventions@is_tuple_type(type_name) of {
                 true -> true;
@@ -248,10 +384,36 @@ fn let_rhs_type_spills_across_io(type_name: string) -> bool {
                     true -> true;
                     false -> case len(type_name) >= 1 and substring(type_name, 0, 1) == ":" of {
                         true -> true;
-                        false -> type_name_is_memory_handle_like(type_name)
+                        false -> case type_name_is_memory_handle_like(type_name) of {
+                            true -> true;
+                            // Compiler-instantiated library type parameters use an uppercase
+                            // identifier (ItemType, KeyType, AccType, ActorState, ...). They can
+                            // specialize to any single-GPR value. Treating one as disposable
+                            // scratch lets a later tuple/record projection overwrite it.
+                            // Do not extend this rule to every unknown internal type: lifetime
+                            // and other bookkeeping lets must not consume the finite X19-X28
+                            // spill set.
+                            false -> type_name_starts_uppercase(type_name)
+                        }
                     }
                 }
             }
+            }
+        }
+    }
+}
+
+fn type_name_starts_uppercase(type_name: string) -> bool {
+    case len(type_name) == 0 of {
+        true -> false;
+        false -> case substring(type_name, 0, 1) of {
+            "A" -> true; "B" -> true; "C" -> true; "D" -> true; "E" -> true;
+            "F" -> true; "G" -> true; "H" -> true; "I" -> true; "J" -> true;
+            "K" -> true; "L" -> true; "M" -> true; "N" -> true; "O" -> true;
+            "P" -> true; "Q" -> true; "R" -> true; "S" -> true; "T" -> true;
+            "U" -> true; "V" -> true; "W" -> true; "X" -> true; "Y" -> true;
+            "Z" -> true;
+            _: string -> false
         }
     }
 }
@@ -282,7 +444,13 @@ fn compute_let_rhs_spill_reg(term: SIRTerm, rhs_reg: string, outer_reg: string) 
         false -> case is_caller_saved_gpr(rhs_reg) of {
             false -> "";
             true -> case let_rhs_type_spills_across_io(term.inner.type_name) of {
-                true -> spill_reg_chain_from_outer(outer_reg);
+                true -> do
+                    unused: string <- spill_reg_chain_from_outer(outer_reg);
+                    case len(unused) > 0 of {
+                        true -> unused;
+                        false -> spill_reg_chain_for_body(outer_reg, term.right_expr)
+                    }
+                end;
                 false -> ""
             }
         }
@@ -716,6 +884,64 @@ fn scrut_reg_w_for_cmp(scrut_reg: string) -> string {
 
 // Case (SIR kind 3): scrutinee in inner, branch list in right_expr (kind 7 chain of kind 8 branches).
 fn emit_case_pattern_check(branch: SIRTerm, scrut_t: string, scrut_reg: string, lit_reg: string, fail_l: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, outer_const: string) -> string {
+    pk: string <- branch.value;
+    ref_q_scrut: bool <- is_ref_optional_scrut_type(scrut_t);
+    case ref_q_scrut and pk == "atom" of {
+        true -> case branch.name == ":none" or branch.name == "none" of {
+            true -> emit_ref_optional_none_atom_check(scrut_reg, lit_reg, fail_l, table, literal_table, float64_literal_table, float32_literal_table, outer_const);
+            false -> ""
+        };
+        false -> case pk == "wild" of {
+            true -> case is_ref_inner_pattern_type(branch.type_name) of {
+                true -> emit_ref_optional_present_check(scrut_reg, lit_reg, fail_l, table, literal_table, float64_literal_table, float32_literal_table, outer_const);
+                false -> ""
+            };
+            false -> case pk == "bind" of {
+                true -> case is_ref_inner_pattern_type(branch.type_name) of {
+                    true -> emit_ref_optional_present_check(scrut_reg, lit_reg, fail_l, table, literal_table, float64_literal_table, float32_literal_table, outer_const);
+                    false -> ""
+                };
+                false -> emit_case_pattern_check_inner(branch, scrut_t, scrut_reg, lit_reg, fail_l, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, outer_const)
+            }
+        }
+    }
+}
+
+fn is_ref_optional_scrut_type(scrut_t: string) -> bool {
+    case len(scrut_t) >= 5 and substring(scrut_t, 0, 4) == "ref?" and substring(scrut_t, 4, 5) == "(" of {
+        true -> true;
+        false -> case len(scrut_t) >= 6 and substring(scrut_t, 0, 6) == ":none|" of {
+            true -> true;
+            false -> false
+        }
+    }
+}
+
+fn is_ref_inner_pattern_type(pat_type: string) -> bool {
+    len(pat_type) >= 4 and substring(pat_type, 0, 3) == "ref" and substring(pat_type, 3, 4) == "("
+}
+
+fn emit_ref_optional_none_atom_check(scrut_reg: string, lit_reg: string, fail_l: string, table: AtomTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, outer_const: string) -> string {
+    syn: SIRTerm <- SIRTerm { kind: 0, type_name: "ref_none", value: "0", name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+    ld: string <- const_dispatcher@emit_const(syn, lit_reg, table, literal_table, float64_literal_table, float32_literal_table, outer_const);
+    ln: string <- concat(ld, "\n");
+    cmp_ln: string <- concat(concat(concat(ln, "    CMP "), scrut_reg), ", ");
+    cmp_full: string <- concat(concat(cmp_ln, lit_reg), "\n");
+    bne_ln: string <- concat(cmp_full, "    B.NE ");
+    concat(concat(bne_ln, fail_l), "\n")
+}
+
+fn emit_ref_optional_present_check(scrut_reg: string, lit_reg: string, fail_l: string, table: AtomTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, outer_const: string) -> string {
+    syn: SIRTerm <- SIRTerm { kind: 0, type_name: "ref_none", value: "0", name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
+    ld: string <- const_dispatcher@emit_const(syn, lit_reg, table, literal_table, float64_literal_table, float32_literal_table, outer_const);
+    ln: string <- concat(ld, "\n");
+    cmp_ln: string <- concat(concat(concat(ln, "    CMP "), scrut_reg), ", ");
+    cmp_full: string <- concat(concat(cmp_ln, lit_reg), "\n");
+    beq_ln: string <- concat(cmp_full, "    B.EQ ");
+    concat(concat(beq_ln, fail_l), "\n")
+}
+
+fn emit_case_pattern_check_inner(branch: SIRTerm, scrut_t: string, scrut_reg: string, lit_reg: string, fail_l: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, outer_const: string) -> string {
     pk: string <- branch.value;
     case pk == "wild" of {
         true -> "";
@@ -1353,6 +1579,142 @@ fn call_arg2_tree_for_gpr_reorder_scan(term: SIRTerm) -> SIRTerm {
     }
 }
 
+fn simple_gpr_call_arg_can_stage(term: SIRTerm, outer_reg: string) -> bool {
+    case user_call_arg_consumes_fp(term.type_name) of {
+        true -> false;
+        false -> case term.kind == 0 of {
+            true -> true;
+            false -> case term.kind == 1 of {
+                false -> false;
+                true -> do
+                    binding: string <- var@find_sp_binding_bare_or_percent_param(outer_reg, term.name);
+                    case len(binding) > 0 of {
+                        true -> var@is_memory_ref(binding) == false;
+                        false -> var@type_name_is_function(term.type_name)
+                    }
+                end
+            }
+        }
+    }
+}
+
+fn simple_gpr_rest_can_stage(rest: SIRTerm, outer_reg: string) -> bool {
+    case rest.kind < 0 of {
+        true -> true;
+        false -> case rest.name == "user_call_rest" of {
+            true -> case simple_gpr_call_arg_can_stage(rest.inner, outer_reg) of {
+                false -> false;
+                true -> simple_gpr_rest_can_stage(rest.right_expr, outer_reg)
+            };
+            false -> simple_gpr_call_arg_can_stage(rest, outer_reg)
+        }
+    }
+}
+
+fn simple_gpr_call_arg_count(rest: SIRTerm) -> int64 {
+    case rest.kind < 0 of {
+        true -> 0;
+        false -> case rest.name == "user_call_rest" of {
+            true -> 1 + simple_gpr_call_arg_count(rest.right_expr);
+            false -> 1
+        }
+    }
+}
+
+fn emit_simple_gpr_arg_to_stage(
+    arg: SIRTerm,
+    table: AtomTable,
+    int64_table: Int64PrintTable,
+    int32_table: Int32PrintTable,
+    int16_table: Int16PrintTable,
+    int8_table: Int8PrintTable,
+    literal_table: Int64LiteralTable,
+    float64_literal_table: Float64LiteralTable,
+    float32_literal_table: Float32LiteralTable,
+    string_literal_table: StringLiteralTable,
+    bound_name: string,
+    bound_reg: string,
+    outer_reg: string,
+    debug: bool
+) -> string {
+    value_asm: string <- case debug of {
+        true -> do
+            term_to_asm_opt_bound_debug(arg, "X16", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, true)
+        end;
+        false -> term_to_asm_opt_bound(arg, "X16", table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, false)
+    };
+    concat(concat(value_asm, "\n"), "    STR X16, [SP, #-16]!\n")
+}
+
+fn emit_simple_gpr_rest_to_stage(
+    rest: SIRTerm,
+    table: AtomTable,
+    int64_table: Int64PrintTable,
+    int32_table: Int32PrintTable,
+    int16_table: Int16PrintTable,
+    int8_table: Int8PrintTable,
+    literal_table: Int64LiteralTable,
+    float64_literal_table: Float64LiteralTable,
+    float32_literal_table: Float32LiteralTable,
+    string_literal_table: StringLiteralTable,
+    bound_name: string,
+    bound_reg: string,
+    outer_reg: string,
+    debug: bool
+) -> string {
+    case rest.kind < 0 of {
+        true -> "";
+        false -> case rest.name == "user_call_rest" of {
+            true -> concat(
+                emit_simple_gpr_arg_to_stage(rest.inner, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug),
+                emit_simple_gpr_rest_to_stage(rest.right_expr, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug)
+            );
+            false -> emit_simple_gpr_arg_to_stage(rest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug)
+        }
+    }
+}
+
+fn emit_simple_gpr_stage_loads(arg_index: int64, arg_count: int64) -> string {
+    case arg_index >= arg_count of {
+        true -> "";
+        false -> do
+            offset: string <- atom_table@int64_to_decimal_string((arg_count - arg_index - 1) * 16);
+            reg: string <- user_call_abi_reg_digit(arg_index);
+            load: string <- concat(concat(concat("    LDR X", reg), ", [SP, #"), concat(offset, "]\n"));
+            concat(load, emit_simple_gpr_stage_loads(arg_index + 1, arg_count))
+        end
+    }
+}
+
+// A call whose arguments are register-resident scalar/function values is a
+// parallel move, not a sequence of destructive MOVs. Stage every source before
+// loading any ABI destination so cycles and fan-out (X0->X2 while X0 is also a
+// destination) are correct for any argument count supported by X0-X7.
+fn emit_simple_gpr_parallel_args(
+    first: SIRTerm,
+    rest: SIRTerm,
+    table: AtomTable,
+    int64_table: Int64PrintTable,
+    int32_table: Int32PrintTable,
+    int16_table: Int16PrintTable,
+    int8_table: Int8PrintTable,
+    literal_table: Int64LiteralTable,
+    float64_literal_table: Float64LiteralTable,
+    float32_literal_table: Float32LiteralTable,
+    string_literal_table: StringLiteralTable,
+    bound_name: string,
+    bound_reg: string,
+    outer_reg: string,
+    debug: bool
+) -> string {
+    count: int64 <- 1 + simple_gpr_call_arg_count(rest);
+    first_stage: string <- emit_simple_gpr_arg_to_stage(first, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+    rest_stage: string <- emit_simple_gpr_rest_to_stage(rest, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+    loads: string <- emit_simple_gpr_stage_loads(0, count);
+    release: string <- concat(concat("    ADD SP, SP, #", atom_table@int64_to_decimal_string(count * 16)), "\n");
+    concat(concat(concat(first_stage, rest_stage), loads), release)
+}
+
 // Generic user call (non-builtin): args in regs, then BLR or tail BR. use_tail + fn_effects for kind 5 / root tail.
 fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTable, int64_table: Int64PrintTable, int32_table: Int32PrintTable, int16_table: Int16PrintTable, int8_table: Int8PrintTable, literal_table: Int64LiteralTable, float64_literal_table: Float64LiteralTable, float32_literal_table: Float32LiteralTable, string_literal_table: StringLiteralTable, bound_name: string, bound_reg: string, outer_reg: string, debug: bool, use_tail: bool, fn_effects_for_tail: string, blr_effect_value_override: string, line_before_call_asm: string) -> string {
     (ffi_found: bool, ffi_c_sym: string, ffi_param_types: string, ffi_return_type: string) <- ffi_foreign@lookup_from_outer(outer_reg, term.name);
@@ -1420,9 +1782,27 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         false -> term.value
     };
     indirect_via_x9: bool <- call@sir_call_targets_bound_callee(outer_reg, term.name);
+    indirect_arg_has_call: bool <- term_subterm_has_user_call(term.inner) or term_subterm_has_user_call(term.right_expr);
+    // An indirect callee address in X17 must survive evaluation of nested call
+    // arguments.  X17 is caller-saved, so capture it in a stack slot before
+    // argument evaluation and reload it afterward.  The offset accounts for
+    // tuple arguments that remain allocated until the call completes.
+    save_indirect_callee_around_args: bool <- indirect_via_x9 and use_tail == false and indirect_arg_has_call;
+    arg_stack_bytes_before_call: int64 <- call_tuple_args_dealloc_bytes(term.inner)
+        + call_tuple_args_dealloc_bytes(term.right_expr);
     callee_prep: string <- case indirect_via_x9 of {
-        true -> call@emit_indirect_callee_address_to_x17(outer_reg, term.name);
+        true -> case save_indirect_callee_around_args of {
+            true -> concat(call@emit_indirect_callee_address_to_x17(outer_reg, term.name), "    STR X17, [SP, #-16]!\n");
+            false -> call@emit_indirect_callee_address_to_x17(outer_reg, term.name)
+        };
         false -> ""
+    };
+    callee_reload_after_args: string <- case save_indirect_callee_around_args of {
+        false -> "";
+        true -> case arg_stack_bytes_before_call == 0 of {
+            true -> "    LDR X17, [SP, #0]\n";
+            false -> concat("    LDR X17, [SP, #", concat(atom_table@int64_to_decimal_string(arg_stack_bytes_before_call), "]\n"))
+        }
     };
     call_asm: string <- case use_tail of {
         true -> case ffi_found and indirect_via_x9 == false of {
@@ -1561,7 +1941,13 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         and arg1_reg == "X0"
         and arg2_term_ok
         and arg2_bound_in_x0_or_w0;
-    args_asm: string <- case len(rest_asm) > 0 of {
+    staged_arg_count: int64 <- 1 + simple_gpr_call_arg_count(term.right_expr);
+    use_simple_gpr_parallel_stage: bool <- staged_arg_count <= 8
+        and simple_gpr_call_arg_can_stage(term.inner, outer_reg)
+        and simple_gpr_rest_can_stage(term.right_expr, outer_reg);
+    args_asm: string <- case use_simple_gpr_parallel_stage of {
+        true -> emit_simple_gpr_parallel_args(term.inner, term.right_expr, table, int64_table, int32_table, int16_table, int8_table, literal_table, float64_literal_table, float32_literal_table, string_literal_table, bound_name, bound_reg, outer_reg, debug);
+        false -> case len(rest_asm) > 0 of {
         true -> case use_two_arg_gpr_reorder of {
             true -> do
                 save0: string <- "    STR X0, [SP, #-16]!\n";
@@ -1589,10 +1975,11 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
             }
         };
         false -> concat(arg1_asm, "\n")
+        }
     };
-    dealloc_bytes_call: int64 <- call_tuple_args_dealloc_bytes(term.inner)
-        + call_tuple_args_dealloc_bytes(term.right_expr)
-        + sret_stack_bytes;
+    dealloc_bytes_call: int64 <- arg_stack_bytes_before_call
+        + sret_stack_bytes
+        + case save_indirect_callee_around_args of { true -> 16; false -> 0 };
     dealloc_asm_call: string <- case dealloc_bytes_call > 0 of {
         true -> concat("\n    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(dealloc_bytes_call), ""));
         false -> ""
@@ -1605,7 +1992,7 @@ fn emit_generic_user_call_asm_inner(term: SIRTerm, dest: string, table: AtomTabl
         true -> concat(line_before_call_asm, "\n");
         false -> ""
     };
-    concat(fuel, concat(sret_setup, concat(callee_prep, concat(concat(concat(args_asm, before_call), call_asm), dealloc_asm_call))))
+    concat(fuel, concat(sret_setup, concat(callee_prep, concat(concat(concat(concat(args_asm, callee_reload_after_args), before_call), call_asm), dealloc_asm_call))))
 }
 
 // Root function body only: SIR kind 5 tail user call with enclosing function effects for frame release + barriers.
@@ -4027,7 +4414,10 @@ fn aggregate_callee_return_stack_bytes(rhs: SIRTerm) -> int64 {
         false -> 0;
         true -> case rhs.kind == 6 and (rhs.name == "tuple_make" or rhs.name == "record_make") of {
             true -> flat_tuple_dealloc_size(rhs);
-            false -> 0
+            false -> case rhs.kind == 6 and prims_checked_int64@is_checked_int64_prim(rhs.name) of {
+                true -> 16;
+                false -> 0
+            }
         }
     }
 }

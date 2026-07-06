@@ -24,6 +24,7 @@ use type_checker_core;
 use type_checker_tuple_decompose_helpers;
 use type_checker_memory_regions;
 use type_checker_lists;
+use type_checker_recursive_tuples;
 use sir_ast;
 use literals;
 use identifiers;
@@ -1223,15 +1224,33 @@ fn lookup_function_type_for_call_sir(env: ListSymbolEntry, composite_name: strin
     }
 }
 
+fn sir_type_text_is_function(type_text: string) -> bool {
+    case len(type_text) >= 3 and substring(type_text, 0, 3) == "fn(" of {
+        true -> true;
+        false -> len(type_text) >= 2
+            and substring(type_text, 0, 1) == "("
+            and sir_find_arrow_pos(type_text, 0) >= 0
+    }
+}
+
+fn sir_identifier_is_function(context: TypeContext, name: string) -> bool {
+    sir_type_text_is_function(lookup_function_type_for_call_sir(context.env, name))
+}
+
 fn user_call_first_arg_expected_type(context: TypeContext, callee_name: string, inferred: string) -> string {
-    func_type: string <- lookup_function_type_for_call_sir(context.env, callee_name);
-    case len(func_type) == 0 of {
+    case len(inferred) > 0 and type_checker_record_types@record_type_starts(inferred) of {
         true -> inferred;
         false -> do
-            first_ty: string <- first_formal_param_type_from_scheme(func_type);
-            case len(first_ty) > 0 of {
-                true -> first_ty;
-                false -> inferred
+            func_type: string <- lookup_function_type_for_call_sir(context.env, callee_name);
+            case len(func_type) == 0 of {
+                true -> inferred;
+                false -> do
+                    first_ty: string <- first_formal_param_type_from_scheme(func_type);
+                    case len(first_ty) > 0 of {
+                        true -> first_ty;
+                        false -> inferred
+                    }
+                end
             }
         end
     }
@@ -1467,9 +1486,30 @@ fn expr_to_sir_in_let_body(context: TypeContext, expr: Expr, bound_name: string,
         true -> case_expr_to_sir(context, expr, expected_type, bound_name, bound_type, true);
         false -> case expr.kind of {
         0 -> literals@expr_to_sir_with_type(context, expr, literal_type_for_expected(expected_type));
-        1 -> identifiers@expr_to_sir_with_bound(context, expr, bound_name, bound_type);
+        1 -> case (len(expected_type) >= 2 and substring(expected_type, 0, 2) == "fn")
+            or sir_identifier_is_function(context, expr.name) of {
+            true -> SIRTerm {
+                kind: 0,
+                type_name: "fn_ptr",
+                value: expr.name,
+                name: "",
+                inner: sir_ast@dummy_sir_term(),
+                right_expr: sir_ast@dummy_sir_term()
+            };
+            false -> identifiers@expr_to_sir_with_bound(context, expr, bound_name, bound_type)
+        };
         2 -> expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, expected_type);
-        5 -> atoms@expr_to_sir(context, expr);
+        5 -> case expr.value == ":none" and type_checker_recursive_tuples@is_ref_optional_type(expected_type) of {
+            true -> SIRTerm {
+                kind: 0,
+                type_name: "ref_none",
+                value: "0",
+                name: "",
+                inner: sir_ast@dummy_sir_term(),
+                right_expr: sir_ast@dummy_sir_term()
+            };
+            false -> atoms@expr_to_sir(context, expr)
+        };
         7 -> boolean_terms@expr_to_sir(context, expr);
         8 -> string_literals@expr_to_sir(context, expr);
         9 -> expr_to_sir_tuple_inline(context, expr, expected_type);
@@ -1849,6 +1889,55 @@ fn user_call_callee_sir_name(context: TypeContext, composite: string) -> string 
     }
 }
 
+fn call_params_tuple_for_sir(context: TypeContext, call_name: string) -> string {
+    func_type: string <- lookup_function_type_for_call_sir(context.env, call_name);
+    params: string <- sir_params_inner_from_func_type(func_type);
+    case len(params) == 0 of {
+        true -> "";
+        false -> concat("(", concat(params, ")"))
+    }
+}
+
+fn expected_or_inferred_call_arg_type(context: TypeContext, expr: Expr, formal_type: string) -> string {
+    inferred: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr, context);
+    case len(inferred) > 0 of {
+        true -> inferred;
+        // Bare function identifiers are the important non-inferable case:
+        // retain the signature formal so they lower as function addresses.
+        false -> formal_type
+    }
+}
+
+fn build_rest_chain_in_body_with_formals(
+    context: TypeContext,
+    curried: Expr,
+    formal_types: string,
+    bound_name: string,
+    bound_type: string
+) -> SIRTerm {
+    formal_tuple: string <- case len(formal_types) > 0 and substring(formal_types, 0, 1) == "(" of {
+        true -> formal_types;
+        false -> case len(formal_types) > 0 of {
+            true -> concat("(", concat(formal_types, ")"));
+            false -> ""
+        }
+    };
+    formal_first: string <- tuple_first_element_type(formal_tuple);
+    formal_rest: string <- tuple_rest_element_type(formal_tuple);
+    case curried.kind == 4 and curried.name == "" of {
+        true -> do
+            arg_type: string <- expected_or_inferred_call_arg_type(context, curried.inner, formal_first);
+            arg: SIRTerm <- expr_to_sir_in_let_body(context, curried.inner, bound_name, bound_type, arg_type);
+            rest: SIRTerm <- build_rest_chain_in_body_with_formals(context, curried.right_expr, formal_rest, bound_name, bound_type);
+            SIRTerm { kind: 6, type_name: "unit", value: "", name: "user_call_rest", inner: arg, right_expr: rest }
+        end;
+        false -> do
+            arg_type: string <- expected_or_inferred_call_arg_type(context, curried, formal_first);
+            expr_to_sir_in_let_body(context, curried, bound_name, bound_type, arg_type)
+        end
+    }
+}
+
 fn build_user_call_from_expr_in_body(context: TypeContext, expr: Expr, bound_name: string, bound_type: string, expected_type: string) -> SIRTerm {
     callee: string <- user_call_callee_sir_name(context, expr.name);
     case expr.inner.kind < 0 of {
@@ -1862,9 +1951,12 @@ fn build_user_call_from_expr_in_body(context: TypeContext, expr: Expr, bound_nam
             end;
             false -> case expr.right_expr.kind == 4 and expr.right_expr.name == "" of {
                 true -> do
-                    arg1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                    formal_tuple: string <- call_params_tuple_for_sir(context, expr.name);
+                    formal_first: string <- tuple_first_element_type(formal_tuple);
+                    formal_rest: string <- tuple_rest_element_type(formal_tuple);
+                    arg1_type: string <- expected_or_inferred_call_arg_type(context, expr.inner, formal_first);
                     arg1: SIRTerm <- expr_to_sir_in_let_body(context, expr.inner, bound_name, bound_type, arg1_type);
-                    rest: SIRTerm <- build_rest_chain_in_body(context, expr.right_expr, bound_name, bound_type);
+                    rest: SIRTerm <- build_rest_chain_in_body_with_formals(context, expr.right_expr, formal_rest, bound_name, bound_type);
                     user_calls@build_user_call_with_rest(callee, arg1, rest, expected_type, recursion_terms@user_call_effect_value_fn(expr))
                 end;
                 false -> case user_call_expects_single_tuple_param(context, expr.name) of {
@@ -2242,12 +2334,23 @@ fn expr_to_sir_with_expected(context: TypeContext, expr: Expr, expected_type: st
         true -> case_expr_to_sir(context, expr, expected_type, "", "", false);
         false -> case expr.kind of {
         0 -> literals@expr_to_sir_with_type(context, expr, literal_type_for_expected(expected_type));
-        1 -> case len(expected_type) >= 2 and substring(expected_type, 0, 2) == "fn" of {
+        1 -> case (len(expected_type) >= 2 and substring(expected_type, 0, 2) == "fn")
+            or sir_identifier_is_function(context, expr.name) of {
             true -> SIRTerm { kind: 0, type_name: "fn_ptr", value: expr.name, name: "", inner: sir_ast@dummy_sir_term(), right_expr: sir_ast@dummy_sir_term() };
             false -> identifiers@expr_to_sir(context, expr)
         };
         2 -> expr_to_sir_with_expected(context, expr.inner, expected_type);
-        5 -> atoms@expr_to_sir(context, expr);
+        5 -> case expr.value == ":none" and type_checker_recursive_tuples@is_ref_optional_type(expected_type) of {
+            true -> SIRTerm {
+                kind: 0,
+                type_name: "ref_none",
+                value: "0",
+                name: "",
+                inner: sir_ast@dummy_sir_term(),
+                right_expr: sir_ast@dummy_sir_term()
+            };
+            false -> atoms@expr_to_sir(context, expr)
+        };
         7 -> boolean_terms@expr_to_sir(context, expr);
         8 -> string_literals@expr_to_sir(context, expr);
         9 -> expr_to_sir_tuple_inline(context, expr, expected_type);
@@ -2566,6 +2669,16 @@ fn branch_from_bind_or_wild(raw: string, scrutinee_ast_type: string, branch: Exp
 
 fn branch_ast_to_sir(branch: Expr, ctx: TypeContext, expected_type: string, scrutinee_ast_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
     raw: string <- trim_pat(branch.value);
+    case raw == ":none" of {
+        true -> make_case_branch("atom", "atom", raw, ctx, branch, expected_type, bound_name, bound_type, in_body);
+        false -> case is_atom_literal_pat(raw) and (type_checker_recursive_tuples@is_ref_optional_type(scrutinee_ast_type) or (len(scrutinee_ast_type) >= 6 and substring(scrutinee_ast_type, 0, 6) == ":none|")) of {
+            true -> make_case_branch("atom", "atom", raw, ctx, branch, expected_type, bound_name, bound_type, in_body);
+            false -> branch_ast_to_sir_after_atom(raw, branch, ctx, expected_type, scrutinee_ast_type, bound_name, bound_type, in_body)
+        }
+    }
+}
+
+fn branch_ast_to_sir_after_atom(raw: string, branch: Expr, ctx: TypeContext, expected_type: string, scrutinee_ast_type: string, bound_name: string, bound_type: string, in_body: bool) -> SIRTerm {
     lep: ListEmptyPat <- type_checker_lists@parse_list_empty_case_pattern(raw);
     case lep.ok of {
         true -> make_case_branch("list_nil", types@type_name_to_sir(lep.list_type), "", ctx, branch, expected_type, bound_name, bound_type, in_body);

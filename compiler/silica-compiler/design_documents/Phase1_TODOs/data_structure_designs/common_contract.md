@@ -17,13 +17,14 @@ WeightedGraph[NodeIdType, EdgeDataType, WeightType, mem(SpaceType)]
 Heap[ItemType, mem(SpaceType)]
 PriorityQueue[PriorityType, ItemType, mem(SpaceType)]
 Tree[ItemType, mem(SpaceType)]
+BinaryTree[ItemType, mem(SpaceType)]
 ```
 
 ### Overriding genericity rule
 
 This rule is normative and overrides every concrete type shown in an example, sketch, trial suggestion, internal layout, or older design statement:
 
-> `ItemType`, `KeyType`, `ValueType`, `PriorityType`, `NodeIdType`, `EdgePayloadType`, `EdgeDataType`, `WeightType`, and `AccType` may each be any valid Silica value type that is legal in the declared memory and ownership context. `SpaceType` may be any valid Silica memory-space type. The programmer determines every one of these types through explicit collection, binding, return, argument, callback, and constructor-function declarations.
+> `ItemType`, `KeyType`, `ValueType`, `PriorityType`, `NodeIdType`, `EdgePayloadType`, `EdgeDataType`, `WeightType`, and `AccType` may each be any valid Silica value type that is legal in the declared memory and ownership context. `SpaceType` may be any valid Silica memory-space type. The programmer determines every one of these types through explicit collection, binding, return, argument, callback, constructor-record, and constructor-value declarations.
 
 An implementation—including one produced by an AI—must infer these placeholders from programmer declarations and must preserve the inferred concrete types through parsing, type checking, specialization, storage, operations, trait dispatch, and code generation. It must never:
 
@@ -36,7 +37,7 @@ Missing or contradictory declaration evidence is a compile-time error, not permi
 
 | Placeholder | May resolve to | Determined from programmer declarations |
 |---|---|---|
-| `ItemType` | any valid Silica value type | `OrderedSet`, `SearchTree`, `Heap`, `PriorityQueue`, or `Tree` type plus comparator/callback signatures |
+| `ItemType` | any valid Silica value type | `OrderedSet`, `SearchTree`, `Heap`, `PriorityQueue`, `Tree`, or `BinaryTree` type plus comparator/callback signatures where required and explicit constructor items |
 | `KeyType` | any valid Silica value type | `OrderedMap` type plus key comparator and operation signatures |
 | `ValueType` | any valid Silica value type | `OrderedMap` type plus value comparator and operation signatures |
 | `PriorityType` | any valid Silica value type | `PriorityQueue` type plus priority comparator or extractor signatures |
@@ -63,10 +64,11 @@ CSR and dense inline records have compiler-version-private structural layouts. T
 
 ## 3. Constructor resolution
 
-Every public constructor receives one inline function record. Resolution uses both:
+Every public constructor receives one inline function record, which may be the exact empty record `{}` when the detailed design requires no behavior function. Resolution uses:
 
 1. the expected collection type at the binding or return position; and
-2. all function-field parameter and return types.
+2. all function-field parameter and return types, when fields are present; and
+3. explicit non-record value arguments such as a root item, when the detailed design names them as type witnesses.
 
 Resolution must produce exactly one tuple of payload types and one memory space. Missing context, contradictory witnesses, missing fields, extra fields forbidden by the constructor contract, wrong arity, or wrong return type are compile-time errors.
 
@@ -104,7 +106,7 @@ For set and map keys, comparator equality is collection identity even when Silic
 
 ## 5. Ordering identity and cross-value operations
 
-Each constructor resolves an opaque ordering-identity token from the exact function values in the complete bundle that affects ordering or extraction, plus representation orientation where applicable.
+Each constructor for an ordered structure resolves an opaque ordering-identity token from the exact function values in the complete bundle that affects ordering or extraction, plus representation orientation where applicable. An unordered structure whose exact constructor record is `{}` carries no ordering token.
 
 - A direct top-level function symbol has one canonical function-value identity throughout the program.
 - A closure's identity includes the exact captured-environment instance. Separately created closures are distinct even when they contain equal captured values and execute equivalent code.
@@ -155,7 +157,7 @@ Logical update rules:
 - update descends through old references, allocates replacement nodes on changed paths, and reuses untouched references;
 - no old node is modified;
 - no result contains a reference into a shorter-lived region;
-- comparator and extractor functions and ordering identity are copied into the new outer record;
+- comparator and extractor functions and ordering identity, where present in the detailed design, are copied into the new outer record;
 - failure before publication leaves the old value unchanged.
 
 The arena supplies one region identity for recursive references in that concrete generated value family. Every standard constructor is required to resolve the canonical arena for its generated representation specialization and memory space. All constructor calls for that specialization and space use the same application-lifetime arena; standard constructors do not create isolated arenas. This makes independently constructed compatible heaps eligible for constant-time meld and makes persistent references uniform.

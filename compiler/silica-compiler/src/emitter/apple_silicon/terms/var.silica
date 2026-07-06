@@ -136,18 +136,29 @@ fn find_sp_binding_extract(outer_reg: string, val_start: int64) -> string {
 
 // emitter_core stores formal params as "|%name=REG". User-call SIR uses bare callee names ("op").
 fn find_sp_binding_percent_param(outer_reg: string, bare_param_name: string) -> string {
-    key: string <- concat("|%", concat(bare_param_name, "="));
-    pos: int64 <- find_str_at(outer_reg, key, 0);
-    case pos < 0 of {
-        true -> "";
-        false -> find_sp_binding_extract(outer_reg, pos + len(key))
-    }
+    percent_name: string <- case len(bare_param_name) > 0 and substring(bare_param_name, 0, 1) == "%" of {
+        true -> bare_param_name;
+        false -> concat("%", bare_param_name)
+    };
+    find_last_sp_binding(outer_reg, percent_name)
 }
 
+// Binding maps can contain an obsolete projection address followed by the real
+// register binding for the same name. Calls and ordinary variable loads must
+// both select the last (innermost) binding.
 fn find_sp_binding_bare_or_percent_param(outer_reg: string, name: string) -> string {
-    b0: string <- find_sp_binding(outer_reg, name);
+    b0: string <- find_last_sp_binding(outer_reg, name);
     case len(b0) > 0 of {
-        true -> b0;
+        true -> case b0 == "SP" of {
+            true -> do
+                percent_binding: string <- find_sp_binding_percent_param(outer_reg, name);
+                case len(percent_binding) > 0 of {
+                    true -> percent_binding;
+                    false -> b0
+                }
+            end;
+            false -> b0
+        };
         false -> find_sp_binding_percent_param(outer_reg, name)
     }
 }
@@ -499,6 +510,19 @@ fn emit_var_with_sp_check(term: SIRTerm, dest: string, outer_reg: string) -> str
     emit_var_with_sp_check_core(term, dest, outer_reg)
 }
 
+fn spurious_non_gpr_binding_for_fn_param(reg: string, type_name: string) -> bool {
+    case type_name_is_function(type_name) of {
+        false -> false;
+        true -> case binding_is_physical_int_reg(reg) of {
+            true -> false;
+            false -> case is_memory_ref(reg) of {
+                true -> false;
+                false -> true
+            }
+        }
+    }
+}
+
 fn emit_var_with_sp_check_core(term: SIRTerm, dest: string, outer_reg: string) -> string {
     // Resolve |name= once: prefer last binding (prepend tail rebind appends |%v=X2 after stale |%v=X0).
     sp_last: string <- find_last_sp_binding(outer_reg, term.name);
@@ -507,15 +531,36 @@ fn emit_var_with_sp_check_core(term: SIRTerm, dest: string, outer_reg: string) -
         true -> sp_last;
         false -> sp_first
     };
-    case len(sp_fin) > 0 of {
-        true -> case is_memory_ref(sp_fin) of {
-            true -> emit_var_sp_load(dest, sp_fin);
-            false -> emit_var_reg_outer(term, dest, sp_fin, outer_reg)
+    sp_resolved: string <- case len(sp_fin) > 0 of {
+        true -> sp_fin;
+        false -> find_sp_binding_bare_or_percent_param(outer_reg, bare_name_from_term(term.name))
+    };
+    sp_effective: string <- case spurious_non_gpr_binding_for_fn_param(sp_resolved, term.type_name) of {
+        true -> do
+            pct: string <- find_sp_binding_bare_or_percent_param(outer_reg, bare_name_from_term(term.name));
+            case len(pct) > 0 of { true -> pct; false -> sp_resolved }
+        end;
+        false -> sp_resolved
+    };
+    case len(sp_effective) > 0 of {
+        true -> case is_memory_ref(sp_effective) of {
+            true -> emit_var_sp_load(dest, sp_effective);
+            false -> emit_var_reg_outer(term, dest, sp_effective, outer_reg)
         };
         false -> do
             bare_fn: string <- bare_name_from_term(term.name);
             case type_name_is_function(term.type_name) and bare_qualifies_as_fn_pointer_asm_symbol(bare_fn) of {
-                true -> emit_fn_symbol_adrp_add(dest, linkage_asm_symbol_for_named_fn_ref(outer_reg, bare_fn));
+                true -> do
+                    pct: string <- find_sp_binding_percent_param(outer_reg, bare_fn);
+                    base: string <- base_reg_of(outer_reg);
+                    case len(pct) > 0 of {
+                        true -> emit_var_reg_outer(term, dest, pct, outer_reg);
+                        false -> case binding_is_physical_int_reg(base) of {
+                            true -> emit_var_reg_outer(term, dest, base, outer_reg);
+                            false -> emit_fn_symbol_adrp_add(dest, linkage_asm_symbol_for_named_fn_ref(outer_reg, bare_fn))
+                        }
+                    }
+                end;
                 false -> emit_var_with_base_reg(term, dest, base_reg_of(outer_reg), outer_reg)
             }
         end
@@ -614,20 +659,27 @@ fn strip_mov_x2_x1_then_x1_x2(s: string) -> string {
 // function address. Without this the emitter produced `MOV X9, %worker` which the assembler rejects.
 fn emit_var_reg_outer(term: SIRTerm, dest: string, reg: string, outer_reg: string) -> string {
     bare_fn: string <- bare_name_from_term(term.name);
+    reg_effective: string <- case spurious_non_gpr_binding_for_fn_param(reg, term.type_name) of {
+        true -> do
+            pct: string <- find_sp_binding_bare_or_percent_param(outer_reg, bare_fn);
+            case len(pct) > 0 of { true -> pct; false -> reg }
+        end;
+        false -> reg
+    };
     case type_name_is_function(term.type_name) and bare_qualifies_as_fn_pointer_asm_symbol(bare_fn) of {
-        true -> case binding_is_physical_int_reg(reg) of {
-            true -> emit_var_reg_core(term, dest, reg);
+        true -> case binding_is_physical_int_reg(reg_effective) of {
+            true -> emit_var_reg_core(term, dest, reg_effective);
             false -> emit_fn_symbol_adrp_add(dest, linkage_asm_symbol_for_named_fn_ref(outer_reg, bare_fn));
         };
-        false -> case len(reg) > 0 and substring(reg, 0, 1) == "%" of {
+        false -> case len(reg_effective) > 0 and substring(reg_effective, 0, 1) == "%" of {
             true -> do
                 bare: string <- substring(reg, 1, len(reg));
                 case bare_qualifies_as_fn_pointer_asm_symbol(bare) of {
                     true -> emit_fn_symbol_adrp_add(dest, linkage_asm_symbol_for_named_fn_ref(outer_reg, bare));
-                    false -> emit_var_reg_core(term, dest, reg)
+                    false -> emit_var_reg_core(term, dest, reg_effective)
                 }
             end;
-            false -> emit_var_reg_core(term, dest, reg)
+            false -> emit_var_reg_core(term, dest, reg_effective)
         }
     }
 }

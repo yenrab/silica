@@ -95,15 +95,35 @@ fn atom_lexeme_to_index(table: AtomTable, lexeme: string) -> int64 {
     }
 }
 
+fn add_implicit_comparator_atoms(table: AtomTable, next_index: int64, include_invalid: bool) -> (AtomTable, int64) {
+    do
+        (t0: AtomTable, i0: int64) <- add_atom(table, ":less", next_index);
+        n0: int64 <- case i0 == next_index of { true -> next_index + 1; false -> next_index };
+        (t1: AtomTable, i1: int64) <- add_atom(t0, ":equal", n0);
+        n1: int64 <- case i1 == n0 of { true -> n0 + 1; false -> n0 };
+        (t2: AtomTable, i2: int64) <- add_atom(t1, ":greater", n1);
+        n2: int64 <- case i2 == n1 of { true -> n1 + 1; false -> n1 };
+        case include_invalid of {
+            false -> (t2, n2);
+            true -> do
+                (t3: AtomTable, i3: int64) <- add_atom(t2, ":invalid_comparator_result", n2);
+                n3: int64 <- case i3 == n2 of { true -> n2 + 1; false -> n2 };
+                (t3, n3)
+            end
+        }
+    end
+}
+
 // Collect atom const terms from a single SIRTerm (recursive)
 // Dummy (kind < 0) and var (kind 1): no children. Call (4): only inner. Let (2): inner + right_expr. Prim (6): inner + right_expr.
-// Case (3): scrutinee inner + branch list right_expr. Branch list (7): inner + rest. Case branch (8): guard inner + body right_expr.
+// Case (3): scrutinee inner + branch list right_expr. Branch list (7): inner + rest.
+// Case branch (8): atom patterns live in the branch metadata, then guard inner + body right_expr.
 fn collect_atoms_from_term(term: SIRTerm, table: AtomTable, next_index: int64) -> (AtomTable, int64) {
     case term.kind < 0 of {
         true -> (table, next_index);
         false -> do
             case term.kind of {
-                0 -> case term.type_name == "atom" of {
+                0 -> case term.type_name == "atom" and term.value != ":none" of {
                     true -> do
                         (new_table: AtomTable, idx: int64) <- add_atom(table, term.value, next_index);
                         next_after_atom: int64 <- case idx == next_index of {
@@ -126,7 +146,12 @@ fn collect_atoms_from_term(term: SIRTerm, table: AtomTable, next_index: int64) -
                 end;
                 4 -> collect_atoms_from_term(term.inner, table, next_index);
                 6 -> do
-                    (t1: AtomTable, i1: int64) <- collect_atoms_from_term(term.inner, table, next_index);
+                    (prim_table: AtomTable, prim_next: int64) <- case term.name of {
+                        "comparator_result_valid" -> add_implicit_comparator_atoms(table, next_index, false);
+                        "comparator_result_validate" -> add_implicit_comparator_atoms(table, next_index, true);
+                        _: string -> (table, next_index)
+                    };
+                    (t1: AtomTable, i1: int64) <- collect_atoms_from_term(term.inner, prim_table, prim_next);
                     (t2: AtomTable, i2: int64) <- collect_atoms_from_term(term.right_expr, t1, i1);
                     (t2, i2)
                 end;
@@ -135,7 +160,18 @@ fn collect_atoms_from_term(term: SIRTerm, table: AtomTable, next_index: int64) -
                     collect_atoms_from_term(term.right_expr, t1, i1)
                 end;
                 8 -> do
-                    (t1: AtomTable, i1: int64) <- collect_atoms_from_term(term.inner, table, next_index);
+                    (pattern_table: AtomTable, pattern_next: int64) <- case term.value == "atom" and term.name != ":none" of {
+                        true -> do
+                            (new_table: AtomTable, idx: int64) <- add_atom(table, term.name, next_index);
+                            next_after_pattern: int64 <- case idx == next_index of {
+                                true -> next_index + 1;
+                                false -> next_index
+                            };
+                            (new_table, next_after_pattern)
+                        end;
+                        false -> (table, next_index)
+                    };
+                    (t1: AtomTable, i1: int64) <- collect_atoms_from_term(term.inner, pattern_table, pattern_next);
                     collect_atoms_from_term(term.right_expr, t1, i1)
                 end;
                 _: int64 -> (table, next_index)

@@ -18,6 +18,8 @@
 | `wbt_core/` | Layer 2A | Adams WBT `(3, 2)` core |
 | `skew_ral_core/` | Layer 2B | Skew binary random-access list |
 | `brodal_okasaki_core/` | Layer 2C | Brodal–Okasaki queue core |
+| `binary_tree_core/` | Layer 2D | Persistent fixed-role binary-tree core (planned by 2026-07-02 amendment) |
+| `binary_tree/` | Layer 3D | `tree_binary`, `BinaryTree`, and inline zipper acceptance (planned) |
 | `ordered_collections/` | Layer 3 | `wbt_set`, `wbt_map`, `OrderedSet`, `OrderedMap`, `Heap` |
 | `live_graphs/` | Layer 4 | Live WBT graph core and directed/undirected/weighted modules |
 | `terminal_structures/` | Layer 5 | `SearchTree`, `PriorityQueue`, `Tree` (leaf traits) |
@@ -68,3 +70,5 @@ cd compiler_substrate && make integrate
 ## Smoke fixtures
 
 Each dependency leaf (except compile-fail-only paths) includes `smoke_harness_ready.silica` — a minimal compile-and-run check that the leaf Makefile and compiler pipeline work. Replace smoke fixtures with real acceptance trials as each layer is implemented.
+
+The BinaryTree amendment adds `binary_tree_core/` and `binary_tree/` to the required hierarchy. Create their leaf harnesses when §7.10 makes the family runnable; their absence before that branch gate does not invalidate the recorded Layer 0 smoke baseline.

@@ -208,14 +208,26 @@ fn should_inject_ordering_bundles(bind_name: string) -> bool {
     }
 }
 
-fn build_fn_ordering_bundle_from_fn_ref(fn_ref: SIRTerm, orient_lexeme: string) -> SIRTerm {
-    zero_env: SIRTerm <- ordering_identity_calls@build_ordering_env_zero();
-    fn_token: SIRTerm <- ordering_identity_calls@build_ordering_identity_prim_from_sir("ordering_identity_materialize", fn_ref, zero_env, "int64");
+fn record_literal_field_expr(record_expr: Expr, field_name: string) -> Expr {
+    case record_expr.kind == 21 of {
+        false -> parser_ast@dummy_expr();
+        true -> case record_expr.name == field_name of {
+            true -> record_expr.inner;
+            false -> record_literal_field_expr(record_expr.right_expr, field_name)
+        }
+    }
+}
+
+fn build_fn_ordering_bundle_from_fn_ref(context: TypeContext, fn_ref: SIRTerm, fn_expr: Expr, orient_lexeme: string) -> SIRTerm {
+    env_sir: SIRTerm <- ordering_identity_calls@build_ordering_env_for_fn_operand(context, fn_expr);
+    fn_token: SIRTerm <- ordering_identity_calls@build_ordering_identity_prim_from_sir("ordering_identity_materialize", fn_ref, env_sir, "int64");
     orient: SIRTerm <- atom_const_sir(orient_lexeme);
     ordering_identity_calls@build_ordering_identity_prim_from_sir("ordering_identity_bundle_make", fn_token, orient, "int64")
 }
 
 fn wrap_bundle_side_lets(
+    context: TypeContext,
+    call_expr: Expr,
     bind_name: string,
     bind_type: string,
     mod_name: string,
@@ -238,10 +250,34 @@ fn wrap_bundle_side_lets(
             fn_type_sir: string <- types@type_name_to_sir(fn_type);
             fn_proj: SIRTerm <- fn_field_projection(fname, fn_type, raw_ast_type, raw_var);
             fn_ref: SIRTerm <- var_ref_sir(fn_side_prefixed, fn_type_sir);
-            bundle_sir: SIRTerm <- build_fn_ordering_bundle_from_fn_ref(fn_ref, orient_lexeme);
-            next: SIRTerm <- wrap_bundle_side_lets(bind_name, bind_type, mod_name, raw_ast_type, raw_var, orient_lexeme, field_idx + 1, field_count, inner_sir);
+            fn_expr: Expr <- record_literal_field_expr(call_expr.inner, fname);
+            bundle_sir: SIRTerm <- build_fn_ordering_bundle_from_fn_ref(context, fn_ref, fn_expr, orient_lexeme);
+            next: SIRTerm <- wrap_bundle_side_lets(context, call_expr, bind_name, bind_type, mod_name, raw_ast_type, raw_var, orient_lexeme, field_idx + 1, field_count, inner_sir);
             bundle_let: SIRTerm <- SIRTerm { kind: 2, type_name: "i64", value: "", name: side_prefixed, inner: bundle_sir, right_expr: next };
             SIRTerm { kind: 2, type_name: fn_type_sir, value: "", name: fn_side_prefixed, inner: fn_proj, right_expr: bundle_let }
+        end
+    }
+}
+
+fn merged_record_type_with_bundle_fields(
+    bind_type: string,
+    mod_name: string,
+    field_idx: int64,
+    field_count: int64
+) -> string {
+    case field_idx >= field_count of {
+        true -> bind_type;
+        false -> do
+            fname: string <- ordering_field_at_for_merge(bind_type, mod_name, field_idx);
+            bundle_name: string <- ordering_bundle_field_name(fname);
+            with_field: string <- case len(type_checker_record_types@find_field_type_in_record(bind_type, bundle_name)) > 0 of {
+                true -> bind_type;
+                false -> concat(
+                    substring(bind_type, 0, len(bind_type) - 1),
+                    concat(", ", concat(bundle_name, ": int64}"))
+                )
+            };
+            merged_record_type_with_bundle_fields(with_field, mod_name, field_idx + 1, field_count)
         end
     }
 }
@@ -252,7 +288,7 @@ fn append_bundle_var_merge_layers(
     mod_name: string,
     field_idx: int64,
     field_count: int64,
-    raw_ast_type: string,
+    merged_ast_type: string,
     acc: SIRTerm
 ) -> SIRTerm {
     case field_idx >= field_count of {
@@ -263,9 +299,9 @@ fn append_bundle_var_merge_layers(
             side_prefixed: string <- concat("%", side_name);
             bname: string <- ordering_bundle_field_name(fname);
             val: SIRTerm <- var_ref_sir(side_prefixed, "i64");
-            sir_rt: string <- types@type_name_to_sir(raw_ast_type);
+            sir_rt: string <- types@type_name_to_sir(merged_ast_type);
             next: SIRTerm <- struct_terms@build_record_make_layer(sir_rt, bname, val, acc);
-            append_bundle_var_merge_layers(bind_name, bind_type, mod_name, field_idx + 1, field_count, raw_ast_type, next)
+            append_bundle_var_merge_layers(bind_name, bind_type, mod_name, field_idx + 1, field_count, merged_ast_type, next)
         end
     }
 }
@@ -291,6 +327,7 @@ fn value_for_merge_field(
 fn build_merge_layers(
     remaining: string,
     raw_ast_type: string,
+    merged_ast_type: string,
     raw_var: string,
     arena_var: string,
     key_var: string,
@@ -299,13 +336,14 @@ fn build_merge_layers(
 ) -> SIRTerm {
     case len(remaining) == 0 of {
         true -> acc;
-        false -> build_merge_layers_step(remaining, raw_ast_type, raw_var, arena_var, key_var, region_type, acc)
+        false -> build_merge_layers_step(remaining, raw_ast_type, merged_ast_type, raw_var, arena_var, key_var, region_type, acc)
     }
 }
 
 fn build_merge_layers_step(
     rem: string,
     raw_ast_type: string,
+    merged_ast_type: string,
     raw_var: string,
     arena_var: string,
     key_var: string,
@@ -316,9 +354,9 @@ fn build_merge_layers_step(
     (fname: string, _: string) <- type_checker_record_types@record_field_segment_name_sub(seg);
     ftype: string <- field_type_from_segment(seg);
     val: SIRTerm <- value_for_merge_field(fname, ftype, raw_ast_type, raw_var, arena_var, key_var, region_type);
-    sir_rt: string <- types@type_name_to_sir(raw_ast_type);
+    sir_rt: string <- types@type_name_to_sir(merged_ast_type);
     next: SIRTerm <- struct_terms@build_record_make_layer(sir_rt, fname, val, acc);
-    build_merge_layers(rest, raw_ast_type, raw_var, arena_var, key_var, region_type, next)
+    build_merge_layers(rest, raw_ast_type, merged_ast_type, raw_var, arena_var, key_var, region_type, next)
 }
 
 fn build_merged_record(
@@ -329,12 +367,28 @@ fn build_merged_record(
     raw_var: string,
     arena_var: string,
     key_var: string,
-    region_type: string
+    region_type: string,
+    field_count: int64
 ) -> SIRTerm {
     inner: string <- type_checker_record_types@record_case_inner_body(raw_ast_type);
-    base: SIRTerm <- build_merge_layers(inner, raw_ast_type, raw_var, arena_var, key_var, region_type, sir_ast@dummy_sir_term());
-    field_count: int64 <- ordering_field_count_for_merge(bind_type, mod_name);
-    append_bundle_var_merge_layers(bind_name, bind_type, mod_name, 0, field_count, raw_ast_type, base)
+    merged_base_type: string <- case len(bind_type) > 0 and substring(bind_type, 0, 1) == "{" of {
+        true -> bind_type;
+        false -> raw_ast_type
+    };
+    merged_ast_type: string <- merged_record_type_with_bundle_fields(merged_base_type, mod_name, 0, field_count);
+    // Record-make layers are emitted from outer to inner.  Seed the ordinary
+    // field merge with bundle overrides as its tail so the computed bundle is
+    // stored after the raw constructor field, not overwritten by it.
+    bundle_overrides: SIRTerm <- append_bundle_var_merge_layers(
+        bind_name,
+        bind_type,
+        mod_name,
+        0,
+        field_count,
+        merged_ast_type,
+        sir_ast@dummy_sir_term()
+    );
+    build_merge_layers(inner, raw_ast_type, merged_ast_type, raw_var, arena_var, key_var, region_type, bundle_overrides)
 }
 
 fn build_collection_constructor_lets(context: TypeContext, bind_name: string, bind_type: string, rhs_expr: Expr, rhs_sir: SIRTerm, inner_sir: SIRTerm) -> SIRTerm {
@@ -379,26 +433,26 @@ fn build_collection_constructor_lets(context: TypeContext, bind_name: string, bi
                 end;
                 false -> key_prefixed
             };
-            merged: SIRTerm <- build_merged_record(bind_name, bind_type, mod_name, raw_ast_type, merge_raw_var, arena_prefixed, merge_key_var, region_type);
+            merged: SIRTerm <- build_merged_record(bind_name, bind_type, mod_name, raw_ast_type, merge_raw_var, arena_prefixed, merge_key_var, region_type, field_count);
             bind_let: SIRTerm <- SIRTerm { kind: 2, type_name: bind_type_sir, value: "", name: bind_prefixed, inner: merged, right_expr: inner_sir };
+            bind_with_bundles: SIRTerm <- wrap_bundle_side_lets(context, rhs_expr, bind_name, bind_type, mod_name, raw_ast_type, merge_raw_var, orient_lexeme, 0, field_count, bind_let);
             bind_for_bundles: SIRTerm <- case inject_bundles of {
                 true -> do
                     key_anchor_name: string <- key_reanchor_binding_name(bind_name);
                     key_anchor_prefixed: string <- concat("%", key_anchor_name);
-                    key_reanchor_let: SIRTerm <- SIRTerm { kind: 2, type_name: "i64", value: "", name: key_anchor_prefixed, inner: var_ref_sir(key_prefixed, "i64"), right_expr: bind_let };
+                    key_reanchor_let: SIRTerm <- SIRTerm { kind: 2, type_name: "i64", value: "", name: key_anchor_prefixed, inner: var_ref_sir(key_prefixed, "i64"), right_expr: bind_with_bundles };
                     key_reanchor_let
                 end;
-                false -> bind_let
+                false -> bind_with_bundles
             };
-            bind_with_bundles: SIRTerm <- wrap_bundle_side_lets(bind_name, bind_type, mod_name, raw_ast_type, merge_raw_var, orient_lexeme, 0, field_count, bind_for_bundles);
             raw_body: SIRTerm <- case inject_bundles of {
                 true -> do
                     reanchor_name: string <- raw_reanchor_binding_name(bind_name);
                     reanchor_prefixed: string <- concat("%", reanchor_name);
-                    reanchor_let: SIRTerm <- SIRTerm { kind: 2, type_name: types@type_name_to_sir(raw_ast_type), value: "", name: reanchor_prefixed, inner: var_ref_sir(raw_prefixed, types@type_name_to_sir(raw_ast_type)), right_expr: bind_with_bundles };
+                    reanchor_let: SIRTerm <- SIRTerm { kind: 2, type_name: types@type_name_to_sir(raw_ast_type), value: "", name: reanchor_prefixed, inner: var_ref_sir(raw_prefixed, types@type_name_to_sir(raw_ast_type)), right_expr: bind_for_bundles };
                     SIRTerm { kind: 2, type_name: types@type_name_to_sir(raw_ast_type), value: "", name: raw_prefixed, inner: rhs_sir, right_expr: reanchor_let }
                 end;
-                false -> SIRTerm { kind: 2, type_name: types@type_name_to_sir(raw_ast_type), value: "", name: raw_prefixed, inner: rhs_sir, right_expr: bind_with_bundles }
+                false -> SIRTerm { kind: 2, type_name: types@type_name_to_sir(raw_ast_type), value: "", name: raw_prefixed, inner: rhs_sir, right_expr: bind_for_bundles }
             };
             raw_let: SIRTerm <- raw_body;
             arena_let: SIRTerm <- SIRTerm { kind: 2, type_name: types@type_name_to_sir(region_type), value: "", name: arena_prefixed, inner: arena_sir, right_expr: raw_let };

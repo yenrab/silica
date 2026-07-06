@@ -1,7 +1,7 @@
 # Layer 0 §6.1 — Normative Inputs Baseline
 
 **Recorded:** 2026-06-29  
-**Status:** Accepted baseline for Phase 1 standard data structures implementation  
+**Status:** Accepted baseline for Phase 1 standard data structures implementation; amended 2026-07-02 for `BinaryTree`
 **Authority:** [`standard_data_structures_implementation_plan.md`](../standard_data_structures_implementation_plan.md) §6.1  
 **Repository snapshot:** `main` at `df118756e30bd973b69cd935e439be233dffc1e7` (pin file contents with `git log -1 -- <path>` before each downstream layer gate)
 
@@ -50,14 +50,18 @@ Every file below is normative for Phase 1. All inherit [`common_contract.md`](..
 | [`heap_trait.md`](../data_structure_designs/heap_trait.md) | `Heap` + min/max modules |
 | [`priority_queue_trait.md`](../data_structure_designs/priority_queue_trait.md) | `PriorityQueue` |
 | [`tree_trait.md`](../data_structure_designs/tree_trait.md) | `Tree` + `tree_rose` |
+| [`binary_tree_trait.md`](../data_structure_designs/binary_tree_trait.md) | `BinaryTree` + `tree_binary` |
 | [`weight_balanced_tree.md`](../data_structure_designs/weight_balanced_tree.md) | Adams WBT core `(3, 2)` |
+| [`persistent_binary_tree.md`](../data_structure_designs/persistent_binary_tree.md) | Persistent fixed-role binary-tree core + inline zipper |
 | [`live_wbt_graph.md`](../data_structure_designs/live_wbt_graph.md) | Live adjacency WBT representation |
 | [`csr_graph_snapshot.md`](../data_structure_designs/csr_graph_snapshot.md) | CSR freeze and query |
 | [`dense_matrix_graph.md`](../data_structure_designs/dense_matrix_graph.md) | Dense RAL-backed graph |
 | [`skew_binary_random_access_list.md`](../data_structure_designs/skew_binary_random_access_list.md) | Skew binary RAL core |
 | [`brodal_okasaki_queue.md`](../data_structure_designs/brodal_okasaki_queue.md) | Brodal–Okasaki shared heap/PQ core |
 
-**Public traits (nine):** `OrderedSet`, `OrderedMap`, `SearchTree`, `DirectedGraph`, `UndirectedGraph`, `WeightedGraph`, `Heap`, `PriorityQueue`, `Tree`.
+**Public traits (ten after the 2026-07-02 amendment):** `OrderedSet`, `OrderedMap`, `SearchTree`, `DirectedGraph`, `UndirectedGraph`, `WeightedGraph`, `Heap`, `PriorityQueue`, `Tree`, `BinaryTree`.
+
+The BinaryTree amendment does not alter the recorded 2026-06-29 repository snapshot or historical nine-family Layer 1 status. It adds a new normative family and requires the implementation-plan §7.10 substrate delta before its representation work starts.
 
 **Rejected parallel paths (do not implement):** finger trees, Patricia/crit-bit tries, HAMT, lazy/bootstrapped primary heaps, persistent vectors, dense bitset graphs, d-ary array heaps, Hinze priority-search queues, obsolete bootstrap modules (`btree_*`, `graph_adj_*`, `heap_binary_*`, node-id B-trees).
 
@@ -148,6 +152,7 @@ This section records **current** compiler support against the normative designs.
 - `WeightedGraph[…]`
 - `PriorityQueue[Priority, Item, mem(Space)]`
 - `Tree[Item, mem(Space)]`
+- `BinaryTree[Item, mem(Space)]` (added after the recorded baseline; §7.10 delta)
 
 ### 5.3 Comparator return typing (partial)
 
@@ -158,7 +163,7 @@ This section records **current** compiler support against the normative designs.
 
 `is_assoc_type_placeholder/1` recognizes: `ItemType`, `KeyType`, `ValueType`, `SpaceType`, `SetType`, `MapType`, `HeapType`, `NodeIdType`, `EdgePayloadType`, `PriorityType`, `WeightType`, `AccType`.
 
-Missing vs designs: `EdgeDataType`, `GraphType`, `QueueType`, `TreeType`, and other trait-module placeholders used in detailed trait signatures.
+Missing vs designs: `EdgeDataType`, `GraphType`, `QueueType`, `TreeType`, `BinaryTreeType`, and other trait-module placeholders used in detailed trait signatures.
 
 ### 5.5 Trait machinery (general — present for non-collection traits)
 
@@ -215,7 +220,7 @@ Missing vs designs: `EdgeDataType`, `GraphType`, `QueueType`, `TreeType`, and ot
 | Issue | Normative source | Current compiler |
 |---|---|---|
 | Heap constructor field name | `compare_item` (`heap_trait.md`, `data_structures_as_traits.md`) | `compare_priority` in witnesses |
-| Collection trait count | nine public traits | four bracket parsers |
+| Collection trait count | ten public traits after BinaryTree amendment | nine families completed in Layer 1; BinaryTree §7.10 delta pending |
 | Provided/required split | each `*_trait.md` | not enforced for collections |
 | Comparator bare `atom` | `common_contract.md` §4, trait designs | still accepted by `comparator_return_type_ok` |
 
@@ -225,6 +230,7 @@ Missing vs designs: `EdgeDataType`, `GraphType`, `QueueType`, `TreeType`, and ot
 
 - [x] Parent design documents identified and linked  
 - [x] Every `data_structure_designs/*.md` file listed  
+- [x] BinaryTree amendment documents and downstream §7.10 delta recorded
 - [x] Recursive-tuple and runtime-buffer language authorities identified  
 - [x] Current compiler collection witness and trait behavior recorded with explicit gaps  
 - [x] Reset baseline declared: no copying from removed stdlib or pre-reset trials  
@@ -253,6 +259,8 @@ Missing vs designs: `EdgeDataType`, `GraphType`, `QueueType`, `TreeType`, and ot
 **Layer 1 §7.3 status:** Complete (2026-06-29).
 
 **Layer 1 §7.5 status:** Constructor function-record resolution complete (2026-06-29). All nine public families parse, validate, and witness constructor records; exact field-name validation; module/representation matching; canonical arena injection at constructor let-bindings; int64 literal pool collects constants inside `case` branches. Positive trials: `compiler_substrate/` → `constructor_record_resolution`, `constructor_record_field_order`, `constructor_canonical_arena_lowering`. Compile-fail goldens: `error_enforcement/` → `trial_compile_fail_constructor_*`. **Integrate verified:** `compiler_substrate/`, `error_enforcement/`, and repo `error_enforcement_addition`.
+
+**BinaryTree amendment status (2026-07-02):** Normative design added after the nine-family Layer 1 gate. Historical §7.5/§7.6/§7.9 completion remains valid for those nine families; BinaryTree parsing, empty-record constructor resolution, registry identity, lowering, and runnable stub coverage are pending implementation-plan §7.10 and block only BinaryTree-dependent work.
 
 **Layer 1 §7.6 status:** Collection type witnesses and representation registry complete (2026-07-01). Representation-based module registry for all concrete families; stable specialization keys; registered-module gating and E2017 for unregistered construction modules; constructor arena/spec-key injection in function-body and `sequence proc` lets. Positive trials: `compiler_substrate/` → `collection_bracket_type_parse`, `collection_registry_specialization_distinct`, `collection_record_not_collection`. Compile-fail goldens: `error_enforcement/` → `trial_compile_fail_collection_bracket_missing_mem`, `trial_compile_fail_collection_unregistered_module`. **Integrate verified:** phase-1 root `84 0`. Proceed to Layer 1 §7.7.
 

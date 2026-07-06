@@ -4,7 +4,7 @@
 
 **Scope:** Logical algorithms, persistence techniques, and primary literature only. This document does not prescribe or refer to any existing Silica stdlib implementation.
 
-**Status:** Algorithm choices below are **locked** (reviewed 2026-06). Do not add parallel representations without revisiting this section.
+**Status:** Algorithm choices below are **locked** (reviewed 2026-06; BinaryTree decision 16 added 2026-07-02). Do not add parallel representations without revisiting this section.
 
 ---
 
@@ -28,6 +28,7 @@
 | 13  | `PriorityQueue`                         | **Brodal–Okasaki** on `(priority, value)` pairs; shared implementation with `Heap`                            |
 | 14  | Decrease-key                            | **Not in the Phase 1 `PriorityQueue` API**; no arbitrary-entry deletion, handles, or priority-search queue    |
 | 15  | Bulk WBT construction                   | **Fold insert** (default) + optional `**from_sorted`** O(n) linear builder                                    |
+| 16  | `BinaryTree`                            | Persistent fixed-role left/right tree with path copying; Huet zipper [Hue97] for focused traversal/rebuild   |
 
 
 ### Architecture (summary)
@@ -44,6 +45,9 @@ Graphs (snapshot)                     →  CSR freeze O(V+E) from live WBT [KL95
 Dense matrix (specialized)            →  Okasaki skew binary random-access list [Oka95]
 
 Tree children                         →  Okasaki skew binary random-access list [Oka95]
+
+BinaryTree                            →  Fixed left/right recursive tuple + path copying
+                                         focused traversal: Huet zipper [Hue97]
 
 Heap / PriorityQueue                  →  Brodal–Okasaki [BO96]
 ```
@@ -64,6 +68,7 @@ Finger trees [HP06], Patricia / crit-bit tries [Hin01, Ber13], HAMT maps [Bag00]
 | **Brodal–Okasaki heap**                    | O(1) worst insert / find-min / meld; O(log n) delete-min | [BO96, Bro95, Vui78] |
 | **Functional graph (WBT + WBT adjacency)** | O(log V + log degree) edge update                        | [KL95, Erw97, Ada93] |
 | **CSR snapshot**                           | O(V + E) batch build from live graph                     | [KL95, Erw97]        |
+| **Persistent binary tree**                 | O(h) path lookup/update; O(n) fold/map                   | [Driscoll86, Hue97]  |
 
 
 ### Okasaki (*Purely Functional Data Structures*, 1998) [Oka98] — chapters referenced
@@ -85,7 +90,8 @@ All mutators return a **new value**; prior bindings remain valid.
 
 | Technique                         | Used by                                                    | References          |
 | --------------------------------- | ---------------------------------------------------------- | ------------------- |
-| **Path copying**                  | WBT; skew binary random-access lists                       | [Driscoll86, Oka98] |
+| **Path copying**                  | WBT; skew RAL; persistent BinaryTree                       | [Driscoll86, Oka98] |
+| **Focused path reconstruction**   | Persistent BinaryTree zipper                              | [Hue97]             |
 | **Data-structural bootstrapping** | Brodal–Okasaki queue (nested queues, global min)           | [Oka98, BO96]       |
 | **Recursive slowdown**            | Brodal–Okasaki worst-case analysis (Kaplan–Tarjan lineage) | [KT95, BO96]        |
 | **Batch rebuild**                 | CSR freeze from WBT adjacency                              | [KL95]              |
@@ -106,6 +112,7 @@ All mutators return a **new value**; prior bindings remain valid.
 | `Heap`                              | Brodal–Okasaki min/max queue                          | [BO96]               |
 | `PriorityQueue`                     | Brodal–Okasaki on `(priority, value)` pairs           | [BO96]               |
 | `Tree`                              | Rose tree; children in skew binary random-access list | [Oka95, Oka98]       |
+| `BinaryTree`                        | Fixed left/right recursive tuple; optional zipper     | [Driscoll86, Hue97]  |
 
 
 ---
@@ -229,7 +236,7 @@ Max-heap uses an orientation adapter that reverses comparator results (`:less` �
 
 ---
 
-## Tree trait
+## Tree traits
 
 ### `Tree` — rose tree
 
@@ -241,6 +248,21 @@ Max-heap uses an orientation adapter that reverses comparator results (`:less` �
 
 
 Here `b_i` is the child-slot count at ancestor `i`; these whole-tree updates are not generally `O(log n)`.
+
+### `BinaryTree` — persistent fixed-role binary tree
+
+`BinaryTree` is not an ordered search tree. Items do not determine placement, and there is no comparator.
+
+| Operation | Algorithm | Persistence | Complexity | References |
+|---|---|---|---|---|
+| **Get path** | Follow fixed `:left` / `:right` components | Read-only | O(h) | [Driscoll86] |
+| **Replace item** | Rebuild target and path-copy ancestors | Path copying | O(h) | [Driscoll86] |
+| **Replace child subtree** | Install at exact left/right role and path-copy ancestors | Path copying | O(h) | [Driscoll86] |
+| **Fold** | Preorder, inorder, or postorder traversal | Read-only | O(n) | — |
+| **Map** | Shape-preserving traversal and rebuild | Path copying | O(n) | [Driscoll86] |
+| **Zipper move down/up** | Breadcrumb focus movement and one-level reconstruction | Purely functional zipper | O(1) per step | [Hue97] |
+
+Here `h` is target depth and `n` is the number of logical node occurrences. Repeated physical subtree references are allowed and counted once per logical position.
 
 ---
 
@@ -258,6 +280,7 @@ Here `b_i` is the child-slot count at ancestor `i`; these whole-tree updates are
 | Min / max heap                    | Brodal–Okasaki insert            | Brodal–Okasaki delete-min        | [BO96]               |
 | Priority queue                    | Brodal–Okasaki insert (pair)     | Brodal–Okasaki delete-min        | [BO96]               |
 | Tree (rose)                       | Random-access list child append  | Random-access list child remove  | [Oka95, Oka98]       |
+| Binary tree                       | Fixed left/right subtree install | Fixed left/right subtree clear   | [Driscoll86, Hue97]  |
 
 
 **Not in scope:** dense bitset graph.
@@ -287,6 +310,7 @@ Here `b_i` is the child-slot count at ancestor `i`; these whole-tree updates are
 | WBT graph edge                    | O(log V + log deg) | O(log V + log deg) | [Ada93, KL95]         |
 | Random-access list (dense / tree) | O(log n)           | O(log n)           | [Oka95, Oka98]        |
 | Brodal–Okasaki heap / PQ          | O(1) worst         | O(log n) worst     | [BO96]                |
+| Persistent binary tree            | O(h) path update   | O(h) path update   | [Driscoll86, Hue97]   |
 | CSR freeze                        | —                  | —                  | O(V + E) batch [KL95] |
 
 
@@ -309,6 +333,7 @@ Citation keys appear in square brackets throughout this document.
 
 - **[Driscoll86]** Driscoll, J. R., Sarnak, N., Sleator, D. D., & Tarjan, R. E. (1986). Making Data Structures Persistent. In *Proceedings of the 18th Annual ACM Symposium on Theory of Computing (STOC '86)*, pages 109–121. ACM. DOI: 10.1145/12130.12138.
 - **[KT95]** Kaplan, H., & Tarjan, R. E. (1995). Persistent Lists with Catenation via Recursive Slow-Down. In *Proceedings of the 27th Annual ACM Symposium on Theory of Computing (STOC '95)*, pages 93–102. ACM. DOI: 10.1145/225058.225093.
+- **[Hue97]** Huet, G. (1997). The Zipper. *Journal of Functional Programming*, 7(5), 549–554. DOI: 10.1017/S0956796897002864.
 
 ### Ordered sets and maps
 

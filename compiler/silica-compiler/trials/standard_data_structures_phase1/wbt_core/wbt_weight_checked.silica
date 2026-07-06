@@ -1,0 +1,121 @@
+// Layer 2 §8A.2: weight is checked size + 1 for both node shapes.
+
+use wbt_set;
+use wbt_map;
+use wbt_trial_fixture;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn set_weight_is(
+    set0: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    expected: int64
+) -> boolean {
+    pair: (boolean, int64) <- wbt_set@weight(set0);
+    (ok: boolean, value: int64) <- pair;
+    case ok of { false -> false; true -> value == expected }
+}
+
+fn map_weight_is(
+    map0: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    expected: int64
+) -> boolean {
+    pair: (boolean, int64) <- wbt_map@weight(map0);
+    (ok: boolean, value: int64) <- pair;
+    case ok of { false -> false; true -> value == expected }
+}
+
+fn set_weight_overflows(set0: {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+}) -> boolean {
+    pair: (boolean, int64) <- wbt_set@weight(set0);
+    (ok: boolean, _: int64) <- pair;
+    ok == false
+}
+
+fn map_weight_overflows(map0: {
+    root: ref?(L, normal, rec),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+}) -> boolean {
+    pair: (boolean, int64) <- wbt_map@weight(map0);
+    (ok: boolean, _: int64) <- pair;
+    ok == false
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        r: region(L, normal) <- alloc_region(normal);
+        set0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_set_i64(cmp_i64, r);
+        map0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_map_i64(cmp_i64, r);
+        overflow_set: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_set_cached_size_i64(cmp_i64, r, 1, 9223372036854775807);
+        overflow_map: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_map_cached_size_i64(cmp_i64, r, 1, 10, 9223372036854775807);
+        exit_code: int64 <- case set_weight_is(set0, 8) of {
+            false -> 1;
+            true -> case map_weight_is(map0, 8) of {
+                false -> 2;
+                true -> case set_weight_overflows(overflow_set) of {
+                    false -> 3;
+                    true -> case map_weight_overflows(overflow_map) of {
+                        false -> 4;
+                        true -> 0
+                    }
+                }
+            }
+        }
+    produces
+        pure exit_code
+    end
+}

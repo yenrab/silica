@@ -527,7 +527,7 @@ fn bind_reg_for_param(param_types: string, idx: int64, ptype: string, string_sha
 }
 
 fn is_gpr64_param_type(ptype: string) -> bool {
-    ptype == "int64" or ptype == "uint64"
+    ptype == "int64" or ptype == "uint64" or var@type_name_is_function(ptype)
 }
 
 // Count int64/uint64 parameters (pipe-separated param_types).
@@ -1229,17 +1229,20 @@ fn fs_is_program_main_name(name: string) -> bool {
     name == "main" or name == "main.main" or name == "main.m"
 }
 
-// Gate: only shadow when the hazard is present, every param fits in one GPR, the function
-// has no float spills / aggregate return / actor-reply-sret / concurrency, and the params
+// Gate: shadow whenever a non-tail body contains a user call, every param fits in one GPR, the function
+// has no float spills / actor-reply-sret / concurrency, and the params
 // plus existing spill pressure fit within the callee-saved register file (X19–X28).
+// A call in any expression can clobber a parameter that remains live afterward; restricting
+// this to calls inside case scrutinees leaves ordinary callback/fold helpers unsound.
+// Aggregate returns use X8 as their independent return buffer and do not conflict with
+// callee-saved parameter shadows; excluding them leaves parameters vulnerable while a
+// helper call constructs the aggregate result.
 fn use_full_param_shadow(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
         false -> case fs_is_program_main_name(fn_val.name) of {
             true -> false;
-            false -> case reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type) of {
-                true -> false;
-                false -> case use_actor_reply_sret_buffer(fn_val) of {
+            false -> case use_actor_reply_sret_buffer(fn_val) of {
                     true -> false;
                     false -> case emitter_effects@has_concurrency(fn_val.effects) of {
                         true -> false;
@@ -1251,7 +1254,7 @@ fn use_full_param_shadow(fn_val: SIRFunction) -> bool {
                                     false -> false;
                                     true -> case fs_all_params_simple_gpr(fn_val.param_types) of {
                                         false -> false;
-                                        true -> case fs_term_has_hazard(fn_val.body) of {
+                                        true -> case fs_subtree_has_user_call(fn_val.body) of {
                                             false -> false;
                                             true -> (n + count_callee_saved_spill_pressure(fn_val.body)) <= 10
                                         }
@@ -1261,7 +1264,6 @@ fn use_full_param_shadow(fn_val: SIRFunction) -> bool {
                         }
                     }
                 }
-            }
         }
     }
 }
@@ -1350,11 +1352,13 @@ fn needs_actor_ref_x21_x22_frame(fn_val: SIRFunction) -> bool {
     }
 }
 
-// STP/LDP X23,X24 when pressure reaches 4.
+// Tuple/record destructuring can materialize up to four additional callee-saved
+// bindings beyond the source-level let count. Keep the frame thresholds four
+// registers ahead of the nominal pressure so emitted X23-X29 uses obey AAPCS64.
 fn needs_callee_x23_x24_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
-        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 4
+        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2
     }
 }
 
@@ -1362,7 +1366,7 @@ fn needs_callee_x23_x24_frame(fn_val: SIRFunction) -> bool {
 fn needs_callee_x25_x26_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
-        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 6
+        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 2
     }
 }
 
@@ -1370,7 +1374,7 @@ fn needs_callee_x25_x26_frame(fn_val: SIRFunction) -> bool {
 fn needs_callee_x27_x28_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
-        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 8
+        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 4
     }
 }
 
@@ -1378,7 +1382,7 @@ fn needs_callee_x27_x28_frame(fn_val: SIRFunction) -> bool {
 fn needs_callee_x29_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
-        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 10
+        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 6
     }
 }
 

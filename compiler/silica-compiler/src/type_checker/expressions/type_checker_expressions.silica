@@ -3436,24 +3436,26 @@ fn try_resolve_qualified_call_func_type(expr: Expr, expected_type: string, world
 }
 
 fn check_user_call_result_user_call(expr: Expr, expected_type: string, return_type: string, context: TypeContext, world: ListNamedProgram) -> TypeCheckResult {
+    receiver_resolved_return: string <- type_checker_collections@resolve_constructor_call_formal(expected_type, return_type);
+    resolved_return: string <- type_checker_collections@resolve_accumulator_call_formal(expected_type, receiver_resolved_return);
     case expected_type == "discard" of {
         true -> type_checker_core@type_check_ok();
         false -> case type_checker_collections@is_collection_trait_type(expected_type) of {
-            true -> case type_checker_collections@collection_return_accepts_constructor(expected_type, return_type, world) of {
-                false -> type_checker_core@type_check_err("E2017", expr.location, concat(concat(concat(concat(expr.name, " return type does not witness declared collection type "), expected_type), " (got "), concat(return_type, ")")), "sect4");
+            true -> case type_checker_collections@collection_return_accepts_constructor(expected_type, resolved_return, world) of {
+                false -> type_checker_core@type_check_err("E2017", expr.location, concat(concat(concat(concat(expr.name, " return type does not witness declared collection type "), expected_type), " (got "), concat(resolved_return, ")")), "sect4");
                 true -> type_checker_core@type_check_ok()
             };
-            false -> case type_checker_lists@formal_type_accepts_actual(return_type, expected_type, world) of {
+            false -> case type_checker_lists@formal_type_accepts_actual(resolved_return, expected_type, world) of {
                 true -> type_checker_core@type_check_ok();
-                false -> case type_checker_lists@formal_type_accepts_actual(expected_type, return_type, world) of {
+                false -> case type_checker_lists@formal_type_accepts_actual(expected_type, resolved_return, world) of {
                     true -> type_checker_core@type_check_ok();
-                    false -> case type_checker_lists@types_equal_strip(expected_type, return_type) of {
+                    false -> case type_checker_lists@types_equal_strip(expected_type, resolved_return) of {
                         true -> type_checker_core@type_check_ok();
-                        false -> case trim_leading_user_call(expected_type) == "string" and return_type_has_ptr_len_out_fields(return_type) of {
+                        false -> case trim_leading_user_call(expected_type) == "string" and return_type_has_ptr_len_out_fields(resolved_return) of {
                             true -> type_checker_core@type_check_ok();
-                            false -> case type_checker_traits@actual_type_satisfies_trait_expectation(return_type, expected_type, world) of {
+                            false -> case type_checker_traits@actual_type_satisfies_trait_expectation(resolved_return, expected_type, world) of {
                                 true -> type_checker_core@type_check_ok();
-                                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat(expr.name, " returns "), return_type), ", expected "), expected_type), "sect6")
+                                false -> type_checker_core@type_check_err("E2003", expr.location, concat(concat(concat(concat(expr.name, " returns "), resolved_return), ", expected "), expected_type), "sect6")
                             }
                         }
                     }
@@ -3507,7 +3509,19 @@ fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_typ
             case len(first_param) == 0 of {
                 true -> type_checker_core@type_check_err("E2005", call_expr.location, concat(call_expr.name, " argument count mismatch"), "sect6");
                 false -> do
-                    r1: TypeCheckResult <- check_expr(expr.inner, first_param, context, world);
+                    arg_inferred: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                    formal_bind: string <- case type_checker_collections@is_collection_trait_type(expected_type) of {
+                        true -> expected_type;
+                        false -> case type_checker_collections@bind_type_has_collection_runtime_fields(expected_type) of {
+                            true -> expected_type;
+                            false -> case len(arg_inferred) > 0 of {
+                                true -> arg_inferred;
+                                false -> expected_type
+                            }
+                        }
+                    };
+                    resolved_param: string <- type_checker_collections@resolve_constructor_call_formal(formal_bind, first_param);
+                    r1: TypeCheckResult <- check_expr(expr.inner, resolved_param, context, world);
                     case r1.is_ok of {
                         false -> r1;
                         true -> case len(rest_params) == 0 of {
@@ -3543,16 +3557,43 @@ fn check_user_call_args_recursive(expr: Expr, params_inner: string, expected_typ
 }
 
 fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: string, context: TypeContext, params_inner: string, return_type: string, world: ListNamedProgram) -> TypeCheckResult proc[DeviceIO] {
+    arg_inferred: string <- case count_call_args_user_call(expr) > 0 of {
+        true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+        false -> ""
+    };
+    formal_bind: string <- case type_checker_collections@is_collection_trait_type(expected_type) of {
+        true -> expected_type;
+        false -> case type_checker_collections@bind_type_has_collection_runtime_fields(expected_type) of {
+            true -> expected_type;
+            false -> case len(arg_inferred) > 0 of {
+                true -> arg_inferred;
+                false -> expected_type
+            }
+        }
+    };
+    params_from_receiver: string <- type_checker_collections@resolve_constructor_call_formal(formal_bind, params_inner);
+    return_from_receiver: string <- type_checker_collections@resolve_constructor_call_formal(formal_bind, return_type);
+    // Collection witnesses resolve ItemType/KeyType/ValueType from argument
+    // one.  AccType is independent and is witnessed by the expected result
+    // type.  When the result is discarded, infer it from the initial
+    // accumulator (argument two) instead; discarding a fold result must not
+    // erase the callback's concrete signature.
+    acc_witness: string <- case expected_type == "discard" and count_call_args_user_call(expr) >= 2 of {
+        true -> type_checker_tuple_decompose_helpers@infer_expr_type(call_second_arg_expr(expr), context);
+        false -> expected_type
+    };
+    params_use: string <- type_checker_collections@resolve_accumulator_call_formal(acc_witness, params_from_receiver);
+    resolved_return: string <- type_checker_collections@resolve_accumulator_call_formal(acc_witness, return_from_receiver);
     at: int64 <- first_at_in_expr_call_name(expr.name, 0);
     case at < 0 of {
-        true -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world);
+        true -> check_user_call_args_recursive(expr, params_use, expected_type, return_type, context, expr, world);
         false -> do
             mod_id: string <- substring(expr.name, 0, at);
             fn_id: string <- substring(expr.name, at + 1, len(expr.name));
             ac: int64 <- count_call_args_user_call(expr);
             (pf: bool, pprog: Program) <- parser_ast@find_named_program(mod_id, world);
             case pf of {
-                false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world);
+                false -> check_user_call_args_recursive(expr, params_use, expected_type, return_type, context, expr, world);
                 true -> do
                     recv_ty: string <- case ac > 0 of {
                         true -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
@@ -3560,31 +3601,40 @@ fn check_user_defined_world_call_with_inference(expr: Expr, expected_type: strin
                     };
                     (pfd: bool, callee_decl: Declaration) <- find_qualified_call_resolved_declaration(pprog, fn_id, expr.value, ac, recv_ty, expected_type, world);
                     case pfd of {
-                        false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world);
+                        false -> check_user_call_args_recursive(expr, params_use, expected_type, return_type, context, expr, world);
                         true -> case callee_decl.tag == 0 of {
-                            false -> check_user_call_args_recursive(expr, params_inner, expected_type, return_type, context, expr, world);
-                            true -> do
-                                params_lr: ListParam <- parser_ast@list_param_reverse_with_acc(callee_decl.parameters, parser_ast@nil_list_param());
-                                (inf_ok: TypeCheckResult, inf_left: ListParam) <- infer_trait_site_call_args_walk(expr, params_lr, context, world, expr, pprog, "", "", 0);
-                                case inf_ok.is_ok of {
-                                    false -> inf_ok;
-                                    true -> do
-                                        params_inner_inf: string <- inferred_types_concat_comma(inf_left);
-                                        chk_args: TypeCheckResult <- check_user_call_args_recursive(expr, params_inner_inf, expected_type, return_type, context, expr, world);
-                                        case chk_args.is_ok of {
-                                            false -> chk_args;
-                                            true -> do
-                                                conc_decl: ListParam <- parser_ast@list_param_reverse_with_acc(inf_left, parser_ast@nil_list_param());
-                                                body_ok: TypeCheckResult <- check_callsite_body_with_concrete_params(callee_decl, world, conc_decl, mod_id, pprog);
-                                                case body_ok.is_ok of {
-                                                    false -> body_ok;
-                                                    true -> check_user_call_result_user_call(expr, expected_type, return_type, context, world)
-                                                }
-                                            end
-                                        }
-                                    end
-                                }
-                            end
+                            false -> check_user_call_args_recursive(expr, params_use, expected_type, return_type, context, expr, world);
+                                true -> case params_use != params_inner of {
+                                true -> do
+                                    chk_args: TypeCheckResult <- check_user_call_args_recursive(expr, params_use, expected_type, resolved_return, context, expr, world);
+                                    case chk_args.is_ok of {
+                                        false -> chk_args;
+                                        true -> check_user_call_result_user_call(expr, expected_type, resolved_return, context, world)
+                                    }
+                                end;
+                                false -> do
+                                    params_lr: ListParam <- parser_ast@list_param_reverse_with_acc(callee_decl.parameters, parser_ast@nil_list_param());
+                                    (inf_ok: TypeCheckResult, inf_left: ListParam) <- infer_trait_site_call_args_walk(expr, params_lr, context, world, expr, pprog, "", "", 0);
+                                    case inf_ok.is_ok of {
+                                        false -> inf_ok;
+                                        true -> do
+                                            params_inner_inf: string <- inferred_types_concat_comma(inf_left);
+                                            chk_args: TypeCheckResult <- check_user_call_args_recursive(expr, params_inner_inf, expected_type, return_type, context, expr, world);
+                                            case chk_args.is_ok of {
+                                                false -> chk_args;
+                                                true -> do
+                                                    conc_decl: ListParam <- parser_ast@list_param_reverse_with_acc(inf_left, parser_ast@nil_list_param());
+                                                    body_ok: TypeCheckResult <- check_callsite_body_with_concrete_params(callee_decl, world, conc_decl, mod_id, pprog);
+                                                    case body_ok.is_ok of {
+                                                        false -> body_ok;
+                                                        true -> check_user_call_result_user_call(expr, expected_type, return_type, context, world)
+                                                    }
+                                                end
+                                            }
+                                        end
+                                    }
+                                end
+                            }
                         }
                     }
                 end
@@ -4088,7 +4138,17 @@ fn context_after_sequence_body(body: Expr, context: TypeContext) -> TypeContext 
         end;
         false -> case body.kind == 10 of {
             true -> do
-                extended: TypeContext <- type_checker_tuple_decompose_helpers@add_bindings_to_context(context, body.pattern_bindings);
+                rhs_type: string <- case body.inner.kind == 11 of {
+                    true -> type_checker_tuple_decompose_helpers@infer_expr_type(body.inner.right_expr, context_after_sequence_body(body.inner.inner, context));
+                    false -> type_checker_tuple_decompose_helpers@infer_expr_type(body.inner, context)
+                };
+                rhs_trimmed: string <- type_checker_tuple_decompose_helpers@tuple_trim(rhs_type);
+                tuple_for_fill: string <- case len(body.value) > 0 of {
+                    true -> type_checker_tuple_decompose_helpers@tuple_trim(body.value);
+                    false -> rhs_trimmed
+                };
+                filled: ListTupleDecomposeBinding <- type_checker_tuple_decompose_helpers@fill_empty_binding_types_from_rhs(body.pattern_bindings, tuple_for_fill);
+                extended: TypeContext <- type_checker_tuple_decompose_helpers@add_bindings_to_context(context, filled);
                 context_after_sequence_body(body.right_expr, extended)
             end;
             false -> context

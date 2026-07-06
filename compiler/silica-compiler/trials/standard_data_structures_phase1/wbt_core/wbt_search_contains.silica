@@ -1,0 +1,146 @@
+// Layer 2 §8A.2: search/contains hit and miss at root, leftmost, rightmost, and internal positions.
+
+use wbt_set;
+use wbt_map;
+use wbt_trial_fixture;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn score_set(set0: {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+}) -> int64 {
+    sequence
+        hit50: boolean <- wbt_set@contains(set0, 50);
+        miss99: boolean <- wbt_set@contains(set0, 99);
+        hit10: boolean <- wbt_set@contains(set0, 10);
+        miss15: boolean <- wbt_set@contains(set0, 15);
+        hit90: boolean <- wbt_set@contains(set0, 90);
+        hit25: boolean <- wbt_set@contains(set0, 25);
+        hit40: boolean <- wbt_set@contains(set0, 40);
+        hit60: boolean <- wbt_set@contains(set0, 60);
+        hit75: boolean <- wbt_set@contains(set0, 75);
+        code: int64 <- case hit50 of {
+            false -> 1;
+            true -> case miss99 of {
+                true -> 2;
+                false -> case hit10 of {
+                    false -> 3;
+                    true -> case miss15 of {
+                        true -> 4;
+                        false -> case hit90 of {
+                            false -> 5;
+                            true -> case hit25 of {
+                                false -> 6;
+                                true -> case hit40 of {
+                                    false -> 6;
+                                    true -> case hit60 of {
+                                        false -> 6;
+                                        true -> case hit75 of {
+                                            true -> 0;
+                                            false -> 6
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    produces
+        pure code
+    end
+}
+
+fn score_map(map0: {
+    root: ref?(L, normal, rec),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+}) -> int64 {
+    sequence
+        g50: { status: :not_found | :found, value: int64 } <- wbt_map@get(map0, 50, 0);
+        g99: { status: :not_found | :found, value: int64 } <- wbt_map@get(map0, 99, 0);
+        g10: { status: :not_found | :found, value: int64 } <- wbt_map@get(map0, 10, 0);
+        g15: { status: :not_found | :found, value: int64 } <- wbt_map@get(map0, 15, 0);
+        g90: { status: :not_found | :found, value: int64 } <- wbt_map@get(map0, 90, 0);
+        has25: boolean <- wbt_map@contains_key(map0, 25);
+        has75: boolean <- wbt_map@contains_key(map0, 75);
+        code: int64 <- case g50.status of {
+            :not_found -> 10;
+            :found -> case g50.value == 500 of {
+                false -> 11;
+                true -> case g99.status of {
+                    :found -> 12;
+                    _: :not_found | :found -> case g10.status of {
+                        :not_found -> 13;
+                        :found -> case g10.value == 100 of {
+                            false -> 14;
+                            true -> case g15.status of {
+                                :found -> 15;
+                                _: :not_found | :found -> case g90.status of {
+                                    :not_found -> 16;
+                                    :found -> case g90.value == 900 of {
+                                        false -> 17;
+                                        true -> case has25 of {
+                                            false -> 18;
+                                            true -> case has75 of {
+                                                true -> 0;
+                                                false -> 18
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    produces
+        pure code
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        r: region(L, normal) <- alloc_region(normal);
+        set0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_set_i64(cmp_i64, r);
+        map0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_map_i64(cmp_i64, r);
+        set_code: int64 <- score_set(set0);
+        map_code: int64 <- score_map(map0);
+        exit_code: int64 <- case set_code == 0 of {
+            false -> set_code;
+            true -> case map_code == 0 of {
+                true -> 0;
+                false -> 100 + map_code
+            }
+        }
+    produces
+        pure exit_code
+    end
+}
