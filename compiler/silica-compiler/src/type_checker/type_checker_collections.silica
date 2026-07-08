@@ -1530,17 +1530,37 @@ fn is_lookup_status_union_type(type_str: string) -> bool {
     }
 }
 
-fn validate_lookup_result_record_type(type_str: string, location: SourceLocation) -> TypeCheckResult {
-    status_type: string <- type_checker_record_types@find_field_type_in_record(type_str, "status");
-    case len(status_type) == 0 of {
-        true -> type_checker_core@type_check_ok();
-        false -> case is_lookup_status_union_type(status_type) of {
-            false -> type_checker_core@type_check_err("E2017", location, concat(concat("collection lookup status must be :not_found | :found, got ", status_type), ""), "common_contract§6");
-            true -> case type_checker_record_types@count_record_fields(type_str) < 2 of {
-                true -> type_checker_core@type_check_err("E2017", location, "collection lookup result record must include status and a separate payload field", "common_contract§6");
-                false -> type_checker_core@type_check_ok()
-            }
+fn record_type_has_field(type_str: string, field: string) -> bool {
+    ft: string <- type_checker_record_types@find_field_type_in_record(type_str, field);
+    len(ft) > 0
+}
+
+// Collection lookup/update results use { status: :not_found | :found, payload } per common_contract §6.
+// Only records with status plus a collection payload field (value or item) are validated; unrelated
+// records such as supervisor replies may also carry a status field with a different meaning.
+fn is_collection_lookup_result_record_shape(type_str: string) -> bool {
+    case record_type_has_field(type_str, "status") of {
+        false -> false;
+        true -> case record_type_has_field(type_str, "value") of {
+            true -> true;
+            false -> record_type_has_field(type_str, "item")
         }
+    }
+}
+
+fn validate_lookup_result_record_type(type_str: string, location: SourceLocation) -> TypeCheckResult {
+    case is_collection_lookup_result_record_shape(type_str) of {
+        false -> type_checker_core@type_check_ok();
+        true -> do
+            status_type: string <- type_checker_record_types@find_field_type_in_record(type_str, "status");
+            case is_lookup_status_union_type(status_type) of {
+                false -> type_checker_core@type_check_err("E2017", location, concat(concat("collection lookup status must be :not_found | :found, got ", status_type), ""), "common_contract§6");
+                true -> case type_checker_record_types@count_record_fields(type_str) < 2 of {
+                    true -> type_checker_core@type_check_err("E2017", location, "collection lookup result record must include status and a separate payload field", "common_contract§6");
+                    false -> type_checker_core@type_check_ok()
+                }
+            }
+        end
     }
 }
 

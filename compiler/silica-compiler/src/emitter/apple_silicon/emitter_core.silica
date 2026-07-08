@@ -1229,9 +1229,10 @@ fn fs_is_program_main_name(name: string) -> bool {
     name == "main" or name == "main.main" or name == "main.m"
 }
 
-// Gate: shadow whenever a non-tail body contains a user call, every param fits in one GPR, the function
-// has no float spills / actor-reply-sret / concurrency, and the params
-// plus existing spill pressure fit within the callee-saved register file (X19–X28).
+// Gate: shadow whenever a non-tail body contains a user call, every param fits in one GPR, and the function
+// has no float spills / actor-reply-sret / concurrency.  High spill pressure is not a reason to leave
+// parameters in caller-saved registers; those are exactly the functions where helper calls are most likely
+// to clobber still-live params before the body can rebuild aggregate values.
 // A call in any expression can clobber a parameter that remains live afterward; restricting
 // this to calls inside case scrutinees leaves ordinary callback/fold helpers unsound.
 // Aggregate returns use X8 as their independent return buffer and do not conflict with
@@ -1254,10 +1255,7 @@ fn use_full_param_shadow(fn_val: SIRFunction) -> bool {
                                     false -> false;
                                     true -> case fs_all_params_simple_gpr(fn_val.param_types) of {
                                         false -> false;
-                                        true -> case fs_subtree_has_user_call(fn_val.body) of {
-                                            false -> false;
-                                            true -> (n + count_callee_saved_spill_pressure(fn_val.body)) <= 10
-                                        }
+                                        true -> fs_subtree_has_user_call(fn_val.body)
                                     }
                                 }
                             end

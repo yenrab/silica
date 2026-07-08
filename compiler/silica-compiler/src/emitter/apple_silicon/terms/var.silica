@@ -44,6 +44,7 @@ export reg_offset_for_index/2;
 export reg_binding/2;
 export extract_sp_bindings/1;
 export is_reg_bound/2;
+export reg_reserved_as_sret_buffer/2;
 export next_free_int_reg/1;
 export find_last_sp_binding/2;
 export binding_is_physical_int_reg/1;
@@ -733,6 +734,15 @@ fn emit_var_reg_core(term: SIRTerm, dest: string, reg: string) -> string {
     }
 }
 
+// Actor behavior reply buffer (|_tuple_sret=X20) and user-call aggregate sret (|_callee_sret=X8)
+// are not ordinary let bindings but must not be used as let-RHS spill targets.
+fn reg_reserved_as_sret_buffer(outer_reg: string, reg: string) -> bool {
+    case find_sp_binding(outer_reg, "_tuple_sret") == reg of {
+        true -> true;
+        false -> find_sp_binding(outer_reg, "_callee_sret") == reg
+    }
+}
+
 // Check if a register appears as a bound value in outer_reg.
 // Uses "|" delimited format: |varname=REGNAME. Matches exact register name only
 // (e.g. "X1" won't match "X10" or "X11" because those have extra digits before the next | or end).
@@ -743,8 +753,11 @@ fn is_reg_bound(outer_reg: string, reg: string) -> bool {
     case find_str_at(outer_reg, key_mid, 0) >= 0 of {
         true -> true;
         false -> case end_pos >= 0 of {
-            true -> substring(outer_reg, end_pos, len(outer_reg)) == key_end;
-            false -> false
+            true -> case substring(outer_reg, end_pos, len(outer_reg)) == key_end of {
+                true -> true;
+                false -> reg_reserved_as_sret_buffer(outer_reg, reg)
+            };
+            false -> reg_reserved_as_sret_buffer(outer_reg, reg)
         }
     }
 }

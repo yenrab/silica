@@ -79,13 +79,13 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 | 2 | Mathematical BST model with cached size | I | Design §2 |
 | 3 | `(DELTA, GAMMA) = (3, 2)` balance definition | I | Design §3; HY11 reference |
 | 4 | Logical node shapes (set vs map) | T | `wbt_core/` → `wbt_representation_specializations`, `wbt_representation_string_specialization`, `wbt_generic_payload_shapes`, `wbt_generic_tuple_map_empty` (**§8A.1 pass**) |
-| 5 | Smart constructor with overflow-safe size | T | `wbt_core/` → `wbt_smart_node_size` (planned) |
-| 6 | Search helpers | T | `stdlib/data_structures/wbt_set.silica`, `wbt_map.silica` (read-only exports); `wbt_core/` → `wbt_read_only_empty` (**§8A.2 partial** — empty paths); `wbt_search_contains` (planned, blocked on §8A.3 / `E2003`) |
+| 5 | Smart constructor with overflow-safe size | T | `stdlib/data_structures/wbt_set.silica`, `wbt_map.silica`; `wbt_core/` → `wbt_smart_node_size`, `wbt_smart_node_arena`, `wbt_smart_node_production_path`, `trial_collection_error_wbt_smart_node_overflow`; `check-wbt-alloc-rec-gate` (**§8A.3 pass**) |
+| 6 | Search helpers | T | `stdlib/data_structures/wbt_set.silica`, `wbt_map.silica` (read-only exports); `wbt_core/` → `wbt_read_only_empty`, `wbt_search_contains`, `wbt_minimum_maximum`, `trial_collection_error_wbt_search_invalid_comparator` (**§8A.2 pass**) |
 | 7 | `balance_left` / `balance_right` contract | T | `wbt_core/` → `wbt_rebalance_adversarial` (planned) |
 | 8 | Set insertion + duplicate no-op | T | `wbt_core/` → `wbt_set_insert_duplicate` (planned) |
 | 9 | Map insert/replace on duplicate key | T | `wbt_core/` → `wbt_map_insert_replace` (planned) |
 | 10 | Deletion + successor/min extraction | T | `wbt_core/` → `wbt_delete_two_child` (planned) |
-| 11 | Ordered fold / early-exit fold order | T | `wbt_core/` → `wbt_fold_ascending` (planned; §8A.2 read-only `fold/3` in stdlib, trial blocked on non-empty fixture) |
+| 11 | Ordered fold / early-exit fold order | T | `wbt_core/` → `wbt_fold_ascending`, `wbt_read_only_alloc_free`, `wbt_weight_checked` (**§8A.2 pass**) |
 | 12 | `from_sorted` linear O(n) builder | T | `wbt_core/` → `wbt_from_sorted_valid_invalid` (planned) |
 | 13 | Optional join/split (same balance law) | O | "Public set/map APIs do not initially require union or split" |
 | 14 | Structural invariants (size, order, balance) | T | `wbt_core/` → `wbt_validate_invariants` (planned) |
@@ -468,4 +468,4 @@ Source: implementation plan §6.4; designs `csr_graph_snapshot.md`, `dense_matri
 - [x] Each row uses exactly one coverage kind (`T`, `C`, `I`, or `O`)  
 - [x] Trial leaf assignment for all `T` and `C` rows  
 
-**Next step:** Layer 1 §§7.1–§7.9 re-verified (2026-07-02 golden refresh); WBT §8A.1 complete; §8A.2 read-only stdlib landed with empty-root trial — proceed to §8A.3 smart constructor (unblocks non-empty §8A.2 acceptance). Skew RAL and Brodal–Okasaki may proceed in parallel on Layer 2. BinaryTree requires §7.10 before §8D. §7.2 meld before-allocation rejection — Layer 2 §8C exit gate, Layer 3 §9C re-verification.
+**Next step:** Layer 1 §§7.1–§7.9 and WBT §§8A.1–§8A.3 are re-verified (2026-07-07, phase-1 root `126 0`; `wbt_core/` `36 0`) — proceed to §8A.4 balance predicates and rotations. Skew RAL and Brodal–Okasaki may proceed in parallel on Layer 2. BinaryTree requires §7.10 before §8D. §7.2 meld before-allocation rejection — Layer 2 §8C exit gate, Layer 3 §9C re-verification.

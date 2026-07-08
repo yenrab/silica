@@ -1,7 +1,9 @@
-// Layer 2 §8A.1–§8A.2 — Adams WBT set core: owning record, empty root, read-only helpers.
+// Layer 2 §8A.1–§8A.3 — Adams WBT set core: owning record, smart node construction, read-only helpers.
 // Node shape (inline at every boundary): (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)).
 
 export empty/1;
+export smart_node/4;
+export subtree_cached_size/1;
 export size/1;
 export search_status/2;
 export contains/2;
@@ -77,6 +79,86 @@ fn compare_checked(
     end
 }
 
+fn subtree_cached_size(subtree: ref?(L, normal, rec)) -> int64 {
+    case subtree of {
+        :none -> 0;
+        node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+            sequence proc[mem(normal)]
+                node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+                (_, sz: int64, _, _) <- node
+            produces
+                pure sz
+            end
+        }
+    }
+}
+
+fn sum_lr_ok(left_sz: int64, right_sz: int64) -> boolean {
+    sum_pair: (boolean, int64) <- checked_int64_add(left_sz, right_sz);
+    (ok: boolean, _: int64) <- sum_pair;
+    ok
+}
+
+fn sum_lr_partial(left_sz: int64, right_sz: int64) -> int64 {
+    sum_pair: (boolean, int64) <- checked_int64_add(left_sz, right_sz);
+    (_: boolean, partial: int64) <- sum_pair;
+    partial
+}
+
+fn partial_add1_ok(partial: int64) -> boolean {
+    add1_pair: (boolean, int64) <- checked_int64_add1(partial);
+    (ok: boolean, _: int64) <- add1_pair;
+    ok
+}
+
+fn partial_add1_size(partial: int64) -> int64 {
+    add1_pair: (boolean, int64) <- checked_int64_add1(partial);
+    (_: boolean, cached_size: int64) <- add1_pair;
+    cached_size
+}
+
+fn smart_node_finish_alloc(
+    item: ItemType,
+    arena: region(L, normal),
+    left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec),
+    cached_size: int64
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        cell: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) <-
+            alloc_rec(arena, (item, cached_size, left, right))
+    produces
+        pure cell
+    end
+}
+
+fn smart_node(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> ref?(L, normal, rec) {
+    left_sz: int64 <- subtree_cached_size(left);
+    right_sz: int64 <- subtree_cached_size(right);
+    sum_pair: (boolean, int64) <- checked_int64_add(left_sz, right_sz);
+    (sum_ok: boolean, partial: int64) <- sum_pair;
+    add1_pair: (boolean, int64) <- checked_int64_add1(partial);
+    (add_ok: boolean, cached_size: int64) <- add1_pair;
+    arena: region(L, normal) <- set.region;
+    case sum_ok of {
+        false -> :none;
+        true -> case add_ok of {
+            false -> :none;
+            true -> smart_node_finish_alloc(item, arena, left, right, cached_size)
+        }
+    }
+}
 
 fn minimum_cmp(
     node_key: ItemType,

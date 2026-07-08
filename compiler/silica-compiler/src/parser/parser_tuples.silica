@@ -30,6 +30,7 @@ export extract_inline_record_type_from_slots/1;
 export extract_list_type_from_slots/1;
 export slots_start_bracketed_collection_type/2;
 export extract_atom_option_type_from_slots/1;
+export atom_option_binding_has_arrow_after_type/1;
 export extract_top_level_or_type_from_slots/1;
 export is_tuple_type_binding_start/1;
 export binding_starts_paren_tuple_type_after_colon/1;
@@ -421,6 +422,30 @@ fn extract_atom_option_tail_from_slots(slots: ListTokenSlot, acc: string, kinds:
                 }
             end;
             false -> TupleTypeResult { type_str: acc, rest_slots: trimmed }
+        }
+    }
+}
+
+// After `ident :`, slots beginning with `:a | :b` … must classify as a let binding when `<-` follows the union type.
+fn atom_option_binding_has_arrow_after_type(ac: ListTokenSlot) -> bool proc[DeviceIO] {
+    kinds: TokenKinds <- lexer_token_kind@token_kinds();
+    case ac.is_nil of {
+        true -> false;
+        false -> case ac.head.token.kind == kinds.atom_literal of {
+            true -> do
+                tr: TupleTypeResult <- extract_atom_option_type_from_slots(ac);
+                case len(tr.type_str) > 0 of {
+                    false -> false;
+                    true -> do
+                        after_ty: ListTokenSlot <- skip_leading_whitespace_slots_for_types(tr.rest_slots);
+                        case after_ty.is_nil of {
+                            true -> false;
+                            false -> after_ty.head.token.kind == kinds.left_arrow
+                        }
+                    end
+                }
+            end;
+            false -> false
         }
     }
 }

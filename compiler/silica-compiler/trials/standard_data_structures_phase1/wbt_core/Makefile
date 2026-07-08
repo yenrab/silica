@@ -7,10 +7,61 @@ include $(STDLIB_PREREQ_MK)
 
 include $(LEAF_DIR)../leaf.mk
 
-COLLECTION_ERROR_TRIALS := trial_collection_error_wbt_search_invalid_comparator.silica
+# WBT core intentionally enumerates accepted gate trials.  This leaf is used
+# for narrow compiler/runtime probes while developing WBT; loose probe files
+# must not become part of the stable integrate gate merely because they have a
+# `.silica` suffix.
+POSITIVE_SILICA := \
+	smoke_harness_ready.silica \
+	wbt_constructor_ordering_bundle.silica \
+	wbt_empty_representation.silica \
+	wbt_fold_ascending.silica \
+	wbt_generic_payload_shapes.silica \
+	wbt_generic_tuple_map_empty.silica \
+	wbt_minimum_maximum.silica \
+	wbt_read_only_alloc_free.silica \
+	wbt_read_only_empty.silica \
+	wbt_representation_specializations.silica \
+	wbt_representation_string_specialization.silica \
+	wbt_search_contains.silica \
+	wbt_smart_node_arena.silica \
+	wbt_smart_node_production_path.silica \
+	wbt_smart_node_size.silica \
+	wbt_weight_checked.silica
+
+COLLECTION_ERROR_TRIALS := trial_collection_error_wbt_search_invalid_comparator.silica trial_collection_error_wbt_smart_node_overflow.silica
 ALL_COMPILE_SILICA := $(POSITIVE_SILICA) $(COLLECTION_ERROR_TRIALS)
 
-.PHONY: lib-sources
+# §8A.3 exit gate: production WBT modules must contain exactly one node allocation site (inside smart_node).
+WBT_PRODUCTION_MODULES := wbt_set wbt_map
+
+.PHONY: lib-sources check-wbt-alloc-rec-gate
+
+check-wbt-alloc-rec-gate:
+	@failed=0; \
+	for mod in $(WBT_PRODUCTION_MODULES); do \
+		silica="$(LEAF_DIR)lib/$$mod.silica"; \
+		sams="$(LEAF_DIR)lib/$$mod.sams"; \
+		if [ ! -f "$$silica" ]; then \
+			echo "FAIL: $(MSG_PREFIX)missing $$silica (run make lib-sources)"; \
+			failed=1; \
+			continue; \
+		fi; \
+		if [ ! -f "$$sams" ]; then \
+			echo "FAIL: $(MSG_PREFIX)missing $$sams (compile stdlib modules first)"; \
+			failed=1; \
+			continue; \
+		fi; \
+		src_count=$$(grep -c 'alloc_rec' "$$silica" || true); \
+		if [ "$$src_count" -ne 1 ]; then \
+			echo "FAIL: $(MSG_PREFIX)$$mod.silica has $$src_count alloc_rec sites (expected 1 in smart_node_finish)"; \
+			grep -n 'alloc_rec' "$$silica" || true; \
+			failed=1; \
+		else \
+			echo "✅ $(MSG_PREFIX)$$mod.silica single smart_node allocation site"; \
+		fi; \
+	done; \
+	exit $$failed
 
 lib-sources: stdlib-data-structures
 	@mkdir -p "$(LEAF_DIR)lib"
@@ -58,6 +109,7 @@ positive-integrate: lib-sources silica.config
 		printf '%d %d\n' 0 1 > .integrate_counts; \
 		exit 1; \
 	fi; \
+	$(MAKE) check-wbt-alloc-rec-gate || { failed=1; printf '%d %d\n' 0 1 > .integrate_counts; exit 1; }; \
 	for sams in *.sams; do \
 		[ -f "$$sams" ] || continue; \
 		base=$${sams%.sams}; \
@@ -198,5 +250,5 @@ clean:
 		[ -f "$$s" ] || continue; \
 		rm -f "$${s%.sams}"; \
 	done
-	@cd "$(LEAF_DIR)" && rm -f *.sams lib/wbt_set.sams lib/wbt_map.sams lib/wbt_set.silica lib/wbt_map.silica *.o lib/*.o __silica_runtime.o smoke_harness_ready wbt_empty_representation wbt_generic_payload_shapes wbt_representation_specializations wbt_constructor_ordering_bundle wbt_search_contains wbt_minimum_maximum wbt_fold_ascending wbt_read_only_alloc_free wbt_read_only_empty trial_collection_error_wbt_search_invalid_comparator *.sout silica.config .integrate_counts
+	@cd "$(LEAF_DIR)" && rm -f *.sams lib/wbt_set.sams lib/wbt_map.sams lib/wbt_set.silica lib/wbt_map.silica *.o lib/*.o __silica_runtime.o smoke_harness_ready wbt_empty_representation wbt_generic_payload_shapes wbt_representation_specializations wbt_constructor_ordering_bundle wbt_search_contains wbt_minimum_maximum wbt_fold_ascending wbt_read_only_alloc_free wbt_read_only_empty wbt_smart_node_arena wbt_smart_node_production_path wbt_smart_node_size trial_collection_error_wbt_search_invalid_comparator trial_collection_error_wbt_smart_node_overflow *.sout silica.config .integrate_counts
 	@echo "✅ $(MSG_PREFIX)Clean complete"

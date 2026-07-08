@@ -31,10 +31,20 @@ use var;
 export compute_rhs_reg_in_let/5;
 export compute_rhs_reg_top_level/3;
 
+// Lifted lambda / fn refs in let RHS lower to kind 0 `fn_ptr` (sir_generator expr_to_sir_with_expected),
+// not a `fn(...)` type string. Treat like function values: materialize in dest (typically X0), never
+// the int64 top-level X1 scratch — X1 may hold closure captures passed at call time.
+fn let_rhs_is_fn_pointer_materialization(type_name: string) -> bool {
+    case type_name == "fn_ptr" of {
+        true -> true;
+        false -> var@type_name_is_function(type_name)
+    }
+}
+
 fn compute_rhs_reg_in_let(term: SIRTerm, dest: string, bound_name: string, bound_reg: string, outer_reg: string) -> string {
     case reg_conventions@is_tuple_type(term.inner.type_name) of {
         true -> let_tuple@compute_rhs_reg_in_let(term, dest, bound_name, bound_reg, outer_reg);
-        false -> case var@type_name_is_function(term.inner.type_name) of {
+        false -> case let_rhs_is_fn_pointer_materialization(term.inner.type_name) of {
             true -> dest;
             false -> case term.inner.type_name of {
         "atom" -> dest;
@@ -82,7 +92,7 @@ fn compute_rhs_reg_in_let(term: SIRTerm, dest: string, bound_name: string, bound
 fn compute_rhs_reg_top_level(term: SIRTerm, bound_reg: string, dest: string) -> string {
     case reg_conventions@is_tuple_type(term.inner.type_name) of {
         true -> let_tuple@compute_rhs_reg_top_level(term, bound_reg, dest);
-        false -> case var@type_name_is_function(term.inner.type_name) of {
+        false -> case let_rhs_is_fn_pointer_materialization(term.inner.type_name) of {
             true -> dest;
             false -> case term.inner.type_name of {
         "atom" -> dest;

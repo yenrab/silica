@@ -183,28 +183,33 @@ fn outer_reg_has_live_binding(outer_reg: string, reg: string, body: SIRTerm) -> 
     outer_reg_has_live_binding_from(outer_reg, reg, body, 0)
 }
 
+fn spill_reg_unavailable_for_body(outer_reg: string, reg: string, body: SIRTerm) -> bool {
+    var@reg_reserved_as_sret_buffer(outer_reg, reg)
+        or outer_reg_has_live_binding(outer_reg, reg, body)
+}
+
 fn spill_reg_chain_for_body(outer_reg: string, body: SIRTerm) -> string {
-    case outer_reg_has_live_binding(outer_reg, "X19", body) of {
+    case spill_reg_unavailable_for_body(outer_reg, "X19", body) of {
         false -> "X19";
-        true -> case outer_reg_has_live_binding(outer_reg, "X20", body) of {
+        true -> case spill_reg_unavailable_for_body(outer_reg, "X20", body) of {
             false -> "X20";
-            true -> case outer_reg_has_live_binding(outer_reg, "X21", body) of {
+            true -> case spill_reg_unavailable_for_body(outer_reg, "X21", body) of {
                 false -> "X21";
-                true -> case outer_reg_has_live_binding(outer_reg, "X22", body) of {
+                true -> case spill_reg_unavailable_for_body(outer_reg, "X22", body) of {
                     false -> "X22";
-                    true -> case outer_reg_has_live_binding(outer_reg, "X23", body) of {
+                    true -> case spill_reg_unavailable_for_body(outer_reg, "X23", body) of {
                         false -> "X23";
-                        true -> case outer_reg_has_live_binding(outer_reg, "X24", body) of {
+                        true -> case spill_reg_unavailable_for_body(outer_reg, "X24", body) of {
                             false -> "X24";
-                            true -> case outer_reg_has_live_binding(outer_reg, "X25", body) of {
+                            true -> case spill_reg_unavailable_for_body(outer_reg, "X25", body) of {
                                 false -> "X25";
-                                true -> case outer_reg_has_live_binding(outer_reg, "X26", body) of {
+                                true -> case spill_reg_unavailable_for_body(outer_reg, "X26", body) of {
                                     false -> "X26";
-                                    true -> case outer_reg_has_live_binding(outer_reg, "X27", body) of {
+                                    true -> case spill_reg_unavailable_for_body(outer_reg, "X27", body) of {
                                         false -> "X27";
-                                        true -> case outer_reg_has_live_binding(outer_reg, "X28", body) of {
+                                        true -> case spill_reg_unavailable_for_body(outer_reg, "X28", body) of {
                                             false -> "X28";
-                                            true -> case outer_reg_has_live_binding(outer_reg, "X29", body) of {
+                                            true -> case spill_reg_unavailable_for_body(outer_reg, "X29", body) of {
                                                 false -> "X29";
                                                 true -> ""
                                             }
@@ -797,7 +802,17 @@ fn emit_rest_args(rest: SIRTerm, gpr_slot: int64, fp_slot: int64, table: AtomTab
                 };
                 false -> ""
             };
-            save_next: string <- concat(concat("    STR ", next_reg), ", [SP, #-16]!\n");
+            save_src_reg: string <- case rest.inner.kind == 1 of {
+                true -> do
+                    bound: string <- var@find_sp_binding_bare_or_percent_param(outer_f, rest.inner.name);
+                    case len(bound) > 0 and var@binding_is_physical_int_reg(bound) of {
+                        true -> bound;
+                        false -> next_reg
+                    }
+                end;
+                false -> next_reg
+            };
+            save_next: string <- concat(concat("    STR ", save_src_reg), ", [SP, #-16]!\n");
             restore_current: string <- concat(concat("    LDR ", reg), ", [SP], #16\n");
             case use_save_next_for_current of {
                 true -> concat(concat(concat(concat(save_next, next_arg_asm), "\n"), restore_current), further_rest_asm);
@@ -1437,7 +1452,7 @@ fn emit_case_pick_scrut_reg(dest: string, outer_reg: string, bound_reg: string) 
             };
             false -> case bound_reg == "X2" of {
                 true -> "X3";
-                false -> "X2"
+                false -> "X3"
             }
         };
         false -> case dest == "X0" of {
@@ -1448,7 +1463,7 @@ fn emit_case_pick_scrut_reg(dest: string, outer_reg: string, bound_reg: string) 
                 };
                 false -> case bound_reg == "X2" of {
                     true -> "X3";
-                    false -> "X2"
+                    false -> "X3"
                 }
             };
             // Result in X2 (e.g. third let hb): default scrutinee X1 would load base with MOV X1,X2 and
