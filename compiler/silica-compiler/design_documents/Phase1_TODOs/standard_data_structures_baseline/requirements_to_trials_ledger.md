@@ -82,7 +82,7 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 | 5 | Smart constructor with overflow-safe size | T | `stdlib/data_structures/wbt_set.silica`, `wbt_map.silica`; `wbt_core/` → `wbt_smart_node_size`, `wbt_smart_node_arena`, `wbt_smart_node_production_path`, `trial_collection_error_wbt_smart_node_overflow`; `check-wbt-alloc-rec-gate` (**§8A.3 pass**) |
 | 6 | Search helpers | T | `stdlib/data_structures/wbt_set.silica`, `wbt_map.silica` (read-only exports); `wbt_core/` → `wbt_read_only_empty`, `wbt_search_contains`, `wbt_minimum_maximum`, `trial_collection_error_wbt_search_invalid_comparator` (**§8A.2 pass**) |
 | 7 | `balance_left` / `balance_right` contract | T | `stdlib/data_structures/wbt_set.silica`, `wbt_map.silica`; `wbt_core/` → `wbt_balance_boundaries`, `wbt_rotation_single_left`, `wbt_rotation_single_right`, `wbt_rotation_double_left`, `wbt_rotation_double_right`, `wbt_rotation_gamma_equality`, `wbt_rebalance_adversarial`, `trial_collection_error_wbt_balance_missing_child` (**§8A.4 pass**) |
-| 8 | Set insertion + duplicate no-op | T | `wbt_core/` → `wbt_set_insert_duplicate` (planned) |
+| 8 | Set insertion + duplicate no-op | T | `stdlib/data_structures/wbt_set.silica` (`insert/2`); `wbt_core/` → `wbt_set_insert_duplicate`, `wbt_set_insert_orders`, `wbt_set_insert_adversarial`, `wbt_set_insert_persistence`, `wbt_set_insert_sharing`, `wbt_set_insert_payload_shapes`, `trial_collection_error_wbt_set_insert_invalid_comparator` (**§8A.5 pass**) |
 | 9 | Map insert/replace on duplicate key | T | `wbt_core/` → `wbt_map_insert_replace` (planned) |
 | 10 | Deletion + successor/min extraction | T | `wbt_core/` → `wbt_delete_two_child` (planned) |
 | 11 | Ordered fold / early-exit fold order | T | `wbt_core/` → `wbt_fold_ascending`, `wbt_read_only_alloc_free`, `wbt_weight_checked` (**§8A.2 pass**) |
@@ -468,4 +468,4 @@ Source: implementation plan §6.4; designs `csr_graph_snapshot.md`, `dense_matri
 - [x] Each row uses exactly one coverage kind (`T`, `C`, `I`, or `O`)  
 - [x] Trial leaf assignment for all `T` and `C` rows  
 
-**Next step:** Layer 1 §§7.1–§7.9 and WBT §§8A.1–§8A.4 are re-verified (2026-07-09) — proceed to §8A.5 persistent set insertion. Skew RAL and Brodal–Okasaki may proceed in parallel on Layer 2. BinaryTree requires §7.10 before §8D. §7.2 meld before-allocation rejection — Layer 2 §8C exit gate, Layer 3 §9C re-verification.
+**Next step:** Layer 1 §§7.1–§7.9 and WBT §§8A.1–§8A.5 are re-verified (2026-07-09) — proceed to §8A.6 persistent map insertion and replacement. Skew RAL and Brodal–Okasaki may proceed in parallel on Layer 2. BinaryTree requires §7.10 before §8D. §7.2 meld before-allocation rejection — Layer 2 §8C exit gate, Layer 3 §9C re-verification.

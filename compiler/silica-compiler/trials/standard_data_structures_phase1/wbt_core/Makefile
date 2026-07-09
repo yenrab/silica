@@ -31,12 +31,18 @@ POSITIVE_SILICA := \
 	wbt_rotation_single_left.silica \
 	wbt_rotation_single_right.silica \
 	wbt_search_contains.silica \
+	wbt_set_insert_adversarial.silica \
+	wbt_set_insert_duplicate.silica \
+	wbt_set_insert_orders.silica \
+	wbt_set_insert_payload_shapes.silica \
+	wbt_set_insert_persistence.silica \
+	wbt_set_insert_sharing.silica \
 	wbt_smart_node_arena.silica \
 	wbt_smart_node_production_path.silica \
 	wbt_smart_node_size.silica \
 	wbt_weight_checked.silica
 
-COLLECTION_ERROR_TRIALS := trial_collection_error_wbt_search_invalid_comparator.silica trial_collection_error_wbt_smart_node_overflow.silica trial_collection_error_wbt_balance_missing_child.silica
+COLLECTION_ERROR_TRIALS := trial_collection_error_wbt_search_invalid_comparator.silica trial_collection_error_wbt_smart_node_overflow.silica trial_collection_error_wbt_balance_missing_child.silica trial_collection_error_wbt_set_insert_invalid_comparator.silica
 ALL_COMPILE_SILICA := $(POSITIVE_SILICA) $(COLLECTION_ERROR_TRIALS)
 
 # §8A.3 exit gate: production WBT modules must contain exactly one node allocation site (inside smart_node).
@@ -257,5 +263,5 @@ clean:
 		[ -f "$$s" ] || continue; \
 		rm -f "$${s%.sams}"; \
 	done
-	@cd "$(LEAF_DIR)" && rm -f *.sams lib/wbt_set.sams lib/wbt_map.sams lib/wbt_set.silica lib/wbt_map.silica *.o lib/*.o __silica_runtime.o smoke_harness_ready wbt_balance_boundaries wbt_empty_representation wbt_generic_payload_shapes wbt_generic_tuple_map_empty wbt_representation_specializations wbt_representation_string_specialization wbt_constructor_ordering_bundle wbt_search_contains wbt_minimum_maximum wbt_fold_ascending wbt_read_only_alloc_free wbt_read_only_empty wbt_rebalance_adversarial wbt_rotation_double_left wbt_rotation_double_right wbt_rotation_gamma_equality wbt_rotation_single_left wbt_rotation_single_right wbt_smart_node_arena wbt_smart_node_production_path wbt_smart_node_size wbt_weight_checked trial_collection_error_wbt_search_invalid_comparator trial_collection_error_wbt_smart_node_overflow trial_collection_error_wbt_balance_missing_child *.sout silica.config .integrate_counts
+	@cd "$(LEAF_DIR)" && rm -f *.sams lib/wbt_set.sams lib/wbt_map.sams lib/wbt_set.silica lib/wbt_map.silica *.o lib/*.o __silica_runtime.o smoke_harness_ready wbt_balance_boundaries wbt_empty_representation wbt_generic_payload_shapes wbt_generic_tuple_map_empty wbt_representation_specializations wbt_representation_string_specialization wbt_constructor_ordering_bundle wbt_search_contains wbt_minimum_maximum wbt_fold_ascending wbt_read_only_alloc_free wbt_read_only_empty wbt_rebalance_adversarial wbt_rotation_double_left wbt_rotation_double_right wbt_rotation_gamma_equality wbt_rotation_single_left wbt_rotation_single_right wbt_smart_node_arena wbt_smart_node_production_path wbt_smart_node_size wbt_weight_checked wbt_set_insert_adversarial wbt_set_insert_duplicate wbt_set_insert_orders wbt_set_insert_payload_shapes wbt_set_insert_persistence wbt_set_insert_sharing trial_collection_error_wbt_search_invalid_comparator trial_collection_error_wbt_smart_node_overflow trial_collection_error_wbt_balance_missing_child trial_collection_error_wbt_set_insert_invalid_comparator *.sout silica.config .integrate_counts
 	@echo "✅ $(MSG_PREFIX)Clean complete"

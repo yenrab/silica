@@ -706,7 +706,7 @@ Run the insertion matrix for more than one payload shape and every supported `Sp
 
 **§8A.5 exit gate:** all insertion shapes pass the directed size/order/balance assertions; duplicate insertion is an identity-preserving zero-node no-op; old roots retain their observable contents; §8A.10 remains responsible for the final full-validator gate.
 
-**§8A.5 status:** Planned.
+**§8A.5 status (2026-07-09):** Complete — `wbt_set@insert/2` returns `{set, inserted}` with path-copy rebalance via §8A.3 `smart_node` / `balance_left` / `balance_right`. Duplicate comparator class is a zero-node identity no-op (`inserted=false`). Invalid comparator results halt via `1/0` and publish no result root. Positive trials in `wbt_core/`: `wbt_set_insert_duplicate`, `wbt_set_insert_orders`, `wbt_set_insert_adversarial`, `wbt_set_insert_persistence`, `wbt_set_insert_sharing`, `wbt_set_insert_payload_shapes` (int64 + string singleton specialization). Collection-error: `trial_collection_error_wbt_set_insert_invalid_comparator` (trial-only `wbt_trial_insert_i64@insert_status_i64`). Proceed to §8A.6.
 
 ### 8A.6 Persistent map insertion and replacement
 
