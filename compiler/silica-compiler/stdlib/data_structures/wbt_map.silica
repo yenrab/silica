@@ -1,4 +1,4 @@
-// Layer 2 §8A.1–§8A.3 — Adams WBT map core: owning record, smart node construction, read-only helpers.
+// Layer 2 §8A.1–§8A.4 — Adams WBT map core: smart nodes, read-only helpers, (3,2) balance/rotations.
 // Node shape (inline at every boundary): (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)).
 
 export empty/1;
@@ -12,6 +12,11 @@ export fold/3;
 export minimum/3;
 export maximum/3;
 export weight/1;
+export weight_le_3x/2;
+export weight_lt_2x/2;
+export weights_balanced/2;
+export balance_left/2;
+export balance_right/2;
 
 fn empty(
     functions: {
@@ -256,9 +261,13 @@ fn size(
     }
 }
 
+fn weight_empty() -> (boolean, int64) {
+    (true, 1)
+}
+
 fn weight_subtree(subtree: ref?(L, normal, rec)) -> (boolean, int64) {
     case subtree of {
-        :none -> (true, 1);
+        :none -> weight_empty();
         node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
             sequence proc[mem(normal)]
                 node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
@@ -579,4 +588,687 @@ fn maximum(
             end
         }
     }
+}
+
+fn weight_le_3x(a: int64, b: int64) -> boolean {
+    mul_pair: (boolean, int64) <- checked_int64_mul(b, 3);
+    (ok: boolean, product: int64) <- mul_pair;
+    case ok of {
+        false -> true;
+        true -> a <= product
+    }
+}
+
+fn weight_lt_2x(a: int64, b: int64) -> boolean {
+    mul_pair: (boolean, int64) <- checked_int64_mul(b, 2);
+    (ok: boolean, product: int64) <- mul_pair;
+    case ok of {
+        false -> true;
+        true -> a < product
+    }
+}
+
+fn weights_balanced(wl: int64, wr: int64) -> boolean {
+    case weight_le_3x(wl, wr) of {
+        false -> false;
+        true -> weight_le_3x(wr, wl)
+    }
+}
+
+fn balance_rep_violation_halt(_: int64) -> ref?(L, normal, rec) {
+    sequence
+        _: int64 <- 1 / 0
+    produces
+        pure :none
+    end
+}
+
+
+fn rotate_single_left_top_reread(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    mid_root: ref?(L, normal, rec),
+    right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        right_node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(right_ref);
+        (right_key, right_value, _: int64, _: ref?(L, normal, rec), rr: ref?(L, normal, rec)) <- right_node
+    produces
+        pure smart_node(tree, right_key, right_value, mid_root, rr)
+    end
+}
+
+fn rotate_single_left_after_mid_parts(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    left: ref?(L, normal, rec),
+    rl: ref?(L, normal, rec),
+    right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> ref?(L, normal, rec) {
+    sequence
+        mid: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+            compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- {
+            root: smart_node(tree, key, value, left, rl),
+            compare_key: tree.compare_key,
+            compare_value: tree.compare_value,
+            region: tree.region,
+            specialization_key: tree.specialization_key,
+            compare_key_ordering_bundle: tree.compare_key_ordering_bundle,
+            compare_value_ordering_bundle: tree.compare_value_ordering_bundle
+        }
+    produces
+        pure rotate_single_left_top_reread(tree, mid.root, right_ref)
+    end
+}
+
+
+fn rotate_single_right_top_reread(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    mid_root: ref?(L, normal, rec),
+    left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        left_node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(left_ref);
+        (left_key, left_value, _: int64, ll: ref?(L, normal, rec), _: ref?(L, normal, rec)) <- left_node
+    produces
+        pure smart_node(tree, left_key, left_value, ll, mid_root)
+    end
+}
+
+fn rotate_single_right_after_mid_parts(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    lr: ref?(L, normal, rec),
+    right: ref?(L, normal, rec),
+    left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> ref?(L, normal, rec) {
+    sequence
+        mid: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+            compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- {
+            root: smart_node(tree, key, value, lr, right),
+            compare_key: tree.compare_key,
+            compare_value: tree.compare_value,
+            region: tree.region,
+            specialization_key: tree.specialization_key,
+            compare_key_ordering_bundle: tree.compare_key_ordering_bundle,
+            compare_value_ordering_bundle: tree.compare_value_ordering_bundle
+        }
+    produces
+        pure rotate_single_right_top_reread(tree, mid.root, left_ref)
+    end
+}
+
+
+
+
+fn node_weight_from_ref(
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> (boolean, int64) {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, _, sz: int64, _, _) <- node
+    produces
+        pure checked_int64_add1(sz)
+    end
+}
+
+fn balance_left_single_from_refs(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    rl: ref?(L, normal, rec),
+    right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        root_node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (key, value, _: int64, left: ref?(L, normal, rec), _: ref?(L, normal, rec)) <- root_node
+    produces
+        pure rotate_single_left_after_mid_parts(tree, key, value, left, rl, right_ref)
+    end
+}
+
+fn balance_left_double_from_refs(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    rl_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        root_node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        right_node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(right_ref);
+        rl_node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(rl_ref);
+        (key, value, _: int64, left: ref?(L, normal, rec), _: ref?(L, normal, rec)) <- root_node;
+        (right_key, right_value, _: int64, _: ref?(L, normal, rec), rr: ref?(L, normal, rec)) <- right_node;
+        (rl_key, rl_value, _: int64, rll: ref?(L, normal, rec), rlr: ref?(L, normal, rec)) <- rl_node;
+        new_left: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+            compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- {
+            root: smart_node(tree, key, value, left, rll),
+            compare_key: tree.compare_key,
+            compare_value: tree.compare_value,
+            region: tree.region,
+            specialization_key: tree.specialization_key,
+            compare_key_ordering_bundle: tree.compare_key_ordering_bundle,
+            compare_value_ordering_bundle: tree.compare_value_ordering_bundle
+        };
+        new_right: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+            compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- {
+            root: smart_node(tree, right_key, right_value, rlr, rr),
+            compare_key: tree.compare_key,
+            compare_value: tree.compare_value,
+            region: tree.region,
+            specialization_key: tree.specialization_key,
+            compare_key_ordering_bundle: tree.compare_key_ordering_bundle,
+            compare_value_ordering_bundle: tree.compare_value_ordering_bundle
+        }
+    produces
+        pure smart_node(tree, rl_key, rl_value, new_left.root, new_right.root)
+    end
+}
+
+fn balance_left_apply_gamma(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    rl: ref?(L, normal, rec),
+    w_rl: int64,
+    w_rr: int64
+) -> ref?(L, normal, rec) {
+    case weight_lt_2x(w_rl, w_rr) of {
+        true -> balance_left_single_from_refs(tree, node_ref, rl, right_ref);
+        false -> case rl of {
+            :none -> balance_rep_violation_halt(0);
+            rl_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                balance_left_double_from_refs(tree, node_ref, right_ref, rl_ref)
+        }
+    }
+}
+
+fn balance_left_with_inner_weights(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    rl: ref?(L, normal, rec),
+    rr: ref?(L, normal, rec),
+    wr: int64
+) -> ref?(L, normal, rec) {
+    case rl of {
+        :none -> case rr of {
+            :none -> balance_left_apply_gamma(tree, node_ref, right_ref, rl, 1, 1);
+            _: ref?(L, normal, rec) -> balance_left_apply_gamma(tree, node_ref, right_ref, rl, 1, wr - 1)
+        };
+        _: ref?(L, normal, rec) -> case rr of {
+            :none -> balance_left_apply_gamma(tree, node_ref, right_ref, rl, wr - 1, 1);
+            rr_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+                w_rr_pair: (boolean, int64) <- node_weight_from_ref(rr_ref);
+                (ok_rr: boolean, w_rr: int64) <- w_rr_pair;
+                case ok_rr of {
+                    false -> balance_rep_violation_halt(wr);
+                    true -> balance_left_apply_gamma(tree, node_ref, right_ref, rl, wr - w_rr, w_rr)
+                }
+            }
+        }
+    }
+}
+
+fn balance_right_single_from_refs(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    lr: ref?(L, normal, rec),
+    left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        root_node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (key, value, _: int64, _: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- root_node
+    produces
+        pure rotate_single_right_after_mid_parts(tree, key, value, lr, right, left_ref)
+    end
+}
+
+fn balance_right_double_from_refs(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    lr_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        root_node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        left_node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(left_ref);
+        lr_node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(lr_ref);
+        (key, value, _: int64, _: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- root_node;
+        (left_key, left_value, _: int64, ll: ref?(L, normal, rec), _: ref?(L, normal, rec)) <- left_node;
+        (lr_key, lr_value, _: int64, lrl: ref?(L, normal, rec), lrr: ref?(L, normal, rec)) <- lr_node;
+        new_left: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+            compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- {
+            root: smart_node(tree, left_key, left_value, ll, lrl),
+            compare_key: tree.compare_key,
+            compare_value: tree.compare_value,
+            region: tree.region,
+            specialization_key: tree.specialization_key,
+            compare_key_ordering_bundle: tree.compare_key_ordering_bundle,
+            compare_value_ordering_bundle: tree.compare_value_ordering_bundle
+        };
+        new_right: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+            compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- {
+            root: smart_node(tree, key, value, lrr, right),
+            compare_key: tree.compare_key,
+            compare_value: tree.compare_value,
+            region: tree.region,
+            specialization_key: tree.specialization_key,
+            compare_key_ordering_bundle: tree.compare_key_ordering_bundle,
+            compare_value_ordering_bundle: tree.compare_value_ordering_bundle
+        }
+    produces
+        pure smart_node(tree, lr_key, lr_value, new_left.root, new_right.root)
+    end
+}
+
+fn balance_right_apply_gamma(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    lr: ref?(L, normal, rec),
+    w_ll: int64,
+    w_lr: int64
+) -> ref?(L, normal, rec) {
+    case weight_lt_2x(w_lr, w_ll) of {
+        true -> balance_right_single_from_refs(tree, node_ref, lr, left_ref);
+        false -> case lr of {
+            :none -> balance_rep_violation_halt(0);
+            lr_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                balance_right_double_from_refs(tree, node_ref, left_ref, lr_ref)
+        }
+    }
+}
+
+fn balance_right_with_inner_weights(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    ll: ref?(L, normal, rec),
+    lr: ref?(L, normal, rec),
+    wl: int64
+) -> ref?(L, normal, rec) {
+    case ll of {
+        :none -> case lr of {
+            :none -> balance_right_apply_gamma(tree, node_ref, left_ref, lr, 1, 1);
+            _: ref?(L, normal, rec) -> balance_right_apply_gamma(tree, node_ref, left_ref, lr, 1, wl - 1)
+        };
+        _: ref?(L, normal, rec) -> case lr of {
+            :none -> balance_right_apply_gamma(tree, node_ref, left_ref, lr, wl - 1, 1);
+            lr_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+                w_lr_pair: (boolean, int64) <- node_weight_from_ref(lr_ref);
+                (ok_lr: boolean, w_lr: int64) <- w_lr_pair;
+                case ok_lr of {
+                    false -> balance_rep_violation_halt(wl);
+                    true -> balance_right_apply_gamma(tree, node_ref, left_ref, lr, wl - w_lr, w_lr)
+                }
+            }
+        }
+    }
+}
+
+fn balance_left(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_k, _v, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node
+    produces
+        pure balance_left_with_children(tree, node_ref, left, right)
+    end
+}
+
+fn balance_left_with_children(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> ref?(L, normal, rec) {
+    case right of {
+        :none -> balance_left_rebuild_same(tree, node_ref);
+        right_present: ref?(L, normal, rec) -> {
+            w_r_pair: (boolean, int64) <- weight_subtree(right_present);
+            (ok_r: boolean, wr: int64) <- w_r_pair;
+            case ok_r of {
+                false -> balance_rep_violation_halt(0);
+                true -> case left of {
+                    :none -> balance_left_check(tree, node_ref, right, 1, wr);
+                    left_present: ref?(L, normal, rec) -> {
+                        w_l_pair: (boolean, int64) <- weight_subtree(left_present);
+                        (ok_l: boolean, wl: int64) <- w_l_pair;
+                        case ok_l of {
+                            false -> balance_rep_violation_halt(0);
+                            true -> balance_left_check(tree, node_ref, right, wl, wr)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn balance_left_rebuild_same(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (node_key, node_value, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node
+    produces
+        pure smart_node(tree, node_key, node_value, left, right)
+    end
+}
+
+fn balance_left_check(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right: ref?(L, normal, rec),
+    wl: int64,
+    wr: int64
+) -> ref?(L, normal, rec) {
+    case weight_le_3x(wr, wl) of {
+        true -> balance_left_rebuild_same(tree, node_ref);
+        false -> case right of {
+            :none -> balance_rep_violation_halt(0);
+            right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                balance_left_from_right_ref(tree, node_ref, right_ref, wr)
+        }
+    }
+}
+
+fn balance_left_from_right_ref(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    wr: int64
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        right_node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(right_ref);
+        (_rk, _rv, _: int64, rl: ref?(L, normal, rec), rr: ref?(L, normal, rec)) <- right_node
+    produces
+        pure balance_left_with_inner_weights(tree, node_ref, right_ref, rl, rr, wr)
+    end
+}
+
+fn balance_right(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_k, _v, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node
+    produces
+        pure balance_right_with_children(tree, node_ref, left, right)
+    end
+}
+
+fn balance_right_with_children(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> ref?(L, normal, rec) {
+    case left of {
+        :none -> balance_left_rebuild_same(tree, node_ref);
+        left_present: ref?(L, normal, rec) -> {
+            w_l_pair: (boolean, int64) <- weight_subtree(left_present);
+            (ok_l: boolean, wl: int64) <- w_l_pair;
+            case ok_l of {
+                false -> balance_rep_violation_halt(0);
+                true -> case right of {
+                    :none -> balance_right_check(tree, node_ref, left, wl, 1);
+                    right_present: ref?(L, normal, rec) -> {
+                        w_r_pair: (boolean, int64) <- weight_subtree(right_present);
+                        (ok_r: boolean, wr: int64) <- w_r_pair;
+                        case ok_r of {
+                            false -> balance_rep_violation_halt(0);
+                            true -> balance_right_check(tree, node_ref, left, wl, wr)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn balance_right_check(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    left: ref?(L, normal, rec),
+    wl: int64,
+    wr: int64
+) -> ref?(L, normal, rec) {
+    case weight_le_3x(wl, wr) of {
+        true -> balance_left_rebuild_same(tree, node_ref);
+        false -> case left of {
+            :none -> balance_rep_violation_halt(0);
+            left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                balance_right_from_left_ref(tree, node_ref, left_ref, wl)
+        }
+    }
+}
+
+fn balance_right_from_left_ref(
+    tree: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    wl: int64
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        left_node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(left_ref);
+        (_lk, _lv, _: int64, ll: ref?(L, normal, rec), lr: ref?(L, normal, rec)) <- left_node
+    produces
+        pure balance_right_with_inner_weights(tree, node_ref, left_ref, ll, lr, wl)
+    end
 }

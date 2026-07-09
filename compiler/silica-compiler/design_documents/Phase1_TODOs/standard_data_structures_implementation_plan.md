@@ -679,7 +679,7 @@ Acceptance trials:
 
 **§8A.4 exit gate:** each of the four rotation branches and the `GAMMA` equality edge is directly exercised for set and map bindings; targeted assertions establish cached-size, strict-order, and `(3,2)` balance behavior pending the full-validator recheck in §8A.10.
 
-**§8A.4 status:** Planned.
+**§8A.4 status:** Complete.
 
 ### 8A.5 Persistent set insertion
 

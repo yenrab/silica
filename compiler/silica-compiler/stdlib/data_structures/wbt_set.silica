@@ -1,4 +1,4 @@
-// Layer 2 §8A.1–§8A.3 — Adams WBT set core: owning record, smart node construction, read-only helpers.
+// Layer 2 §8A.1–§8A.4 — Adams WBT set core: smart nodes, read-only helpers, (3,2) balance/rotations.
 // Node shape (inline at every boundary): (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)).
 
 export empty/1;
@@ -11,6 +11,11 @@ export fold/3;
 export minimum/2;
 export maximum/2;
 export weight/1;
+export weight_le_3x/2;
+export weight_lt_2x/2;
+export weights_balanced/2;
+export balance_left/4;
+export balance_right/4;
 
 fn empty(
     functions: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater }
@@ -204,9 +209,13 @@ fn size(
     }
 }
 
+fn weight_empty() -> (boolean, int64) {
+    (true, 1)
+}
+
 fn weight_subtree(subtree: ref?(L, normal, rec)) -> (boolean, int64) {
     case subtree of {
-        :none -> (true, 1);
+        :none -> weight_empty();
         node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
             sequence proc[mem(normal)]
                 node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
@@ -445,6 +454,611 @@ fn maximum(
             produces
                 pure maximum_cmp(node_key, right, placeholder)
             end
+        }
+    }
+}
+
+// §8A.4 — overflow-safe a <= 3*b (DELTA). Mul overflow of non-negative b means 3*b exceeds int64, so a <= 3*b.
+fn weight_le_3x(a: int64, b: int64) -> boolean {
+    mul_pair: (boolean, int64) <- checked_int64_mul(b, 3);
+    (ok: boolean, product: int64) <- mul_pair;
+    case ok of {
+        false -> true;
+        true -> a <= product
+    }
+}
+
+// §8A.4 — overflow-safe a < 2*b (GAMMA). Equality is intentionally excluded (selects double rotation).
+fn weight_lt_2x(a: int64, b: int64) -> boolean {
+    mul_pair: (boolean, int64) <- checked_int64_mul(b, 2);
+    (ok: boolean, product: int64) <- mul_pair;
+    case ok of {
+        false -> true;
+        true -> a < product
+    }
+}
+
+fn weights_balanced(wl: int64, wr: int64) -> boolean {
+    case weight_le_3x(wl, wr) of {
+        false -> false;
+        true -> weight_le_3x(wr, wl)
+    }
+}
+
+fn balance_rep_violation_halt(_: int64) -> ref?(L, normal, rec) {
+    sequence
+        _: int64 <- 1 / 0
+    produces
+        pure :none
+    end
+}
+
+
+fn rotate_single_left_build(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left: ref?(L, normal, rec),
+    right_key: ItemType,
+    rl: ref?(L, normal, rec),
+    rr: ref?(L, normal, rec)
+) -> ref?(L, normal, rec) {
+    sequence
+        mid: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: smart_node(set, item, left, rl),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        };
+        out: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: smart_node(set, right_key, mid.root, rr),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        }
+    produces
+        pure out.root
+    end
+}
+
+fn rotate_double_left_build(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left: ref?(L, normal, rec),
+    right_key: ItemType,
+    rl_key: ItemType,
+    rll: ref?(L, normal, rec),
+    rlr: ref?(L, normal, rec),
+    rr: ref?(L, normal, rec)
+) -> ref?(L, normal, rec) {
+    sequence
+        new_left: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: smart_node(set, item, left, rll),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        };
+        new_right: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: smart_node(set, right_key, rlr, rr),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        };
+        out: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: smart_node(set, rl_key, new_left.root, new_right.root),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        }
+    produces
+        pure out.root
+    end
+}
+
+fn rotate_single_right_build(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left_key: ItemType,
+    ll: ref?(L, normal, rec),
+    lr: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> ref?(L, normal, rec) {
+    sequence
+        mid: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: smart_node(set, item, lr, right),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        };
+        out: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: smart_node(set, left_key, ll, mid.root),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        }
+    produces
+        pure out.root
+    end
+}
+
+fn rotate_double_right_build(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left_key: ItemType,
+    ll: ref?(L, normal, rec),
+    lr_key: ItemType,
+    lrl: ref?(L, normal, rec),
+    lrr: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> ref?(L, normal, rec) {
+    sequence
+        new_left: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: smart_node(set, left_key, ll, lrl),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        };
+        new_right: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: smart_node(set, item, lrr, right),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        };
+        out: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: smart_node(set, lr_key, new_left.root, new_right.root),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        }
+    produces
+        pure out.root
+    end
+}
+
+fn balance_left_decide_rotation(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left: ref?(L, normal, rec),
+    right_key: ItemType,
+    rl: ref?(L, normal, rec),
+    rr: ref?(L, normal, rec),
+    w_rl: int64,
+    w_rr: int64
+) -> ref?(L, normal, rec) {
+    case weight_lt_2x(w_rl, w_rr) of {
+        true -> rotate_single_left_build(set, item, left, right_key, rl, rr);
+        false -> case rl of {
+            :none -> balance_rep_violation_halt(0);
+            rl_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+                sequence proc[mem(normal)]
+                    rl_node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(rl_ref);
+                    (rl_key, _: int64, rll: ref?(L, normal, rec), rlr: ref?(L, normal, rec)) <- rl_node
+                produces
+                    pure rotate_double_left_build(set, item, left, right_key, rl_key, rll, rlr, rr)
+                end
+            }
+        }
+    }
+}
+
+
+
+fn node_weight_from_ref(
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> (boolean, int64) {
+    sequence proc[mem(normal)]
+        node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, sz: int64, _, _) <- node
+    produces
+        pure checked_int64_add1(sz)
+    end
+}
+
+fn balance_left_after_right_read(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left: ref?(L, normal, rec),
+    right_node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)),
+    wl: int64,
+    wr: int64
+) -> ref?(L, normal, rec) {
+    sequence
+        (right_key, _: int64, rl: ref?(L, normal, rec), rr: ref?(L, normal, rec)) <- right_node
+    produces
+        pure balance_left_with_inner_weights(set, item, left, right_key, rl, rr, wl, wr)
+    end
+}
+
+fn balance_left_with_inner_weights(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left: ref?(L, normal, rec),
+    right_key: ItemType,
+    rl: ref?(L, normal, rec),
+    rr: ref?(L, normal, rec),
+    wl: int64,
+    wr: int64
+) -> ref?(L, normal, rec) {
+    case rl of {
+        :none -> case rr of {
+            :none -> balance_left_decide_rotation(set, item, left, right_key, rl, rr, 1, 1);
+            _: ref?(L, normal, rec) -> balance_left_decide_rotation(set, item, left, right_key, rl, rr, 1, wr - 1)
+        };
+        _: ref?(L, normal, rec) -> case rr of {
+            :none -> balance_left_decide_rotation(set, item, left, right_key, rl, rr, wr - 1, 1);
+            rr_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+                w_rr_pair: (boolean, int64) <- node_weight_from_ref(rr_ref);
+                (ok_rr: boolean, w_rr: int64) <- w_rr_pair;
+                case ok_rr of {
+                    false -> balance_rep_violation_halt(wr);
+                    true -> balance_left_decide_rotation(set, item, left, right_key, rl, rr, wr - w_rr, w_rr)
+                }
+            }
+        }
+    }
+}
+
+
+fn balance_left_from_right_node(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left: ref?(L, normal, rec),
+    right_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    wl: int64,
+    wr: int64
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        right_node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(right_ref)
+    produces
+        pure balance_left_after_right_read(set, item, left, right_node, wl, wr)
+    end
+}
+
+fn balance_right_decide_rotation(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left_key: ItemType,
+    ll: ref?(L, normal, rec),
+    lr: ref?(L, normal, rec),
+    right: ref?(L, normal, rec),
+    w_ll: int64,
+    w_lr: int64
+) -> ref?(L, normal, rec) {
+    case weight_lt_2x(w_lr, w_ll) of {
+        true -> rotate_single_right_build(set, item, left_key, ll, lr, right);
+        false -> case lr of {
+            :none -> balance_rep_violation_halt(0);
+            lr_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+                sequence proc[mem(normal)]
+                    lr_node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(lr_ref);
+                    (lr_key, _: int64, lrl: ref?(L, normal, rec), lrr: ref?(L, normal, rec)) <- lr_node
+                produces
+                    pure rotate_double_right_build(set, item, left_key, ll, lr_key, lrl, lrr, right)
+                end
+            }
+        }
+    }
+}
+
+
+
+fn balance_right_after_left_read(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left_node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)),
+    right: ref?(L, normal, rec),
+    wl: int64,
+    wr: int64
+) -> ref?(L, normal, rec) {
+    sequence
+        (left_key, _: int64, ll: ref?(L, normal, rec), lr: ref?(L, normal, rec)) <- left_node
+    produces
+        pure balance_right_with_inner_weights(set, item, left_key, ll, lr, right, wl, wr)
+    end
+}
+
+fn balance_right_with_inner_weights(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left_key: ItemType,
+    ll: ref?(L, normal, rec),
+    lr: ref?(L, normal, rec),
+    right: ref?(L, normal, rec),
+    wl: int64,
+    wr: int64
+) -> ref?(L, normal, rec) {
+    case ll of {
+        :none -> case lr of {
+            :none -> balance_right_decide_rotation(set, item, left_key, ll, lr, right, 1, 1);
+            _: ref?(L, normal, rec) -> balance_right_decide_rotation(set, item, left_key, ll, lr, right, 1, wl - 1)
+        };
+        _: ref?(L, normal, rec) -> case lr of {
+            :none -> balance_right_decide_rotation(set, item, left_key, ll, lr, right, wl - 1, 1);
+            lr_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+                w_lr_pair: (boolean, int64) <- node_weight_from_ref(lr_ref);
+                (ok_lr: boolean, w_lr: int64) <- w_lr_pair;
+                case ok_lr of {
+                    false -> balance_rep_violation_halt(wl);
+                    true -> balance_right_decide_rotation(set, item, left_key, ll, lr, right, wl - w_lr, w_lr)
+                }
+            }
+        }
+    }
+}
+
+
+fn balance_right_from_left_node(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right: ref?(L, normal, rec),
+    wl: int64,
+    wr: int64
+) -> ref?(L, normal, rec) {
+    sequence proc[mem(normal)]
+        left_node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(left_ref)
+    produces
+        pure balance_right_after_left_read(set, item, left_node, right, wl, wr)
+    end
+}
+
+fn balance_left_with_weights(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec),
+    wl: int64,
+    wr: int64
+) -> ref?(L, normal, rec) {
+    case weight_le_3x(wr, wl) of {
+        true -> smart_node(set, item, left, right);
+        false -> case right of {
+            :none -> balance_rep_violation_halt(0);
+            right_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                balance_left_from_right_node(set, item, left, right_ref, wl, wr)
+        }
+    }
+}
+
+// balance_left: used when the right side may have become too heavy (DELTA = 3).
+fn balance_left(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> ref?(L, normal, rec) {
+    case right of {
+        :none -> smart_node(set, item, left, right);
+        right_present: ref?(L, normal, rec) -> {
+            w_r_pair: (boolean, int64) <- weight_subtree(right_present);
+            (ok_r: boolean, wr: int64) <- w_r_pair;
+            case ok_r of {
+                false -> balance_rep_violation_halt(0);
+                true -> case left of {
+                    :none -> balance_left_with_weights(set, item, left, right, 1, wr);
+                    left_present: ref?(L, normal, rec) -> {
+                        w_l_pair: (boolean, int64) <- weight_subtree(left_present);
+                        (ok_l: boolean, wl: int64) <- w_l_pair;
+                        case ok_l of {
+                            false -> balance_rep_violation_halt(0);
+                            true -> balance_left_with_weights(set, item, left, right, wl, wr)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn balance_right_with_weights(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec),
+    wl: int64,
+    wr: int64
+) -> ref?(L, normal, rec) {
+    case weight_le_3x(wl, wr) of {
+        true -> smart_node(set, item, left, right);
+        false -> case left of {
+            :none -> balance_rep_violation_halt(0);
+            left_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                balance_right_from_left_node(set, item, left_ref, right, wl, wr)
+        }
+    }
+}
+
+// balance_right: mirror of balance_left when the left side may have become too heavy.
+fn balance_right(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> ref?(L, normal, rec) {
+    case left of {
+        :none -> smart_node(set, item, left, right);
+        left_present: ref?(L, normal, rec) -> {
+            w_l_pair: (boolean, int64) <- weight_subtree(left_present);
+            (ok_l: boolean, wl: int64) <- w_l_pair;
+            case ok_l of {
+                false -> balance_rep_violation_halt(0);
+                true -> case right of {
+                    :none -> balance_right_with_weights(set, item, left, right, wl, 1);
+                    right_present: ref?(L, normal, rec) -> {
+                        w_r_pair: (boolean, int64) <- weight_subtree(right_present);
+                        (ok_r: boolean, wr: int64) <- w_r_pair;
+                        case ok_r of {
+                            false -> balance_rep_violation_halt(0);
+                            true -> balance_right_with_weights(set, item, left, right, wl, wr)
+                        }
+                    }
+                }
+            }
         }
     }
 }
