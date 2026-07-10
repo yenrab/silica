@@ -15,16 +15,16 @@
    limitations under the License.
 -}
 
-// String prim emission: string_concat, string_substring, string_substring_until_char
-// eq / nq: pointer (handle) compare; operands in X9, X10 per term_emitter (same as int64 compares).
+// String prim emission: string_concat, string_substring, string_substring_until_char,
+// and content compares (lt/gt/le/ge/eq/nq) via L_string_cmp_helper.
+// Compare operands arrive in X9/X10 (term_emitter is_cmp branch), same as int64.
 // string_concat: X0 (arg1), X1 (arg2). BL L_concat_helper; result in X0.
 // string_substring: X0 (s), X1 (start_char), X2 (end_char). Character-based indices. BL L_substring_helper; result in X0.
 // string_substring_until_char: X0 (s), X1 (start), X2 (encoded char: len<<56|packed). BL L_substring_until_char_helper; result in X0.
-// Helpers emitted by string_concat_mmap_nomte and string_substring_mmap_nomte when module uses them.
+// Helpers emitted by string_concat_mmap_nomte / string_substring_mmap_nomte / string_eq_mmap_nomte when module uses them.
 // sir_design_spec §7.10, sir_emitter_pattern_spec §9
 
 use sir_ast;
-use comparison;
 
 export emit_prim_op/2;
 
@@ -55,10 +55,37 @@ fn emit_string_substring_until_char(dest: string) -> string {
     concat(bl_line, result_mov)
 }
 
+// Content compare: operands in X9/X10; helper uses X0/X1. Preserve live X0/X1 (e.g. fold
+// step args acc/item) across BL — same discipline as string_length_* in prims_int64.
+// Result via W12 then MOV to dest so LDP does not wipe a dest of X0/X1.
+fn emit_string_rel_op(dest: string, cond: string) -> string {
+    save: string <- "    STP X0, X1, [SP, #-16]!\n";
+    setup: string <- "    MOV X0, X9\n    MOV X1, X10\n    BL L_string_cmp_helper\n    CMP W0, #0\n";
+    cset_tmp: string <- concat(concat("    CSET W12, ", cond), "\n");
+    restore: string <- "    LDP X0, X1, [SP], #16\n";
+    to_dest: string <- case dest == "X12" or dest == "W12" of {
+        true -> "";
+        false -> case dest == "X0" or dest == "W0" of {
+            true -> "    MOV X0, X12\n";
+            false -> case dest == "X1" or dest == "W1" of {
+                true -> "    MOV X1, X12\n";
+                false -> concat(concat("    MOV ", dest), ", X12\n")
+            }
+        }
+    };
+    part1: string <- concat(save, setup);
+    part2: string <- concat(cset_tmp, restore);
+    concat(concat(part1, part2), to_dest)
+}
+
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     case term.name of {
-        "eq" -> comparison@emit_eq_op(dest, "X");
-        "nq" -> comparison@emit_ne_op(dest, "X");
+        "lt" -> emit_string_rel_op(dest, "LT");
+        "gt" -> emit_string_rel_op(dest, "GT");
+        "le" -> emit_string_rel_op(dest, "LE");
+        "ge" -> emit_string_rel_op(dest, "GE");
+        "eq" -> emit_string_rel_op(dest, "EQ");
+        "nq" -> emit_string_rel_op(dest, "NE");
         "string_concat" -> emit_string_concat(dest);
         "string_substring" -> emit_string_substring(dest);
         "string_substring_until_char" -> emit_string_substring_until_char(dest);

@@ -1,44 +1,99 @@
-// Layer 2 §8A.5: insert matrix covers a second payload shape (string singleton) and
-// distinct specialization from int64. Multi-node string/tuple insert is deferred while
-// non-scalar compare-on-descent remains unreliable in the current runtime.
+// Layer 2 §8A.5: insertion matrix on a second payload shape (string; int64 covered by wbt_set_insert_orders).
 
 use wbt_set;
-
-fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
-    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
-}
 
 fn cmp_str(a: string, b: string) -> :less | :equal | :greater {
     case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
 }
 
-fn main() -> int64 {
+fn str_digit_step(acc: int64, item: string) -> int64 {
+    case item == "a" of {
+        true -> (acc * 10) + 1;
+        false -> case item == "b" of {
+            true -> (acc * 10) + 2;
+            false -> case item == "c" of {
+                true -> (acc * 10) + 3;
+                false -> case item == "d" of {
+                    true -> (acc * 10) + 4;
+                    false -> case item == "e" of {
+                        true -> (acc * 10) + 5;
+                        false -> (acc * 10) + 9
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn found_str_is(
+    result: { status: :not_found | :found, item: string },
+    expected: string
+) -> boolean {
+    case result.status of {
+        :found -> result.item == expected;
+        :not_found -> false
+    }
+}
+
+fn str_set_ok(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(string, string) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> boolean {
     sequence
-        int_empty: {
-            root: ref?(L, normal, rec),
-            compare_item: fn(int64, int64) -> :less | :equal | :greater,
-            region: region(L, normal),
-            specialization_key: int64,
-            compare_item_ordering_bundle: int64
-        } <- wbt_set@empty({ compare_item: cmp_i64 });
-        str_empty: {
-            root: ref?(L, normal, rec),
-            compare_item: fn(string, string) -> :less | :equal | :greater,
-            region: region(L, normal),
-            specialization_key: int64,
-            compare_item_ordering_bundle: int64
-        } <- wbt_set@empty({ compare_item: cmp_str });
-        i1: {
-            set: {
-                root: ref?(L, normal, rec),
-                compare_item: fn(int64, int64) -> :less | :equal | :greater,
-                region: region(L, normal),
-                specialization_key: int64,
-                compare_item_ordering_bundle: int64
-            },
-            inserted: boolean
-        } <- wbt_set@insert(int_empty, 7);
-        s1: {
+        sz: int64 <- wbt_set@size(set);
+        digest: int64 <- wbt_set@fold(set, 0, str_digit_step);
+        lo: { status: :not_found | :found, item: string } <- wbt_set@minimum(set, "z");
+        hi: { status: :not_found | :found, item: string } <- wbt_set@maximum(set, "z");
+        has_a: boolean <- wbt_set@contains(set, "a");
+        has_b: boolean <- wbt_set@contains(set, "b");
+        has_c: boolean <- wbt_set@contains(set, "c");
+        has_d: boolean <- wbt_set@contains(set, "d");
+        has_e: boolean <- wbt_set@contains(set, "e")
+    produces
+        pure case sz == 5 of {
+            false -> false;
+            true -> case digest == 12345 of {
+                false -> false;
+                true -> case found_str_is(lo, "a") of {
+                    false -> false;
+                    true -> case found_str_is(hi, "e") of {
+                        false -> false;
+                        true -> case has_a of {
+                            false -> false;
+                            true -> case has_b of {
+                                false -> false;
+                                true -> case has_c of {
+                                    false -> false;
+                                    true -> case has_d of {
+                                        false -> false;
+                                        true -> has_e
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    end
+}
+
+fn str_singleton_duplicate_ok(
+    empty_s: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(string, string) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> boolean {
+    sequence
+        r1: {
             set: {
                 root: ref?(L, normal, rec),
                 compare_item: fn(string, string) -> :less | :equal | :greater,
@@ -47,33 +102,259 @@ fn main() -> int64 {
                 compare_item_ordering_bundle: int64
             },
             inserted: boolean
-        } <- wbt_set@insert(str_empty, "x");
-        i_sz: int64 <- wbt_set@size(i1.set);
-        s_sz: int64 <- wbt_set@size(s1.set);
-        i_has: boolean <- wbt_set@contains(i1.set, 7);
-        s_has: boolean <- wbt_set@contains(s1.set, "x");
-        keys_distinct: boolean <- case i1.set.specialization_key != s1.set.specialization_key of {
-            true -> true;
-            false -> false
-        }
+        } <- wbt_set@insert(empty_s, "m");
+        r2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(r1.set, "m");
+        sz: int64 <- wbt_set@size(r2.set);
+        has_m: boolean <- wbt_set@contains(r2.set, "m")
     produces
-        pure case i1.inserted of {
+        pure case r1.inserted of {
+            false -> false;
+            true -> case r2.inserted of {
+                true -> false;
+                false -> case sz == 1 of {
+                    false -> false;
+                    true -> has_m
+                }
+            }
+        }
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(string, string) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: cmp_str });
+        single_ok: boolean <- str_singleton_duplicate_ok(empty0);
+        a1: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(empty0, "a");
+        a2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(a1.set, "b");
+        a3: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(a2.set, "c");
+        a4: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(a3.set, "d");
+        a5: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(a4.set, "e");
+        d1: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(empty0, "e");
+        d2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(d1.set, "d");
+        d3: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(d2.set, "c");
+        d4: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(d3.set, "b");
+        d5: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(d4.set, "a");
+        e1: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(empty0, "a");
+        e2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(e1.set, "e");
+        e3: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(e2.set, "b");
+        e4: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(e3.set, "d");
+        e5: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(e4.set, "c");
+        m1: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(empty0, "c");
+        m2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(m1.set, "a");
+        m3: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(m2.set, "e");
+        m4: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(m3.set, "b");
+        m5: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(string, string) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(m4.set, "d");
+        asc_ok: boolean <- str_set_ok(a5.set);
+        desc_ok: boolean <- str_set_ok(d5.set);
+        alt_ok: boolean <- str_set_ok(e5.set);
+        med_ok: boolean <- str_set_ok(m5.set)
+    produces
+        pure case single_ok of {
             false -> 1;
-            true -> case s1.inserted of {
+            true -> case asc_ok of {
                 false -> 2;
-                true -> case i_sz == 1 of {
+                true -> case desc_ok of {
                     false -> 3;
-                    true -> case s_sz == 1 of {
+                    true -> case alt_ok of {
                         false -> 4;
-                        true -> case i_has of {
+                        true -> case med_ok of {
                             false -> 5;
-                            true -> case s_has of {
-                                false -> 6;
-                                true -> case keys_distinct of {
-                                    false -> 7;
-                                    true -> 0
-                                }
-                            }
+                            true -> 0
                         }
                     }
                 }

@@ -37,12 +37,20 @@ POSITIVE_SILICA := \
 	wbt_set_insert_payload_shapes.silica \
 	wbt_set_insert_persistence.silica \
 	wbt_set_insert_sharing.silica \
+	wbt_map_canonical_key.silica \
+	wbt_map_compare_value_not_called.silica \
+	wbt_map_insert_payload_shapes.silica \
+	wbt_map_insert_orders.silica \
+	wbt_map_insert_replace.silica \
+	wbt_map_insert_tuple_value.silica \
+	wbt_map_replace_persistence.silica \
+	wbt_map_value_pairing.silica \
 	wbt_smart_node_arena.silica \
 	wbt_smart_node_production_path.silica \
 	wbt_smart_node_size.silica \
 	wbt_weight_checked.silica
 
-COLLECTION_ERROR_TRIALS := trial_collection_error_wbt_search_invalid_comparator.silica trial_collection_error_wbt_smart_node_overflow.silica trial_collection_error_wbt_balance_missing_child.silica trial_collection_error_wbt_set_insert_invalid_comparator.silica
+COLLECTION_ERROR_TRIALS := trial_collection_error_wbt_search_invalid_comparator.silica trial_collection_error_wbt_smart_node_overflow.silica trial_collection_error_wbt_balance_missing_child.silica trial_collection_error_wbt_set_insert_invalid_comparator.silica trial_collection_error_wbt_map_insert_invalid_comparator.silica
 ALL_COMPILE_SILICA := $(POSITIVE_SILICA) $(COLLECTION_ERROR_TRIALS)
 
 # §8A.3 exit gate: production WBT modules must contain exactly one node allocation site (inside smart_node).

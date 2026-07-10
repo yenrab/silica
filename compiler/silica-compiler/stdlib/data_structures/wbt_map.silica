@@ -17,6 +17,7 @@ export weight_lt_2x/2;
 export weights_balanced/2;
 export balance_left/2;
 export balance_right/2;
+export insert/3;
 
 fn empty(
     functions: {
@@ -1271,4 +1272,1467 @@ fn balance_right_from_left_ref(
     produces
         pure balance_right_with_inner_weights(tree, node_ref, left_ref, ll, lr, wl)
     end
+}
+
+// §8A.6: persistent map insertion and replacement.
+// Placement uses only compare_key. On :equal keep stored key, install new value, path-copy ancestors.
+// Map balance_left/right take (tree, node_ref).
+// Rebuild uses set-style `sequence out <- insert_balance_*(map, smart_node(...))` so
+// `:none` and `child_map.root` lower with preserved callee-saved regs (bare smart_node
+// call clobbered the child pointer and null-deref hung).
+// Do not rebind map.root to a node ref inside descent helpers.
+
+fn insert_pair_new(
+    new_map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    sequence
+        out: {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} <- {
+            map: new_map,
+            inserted: true,
+            replaced: false
+        }
+    produces
+        pure out
+    end
+}
+
+fn insert_pair_replaced(
+    new_map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    sequence
+        out: {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} <- {
+            map: new_map,
+            inserted: false,
+            replaced: true
+        }
+    produces
+        pure out
+    end
+}
+
+fn insert_pair_unchanged(
+    old_map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    sequence
+        out: {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} <- {
+            map: old_map,
+            inserted: false,
+            replaced: false
+        }
+    produces
+        pure out
+    end
+}
+
+fn insert_invalid_halt(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    _: atom
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    sequence
+        _: int64 <- 1 / 0;
+        out: {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} <- {
+            map: map,
+            inserted: false,
+            replaced: false
+        }
+    produces
+        pure out
+    end
+}
+
+fn insert_owning_from_root(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    new_root: ref?(L, normal, rec)
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    sequence
+        out: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } <- {
+            root: new_root,
+            compare_key: map.compare_key,
+            compare_value: map.compare_value,
+            region: map.region,
+            specialization_key: map.specialization_key,
+            compare_key_ordering_bundle: map.compare_key_ordering_bundle,
+            compare_value_ordering_bundle: map.compare_value_ordering_bundle
+        }
+    produces
+        pure out
+    end
+}
+
+fn insert_balance_left_root(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    rebuilt: ref?(L, normal, rec)
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    case rebuilt of {
+        :none -> insert_owning_from_root(map, :none);
+        node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            insert_owning_from_root(map, balance_left(map, node_ref))
+    }
+}
+
+fn insert_balance_right_root(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    rebuilt: ref?(L, normal, rec)
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    case rebuilt of {
+        :none -> insert_owning_from_root(map, :none);
+        node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            insert_owning_from_root(map, balance_right(map, node_ref))
+    }
+}
+
+fn insert_singleton_map(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    insert_owning_from_root(map, smart_node(map, key, value, :none, :none))
+}
+
+fn insert_singleton(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    insert_pair_new(insert_singleton_map(map, key, value))
+}
+
+fn insert_replace_at_node_map(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    stored_key: KeyType,
+    value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, _, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node
+    produces
+        pure insert_owning_from_root(map, smart_node(map, stored_key, value, left, right))
+    end
+}
+
+fn insert_rebuild_right_empty_sibling(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_key: KeyType,
+    node_value: ValueType,
+    child_map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    sequence
+        out: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } <- insert_balance_left_root(map, smart_node(map, node_key, node_value, :none, child_map.root))
+    produces
+        pure out
+    end
+}
+
+fn insert_rebuild_left_empty_sibling(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_key: KeyType,
+    node_value: ValueType,
+    child_map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    sequence
+        out: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } <- insert_balance_right_root(map, smart_node(map, node_key, node_value, child_map.root, :none))
+    produces
+        pure out
+    end
+}
+
+fn insert_rebuild_right_with_sibling(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_key: KeyType,
+    node_value: ValueType,
+    left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    child_map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    sequence
+        out: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } <- insert_balance_left_root(map, smart_node(map, node_key, node_value, left_ref, child_map.root))
+    produces
+        pure out
+    end
+}
+
+fn insert_rebuild_left_with_sibling(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_key: KeyType,
+    node_value: ValueType,
+    right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    child_map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    sequence
+        out: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } <- insert_balance_right_root(map, smart_node(map, node_key, node_value, child_map.root, right_ref))
+    produces
+        pure out
+    end
+}
+
+fn insert_leaf_as_right_child(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    node_key: KeyType,
+    node_value: ValueType
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    insert_pair_new(insert_rebuild_right_empty_sibling(map, node_key, node_value, insert_singleton_map(map, key, value)))
+}
+
+fn insert_leaf_as_left_child(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    node_key: KeyType,
+    node_value: ValueType
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    insert_pair_new(insert_rebuild_left_empty_sibling(map, node_key, node_value, insert_singleton_map(map, key, value)))
+}
+
+fn insert_right_is_empty(
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> boolean {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, _, _: int64, _, right: ref?(L, normal, rec)) <- node
+    produces
+        pure case right of {
+            :none -> true;
+            _: ref?(L, normal, rec) -> false
+        }
+    end
+}
+
+fn insert_left_is_empty(
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> boolean {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, _, _: int64, left: ref?(L, normal, rec), _) <- node
+    produces
+        pure case left of {
+            :none -> true;
+            _: ref?(L, normal, rec) -> false
+        }
+    end
+}
+
+fn insert_node_key(
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> KeyType {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (node_key, _, _: int64, _, _) <- node
+    produces
+        pure node_key
+    end
+}
+
+fn insert_node_value(
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> ValueType {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, node_value, _: int64, _, _) <- node
+    produces
+        pure node_value
+    end
+}
+
+fn insert_finish_right_with_left_present(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_key: KeyType,
+    node_value: ValueType,
+    left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    child_map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    insert_rebuild_right_with_sibling(map, node_key, node_value, left_ref, child_map)
+}
+
+fn insert_finish_right_after_left_read(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_key: KeyType,
+    node_value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    child_map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, _, _: int64, left: ref?(L, normal, rec), _) <- node
+    produces
+        pure case left of {
+            :none -> insert_rebuild_right_empty_sibling(map, node_key, node_value, child_map);
+            left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                insert_finish_right_with_left_present(map, node_key, node_value, left_ref, child_map)
+        }
+    end
+}
+
+fn insert_finish_right_rebuild(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_key: KeyType,
+    node_value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    child_map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    sequence
+        left_empty: boolean <- insert_left_is_empty(node_ref)
+    produces
+        pure case left_empty of {
+            true -> insert_rebuild_right_empty_sibling(map, node_key, node_value, child_map);
+            false -> insert_finish_right_after_left_read(map, node_key, node_value, node_ref, child_map)
+        }
+    end
+}
+
+fn insert_finish_right_child(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_key: KeyType,
+    node_value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    child: {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+}
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    case child.inserted of {
+        true -> insert_pair_new(insert_finish_right_rebuild(map, node_key, node_value, node_ref, child.map));
+        false -> case child.replaced of {
+            true -> insert_pair_replaced(insert_finish_right_rebuild(map, node_key, node_value, node_ref, child.map));
+            false -> insert_pair_unchanged(map)
+        }
+    }
+}
+
+fn insert_finish_left_with_right_present(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_key: KeyType,
+    node_value: ValueType,
+    right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    child_map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    insert_rebuild_left_with_sibling(map, node_key, node_value, right_ref, child_map)
+}
+
+fn insert_finish_left_after_right_read(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_key: KeyType,
+    node_value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    child_map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, _, _: int64, _, right: ref?(L, normal, rec)) <- node
+    produces
+        pure case right of {
+            :none -> insert_rebuild_left_empty_sibling(map, node_key, node_value, child_map);
+            right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                insert_finish_left_with_right_present(map, node_key, node_value, right_ref, child_map)
+        }
+    end
+}
+
+fn insert_finish_left_rebuild(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_key: KeyType,
+    node_value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    child_map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    } {
+    sequence
+        right_empty: boolean <- insert_right_is_empty(node_ref)
+    produces
+        pure case right_empty of {
+            true -> insert_rebuild_left_empty_sibling(map, node_key, node_value, child_map);
+            false -> insert_finish_left_after_right_read(map, node_key, node_value, node_ref, child_map)
+        }
+    end
+}
+
+fn insert_finish_left_child(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_key: KeyType,
+    node_value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    child: {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+}
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    case child.inserted of {
+        true -> insert_pair_new(insert_finish_left_rebuild(map, node_key, node_value, node_ref, child.map));
+        false -> case child.replaced of {
+            true -> insert_pair_replaced(insert_finish_left_rebuild(map, node_key, node_value, node_ref, child.map));
+            false -> insert_pair_unchanged(map)
+        }
+    }
+}
+
+fn insert_leaf_as_right_with_left_read(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    node_key: KeyType,
+    node_value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    sequence
+        child_map: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+            compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- insert_singleton_map(map, key, value);
+        left_empty: boolean <- insert_left_is_empty(node_ref)
+    produces
+        pure case left_empty of {
+            true -> insert_pair_new(insert_rebuild_right_empty_sibling(map, node_key, node_value, child_map));
+            false -> insert_pair_new(insert_finish_right_after_left_read(map, node_key, node_value, node_ref, child_map))
+        }
+    end
+}
+
+fn insert_leaf_as_right_maybe_left(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    node_key: KeyType,
+    node_value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    sequence
+        left_empty: boolean <- insert_left_is_empty(node_ref)
+    produces
+        pure case left_empty of {
+            true -> insert_leaf_as_right_child(map, key, value, node_key, node_value);
+            false -> insert_leaf_as_right_with_left_read(map, key, value, node_key, node_value, node_ref)
+        }
+    end
+}
+
+fn insert_leaf_as_left_with_right_read(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    node_key: KeyType,
+    node_value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    sequence
+        child_map: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+            compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- insert_singleton_map(map, key, value);
+        right_empty: boolean <- insert_right_is_empty(node_ref)
+    produces
+        pure case right_empty of {
+            true -> insert_pair_new(insert_rebuild_left_empty_sibling(map, node_key, node_value, child_map));
+            false -> insert_pair_new(insert_finish_left_after_right_read(map, node_key, node_value, node_ref, child_map))
+        }
+    end
+}
+
+fn insert_leaf_as_left_maybe_right(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    node_key: KeyType,
+    node_value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    sequence
+        right_empty: boolean <- insert_right_is_empty(node_ref)
+    produces
+        pure case right_empty of {
+            true -> insert_leaf_as_left_child(map, key, value, node_key, node_value);
+            false -> insert_leaf_as_left_with_right_read(map, key, value, node_key, node_value, node_ref)
+        }
+    end
+}
+
+fn insert_descend_right(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    node_key: KeyType,
+    node_value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, _, _: int64, _, right: ref?(L, normal, rec)) <- node
+    produces
+        pure case right of {
+            :none -> insert_leaf_as_right_maybe_left(map, key, value, node_key, node_value, node_ref);
+            right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+                sequence
+                    child: {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} <- insert_at_node(map, key, value, right_ref)
+                produces
+                    pure insert_finish_right_child(map, node_key, node_value, node_ref, child)
+                end
+            }
+        }
+    end
+}
+
+fn insert_descend_left(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    node_key: KeyType,
+    node_value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, _, _: int64, left: ref?(L, normal, rec), _) <- node
+    produces
+        pure case left of {
+            :none -> insert_leaf_as_left_maybe_right(map, key, value, node_key, node_value, node_ref);
+            left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+                sequence
+                    child: {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} <- insert_at_node(map, key, value, left_ref)
+                produces
+                    pure insert_finish_left_child(map, node_key, node_value, node_ref, child)
+                end
+            }
+        }
+    end
+}
+
+fn insert_at_node_greater(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    node_key: KeyType,
+    node_value: ValueType
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    sequence
+        right_empty: boolean <- insert_right_is_empty(node_ref)
+    produces
+        pure case right_empty of {
+            true -> insert_leaf_as_right_with_left_read(map, key, value, node_key, node_value, node_ref);
+            false -> insert_descend_right(map, key, value, node_key, node_value, node_ref)
+        }
+    end
+}
+
+fn insert_at_node_less(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    node_key: KeyType,
+    node_value: ValueType
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    sequence
+        left_empty: boolean <- insert_left_is_empty(node_ref)
+    produces
+        pure case left_empty of {
+            true -> insert_leaf_as_left_with_right_read(map, key, value, node_key, node_value, node_ref);
+            false -> insert_descend_left(map, key, value, node_key, node_value, node_ref)
+        }
+    end
+}
+
+fn insert_after_key(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    node_key: KeyType,
+    node_value: ValueType,
+    cmp: atom
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    case cmp of {
+        :equal -> insert_pair_replaced(insert_replace_at_node_map(map, node_key, value, node_ref));
+        :less -> insert_at_node_less(map, key, value, node_ref, node_key, node_value);
+        :greater -> insert_at_node_greater(map, key, value, node_ref, node_key, node_value);
+        _: atom -> insert_invalid_halt(map, cmp)
+    }
+}
+
+fn insert_at_node(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType,
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    sequence
+        node_key: KeyType <- insert_node_key(node_ref);
+        node_value: ValueType <- insert_node_value(node_ref);
+        cmp: atom <- compare_checked(key, node_key, map.compare_key)
+    produces
+        // Keep the owning map root unchanged across descent. Rebinding map.root to
+        // node_ref corrupts caller-held versions under Silica's record lowering.
+        pure insert_after_key(map, key, value, node_ref, node_key, node_value, cmp)
+    end
+}
+
+fn insert(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: KeyType,
+    value: ValueType
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    inserted: boolean,
+    replaced: boolean
+} {
+    case map.root of {
+        :none -> insert_singleton(map, key, value);
+        root_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            insert_at_node(map, key, value, root_ref)
+    }
 }

@@ -1,3 +1,10 @@
+.bss
+.balign 8
+.lcomm _silica_frame_depth, 8
+.lcomm _silica_frame_max, 8
+.lcomm _silica_fuel, 8
+.lcomm _silica_saved_pc, 8
+
 .text
 .global wbt_set_empty
 .global wbt_set_smart_node
@@ -9,11 +16,28 @@
 .global wbt_set_minimum
 .global wbt_set_maximum
 .global wbt_set_weight
+.global wbt_set_weight_le_3x
+.global wbt_set_weight_lt_2x
+.global wbt_set_weights_balanced
+.global wbt_set_balance_left
+.global wbt_set_balance_right
+.global wbt_set_insert
 .extern _silica_rt_ffi_guarded_enter
 .extern _silica_rt_ffi_guarded_exit
 .extern _silica_rt_ffi_guarded_setjmp
 .extern _silica_rt_ffi_guarded_fault_finish
 .extern _silica_rt_ffi_arena_bump
+
+    ; --- recursion phases (recursion_implementation.jsonld) ---
+    ; p1: explicit frame fields; p2: push/dispatch/pop; p3: fuel on back-edges
+    ; p4: PC/source map hooks; p5: tail BR (see emit_tail_call_body); p6: trampoline fallback
+
+    ; p4 observability: frame -> (fn id, source id) map; filter trampoline frames
+
+    ; p6 trampoline fallback (optional):
+    ; _silica_trampoline_dispatch: load target from frame / BR X8
+    ; never rely on unbounded native recursion for general calls
+
 
 
 wbt_set_empty:     STP X29, X30, [SP, #-16]!
@@ -89,16 +113,16 @@ wbt_set_walk_search_cmp:     STP X29, X30, [SP, #-16]!
     MOV X1, X21
     LDR X2, [X19, #8]
 
-    ; effects []|sir_rec:o1774|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o1917|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_compare_checked@PAGE
     ADD X9, X9, wbt_set_compare_checked@PAGEOFF
     BLR X9
     MOV X24, X0
-    MOV X2, X24
-L_case_o1850_br_0:
-    MOV X3, #21
-    CMP X2, X3
-    B.NE L_case_o1850_br_1
+    MOV X3, X24
+L_case_o1993_br_0:
+    MOV X4, #21
+    CMP X3, X4
+    B.NE L_case_o1993_br_1
     MOV X16, X19
     STR X16, [SP, #-16]!
     MOV X16, X20
@@ -109,21 +133,21 @@ L_case_o1850_br_0:
     LDR X1, [SP, #16]
     LDR X2, [SP, #0]
     ADD SP, SP, #48
-    ; effects []|sir_rec:o1885|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o2028|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_walk_search@PAGE
     ADD X9, X9, wbt_set_walk_search@PAGEOFF
     BLR X9
-    B L_case_o1850_done
-L_case_o1850_br_1:
-    MOV X3, #22
-    CMP X2, X3
-    B.NE L_case_o1850_br_2
+    B L_case_o1993_done
+L_case_o1993_br_1:
+    MOV X4, #22
+    CMP X3, X4
+    B.NE L_case_o1993_br_2
     MOV X0, #18
-    B L_case_o1850_done
-L_case_o1850_br_2:
-    MOV X3, #23
-    CMP X2, X3
-    B.NE L_case_o1850_br_3
+    B L_case_o1993_done
+L_case_o1993_br_2:
+    MOV X4, #23
+    CMP X3, X4
+    B.NE L_case_o1993_br_3
     MOV X16, X19
     STR X16, [SP, #-16]!
     MOV X16, X20
@@ -134,19 +158,19 @@ L_case_o1850_br_2:
     LDR X1, [SP, #16]
     LDR X2, [SP, #0]
     ADD SP, SP, #48
-    ; effects []|sir_rec:o1969|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o2112|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_walk_search@PAGE
     ADD X9, X9, wbt_set_walk_search@PAGEOFF
     BLR X9
-    B L_case_o1850_done
-L_case_o1850_br_3:
+    B L_case_o1993_done
+L_case_o1993_br_3:
     MOV X0, #24
-    B L_case_o1850_done
-L_case_o1850_fb:
+    B L_case_o1993_done
+L_case_o1993_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o1850_done
-L_case_o1850_done:
+    B L_case_o1993_done
+L_case_o1993_done:
 
     LDR X29, [SP], #16
     LDP X27, X28, [SP], #16
@@ -175,7 +199,7 @@ wbt_set_compare_checked:     STP X29, X30, [SP, #-16]!
     LDR X0, [SP, #16]
     LDR X1, [SP, #0]
     ADD SP, SP, #32
-    ; effects []|sir_rec:o2260|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o2403|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     BLR X17
     MOV X1, X0
     MOV X0, X1
@@ -203,17 +227,17 @@ wbt_set_subtree_cached_size:     STP X29, X30, [SP, #-16]!
     STP X23, X24, [SP, #-16]!
     STP X25, X26, [SP, #-16]!
 
-    MOV X2, X0
-L_case_o2403_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o2403_br_1
+    MOV X3, X0
+L_case_o2546_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o2546_br_1
     MOV X0, #0
-    B L_case_o2403_done
-L_case_o2403_br_1:
-    MOV X1, X2
-    LDR X3, [X1]
-    MOV X19, X3
+    B L_case_o2546_done
+L_case_o2546_br_1:
+    MOV X1, X3
+    LDR X1, [X1]
+    MOV X19, X1
     MOV X1, X19
     MOV X20, X1
     MOV X12, X20
@@ -226,12 +250,12 @@ L_case_o2403_br_1:
     LDR X0, [X12, #24]
     MOV X24, X0
     MOV X0, X22
-    B L_case_o2403_done
-L_case_o2403_fb:
+    B L_case_o2546_done
+L_case_o2546_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o2403_done
-L_case_o2403_done:
+    B L_case_o2546_done
+L_case_o2546_done:
 
     LDP X25, X26, [SP], #16
     LDP X23, X24, [SP], #16
@@ -240,20 +264,84 @@ L_case_o2403_done:
     LDP X29, X30, [SP], #16
     RET
 
-wbt_set_smart_node_finish:     STP X29, X30, [SP, #-16]!
+wbt_set_sum_lr_ok:     STP X29, X30, [SP, #-16]!
     STP X19, X20, [SP, #-16]!
     STP X21, X22, [SP, #-16]!
     STP X23, X24, [SP, #-16]!
     STP X25, X26, [SP, #-16]!
-    STP X27, X28, [SP, #-16]!
-    STR X29, [SP, #-16]!
     MOV X19, X0
     MOV X20, X1
-    MOV X21, X2
-    MOV X22, X3
-    MOV X23, X4
 
-    MOV X1, X23
+    MOV X1, X19
+    MOV X2, X1
+    MOV X0, X1
+    MOV X1, X2
+    BL _silica_rt_checked_i64_add
+    MOV W9, W0
+    UXTW X9, W9
+    SUB SP, SP, #16
+    STR X9, [SP]
+    STR X1, [SP, #8]
+    MOV X0, SP
+    MOV X20, X0
+    MOV X0, X20
+    MOV X21, X0
+    LDR X0, [X21, #0]
+    MOV X22, X0
+    LDR X0, [X21, #8]
+    MOV X23, X0
+    MOV X0, X22
+    ADD SP, SP, #16
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_sum_lr_partial:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X1, X19
+    MOV X2, X1
+    MOV X0, X1
+    MOV X1, X2
+    BL _silica_rt_checked_i64_add
+    MOV W9, W0
+    UXTW X9, W9
+    SUB SP, SP, #16
+    STR X9, [SP]
+    STR X1, [SP, #8]
+    MOV X0, SP
+    MOV X20, X0
+    MOV X0, X20
+    MOV X21, X0
+    LDR X0, [X21, #0]
+    MOV X22, X0
+    LDR X0, [X21, #8]
+    MOV X23, X0
+
+    ADD SP, SP, #16
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_partial_add1_ok:     STP X29, X30, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+
+    MOV X1, X0
 
     MOV X0, X1
     BL _silica_rt_checked_i64_add1
@@ -263,71 +351,48 @@ wbt_set_smart_node_finish:     STP X29, X30, [SP, #-16]!
     STR X9, [SP]
     STR X1, [SP, #8]
     MOV X0, SP
-    MOV X24, X0
-    MOV X0, X24
-    MOV X25, X0
-    LDR X0, [X25, #0]
-    MOV X26, X0
-    LDR X1, [X25, #8]
-    MOV X27, X1
-    MOV X2, X26
-L_case_o3141_br_0:
-    CMP W2, #0
-    B.NE L_case_o3141_br_1
+    MOV X19, X0
+    MOV X1, X19
+    MOV X20, X1
+    LDR X1, [X20, #0]
+    MOV X21, X1
+    LDR X0, [X20, #8]
+    MOV X22, X0
+    MOV X0, X21
+    ADD SP, SP, #16
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_partial_add1_size:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+
+    MOV X1, X0
+
+    MOV X0, X1
+    BL _silica_rt_checked_i64_add1
+    MOV W9, W0
+    UXTW X9, W9
     SUB SP, SP, #16
-    MOV X9, #0
-    STR X9, [SP, #0]
-    MOV X9, #0
-    STR X9, [SP, #8]
+    STR X9, [SP]
+    STR X1, [SP, #8]
     MOV X0, SP
-    SUB SP, SP, #16
-    STR X0, [SP, #8]
-    MOV X0, #16
-    BL _silica_rt_region_alloc
-    MOV X4, X0
-    LDR X1, [SP, #8]
-    LDR X3, [X1, #0]
-    STR X3, [X4, #0]
-    LDR X3, [X1, #8]
-    STR X3, [X4, #8]
-    MOV X0, X4
-    ADD SP, SP, #16
-    ADD SP, SP, #16
-    B L_case_o3141_done
-L_case_o3141_br_1:
-    CMP W2, #1
-    B.NE L_case_o3141_fb
-    MOV X16, X19
-    STR X16, [SP, #-16]!
-    MOV X16, X20
-    STR X16, [SP, #-16]!
-    MOV X16, X21
-    STR X16, [SP, #-16]!
-    MOV X16, X22
-    STR X16, [SP, #-16]!
-    MOV X16, X1
-    STR X16, [SP, #-16]!
-    LDR X0, [SP, #64]
-    LDR X1, [SP, #48]
-    LDR X2, [SP, #32]
-    LDR X3, [SP, #16]
-    LDR X4, [SP, #0]
-    ADD SP, SP, #80
-    ; effects []|sir_rec:o3224|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
-    ADRP X9, wbt_set_smart_node_finish_alloc@PAGE
-    ADD X9, X9, wbt_set_smart_node_finish_alloc@PAGEOFF
-    BLR X9
-    B L_case_o3141_done
-L_case_o3141_fb:
-    BL _silica_rt_case_clause
-    MOV X0, #0
-    B L_case_o3141_done
-L_case_o3141_done:
+    MOV X19, X0
+    MOV X1, X19
+    MOV X20, X1
+    LDR X0, [X20, #0]
+    MOV X21, X0
+    LDR X0, [X20, #8]
+    MOV X22, X0
 
     ADD SP, SP, #16
 
-    LDR X29, [SP], #16
-    LDP X27, X28, [SP], #16
     LDP X25, X26, [SP], #16
     LDP X23, X24, [SP], #16
     LDP X21, X22, [SP], #16
@@ -337,13 +402,10 @@ L_case_o3141_done:
 
 wbt_set_smart_node_finish_alloc:     STP X29, X30, [SP, #-16]!
     STP X19, X20, [SP, #-16]!
-    STP X21, X22, [SP, #-16]!
-    STP X23, X24, [SP, #-16]!
-    STP X25, X26, [SP, #-16]!
 
-    MOV X1, X0
+
     SUB SP, SP, #32
-    MOV X9, X1
+    MOV X9, X0
     STR X9, [SP, #0]
     MOV X9, X4
     STR X9, [SP, #8]
@@ -374,31 +436,7 @@ wbt_set_smart_node_finish_alloc:     STP X29, X30, [SP, #-16]!
     MOV X0, X4
     ADD SP, SP, #32
     MOV X19, X0
-    SUB SP, SP, #16
-    MOV X9, #1
-    STR X9, [SP, #0]
-    MOV X9, X19
-    STR X9, [SP, #8]
-    MOV X0, SP
-    MOV X20, X0
-    MOV X0, X20
-    SUB SP, SP, #16
-    STR X0, [SP, #8]
-    MOV X0, #16
-    BL _silica_rt_region_alloc
-    MOV X4, X0
-    LDR X1, [SP, #8]
-    LDR X3, [X1, #0]
-    STR X3, [X4, #0]
-    LDR X3, [X1, #8]
-    STR X3, [X4, #8]
-    MOV X0, X4
-    ADD SP, SP, #16
-    ADD SP, SP, #16
-
-    LDP X25, X26, [SP], #16
-    LDP X23, X24, [SP], #16
-    LDP X21, X22, [SP], #16
+    MOV X0, X19
     LDP X19, X20, [SP], #16
     LDP X29, X30, [SP], #16
     RET
@@ -410,28 +448,31 @@ wbt_set_smart_node:     STP X29, X30, [SP, #-16]!
     STP X25, X26, [SP, #-16]!
     STP X27, X28, [SP, #-16]!
     STR X29, [SP, #-16]!
-    MOV X20, X0
-
-    MOV X16, X2
-    STR X16, [SP, #-16]!
-    LDR X0, [SP, #0]
-    ADD SP, SP, #16
-    ; effects []|sir_rec:o4305|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
-    ADRP X9, wbt_set_subtree_cached_size@PAGE
-    ADD X9, X9, wbt_set_subtree_cached_size@PAGEOFF
-    BLR X9
     MOV X19, X0
-    MOV X16, X3
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X16, X21
     STR X16, [SP, #-16]!
     LDR X0, [SP, #0]
     ADD SP, SP, #16
-    ; effects []|sir_rec:o4359|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o4496|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_subtree_cached_size@PAGE
     ADD X9, X9, wbt_set_subtree_cached_size@PAGEOFF
     BLR X9
-    MOV X21, X0
-    MOV X1, X19
-    MOV X2, X21
+    MOV X23, X0
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o4546|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_subtree_cached_size@PAGE
+    ADD X9, X9, wbt_set_subtree_cached_size@PAGEOFF
+    BLR X9
+    MOV X24, X0
+    MOV X1, X23
+    MOV X2, X24
     MOV X0, X1
     MOV X1, X2
     BL _silica_rt_checked_i64_add
@@ -441,58 +482,86 @@ wbt_set_smart_node:     STP X29, X30, [SP, #-16]!
     STR X9, [SP]
     STR X1, [SP, #8]
     MOV X0, SP
-    MOV X22, X0
-    MOV X0, X22
+    MOV X25, X0
+    MOV X0, X25
+    MOV X26, X0
+    LDR X0, [X26, #0]
+    MOV X27, X0
+    LDR X1, [X26, #8]
+    MOV X28, X1
+
+
+    MOV X0, X1
+    BL _silica_rt_checked_i64_add1
+    MOV W9, W0
+    UXTW X9, W9
+    SUB SP, SP, #16
+    STR X9, [SP]
+    STR X1, [SP, #8]
+    MOV X2, SP
+    MOV X29, X2
+    MOV X0, X29
     MOV X23, X0
     LDR X0, [X23, #0]
     MOV X24, X0
-    LDR X0, [X23, #8]
-    MOV X25, X0
-    MOV X4, X24
-L_case_o4581_br_0:
-    CMP W4, #0
-    B.NE L_case_o4581_br_1
-    SUB SP, SP, #16
-    MOV X9, #0
-    STR X9, [SP, #0]
-    MOV X9, #0
-    STR X9, [SP, #8]
-    MOV X0, SP
-    SUB SP, SP, #16
-    STR X0, [SP, #8]
-    MOV X0, #16
-    BL _silica_rt_region_alloc
-    MOV X4, X0
-    LDR X1, [SP, #8]
-    LDR X3, [X1, #0]
-    STR X3, [X4, #0]
-    LDR X3, [X1, #8]
-    STR X3, [X4, #8]
-    MOV X0, X4
-    ADD SP, SP, #16
-    ADD SP, SP, #16
-    B L_case_o4581_done
-L_case_o4581_br_1:
-    CMP W4, #1
-    B.NE L_case_o4581_fb
-    LDR X0, [X20, #16]
-
-
-
-    MOV X4, X0
-
-    ; effects []|sir_rec:o4670|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
-    ADRP X9, wbt_set_smart_node_finish@PAGE
-    ADD X9, X9, wbt_set_smart_node_finish@PAGEOFF
+    LDR X1, [X23, #8]
+    MOV X23, X1
+    LDR X2, [X19, #16]
+    MOV X19, X2
+    MOV X3, X27
+L_case_o4865_br_0:
+    CMP W3, #0
+    B.NE L_case_o4865_br_1
+    MOV X0, #0
+    B L_case_o4865_done
+L_case_o4865_br_1:
+    CMP W3, #1
+    B.NE L_case_o4865_fb
+    MOV X3, X24
+L_case_o4922_br_0:
+    CMP W3, #0
+    B.NE L_case_o4922_br_1
+    MOV X0, #0
+    B L_case_o4922_done
+L_case_o4922_br_1:
+    CMP W3, #1
+    B.NE L_case_o4922_fb
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o4987|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node_finish_alloc@PAGE
+    ADD X9, X9, wbt_set_smart_node_finish_alloc@PAGEOFF
     BLR X9
-    B L_case_o4581_done
-L_case_o4581_fb:
+    B L_case_o4922_done
+L_case_o4922_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o4581_done
-L_case_o4581_done:
-    MOV X26, X0
-    MOV X0, X26
+    B L_case_o4922_done
+L_case_o4922_done:
+
+    B L_case_o4865_done
+L_case_o4865_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o4865_done
+L_case_o4865_done:
+
+    ADD SP, SP, #16
+
     ADD SP, SP, #16
 
     LDR X29, [SP], #16
@@ -513,11 +582,11 @@ wbt_set_minimum_cmp:     STP X29, X30, [SP, #-16]!
     MOV X20, X1
     MOV X21, X2
 
-    MOV X2, X20
-L_case_o4940_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o4940_br_1
+    MOV X3, X20
+L_case_o5226_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o5226_br_1
     SUB SP, SP, #16
     MOV X9, #18
     STR X9, [SP, #0]
@@ -537,8 +606,8 @@ L_case_o4940_br_0:
     MOV X0, X4
     ADD SP, SP, #16
     ADD SP, SP, #16
-    B L_case_o4940_done
-L_case_o4940_br_1:
+    B L_case_o5226_done
+L_case_o5226_br_1:
     MOV X16, X20
     STR X16, [SP, #-16]!
     MOV X16, X21
@@ -546,16 +615,16 @@ L_case_o4940_br_1:
     LDR X0, [SP, #16]
     LDR X1, [SP, #0]
     ADD SP, SP, #32
-    ; effects []|sir_rec:o5043|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o5329|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_minimum_subtree@PAGE
     ADD X9, X9, wbt_set_minimum_subtree@PAGEOFF
     BLR X9
-    B L_case_o4940_done
-L_case_o4940_fb:
+    B L_case_o5226_done
+L_case_o5226_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o4940_done
-L_case_o4940_done:
+    B L_case_o5226_done
+L_case_o5226_done:
 
     LDP X25, X26, [SP], #16
     LDP X23, X24, [SP], #16
@@ -573,11 +642,11 @@ wbt_set_maximum_cmp:     STP X29, X30, [SP, #-16]!
     MOV X20, X1
     MOV X21, X2
 
-    MOV X2, X20
-L_case_o5245_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o5245_br_1
+    MOV X3, X20
+L_case_o5531_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o5531_br_1
     SUB SP, SP, #16
     MOV X9, #18
     STR X9, [SP, #0]
@@ -597,8 +666,8 @@ L_case_o5245_br_0:
     MOV X0, X4
     ADD SP, SP, #16
     ADD SP, SP, #16
-    B L_case_o5245_done
-L_case_o5245_br_1:
+    B L_case_o5531_done
+L_case_o5531_br_1:
     MOV X16, X20
     STR X16, [SP, #-16]!
     MOV X16, X21
@@ -606,16 +675,16 @@ L_case_o5245_br_1:
     LDR X0, [SP, #16]
     LDR X1, [SP, #0]
     ADD SP, SP, #32
-    ; effects []|sir_rec:o5349|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o5635|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_maximum_subtree@PAGE
     ADD X9, X9, wbt_set_maximum_subtree@PAGEOFF
     BLR X9
-    B L_case_o5245_done
-L_case_o5245_fb:
+    B L_case_o5531_done
+L_case_o5531_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o5245_done
-L_case_o5245_done:
+    B L_case_o5531_done
+L_case_o5531_done:
 
     LDP X25, X26, [SP], #16
     LDP X23, X24, [SP], #16
@@ -631,17 +700,17 @@ wbt_set_size:     STP X29, X30, [SP, #-16]!
     STP X25, X26, [SP, #-16]!
     MOV X20, X0
 
-    LDR X2, [X20, #0]
-L_case_o5662_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o5662_br_1
+    LDR X3, [X20, #0]
+L_case_o5948_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o5948_br_1
     MOV X0, #0
-    B L_case_o5662_done
-L_case_o5662_br_1:
-    MOV X1, X2
-    LDR X3, [X1]
-    MOV X19, X3
+    B L_case_o5948_done
+L_case_o5948_br_1:
+    MOV X1, X3
+    LDR X0, [X1]
+    MOV X19, X0
     MOV X0, X19
     MOV X21, X0
     MOV X12, X21
@@ -654,16 +723,28 @@ L_case_o5662_br_1:
     LDR X0, [X12, #24]
     MOV X25, X0
     MOV X0, X23
-    B L_case_o5662_done
-L_case_o5662_fb:
+    B L_case_o5948_done
+L_case_o5948_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o5662_done
-L_case_o5662_done:
+    B L_case_o5948_done
+L_case_o5948_done:
 
     LDP X25, X26, [SP], #16
     LDP X23, X24, [SP], #16
     LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_weight_empty:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+
+    MOV X9, #1
+    STR X9, [X8, #0]
+    MOV X9, #1
+    STR X9, [X8, #8]
+    MOV X0, X8
     LDP X19, X20, [SP], #16
     LDP X29, X30, [SP], #16
     RET
@@ -673,48 +754,36 @@ wbt_set_weight_subtree:     STP X29, X30, [SP, #-16]!
     STP X21, X22, [SP, #-16]!
     STP X23, X24, [SP, #-16]!
     STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
 
-    MOV X2, X0
-L_case_o6148_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o6148_br_1
-    SUB SP, SP, #16
-    MOV X9, #1
-    STR X9, [SP, #0]
-    MOV X9, #1
-    STR X9, [SP, #8]
-    MOV X0, SP
-    SUB SP, SP, #16
-    STR X0, [SP, #8]
-    MOV X0, #16
-    BL _silica_rt_region_alloc
-    MOV X4, X0
-    LDR X1, [SP, #8]
-    LDR X3, [X1, #0]
-    STR X3, [X4, #0]
-    LDR X3, [X1, #8]
-    STR X3, [X4, #8]
-    MOV X0, X4
-    ADD SP, SP, #16
-    ADD SP, SP, #16
-    B L_case_o6148_done
-L_case_o6148_br_1:
-    MOV X1, X2
-    LDR X3, [X1]
-    MOV X19, X3
-    MOV X1, X19
-    MOV X20, X1
-    MOV X12, X20
-    LDR X0, [X20, #0]
+    MOV X3, X19
+L_case_o6491_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o6491_br_1
+    ; unsupported term kind (dummy k)?
+    ; effects []|sir_rec:o6526|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_weight_empty@PAGE
+    ADD X9, X9, wbt_set_weight_empty@PAGEOFF
+    BLR X9
+    B L_case_o6491_done
+L_case_o6491_br_1:
+    MOV X1, X3
+    LDR X0, [X1]
+    MOV X20, X0
+    MOV X0, X20
     MOV X21, X0
-    LDR X0, [X12, #8]
+    MOV X12, X21
+    LDR X0, [X21, #0]
     MOV X22, X0
-    LDR X0, [X12, #16]
+    LDR X0, [X12, #8]
     MOV X23, X0
-    LDR X0, [X12, #24]
+    LDR X0, [X12, #16]
     MOV X24, X0
-    MOV X1, X22
+    LDR X0, [X12, #24]
+    MOV X25, X0
+    MOV X1, X23
 
     MOV X0, X1
     BL _silica_rt_checked_i64_add1
@@ -725,12 +794,12 @@ L_case_o6148_br_1:
     STR X1, [SP, #8]
     MOV X0, SP
 
-    B L_case_o6148_done
-L_case_o6148_fb:
+    B L_case_o6491_done
+L_case_o6491_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o6148_done
-L_case_o6148_done:
+    B L_case_o6491_done
+L_case_o6491_done:
 
     SUB SP, SP, #16
     STR X0, [SP, #8]
@@ -745,6 +814,7 @@ L_case_o6148_done:
     MOV X0, X4
     ADD SP, SP, #16
     ADD SP, SP, #16
+    LDP X27, X28, [SP], #16
     LDP X25, X26, [SP], #16
     LDP X23, X24, [SP], #16
     LDP X21, X22, [SP], #16
@@ -759,11 +829,11 @@ wbt_set_weight:     STP X29, X30, [SP, #-16]!
     STP X25, X26, [SP, #-16]!
     MOV X20, X0
 
-    LDR X2, [X20, #0]
-L_case_o6867_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o6867_br_1
+    LDR X3, [X20, #0]
+L_case_o7215_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o7215_br_1
     SUB SP, SP, #16
     MOV X9, #1
     STR X9, [SP, #0]
@@ -783,11 +853,11 @@ L_case_o6867_br_0:
     MOV X0, X4
     ADD SP, SP, #16
     ADD SP, SP, #16
-    B L_case_o6867_done
-L_case_o6867_br_1:
-    MOV X1, X2
-    LDR X3, [X1]
-    MOV X19, X3
+    B L_case_o7215_done
+L_case_o7215_br_1:
+    MOV X1, X3
+    LDR X0, [X1]
+    MOV X19, X0
     MOV X0, X19
     MOV X21, X0
     MOV X12, X21
@@ -810,12 +880,12 @@ L_case_o6867_br_1:
     STR X1, [SP, #8]
     MOV X0, SP
 
-    B L_case_o6867_done
-L_case_o6867_fb:
+    B L_case_o7215_done
+L_case_o7215_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o6867_done
-L_case_o6867_done:
+    B L_case_o7215_done
+L_case_o7215_done:
 
     SUB SP, SP, #16
     STR X0, [SP, #8]
@@ -848,17 +918,17 @@ wbt_set_walk_search:     STP X29, X30, [SP, #-16]!
     MOV X20, X1
     MOV X21, X2
 
-    MOV X2, X21
-L_case_o7635_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o7635_br_1
+    MOV X3, X21
+L_case_o7983_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o7983_br_1
     MOV X0, #19
-    B L_case_o7635_done
-L_case_o7635_br_1:
-    MOV X1, X2
-    LDR X3, [X1]
-    MOV X22, X3
+    B L_case_o7983_done
+L_case_o7983_br_1:
+    MOV X1, X3
+    LDR X0, [X1]
+    MOV X22, X0
     MOV X0, X22
     MOV X23, X0
     MOV X12, X23
@@ -886,16 +956,16 @@ L_case_o7635_br_1:
     LDR X3, [SP, #16]
     LDR X4, [SP, #0]
     ADD SP, SP, #80
-    ; effects []|sir_rec:o8073|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o8421|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_walk_search_cmp@PAGE
     ADD X9, X9, wbt_set_walk_search_cmp@PAGEOFF
     BLR X9
-    B L_case_o7635_done
-L_case_o7635_fb:
+    B L_case_o7983_done
+L_case_o7983_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o7635_done
-L_case_o7635_done:
+    B L_case_o7983_done
+L_case_o7983_done:
 
     LDR X29, [SP], #16
     LDP X27, X28, [SP], #16
@@ -916,17 +986,17 @@ wbt_set_search_status:     STP X29, X30, [SP, #-16]!
     MOV X19, X0
     MOV X20, X1
 
-    LDR X2, [X19, #0]
-L_case_o8454_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o8454_br_1
+    LDR X3, [X19, #0]
+L_case_o8802_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o8802_br_1
     MOV X0, #19
-    B L_case_o8454_done
-L_case_o8454_br_1:
-    MOV X1, X2
-    LDR X3, [X1]
-    MOV X21, X3
+    B L_case_o8802_done
+L_case_o8802_br_1:
+    MOV X1, X3
+    LDR X0, [X1]
+    MOV X21, X0
     MOV X0, X21
     MOV X22, X0
     MOV X12, X22
@@ -954,16 +1024,16 @@ L_case_o8454_br_1:
     LDR X3, [SP, #16]
     LDR X4, [SP, #0]
     ADD SP, SP, #80
-    ; effects []|sir_rec:o8893|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o9241|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_walk_search_cmp@PAGE
     ADD X9, X9, wbt_set_walk_search_cmp@PAGEOFF
     BLR X9
-    B L_case_o8454_done
-L_case_o8454_fb:
+    B L_case_o8802_done
+L_case_o8802_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o8454_done
-L_case_o8454_done:
+    B L_case_o8802_done
+L_case_o8802_done:
 
     LDR X29, [SP], #16
     LDP X27, X28, [SP], #16
@@ -1005,35 +1075,35 @@ wbt_set_contains:     STP X29, X30, [SP, #-16]!
     LDR X0, [SP, #16]
     LDR X1, [SP, #0]
     ADD SP, SP, #32
-    ; effects []|sir_rec:o9406|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o9754|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_search_status@PAGE
     ADD X9, X9, wbt_set_search_status@PAGEOFF
     BLR X9
-    MOV X2, X0
-L_case_o9401_br_0:
-    MOV X3, #18
-    CMP X2, X3
-    B.NE L_case_o9401_br_1
+    MOV X3, X0
+L_case_o9749_br_0:
+    MOV X4, #18
+    CMP X3, X4
+    B.NE L_case_o9749_br_1
     MOV X0, #1
-    B L_case_o9401_done
-L_case_o9401_br_1:
-    MOV X3, #19
-    CMP X2, X3
-    B.NE L_case_o9401_br_2
+    B L_case_o9749_done
+L_case_o9749_br_1:
+    MOV X4, #19
+    CMP X3, X4
+    B.NE L_case_o9749_br_2
     MOV X0, #0
-    B L_case_o9401_done
-L_case_o9401_br_2:
-    MOV X0, X2
-    ; effects []|sir_rec:o9510|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    B L_case_o9749_done
+L_case_o9749_br_2:
+    MOV X0, X3
+    ; effects []|sir_rec:o9858|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_contains_invalid_halt@PAGE
     ADD X9, X9, wbt_set_contains_invalid_halt@PAGEOFF
     BLR X9
-    B L_case_o9401_done
-L_case_o9401_fb:
+    B L_case_o9749_done
+L_case_o9749_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o9401_done
-L_case_o9401_done:
+    B L_case_o9749_done
+L_case_o9749_done:
 
     LDP X25, X26, [SP], #16
     LDP X23, X24, [SP], #16
@@ -1061,7 +1131,7 @@ wbt_set_fold_after_left:     STP X29, X30, [SP, #-16]!
     LDR X0, [SP, #16]
     LDR X1, [SP, #0]
     ADD SP, SP, #32
-    ; effects []|sir_rec:o9741|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o10089|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     BLR X17
     MOV X23, X0
     MOV X16, X19
@@ -1074,7 +1144,7 @@ wbt_set_fold_after_left:     STP X29, X30, [SP, #-16]!
     LDR X1, [SP, #16]
     LDR X2, [SP, #0]
     ADD SP, SP, #48
-    ; effects []|sir_rec:o9792|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o10140|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_fold_subtree@PAGE
     ADD X9, X9, wbt_set_fold_subtree@PAGEOFF
     BLR X9
@@ -1121,7 +1191,7 @@ wbt_set_fold_node:     STP X29, X30, [SP, #-16]!
     LDR X1, [SP, #16]
     LDR X2, [SP, #0]
     ADD SP, SP, #48
-    ; effects []|sir_rec:o10271|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o10619|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_fold_subtree@PAGE
     ADD X9, X9, wbt_set_fold_subtree@PAGEOFF
     BLR X9
@@ -1139,7 +1209,7 @@ wbt_set_fold_node:     STP X29, X30, [SP, #-16]!
     LDR X2, [SP, #16]
     LDR X3, [SP, #0]
     ADD SP, SP, #64
-    ; effects []|sir_rec:o10327|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o10675|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_fold_after_left@PAGE
     ADD X9, X9, wbt_set_fold_after_left@PAGEOFF
     BLR X9
@@ -1161,28 +1231,28 @@ wbt_set_fold_subtree:     STP X29, X30, [SP, #-16]!
     MOV X20, X1
     MOV X21, X2
 
-    MOV X2, X21
-L_case_o10519_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o10519_br_1
+    MOV X3, X21
+L_case_o10867_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o10867_br_1
     MOV X0, X20
-    B L_case_o10519_done
-L_case_o10519_br_1:
+    B L_case_o10867_done
+L_case_o10867_br_1:
     MOV X0, X19
     MOV X1, X20
+    MOV X2, X3
 
-
-    ; effects []|sir_rec:o10670|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o11018|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_fold_node@PAGE
     ADD X9, X9, wbt_set_fold_node@PAGEOFF
     BLR X9
-    B L_case_o10519_done
-L_case_o10519_fb:
+    B L_case_o10867_done
+L_case_o10867_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o10519_done
-L_case_o10519_done:
+    B L_case_o10867_done
+L_case_o10867_done:
 
     LDP X25, X26, [SP], #16
     LDP X23, X24, [SP], #16
@@ -1200,28 +1270,28 @@ wbt_set_fold:     STP X29, X30, [SP, #-16]!
     MOV X20, X1
     MOV X21, X2
 
-    LDR X2, [X19, #0]
-L_case_o11047_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o11047_br_1
+    LDR X3, [X19, #0]
+L_case_o11395_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o11395_br_1
     MOV X0, X20
-    B L_case_o11047_done
-L_case_o11047_br_1:
+    B L_case_o11395_done
+L_case_o11395_br_1:
     MOV X0, X21
     MOV X1, X20
+    MOV X2, X3
 
-
-    ; effects []|sir_rec:o11200|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o11548|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_fold_node@PAGE
     ADD X9, X9, wbt_set_fold_node@PAGEOFF
     BLR X9
-    B L_case_o11047_done
-L_case_o11047_fb:
+    B L_case_o11395_done
+L_case_o11395_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o11047_done
-L_case_o11047_done:
+    B L_case_o11395_done
+L_case_o11395_done:
 
     LDP X25, X26, [SP], #16
     LDP X23, X24, [SP], #16
@@ -1240,11 +1310,11 @@ wbt_set_minimum_subtree:     STP X29, X30, [SP, #-16]!
     MOV X19, X0
     MOV X20, X1
 
-    MOV X2, X19
-L_case_o11385_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o11385_br_1
+    MOV X3, X19
+L_case_o11733_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o11733_br_1
     SUB SP, SP, #16
     MOV X9, #19
     STR X9, [SP, #0]
@@ -1264,11 +1334,11 @@ L_case_o11385_br_0:
     MOV X0, X4
     ADD SP, SP, #16
     ADD SP, SP, #16
-    B L_case_o11385_done
-L_case_o11385_br_1:
-    MOV X1, X2
-    LDR X3, [X1]
-    MOV X21, X3
+    B L_case_o11733_done
+L_case_o11733_br_1:
+    MOV X1, X3
+    LDR X0, [X1]
+    MOV X21, X0
     MOV X0, X21
     MOV X22, X0
     MOV X12, X22
@@ -1290,16 +1360,16 @@ L_case_o11385_br_1:
     LDR X1, [SP, #16]
     LDR X2, [SP, #0]
     ADD SP, SP, #48
-    ; effects []|sir_rec:o11850|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o12198|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_minimum_cmp@PAGE
     ADD X9, X9, wbt_set_minimum_cmp@PAGEOFF
     BLR X9
-    B L_case_o11385_done
-L_case_o11385_fb:
+    B L_case_o11733_done
+L_case_o11733_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o11385_done
-L_case_o11385_done:
+    B L_case_o11733_done
+L_case_o11733_done:
 
     LDR X29, [SP], #16
     LDP X27, X28, [SP], #16
@@ -1320,11 +1390,11 @@ wbt_set_minimum:     STP X29, X30, [SP, #-16]!
     MOV X19, X0
     MOV X20, X1
 
-    LDR X2, [X19, #0]
-L_case_o12266_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o12266_br_1
+    LDR X3, [X19, #0]
+L_case_o12614_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o12614_br_1
     SUB SP, SP, #16
     MOV X9, #19
     STR X9, [SP, #0]
@@ -1344,11 +1414,11 @@ L_case_o12266_br_0:
     MOV X0, X4
     ADD SP, SP, #16
     ADD SP, SP, #16
-    B L_case_o12266_done
-L_case_o12266_br_1:
-    MOV X1, X2
-    LDR X3, [X1]
-    MOV X21, X3
+    B L_case_o12614_done
+L_case_o12614_br_1:
+    MOV X1, X3
+    LDR X0, [X1]
+    MOV X21, X0
     MOV X0, X21
     MOV X22, X0
     MOV X12, X22
@@ -1370,16 +1440,16 @@ L_case_o12266_br_1:
     LDR X1, [SP, #16]
     LDR X2, [SP, #0]
     ADD SP, SP, #48
-    ; effects []|sir_rec:o12732|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o13080|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_minimum_cmp@PAGE
     ADD X9, X9, wbt_set_minimum_cmp@PAGEOFF
     BLR X9
-    B L_case_o12266_done
-L_case_o12266_fb:
+    B L_case_o12614_done
+L_case_o12614_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o12266_done
-L_case_o12266_done:
+    B L_case_o12614_done
+L_case_o12614_done:
 
     LDR X29, [SP], #16
     LDP X27, X28, [SP], #16
@@ -1400,11 +1470,11 @@ wbt_set_maximum_subtree:     STP X29, X30, [SP, #-16]!
     MOV X19, X0
     MOV X20, X1
 
-    MOV X2, X19
-L_case_o12948_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o12948_br_1
+    MOV X3, X19
+L_case_o13296_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o13296_br_1
     SUB SP, SP, #16
     MOV X9, #19
     STR X9, [SP, #0]
@@ -1424,11 +1494,11 @@ L_case_o12948_br_0:
     MOV X0, X4
     ADD SP, SP, #16
     ADD SP, SP, #16
-    B L_case_o12948_done
-L_case_o12948_br_1:
-    MOV X1, X2
-    LDR X3, [X1]
-    MOV X21, X3
+    B L_case_o13296_done
+L_case_o13296_br_1:
+    MOV X1, X3
+    LDR X0, [X1]
+    MOV X21, X0
     MOV X0, X21
     MOV X22, X0
     MOV X12, X22
@@ -1450,16 +1520,16 @@ L_case_o12948_br_1:
     LDR X1, [SP, #16]
     LDR X2, [SP, #0]
     ADD SP, SP, #48
-    ; effects []|sir_rec:o13414|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o13762|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_maximum_cmp@PAGE
     ADD X9, X9, wbt_set_maximum_cmp@PAGEOFF
     BLR X9
-    B L_case_o12948_done
-L_case_o12948_fb:
+    B L_case_o13296_done
+L_case_o13296_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o12948_done
-L_case_o12948_done:
+    B L_case_o13296_done
+L_case_o13296_done:
 
     LDR X29, [SP], #16
     LDP X27, X28, [SP], #16
@@ -1480,11 +1550,11 @@ wbt_set_maximum:     STP X29, X30, [SP, #-16]!
     MOV X19, X0
     MOV X20, X1
 
-    LDR X2, [X19, #0]
-L_case_o13831_br_0:
-    MOV X3, #0
-    CMP X2, X3
-    B.NE L_case_o13831_br_1
+    LDR X3, [X19, #0]
+L_case_o14179_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o14179_br_1
     SUB SP, SP, #16
     MOV X9, #19
     STR X9, [SP, #0]
@@ -1504,11 +1574,11 @@ L_case_o13831_br_0:
     MOV X0, X4
     ADD SP, SP, #16
     ADD SP, SP, #16
-    B L_case_o13831_done
-L_case_o13831_br_1:
-    MOV X1, X2
-    LDR X3, [X1]
-    MOV X21, X3
+    B L_case_o14179_done
+L_case_o14179_br_1:
+    MOV X1, X3
+    LDR X0, [X1]
+    MOV X21, X0
     MOV X0, X21
     MOV X22, X0
     MOV X12, X22
@@ -1530,19 +1600,4061 @@ L_case_o13831_br_1:
     LDR X1, [SP, #16]
     LDR X2, [SP, #0]
     ADD SP, SP, #48
-    ; effects []|sir_rec:o14298|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ; effects []|sir_rec:o14646|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
     ADRP X9, wbt_set_maximum_cmp@PAGE
     ADD X9, X9, wbt_set_maximum_cmp@PAGEOFF
     BLR X9
-    B L_case_o13831_done
-L_case_o13831_fb:
+    B L_case_o14179_done
+L_case_o14179_fb:
     BL _silica_rt_case_clause
     MOV X0, #0
-    B L_case_o13831_done
-L_case_o13831_done:
+    B L_case_o14179_done
+L_case_o14179_done:
 
     LDR X29, [SP], #16
     LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_weight_le_3x:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X1, X20
+    MOV X2, #3
+    MOV X0, X1
+    MOV X1, X2
+    BL _silica_rt_checked_i64_mul
+    MOV W9, W0
+    UXTW X9, W9
+    SUB SP, SP, #16
+    STR X9, [SP]
+    STR X1, [SP, #8]
+    MOV X0, SP
+    MOV X21, X0
+    MOV X0, X21
+    MOV X22, X0
+    LDR X0, [X22, #0]
+    MOV X23, X0
+    LDR X1, [X22, #8]
+    MOV X24, X1
+    MOV X3, X23
+L_case_o14997_br_0:
+    CMP W3, #0
+    B.NE L_case_o14997_br_1
+    MOV X0, #1
+    B L_case_o14997_done
+L_case_o14997_br_1:
+    CMP W3, #1
+    B.NE L_case_o14997_fb
+    MOV X9, X19
+    MOV X10, X1
+    CMP X9, X10
+    CSET X0, LE
+    B L_case_o14997_done
+L_case_o14997_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o14997_done
+L_case_o14997_done:
+
+    ADD SP, SP, #16
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_weight_lt_2x:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X1, X20
+    MOV X2, #2
+    MOV X0, X1
+    MOV X1, X2
+    BL _silica_rt_checked_i64_mul
+    MOV W9, W0
+    UXTW X9, W9
+    SUB SP, SP, #16
+    STR X9, [SP]
+    STR X1, [SP, #8]
+    MOV X0, SP
+    MOV X21, X0
+    MOV X0, X21
+    MOV X22, X0
+    LDR X0, [X22, #0]
+    MOV X23, X0
+    LDR X1, [X22, #8]
+    MOV X24, X1
+    MOV X3, X23
+L_case_o15337_br_0:
+    CMP W3, #0
+    B.NE L_case_o15337_br_1
+    MOV X0, #1
+    B L_case_o15337_done
+L_case_o15337_br_1:
+    CMP W3, #1
+    B.NE L_case_o15337_fb
+    MOV X9, X19
+    MOV X10, X1
+    CMP X9, X10
+    CSET X0, LT
+    B L_case_o15337_done
+L_case_o15337_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o15337_done
+L_case_o15337_done:
+
+    ADD SP, SP, #16
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_weights_balanced:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o15474|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_weight_le_3x@PAGE
+    ADD X9, X9, wbt_set_weight_le_3x@PAGEOFF
+    BLR X9
+    MOV X3, X0
+L_case_o15469_br_0:
+    CMP W3, #0
+    B.NE L_case_o15469_br_1
+    MOV X0, #0
+    B L_case_o15469_done
+L_case_o15469_br_1:
+    CMP W3, #1
+    B.NE L_case_o15469_fb
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o15540|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_weight_le_3x@PAGE
+    ADD X9, X9, wbt_set_weight_le_3x@PAGEOFF
+    BLR X9
+    B L_case_o15469_done
+L_case_o15469_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o15469_done
+L_case_o15469_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_balance_rep_violation_halt:     STP X29, X30, [SP, #-16]!
+
+    MOV X9, #1
+    MOV X10, #0
+
+
+    CMP X10, #0
+    B.NE 1f
+    BL _silica_rt_badarith
+1:
+    SDIV X0, X9, X10
+    MOV X19, X0
+    MOV X0, #0
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_rotate_single_left_build:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+
+    SUB SP, SP, #48
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o16461|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X25, X0
+    SUB SP, SP, #48
+    MOV X0, X19
+    MOV X1, X22
+    LDR X2, [X25, #0]
+    MOV X3, X24
+
+    ; effects []|sir_rec:o17005|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X26, X0
+    LDR X0, [X26, #0]
+    ADD SP, SP, #48
+
+    ADD SP, SP, #48
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_rotate_double_left_build:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+    MOV X25, X6
+    MOV X26, X7
+
+    SUB SP, SP, #48
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o18111|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X27, X0
+    SUB SP, SP, #48
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o18662|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X28, X0
+    SUB SP, SP, #48
+    MOV X0, X19
+    MOV X1, X23
+    LDR X2, [X27, #0]
+    LDR X3, [X28, #0]
+
+    ; effects []|sir_rec:o19210|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X29, X0
+    LDR X0, [X29, #0]
+    ADD SP, SP, #48
+
+    ADD SP, SP, #48
+
+    ADD SP, SP, #48
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_rotate_single_right_build:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+
+    SUB SP, SP, #48
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o20272|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X25, X0
+    SUB SP, SP, #48
+    MOV X0, X19
+    MOV X1, X21
+    MOV X2, X22
+    LDR X3, [X25, #0]
+
+    ; effects []|sir_rec:o20817|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X26, X0
+    LDR X0, [X26, #0]
+    ADD SP, SP, #48
+
+    ADD SP, SP, #48
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_rotate_double_right_build:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+    MOV X25, X6
+    MOV X26, X7
+
+    SUB SP, SP, #48
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o21923|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X27, X0
+    SUB SP, SP, #48
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o22476|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X28, X0
+    SUB SP, SP, #48
+    MOV X0, X19
+    MOV X1, X23
+    LDR X2, [X27, #0]
+    LDR X3, [X28, #0]
+
+    ; effects []|sir_rec:o23022|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X29, X0
+    LDR X0, [X29, #0]
+    ADD SP, SP, #48
+
+    ADD SP, SP, #48
+
+    ADD SP, SP, #48
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_balance_left_decide_rotation:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+    MOV X25, X6
+    MOV X26, X7
+
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o23824|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_weight_lt_2x@PAGE
+    ADD X9, X9, wbt_set_weight_lt_2x@PAGEOFF
+    BLR X9
+    MOV X3, X0
+L_case_o23819_br_0:
+    CMP W3, #1
+    B.NE L_case_o23819_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o23870|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_rotate_single_left_build@PAGE
+    ADD X9, X9, wbt_set_rotate_single_left_build@PAGEOFF
+    BLR X9
+    B L_case_o23819_done
+L_case_o23819_br_1:
+    CMP W3, #0
+    B.NE L_case_o23819_fb
+    MOV X3, X23
+L_case_o23949_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o23949_br_1
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o23983|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_rep_violation_halt@PAGE
+    ADD X9, X9, wbt_set_balance_rep_violation_halt@PAGEOFF
+    BLR X9
+    B L_case_o23949_done
+L_case_o23949_br_1:
+    MOV X1, X3
+    LDR X0, [X1]
+    MOV X27, X0
+    MOV X0, X27
+    MOV X28, X0
+    MOV X12, X28
+    LDR X0, [X28, #0]
+    MOV X29, X0
+    LDR X0, [X12, #8]
+    MOV X23, X0
+    LDR X0, [X12, #16]
+    MOV X23, X0
+    LDR X0, [X12, #24]
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X29
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #112]
+    LDR X1, [SP, #96]
+    LDR X2, [SP, #80]
+    LDR X3, [SP, #64]
+    LDR X4, [SP, #48]
+    LDR X5, [SP, #32]
+    LDR X6, [SP, #16]
+    LDR X7, [SP, #0]
+    ADD SP, SP, #128
+    ; effects []|sir_rec:o24426|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_rotate_double_left_build@PAGE
+    ADD X9, X9, wbt_set_rotate_double_left_build@PAGEOFF
+    BLR X9
+    B L_case_o23949_done
+L_case_o23949_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o23949_done
+L_case_o23949_done:
+
+    B L_case_o23819_done
+L_case_o23819_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o23819_done
+L_case_o23819_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_node_weight_from_ref:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+
+    MOV X1, X0
+    LDR X0, [X1]
+    MOV X19, X0
+    MOV X1, X19
+    MOV X20, X1
+    MOV X12, X20
+    LDR X0, [X20, #0]
+    MOV X21, X0
+    LDR X0, [X12, #8]
+    MOV X22, X0
+    LDR X0, [X12, #16]
+    MOV X23, X0
+    LDR X0, [X12, #24]
+    MOV X24, X0
+    MOV X1, X22
+
+    MOV X0, X1
+    BL _silica_rt_checked_i64_add1
+    MOV W9, W0
+    UXTW X9, W9
+    SUB SP, SP, #16
+    STR X9, [SP]
+    STR X1, [SP, #8]
+    MOV X0, SP
+
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #16
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_balance_left_after_right_read:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X20, X0
+
+    MOV X0, X3
+    MOV X19, X0
+    MOV X12, X19
+    LDR X0, [X19, #0]
+    MOV X21, X0
+    LDR X0, [X12, #8]
+    MOV X22, X0
+    LDR X0, [X12, #16]
+    MOV X23, X0
+    LDR X0, [X12, #24]
+    MOV X24, X0
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    MOV X16, X2
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X16, X4
+    STR X16, [SP, #-16]!
+    MOV X16, X5
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #112]
+    LDR X1, [SP, #96]
+    LDR X2, [SP, #80]
+    LDR X3, [SP, #64]
+    LDR X4, [SP, #48]
+    LDR X5, [SP, #32]
+    LDR X6, [SP, #16]
+    LDR X7, [SP, #0]
+    ADD SP, SP, #128
+    ; effects []|sir_rec:o25524|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_left_with_inner_weights@PAGE
+    ADD X9, X9, wbt_set_balance_left_with_inner_weights@PAGEOFF
+    BLR X9
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_balance_left_with_inner_weights:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+    MOV X25, X6
+    MOV X26, X7
+
+    MOV X3, X23
+L_case_o26088_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o26088_br_1
+    MOV X3, X24
+L_case_o26118_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o26118_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, #1
+    STR X16, [SP, #-16]!
+    MOV X16, #1
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #112]
+    LDR X1, [SP, #96]
+    LDR X2, [SP, #80]
+    LDR X3, [SP, #64]
+    LDR X4, [SP, #48]
+    LDR X5, [SP, #32]
+    LDR X6, [SP, #16]
+    LDR X7, [SP, #0]
+    ADD SP, SP, #128
+    ; effects []|sir_rec:o26152|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_left_decide_rotation@PAGE
+    ADD X9, X9, wbt_set_balance_left_decide_rotation@PAGEOFF
+    BLR X9
+    B L_case_o26118_done
+L_case_o26118_br_1:
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X21
+    MOV X3, X22
+    MOV X4, X23
+    MOV X5, X24
+    MOV X6, #1
+    MOV X9, X26
+    MOV X10, #1
+
+
+    SUB X7, X9, X10
+
+    ; effects []|sir_rec:o26263|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_left_decide_rotation@PAGE
+    ADD X9, X9, wbt_set_balance_left_decide_rotation@PAGEOFF
+    BLR X9
+    B L_case_o26118_done
+L_case_o26118_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o26118_done
+L_case_o26118_done:
+
+    B L_case_o26088_done
+L_case_o26088_br_1:
+    MOV X3, X24
+L_case_o26385_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o26385_br_1
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X21
+    MOV X3, X22
+    MOV X4, X23
+    MOV X5, X24
+    MOV X9, X26
+    MOV X10, #1
+
+
+    SUB X6, X9, X10
+    MOV X7, #1
+
+    ; effects []|sir_rec:o26419|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_left_decide_rotation@PAGE
+    ADD X9, X9, wbt_set_balance_left_decide_rotation@PAGEOFF
+    BLR X9
+    B L_case_o26385_done
+L_case_o26385_br_1:
+    MOV X0, X3
+    ; effects []|sir_rec:o26646|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_node_weight_from_ref@PAGE
+    ADD X9, X9, wbt_set_node_weight_from_ref@PAGEOFF
+    BLR X9
+    MOV X27, X0
+    MOV X0, X27
+    MOV X28, X0
+    LDR X0, [X28, #0]
+    MOV X29, X0
+    LDR X1, [X28, #8]
+    MOV X25, X1
+    MOV X3, X29
+L_case_o26752_br_0:
+    CMP W3, #0
+    B.NE L_case_o26752_br_1
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o26797|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_rep_violation_halt@PAGE
+    ADD X9, X9, wbt_set_balance_rep_violation_halt@PAGEOFF
+    BLR X9
+    B L_case_o26752_done
+L_case_o26752_br_1:
+    CMP W3, #1
+    B.NE L_case_o26752_fb
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X21
+    MOV X3, X22
+    MOV X4, X23
+    MOV X5, X24
+    MOV X9, X26
+    MOV X10, X1
+    SUB X6, X9, X10
+    MOV X7, X1
+
+    ; effects []|sir_rec:o26857|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_left_decide_rotation@PAGE
+    ADD X9, X9, wbt_set_balance_left_decide_rotation@PAGEOFF
+    BLR X9
+    B L_case_o26752_done
+L_case_o26752_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o26752_done
+L_case_o26752_done:
+
+    B L_case_o26385_done
+L_case_o26385_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o26385_done
+L_case_o26385_done:
+
+    B L_case_o26088_done
+L_case_o26088_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o26088_done
+L_case_o26088_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_balance_left_from_right_node:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+
+    MOV X1, X22
+    LDR X0, [X1]
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o27632|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_left_after_right_read@PAGE
+    ADD X9, X9, wbt_set_balance_left_after_right_read@PAGEOFF
+    BLR X9
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_balance_right_decide_rotation:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+    MOV X25, X6
+    MOV X26, X7
+
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o28194|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_weight_lt_2x@PAGE
+    ADD X9, X9, wbt_set_weight_lt_2x@PAGEOFF
+    BLR X9
+    MOV X3, X0
+L_case_o28189_br_0:
+    CMP W3, #1
+    B.NE L_case_o28189_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o28240|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_rotate_single_right_build@PAGE
+    ADD X9, X9, wbt_set_rotate_single_right_build@PAGEOFF
+    BLR X9
+    B L_case_o28189_done
+L_case_o28189_br_1:
+    CMP W3, #0
+    B.NE L_case_o28189_fb
+    MOV X3, X23
+L_case_o28320_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o28320_br_1
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o28354|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_rep_violation_halt@PAGE
+    ADD X9, X9, wbt_set_balance_rep_violation_halt@PAGEOFF
+    BLR X9
+    B L_case_o28320_done
+L_case_o28320_br_1:
+    MOV X1, X3
+    LDR X0, [X1]
+    MOV X27, X0
+    MOV X0, X27
+    MOV X28, X0
+    MOV X12, X28
+    LDR X0, [X28, #0]
+    MOV X29, X0
+    LDR X0, [X12, #8]
+    MOV X23, X0
+    LDR X0, [X12, #16]
+    MOV X23, X0
+    LDR X0, [X12, #24]
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X29
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #112]
+    LDR X1, [SP, #96]
+    LDR X2, [SP, #80]
+    LDR X3, [SP, #64]
+    LDR X4, [SP, #48]
+    LDR X5, [SP, #32]
+    LDR X6, [SP, #16]
+    LDR X7, [SP, #0]
+    ADD SP, SP, #128
+    ; effects []|sir_rec:o28797|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_rotate_double_right_build@PAGE
+    ADD X9, X9, wbt_set_rotate_double_right_build@PAGEOFF
+    BLR X9
+    B L_case_o28320_done
+L_case_o28320_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o28320_done
+L_case_o28320_done:
+
+    B L_case_o28189_done
+L_case_o28189_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o28189_done
+L_case_o28189_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_balance_right_after_left_read:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X20, X0
+
+    MOV X0, X2
+    MOV X19, X0
+    MOV X12, X19
+    LDR X0, [X19, #0]
+    MOV X21, X0
+    LDR X0, [X12, #8]
+    MOV X22, X0
+    LDR X0, [X12, #16]
+    MOV X23, X0
+    LDR X0, [X12, #24]
+    MOV X24, X0
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X0
+    STR X16, [SP, #-16]!
+    MOV X16, X3
+    STR X16, [SP, #-16]!
+    MOV X16, X4
+    STR X16, [SP, #-16]!
+    MOV X16, X5
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #112]
+    LDR X1, [SP, #96]
+    LDR X2, [SP, #80]
+    LDR X3, [SP, #64]
+    LDR X4, [SP, #48]
+    LDR X5, [SP, #32]
+    LDR X6, [SP, #16]
+    LDR X7, [SP, #0]
+    ADD SP, SP, #128
+    ; effects []|sir_rec:o29526|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_right_with_inner_weights@PAGE
+    ADD X9, X9, wbt_set_balance_right_with_inner_weights@PAGEOFF
+    BLR X9
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_balance_right_with_inner_weights:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+    MOV X25, X6
+    MOV X26, X7
+
+    MOV X3, X22
+L_case_o30092_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o30092_br_1
+    MOV X3, X23
+L_case_o30122_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o30122_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, #1
+    STR X16, [SP, #-16]!
+    MOV X16, #1
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #112]
+    LDR X1, [SP, #96]
+    LDR X2, [SP, #80]
+    LDR X3, [SP, #64]
+    LDR X4, [SP, #48]
+    LDR X5, [SP, #32]
+    LDR X6, [SP, #16]
+    LDR X7, [SP, #0]
+    ADD SP, SP, #128
+    ; effects []|sir_rec:o30156|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_right_decide_rotation@PAGE
+    ADD X9, X9, wbt_set_balance_right_decide_rotation@PAGEOFF
+    BLR X9
+    B L_case_o30122_done
+L_case_o30122_br_1:
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X21
+    MOV X3, X22
+    MOV X4, X23
+    MOV X5, X24
+    MOV X6, #1
+    MOV X9, X25
+    MOV X10, #1
+
+
+    SUB X7, X9, X10
+
+    ; effects []|sir_rec:o30268|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_right_decide_rotation@PAGE
+    ADD X9, X9, wbt_set_balance_right_decide_rotation@PAGEOFF
+    BLR X9
+    B L_case_o30122_done
+L_case_o30122_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o30122_done
+L_case_o30122_done:
+
+    B L_case_o30092_done
+L_case_o30092_br_1:
+    MOV X3, X23
+L_case_o30391_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o30391_br_1
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X21
+    MOV X3, X22
+    MOV X4, X23
+    MOV X5, X24
+    MOV X9, X25
+    MOV X10, #1
+
+
+    SUB X6, X9, X10
+    MOV X7, #1
+
+    ; effects []|sir_rec:o30425|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_right_decide_rotation@PAGE
+    ADD X9, X9, wbt_set_balance_right_decide_rotation@PAGEOFF
+    BLR X9
+    B L_case_o30391_done
+L_case_o30391_br_1:
+    MOV X0, X3
+    ; effects []|sir_rec:o30653|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_node_weight_from_ref@PAGE
+    ADD X9, X9, wbt_set_node_weight_from_ref@PAGEOFF
+    BLR X9
+    MOV X27, X0
+    MOV X0, X27
+    MOV X28, X0
+    LDR X0, [X28, #0]
+    MOV X29, X0
+    LDR X1, [X28, #8]
+    MOV X26, X1
+    MOV X3, X29
+L_case_o30759_br_0:
+    CMP W3, #0
+    B.NE L_case_o30759_br_1
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o30804|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_rep_violation_halt@PAGE
+    ADD X9, X9, wbt_set_balance_rep_violation_halt@PAGEOFF
+    BLR X9
+    B L_case_o30759_done
+L_case_o30759_br_1:
+    CMP W3, #1
+    B.NE L_case_o30759_fb
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X21
+    MOV X3, X22
+    MOV X4, X23
+    MOV X5, X24
+    MOV X9, X25
+    MOV X10, X1
+    SUB X6, X9, X10
+    MOV X7, X1
+
+    ; effects []|sir_rec:o30864|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_right_decide_rotation@PAGE
+    ADD X9, X9, wbt_set_balance_right_decide_rotation@PAGEOFF
+    BLR X9
+    B L_case_o30759_done
+L_case_o30759_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o30759_done
+L_case_o30759_done:
+
+    B L_case_o30391_done
+L_case_o30391_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o30391_done
+L_case_o30391_done:
+
+    B L_case_o30092_done
+L_case_o30092_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o30092_done
+L_case_o30092_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_balance_right_from_left_node:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+
+    MOV X1, X21
+    LDR X0, [X1]
+    MOV X25, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X25
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o31638|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_right_after_left_read@PAGE
+    ADD X9, X9, wbt_set_balance_right_after_left_read@PAGEOFF
+    BLR X9
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_balance_left_with_weights:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o32140|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_weight_le_3x@PAGE
+    ADD X9, X9, wbt_set_weight_le_3x@PAGEOFF
+    BLR X9
+    MOV X3, X0
+L_case_o32135_br_0:
+    CMP W3, #1
+    B.NE L_case_o32135_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o32182|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    B L_case_o32135_done
+L_case_o32135_br_1:
+    CMP W3, #0
+    B.NE L_case_o32135_fb
+    MOV X3, X22
+L_case_o32235_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o32235_br_1
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o32272|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_rep_violation_halt@PAGE
+    ADD X9, X9, wbt_set_balance_rep_violation_halt@PAGEOFF
+    BLR X9
+    B L_case_o32235_done
+L_case_o32235_br_1:
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X21
+
+    MOV X4, X23
+    MOV X5, X24
+
+    ; effects []|sir_rec:o32423|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_left_from_right_node@PAGE
+    ADD X9, X9, wbt_set_balance_left_from_right_node@PAGEOFF
+    BLR X9
+    B L_case_o32235_done
+L_case_o32235_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o32235_done
+L_case_o32235_done:
+
+    B L_case_o32135_done
+L_case_o32135_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o32135_done
+L_case_o32135_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_balance_left:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X3, X22
+L_case_o32964_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o32964_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o32997|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    B L_case_o32964_done
+L_case_o32964_br_1:
+    MOV X0, X3
+    ; effects []|sir_rec:o33124|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_weight_subtree@PAGE
+    ADD X9, X9, wbt_set_weight_subtree@PAGEOFF
+    BLR X9
+    MOV X23, X0
+    MOV X0, X23
+    MOV X24, X0
+    LDR X0, [X24, #0]
+    MOV X25, X0
+    LDR X1, [X24, #8]
+    MOV X26, X1
+    MOV X3, X25
+L_case_o33219_br_0:
+    CMP W3, #0
+    B.NE L_case_o33219_br_1
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o33259|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_rep_violation_halt@PAGE
+    ADD X9, X9, wbt_set_balance_rep_violation_halt@PAGEOFF
+    BLR X9
+    B L_case_o33219_done
+L_case_o33219_br_1:
+    CMP W3, #1
+    B.NE L_case_o33219_fb
+    MOV X3, X21
+L_case_o33314_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o33314_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, #1
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o33358|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_left_with_weights@PAGE
+    ADD X9, X9, wbt_set_balance_left_with_weights@PAGEOFF
+    BLR X9
+    B L_case_o33314_done
+L_case_o33314_br_1:
+    MOV X0, X3
+    ; effects []|sir_rec:o33530|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_weight_subtree@PAGE
+    ADD X9, X9, wbt_set_weight_subtree@PAGEOFF
+    BLR X9
+    MOV X27, X0
+    MOV X0, X27
+    MOV X28, X0
+    LDR X0, [X28, #0]
+    MOV X29, X0
+    LDR X1, [X28, #8]
+    MOV X23, X1
+    MOV X3, X29
+L_case_o33648_br_0:
+    CMP W3, #0
+    B.NE L_case_o33648_br_1
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o33700|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_rep_violation_halt@PAGE
+    ADD X9, X9, wbt_set_balance_rep_violation_halt@PAGEOFF
+    BLR X9
+    B L_case_o33648_done
+L_case_o33648_br_1:
+    CMP W3, #1
+    B.NE L_case_o33648_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o33767|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_left_with_weights@PAGE
+    ADD X9, X9, wbt_set_balance_left_with_weights@PAGEOFF
+    BLR X9
+    B L_case_o33648_done
+L_case_o33648_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o33648_done
+L_case_o33648_done:
+
+    B L_case_o33314_done
+L_case_o33314_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o33314_done
+L_case_o33314_done:
+
+    B L_case_o33219_done
+L_case_o33219_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o33219_done
+L_case_o33219_done:
+
+    B L_case_o32964_done
+L_case_o32964_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o32964_done
+L_case_o32964_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_balance_right_with_weights:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+    MOV X24, X5
+
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    MOV X16, X24
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o34349|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_weight_le_3x@PAGE
+    ADD X9, X9, wbt_set_weight_le_3x@PAGEOFF
+    BLR X9
+    MOV X3, X0
+L_case_o34344_br_0:
+    CMP W3, #1
+    B.NE L_case_o34344_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o34391|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    B L_case_o34344_done
+L_case_o34344_br_1:
+    CMP W3, #0
+    B.NE L_case_o34344_fb
+    MOV X3, X21
+L_case_o34444_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o34444_br_1
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o34480|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_rep_violation_halt@PAGE
+    ADD X9, X9, wbt_set_balance_rep_violation_halt@PAGEOFF
+    BLR X9
+    B L_case_o34444_done
+L_case_o34444_br_1:
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X3
+    MOV X3, X22
+    MOV X4, X23
+    MOV X5, X24
+
+    ; effects []|sir_rec:o34630|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_right_from_left_node@PAGE
+    ADD X9, X9, wbt_set_balance_right_from_left_node@PAGEOFF
+    BLR X9
+    B L_case_o34444_done
+L_case_o34444_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o34444_done
+L_case_o34444_done:
+
+    B L_case_o34344_done
+L_case_o34344_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o34344_done
+L_case_o34344_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_balance_right:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X3, X21
+L_case_o35178_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o35178_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o35210|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    B L_case_o35178_done
+L_case_o35178_br_1:
+    MOV X0, X3
+    ; effects []|sir_rec:o35336|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_weight_subtree@PAGE
+    ADD X9, X9, wbt_set_weight_subtree@PAGEOFF
+    BLR X9
+    MOV X23, X0
+    MOV X0, X23
+    MOV X24, X0
+    LDR X0, [X24, #0]
+    MOV X25, X0
+    LDR X1, [X24, #8]
+    MOV X26, X1
+    MOV X3, X25
+L_case_o35430_br_0:
+    CMP W3, #0
+    B.NE L_case_o35430_br_1
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o35470|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_rep_violation_halt@PAGE
+    ADD X9, X9, wbt_set_balance_rep_violation_halt@PAGEOFF
+    BLR X9
+    B L_case_o35430_done
+L_case_o35430_br_1:
+    CMP W3, #1
+    B.NE L_case_o35430_fb
+    MOV X3, X22
+L_case_o35525_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o35525_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    MOV X16, #1
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o35570|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_right_with_weights@PAGE
+    ADD X9, X9, wbt_set_balance_right_with_weights@PAGEOFF
+    BLR X9
+    B L_case_o35525_done
+L_case_o35525_br_1:
+    MOV X0, X3
+    ; effects []|sir_rec:o35744|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_weight_subtree@PAGE
+    ADD X9, X9, wbt_set_weight_subtree@PAGEOFF
+    BLR X9
+    MOV X27, X0
+    MOV X0, X27
+    MOV X28, X0
+    LDR X0, [X28, #0]
+    MOV X29, X0
+    LDR X1, [X28, #8]
+    MOV X23, X1
+    MOV X3, X29
+L_case_o35863_br_0:
+    CMP W3, #0
+    B.NE L_case_o35863_br_1
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o35915|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_rep_violation_halt@PAGE
+    ADD X9, X9, wbt_set_balance_rep_violation_halt@PAGEOFF
+    BLR X9
+    B L_case_o35863_done
+L_case_o35863_br_1:
+    CMP W3, #1
+    B.NE L_case_o35863_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X26
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #80]
+    LDR X1, [SP, #64]
+    LDR X2, [SP, #48]
+    LDR X3, [SP, #32]
+    LDR X4, [SP, #16]
+    LDR X5, [SP, #0]
+    ADD SP, SP, #96
+    ; effects []|sir_rec:o35982|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_right_with_weights@PAGE
+    ADD X9, X9, wbt_set_balance_right_with_weights@PAGEOFF
+    BLR X9
+    B L_case_o35863_done
+L_case_o35863_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o35863_done
+L_case_o35863_done:
+
+    B L_case_o35525_done
+L_case_o35525_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o35525_done
+L_case_o35525_done:
+
+    B L_case_o35430_done
+L_case_o35430_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o35430_done
+L_case_o35430_done:
+
+    B L_case_o35178_done
+L_case_o35178_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o35178_done
+L_case_o35178_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_pair_true:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    MOV X11, X0
+
+    SUB SP, SP, #64
+    MOV X9, X11
+    LDR X10, [X9, #0]
+    STR X10, [SP, #0]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #8]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #16]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #24]
+    LDR X10, [X9, #32]
+    STR X10, [SP, #32]
+
+    MOV X9, #1
+    STR X9, [SP, #48]
+    MOV X0, SP
+    MOV X19, X0
+    MOV X0, X19
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #64
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #64
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_pair_false:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    MOV X11, X0
+
+    SUB SP, SP, #64
+    MOV X9, X11
+    LDR X10, [X9, #0]
+    STR X10, [SP, #0]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #8]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #16]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #24]
+    LDR X10, [X9, #32]
+    STR X10, [SP, #32]
+
+    MOV X9, #0
+    STR X9, [SP, #48]
+    MOV X0, SP
+    MOV X19, X0
+    MOV X0, X19
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #64
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #64
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_invalid_halt:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    MOV X11, X0
+
+    MOV X9, #1
+    MOV X10, #0
+
+
+    CMP X10, #0
+    B.NE 1f
+    BL _silica_rt_badarith
+1:
+    SDIV X0, X9, X10
+    MOV X19, X0
+    SUB SP, SP, #64
+    MOV X9, X11
+    LDR X10, [X9, #0]
+    STR X10, [SP, #0]
+    LDR X10, [X9, #8]
+    STR X10, [SP, #8]
+    LDR X10, [X9, #16]
+    STR X10, [SP, #16]
+    LDR X10, [X9, #24]
+    STR X10, [SP, #24]
+    LDR X10, [X9, #32]
+    STR X10, [SP, #32]
+
+    MOV X9, #0
+    STR X9, [SP, #48]
+    MOV X0, SP
+    MOV X20, X0
+    MOV X0, X20
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #64
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    LDR X3, [X1, #48]
+    STR X3, [X4, #48]
+    LDR X3, [X1, #56]
+    STR X3, [X4, #56]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #64
+
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_singleton_set:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    SUB SP, SP, #48
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    MOV X16, #0
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o39828|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_smart_node@PAGE
+    ADD X9, X9, wbt_set_smart_node@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X21, X0
+    MOV X0, X21
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #48
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #48
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_singleton:     STP X29, X30, [SP, #-16]!
+    MOV X20, X0
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o40703|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_singleton_set@PAGE
+    ADD X9, X9, wbt_set_insert_singleton_set@PAGEOFF
+    BLR X9
+    ; effects []|sir_rec:o40686|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, wbt_set_insert_pair_true@PAGE
+    ADD X9, X9, wbt_set_insert_pair_true@PAGEOFF
+    BR X9
+
+
+wbt_set_insert_rebuild_right_empty_sibling:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    SUB SP, SP, #48
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, #0
+    LDR X3, [X21, #0]
+
+    ; effects []|sir_rec:o41815|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_left@PAGE
+    ADD X9, X9, wbt_set_balance_left@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X22, X0
+    MOV X0, X22
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #48
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #48
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_rebuild_left_empty_sibling:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    SUB SP, SP, #48
+    MOV X0, X19
+    MOV X1, X20
+    LDR X2, [X21, #0]
+    MOV X3, #0
+
+    ; effects []|sir_rec:o43200|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_right@PAGE
+    ADD X9, X9, wbt_set_balance_right@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X22, X0
+    MOV X0, X22
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #48
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #48
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_rebuild_right_with_sibling:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    SUB SP, SP, #48
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X21
+    LDR X3, [X22, #0]
+
+    ; effects []|sir_rec:o44679|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_left@PAGE
+    ADD X9, X9, wbt_set_balance_left@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X23, X0
+    MOV X0, X23
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #48
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #48
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_rebuild_left_with_sibling:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    SUB SP, SP, #48
+    MOV X0, X19
+    MOV X1, X20
+    LDR X2, [X22, #0]
+    MOV X3, X21
+
+    ; effects []|sir_rec:o46160|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_balance_right@PAGE
+    ADD X9, X9, wbt_set_balance_right@PAGEOFF
+    BLR X9
+    MOV X9, X0
+    STR X9, [SP, #0]
+    LDR X9, [X19, #8]
+    STR X9, [SP, #8]
+    LDR X9, [X19, #16]
+    STR X9, [SP, #16]
+    LDR X9, [X19, #24]
+    STR X9, [SP, #24]
+    LDR X9, [X19, #32]
+    STR X9, [SP, #32]
+    MOV X0, SP
+    MOV X23, X0
+    MOV X0, X23
+    SUB SP, SP, #16
+    STR X0, [SP, #8]
+    MOV X0, #48
+    BL _silica_rt_region_alloc
+    MOV X4, X0
+    LDR X1, [SP, #8]
+    LDR X3, [X1, #0]
+    STR X3, [X4, #0]
+    LDR X3, [X1, #8]
+    STR X3, [X4, #8]
+    LDR X3, [X1, #16]
+    STR X3, [X4, #16]
+    LDR X3, [X1, #24]
+    STR X3, [X4, #24]
+    LDR X3, [X1, #32]
+    STR X3, [X4, #32]
+    LDR X3, [X1, #40]
+    STR X3, [X4, #40]
+    MOV X0, X4
+    ADD SP, SP, #16
+    ADD SP, SP, #48
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_leaf_as_right_child:     STP X29, X30, [SP, #-16]!
+    MOV X20, X0
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X0, X20
+    MOV X1, X2
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o47139|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_singleton_set@PAGE
+    ADD X9, X9, wbt_set_insert_singleton_set@PAGEOFF
+    BLR X9
+    MOV X2, X0
+
+    ; effects []|sir_rec:o47089|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_rebuild_right_empty_sibling@PAGE
+    ADD X9, X9, wbt_set_insert_rebuild_right_empty_sibling@PAGEOFF
+    BLR X9
+    ; effects []|sir_rec:o47072|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, wbt_set_insert_pair_true@PAGE
+    ADD X9, X9, wbt_set_insert_pair_true@PAGEOFF
+    BR X9
+
+
+wbt_set_insert_leaf_as_left_child:     STP X29, X30, [SP, #-16]!
+    MOV X20, X0
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X0, X20
+    MOV X1, X2
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o47838|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_singleton_set@PAGE
+    ADD X9, X9, wbt_set_insert_singleton_set@PAGEOFF
+    BLR X9
+    MOV X2, X0
+
+    ; effects []|sir_rec:o47789|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_rebuild_left_empty_sibling@PAGE
+    ADD X9, X9, wbt_set_insert_rebuild_left_empty_sibling@PAGEOFF
+    BLR X9
+    ; effects []|sir_rec:o47772|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, wbt_set_insert_pair_true@PAGE
+    ADD X9, X9, wbt_set_insert_pair_true@PAGEOFF
+    BR X9
+
+
+wbt_set_insert_leaf_as_right_with_left:     STP X29, X30, [SP, #-16]!
+    MOV X20, X0
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X0, X20
+    MOV X1, X2
+    MOV X2, X3
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o48645|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_singleton_set@PAGE
+    ADD X9, X9, wbt_set_insert_singleton_set@PAGEOFF
+    BLR X9
+    MOV X3, X0
+
+    ; effects []|sir_rec:o48586|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_rebuild_right_with_sibling@PAGE
+    ADD X9, X9, wbt_set_insert_rebuild_right_with_sibling@PAGEOFF
+    BLR X9
+    ; effects []|sir_rec:o48569|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, wbt_set_insert_pair_true@PAGE
+    ADD X9, X9, wbt_set_insert_pair_true@PAGEOFF
+    BR X9
+
+
+wbt_set_insert_leaf_as_left_with_right:     STP X29, X30, [SP, #-16]!
+    MOV X20, X0
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X0, X20
+    MOV X1, X2
+    MOV X2, X3
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o49453|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_singleton_set@PAGE
+    ADD X9, X9, wbt_set_insert_singleton_set@PAGEOFF
+    BLR X9
+    MOV X3, X0
+
+    ; effects []|sir_rec:o49394|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_rebuild_left_with_sibling@PAGE
+    ADD X9, X9, wbt_set_insert_rebuild_left_with_sibling@PAGEOFF
+    BLR X9
+    ; effects []|sir_rec:o49377|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, wbt_set_insert_pair_true@PAGE
+    ADD X9, X9, wbt_set_insert_pair_true@PAGEOFF
+    BR X9
+
+
+wbt_set_insert_right_is_empty:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+
+    MOV X1, X0
+    LDR X0, [X1]
+    MOV X19, X0
+    MOV X1, X19
+    MOV X20, X1
+    MOV X12, X20
+    LDR X0, [X20, #0]
+    MOV X21, X0
+    LDR X0, [X12, #8]
+    MOV X22, X0
+    LDR X0, [X12, #16]
+    MOV X23, X0
+    LDR X0, [X12, #24]
+    MOV X24, X0
+    MOV X3, X0
+L_case_o49841_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o49841_br_1
+    MOV X0, #1
+    B L_case_o49841_done
+L_case_o49841_br_1:
+    MOV X0, #0
+    B L_case_o49841_done
+L_case_o49841_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o49841_done
+L_case_o49841_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_left_is_empty:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+
+    MOV X1, X0
+    LDR X0, [X1]
+    MOV X19, X0
+    MOV X1, X19
+    MOV X20, X1
+    MOV X12, X20
+    LDR X0, [X20, #0]
+    MOV X21, X0
+    LDR X0, [X12, #8]
+    MOV X22, X0
+    LDR X0, [X12, #16]
+    MOV X23, X0
+    LDR X0, [X12, #24]
+    MOV X24, X0
+    MOV X3, X23
+L_case_o50299_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o50299_br_1
+    MOV X0, #1
+    B L_case_o50299_done
+L_case_o50299_br_1:
+    MOV X0, #0
+    B L_case_o50299_done
+L_case_o50299_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o50299_done
+L_case_o50299_done:
+
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_node_key:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+
+    MOV X1, X0
+    LDR X0, [X1]
+    MOV X19, X0
+    MOV X1, X19
+    MOV X20, X1
+    MOV X12, X20
+    LDR X1, [X20, #0]
+    MOV X21, X1
+    LDR X0, [X12, #8]
+    MOV X22, X0
+    LDR X0, [X12, #16]
+    MOV X23, X0
+    LDR X0, [X12, #24]
+    MOV X24, X0
+    MOV X0, X21
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_finish_right_with_left_present:     STP X29, X30, [SP, #-16]!
+    MOV X20, X0
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    MOV X16, X2
+    STR X16, [SP, #-16]!
+    MOV X16, X3
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o51701|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_rebuild_right_with_sibling@PAGE
+    ADD X9, X9, wbt_set_insert_rebuild_right_with_sibling@PAGEOFF
+    BLR X9
+    ; effects []|sir_rec:o51684|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, wbt_set_insert_pair_true@PAGE
+    ADD X9, X9, wbt_set_insert_pair_true@PAGEOFF
+    BR X9
+
+
+wbt_set_insert_finish_right_after_left_read:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X1, X21
+    LDR X0, [X1]
+    MOV X23, X0
+    MOV X0, X23
+    MOV X24, X0
+    MOV X12, X24
+    LDR X0, [X24, #0]
+    MOV X25, X0
+    LDR X0, [X12, #8]
+    MOV X26, X0
+    LDR X0, [X12, #16]
+    MOV X27, X0
+    LDR X0, [X12, #24]
+    MOV X28, X0
+    MOV X3, X27
+L_case_o52916_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o52916_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o52969|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_rebuild_right_empty_sibling@PAGE
+    ADD X9, X9, wbt_set_insert_rebuild_right_empty_sibling@PAGEOFF
+    BLR X9
+    ; effects []|sir_rec:o52952|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_pair_true@PAGE
+    ADD X9, X9, wbt_set_insert_pair_true@PAGEOFF
+    BLR X9
+    B L_case_o52916_done
+L_case_o52916_br_1:
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X3
+    MOV X3, X22
+
+    ; effects []|sir_rec:o53151|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_finish_right_with_left_present@PAGE
+    ADD X9, X9, wbt_set_insert_finish_right_with_left_present@PAGEOFF
+    BLR X9
+    B L_case_o52916_done
+L_case_o52916_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o52916_done
+L_case_o52916_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_finish_right_child:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    LDR X3, [X22, #48]
+L_case_o54196_br_0:
+    CMP W3, #0
+    B.NE L_case_o54196_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o54238|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_pair_false@PAGE
+    ADD X9, X9, wbt_set_insert_pair_false@PAGEOFF
+    BLR X9
+    B L_case_o54196_done
+L_case_o54196_br_1:
+    CMP W3, #1
+    B.NE L_case_o54196_fb
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o54340|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_left_is_empty@PAGE
+    ADD X9, X9, wbt_set_insert_left_is_empty@PAGEOFF
+    BLR X9
+    MOV X23, X0
+    MOV X3, X23
+L_case_o54413_br_0:
+    CMP W3, #1
+    B.NE L_case_o54413_br_1
+    MOV X0, X19
+    MOV X1, X20
+    ADD X2, X22, #0
+
+
+    ; effects []|sir_rec:o54479|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_rebuild_right_empty_sibling@PAGE
+    ADD X9, X9, wbt_set_insert_rebuild_right_empty_sibling@PAGEOFF
+    BLR X9
+    ; effects []|sir_rec:o54462|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_pair_true@PAGE
+    ADD X9, X9, wbt_set_insert_pair_true@PAGEOFF
+    BLR X9
+    B L_case_o54413_done
+L_case_o54413_br_1:
+    CMP W3, #0
+    B.NE L_case_o54413_fb
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X21
+    ADD X3, X22, #0
+
+
+    ; effects []|sir_rec:o54571|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_finish_right_after_left_read@PAGE
+    ADD X9, X9, wbt_set_insert_finish_right_after_left_read@PAGEOFF
+    BLR X9
+    B L_case_o54413_done
+L_case_o54413_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o54413_done
+L_case_o54413_done:
+
+    B L_case_o54196_done
+L_case_o54196_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o54196_done
+L_case_o54196_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_finish_left_with_right_present:     STP X29, X30, [SP, #-16]!
+    MOV X20, X0
+
+    ; p3 fuel: LDR X9,=_silica_fuel / SUBS / B.EQ _silica_yield (optional)
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X1
+    STR X16, [SP, #-16]!
+    MOV X16, X2
+    STR X16, [SP, #-16]!
+    MOV X16, X3
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o55644|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_rebuild_left_with_sibling@PAGE
+    ADD X9, X9, wbt_set_insert_rebuild_left_with_sibling@PAGEOFF
+    BLR X9
+    ; effects []|sir_rec:o55627|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline|sir_rec:p3_fuel_edge|sir_rec:p5_tail_call
+    LDP X29, X30, [SP], #16
+
+    ADRP X9, wbt_set_insert_pair_true@PAGE
+    ADD X9, X9, wbt_set_insert_pair_true@PAGEOFF
+    BR X9
+
+
+wbt_set_insert_finish_left_after_right_read:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X1, X21
+    LDR X0, [X1]
+    MOV X23, X0
+    MOV X0, X23
+    MOV X24, X0
+    MOV X12, X24
+    LDR X0, [X24, #0]
+    MOV X25, X0
+    LDR X0, [X12, #8]
+    MOV X26, X0
+    LDR X0, [X12, #16]
+    MOV X27, X0
+    LDR X0, [X12, #24]
+    MOV X28, X0
+    MOV X3, X0
+L_case_o56860_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o56860_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o56914|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_rebuild_left_empty_sibling@PAGE
+    ADD X9, X9, wbt_set_insert_rebuild_left_empty_sibling@PAGEOFF
+    BLR X9
+    ; effects []|sir_rec:o56897|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_pair_true@PAGE
+    ADD X9, X9, wbt_set_insert_pair_true@PAGEOFF
+    BLR X9
+    B L_case_o56860_done
+L_case_o56860_br_1:
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X3
+    MOV X3, X22
+
+    ; effects []|sir_rec:o57096|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_finish_left_with_right_present@PAGE
+    ADD X9, X9, wbt_set_insert_finish_left_with_right_present@PAGEOFF
+    BLR X9
+    B L_case_o56860_done
+L_case_o56860_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o56860_done
+L_case_o56860_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_finish_left_child:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    LDR X3, [X22, #48]
+L_case_o58141_br_0:
+    CMP W3, #0
+    B.NE L_case_o58141_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o58183|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_pair_false@PAGE
+    ADD X9, X9, wbt_set_insert_pair_false@PAGEOFF
+    BLR X9
+    B L_case_o58141_done
+L_case_o58141_br_1:
+    CMP W3, #1
+    B.NE L_case_o58141_fb
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o58286|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_right_is_empty@PAGE
+    ADD X9, X9, wbt_set_insert_right_is_empty@PAGEOFF
+    BLR X9
+    MOV X23, X0
+    MOV X3, X23
+L_case_o58360_br_0:
+    CMP W3, #1
+    B.NE L_case_o58360_br_1
+    MOV X0, X19
+    MOV X1, X20
+    ADD X2, X22, #0
+
+
+    ; effects []|sir_rec:o58427|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_rebuild_left_empty_sibling@PAGE
+    ADD X9, X9, wbt_set_insert_rebuild_left_empty_sibling@PAGEOFF
+    BLR X9
+    ; effects []|sir_rec:o58410|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_pair_true@PAGE
+    ADD X9, X9, wbt_set_insert_pair_true@PAGEOFF
+    BLR X9
+    B L_case_o58360_done
+L_case_o58360_br_1:
+    CMP W3, #0
+    B.NE L_case_o58360_fb
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X21
+    ADD X3, X22, #0
+
+
+    ; effects []|sir_rec:o58518|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_finish_left_after_right_read@PAGE
+    ADD X9, X9, wbt_set_insert_finish_left_after_right_read@PAGEOFF
+    BLR X9
+    B L_case_o58360_done
+L_case_o58360_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o58360_done
+L_case_o58360_done:
+
+    B L_case_o58141_done
+L_case_o58141_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o58141_done
+L_case_o58141_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_leaf_as_right_with_left_read:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o59630|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_singleton_set@PAGE
+    ADD X9, X9, wbt_set_insert_singleton_set@PAGEOFF
+    BLR X9
+    MOV X23, X0
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o59694|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_left_is_empty@PAGE
+    ADD X9, X9, wbt_set_insert_left_is_empty@PAGEOFF
+    BLR X9
+    MOV X24, X0
+    MOV X3, X24
+L_case_o59751_br_0:
+    CMP W3, #1
+    B.NE L_case_o59751_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o59809|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_rebuild_right_empty_sibling@PAGE
+    ADD X9, X9, wbt_set_insert_rebuild_right_empty_sibling@PAGEOFF
+    BLR X9
+    ; effects []|sir_rec:o59792|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_pair_true@PAGE
+    ADD X9, X9, wbt_set_insert_pair_true@PAGEOFF
+    BLR X9
+    B L_case_o59751_done
+L_case_o59751_br_1:
+    CMP W3, #0
+    B.NE L_case_o59751_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o59893|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_finish_right_after_left_read@PAGE
+    ADD X9, X9, wbt_set_insert_finish_right_after_left_read@PAGEOFF
+    BLR X9
+    B L_case_o59751_done
+L_case_o59751_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o59751_done
+L_case_o59751_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_leaf_as_right_maybe_left:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o60721|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_left_is_empty@PAGE
+    ADD X9, X9, wbt_set_insert_left_is_empty@PAGEOFF
+    BLR X9
+    MOV X23, X0
+    MOV X3, X23
+L_case_o60778_br_0:
+    CMP W3, #1
+    B.NE L_case_o60778_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o60819|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_leaf_as_right_child@PAGE
+    ADD X9, X9, wbt_set_insert_leaf_as_right_child@PAGEOFF
+    BLR X9
+    B L_case_o60778_done
+L_case_o60778_br_1:
+    CMP W3, #0
+    B.NE L_case_o60778_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o60889|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_leaf_as_right_with_left_read@PAGE
+    ADD X9, X9, wbt_set_insert_leaf_as_right_with_left_read@PAGEOFF
+    BLR X9
+    B L_case_o60778_done
+L_case_o60778_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o60778_done
+L_case_o60778_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_leaf_as_left_with_right_read:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o61964|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_singleton_set@PAGE
+    ADD X9, X9, wbt_set_insert_singleton_set@PAGEOFF
+    BLR X9
+    MOV X23, X0
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o62029|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_right_is_empty@PAGE
+    ADD X9, X9, wbt_set_insert_right_is_empty@PAGEOFF
+    BLR X9
+    MOV X24, X0
+    MOV X3, X24
+L_case_o62087_br_0:
+    CMP W3, #1
+    B.NE L_case_o62087_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o62146|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_rebuild_left_empty_sibling@PAGE
+    ADD X9, X9, wbt_set_insert_rebuild_left_empty_sibling@PAGEOFF
+    BLR X9
+    ; effects []|sir_rec:o62129|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_pair_true@PAGE
+    ADD X9, X9, wbt_set_insert_pair_true@PAGEOFF
+    BLR X9
+    B L_case_o62087_done
+L_case_o62087_br_1:
+    CMP W3, #0
+    B.NE L_case_o62087_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o62229|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_finish_left_after_right_read@PAGE
+    ADD X9, X9, wbt_set_insert_finish_left_after_right_read@PAGEOFF
+    BLR X9
+    B L_case_o62087_done
+L_case_o62087_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o62087_done
+L_case_o62087_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_leaf_as_left_maybe_right:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o63058|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_right_is_empty@PAGE
+    ADD X9, X9, wbt_set_insert_right_is_empty@PAGEOFF
+    BLR X9
+    MOV X23, X0
+    MOV X3, X23
+L_case_o63116_br_0:
+    CMP W3, #1
+    B.NE L_case_o63116_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #32]
+    LDR X1, [SP, #16]
+    LDR X2, [SP, #0]
+    ADD SP, SP, #48
+    ; effects []|sir_rec:o63158|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_leaf_as_left_child@PAGE
+    ADD X9, X9, wbt_set_insert_leaf_as_left_child@PAGEOFF
+    BLR X9
+    B L_case_o63116_done
+L_case_o63116_br_1:
+    CMP W3, #0
+    B.NE L_case_o63116_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o63227|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_leaf_as_left_with_right_read@PAGE
+    ADD X9, X9, wbt_set_insert_leaf_as_left_with_right_read@PAGEOFF
+    BLR X9
+    B L_case_o63116_done
+L_case_o63116_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o63116_done
+L_case_o63116_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_descend_right:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X1, X22
+    LDR X0, [X1]
+    MOV X23, X0
+    MOV X0, X23
+    MOV X24, X0
+    MOV X12, X24
+    LDR X0, [X24, #0]
+    MOV X25, X0
+    LDR X0, [X12, #8]
+    MOV X26, X0
+    LDR X0, [X12, #16]
+    MOV X27, X0
+    LDR X0, [X12, #24]
+    MOV X28, X0
+    MOV X3, X0
+L_case_o64213_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o64213_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o64250|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_leaf_as_right_maybe_left@PAGE
+    ADD X9, X9, wbt_set_insert_leaf_as_right_maybe_left@PAGEOFF
+    BLR X9
+    B L_case_o64213_done
+L_case_o64213_br_1:
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X3
+
+    ; effects []|sir_rec:o64744|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_at_node@PAGE
+    ADD X9, X9, wbt_set_insert_at_node@PAGEOFF
+    BLR X9
+    MOV X29, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X29
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o64831|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_finish_right_child@PAGE
+    ADD X9, X9, wbt_set_insert_finish_right_child@PAGEOFF
+    BLR X9
+    B L_case_o64213_done
+L_case_o64213_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o64213_done
+L_case_o64213_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_descend_left:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    STR X29, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X1, X22
+    LDR X0, [X1]
+    MOV X23, X0
+    MOV X0, X23
+    MOV X24, X0
+    MOV X12, X24
+    LDR X0, [X24, #0]
+    MOV X25, X0
+    LDR X0, [X12, #8]
+    MOV X26, X0
+    LDR X0, [X12, #16]
+    MOV X27, X0
+    LDR X0, [X12, #24]
+    MOV X28, X0
+    MOV X3, X27
+L_case_o65840_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o65840_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o65876|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_leaf_as_left_maybe_right@PAGE
+    ADD X9, X9, wbt_set_insert_leaf_as_left_maybe_right@PAGEOFF
+    BLR X9
+    B L_case_o65840_done
+L_case_o65840_br_1:
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X3
+
+    ; effects []|sir_rec:o66369|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_at_node@PAGE
+    ADD X9, X9, wbt_set_insert_at_node@PAGEOFF
+    BLR X9
+    MOV X29, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X29
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o66455|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_finish_left_child@PAGE
+    ADD X9, X9, wbt_set_insert_finish_left_child@PAGEOFF
+    BLR X9
+    B L_case_o65840_done
+L_case_o65840_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o65840_done
+L_case_o65840_done:
+
+    LDR X29, [SP], #16
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_at_node_greater:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o67294|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_right_is_empty@PAGE
+    ADD X9, X9, wbt_set_insert_right_is_empty@PAGEOFF
+    BLR X9
+    MOV X23, X0
+    MOV X3, X23
+L_case_o67352_br_0:
+    CMP W3, #1
+    B.NE L_case_o67352_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o67394|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_leaf_as_right_with_left_read@PAGE
+    ADD X9, X9, wbt_set_insert_leaf_as_right_with_left_read@PAGEOFF
+    BLR X9
+    B L_case_o67352_done
+L_case_o67352_br_1:
+    CMP W3, #0
+    B.NE L_case_o67352_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o67483|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_descend_right@PAGE
+    ADD X9, X9, wbt_set_insert_descend_right@PAGEOFF
+    BLR X9
+    B L_case_o67352_done
+L_case_o67352_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o67352_done
+L_case_o67352_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_at_node_less:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o68279|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_left_is_empty@PAGE
+    ADD X9, X9, wbt_set_insert_left_is_empty@PAGEOFF
+    BLR X9
+    MOV X23, X0
+    MOV X3, X23
+L_case_o68336_br_0:
+    CMP W3, #1
+    B.NE L_case_o68336_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o68377|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_leaf_as_left_with_right_read@PAGE
+    ADD X9, X9, wbt_set_insert_leaf_as_left_with_right_read@PAGEOFF
+    BLR X9
+    B L_case_o68336_done
+L_case_o68336_br_1:
+    CMP W3, #0
+    B.NE L_case_o68336_fb
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o68466|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_descend_left@PAGE
+    ADD X9, X9, wbt_set_insert_descend_left@PAGEOFF
+    BLR X9
+    B L_case_o68336_done
+L_case_o68336_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o68336_done
+L_case_o68336_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_after_key:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+    MOV X22, X3
+    MOV X23, X4
+
+    MOV X3, X23
+L_case_o69233_br_0:
+    MOV X4, #22
+    CMP X3, X4
+    B.NE L_case_o69233_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o69265|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_pair_false@PAGE
+    ADD X9, X9, wbt_set_insert_pair_false@PAGEOFF
+    BLR X9
+    B L_case_o69233_done
+L_case_o69233_br_1:
+    MOV X4, #21
+    CMP X3, X4
+    B.NE L_case_o69233_br_2
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o69306|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_at_node_less@PAGE
+    ADD X9, X9, wbt_set_insert_at_node_less@PAGEOFF
+    BLR X9
+    B L_case_o69233_done
+L_case_o69233_br_2:
+    MOV X4, #23
+    CMP X3, X4
+    B.NE L_case_o69233_br_3
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #48]
+    LDR X1, [SP, #32]
+    LDR X2, [SP, #16]
+    LDR X3, [SP, #0]
+    ADD SP, SP, #64
+    ; effects []|sir_rec:o69378|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_at_node_greater@PAGE
+    ADD X9, X9, wbt_set_insert_at_node_greater@PAGEOFF
+    BLR X9
+    B L_case_o69233_done
+L_case_o69233_br_3:
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o69452|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_invalid_halt@PAGE
+    ADD X9, X9, wbt_set_insert_invalid_halt@PAGEOFF
+    BLR X9
+    B L_case_o69233_done
+L_case_o69233_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o69233_done
+L_case_o69233_done:
+
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert_at_node:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    STP X27, X28, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+    MOV X21, X2
+
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #0]
+    ADD SP, SP, #16
+    ; effects []|sir_rec:o70184|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_node_key@PAGE
+    ADD X9, X9, wbt_set_insert_node_key@PAGEOFF
+    BLR X9
+    MOV X22, X0
+    MOV X0, X20
+    MOV X1, X22
+    LDR X2, [X19, #8]
+
+    ; effects []|sir_rec:o70232|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_compare_checked@PAGE
+    ADD X9, X9, wbt_set_compare_checked@PAGEOFF
+    BLR X9
+    MOV X23, X0
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    MOV X16, X21
+    STR X16, [SP, #-16]!
+    MOV X16, X22
+    STR X16, [SP, #-16]!
+    MOV X16, X23
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #64]
+    LDR X1, [SP, #48]
+    LDR X2, [SP, #32]
+    LDR X3, [SP, #16]
+    LDR X4, [SP, #0]
+    ADD SP, SP, #80
+    ; effects []|sir_rec:o70474|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_after_key@PAGE
+    ADD X9, X9, wbt_set_insert_after_key@PAGEOFF
+    BLR X9
+    LDP X27, X28, [SP], #16
+    LDP X25, X26, [SP], #16
+    LDP X23, X24, [SP], #16
+    LDP X21, X22, [SP], #16
+    LDP X19, X20, [SP], #16
+    LDP X29, X30, [SP], #16
+    RET
+
+wbt_set_insert:     STP X29, X30, [SP, #-16]!
+    STP X19, X20, [SP, #-16]!
+    STP X21, X22, [SP, #-16]!
+    STP X23, X24, [SP, #-16]!
+    STP X25, X26, [SP, #-16]!
+    MOV X19, X0
+    MOV X20, X1
+
+    LDR X3, [X19, #0]
+L_case_o71270_br_0:
+    MOV X4, #0
+    CMP X3, X4
+    B.NE L_case_o71270_br_1
+    MOV X16, X19
+    STR X16, [SP, #-16]!
+    MOV X16, X20
+    STR X16, [SP, #-16]!
+    LDR X0, [SP, #16]
+    LDR X1, [SP, #0]
+    ADD SP, SP, #32
+    ; effects []|sir_rec:o71306|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_singleton@PAGE
+    ADD X9, X9, wbt_set_insert_singleton@PAGEOFF
+    BLR X9
+    B L_case_o71270_done
+L_case_o71270_br_1:
+    MOV X0, X19
+    MOV X1, X20
+    MOV X2, X3
+
+    ; effects []|sir_rec:o71446|sir_rec:p1_frame|sir_rec:p2_lower|sir_rec:p4_src|sir_rec:p6_trampoline
+    ADRP X9, wbt_set_insert_at_node@PAGE
+    ADD X9, X9, wbt_set_insert_at_node@PAGEOFF
+    BLR X9
+    B L_case_o71270_done
+L_case_o71270_fb:
+    BL _silica_rt_case_clause
+    MOV X0, #0
+    B L_case_o71270_done
+L_case_o71270_done:
+
     LDP X25, X26, [SP], #16
     LDP X23, X24, [SP], #16
     LDP X21, X22, [SP], #16

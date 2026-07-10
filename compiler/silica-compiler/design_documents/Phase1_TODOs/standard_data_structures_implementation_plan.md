@@ -706,17 +706,139 @@ Run the insertion matrix for more than one payload shape and every supported `Sp
 
 **§8A.5 exit gate:** all insertion shapes pass the directed size/order/balance assertions; duplicate insertion is an identity-preserving zero-node no-op; old roots retain their observable contents; §8A.10 remains responsible for the final full-validator gate.
 
-**§8A.5 status (2026-07-09):** Complete — `wbt_set@insert/2` returns `{set, inserted}` with path-copy rebalance via §8A.3 `smart_node` / `balance_left` / `balance_right`. Duplicate comparator class is a zero-node identity no-op (`inserted=false`). Invalid comparator results halt via `1/0` and publish no result root. Positive trials in `wbt_core/`: `wbt_set_insert_duplicate`, `wbt_set_insert_orders`, `wbt_set_insert_adversarial`, `wbt_set_insert_persistence`, `wbt_set_insert_sharing`, `wbt_set_insert_payload_shapes` (int64 + string singleton specialization). Collection-error: `trial_collection_error_wbt_set_insert_invalid_comparator` (trial-only `wbt_trial_insert_i64@insert_status_i64`). Proceed to §8A.6.
+**§8A.5 status (2026-07-09; stabilized 2026-07-10):** Complete — `wbt_set@insert/2` returns `{set, inserted}` with path-copy rebalance via §8A.3 `smart_node` / `balance_left` / `balance_right`. Duplicate comparator class is a zero-node identity no-op (`inserted=false`). Invalid comparator results halt via `1/0` and publish no result root. Positive trials in `wbt_core/`: `wbt_set_insert_duplicate`, `wbt_set_insert_orders` (int64 matrix), `wbt_set_insert_adversarial`, `wbt_set_insert_persistence`, `wbt_set_insert_sharing`, `wbt_set_insert_payload_shapes` (string payload matrix: singleton/duplicate, ascending, descending, alternating-extremes, median-first; fold digest + min/max/contains). Emitter support: content string `lt`/`gt`/`le`/`ge`/`eq`/`nq` via `L_string_cmp_helper` with X0/X1 preserved across the helper call. SpaceType coverage is pinned in `compiler_substrate/collection_ordered_set_space_matrix`, which asserts distinct OrderedSet specialization keys for `normal`, `normal_writeback`, `normal_writethrough`, `normal_noncacheable`, `atomic`, and `device`. Collection-error: `trial_collection_error_wbt_set_insert_invalid_comparator` (trial-only `wbt_trial_insert_i64@insert_status_i64`). Proceed to §8A.6.
 
 ### 8A.6 Persistent map insertion and replacement
 
-Implement map insertion returning `{root, inserted, replaced}`:
+Mirror §8A.5 set insertion on the map node shape `(KeyType, ValueType, int64, ref?, ref?)`, then add the replacement branch. Do not invent a second balancing algorithm: unequal descent, path-copy, and rebalance reuse §8A.3 `smart_node` and §8A.4 `balance_left` / `balance_right` exactly as set insert does.
 
-- an empty position inserts one `(key, value)` binding with `inserted = true`, `replaced = false`;
-- comparator equality retains the old key representation, installs the new value, preserves both children, keeps the same logical size, and returns `inserted = false`, `replaced = true`;
-- unequal descent and rebalancing use the same structural path as set insertion.
+**Normative result shape (compiler-private owning wrap):**
 
-Do not call `compare_value` during placement, replacement, rotation, or validation of key order. Even when the old and new values are observationally equal, replacement is not suppressed. The replacement node and every copied ancestor use §8A.3.
+```text
+insert(map, key, value) -> { map, inserted, replaced }
+```
+
+Flag combinations that may be published:
+
+| Case | `inserted` | `replaced` | size | root identity |
+| --- | --- | --- | --- | --- |
+| empty / new key | `true` | `false` | `old + 1` | new path-copied root |
+| key comparator-equal | `false` | `true` | unchanged | new path-copied root (matched node + ancestors) |
+| invalid `compare_key` | — | — | — | no result root published |
+
+`inserted = true ∧ replaced = true` is forbidden. Observationally equal old/new values still replace (`replaced = true`); never suppress replacement by calling `compare_value`.
+
+**Hard invariants (carry from §8A.5):**
+
+- Placement uses only `compare_key` (validated at every call site). `compare_value` must not run on insert, replace, rotate, or key-order checks.
+- Canonical key: on `:equal`, keep the **stored** key bytes/representation; install only the new value; preserve both child refs unchanged at the matched node.
+- Never keep a live empty `ref?` in a frame that allocates (`smart_node` / balance).
+- Do not rebind `map.root` to a node `ref` inside descent helpers (that corrupted retained roots on set insert).
+- Exactly one production `alloc_rec` remains inside map `smart_node` finish (`check-wbt-alloc-rec-gate`).
+- Prefer small helpers over deep nested `and` / many live locals in one `produces` (emitter/stack hazards).
+
+Complete the steps below in order. A later step may add trials for an earlier helper, but must not leave an earlier step's gate failing.
+
+#### Step 1 — Public export and result wrappers
+
+1. Export `insert/3` from `stdlib/data_structures/wbt_map.silica`.
+2. Define private helpers that build the three-field result without nesting large records in one expression:
+   - `insert_pair_new(map, root)` → `{map with root, inserted=true, replaced=false}`;
+   - `insert_pair_replaced(map, root)` → `{map with root, inserted=false, replaced=true}`;
+   - `insert_invalid_halt(...)` → same halt style as set insert (`1/0` / collection-error path) and publish no result root.
+3. Owning-record fields copied on every success path: `compare_key`, `compare_value`, `region`, `specialization_key`, both ordering bundles. Only `root` changes.
+
+**Step 1 check:** empty map + one insert compiles and returns a record with all three fields; invalid-comparator halt path is linkable from a trial-only status helper if needed (mirror `wbt_trial_insert_i64`).
+
+#### Step 2 — Empty-root singleton insert
+
+1. When `map.root` is `:none`, allocate one leaf via `smart_node(key, value, :none, :none, region)` (or the map smart-node arity already used in §8A.3).
+2. Return `inserted=true`, `replaced=false`, size `1`.
+3. Confirm `get` / `contains_key` / `fold` see the single binding and that `compare_value` was never invoked.
+
+**Step 2 check:** trial fragment — empty → insert `(k0, v0)` → size 1, `get(k0)=v0`, flags `{true,false}`.
+
+#### Step 3 — Equal-key replacement at a node (no descent)
+
+1. Read the node tuple; compare `key` to `node_key` with validated `compare_key`.
+2. On `:equal`:
+   - build a **new** node with `(stored_key, new_value, same_size, same_left, same_right)` through §8A.3;
+   - do **not** compare values;
+   - do **not** rebalance (children and size unchanged ⇒ already balanced);
+   - return that node ref to the caller for ancestor rebuild.
+3. Representationally distinct but comparator-equal keys must keep `stored_key`, not the argument key.
+
+**Step 3 check:** singleton map; insert same logical key with new value → size still 1, `get` returns new value, fold/search still report the original key representation, flags `{false,true}`, old root still returns old value.
+
+#### Step 4 — Unequal descent (structural clone of set insert)
+
+1. On `:less` / `:greater`, recurse into exactly one child (empty child ⇒ Step 2 leaf-as-child).
+2. If the recursive result reports no structural change is impossible for map insert except via halt; for replacement deeper in the tree, the child root always changes, so ancestors always path-copy.
+3. On unwind after a **new-key** insert (`inserted=true`): rebuild the ancestor with the new child via `smart_node`, then `balance_left` / `balance_right` as in §8A.5.
+4. On unwind after a **replacement** (`replaced=true`): rebuild the ancestor with the new child via `smart_node`. Size is unchanged along the path; still run the same balance helpers (they must be no-ops when already balanced) so there is one rebuild path.
+5. Untouched sibling child refs must be shared (pointer identity), not deep-copied.
+
+**Step 4 check:** multi-node map; insert new key on left and right; insert replacing an internal key; assert size, ascending fold of `(key,value)` pairs, and sibling sharing on the replace path.
+
+#### Step 5 — Wire `insert` top-level
+
+```text
+case map.root of
+  :none -> singleton (Step 2)
+  root_ref -> insert_at_node(map, key, value, root_ref)
+```
+
+`insert_at_node`:
+
+1. `read_ref` → `(node_key, node_value, size, left, right)`;
+2. validated `compare_key(key, node_key)`;
+3. `:equal` → Step 3, wrap with `insert_pair_replaced`;
+4. `:less` / `:greater` → Step 4 descend/rebuild;
+5. invalid atom → `insert_invalid_halt`.
+
+Keep helper granularity similar to `wbt_set` insert (`insert_at_node_less` / `_greater`, leaf-as-child, finish-rebuild) so live `ref?` and register pressure stay manageable.
+
+**Step 5 check:** export-only smoke — orders matrix on `int64` keys / `string` values (or similar) covering empty, singleton, ascending, descending, alternating, median-first, plus one replace in each shape.
+
+#### Step 6 — Persistence, sharing, and value-pairing stress
+
+1. Retain every prior map root across a sequence of inserts and replaces; each old root must keep its old `get`/`fold` observations.
+2. On replace at depth ≥ 1, assert both children of the matched node are reference-identical to the pre-replace children, and that only the path to the root is new.
+3. Force single and double rotations (reuse §8A.4 / §8A.5 adversarial key orders) and assert every fold step still yields intact `(key, value)` pairs — never a key with a sibling's value.
+
+**Step 6 check:** dedicated persistence + sharing + rotation-pairing trials below.
+
+#### Step 7 — Prove `compare_value` is unused on placement
+
+1. Construct maps whose `compare_value` traps (e.g. `1/0` or an atom that fails validation) if called.
+2. Exercise empty insert, new-key insert, equal-key replace, and rotation-heavy inserts.
+3. Success of those paths is the proof; do not “soft-skip” by substituting a benign value comparator in the negative trial.
+
+**Step 7 check:** `wbt_map_compare_value_not_called`.
+
+#### Step 8 — Invalid `compare_key` collection errors
+
+1. Invalid atom at root compare, left descent, and right descent.
+2. Input map remains valid and observable; no partial result root is published.
+3. Prefer a trial-only `insert_status_*` helper (as in §8A.5) if exporting a status-shaped API would collide with emitter labels or widen the public core surface.
+
+**Step 8 check:** `trial_collection_error_wbt_map_insert_invalid_comparator`.
+
+#### Step 9 — Genericity and SpaceType coverage
+
+1. Instantiate at least two distinct key/value type pairs; include one non-scalar value (tuple or record) where the language permits.
+2. Do not rely on `int64`/`int64` alone for the gate.
+3. SpaceType specialization keys remain covered by `compiler_substrate/collection_ordered_set_space_matrix` (and map analogue if present); do not block §8A.6 on re-deriving every space if Layer 1 already pins them, but do not hard-code a single space into `insert`.
+
+**Step 9 check:** payload/type matrix trial(s) listed below pass under `wbt_core/` integrate.
+
+#### Step 10 — Gate integration
+
+1. Add positives to `wbt_core/POSITIVE_SILICA` (enumerated list, not probe wildcards).
+2. `make record-positive-golden` then `make positive-integrate` / `make integrate` in `wbt_core/`.
+3. Re-run `check-wbt-alloc-rec-gate` (still one `alloc_rec` in `wbt_map.silica`).
+4. Phase 1 root `make integrate`.
+5. Mark this section Complete with dated status and update the requirements-to-trials ledger row for map insertion.
 
 Acceptance trials:
 
@@ -725,13 +847,14 @@ Acceptance trials:
 - `wbt_map_value_pairing`: single/double rotations and deep path copies never detach a value from its key;
 - `wbt_map_compare_value_not_called`: a value comparator that would fail if invoked is not called by any key-placement path;
 - `wbt_map_replace_persistence`: the old root retains the old value, the new root has the replacement, and both subtrees of the matched node are shared;
+- `wbt_map_insert_orders` (or fold into `wbt_map_insert_replace`): empty/singleton/ascending/descending/alternating/median-first for at least one key/value pair;
 - `trial_collection_error_wbt_map_insert_invalid_comparator`: failure at each descent direction leaves the input root valid and unpublished output inaccessible.
 
 Instantiate keys and values with different concrete types, including at least one non-scalar value.
 
-**§8A.6 exit gate:** map insertion and replacement preserve canonical keys and key/value pairing, report exact flags, never use value comparison for placement, and preserve every old version.
+**§8A.6 exit gate:** map insertion and replacement preserve canonical keys and key/value pairing, report exact flags, never use value comparison for placement, preserve every old version, keep the single smart-node allocation site, and pass `wbt_core/` integrate with the trials above.
 
-**§8A.6 status:** Planned.
+**§8A.6 status (2026-07-10):** Complete — `wbt_map@insert/3` returns `{map, inserted, replaced}` with path-copy rebalance via §8A.3 `smart_node` / §8A.4 `balance_left` / `balance_right`. Equal-key replacement keeps the stored key, installs the new value, preserves children, and reports `{inserted=false, replaced=true}`. Placement never calls `compare_value`. Rebuild helpers use set-style `sequence out <- insert_balance_*(map, smart_node(...))` so `:none` + `child_map.root` lower with preserved callee-saved regs. Positive trials in `wbt_core/`: `wbt_map_insert_replace` (flags + ascending/descending), `wbt_map_insert_orders` (alternating/median-first; split for shared-arena budget), `wbt_map_canonical_key`, `wbt_map_value_pairing`, `wbt_map_compare_value_not_called`, `wbt_map_replace_persistence`, `wbt_map_insert_payload_shapes` (string→int64), `wbt_map_insert_tuple_value` (int64→`(int64, string)`), `trial_collection_error_wbt_map_insert_invalid_comparator`. `check-wbt-alloc-rec-gate` still one `alloc_rec` in `wbt_map.silica`. `wbt_core/` positive-integrate **84 0**.
 
 ### 8A.7 Deletion, extreme extraction, and deletion-side rebalancing
 
