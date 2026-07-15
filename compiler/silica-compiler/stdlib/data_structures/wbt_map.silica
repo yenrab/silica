@@ -1,5 +1,5 @@
-// Layer 2 §8A.1–§8A.4, §8A.6–§8A.7 — Adams WBT map core: smart nodes, read-only helpers,
-// (3,2) balance/rotations, insert/replace, delete / delete_min / delete_max.
+// Layer 2 §8A.1–§8A.4, §8A.6–§8A.8, §8A.10 — Adams WBT map core: smart nodes, read-only helpers,
+// (3,2) balance/rotations, insert/replace, delete / delete_min / delete_max, from_sorted, validate.
 // Node shape (inline at every boundary): (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)).
 
 export empty/1;
@@ -26,6 +26,8 @@ export from_sorted/2;
 export from_sorted_counted/3;
 export from_sorted_error_code/1;
 export from_sorted_preflight_status/4;
+export validate/1;
+export validate_error_code/1;
 
 fn empty(
     functions: {
@@ -7117,4 +7119,609 @@ fn from_sorted(
     produces
         pure out
     end
+}
+
+// §8A.10 — postorder structural validation (same precedence as wbt_set).
+// Map pairing is the node tuple itself; validate confirms key order and structure.
+
+fn map_validate_result_ok(count: int64) -> { valid: boolean, error: atom, logical_count: int64 } {
+    sequence
+        out: { valid: boolean, error: atom, logical_count: int64 } <- { valid: true, error: :ok, logical_count: count }
+    produces
+        pure out
+    end
+}
+
+fn map_validate_result_err(error: atom, count: int64) -> { valid: boolean, error: atom, logical_count: int64 } {
+    sequence
+        out: { valid: boolean, error: atom, logical_count: int64 } <- { valid: false, error: error, logical_count: count }
+    produces
+        pure out
+    end
+}
+
+fn map_validate_ok_empty(placeholder: KeyType) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: KeyType,
+    hi: KeyType
+} {
+    sequence
+        out: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: KeyType,
+            hi: KeyType
+        } <- { error: :ok, count: 0, has_items: false, lo: placeholder, hi: placeholder }
+    produces
+        pure out
+    end
+}
+
+fn map_validate_err(error: atom, count: int64, placeholder: KeyType) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: KeyType,
+    hi: KeyType
+} {
+    sequence
+        out: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: KeyType,
+            hi: KeyType
+        } <- { error: error, count: count, has_items: false, lo: placeholder, hi: placeholder }
+    produces
+        pure out
+    end
+}
+
+fn map_validate_ok_node(count: int64, lo: KeyType, hi: KeyType) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: KeyType,
+    hi: KeyType
+} {
+    sequence
+        out: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: KeyType,
+            hi: KeyType
+        } <- { error: :ok, count: count, has_items: true, lo: lo, hi: hi }
+    produces
+        pure out
+    end
+}
+
+fn map_validate_fuel_start(cached: int64) -> int64 {
+    case cached < 0 of {
+        true -> 64;
+        false -> case cached > 1000000 of {
+            true -> 1000002;
+            false -> cached + 2
+        }
+    }
+}
+
+fn map_validate_order_left(
+    compare_key: fn(KeyType, KeyType) -> atom,
+    left_hi: KeyType,
+    key: KeyType
+) -> atom {
+    sequence
+        cmp: atom <- comparator_result_validate(compare_key(left_hi, key))
+    produces
+        pure case cmp of {
+            :less -> :ok;
+            :equal -> :order_violation;
+            :greater -> :order_violation;
+            _: atom -> :invalid_comparator_result
+        }
+    end
+}
+
+fn map_validate_order_right(
+    compare_key: fn(KeyType, KeyType) -> atom,
+    key: KeyType,
+    right_lo: KeyType
+) -> atom {
+    sequence
+        cmp: atom <- comparator_result_validate(compare_key(key, right_lo))
+    produces
+        pure case cmp of {
+            :less -> :ok;
+            :equal -> :order_violation;
+            :greater -> :order_violation;
+            _: atom -> :invalid_comparator_result
+        }
+    end
+}
+
+fn map_validate_bounds_left(
+    compare_key: fn(KeyType, KeyType) -> atom,
+    left: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: KeyType,
+        hi: KeyType
+    },
+    key: KeyType
+) -> atom {
+    case left.has_items of {
+        false -> :ok;
+        true -> map_validate_order_left(compare_key, left.hi, key)
+    }
+}
+
+fn map_validate_bounds_right(
+    compare_key: fn(KeyType, KeyType) -> atom,
+    key: KeyType,
+    right: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: KeyType,
+        hi: KeyType
+    }
+) -> atom {
+    case right.has_items of {
+        false -> :ok;
+        true -> map_validate_order_right(compare_key, key, right.lo)
+    }
+}
+
+fn map_validate_combine_lo(key: KeyType, left: {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: KeyType,
+    hi: KeyType
+}) -> KeyType {
+    case left.has_items of {
+        true -> left.lo;
+        false -> key
+    }
+}
+
+fn map_validate_combine_hi(key: KeyType, right: {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: KeyType,
+    hi: KeyType
+}) -> KeyType {
+    case right.has_items of {
+        true -> right.hi;
+        false -> key
+    }
+}
+
+fn map_validate_node_local(
+    compare_key: fn(KeyType, KeyType) -> atom,
+    key: KeyType,
+    cached: int64,
+    left: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: KeyType,
+        hi: KeyType
+    },
+    right: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: KeyType,
+        hi: KeyType
+    }
+) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: KeyType,
+    hi: KeyType
+} {
+    sequence
+        left_bound: atom <- map_validate_bounds_left(compare_key, left, key);
+        right_bound: atom <- case left_bound of {
+            :ok -> map_validate_bounds_right(compare_key, key, right);
+            bad: atom -> bad
+        };
+        counts_ok: boolean <- case left.count < 0 of {
+            true -> false;
+            false -> case right.count < 0 of { true -> false; false -> true }
+        };
+        computed: int64 <- left.count + right.count + 1;
+        wl: int64 <- left.count + 1;
+        wr: int64 <- right.count + 1;
+        bal_ok: boolean <- case counts_ok of {
+            true -> weights_balanced(wl, wr);
+            false -> false
+        };
+        combined_lo: KeyType <- map_validate_combine_lo(key, left);
+        combined_hi: KeyType <- map_validate_combine_hi(key, right);
+        out: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: KeyType,
+            hi: KeyType
+        } <- case right_bound of {
+            :invalid_comparator_result -> map_validate_err(:invalid_comparator_result, computed, key);
+            :order_violation -> case cached <= 0 of {
+                true -> map_validate_err(:negative_count, computed, key);
+                false -> case counts_ok of {
+                    false -> map_validate_err(:size_mismatch, computed, key);
+                    true -> case computed == cached of {
+                        false -> map_validate_err(:size_mismatch, computed, key);
+                        true -> map_validate_err(:order_violation, computed, key)
+                    }
+                }
+            };
+            :ok -> case cached <= 0 of {
+                true -> map_validate_err(:negative_count, computed, key);
+                false -> case counts_ok of {
+                    false -> map_validate_err(:size_mismatch, computed, key);
+                    true -> case computed == cached of {
+                        false -> map_validate_err(:size_mismatch, computed, key);
+                        true -> case bal_ok of {
+                            false -> map_validate_err(:balance_violation, computed, key);
+                            true -> map_validate_ok_node(computed, combined_lo, combined_hi)
+                        }
+                    }
+                }
+            };
+            bad: atom -> map_validate_err(bad, computed, key)
+        }
+    produces
+        pure out
+    end
+}
+
+// Single left-then-right walk (no left_only/right_only/both split).
+fn map_validate_finish(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    left_res: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: KeyType,
+        hi: KeyType
+    },
+    right_res: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: KeyType,
+        hi: KeyType
+    }
+) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: KeyType,
+    hi: KeyType
+} {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (key, _, cached: int64, _: ref?(L, normal, rec), _: ref?(L, normal, rec)) <- node;
+        out: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: KeyType,
+            hi: KeyType
+        } <- case left_res.error of {
+            :ok -> case right_res.error of {
+                :ok -> map_validate_node_local(map.compare_key, key, cached, left_res, right_res);
+                bad: atom -> right_res
+            };
+            bad: atom -> left_res
+        }
+    produces
+        pure out
+    end
+}
+
+fn map_validate_after_children(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right: ref?(L, normal, rec),
+    fuel: int64,
+    left_res: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: KeyType,
+        hi: KeyType
+    }
+) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: KeyType,
+    hi: KeyType
+} {
+    case left_res.error of {
+        :ok -> {
+            sequence proc[mem(normal)]
+                node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+                (key, _, _: int64, _: ref?(L, normal, rec), _: ref?(L, normal, rec)) <- node;
+                right_res: {
+                    error: atom,
+                    count: int64,
+                    has_items: boolean,
+                    lo: KeyType,
+                    hi: KeyType
+                } <- map_validate_subtree(map, right, key, fuel)
+            produces
+                pure map_validate_finish(map, node_ref, left_res, right_res)
+            end
+        };
+        bad: atom -> left_res
+    }
+}
+
+fn map_edge_cycle(
+    a: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    b: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> atom {
+    sequence
+        cyc: boolean <- ref_eq(a, b);
+        out: atom <- case cyc of { true -> :cycle; false -> :ok }
+    produces
+        pure out
+    end
+}
+
+fn map_edge_repeated(
+    a: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    b: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> atom {
+    sequence
+        same: boolean <- ref_eq(a, b);
+        out: atom <- case same of { true -> :repeated_child; false -> :ok }
+    produces
+        pure out
+    end
+}
+
+fn map_edges_when_left(
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right: ref?(L, normal, rec)
+) -> atom {
+    case right of {
+        :none -> map_edge_cycle(node_ref, left_ref);
+        right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+            sequence
+                rep: atom <- map_edge_repeated(left_ref, right_ref);
+                out: atom <- case rep of {
+                    :repeated_child -> :repeated_child;
+                    :ok -> {
+                        sequence
+                            e1: atom <- map_edge_cycle(node_ref, left_ref);
+                            e2: atom <- case e1 of {
+                                :ok -> map_edge_cycle(node_ref, right_ref);
+                                bad: atom -> bad
+                            }
+                        produces
+                            pure e2
+                        end
+                    };
+                    bad: atom -> bad
+                }
+            produces
+                pure out
+            end
+        }
+    }
+}
+
+fn map_validate_child_edges_of(
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> atom {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, _, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node;
+        out: atom <- case left of {
+            :none -> case right of {
+                :none -> :ok;
+                right_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                    map_edge_cycle(node_ref, right_ref)
+            };
+            left_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                map_edges_when_left(node_ref, left_ref, right)
+        }
+    produces
+        pure out
+    end
+}
+
+fn map_validate_node(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    placeholder: KeyType,
+    fuel: int64
+) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: KeyType,
+    hi: KeyType
+} {
+    sequence proc[mem(normal)]
+        in_arena: boolean <- ref_in_region(node_ref, map.region);
+        out: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: KeyType,
+            hi: KeyType
+        } <- case fuel <= 0 of {
+            true -> map_validate_err(:cycle, 0, placeholder);
+            false -> case in_arena of {
+                false -> map_validate_err(:wrong_arena, 0, placeholder);
+                true -> {
+                    sequence
+                        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+                        (key, _, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node;
+                        next_fuel: int64 <- fuel - 1;
+                        edges: atom <- map_validate_child_edges_of(node_ref);
+                        walked: {
+                            error: atom,
+                            count: int64,
+                            has_items: boolean,
+                            lo: KeyType,
+                            hi: KeyType
+                        } <- case edges of {
+                            :ok -> {
+                                sequence
+                                    left_res: {
+                                        error: atom,
+                                        count: int64,
+                                        has_items: boolean,
+                                        lo: KeyType,
+                                        hi: KeyType
+                                    } <- map_validate_subtree(map, left, key, next_fuel)
+                                produces
+                                    pure map_validate_after_children(map, node_ref, right, next_fuel, left_res)
+                                end
+                            };
+                            bad: atom -> map_validate_err(bad, 0, key)
+                        }
+                    produces
+                        pure walked
+                    end
+                }
+            }
+        }
+    produces
+        pure out
+    end
+}
+
+fn map_validate_subtree(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    subtree: ref?(L, normal, rec),
+    placeholder: KeyType,
+    fuel: int64
+) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: KeyType,
+    hi: KeyType
+} {
+    case subtree of {
+        :none -> map_validate_ok_empty(placeholder);
+        node_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            map_validate_node(map, node_ref, placeholder, fuel)
+    }
+}
+
+fn map_validate_at_root(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    root_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> { valid: boolean, error: atom, logical_count: int64 } {
+    sequence proc[mem(normal)]
+        node: (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(root_ref);
+        (key, _, cached: int64, _: ref?(L, normal, rec), _: ref?(L, normal, rec)) <- node;
+        fuel: int64 <- map_validate_fuel_start(cached);
+        walk: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: KeyType,
+            hi: KeyType
+        } <- map_validate_node(map, root_ref, key, fuel);
+        out: { valid: boolean, error: atom, logical_count: int64 } <- case walk.error of {
+            :ok -> map_validate_result_ok(walk.count);
+            bad: atom -> map_validate_result_err(bad, walk.count)
+        }
+    produces
+        pure out
+    end
+}
+
+fn validate(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(KeyType, KeyType) -> :less | :equal | :greater,
+        compare_value: fn(ValueType, ValueType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> { valid: boolean, error: atom, logical_count: int64 } {
+    case map.root of {
+        :none -> map_validate_result_ok(0);
+        root_ref: ref(L, normal, (KeyType, ValueType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            map_validate_at_root(map, root_ref)
+    }
+}
+
+fn validate_error_code(error: atom) -> int64 {
+    case error of {
+        :ok -> 0;
+        :cycle -> 1;
+        :wrong_arena -> 2;
+        :repeated_child -> 3;
+        :invalid_comparator_result -> 4;
+        :negative_count -> 5;
+        :size_mismatch -> 6;
+        :order_violation -> 7;
+        :balance_violation -> 8;
+        _: atom -> 99
+    }
 }

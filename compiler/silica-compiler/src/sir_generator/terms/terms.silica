@@ -1723,7 +1723,7 @@ fn build_region_prim_in_body(context: TypeContext, expr: Expr, bound_name: strin
         true -> build_region_prim_fresh_lifetime(expr.name, expected_type);
         false -> case expr.name == "alloc_region" or expr.name == "read_ref" or expr.name == "canonical_arena_lookup" of {
             true -> build_region_prim_in_body_1arg(context, expr, bound_name, bound_type, expected_type);
-            false -> case expr.name == "alloc_ref" or expr.name == "alloc_rec" or expr.name == "alloc_buf" or expr.name == "buf_load" or expr.name == "read_buf" or expr.name == "write_ref" or expr.name == "canonical_arena_same" of {
+            false -> case expr.name == "alloc_ref" or expr.name == "alloc_rec" or expr.name == "alloc_buf" or expr.name == "buf_load" or expr.name == "read_buf" or expr.name == "write_ref" or expr.name == "canonical_arena_same" or expr.name == "ref_eq" or expr.name == "ref_in_region" of {
                 true -> build_region_prim_in_body_2arg(context, expr, bound_name, bound_type, expected_type);
                 false -> case expr.name == "buf_store" or expr.name == "write_buf" of {
                     true -> build_region_prim_in_body_buf_store(context, expr, bound_name, bound_type, expected_type);
@@ -1794,7 +1794,7 @@ fn build_region_prim(context: TypeContext, expr: Expr, expected_type: string) ->
         true -> build_region_prim_fresh_lifetime(expr.name, expected_type);
         false -> case expr.name == "alloc_region" or expr.name == "read_ref" or expr.name == "canonical_arena_lookup" of {
             true -> build_region_prim_1arg(context, expr, expected_type);
-            false -> case expr.name == "alloc_ref" or expr.name == "alloc_rec" or expr.name == "alloc_buf" or expr.name == "buf_load" or expr.name == "read_buf" or expr.name == "write_ref" or expr.name == "canonical_arena_same" of {
+            false -> case expr.name == "alloc_ref" or expr.name == "alloc_rec" or expr.name == "alloc_buf" or expr.name == "buf_load" or expr.name == "read_buf" or expr.name == "write_ref" or expr.name == "canonical_arena_same" or expr.name == "ref_eq" or expr.name == "ref_in_region" of {
                 true -> build_region_prim_2arg(context, expr, expected_type);
                 false -> case expr.name == "buf_store" or expr.name == "write_buf" of {
                     true -> build_region_prim_buf_store(context, expr, expected_type);
@@ -1852,6 +1852,8 @@ fn arg_type_for_region_prim(call_name: string, arg_idx: int64, expected_type: st
         "fresh_lifetime" -> "lifetime";
         "canonical_arena_lookup" -> "int64";
         "canonical_arena_same" -> "region(R, normal)";
+        "ref_eq" -> "ref(R, normal, int64)";
+        "ref_in_region" -> case arg_idx of { 0 -> "ref(R, normal, int64)"; 1 -> "region(R, normal)"; _: int64 -> expected_type };
         _: string -> expected_type
     }
 }
@@ -1864,16 +1866,23 @@ fn arg_type_for_region_prim_inferred(call_name: string, arg_idx: int64, expected
             1 -> type_checker_tuple_decompose_helpers@infer_expr_type(region_call_second_arg(expr), context);
             _: int64 -> "region(R, normal)"
         };
-        false -> case call_name == "buf_load" or call_name == "read_buf" of {
-            true -> case arg_idx of { 0 -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context); 1 -> "int64"; _: int64 -> expected_type };
-            false -> case call_name == "buf_store" or call_name == "write_buf" of {
-                true -> case arg_idx of {
-                    0 -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
-                    1 -> "int64";
-                    2 -> type_checker_memory_regions@extract_element_type_from_buf(type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context));
-                    _: int64 -> expected_type
-                };
-                false -> arg_type_for_region_prim(call_name, arg_idx, expected_type)
+        false -> case call_name == "ref_eq" or call_name == "ref_in_region" of {
+            true -> case arg_idx of {
+                0 -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                1 -> type_checker_tuple_decompose_helpers@infer_expr_type(region_call_second_arg(expr), context);
+                _: int64 -> expected_type
+            };
+            false -> case call_name == "buf_load" or call_name == "read_buf" of {
+                true -> case arg_idx of { 0 -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context); 1 -> "int64"; _: int64 -> expected_type };
+                false -> case call_name == "buf_store" or call_name == "write_buf" of {
+                    true -> case arg_idx of {
+                        0 -> type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                        1 -> "int64";
+                        2 -> type_checker_memory_regions@extract_element_type_from_buf(type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context));
+                        _: int64 -> expected_type
+                    };
+                    false -> arg_type_for_region_prim(call_name, arg_idx, expected_type)
+                }
             }
         }
     }

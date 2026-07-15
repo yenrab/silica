@@ -1,0 +1,97 @@
+// Layer 2 §8A.10: independently detect each injectable structural fault.
+
+use wbt_set;
+use wbt_trial_fixture;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn expect_code(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    expected: int64
+) -> int64 {
+    sequence
+        v: { valid: boolean, error: atom, logical_count: int64 } <- wbt_set@validate(set);
+        code: int64 <- wbt_set@validate_error_code(v.error);
+        out: int64 <- case v.valid of {
+            true -> 0;
+            false -> case code == expected of { true -> 1; false -> 0 }
+        }
+    produces
+        pure out
+    end
+}
+
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        r: region(L, normal) <- alloc_region(normal);
+        r2: region(L, normal) <- alloc_region(normal);
+        zero: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_set_zero_size_i64(cmp_i64, r);
+        wrong: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_set_wrong_size_i64(cmp_i64, r);
+        order: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_set_order_violation_i64(cmp_i64, r);
+        bal: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_set_balance_violation_i64(cmp_i64, r);
+        cyc: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_set_cycle_i64(cmp_i64, r);
+        rep: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_set_repeated_child_i64(cmp_i64, r);
+        arena: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_trial_fixture@build_set_wrong_arena_i64(cmp_i64, r, r2);
+        a0: int64 <- expect_code(zero, 5);
+        a1: int64 <- expect_code(wrong, 6);
+        a2: int64 <- expect_code(order, 7);
+        a3: int64 <- expect_code(bal, 8);
+        a4: int64 <- expect_code(cyc, 1);
+        a5: int64 <- expect_code(rep, 3);
+        a6: int64 <- expect_code(arena, 2);
+        out: int64 <- a0 + a1 + a2 + a3 + a4 + a5 + a6
+    produces
+        pure out
+    end
+}

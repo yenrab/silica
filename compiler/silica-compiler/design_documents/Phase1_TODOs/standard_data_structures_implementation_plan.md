@@ -1064,9 +1064,11 @@ Acceptance trials:
 
 Audit every Phase 1 downstream consumer before adding `join`, `concat`, or `split`. The current public set/map designs, live graphs, and snapshot index builders do not require them, so the default decision is **deferred—not implemented in Phase 1 Layer 2A**.
 
-If a concrete Phase 1 consumer later proves one is required:
+**Revisit home:** Layer 3 §9B.1 (after `OrderedSet` / `OrderedMap` land). Do not leave the reopen decision only in this Layer 2A subsection.
 
-- record that consumer and operation in this section and the requirements ledger;
+If a concrete consumer later proves one is required (at §9B.1 or afterward):
+
+- record that consumer and operation in §9B.1 and the requirements ledger;
 - implement it only in terms of the same smart constructor and `(3,2)` balance functions;
 - check ordering and arena preconditions before allocating a result that can reference both inputs;
 - add direct valid, invalid-precondition, persistence, sharing, and randomized-oracle trials; and
@@ -1076,7 +1078,7 @@ Do not add a second balancing algorithm or speculative public API.
 
 **§8A.9 exit gate:** either the deferral is recorded after the consumer audit, or every required primitive has its own accepted mini-gate. An untested optional primitive may not ship in the internal module.
 
-**§8A.9 status:** Planned consumer audit; join/split/concat deferred unless proven necessary.
+**§8A.9 status (2026-07-15):** Complete — consumer audit recorded; `join` / `concat` / `split` **deferred** out of Layer 2A (not implemented). Audit: public `OrderedSet` / `OrderedMap` / `SearchTree` designs expose insert, delete, search, fold, `from_sorted`, and validate only; live WBT graphs update indexes via insert-style edge ops; CSR/dense snapshot builders need WBT `from_sorted` for `node_to_slot`, not join/split/concat. No Phase 1 Layer 2A consumer requires these primitives. **Verified:** `stdlib/data_structures/wbt_{set,map}.silica` export none of `join` / `concat` / `split` (internal `from_sorted_buf_split` is the §8A.8 median builder only). **Mandatory reopen checkpoint:** §9B.1 after Layer 3 §9A/§9B. Exit gate satisfied by recorded deferral plus forward pointer.
 
 ### 8A.10 Full structural validation
 
@@ -1106,7 +1108,7 @@ Malformed fixture construction remains trial-only. No production constructor may
 
 **§8A.10 exit gate:** the validator accepts every valid operation result, rejects every independently injectable invariant violation, terminates on cycles, reports deterministic diagnostics, and returns the exact logical count.
 
-**§8A.10 status:** Planned.
+**§8A.10 status (2026-07-15):** Complete — `wbt_set@validate/1` and `wbt_map@validate/1` return `{valid, error, logical_count}` via a single left-then-right postorder walk. Entry checks: `:cycle` / `:repeated_child` (via `ref_eq` on parent/child and sibling edges) and `:wrong_arena` (`ref_in_region`). Node-local checks after children: `:invalid_comparator_result`, `:negative_count`, `:size_mismatch`, `:order_violation`, `:balance_violation` under fixed precedence. Set also exports `validate_with_compare/2` for bound-check comparator injection; `validate_error_code/1` maps atoms to stable int64 codes (`:ok=0` … `:balance_violation=8`). Emitter-safe helpers keep child refs as parameters (`edges_when_left` / `map_edges_when_left`) to avoid multi-arg register scramble. Positive trials in `wbt_core/`: `wbt_validate_invariants` (empty + 7-node fixture + insert-2; exit 3), `wbt_validate_malformed_fixture` (seven independent faults; exit 7), `wbt_validate_error_precedence` (size before order), `wbt_validate_map_pairing` (mutate + bulk fold pairing). Collection-error: `trial_collection_error_wbt_validate_invalid_comparator`. Malformed construction remains trial-only in `wbt_trial_fixture`.
 
 ### 8A.11 Deterministic exhaustive and randomized trace hardening
 
@@ -1165,7 +1167,7 @@ The corrected Adams-family WBT core is accepted only when all of the following h
 - Invalid comparator results are exercised at every comparator-using operation and never publish a changed root.
 - Full validation covers arena, acyclicity/non-duplication, cached size, strict order, `(3,2)` balance, map pairing, and root logical count.
 - Exhaustive and fixed-seed randomized set/map traces agree with independent test oracles after every operation.
-- The §8A.9 consumer audit records join/split/concat as deferred or separately accepts each primitive that is actually required.
+- The §8A.9 consumer audit records join/split/concat as deferred for Layer 2A; the mandatory reopen checkpoint is Layer 3 §9B.1 (not only this bullet).
 - No public `wbt_set`, `wbt_map`, `OrderedSet`, `OrderedMap`, SearchTree, or graph implementation has been used to hide a missing core behavior.
 
 Only after this gate passes may Layer 3 §9A/§9B or any WBT-dependent graph/index work begin.
@@ -1376,6 +1378,20 @@ Implement:
 
 Acceptance includes a test proving value comparison is not called during key descent, insertion, deletion, or balancing.
 
+### 9B.1 Optional WBT join/split/concat reopen (from §8A.9)
+
+**Purpose:** Keep the §8A.9 deferral from being forgotten after public set/map backends exist.
+
+After §9A and §9B acceptance (and before treating Layer 3 set/map work as finished), re-audit whether any Phase 1 consumer—including `OrderedSet` / `OrderedMap` public surface, `SearchTree`, live graphs, and CSR/dense indexes—needs WBT `join`, `concat`, or `split`.
+
+Default outcome (matches §8A.9 and `ordered_set_trait.md` / `ordered_map_trait.md`): **remain deferred**—no public trait methods and no internal `wbt_set` / `wbt_map` exports for these ops in the initial Layer 3 landing.
+
+Reopen only if a **named** consumer requires set union, ordered concat, or key-range split and fold-insert / `from_sorted` is insufficient. Then follow §8A.9’s conditional mini-gate (same `(3,2)` balance, precondition checks, trials, dated acceptance) before any consumer uses the primitive. Speculative Adams set-algebra API without a consumer is still out of scope; if still undesired after this checkpoint, record “deferred post–Phase 1” in the ledger and move on.
+
+**§9B.1 exit gate:** dated record either reaffirming deferral (no Phase 1 consumer) or accepting each required primitive under the §8A.9 mini-gate rules.
+
+**§9B.1 status:** Planned — blocked on §9A/§9B.
+
 ## 9C. `Heap`
 
 **Dependencies:** accepted Brodal–Okasaki core and trait substrate.
@@ -1441,6 +1457,7 @@ Acceptance trials:
 
 - `OrderedSet`, `OrderedMap`, `Heap`, and `BinaryTree` pass their complete detailed-design suites.
 - Their generated records and methods link without specialization collisions.
+- **§9B.1:** join/split/concat reopen checkpoint is dated (reaffirmed deferral or accepted mini-gate).
 - **§9C:** public `Heap@meld` incompatibility behavior matches §8C before-allocation rejection (left heap unchanged, `compatible=false`).
 - WBT set/map backends are usable internally without dispatching through public traits where representation code requires direct operations.
 - The accepted BinaryTree backend is available to the downstream bootstrap-retirement AST bridge without making that bridge part of the standard-structure gate.

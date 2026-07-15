@@ -17,7 +17,7 @@
 
 // Memory region prim emission: alloc_region, alloc_ref, alloc_rec, read_ref, write_ref,
 // alloc_buf, buf_load, buf_store, read_buf, write_buf, fresh_lifetime,
-// canonical_arena_lookup, canonical_arena_same
+// canonical_arena_lookup, canonical_arena_same, ref_eq, ref_in_region
 // sir_design_spec §7.4, §7.5; silica-specification §12.1.2
 // Heap-based allocation per spec: regions are heap-allocated with scope-tied deallocation.
 // Arena layout: [0:8]=bump, [8:16]=end; data at offset 16. Size 4096+16=4112 bytes.
@@ -37,7 +37,29 @@ export module_uses_alloc_region/1;
 export emit_region_overflow_helper/0;
 
 fn is_memory_prim(name: string) -> bool {
-    name == "alloc_region" or name == "alloc_ref" or name == "alloc_rec" or name == "read_ref" or name == "write_ref" or name == "alloc_buf" or name == "buf_load" or name == "buf_store" or name == "read_buf" or name == "write_buf" or name == "fresh_lifetime" or name == "canonical_arena_lookup" or name == "canonical_arena_same"
+    name == "alloc_region" or name == "alloc_ref" or name == "alloc_rec" or name == "read_ref" or name == "write_ref" or name == "alloc_buf" or name == "buf_load" or name == "buf_store" or name == "read_buf" or name == "write_buf" or name == "fresh_lifetime" or name == "canonical_arena_lookup" or name == "canonical_arena_same" or name == "ref_eq" or name == "ref_in_region"
+}
+
+// ref_eq(a, b): X1 = ref A, X2 = ref B -> boolean in dest (pointer identity).
+fn emit_ref_eq(dest: string) -> string {
+    cmp: string <- "    CMP X1, X2\n";
+    cset: string <- "    CSET W5, EQ\n";
+    mov_dest: string <- concat(concat("    MOV ", dest), ", X5");
+    concat(concat(cmp, cset), mov_dest)
+}
+
+// ref_in_region(ref, region): X1 = ref cell, X2 = region base -> boolean in dest.
+// Arena span is [region+16, end); bump is only the next-allocation cursor.
+fn emit_ref_in_region(dest: string) -> string {
+    ldr_end: string <- "    LDR X3, [X2, #8]\n";
+    add_start: string <- "    ADD X4, X2, #16\n";
+    cmp_lo: string <- "    CMP X1, X4\n";
+    cset_lo: string <- "    CSET W5, HS\n";
+    cmp_hi: string <- "    CMP X1, X3\n";
+    cset_hi: string <- "    CSET W6, LO\n";
+    and_both: string <- "    AND W5, W5, W6\n";
+    mov_dest: string <- concat(concat("    MOV ", dest), ", X5");
+    concat(concat(concat(concat(ldr_end, add_start), concat(cmp_lo, cset_lo)), concat(cmp_hi, cset_hi)), concat(and_both, mov_dest))
 }
 
 // canonical_arena_lookup(key): X1 = int64 specialization key -> region base in dest.
@@ -532,6 +554,8 @@ fn emit_prim_op(term: SIRTerm, dest: string) -> string {
         "fresh_lifetime" -> emit_fresh_lifetime(dest);
         "canonical_arena_lookup" -> emit_canonical_arena_lookup(dest);
         "canonical_arena_same" -> emit_canonical_arena_same(dest);
+        "ref_eq" -> emit_ref_eq(dest);
+        "ref_in_region" -> emit_ref_in_region(dest);
         _: string -> concat(concat("    ; unsupported memory prim: ", term.name), "")
     }
 }

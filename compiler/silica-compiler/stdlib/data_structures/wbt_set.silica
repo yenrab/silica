@@ -1,5 +1,5 @@
-// Layer 2 §8A.1–§8A.5 / §8A.7–§8A.8 — Adams WBT set core: smart nodes, read-only helpers,
-// (3,2) balance/rotations, insert, delete, from_sorted.
+// Layer 2 §8A.1–§8A.5 / §8A.7–§8A.8 / §8A.10 — Adams WBT set core: smart nodes, read-only helpers,
+// (3,2) balance/rotations, insert, delete, from_sorted, validate.
 // Node shape (inline at every boundary): (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)).
 
 export empty/1;
@@ -25,6 +25,9 @@ export from_sorted/2;
 export from_sorted_counted/3;
 export from_sorted_error_code/1;
 export from_sorted_preflight_status/4;
+export validate/1;
+export validate_with_compare/2;
+export validate_error_code/1;
 
 fn empty(
     functions: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater }
@@ -4633,4 +4636,664 @@ fn from_sorted(
     produces
         pure out
     end
+}
+
+// §8A.10 — postorder structural validation.
+// Diagnostic precedence (stable for goldens):
+//   on entry: :cycle, :wrong_arena, :repeated_child
+//   after children (node-local): :invalid_comparator_result, :negative_count,
+//     :size_mismatch, :order_violation, :balance_violation
+// Child errors surface before parent node-local errors.
+
+fn validate_result_ok(count: int64) -> { valid: boolean, error: atom, logical_count: int64 } {
+    sequence
+        out: { valid: boolean, error: atom, logical_count: int64 } <- { valid: true, error: :ok, logical_count: count }
+    produces
+        pure out
+    end
+}
+
+fn validate_result_err(error: atom, count: int64) -> { valid: boolean, error: atom, logical_count: int64 } {
+    sequence
+        out: { valid: boolean, error: atom, logical_count: int64 } <- { valid: false, error: error, logical_count: count }
+    produces
+        pure out
+    end
+}
+
+fn validate_subtree_ok_empty(placeholder: ItemType) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: ItemType,
+    hi: ItemType
+} {
+    sequence
+        out: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: ItemType,
+            hi: ItemType
+        } <- { error: :ok, count: 0, has_items: false, lo: placeholder, hi: placeholder }
+    produces
+        pure out
+    end
+}
+
+fn validate_subtree_err(error: atom, count: int64, placeholder: ItemType) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: ItemType,
+    hi: ItemType
+} {
+    sequence
+        out: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: ItemType,
+            hi: ItemType
+        } <- { error: error, count: count, has_items: false, lo: placeholder, hi: placeholder }
+    produces
+        pure out
+    end
+}
+
+fn validate_subtree_ok_node(count: int64, lo: ItemType, hi: ItemType) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: ItemType,
+    hi: ItemType
+} {
+    sequence
+        out: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: ItemType,
+            hi: ItemType
+        } <- { error: :ok, count: count, has_items: true, lo: lo, hi: hi }
+    produces
+        pure out
+    end
+}
+
+fn validate_fuel_start(cached: int64) -> int64 {
+    case cached < 0 of {
+        true -> 64;
+        false -> case cached > 1000000 of {
+            true -> 1000002;
+            false -> cached + 2
+        }
+    }
+}
+
+fn validate_order_left(
+    compare_item: fn(ItemType, ItemType) -> atom,
+    left_hi: ItemType,
+    key: ItemType
+) -> atom {
+    sequence
+        cmp: atom <- comparator_result_validate(compare_item(left_hi, key))
+    produces
+        pure case cmp of {
+            :less -> :ok;
+            :equal -> :order_violation;
+            :greater -> :order_violation;
+            _: atom -> :invalid_comparator_result
+        }
+    end
+}
+
+fn validate_order_right(
+    compare_item: fn(ItemType, ItemType) -> atom,
+    key: ItemType,
+    right_lo: ItemType
+) -> atom {
+    sequence
+        cmp: atom <- comparator_result_validate(compare_item(key, right_lo))
+    produces
+        pure case cmp of {
+            :less -> :ok;
+            :equal -> :order_violation;
+            :greater -> :order_violation;
+            _: atom -> :invalid_comparator_result
+        }
+    end
+}
+
+fn validate_bounds_left(
+    compare_item: fn(ItemType, ItemType) -> atom,
+    left: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: ItemType,
+        hi: ItemType
+    },
+    key: ItemType
+) -> atom {
+    case left.has_items of {
+        false -> :ok;
+        true -> validate_order_left(compare_item, left.hi, key)
+    }
+}
+
+fn validate_bounds_right(
+    compare_item: fn(ItemType, ItemType) -> atom,
+    key: ItemType,
+    right: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: ItemType,
+        hi: ItemType
+    }
+) -> atom {
+    case right.has_items of {
+        false -> :ok;
+        true -> validate_order_right(compare_item, key, right.lo)
+    }
+}
+
+fn validate_combine_lo(key: ItemType, left: {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: ItemType,
+    hi: ItemType
+}) -> ItemType {
+    case left.has_items of {
+        true -> left.lo;
+        false -> key
+    }
+}
+
+fn validate_combine_hi(key: ItemType, right: {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: ItemType,
+    hi: ItemType
+}) -> ItemType {
+    case right.has_items of {
+        true -> right.hi;
+        false -> key
+    }
+}
+
+fn validate_node_local(
+    compare_item: fn(ItemType, ItemType) -> atom,
+    key: ItemType,
+    cached: int64,
+    left: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: ItemType,
+        hi: ItemType
+    },
+    right: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: ItemType,
+        hi: ItemType
+    }
+) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: ItemType,
+    hi: ItemType
+} {
+    sequence
+        left_bound: atom <- validate_bounds_left(compare_item, left, key);
+        right_bound: atom <- case left_bound of {
+            :ok -> validate_bounds_right(compare_item, key, right);
+            bad: atom -> bad
+        };
+        // Avoid checked_int64_add pair temps here: their stack slabs unbalanced SP and
+        // made RET load LR from a key immediate (crash to address 0xa).
+        counts_ok: boolean <- case left.count < 0 of {
+            true -> false;
+            false -> case right.count < 0 of { true -> false; false -> true }
+        };
+        computed: int64 <- left.count + right.count + 1;
+        wl: int64 <- left.count + 1;
+        wr: int64 <- right.count + 1;
+        bal_ok: boolean <- case counts_ok of {
+            true -> weights_balanced(wl, wr);
+            false -> false
+        };
+        combined_lo: ItemType <- validate_combine_lo(key, left);
+        combined_hi: ItemType <- validate_combine_hi(key, right);
+        out: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: ItemType,
+            hi: ItemType
+        } <- case right_bound of {
+            :invalid_comparator_result -> validate_subtree_err(:invalid_comparator_result, computed, key);
+            :order_violation -> case cached <= 0 of {
+                true -> validate_subtree_err(:negative_count, computed, key);
+                false -> case counts_ok of {
+                    false -> validate_subtree_err(:size_mismatch, computed, key);
+                    true -> case computed == cached of {
+                        false -> validate_subtree_err(:size_mismatch, computed, key);
+                        true -> validate_subtree_err(:order_violation, computed, key)
+                    }
+                }
+            };
+            :ok -> case cached <= 0 of {
+                true -> validate_subtree_err(:negative_count, computed, key);
+                false -> case counts_ok of {
+                    false -> validate_subtree_err(:size_mismatch, computed, key);
+                    true -> case computed == cached of {
+                        false -> validate_subtree_err(:size_mismatch, computed, key);
+                        true -> case bal_ok of {
+                            false -> validate_subtree_err(:balance_violation, computed, key);
+                            true -> validate_subtree_ok_node(computed, combined_lo, combined_hi)
+                        }
+                    }
+                }
+            };
+            bad: atom -> validate_subtree_err(bad, computed, key)
+        }
+    produces
+        pure out
+    end
+}
+
+// Single left-then-right walk (no left_only/right_only/both split): the emitter
+// clobbers the unmatched child when marshalling calls after a `case` on ref?.
+fn validate_finish(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> atom,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    left_res: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: ItemType,
+        hi: ItemType
+    },
+    right_res: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: ItemType,
+        hi: ItemType
+    }
+) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: ItemType,
+    hi: ItemType
+} {
+    sequence proc[mem(normal)]
+        node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (key, cached: int64, _: ref?(L, normal, rec), _: ref?(L, normal, rec)) <- node;
+        out: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: ItemType,
+            hi: ItemType
+        } <- case left_res.error of {
+            :ok -> case right_res.error of {
+                :ok -> validate_node_local(set.compare_item, key, cached, left_res, right_res);
+                bad: atom -> right_res
+            };
+            bad: atom -> left_res
+        }
+    produces
+        pure out
+    end
+}
+
+fn validate_after_children(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> atom,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right: ref?(L, normal, rec),
+    fuel: int64,
+    left_res: {
+        error: atom,
+        count: int64,
+        has_items: boolean,
+        lo: ItemType,
+        hi: ItemType
+    }
+) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: ItemType,
+    hi: ItemType
+} {
+    case left_res.error of {
+        :ok -> {
+            sequence proc[mem(normal)]
+                node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+                (key, _: int64, _: ref?(L, normal, rec), _: ref?(L, normal, rec)) <- node;
+                right_res: {
+                    error: atom,
+                    count: int64,
+                    has_items: boolean,
+                    lo: ItemType,
+                    hi: ItemType
+                } <- validate_subtree(set, right, key, fuel)
+            produces
+                pure validate_finish(set, node_ref, left_res, right_res)
+            end
+        };
+        bad: atom -> left_res
+    }
+}
+
+fn edge_cycle(
+    a: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    b: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> atom {
+    sequence
+        cyc: boolean <- ref_eq(a, b);
+        out: atom <- case cyc of { true -> :cycle; false -> :ok }
+    produces
+        pure out
+    end
+}
+
+fn edge_repeated(
+    a: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    b: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> atom {
+    sequence
+        same: boolean <- ref_eq(a, b);
+        out: atom <- case same of { true -> :repeated_child; false -> :ok }
+    produces
+        pure out
+    end
+}
+
+fn edges_when_left(
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    left_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right: ref?(L, normal, rec)
+) -> atom {
+    case right of {
+        :none -> edge_cycle(node_ref, left_ref);
+        right_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+            sequence
+                rep: atom <- edge_repeated(left_ref, right_ref);
+                out: atom <- case rep of {
+                    :repeated_child -> :repeated_child;
+                    :ok -> {
+                        sequence
+                            e1: atom <- edge_cycle(node_ref, left_ref);
+                            e2: atom <- case e1 of {
+                                :ok -> edge_cycle(node_ref, right_ref);
+                                bad: atom -> bad
+                            }
+                        produces
+                            pure e2
+                        end
+                    };
+                    bad: atom -> bad
+                }
+            produces
+                pure out
+            end
+        }
+    }
+}
+
+fn validate_child_edges_of(
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> atom {
+    sequence proc[mem(normal)]
+        node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node;
+        out: atom <- case left of {
+            :none -> case right of {
+                :none -> :ok;
+                right_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                    edge_cycle(node_ref, right_ref)
+            };
+            left_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                edges_when_left(node_ref, left_ref, right)
+        }
+    produces
+        pure out
+    end
+}
+
+fn validate_node(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> atom,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    placeholder: ItemType,
+    fuel: int64
+) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: ItemType,
+    hi: ItemType
+} {
+    sequence proc[mem(normal)]
+        in_arena: boolean <- ref_in_region(node_ref, set.region);
+        out: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: ItemType,
+            hi: ItemType
+        } <- case fuel <= 0 of {
+            true -> validate_subtree_err(:cycle, 0, placeholder);
+            false -> case in_arena of {
+                false -> validate_subtree_err(:wrong_arena, 0, placeholder);
+                true -> {
+                    sequence
+                        node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+                        (key, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node;
+                        next_fuel: int64 <- fuel - 1;
+                        edges: atom <- validate_child_edges_of(node_ref);
+                        walked: {
+                            error: atom,
+                            count: int64,
+                            has_items: boolean,
+                            lo: ItemType,
+                            hi: ItemType
+                        } <- case edges of {
+                            :ok -> {
+                                sequence
+                                    left_res: {
+                                        error: atom,
+                                        count: int64,
+                                        has_items: boolean,
+                                        lo: ItemType,
+                                        hi: ItemType
+                                    } <- validate_subtree(set, left, key, next_fuel)
+                                produces
+                                    pure validate_after_children(set, node_ref, right, next_fuel, left_res)
+                                end
+                            };
+                            bad: atom -> validate_subtree_err(bad, 0, key)
+                        }
+                    produces
+                        pure walked
+                    end
+                }
+            }
+        }
+    produces
+        pure out
+    end
+}
+
+fn validate_subtree(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> atom,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    subtree: ref?(L, normal, rec),
+    placeholder: ItemType,
+    fuel: int64
+) -> {
+    error: atom,
+    count: int64,
+    has_items: boolean,
+    lo: ItemType,
+    hi: ItemType
+} {
+    case subtree of {
+        :none -> validate_subtree_ok_empty(placeholder);
+        node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            validate_node(set, node_ref, placeholder, fuel)
+    }
+}
+
+fn validate_at_root(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> atom,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    root_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> { valid: boolean, error: atom, logical_count: int64 } {
+    sequence proc[mem(normal)]
+        node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(root_ref);
+        (key, cached: int64, _: ref?(L, normal, rec), _: ref?(L, normal, rec)) <- node;
+        fuel: int64 <- validate_fuel_start(cached);
+        walk: {
+            error: atom,
+            count: int64,
+            has_items: boolean,
+            lo: ItemType,
+            hi: ItemType
+        } <- validate_node(set, root_ref, key, fuel);
+        out: { valid: boolean, error: atom, logical_count: int64 } <- case walk.error of {
+            :ok -> validate_result_ok(walk.count);
+            bad: atom -> validate_result_err(bad, walk.count)
+        }
+    produces
+        pure out
+    end
+}
+
+fn validate(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> { valid: boolean, error: atom, logical_count: int64 } {
+    sequence
+        probe: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> atom,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: set.root,
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        };
+        out: { valid: boolean, error: atom, logical_count: int64 } <- validate_core(probe)
+    produces
+        pure out
+    end
+}
+
+fn validate_with_compare(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    injected_compare: fn(ItemType, ItemType) -> atom
+) -> { valid: boolean, error: atom, logical_count: int64 } {
+    sequence
+        _: int64 <- set.specialization_key;
+        probe: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> atom,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: set.root,
+            compare_item: injected_compare,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        };
+        out: { valid: boolean, error: atom, logical_count: int64 } <- validate_core(probe)
+    produces
+        pure out
+    end
+}
+
+fn validate_core(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> atom,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> { valid: boolean, error: atom, logical_count: int64 } {
+    case set.root of {
+        :none -> validate_result_ok(0);
+        root_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            validate_at_root(set, root_ref)
+    }
+}
+
+fn validate_error_code(error: atom) -> int64 {
+    case error of {
+        :ok -> 0;
+        :cycle -> 1;
+        :wrong_arena -> 2;
+        :repeated_child -> 3;
+        :invalid_comparator_result -> 4;
+        :negative_count -> 5;
+        :size_mismatch -> 6;
+        :order_violation -> 7;
+        :balance_violation -> 8;
+        _: atom -> 99
+    }
 }

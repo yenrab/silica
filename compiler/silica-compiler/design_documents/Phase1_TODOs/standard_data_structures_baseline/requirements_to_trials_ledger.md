@@ -86,10 +86,10 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 | 9 | Map insert/replace on duplicate key | T | `stdlib/data_structures/wbt_map.silica` (`insert/3`); `wbt_core/` → `wbt_map_insert_replace`, `wbt_map_insert_orders`, `wbt_map_canonical_key`, `wbt_map_value_pairing`, `wbt_map_compare_value_not_called`, `wbt_map_replace_persistence`, `wbt_map_insert_payload_shapes`, `wbt_map_insert_tuple_value`, `trial_collection_error_wbt_map_insert_invalid_comparator`; `check-wbt-alloc-rec-gate` (**§8A.6 pass**) |
 | 10 | Deletion + successor/min extraction | T | `stdlib/data_structures/wbt_set.silica`, `wbt_map.silica` (`delete/2`, `delete_min`, `delete_max`); `wbt_core/` → `wbt_delete_absent`, `wbt_delete_leaf`, `wbt_delete_one_child`, `wbt_delete_two_child`, `wbt_delete_root`, `wbt_delete_extreme`, `wbt_delete_heavier_side`, `wbt_delete_rebalance`, `wbt_delete_persistence`, `wbt_delete_payload_shapes`, `trial_collection_error_wbt_{set,map}_delete_invalid_comparator` (**§8A.7 pass**) |
 | 11 | Ordered fold / early-exit fold order | T | `wbt_core/` → `wbt_fold_ascending`, `wbt_read_only_alloc_free`, `wbt_weight_checked` (**§8A.2 pass**) |
-| 12 | `from_sorted` linear O(n) builder | T | **Not green / incomplete** — `wbt_core/` → `wbt_from_sorted_empty` covers empty set/map success paths, `wbt_from_sorted_singleton` covers singleton set/map `from_sorted` plus `from_sorted_counted(..., 1)`, and `wbt_from_sorted_two` covers two-element set/map `from_sorted` plus `from_sorted_counted(..., 2)`; all three are enumerated, recorded, and passing. Planned deterministic-shape / malformed-input / count-mismatch / linearity / persistence `wbt_from_sorted_*` gate trials are still not passing; do not count §8A.8 complete until they are restored, recorded, and green without hangs. |
-| 13 | Optional join/split (same balance law) | O | "Public set/map APIs do not initially require union or split" |
-| 14 | Structural invariants (size, order, balance) | T | `wbt_core/` → `wbt_validate_invariants` (planned) |
-| 15 | Postorder validation algorithm | T | `wbt_core/` → `wbt_validate_detect_cycle` (planned) |
+| 12 | `from_sorted` linear O(n) builder | T | `wbt_core/` → `wbt_from_sorted_empty`, `wbt_from_sorted_singleton`, `wbt_from_sorted_two`, `wbt_from_sorted_shape`, `wbt_from_sorted_shape_large`, `wbt_from_sorted_set_map`, `wbt_from_sorted_ten_plus`, `wbt_from_sorted_valid_invalid`, `wbt_from_sorted_count_mismatch`, `wbt_from_sorted_map_invalid_two`, `wbt_from_sorted_linear`, `wbt_from_sorted_persistence`, `trial_collection_error_wbt_from_sorted_{set,map}_invalid_comparator` (**§8A.8 pass**) |
+| 13 | Optional join/split (same balance law) | O | **Deferred Layer 2A (2026-07-15, §8A.9)**; **reopen at Layer 3 §9B.1** after `OrderedSet`/`OrderedMap` — reaffirm deferral or accept a named-consumer mini-gate; not part of initial §9A/§9B trait surface |
+| 14 | Structural invariants (size, order, balance) | T | `wbt_core/` → `wbt_validate_invariants`, `wbt_validate_malformed_fixture`, `wbt_validate_error_precedence`, `wbt_validate_map_pairing` (**§8A.10 pass**) |
+| 15 | Postorder validation algorithm | T | `wbt_core/` → `wbt_validate_malformed_fixture` (cycle/repeated), `trial_collection_error_wbt_validate_invalid_comparator` (**§8A.10 pass**) |
 | 16 | Complexity table | I | Design §16 bounds |
 | 17 | References | I | Bibliography only |
 
@@ -229,7 +229,7 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 | 4 | `wbt_set` module surface | T | `ordered_collections/` → `wbt_set_empty_insert` (planned) |
 | 5 | Insert/delete/contains semantics | T | `ordered_collections/` → `ordered_set_duplicate_insert` (planned) |
 | 6 | Empty + invalid comparator failures | T | `ordered_collections/` → `ordered_set_invalid_comparator` (planned) |
-| 7 | WBT invariants delegated to core | T | `wbt_core/` → `wbt_validate_invariants` (planned) |
+| 7 | WBT invariants delegated to core | T | `wbt_core/` → `wbt_validate_invariants`, `wbt_validate_malformed_fixture` (**§8A.10 pass**) |
 | 8 | Persistence and memory effects | T | `ordered_collections/` → `ordered_set_persistence` (planned) |
 | 9 | Complexity | I | Design §9 table |
 | 10 | Example usage | T | `ordered_collections/` → `ordered_set_string_example` (planned) |
@@ -250,7 +250,7 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 | 7 | Delete by key | T | `ordered_collections/` → `ordered_map_delete_absent` (planned) |
 | 8 | `from_list` / `from_sorted` bulk | T | `ordered_collections/` → `ordered_map_from_sorted` (planned) |
 | 9 | Empty/failure behavior | T | `ordered_collections/` → `ordered_map_not_found_status` (planned) |
-| 10 | Invariants | T | `wbt_core/` → `wbt_validate_invariants` (planned) |
+| 10 | Invariants | T | `wbt_core/` → `wbt_validate_invariants`, `wbt_validate_map_pairing` (**§8A.10 pass**) |
 | 11 | Persistence | T | `ordered_collections/` → `ordered_map_persistence` (planned) |
 | 12 | Complexity | I | Design §12 table |
 | 13 | Example | T | `ordered_collections/` → `ordered_map_string_example` (planned) |
@@ -468,4 +468,4 @@ Source: implementation plan §6.4; designs `csr_graph_snapshot.md`, `dense_matri
 - [x] Each row uses exactly one coverage kind (`T`, `C`, `I`, or `O`)  
 - [x] Trial leaf assignment for all `T` and `C` rows  
 
-**Next step:** Layer 1 §§7.1–§7.9 and WBT §§8A.1–§8A.7 are re-verified (2026-07-10) — proceed to §8A.8 `from_sorted`. Skew RAL and Brodal–Okasaki may proceed in parallel on Layer 2. BinaryTree requires §7.10 before §8D. §7.2 meld before-allocation rejection — Layer 2 §8C exit gate, Layer 3 §9C re-verification.
+**Next step:** WBT §§8A.1–§8A.10 complete (2026-07-15) — proceed to §8A.11 deterministic exhaustive / randomized trace hardening. Skew RAL and Brodal–Okasaki may proceed in parallel on Layer 2. BinaryTree requires §7.10 before §8D. §7.2 meld before-allocation rejection — Layer 2 §8C exit gate, Layer 3 §9C re-verification.

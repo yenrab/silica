@@ -568,7 +568,52 @@ fn check_region_builtin_call(expr: Expr, expected_type: string, context: TypeCon
                                                         }
                                                     }
                                                 end;
-                                                false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown region built-in: ", expr.name), "sect22")
+                                                false -> case expr.name == "ref_eq" of {
+                                                    true -> do
+                                                        r1_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                                                        r2_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(call_second_arg_expr(expr), context);
+                                                        e1: string <- type_checker_memory_regions@extract_element_type_from_ref(r1_type);
+                                                        e2: string <- type_checker_memory_regions@extract_element_type_from_ref(r2_type);
+                                                        case len(e1) == 0 or len(e2) == 0 of {
+                                                            true -> type_checker_core@type_check_err("E2010", expr.location, "ref_eq: both arguments must be ref(R, Space, T) values", "sect4.4.2");
+                                                            false -> case expected_type == "boolean" of {
+                                                                false -> type_checker_core@type_check_err("E2003", expr.location, "ref_eq returns boolean", "sect4.4.2");
+                                                                true -> do
+                                                                    r1: TypeCheckResult <- check_expr(expr.inner, r1_type, context, world);
+                                                                    case r1.is_ok of {
+                                                                        false -> r1;
+                                                                        true -> check_expr(call_second_arg_expr(expr), r2_type, context, world)
+                                                                    }
+                                                                end
+                                                            }
+                                                        }
+                                                    end;
+                                                    false -> case expr.name == "ref_in_region" of {
+                                                        true -> do
+                                                            ref_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(expr.inner, context);
+                                                            region_type: string <- type_checker_tuple_decompose_helpers@infer_expr_type(call_second_arg_expr(expr), context);
+                                                            elem: string <- type_checker_memory_regions@extract_element_type_from_ref(ref_type);
+                                                            space_r: string <- type_checker_memory_regions@get_space_from_region_type(region_type);
+                                                            case len(elem) == 0 of {
+                                                                true -> type_checker_core@type_check_err("E2010", expr.location, "ref_in_region: first argument must be ref(R, Space, T)", "sect4.4.2");
+                                                                false -> case len(space_r) == 0 of {
+                                                                    true -> type_checker_core@type_check_err("E2010", expr.location, "ref_in_region: second argument must be region(R, Space)", "sect4.4.2");
+                                                                    false -> case expected_type == "boolean" of {
+                                                                        false -> type_checker_core@type_check_err("E2003", expr.location, "ref_in_region returns boolean", "sect4.4.2");
+                                                                        true -> do
+                                                                            r1: TypeCheckResult <- check_expr(expr.inner, ref_type, context, world);
+                                                                            case r1.is_ok of {
+                                                                                false -> r1;
+                                                                                true -> check_expr(call_second_arg_expr(expr), region_type, context, world)
+                                                                            }
+                                                                        end
+                                                                    }
+                                                                }
+                                                            }
+                                                        end;
+                                                        false -> type_checker_core@type_check_err("E2005", expr.location, concat("unknown region built-in: ", expr.name), "sect22")
+                                                    }
+                                                }
                                             }
                                         }
                                     }
