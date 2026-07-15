@@ -1,0 +1,116 @@
+// Layer 2 §8A.8 gate: set and map from_sorted use equivalent key shapes and keep values attached.
+
+use wbt_set;
+use wbt_map;
+use wbt_trial_i64;
+use wbt_trial_shape_i64;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn trap_value(_a: int64, _b: int64) -> :less | :equal | :greater {
+    sequence
+        _: int64 <- 1 / 0
+    produces
+        pure :equal
+    end
+}
+
+fn set_sum_step(acc: int64, item: int64) -> int64 {
+    acc + item
+}
+
+fn map_key_sum_step(acc: int64, key: int64, _value: int64) -> int64 {
+    acc + key
+}
+
+fn got_is(result: { status: :not_found | :found, value: int64 }, expected: int64) -> boolean {
+    case result.status of {
+        :found -> result.value == expected;
+        :not_found -> false
+    }
+}
+
+fn set_shape_ok() -> boolean {
+    sequence proc[mem(normal)]
+        empty_set: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: cmp_i64 });
+        set_items: List[int64, mem(normal)] <- [10, 20, 30, 40, 50, 60, 70];
+        built_set: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- wbt_set@from_sorted(empty_set, set_items);
+        set_sum: int64 <- wbt_trial_i64@fold_set_i64(built_set.set, 0, set_sum_step);
+        set_shape: boolean <- wbt_trial_shape_i64@set_root_shape_i64(built_set.set, { root: 40, size: 7, left_root: 20, left_size: 3, right_root: 60, right_size: 3 });
+        set_code: int64 <- wbt_set@from_sorted_error_code(built_set.error)
+    produces
+        pure built_set.valid and set_code == 0 and set_sum == 280 and set_shape
+    end
+}
+
+fn map_shape_ok() -> boolean {
+    sequence proc[mem(normal)]
+        empty_map: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_map@empty({ compare_key: cmp_i64, compare_value: trap_value });
+        b1: (int64, int64) <- (10, 100);
+        b2: (int64, int64) <- (20, 200);
+        b3: (int64, int64) <- (30, 300);
+        b4: (int64, int64) <- (40, 400);
+        b5: (int64, int64) <- (50, 500);
+        b6: (int64, int64) <- (60, 600);
+        b7: (int64, int64) <- (70, 700);
+        map_items: List[(int64, int64), mem(normal)] <- [b1, b2, b3, b4, b5, b6, b7];
+        built_map: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- wbt_map@from_sorted(empty_map, map_items);
+        map_key_sum: int64 <- wbt_trial_i64@fold_map_i64(built_map.map, 0, map_key_sum_step);
+        map_shape: boolean <- wbt_trial_shape_i64@map_root_shape_i64(built_map.map, { root_key: 40, root_value: 400, size: 7, left_key: 20, left_value: 200, left_size: 3, right_key: 60, right_value: 600, right_size: 3 });
+        got40: { status: :not_found | :found, value: int64 } <- wbt_map@get(built_map.map, 40, 0);
+        got70: { status: :not_found | :found, value: int64 } <- wbt_map@get(built_map.map, 70, 0);
+        map_code: int64 <- wbt_map@from_sorted_error_code(built_map.error)
+    produces
+        pure built_map.valid and map_code == 0 and map_key_sum == 280 and map_shape and got_is(got40, 400) and got_is(got70, 700)
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        set_ok: boolean <- set_shape_ok();
+        map_ok: boolean <- map_shape_ok()
+    produces
+        pure case set_ok of {
+            false -> 1;
+            true -> case map_ok of { false -> 2; true -> 0 }
+        }
+    end
+}

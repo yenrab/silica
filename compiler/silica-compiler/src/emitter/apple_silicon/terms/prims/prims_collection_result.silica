@@ -14,13 +14,36 @@ fn atom_index_str(table: AtomTable, lexeme: string) -> string {
     atom_table@int64_to_decimal_string(atom_table@lexeme_to_index_first_added_order(table, lexeme))
 }
 
+fn hash_string_acc(s: string, i: int64, acc: int64) -> int64 {
+    case i >= len(s) of {
+        true -> acc;
+        false -> do
+            // Mix in a stable per-character contribution without needing char codes:
+            // use position and a substring length window so distinct sites diverge.
+            piece: string <- substring(s, i, case i + 3 <= len(s) of { true -> i + 3; false -> len(s) });
+            // Keep the accumulator non-negative so label suffixes stay valid asm identifiers.
+            mixed: int64 <- acc * 131 + len(piece) * (i + 1) + len(s);
+            next: int64 <- case mixed < 0 of { true -> 0 - mixed; false -> mixed };
+            hash_string_acc(s, i + 1, next)
+        end
+    }
+}
+
+fn cmpres_site_id(term: SIRTerm) -> string {
+    // Fingerprint the full prim term so two comparator_result_* sites that share
+    // dest register X0 still emit distinct assembly labels.
+    text: string <- sir_ast@sir_term_to_text(term);
+    atom_table@int64_to_decimal_string(hash_string_acc(text, 0, 17))
+}
+
 fn cmpres_label_suffix(term: SIRTerm, dest: string, table: AtomTable) -> string {
+    site: string <- cmpres_site_id(term);
     case term.inner.kind == 0 and term.inner.type_name == "atom" of {
         true -> do
             idx: string <- atom_index_str(table, term.inner.value);
-            concat(concat(dest, "_"), idx)
+            concat(concat(concat(dest, "_"), idx), concat("_", site))
         end;
-        false -> dest
+        false -> concat(dest, concat("_", site))
     }
 }
 

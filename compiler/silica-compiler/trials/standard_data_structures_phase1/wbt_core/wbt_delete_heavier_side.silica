@@ -1,0 +1,535 @@
+// Layer 2 §8A.7: heavier-side / tie splice rule; map replacement value from extracted binding.
+
+use wbt_set;
+use wbt_map;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn sum_set(acc: int64, item: int64) -> int64 {
+    acc + item
+}
+
+// left-heavier: insert 2,1,3,0 then delete 2 → predecessor 1 spliced in
+fn set_left_heavy_ok() -> boolean {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: cmp_i64 });
+        a1: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(empty0, 2);
+        a2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(a1.set, 1);
+        a3: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(a2.set, 3);
+        a4: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(a3.set, 0);
+        d2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- wbt_set@delete(a4.set, 2);
+        sz: int64 <- wbt_set@size(d2.set);
+        sum: int64 <- wbt_set@fold(d2.set, 0, sum_set);
+        has2: boolean <- wbt_set@contains(d2.set, 2);
+        has1: boolean <- wbt_set@contains(d2.set, 1)
+    produces
+        pure case d2.removed of {
+            false -> false;
+            true -> case sz == 3 and sum == 4 of {
+                false -> false;
+                true -> case has2 of { true -> false; false -> has1 }
+            }
+        }
+    end
+}
+
+// right-heavier: insert 2,1,3,4 delete 2 → successor 3
+fn set_right_heavy_ok() -> boolean {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: cmp_i64 });
+        a1: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(empty0, 2);
+        a2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(a1.set, 1);
+        a3: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(a2.set, 3);
+        a4: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(a3.set, 4);
+        d2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- wbt_set@delete(a4.set, 2);
+        sz: int64 <- wbt_set@size(d2.set);
+        sum: int64 <- wbt_set@fold(d2.set, 0, sum_set);
+        has2: boolean <- wbt_set@contains(d2.set, 2);
+        has3: boolean <- wbt_set@contains(d2.set, 3)
+    produces
+        pure case d2.removed of {
+            false -> false;
+            true -> case sz == 3 and sum == 8 of {
+                false -> false;
+                true -> case has2 of { true -> false; false -> has3 }
+            }
+        }
+    end
+}
+
+// equal-size {1,2,3} delete 2 → tie uses successor 3
+fn set_tie_ok() -> boolean {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: cmp_i64 });
+        a1: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(empty0, 2);
+        a2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(a1.set, 1);
+        a3: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(a2.set, 3);
+        d2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- wbt_set@delete(a3.set, 2);
+        sz: int64 <- wbt_set@size(d2.set);
+        sum: int64 <- wbt_set@fold(d2.set, 0, sum_set);
+        has2: boolean <- wbt_set@contains(d2.set, 2)
+    produces
+        pure case d2.removed of {
+            false -> false;
+            true -> case sz == 2 and sum == 4 of {
+                false -> false;
+                true -> case has2 of { true -> false; false -> true }
+            }
+        }
+    end
+}
+
+fn map_left_heavy_ok() -> boolean {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_map@empty({ compare_key: cmp_i64, compare_value: cmp_i64 });
+        a1: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(empty0, 2, 200);
+        a2: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(a1.map, 1, 100);
+        a3: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(a2.map, 3, 300);
+        a4: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(a3.map, 0, 0);
+        d2: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- wbt_map@delete(a4.map, 2);
+        // predecessor key 1 keeps value 100 (not deleted node's 200)
+        g1: { status: :not_found | :found, value: int64 } <- wbt_map@get(d2.map, 1, 0);
+        has2: boolean <- wbt_map@contains_key(d2.map, 2);
+        sz: int64 <- wbt_map@size(d2.map)
+    produces
+        pure case d2.removed of {
+            false -> false;
+            true -> case sz == 3 of {
+                false -> false;
+                true -> case has2 of {
+                    true -> false;
+                    false -> case g1.status of {
+                        :not_found -> false;
+                        :found -> g1.value == 100
+                    }
+                }
+            }
+        }
+    end
+}
+
+fn map_right_heavy_ok() -> boolean {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_map@empty({ compare_key: cmp_i64, compare_value: cmp_i64 });
+        a1: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(empty0, 2, 200);
+        a2: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(a1.map, 1, 100);
+        a3: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(a2.map, 3, 300);
+        a4: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(a3.map, 4, 400);
+        d2: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- wbt_map@delete(a4.map, 2);
+        g3: { status: :not_found | :found, value: int64 } <- wbt_map@get(d2.map, 3, 0);
+        has2: boolean <- wbt_map@contains_key(d2.map, 2);
+        sz: int64 <- wbt_map@size(d2.map)
+    produces
+        pure case d2.removed of {
+            false -> false;
+            true -> case sz == 3 of {
+                false -> false;
+                true -> case has2 of {
+                    true -> false;
+                    false -> case g3.status of {
+                        :not_found -> false;
+                        :found -> g3.value == 300
+                    }
+                }
+            }
+        }
+    end
+}
+
+fn map_tie_ok() -> boolean {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_map@empty({ compare_key: cmp_i64, compare_value: cmp_i64 });
+        a1: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(empty0, 2, 200);
+        a2: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(a1.map, 1, 100);
+        a3: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(a2.map, 3, 300);
+        d2: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- wbt_map@delete(a3.map, 2);
+        // tie → successor 3 keeps value 300
+        g3: { status: :not_found | :found, value: int64 } <- wbt_map@get(d2.map, 3, 0);
+        g1: { status: :not_found | :found, value: int64 } <- wbt_map@get(d2.map, 1, 0);
+        has2: boolean <- wbt_map@contains_key(d2.map, 2);
+        sz: int64 <- wbt_map@size(d2.map)
+    produces
+        pure case d2.removed of {
+            false -> false;
+            true -> case sz == 2 of {
+                false -> false;
+                true -> case has2 of {
+                    true -> false;
+                    false -> case g3.status of {
+                        :not_found -> false;
+                        :found -> case g3.value == 300 of {
+                            false -> false;
+                            true -> case g1.status of {
+                                :not_found -> false;
+                                :found -> g1.value == 100
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        sl: boolean <- set_left_heavy_ok();
+        sr: boolean <- set_right_heavy_ok();
+        st: boolean <- set_tie_ok();
+        ml: boolean <- map_left_heavy_ok();
+        mr: boolean <- map_right_heavy_ok();
+        mt: boolean <- map_tie_ok()
+    produces
+        pure case sl of {
+            false -> 1;
+            true -> case sr of {
+                false -> 2;
+                true -> case st of {
+                    false -> 3;
+                    true -> case ml of {
+                        false -> 4;
+                        true -> case mr of {
+                            false -> 5;
+                            true -> case mt of { false -> 6; true -> 0 }
+                        }
+                    }
+                }
+            }
+        }
+    end
+}

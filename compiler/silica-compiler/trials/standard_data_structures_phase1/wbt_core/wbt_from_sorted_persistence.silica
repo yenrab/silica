@@ -1,0 +1,162 @@
+// Layer 2 §8A.8 gate: from_sorted leaves input lists and original empty roots readable after success and failure.
+
+use wbt_set;
+use wbt_map;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn trap_value(_a: int64, _b: int64) -> :less | :equal | :greater {
+    sequence
+        _: int64 <- 1 / 0
+    produces
+        pure :equal
+    end
+}
+
+fn list_sum_i64(xs: List[int64, mem(normal)]) -> int64 {
+    case xs of {
+        []: List[int64, mem(normal)] -> 0;
+        [h: int64, t: List[int64, mem(normal)]] -> h + list_sum_i64(t)
+    }
+}
+
+fn binding_key_sum_i64(xs: List[(int64, int64), mem(normal)]) -> int64 {
+    case xs of {
+        []: List[(int64, int64), mem(normal)] -> 0;
+        [h: (int64, int64), t: List[(int64, int64), mem(normal)]] -> {
+            sequence
+                (key, _: int64) <- h
+            produces
+                pure key + binding_key_sum_i64(t)
+            end
+        }
+    }
+}
+
+fn binding_value_sum_i64(xs: List[(int64, int64), mem(normal)]) -> int64 {
+    case xs of {
+        []: List[(int64, int64), mem(normal)] -> 0;
+        [h: (int64, int64), t: List[(int64, int64), mem(normal)]] -> {
+            sequence
+                (_: int64, value) <- h
+            produces
+                pure value + binding_value_sum_i64(t)
+            end
+        }
+    }
+}
+
+fn set_persistence_ok() -> boolean {
+    sequence proc[mem(normal)]
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: cmp_i64 });
+        good: List[int64, mem(normal)] <- [10, 20, 30];
+        bad: List[int64, mem(normal)] <- [30, 20, 10];
+        good_built: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- wbt_set@from_sorted(empty0, good);
+        bad_built: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- wbt_set@from_sorted(empty0, bad);
+        empty_size: int64 <- wbt_set@size(empty0);
+        good_len: int64 <- length[int64, mem(normal)](good);
+        bad_len: int64 <- length[int64, mem(normal)](bad);
+        good_sum: int64 <- list_sum_i64(good);
+        bad_sum: int64 <- list_sum_i64(bad);
+        good_code: int64 <- wbt_set@from_sorted_error_code(good_built.error);
+        bad_code: int64 <- wbt_set@from_sorted_error_code(bad_built.error)
+    produces
+        pure good_built.valid and case bad_built.valid of { true -> false; false -> empty_size == 0 and good_code == 0 and bad_code == 1 and good_len == 3 and bad_len == 3 and good_sum == 60 and bad_sum == 60 }
+    end
+}
+
+fn map_persistence_ok() -> boolean {
+    sequence proc[mem(normal)]
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_map@empty({ compare_key: cmp_i64, compare_value: trap_value });
+        a: (int64, int64) <- (10, 100);
+        b: (int64, int64) <- (20, 200);
+        c: (int64, int64) <- (30, 300);
+        good: List[(int64, int64), mem(normal)] <- [a, b, c];
+        bad: List[(int64, int64), mem(normal)] <- [c, b, a];
+        good_built: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- wbt_map@from_sorted(empty0, good);
+        bad_built: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- wbt_map@from_sorted(empty0, bad);
+        empty_size: int64 <- wbt_map@size(empty0);
+        good_len: int64 <- length[(int64, int64), mem(normal)](good);
+        bad_len: int64 <- length[(int64, int64), mem(normal)](bad);
+        good_key_sum: int64 <- binding_key_sum_i64(good);
+        bad_key_sum: int64 <- binding_key_sum_i64(bad);
+        good_value_sum: int64 <- binding_value_sum_i64(good);
+        bad_value_sum: int64 <- binding_value_sum_i64(bad);
+        good_code: int64 <- wbt_map@from_sorted_error_code(good_built.error);
+        bad_code: int64 <- wbt_map@from_sorted_error_code(bad_built.error)
+    produces
+        pure good_built.valid and case bad_built.valid of { true -> false; false -> empty_size == 0 and good_code == 0 and bad_code == 1 and good_len == 3 and bad_len == 3 and good_key_sum == 60 and bad_key_sum == 60 and good_value_sum == 600 and bad_value_sum == 600 }
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        set_ok: boolean <- set_persistence_ok();
+        map_ok: boolean <- map_persistence_ok()
+    produces
+        pure case set_ok of {
+            false -> 1;
+            true -> case map_ok of { false -> 2; true -> 0 }
+        }
+    end
+}

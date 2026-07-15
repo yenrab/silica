@@ -6,7 +6,7 @@
 |----------|---------|
 | [silica-specification-additional.md](silica-specification-additional.md) | Compiler failure rules: anti-patterns that must fail at compile time |
 | [silica_actor_capabilities_specification.md](silica_actor_capabilities_specification.md) | Actor capabilities, protocol-typed references, and message-order guarantees (draft extension) |
-| [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) | Outbound C/FFI wrapper calls: `dangerous_*` modules, cast-mediated FFI workers, `external_danger`, sidecar metadata, and link-time validation |
+| [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) | **Fifi** (outbound C/FFI layer): `dangerous_*` modules, cast-mediated FFI workers, `external_danger`, sidecar metadata, and link-time validation |
 | [macos_crash_handling_for_silica.md](macos_crash_handling_for_silica.md) | macOS-specific crash/fault handling notes for guarded FFI, signal/Mach exception boundaries, and actor-supervisor recovery caveats |
 | [ffi_wrapper_implementation_plan.md](ffi_wrapper_implementation_plan.md) | Compiler implementation phases for [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md) |
 | [memory-effects-aarch64-implementation-plan.md](memory-effects-aarch64-implementation-plan.md) | Memory `Space` model for OS-free AArch64 and embedded targets (implementation plan) |
@@ -14952,7 +14952,11 @@ Integration with OS memory facilities:
 - **Memory Locking**: Optional memory locking for real-time use
 - **NUMA Awareness**: NUMA-aware memory allocation
 
-### 26.3 Foreign Function Interface
+<a id="spec-fifi"></a>
+
+### 26.3 Foreign Function Interface (Fifi)
+
+The Silica compiler's outbound foreign-function interface layer is named **Fifi**. Think of Fifi as a cute, cuddly-looking poodle that will bite you when you try to pet it: **non-Silica code loaded and run by Silica applications** looks approachable from the outside, but it remains outside Silica's memory and type guarantees and can fail in ways pure Silica cannot. The language and compiler surface that risk through the wrapper-first contract below rather than pretending the boundary is safe to touch casually.
 
 Outbound calls to C-compatible wrapper libraries are specified in [silica_ffi_wrapper_specification.md](silica_ffi_wrapper_specification.md). That document covers:
 

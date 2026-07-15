@@ -847,27 +847,173 @@ Acceptance trials:
 - `wbt_map_value_pairing`: single/double rotations and deep path copies never detach a value from its key;
 - `wbt_map_compare_value_not_called`: a value comparator that would fail if invoked is not called by any key-placement path;
 - `wbt_map_replace_persistence`: the old root retains the old value, the new root has the replacement, and both subtrees of the matched node are shared;
-- `wbt_map_insert_orders` (or fold into `wbt_map_insert_replace`): empty/singleton/ascending/descending/alternating/median-first for at least one key/value pair;
+- `wbt_map_insert_orders`: alternating-extremes and median-first order matrices (ascending/descending live in `wbt_map_insert_replace`; split so one process stays within the shared canonical arena budget);
 - `trial_collection_error_wbt_map_insert_invalid_comparator`: failure at each descent direction leaves the input root valid and unpublished output inaccessible.
 
 Instantiate keys and values with different concrete types, including at least one non-scalar value.
 
 **§8A.6 exit gate:** map insertion and replacement preserve canonical keys and key/value pairing, report exact flags, never use value comparison for placement, preserve every old version, keep the single smart-node allocation site, and pass `wbt_core/` integrate with the trials above.
 
-**§8A.6 status (2026-07-10):** Complete — `wbt_map@insert/3` returns `{map, inserted, replaced}` with path-copy rebalance via §8A.3 `smart_node` / §8A.4 `balance_left` / `balance_right`. Equal-key replacement keeps the stored key, installs the new value, preserves children, and reports `{inserted=false, replaced=true}`. Placement never calls `compare_value`. Rebuild helpers use set-style `sequence out <- insert_balance_*(map, smart_node(...))` so `:none` + `child_map.root` lower with preserved callee-saved regs. Positive trials in `wbt_core/`: `wbt_map_insert_replace` (flags + ascending/descending), `wbt_map_insert_orders` (alternating/median-first; split for shared-arena budget), `wbt_map_canonical_key`, `wbt_map_value_pairing`, `wbt_map_compare_value_not_called`, `wbt_map_replace_persistence`, `wbt_map_insert_payload_shapes` (string→int64), `wbt_map_insert_tuple_value` (int64→`(int64, string)`), `trial_collection_error_wbt_map_insert_invalid_comparator`. `check-wbt-alloc-rec-gate` still one `alloc_rec` in `wbt_map.silica`. `wbt_core/` positive-integrate **84 0**.
+**§8A.6 status (2026-07-10):** Complete — `wbt_map@insert/3` returns `{map, inserted, replaced}` with path-copy rebalance via §8A.3 `smart_node` / `balance_left` / `balance_right`. New-key insert reports `{inserted=true, replaced=false}`; equal-key replacement keeps the stored key, installs the new value, preserves both children, and reports `{inserted=false, replaced=true}` without calling `compare_value`. Invalid `compare_key` results halt via `1/0` and publish no result root. Rebuild helpers mirror set insert (`sequence out <- insert_balance_*(map, smart_node(...))`) so `:none` and `child_map.root` lower with preserved callee-saved regs. Positive trials in `wbt_core/`: `wbt_map_insert_replace` (flags + ascending/descending), `wbt_map_insert_orders` (alternating-extremes / median-first; split from replace for shared-arena budget), `wbt_map_canonical_key`, `wbt_map_value_pairing`, `wbt_map_compare_value_not_called`, `wbt_map_replace_persistence`, `wbt_map_insert_payload_shapes` (string→int64), `wbt_map_insert_tuple_value` (int64→`(int64, string)` non-scalar value). `check-wbt-alloc-rec-gate` remains one `alloc_rec` in `wbt_map.silica` (`smart_node_finish_alloc`). SpaceType specialization keys remain covered by Layer 1 / `compiler_substrate/collection_ordered_set_space_matrix` (insert does not hard-code a space). Collection-error: `trial_collection_error_wbt_map_insert_invalid_comparator` (trial-only `wbt_trial_insert_map_i64@insert_status_i64`). Exit gate: `wbt_core/` positive-integrate **84 0**; Phase 1 root integrate **176 0**. Proceed to §8A.7.
 
 ### 8A.7 Deletion, extreme extraction, and deletion-side rebalancing
 
-Implement `delete_min` and `delete_max` first. Each returns the extracted complete binding and residual root, copies and rebalances every changed ancestor, and never separates map keys from values.
+Mirror §8A.5 / §8A.6 update discipline on the delete path. Do not invent a second balancing algorithm: path-copy and rebalance reuse §8A.3 `smart_node` and §8A.4 `balance_left` / `balance_right`. Implement **extreme extraction first** (`delete_min` / `delete_max`); ordinary `delete` of an interior node with two children must call those helpers rather than duplicating spine logic.
 
-Then implement deletion returning `{root, removed}`:
+**Normative result shapes (compiler-private owning wrap):**
 
-- empty/absent returns the original root and `removed = false`;
-- unequal descent copies nothing when the recursive result reports absence;
-- equal with zero or one non-empty child returns the surviving child;
-- equal with two children extracts the maximum from the left exactly when `size(left) > size(right)`;
-- a size tie and every right-heavier case extracts the minimum from the right; and
-- the replacement root is rebuilt and deletion-balanced through the smart constructor.
+```text
+delete(set, item) -> { set, removed }
+delete(map, key)  -> { map, removed }
+
+delete_min(set) -> { set, status: :empty | :found, item }
+delete_max(set) -> { set, status: :empty | :found, item }
+delete_min(map) -> { map, status: :empty | :found, key, value }
+delete_max(map) -> { map, status: :empty | :found, key, value }
+```
+
+Flag / status combinations that may be published:
+
+| Case | `removed` / status | size | root identity |
+| --- | --- | --- | --- |
+| empty or absent key/item | `removed=false` / `:empty` on extreme of empty | unchanged | **same** root (zero-node no-op) |
+| present leaf / one-child / two-child / root | `removed=true` / `:found` | `old - 1` | new path-copied residual root |
+| invalid placement comparator | — | — | no changed root published |
+
+`removed = true` with an unchanged root identity is forbidden. Map deletion always removes the key and its value together; never call `compare_value` on delete, extreme extraction, rotate, or key-order checks.
+
+**Heavier-side / tie rule (two non-empty children, normative):**
+
+- if `size(left) > size(right)`: extract **maximum** from the left (predecessor), splice into the deleted node’s place;
+- otherwise (right heavier **or** size tie): extract **minimum** from the right (successor).
+
+**Hard invariants (carry from §§8A.5–§8A.6):**
+
+- Placement / search uses only the set item comparator or map `compare_key` (validated at every call site).
+- Never keep a live empty `ref?` in a frame that allocates (`smart_node` / balance); prefer set-style `sequence out <- …` rebuilds when passing `:none` beside a child root field.
+- Do not rebind `set.root` / `map.root` to a node `ref` inside descent helpers.
+- Exactly one production `alloc_rec` per module remains inside `smart_node` finish (`check-wbt-alloc-rec-gate`).
+- Prefer small helpers over deep nested `and` / many live locals in one `produces`.
+- On absent recursive results, **copy nothing** on the unwind (return the original ancestor root unchanged).
+- After a structural change on the left child, rebuild then `balance_left`; after a change on the right child, rebuild then `balance_right` (same helpers as insert; they are no-ops when already balanced).
+
+Complete the steps below in order. A later step may add trials for an earlier helper, but must not leave an earlier step's gate failing. Implement set and map in parallel within a step when the helper shapes differ only by the value field; do not finish set-only and defer map pairing to a later gate.
+
+#### Step 1 — Public exports and result wrappers
+
+1. Export from `wbt_set.silica`: `delete/2`, `delete_min/1`, `delete_max/1`.
+2. Export from `wbt_map.silica`: `delete/2`, `delete_min/1`, `delete_max/1`.
+3. Define private helpers that build result records without nesting large owning records in one expression:
+   - `delete_pair_removed` / `delete_pair_unchanged` (set and map);
+   - `extreme_found_*` / `extreme_empty_*` for min/max results;
+   - `delete_invalid_halt(...)` — same `1/0` / collection-error style as insert; publish no changed root.
+4. Owning-record fields copied on every success path that publishes a new root: comparators, `region`, `specialization_key`, ordering bundles. Only `root` changes. Unchanged paths must return the **input** owning record (same root identity).
+
+**Step 1 check:** empty set/map + `delete` / `delete_min` compile and return the documented record shapes; invalid-comparator halt path is linkable from a trial-only status helper if needed (mirror `wbt_trial_insert_*`).
+
+#### Step 2 — Set `delete_min` / `delete_max`
+
+1. Empty root → `{set, status=:empty, item=placeholder-or-unused}`; no allocation.
+2. Non-empty: walk the left spine (`delete_min`) or right spine (`delete_max`) to the extreme node.
+3. Extreme is a leaf or has only the opposite-side child empty: residual is the surviving child (possibly `:none`).
+4. On unwind, rebuild each ancestor with `smart_node` and the deletion-side balance helper (`balance_left` after removing from the left spine under a node, `balance_right` after removing from the right spine — match the child that shrank).
+5. Return the extracted item and the residual set.
+
+**Step 2 check:** `wbt_delete_extreme` fragments for set — depth-zero singleton; multi-level left/right spines; residual size = old−1; fold/search omit the extracted item; old root still contains it.
+
+#### Step 3 — Map `delete_min` / `delete_max`
+
+1. Same spine / rebuild / balance structure as Step 2 on the map node shape `(KeyType, ValueType, int64, ref?, ref?)`.
+2. Extracted binding is always `(key, value)` together; never invent a placeholder value or call `compare_value`.
+3. Residual map fold must retain intact pairing for every remaining binding.
+
+**Step 3 check:** map extreme extraction at depth zero and multiple levels; `get` of extracted key is `:not_found` on the new root and `:found` on the old root; fold pairs stay attached after any rotation on the unwind.
+
+#### Step 4 — Absent and empty `delete` (identity no-op)
+
+1. `delete` on empty root → unchanged owning record, `removed=false`, zero WBT node allocations.
+2. Unequal descent that reaches `:none` → unwind with **no** `smart_node` / balance; return original root, `removed=false`.
+3. Invalid comparator atom at any compare site → halt; input root remains valid and observable.
+
+**Step 4 check:** `wbt_delete_absent` for set and map (empty + missing key in a non-empty tree); root reference identity preserved; no `alloc_rec` beyond whatever the trial fixture already used.
+
+#### Step 5 — Present delete: leaf and one-child cases
+
+1. On `:equal` with both children `:none`: residual at this node is `:none` (parent rebuilds with the empty sibling side).
+2. On `:equal` with exactly one non-empty child: residual is that child ref (no new node at the deleted site).
+3. On unwind after `removed=true`, ancestors path-copy via `smart_node` + the appropriate `balance_*` for the side that lost weight.
+4. Cover deletion of the current tree root when it is a leaf or one-child node (`wbt_delete_root` cases).
+
+**Step 5 check:** `wbt_delete_leaf`, `wbt_delete_one_child`, and matching root cases for set and map; size/order/balance observations; map values remain paired.
+
+#### Step 6 — Present delete: two-child splice via extremes
+
+1. On `:equal` with two non-empty children, apply the heavier-side / tie rule (above).
+2. Call Step 2/3 extraction on the chosen subtree to obtain `(replacement_binding, residual_subtree)`.
+3. Build the replacement node with `smart_node(replacement_key[, replacement_value], residual_of_extracted_side, untouched_sibling)` — for maps, the spliced key **and** value come from the extracted binding.
+4. Then run deletion-side balance on that rebuilt node as if this site’s child weight changed.
+5. Prove left-heavier, right-heavier, and equal-size child pairs select predecessor vs successor deterministically.
+
+**Step 6 check:** `wbt_delete_two_child` and `wbt_delete_heavier_side` for set and map; after splice, search/fold omit only the deleted key; replacement key’s value (map) is the extracted binding’s value, not the deleted node’s value.
+
+#### Step 7 — Wire top-level `delete`
+
+```text
+case root of
+  :none -> unchanged, removed=false
+  root_ref -> delete_at_node(...)
+```
+
+`delete_at_node`:
+
+1. `read_ref` → node fields;
+2. validated comparator vs search key/item;
+3. `:equal` → Step 5 or Step 6;
+4. `:less` / `:greater` → descend; if child reports `removed=false`, return unchanged ancestor; if `removed=true`, rebuild + balance on that side;
+5. invalid atom → `delete_invalid_halt`.
+
+Keep helper granularity similar to insert (`delete_at_node_less` / `_greater`, finish-rebuild) so live `ref?` and register pressure stay manageable. Split large order/delete matrices across trial files if the shared canonical arena budget requires it (same lesson as §8A.6).
+
+**Step 7 check:** export-only smoke covering empty, absent, leaf, one-child, two-child, and root deletion for set and map on at least one scalar payload.
+
+#### Step 8 — Deletion-side rebalance stress
+
+1. Build fixtures (via insert) that, under chosen delete orders, force single and double rotations in both directions, including `GAMMA` equality cases from §8A.4.
+2. After each deletion assert size, ascending fold, and direct balance observations (full postorder validator remains §8A.10).
+3. Map trials must show key/value pairing survives every rotation on the delete unwind.
+
+**Step 8 check:** `wbt_delete_rebalance` (set + map, or paired trials).
+
+#### Step 9 — Persistence and delete-all permutation
+
+1. Retain every prior root across a sequence of deletions; each old root must keep its old `contains`/`get`/`fold` observations.
+2. Deterministic delete-all: insert a known adversarial set/map, delete every key in several fixed orders, check size/order/balance observations after every deletion, finish at `:none`.
+3. Amend this trial in §8A.10 to invoke the production validator after every deletion; for §8A.7 use directed size/order/balance assertions only.
+
+**Step 9 check:** `wbt_delete_persistence` plus the delete-all permutation trial (name may be folded into persistence or a dedicated `wbt_delete_all_orders` if arena budget requires a split).
+
+#### Step 10 — Invalid comparator collection errors
+
+1. Invalid atom at root compare, left descent, and right descent for `delete` (and at least one extreme-extraction compare site if extremes compare).
+2. Input collection remains valid and observable; no partial/changed result root is published.
+3. Prefer trial-only `delete_status_*` helpers if a status-shaped public API would collide with emitter labels.
+
+**Step 10 check:** `trial_collection_error_wbt_delete_invalid_comparator` (set and map coverage, or two tightly scoped trials).
+
+#### Step 11 — Genericity
+
+1. Exercise delete / extremes on more than one payload shape for set (e.g. `int64` and `string`) and for map (e.g. `int64`→`int64` and at least one non-scalar value shape already used in §8A.6).
+2. Do not hard-code a single `SpaceType` into delete helpers; SpaceType keys remain covered by Layer 1 / `compiler_substrate/collection_ordered_set_space_matrix`.
+
+**Step 11 check:** payload matrix coverage under `wbt_core/` integrate (dedicated trials or extensions of the structural trials above).
+
+#### Step 12 — Gate integration
+
+1. Add positives to `wbt_core/POSITIVE_SILICA` (enumerated list, not probe wildcards).
+2. `make record-positive-golden` then `make positive-integrate` / `make integrate` in `wbt_core/`.
+3. Re-run `check-wbt-alloc-rec-gate` (still one `alloc_rec` each in `wbt_set.silica` and `wbt_map.silica`).
+4. Phase 1 root `make integrate`.
+5. Mark this section Complete with dated status (follow the §8A.5 / §8A.6 status pattern) and update the requirements-to-trials ledger row for deletion / extreme extraction.
 
 Acceptance trials:
 
@@ -877,13 +1023,14 @@ Acceptance trials:
 - `wbt_delete_heavier_side`: left-heavier, right-heavier, and equal-size children prove the deterministic predecessor/successor rule;
 - `wbt_delete_rebalance`: deletion sequences that exercise single and double rotations in both directions, including `GAMMA` equality;
 - `wbt_delete_persistence`: all roots before and after repeated deletion remain searchable and fold correctly; §8A.10 later validates every retained root;
+- delete-all permutation (standalone or folded into persistence): adversarial insert then delete every key in several orders, finishing at `:none`;
 - `trial_collection_error_wbt_delete_invalid_comparator`: invalid comparator results at root and deeper paths publish no changed root.
 
-Add a deterministic delete-all permutation test: insert a known adversarial set, delete every key in several orders, check size/order/balance observations after every deletion, and finish at `:none`. Amend this trial in §8A.10 to invoke the production validator after every deletion.
+Instantiate set items and map key/value pairs with more than one concrete type where the language permits; map trials must keep values attached through every splice and rotation.
 
-**§8A.7 exit gate:** every structural and rebalancing branch is covered, absent deletion is a zero-node identity no-op, the heavier-side/tie rule is proven, and all retained versions preserve their observable contents pending the §8A.10 validator recheck.
+**§8A.7 exit gate:** every structural and rebalancing branch is covered for set and map, absent deletion is a zero-node identity no-op, the heavier-side/tie rule is proven, extremes never detach map values from keys, the single smart-node allocation site is preserved, and `wbt_core/` integrate passes with the trials above. All retained versions preserve their observable contents pending the §8A.10 validator recheck.
 
-**§8A.7 status:** Planned.
+**§8A.7 status (2026-07-10):** Complete — `wbt_set` / `wbt_map` export `delete/2`, `delete_min` / `delete_max` (set `/2` and map `/3` take a placeholder binding for the empty-root case). Result shapes: `{set|map, removed}` and `{set|map, status: :not_found | :found, …}` (status atoms match search/get, not a separate `:empty`). Path-copy rebalance reuses §8A.3 `smart_node` and §8A.4 `balance_*`; two-child delete splices via heavier-side / tie rule (left-heavier → predecessor `delete_max`, else successor `delete_min`). Emitter constraints carried from insert: no nested `case` closing over outer pattern-bound refs; no live `:none` into `smart_node`/balance (map rebuilds case residuals into literal-`:none` helpers; finish helpers use `sequence` bindings, not one-liner nested calls). Map delete never calls `compare_value`. Positive trials in `wbt_core/`: `wbt_delete_absent`, `wbt_delete_leaf`, `wbt_delete_one_child`, `wbt_delete_two_child`, `wbt_delete_root`, `wbt_delete_extreme`, `wbt_delete_heavier_side`, `wbt_delete_rebalance`, `wbt_delete_persistence`, `wbt_delete_payload_shapes` (string set + int64→`(int64,string)` map). Collection-error: `trial_collection_error_wbt_{set,map}_delete_invalid_comparator` (trial-only `wbt_trial_delete_*@delete_status_i64`). `check-wbt-alloc-rec-gate` remains one `alloc_rec` per module. Exit gate: `wbt_core/` positive-integrate **108 0**; Phase 1 root integrate **200 0**. Proceed to §8A.8.
 
 ### 8A.8 Deterministic linear `from_sorted`
 
@@ -911,7 +1058,7 @@ Acceptance trials:
 
 **§8A.8 exit gate:** valid input produces the specified deterministic shape in `O(n)` time and `O(n)` nodes; every malformed-input class is rejected; no insertion loop, sorting pass, or deduplication is hidden in the builder.
 
-**§8A.8 status:** Planned.
+**§8A.8 status (2026-07-14):** Complete — `wbt_core` acceptance suite for deterministic linear `from_sorted` is enumerated in `POSITIVE_SILICA` / `COLLECTION_ERROR_TRIALS`, recorded, and green: empty/singleton/two boundaries; `wbt_from_sorted_shape` (0..16 and powers of two) plus `wbt_from_sorted_shape_large` (31/32) with exact median shape; `wbt_from_sorted_set_map`; `wbt_from_sorted_valid_invalid` (ascending OK; desc/eq at begin/mid/end fail for set and map); `wbt_from_sorted_count_mismatch` and `wbt_from_sorted_map_invalid_two`; production `from_sorted_preflight_status` invalid-comparator collection-error trials; `wbt_from_sorted_linear` (exact `n` cached nodes + median shape, distinct from fold-insert); `wbt_from_sorted_persistence`. Live builder path is buffer fill + bottom-up `smart_node` (no hidden insert/sort/dedup). Exit gate is green.
 
 ### 8A.9 Join/split scope decision
 

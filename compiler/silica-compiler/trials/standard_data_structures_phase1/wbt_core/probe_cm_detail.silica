@@ -1,0 +1,55 @@
+use wbt_map;
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+fn trap_value(_a: int64, _b: int64) -> :less | :equal | :greater {
+    sequence
+        _: int64 <- 1 / 0
+    produces
+        pure :equal
+    end
+}
+fn detail(items: List[(int64, int64), mem(normal)], n: int64) -> int64 {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_map@empty({ compare_key: cmp_i64, compare_value: trap_value });
+        built: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- wbt_map@from_sorted_counted(empty0, items, n);
+        sz: int64 <- wbt_map@size(built.map);
+        code: int64 <- wbt_map@from_sorted_error_code(built.error)
+    produces
+        pure case built.valid of { true -> 100 + sz; false -> code * 10 + sz }
+    end
+}
+fn main() -> int64 {
+    sequence proc[mem(normal)]
+        a: (int64, int64) <- (10, 100);
+        b: (int64, int64) <- (20, 200);
+        c: (int64, int64) <- (30, 300);
+        xs: List[(int64, int64), mem(normal)] <- [a, b, c];
+        neg: int64 <- detail(xs, 0 - 1);
+        short: int64 <- detail(xs, 4);
+        long: int64 <- detail(xs, 2)
+    produces
+        // expected: neg=40, short=50, long=50 -> pack as neg*10000+short*100+long
+        pure neg * 10000 + short * 100 + long
+    end
+}

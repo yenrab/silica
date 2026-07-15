@@ -1,0 +1,157 @@
+// Layer 2 §8A.8 gate: from_sorted accepts 10+ ascending elements for set and map.
+
+use wbt_set;
+use wbt_map;
+use wbt_trial_i64;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn trap_value(_a: int64, _b: int64) -> :less | :equal | :greater {
+    sequence
+        _: int64 <- 1 / 0
+    produces
+        pure :equal
+    end
+}
+
+fn set_sum_step(acc: int64, item: int64) -> int64 {
+    acc + item
+}
+
+fn map_key_sum_step(acc: int64, key: int64, _value: int64) -> int64 {
+    acc + key
+}
+
+fn got_is(result: { status: :not_found | :found, value: int64 }, expected: int64) -> boolean {
+    case result.status of {
+        :found -> result.value == expected;
+        :not_found -> false
+    }
+}
+
+fn set_ten_ok() -> boolean {
+    sequence proc[mem(normal)]
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: cmp_i64 });
+        items: List[int64, mem(normal)] <- [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+        built: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- wbt_set@from_sorted(empty0, items);
+        sz: int64 <- wbt_set@size(built.set);
+        sum: int64 <- wbt_trial_i64@fold_set_i64(built.set, 0, set_sum_step);
+        has_first: boolean <- wbt_set@contains(built.set, 10);
+        has_mid: boolean <- wbt_set@contains(built.set, 60);
+        has_last: boolean <- wbt_set@contains(built.set, 100);
+        has_missing: boolean <- wbt_set@contains(built.set, 105);
+        code: int64 <- wbt_set@from_sorted_error_code(built.error)
+    produces
+        pure built.valid and code == 0 and sz == 10 and sum == 550 and has_first and has_mid and has_last and case has_missing of { true -> false; false -> true }
+    end
+}
+
+fn set_counted_twelve_ok() -> boolean {
+    sequence proc[mem(normal)]
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: cmp_i64 });
+        items: List[int64, mem(normal)] <- [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60];
+        built: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- wbt_set@from_sorted_counted(empty0, items, 12);
+        sz: int64 <- wbt_set@size(built.set);
+        sum: int64 <- wbt_trial_i64@fold_set_i64(built.set, 0, set_sum_step);
+        code: int64 <- wbt_set@from_sorted_error_code(built.error)
+    produces
+        pure built.valid and code == 0 and sz == 12 and sum == 390
+    end
+}
+
+fn map_ten_ok() -> boolean {
+    sequence proc[mem(normal)]
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_map@empty({ compare_key: cmp_i64, compare_value: trap_value });
+        b1: (int64, int64) <- (10, 100);
+        b2: (int64, int64) <- (20, 200);
+        b3: (int64, int64) <- (30, 300);
+        b4: (int64, int64) <- (40, 400);
+        b5: (int64, int64) <- (50, 500);
+        b6: (int64, int64) <- (60, 600);
+        b7: (int64, int64) <- (70, 700);
+        b8: (int64, int64) <- (80, 800);
+        b9: (int64, int64) <- (90, 900);
+        b10: (int64, int64) <- (100, 1000);
+        items: List[(int64, int64), mem(normal)] <- [b1, b2, b3, b4, b5, b6, b7, b8, b9, b10];
+        built: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- wbt_map@from_sorted(empty0, items);
+        sz: int64 <- wbt_map@size(built.map);
+        key_sum: int64 <- wbt_trial_i64@fold_map_i64(built.map, 0, map_key_sum_step);
+        got10: { status: :not_found | :found, value: int64 } <- wbt_map@get(built.map, 10, 0);
+        got60: { status: :not_found | :found, value: int64 } <- wbt_map@get(built.map, 60, 0);
+        got100: { status: :not_found | :found, value: int64 } <- wbt_map@get(built.map, 100, 0);
+        missing: { status: :not_found | :found, value: int64 } <- wbt_map@get(built.map, 105, 0);
+        code: int64 <- wbt_map@from_sorted_error_code(built.error)
+    produces
+        pure built.valid and code == 0 and sz == 10 and key_sum == 550 and got_is(got10, 100) and got_is(got60, 600) and got_is(got100, 1000) and case missing.status of { :found -> false; :not_found -> true }
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        set_ok: boolean <- set_ten_ok();
+        counted_ok: boolean <- set_counted_twelve_ok();
+        map_ok: boolean <- map_ten_ok()
+    produces
+        pure case set_ok of {
+            false -> 1;
+            true -> case counted_ok of {
+                false -> 2;
+                true -> case map_ok of { false -> 3; true -> 0 }
+            }
+        }
+    end
+}

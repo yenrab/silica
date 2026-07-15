@@ -76,10 +76,28 @@ fn emit_alloc_region(dest: string) -> string {
     concat(part3, mov_dest)
 }
 
-// alloc_ref(region, value): bump-allocate one cell in region, store value, return ref.
+fn memory_type_is_tuple(type_name: string) -> bool {
+    len(type_name) >= 2 and substring(type_name, 0, 1) == "("
+}
+
+fn memory_value_is_tuple_like(value: SIRTerm) -> bool {
+    case memory_type_is_tuple(value.type_name) of {
+        true -> true;
+        false -> value.kind == 6 and value.name == "tuple_make"
+    }
+}
+
+fn memory_tuple_word_count(value: SIRTerm) -> int64 {
+    case value.kind == 6 and value.name == "tuple_make" of {
+        true -> prims_tuple@count_flat_elements(value);
+        false -> prims_tuple@count_type_elements(value.type_name)
+    }
+}
+
+// alloc_ref(region, scalar): bump-allocate one cell in region, store value, return ref.
 // Operands: X1 = region base, X2 = value. Region [X1]=bump, [X1+8]=end.
 // Bounds check: if bump+8 > end, branch to L_region_overflow (runtime error).
-fn emit_alloc_ref(dest: string) -> string {
+fn emit_alloc_ref_scalar(dest: string) -> string {
     ldr_bump: string <- "    LDR X3, [X1]\n";
     ldr_end: string <- "    LDR X4, [X1, #8]\n";
     add_new: string <- "    ADD X5, X3, #8\n";
@@ -98,16 +116,52 @@ fn emit_alloc_ref(dest: string) -> string {
     concat(check, alloc)
 }
 
+// alloc_ref(region, tuple): reserve a ref cell plus a stable copy of the
+// complete tuple in the region. The ref cell contains the tuple address, so
+// read_ref still uses one load and the temporary tuple stack slab does not escape.
+fn emit_alloc_ref_tuple(term: SIRTerm, dest: string) -> string {
+    emit_alloc_rec(term, dest)
+}
+
+fn emit_alloc_ref(term: SIRTerm, dest: string) -> string {
+    case memory_type_is_tuple(term.right_expr.type_name) of {
+        true -> emit_alloc_ref_tuple(term, dest);
+        false -> emit_alloc_ref_scalar(dest)
+    }
+}
+
 // read_ref(ref): load value from ref
 // Operands: X1 = ref (pointer)
 fn emit_read_ref(dest: string) -> string {
     concat(concat(concat("    LDR ", dest), ", [X1]"), "")
 }
 
-// write_ref(ref, value): store value at ref
+fn emit_write_ref_tuple_copy_words(word_index: int64, word_count: int64) -> string {
+    emit_alloc_rec_copy_words(word_index, word_count)
+}
+
+// write_ref(ref, scalar): store value at ref
 // Operands: X1 = ref, X2 = value. Returns unit.
-fn emit_write_ref(dest: string) -> string {
+fn emit_write_ref_scalar(dest: string) -> string {
     concat("    STR X2, [X1]", "")
+}
+
+// write_ref(ref, tuple): copy the tuple words into the region-owned payload
+// already referenced by the cell. This keeps read_ref's one-load representation
+// and avoids publishing a transient stack tuple pointer.
+fn emit_write_ref_tuple(term: SIRTerm, dest: string) -> string {
+    tuple_count: int64 <- memory_tuple_word_count(term.right_expr);
+    tuple_bytes: int64 <- prims_tuple@flat_alloc_size(tuple_count);
+    payload: string <- "    LDR X6, [X1]\n";
+    copy: string <- emit_write_ref_tuple_copy_words(0, tuple_bytes / 8);
+    concat(payload, copy)
+}
+
+fn emit_write_ref(term: SIRTerm, dest: string) -> string {
+    case memory_value_is_tuple_like(term.right_expr) of {
+        true -> emit_write_ref_tuple(term, dest);
+        false -> emit_write_ref_scalar(dest)
+    }
 }
 
 // alloc_buf(region, N): bump-allocate buffer of N elements within region.
@@ -466,10 +520,10 @@ fn emit_region_overflow_helper() -> string {
 fn emit_prim_op(term: SIRTerm, dest: string) -> string {
     case term.name of {
         "alloc_region" -> emit_alloc_region(dest);
-        "alloc_ref" -> emit_alloc_ref(dest);
+        "alloc_ref" -> emit_alloc_ref(term, dest);
         "alloc_rec" -> emit_alloc_rec(term, dest);
         "read_ref" -> emit_read_ref(dest);
-        "write_ref" -> emit_write_ref(dest);
+        "write_ref" -> emit_write_ref(term, dest);
         "alloc_buf" -> emit_alloc_buf(term, dest);
         "buf_load" -> emit_buf_load(term, dest);
         "buf_store" -> emit_buf_store(term, dest, "");

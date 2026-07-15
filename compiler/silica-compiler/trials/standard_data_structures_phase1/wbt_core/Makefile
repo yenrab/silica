@@ -17,6 +17,18 @@ POSITIVE_SILICA := \
 	wbt_constructor_ordering_bundle.silica \
 	wbt_empty_representation.silica \
 	wbt_fold_ascending.silica \
+	wbt_from_sorted_empty.silica \
+	wbt_from_sorted_singleton.silica \
+	wbt_from_sorted_two.silica \
+	wbt_from_sorted_valid_invalid.silica \
+	wbt_from_sorted_count_mismatch.silica \
+	wbt_from_sorted_map_invalid_two.silica \
+	wbt_from_sorted_shape.silica \
+	wbt_from_sorted_shape_large.silica \
+	wbt_from_sorted_set_map.silica \
+	wbt_from_sorted_ten_plus.silica \
+	wbt_from_sorted_linear.silica \
+	wbt_from_sorted_persistence.silica \
 	wbt_generic_payload_shapes.silica \
 	wbt_generic_tuple_map_empty.silica \
 	wbt_minimum_maximum.silica \
@@ -45,12 +57,22 @@ POSITIVE_SILICA := \
 	wbt_map_insert_tuple_value.silica \
 	wbt_map_replace_persistence.silica \
 	wbt_map_value_pairing.silica \
+	wbt_delete_absent.silica \
+	wbt_delete_leaf.silica \
+	wbt_delete_one_child.silica \
+	wbt_delete_two_child.silica \
+	wbt_delete_root.silica \
+	wbt_delete_extreme.silica \
+	wbt_delete_heavier_side.silica \
+	wbt_delete_rebalance.silica \
+	wbt_delete_persistence.silica \
+	wbt_delete_payload_shapes.silica \
 	wbt_smart_node_arena.silica \
 	wbt_smart_node_production_path.silica \
 	wbt_smart_node_size.silica \
 	wbt_weight_checked.silica
 
-COLLECTION_ERROR_TRIALS := trial_collection_error_wbt_search_invalid_comparator.silica trial_collection_error_wbt_smart_node_overflow.silica trial_collection_error_wbt_balance_missing_child.silica trial_collection_error_wbt_set_insert_invalid_comparator.silica trial_collection_error_wbt_map_insert_invalid_comparator.silica
+COLLECTION_ERROR_TRIALS := trial_collection_error_wbt_search_invalid_comparator.silica trial_collection_error_wbt_smart_node_overflow.silica trial_collection_error_wbt_balance_missing_child.silica trial_collection_error_wbt_set_insert_invalid_comparator.silica trial_collection_error_wbt_map_insert_invalid_comparator.silica trial_collection_error_wbt_set_delete_invalid_comparator.silica trial_collection_error_wbt_map_delete_invalid_comparator.silica trial_collection_error_wbt_from_sorted_set_invalid_comparator.silica trial_collection_error_wbt_from_sorted_map_invalid_comparator.silica
 ALL_COMPILE_SILICA := $(POSITIVE_SILICA) $(COLLECTION_ERROR_TRIALS)
 
 # §8A.3 exit gate: production WBT modules must contain exactly one node allocation site (inside smart_node).
@@ -271,5 +293,5 @@ clean:
 		[ -f "$$s" ] || continue; \
 		rm -f "$${s%.sams}"; \
 	done
-	@cd "$(LEAF_DIR)" && rm -f *.sams lib/wbt_set.sams lib/wbt_map.sams lib/wbt_set.silica lib/wbt_map.silica *.o lib/*.o __silica_runtime.o smoke_harness_ready wbt_balance_boundaries wbt_empty_representation wbt_generic_payload_shapes wbt_generic_tuple_map_empty wbt_representation_specializations wbt_representation_string_specialization wbt_constructor_ordering_bundle wbt_search_contains wbt_minimum_maximum wbt_fold_ascending wbt_read_only_alloc_free wbt_read_only_empty wbt_rebalance_adversarial wbt_rotation_double_left wbt_rotation_double_right wbt_rotation_gamma_equality wbt_rotation_single_left wbt_rotation_single_right wbt_smart_node_arena wbt_smart_node_production_path wbt_smart_node_size wbt_weight_checked wbt_set_insert_adversarial wbt_set_insert_duplicate wbt_set_insert_orders wbt_set_insert_payload_shapes wbt_set_insert_persistence wbt_set_insert_sharing trial_collection_error_wbt_search_invalid_comparator trial_collection_error_wbt_smart_node_overflow trial_collection_error_wbt_balance_missing_child trial_collection_error_wbt_set_insert_invalid_comparator *.sout silica.config .integrate_counts
+	@cd "$(LEAF_DIR)" && rm -f *.sams lib/wbt_set.sams lib/wbt_map.sams lib/wbt_set.silica lib/wbt_map.silica *.o lib/*.o __silica_runtime.o smoke_harness_ready wbt_balance_boundaries wbt_empty_representation wbt_generic_payload_shapes wbt_generic_tuple_map_empty wbt_representation_specializations wbt_representation_string_specialization wbt_constructor_ordering_bundle wbt_search_contains wbt_minimum_maximum wbt_fold_ascending wbt_from_sorted_empty wbt_from_sorted_singleton wbt_from_sorted_two wbt_from_sorted_shape wbt_from_sorted_shape_large wbt_from_sorted_set_map wbt_from_sorted_ten_plus wbt_from_sorted_valid_invalid wbt_from_sorted_map_invalid_two wbt_from_sorted_count_mismatch wbt_from_sorted_linear wbt_from_sorted_persistence wbt_read_only_alloc_free wbt_read_only_empty wbt_rebalance_adversarial wbt_rotation_double_left wbt_rotation_double_right wbt_rotation_gamma_equality wbt_rotation_single_left wbt_rotation_single_right wbt_smart_node_arena wbt_smart_node_production_path wbt_smart_node_size wbt_weight_checked wbt_set_insert_adversarial wbt_set_insert_duplicate wbt_set_insert_orders wbt_set_insert_payload_shapes wbt_set_insert_persistence wbt_set_insert_sharing wbt_map_canonical_key wbt_map_compare_value_not_called wbt_map_insert_payload_shapes wbt_map_insert_orders wbt_map_insert_replace wbt_map_insert_tuple_value wbt_map_replace_persistence wbt_map_value_pairing wbt_delete_absent wbt_delete_leaf wbt_delete_one_child wbt_delete_two_child wbt_delete_root wbt_delete_extreme wbt_delete_heavier_side wbt_delete_rebalance wbt_delete_persistence wbt_delete_payload_shapes trial_collection_error_wbt_search_invalid_comparator trial_collection_error_wbt_smart_node_overflow trial_collection_error_wbt_balance_missing_child trial_collection_error_wbt_set_insert_invalid_comparator trial_collection_error_wbt_map_insert_invalid_comparator trial_collection_error_wbt_set_delete_invalid_comparator trial_collection_error_wbt_map_delete_invalid_comparator trial_collection_error_wbt_from_sorted_set_invalid_comparator trial_collection_error_wbt_from_sorted_map_invalid_comparator *.sout silica.config .integrate_counts
 	@echo "✅ $(MSG_PREFIX)Clean complete"

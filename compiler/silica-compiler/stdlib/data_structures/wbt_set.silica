@@ -1,4 +1,5 @@
-// Layer 2 §8A.1–§8A.5 — Adams WBT set core: smart nodes, read-only helpers, (3,2) balance/rotations, insert.
+// Layer 2 §8A.1–§8A.5 / §8A.7–§8A.8 — Adams WBT set core: smart nodes, read-only helpers,
+// (3,2) balance/rotations, insert, delete, from_sorted.
 // Node shape (inline at every boundary): (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)).
 
 export empty/1;
@@ -17,6 +18,13 @@ export weights_balanced/2;
 export balance_left/4;
 export balance_right/4;
 export insert/2;
+export delete/2;
+export delete_min/2;
+export delete_max/2;
+export from_sorted/2;
+export from_sorted_counted/3;
+export from_sorted_error_code/1;
+export from_sorted_preflight_status/4;
 
 fn empty(
     functions: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater }
@@ -2145,4 +2153,2484 @@ fn insert(
         root_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
             insert_at_node(set, item, root_ref)
     }
+}
+
+// §8A.7 — deletion, extreme extraction, deletion-side rebalancing.
+
+fn delete_pair_removed(
+    new_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- {
+            set: new_set,
+            removed: true
+        }
+    produces
+        pure out
+    end
+}
+
+fn delete_pair_unchanged(
+    old_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- {
+            set: old_set,
+            removed: false
+        }
+    produces
+        pure out
+    end
+}
+
+fn delete_invalid_halt(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    _: atom
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence
+        _: int64 <- 1 / 0;
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- {
+            set: set,
+            removed: false
+        }
+    produces
+        pure out
+    end
+}
+
+fn extreme_empty(
+    old_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    placeholder: ItemType
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    status: :not_found | :found,
+    item: ItemType
+} {
+    sequence
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            status: :not_found | :found,
+            item: ItemType
+        } <- {
+            set: old_set,
+            status: :not_found,
+            item: placeholder
+        }
+    produces
+        pure out
+    end
+}
+
+fn extreme_found(
+    new_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    status: :not_found | :found,
+    item: ItemType
+} {
+    sequence
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            status: :not_found | :found,
+            item: ItemType
+        } <- {
+            set: new_set,
+            status: :found,
+            item: item
+        }
+    produces
+        pure out
+    end
+}
+
+fn set_with_root(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    new_root: ref?(L, normal, rec)
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence
+        out: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: new_root,
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        }
+    produces
+        pure out
+    end
+}
+
+fn delete_extreme_residual(
+    residual: ref?(L, normal, rec),
+    item: ItemType
+) -> {
+    root: ref?(L, normal, rec),
+    item: ItemType
+} {
+    sequence
+        out: {
+            root: ref?(L, normal, rec),
+            item: ItemType
+        } <- {
+            root: residual,
+            item: item
+        }
+    produces
+        pure out
+    end
+}
+
+fn delete_min_rebuild(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_key: ItemType,
+    residual_left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec),
+    extracted: ItemType
+) -> {
+    root: ref?(L, normal, rec),
+    item: ItemType
+} {
+    sequence
+        rebuilt: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: balance_left(set, node_key, residual_left, right),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        };
+        out: {
+            root: ref?(L, normal, rec),
+            item: ItemType
+        } <- {
+            root: rebuilt.root,
+            item: extracted
+        }
+    produces
+        pure out
+    end
+}
+
+fn delete_max_rebuild(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_key: ItemType,
+    left: ref?(L, normal, rec),
+    residual_right: ref?(L, normal, rec),
+    extracted: ItemType
+) -> {
+    root: ref?(L, normal, rec),
+    item: ItemType
+} {
+    sequence
+        rebuilt: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: balance_right(set, node_key, left, residual_right),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        };
+        out: {
+            root: ref?(L, normal, rec),
+            item: ItemType
+        } <- {
+            root: rebuilt.root,
+            item: extracted
+        }
+    produces
+        pure out
+    end
+}
+
+fn delete_min_after_child(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_key: ItemType,
+    child: {
+        root: ref?(L, normal, rec),
+        item: ItemType
+    },
+    right: ref?(L, normal, rec)
+) -> {
+    root: ref?(L, normal, rec),
+    item: ItemType
+} {
+    sequence
+        extracted: ItemType <- child.item
+    produces
+        pure delete_min_rebuild(set, node_key, child.root, right, extracted)
+    end
+}
+
+fn delete_max_after_child(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_key: ItemType,
+    left: ref?(L, normal, rec),
+    child: {
+        root: ref?(L, normal, rec),
+        item: ItemType
+    }
+) -> {
+    root: ref?(L, normal, rec),
+    item: ItemType
+} {
+    sequence
+        extracted: ItemType <- child.item
+    produces
+        pure delete_max_rebuild(set, node_key, left, child.root, extracted)
+    end
+}
+
+fn delete_min_descend(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_key: ItemType,
+    left_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right: ref?(L, normal, rec)
+) -> {
+    root: ref?(L, normal, rec),
+    item: ItemType
+} {
+    sequence
+        child: {
+            root: ref?(L, normal, rec),
+            item: ItemType
+        } <- delete_min_at_node(set, left_ref)
+    produces
+        pure delete_min_after_child(set, node_key, child, right)
+    end
+}
+
+fn delete_max_descend(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_key: ItemType,
+    left: ref?(L, normal, rec),
+    right_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    root: ref?(L, normal, rec),
+    item: ItemType
+} {
+    sequence
+        child: {
+            root: ref?(L, normal, rec),
+            item: ItemType
+        } <- delete_max_at_node(set, right_ref)
+    produces
+        pure delete_max_after_child(set, node_key, left, child)
+    end
+}
+
+fn delete_min_at_node(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    root: ref?(L, normal, rec),
+    item: ItemType
+} {
+    sequence proc[mem(normal)]
+        node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (node_key, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node
+    produces
+        pure case left of {
+            :none -> delete_extreme_residual(right, node_key);
+            left_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                delete_min_descend(set, node_key, left_ref, right)
+        }
+    end
+}
+
+fn delete_max_at_node(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    root: ref?(L, normal, rec),
+    item: ItemType
+} {
+    sequence proc[mem(normal)]
+        node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (node_key, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node
+    produces
+        pure case right of {
+            :none -> delete_extreme_residual(left, node_key);
+            right_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                delete_max_descend(set, node_key, left, right_ref)
+        }
+    end
+}
+
+fn delete_rebuild_left_shrunk(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_key: ItemType,
+    residual_left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence
+        out: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: balance_left(set, node_key, residual_left, right),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        }
+    produces
+        pure out
+    end
+}
+
+fn delete_rebuild_right_shrunk(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_key: ItemType,
+    left: ref?(L, normal, rec),
+    residual_right: ref?(L, normal, rec)
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence
+        out: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: balance_right(set, node_key, left, residual_right),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        }
+    produces
+        pure out
+    end
+}
+
+fn delete_finish_after_left(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_key: ItemType,
+    child_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    right: ref?(L, normal, rec)
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence
+        rebuilt: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- delete_rebuild_left_shrunk(set, node_key, child_set.root, right)
+    produces
+        pure delete_pair_removed(rebuilt)
+    end
+}
+
+fn delete_finish_after_right(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_key: ItemType,
+    left: ref?(L, normal, rec),
+    child_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence
+        rebuilt: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- delete_rebuild_right_shrunk(set, node_key, left, child_set.root)
+    produces
+        pure delete_pair_removed(rebuilt)
+    end
+}
+
+fn delete_finish_after_left_reread(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    child_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    ancestor_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence proc[mem(normal)]
+        node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(ancestor_ref);
+        (node_key, _: int64, _, right: ref?(L, normal, rec)) <- node
+    produces
+        pure delete_finish_after_left(set, node_key, child_set, right)
+    end
+}
+
+fn delete_finish_after_right_reread(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    child_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    ancestor_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence proc[mem(normal)]
+        node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(ancestor_ref);
+        (node_key, _: int64, left: ref?(L, normal, rec), _) <- node
+    produces
+        pure delete_finish_after_right(set, node_key, left, child_set)
+    end
+}
+
+fn delete_after_left_child(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    child: {
+        set: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        },
+        removed: boolean
+    },
+    ancestor_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    case child.removed of {
+        false -> delete_pair_unchanged(set);
+        true -> delete_finish_after_left_reread(set, child.set, ancestor_ref)
+    }
+}
+
+fn delete_after_right_child(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    child: {
+        set: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        },
+        removed: boolean
+    },
+    ancestor_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    case child.removed of {
+        false -> delete_pair_unchanged(set);
+        true -> delete_finish_after_right_reread(set, child.set, ancestor_ref)
+    }
+}
+
+fn delete_descend_left_present(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    ancestor_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    left_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence
+        child: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- delete_at_node(set, item, left_ref)
+    produces
+        pure delete_after_left_child(set, child, ancestor_ref)
+    end
+}
+
+fn delete_descend_right_present(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    ancestor_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence
+        child: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- delete_at_node(set, item, right_ref)
+    produces
+        pure delete_after_right_child(set, child, ancestor_ref)
+    end
+}
+
+fn delete_at_node_less(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    _node_key: ItemType
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence proc[mem(normal)]
+        node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, _: int64, left: ref?(L, normal, rec), _: ref?(L, normal, rec)) <- node
+    produces
+        pure case left of {
+            :none -> delete_pair_unchanged(set);
+            left_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                delete_descend_left_present(set, item, node_ref, left_ref)
+        }
+    end
+}
+
+fn delete_at_node_greater(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    _node_key: ItemType
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence proc[mem(normal)]
+        node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, _: int64, _: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node
+    produces
+        pure case right of {
+            :none -> delete_pair_unchanged(set);
+            right_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+                delete_descend_right_present(set, item, node_ref, right_ref)
+        }
+    end
+}
+
+fn delete_rebuild_splice_left(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    repl_item: ItemType,
+    residual_left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence
+        out: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: balance_left(set, repl_item, residual_left, right),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        }
+    produces
+        pure out
+    end
+}
+
+fn delete_rebuild_splice_right(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    repl_item: ItemType,
+    left: ref?(L, normal, rec),
+    residual_right: ref?(L, normal, rec)
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence
+        out: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: balance_right(set, repl_item, left, residual_right),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        }
+    produces
+        pure out
+    end
+}
+
+fn delete_splice_from_left(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    left_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence
+        ext: {
+            root: ref?(L, normal, rec),
+            item: ItemType
+        } <- delete_max_at_node(set, left_ref)
+    produces
+        pure delete_pair_removed(delete_rebuild_splice_left(set, ext.item, ext.root, right_ref))
+    end
+}
+
+fn delete_splice_from_right(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    left_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence
+        ext: {
+            root: ref?(L, normal, rec),
+            item: ItemType
+        } <- delete_min_at_node(set, right_ref)
+    produces
+        pure delete_pair_removed(delete_rebuild_splice_right(set, ext.item, left_ref, ext.root))
+    end
+}
+
+fn delete_equal_two_children(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    left_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence
+        left_sz: int64 <- subtree_cached_size(left_ref);
+        right_sz: int64 <- subtree_cached_size(right_ref)
+    produces
+        pure case left_sz > right_sz of {
+            true -> delete_splice_from_left(set, left_ref, right_ref);
+            false -> delete_splice_from_right(set, left_ref, right_ref)
+        }
+    end
+}
+
+// Nested `case` must not close over an outer pattern-bound ref: the emitter can
+// rebind that name to the wrong register (seen as `delete_equal_two_children(set, set, right)`).
+// Split so `left_ref` is a real parameter before casing on `right`.
+fn delete_equal_left_empty(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    right: ref?(L, normal, rec)
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    case right of {
+        :none -> delete_pair_removed(set_with_root(set, :none));
+        right_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            delete_pair_removed(set_with_root(set, right_ref))
+    }
+}
+
+fn delete_equal_left_present(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    left_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    right: ref?(L, normal, rec)
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    case right of {
+        :none -> delete_pair_removed(set_with_root(set, left_ref));
+        right_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            delete_equal_two_children(set, left_ref, right_ref)
+    }
+}
+
+fn delete_equal_by_children(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    left: ref?(L, normal, rec),
+    right: ref?(L, normal, rec)
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    case left of {
+        :none -> delete_equal_left_empty(set, right);
+        left_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            delete_equal_left_present(set, left_ref, right)
+    }
+}
+
+fn delete_at_node_equal(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence proc[mem(normal)]
+        node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (_, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node
+    produces
+        pure delete_equal_by_children(set, left, right)
+    end
+}
+
+fn delete_after_key(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))),
+    node_key: ItemType,
+    cmp: atom
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    case cmp of {
+        :equal -> delete_at_node_equal(set, node_ref);
+        :less -> delete_at_node_less(set, item, node_ref, node_key);
+        :greater -> delete_at_node_greater(set, item, node_ref, node_key);
+        _: atom -> delete_invalid_halt(set, cmp)
+    }
+}
+
+fn delete_node_key(
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> ItemType {
+    sequence proc[mem(normal)]
+        node: (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+        (node_key, _: int64, _, _) <- node
+    produces
+        pure node_key
+    end
+}
+
+fn delete_at_node(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    node_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    sequence
+        node_key: ItemType <- delete_node_key(node_ref);
+        cmp: atom <- compare_checked(item, node_key, set.compare_item)
+    produces
+        pure delete_after_key(set, item, node_ref, node_key, cmp)
+    end
+}
+
+fn delete(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    removed: boolean
+} {
+    case set.root of {
+        :none -> delete_pair_unchanged(set);
+        root_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            delete_at_node(set, item, root_ref)
+    }
+}
+
+fn delete_min_from_root(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    root_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    status: :not_found | :found,
+    item: ItemType
+} {
+    sequence
+        ext: {
+            root: ref?(L, normal, rec),
+            item: ItemType
+        } <- delete_min_at_node(set, root_ref);
+        extracted: ItemType <- ext.item;
+        new_set: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_with_root(set, ext.root)
+    produces
+        pure extreme_found(new_set, extracted)
+    end
+}
+
+fn delete_max_from_root(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    root_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec)))
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    status: :not_found | :found,
+    item: ItemType
+} {
+    sequence
+        ext: {
+            root: ref?(L, normal, rec),
+            item: ItemType
+        } <- delete_max_at_node(set, root_ref);
+        extracted: ItemType <- ext.item;
+        new_set: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_with_root(set, ext.root)
+    produces
+        pure extreme_found(new_set, extracted)
+    end
+}
+
+fn delete_min(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    placeholder: ItemType
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    status: :not_found | :found,
+    item: ItemType
+} {
+    case set.root of {
+        :none -> extreme_empty(set, placeholder);
+        root_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            delete_min_from_root(set, root_ref)
+    }
+}
+
+fn delete_max(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    placeholder: ItemType
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    status: :not_found | :found,
+    item: ItemType
+} {
+    case set.root of {
+        :none -> extreme_empty(set, placeholder);
+        root_ref: ref(L, normal, (ItemType, int64, ref?(L, normal, rec), ref?(L, normal, rec))) ->
+            delete_max_from_root(set, root_ref)
+    }
+}
+
+
+
+// §8A.8 — deterministic linear from_sorted (median split, bottom-up smart_node sizes).
+// Emitter/runtime constraints discovered while implementing:
+// - Finish/smart_node must run under a live List cons-match arm (scalar extract + finish).
+// - Nested preflight that threads `original` then publishes corrupts the list; atom-only
+//   preflight that fully unwinds before publish is safe.
+// - Passing List tails as arguments is OK; do not store them in result records/tuples.
+// - Atom indices are module-local: decode via from_sorted_error_code for portable codes.
+// Builder: Adams consume via a mutable list cursor; mid is matched in-place so right
+// build + finish_node stay under that cons frame.
+
+fn from_sorted_ok(
+    new_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- {
+            set: new_set,
+            valid: true,
+            error: :ok
+        }
+    produces
+        pure out
+    end
+}
+
+fn from_sorted_err(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    error: atom
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- {
+            set: set_with_root(set, :none),
+            valid: false,
+            error: error
+        }
+    produces
+        pure out
+    end
+}
+
+fn from_sorted_build_ok(
+    new_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    from_sorted_ok(new_set)
+}
+
+fn from_sorted_build_err(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    error: atom
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    from_sorted_err(set, error)
+}
+
+fn from_sorted_preflight_pair(
+    compare_item: fn(ItemType, ItemType) -> atom,
+    prev: ItemType,
+    next: ItemType
+) -> atom {
+    sequence
+        cmp: atom <- comparator_result_validate(compare_item(prev, next))
+    produces
+        pure case cmp of {
+            :less -> :ok;
+            :equal -> :equal_keys;
+            :greater -> :not_ascending;
+            _: atom -> :invalid_comparator_result
+        }
+    end
+}
+
+// Trial/status entry: set argument specializes ItemType so an atom comparator can be injected.
+fn from_sorted_preflight_status(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    injected_compare: fn(ItemType, ItemType) -> atom,
+    prev: ItemType,
+    next: ItemType
+) -> atom {
+    sequence
+        _: int64 <- set.specialization_key;
+        out: atom <- from_sorted_preflight_pair(injected_compare, prev, next)
+    produces
+        pure out
+    end
+}
+
+fn from_sorted_finish_node(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    right_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence
+        left_hold: {
+            root: ref?(L, normal, rec)
+        } <- {
+            root: left_set.root
+        };
+        right_hold: {
+            root: ref?(L, normal, rec)
+        } <- {
+            root: right_set.root
+        };
+        built_set: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: smart_node(set, item, left_hold.root, right_hold.root),
+            compare_item: set.compare_item,
+            region: set.region,
+            specialization_key: set.specialization_key,
+            compare_item_ordering_bundle: set.compare_item_ordering_bundle
+        };
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- case built_set.root of {
+            :none -> from_sorted_build_err(set, :size_overflow);
+            _: ref?(L, normal, rec) -> from_sorted_build_ok(built_set)
+        }
+    produces
+        pure out
+    end
+}
+
+fn from_sorted_after_right(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType,
+    left_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    right_b: {
+        set: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        },
+        valid: boolean,
+        error: atom
+    }
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    case right_b.valid of {
+        false -> right_b;
+        true -> from_sorted_finish_node(set, item, left_set, right_b.set)
+    }
+}
+
+fn from_sorted_build_one_item(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: ItemType
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence
+        empty_child: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_with_root(set, :none);
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- from_sorted_finish_node(set, item, empty_child, empty_child)
+    produces
+        pure out
+    end
+}
+
+// §8A.8: runtime-sized item buffer + Adams build.
+// Constraints (emitter/runtime):
+// - Do not alloc_buf under a live List cons (hangs).
+// - Do not smart_node before the input list is fully peeled under cons (hangs).
+// - Fill under cons (write_buf + adjacent preflight only); build after cons unwinds.
+
+fn from_sorted_fill(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    items: List[ItemType, mem(normal)],
+    remaining: int64,
+    n: int64,
+    items_buf: buf(L, normal, ItemType, n),
+    cursor: {
+        write_idx: int64,
+        prev_ref: ref(L, normal, (ItemType, int64)),
+        has_prev: boolean
+    }
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    case remaining == 0 of {
+        true -> case items of {
+            []: List[ItemType, mem(normal)] -> from_sorted_ok(set);
+            _: List[ItemType, mem(normal)] -> from_sorted_err(set, :count_mismatch)
+        };
+        false -> case items of {
+            []: List[ItemType, mem(normal)] -> from_sorted_err(set, :count_mismatch);
+            [h: ItemType, t: List[ItemType, mem(normal)]] ->
+                from_sorted_fill_cons(set, h, t, remaining, n, items_buf, cursor)
+        }
+    }
+}
+
+fn from_sorted_fill_cons(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    h: ItemType,
+    t: List[ItemType, mem(normal)],
+    remaining: int64,
+    n: int64,
+    items_buf: buf(L, normal, ItemType, n),
+    cursor: {
+        write_idx: int64,
+        prev_ref: ref(L, normal, (ItemType, int64)),
+        has_prev: boolean
+    }
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence
+        chk: atom <- from_sorted_peel_check(set, cursor.prev_ref, cursor.has_prev, h);
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- case chk of {
+            :ok -> from_sorted_fill_cons_ok(set, h, t, remaining, n, items_buf, cursor);
+            _: atom -> from_sorted_err(set, chk)
+        }
+    produces
+        pure out
+    end
+}
+
+fn from_sorted_peel_check(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    prev_ref: ref(L, normal, (ItemType, int64)),
+    has_prev: boolean,
+    h: ItemType
+) -> atom {
+    case has_prev of {
+        false -> :ok;
+        true -> from_sorted_peel_check_prev(set, prev_ref, h)
+    }
+}
+
+fn from_sorted_peel_check_prev(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    prev_ref: ref(L, normal, (ItemType, int64)),
+    h: ItemType
+) -> atom {
+    sequence proc[mem(normal)]
+        wrapped: (ItemType, int64) <- read_ref(prev_ref);
+        (prev, _flag: int64) <- wrapped;
+        out: atom <- from_sorted_preflight_pair(set.compare_item, prev, h)
+    produces
+        pure out
+    end
+}
+
+fn from_sorted_fill_cons_ok(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    h: ItemType,
+    t: List[ItemType, mem(normal)],
+    remaining: int64,
+    n: int64,
+    items_buf: buf(L, normal, ItemType, n),
+    cursor: {
+        write_idx: int64,
+        prev_ref: ref(L, normal, (ItemType, int64)),
+        has_prev: boolean
+    }
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence proc[mem(normal)]
+        _: atom <- write_buf(items_buf, cursor.write_idx, h);
+        _: atom <- write_ref(cursor.prev_ref, (h, 1));
+        next_cursor: {
+            write_idx: int64,
+            prev_ref: ref(L, normal, (ItemType, int64)),
+            has_prev: boolean
+        } <- {
+            write_idx: cursor.write_idx + 1,
+            prev_ref: cursor.prev_ref,
+            has_prev: true
+        };
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- from_sorted_fill(set, t, remaining - 1, n, items_buf, next_cursor)
+    produces
+        pure out
+    end
+}
+
+fn from_sorted_buf_build(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    n: int64,
+    items_buf: buf(L, normal, ItemType, n),
+    start: int64,
+    count: int64
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    case count == 0 of {
+        true -> from_sorted_ok(set_with_root(set, :none));
+        false -> case count == 1 of {
+            true -> from_sorted_buf_one(set, n, items_buf, start);
+            false -> from_sorted_buf_split(set, n, items_buf, start, count)
+        }
+    }
+}
+
+fn from_sorted_buf_one(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    n: int64,
+    items_buf: buf(L, normal, ItemType, n),
+    start: int64
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence proc[mem(normal)]
+        item: ItemType <- read_buf(items_buf, start);
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- from_sorted_build_one_item(set, item)
+    produces
+        pure out
+    end
+}
+
+fn from_sorted_buf_split(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    n: int64,
+    items_buf: buf(L, normal, ItemType, n),
+    start: int64,
+    count: int64
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence
+        left_count: int64 <- count / 2;
+        right_count: int64 <- count - left_count - 1;
+        left_b: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- from_sorted_buf_build(set, n, items_buf, start, left_count);
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- from_sorted_buf_after_left(set, n, items_buf, start, left_count, right_count, left_b)
+    produces
+        pure out
+    end
+}
+
+fn from_sorted_buf_after_left(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    n: int64,
+    items_buf: buf(L, normal, ItemType, n),
+    start: int64,
+    left_count: int64,
+    right_count: int64,
+    left_b: {
+        set: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        },
+        valid: boolean,
+        error: atom
+    }
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    case left_b.valid of {
+        false -> left_b;
+        true -> from_sorted_buf_mid(set, n, items_buf, start, left_count, right_count, left_b.set)
+    }
+}
+
+fn from_sorted_buf_mid(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    n: int64,
+    items_buf: buf(L, normal, ItemType, n),
+    start: int64,
+    left_count: int64,
+    right_count: int64,
+    left_set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence proc[mem(normal)]
+        mid: ItemType <- read_buf(items_buf, start + left_count);
+        right_b: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- from_sorted_buf_build(set, n, items_buf, start + left_count + 1, right_count);
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- from_sorted_after_right(set, mid, left_set, right_b)
+    produces
+        pure out
+    end
+}
+
+fn from_sorted_after_fill(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    n: int64,
+    items_buf: buf(L, normal, ItemType, n),
+    filled: {
+        set: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        },
+        valid: boolean,
+        error: atom
+    }
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    case filled.valid of {
+        false -> filled;
+        true -> from_sorted_buf_build(set, n, items_buf, 0, n)
+    }
+}
+
+fn from_sorted_publish(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    items: List[ItemType, mem(normal)],
+    n: int64
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    case n == 0 of {
+        true -> case items of {
+            []: List[ItemType, mem(normal)] -> from_sorted_ok(set_with_root(set, :none));
+            _: List[ItemType, mem(normal)] -> from_sorted_err(set, :count_mismatch)
+        };
+        false -> from_sorted_publish_alloc(set, items, n)
+    }
+}
+
+fn from_sorted_publish_alloc(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    items: List[ItemType, mem(normal)],
+    n: int64
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence proc[mem(normal)]
+        items_buf: buf(L, normal, ItemType, n) <- alloc_buf(set.region, n);
+        filled: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- from_sorted_publish_fill(set, items, n, items_buf);
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- from_sorted_after_fill(set, n, items_buf, filled)
+    produces
+        pure out
+    end
+}
+
+fn from_sorted_publish_fill(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    items: List[ItemType, mem(normal)],
+    n: int64,
+    items_buf: buf(L, normal, ItemType, n)
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    case items of {
+        []: List[ItemType, mem(normal)] -> from_sorted_err(set, :count_mismatch);
+        [h: ItemType, t: List[ItemType, mem(normal)]] ->
+            from_sorted_publish_fill_start(set, h, t, n, items_buf)
+    }
+}
+
+fn from_sorted_publish_fill_start(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    h: ItemType,
+    t: List[ItemType, mem(normal)],
+    n: int64,
+    items_buf: buf(L, normal, ItemType, n)
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence proc[mem(normal)]
+        prev_ref: ref(L, normal, (ItemType, int64)) <- alloc_ref(set.region, (h, 1));
+        _: atom <- write_buf(items_buf, 0, h);
+        cursor: {
+            write_idx: int64,
+            prev_ref: ref(L, normal, (ItemType, int64)),
+            has_prev: boolean
+        } <- {
+            write_idx: 1,
+            prev_ref: prev_ref,
+            has_prev: true
+        };
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- from_sorted_fill(set, t, n - 1, n, items_buf, cursor)
+    produces
+        pure out
+    end
+}
+
+
+
+
+fn from_sorted_counted_matching(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    items: List[ItemType, mem(normal)],
+    n: int64
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    from_sorted_publish(set, items, n)
+}
+
+fn from_sorted_counted(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    items: List[ItemType, mem(normal)],
+    n: int64
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    case n < 0 of {
+        true -> from_sorted_err(set, :negative_count);
+        false -> from_sorted_counted_matching(set, items, n)
+    }
+}
+
+fn from_sorted_error_code(error: atom) -> int64 {
+    case error of {
+        :ok -> 0;
+        :not_ascending -> 1;
+        :equal_keys -> 2;
+        :invalid_comparator_result -> 3;
+        :negative_count -> 4;
+        :count_mismatch -> 5;
+        :size_overflow -> 6;
+        _: atom -> 99
+    }
+}
+
+fn from_sorted(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    items: List[ItemType, mem(normal)]
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence proc[mem(normal)]
+        n: int64 <- length[ItemType, mem(normal)](items);
+        out: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- from_sorted_counted_matching(set, items, n)
+    produces
+        pure out
+    end
 }

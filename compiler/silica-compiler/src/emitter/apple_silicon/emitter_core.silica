@@ -1180,21 +1180,29 @@ fn fs_term_has_hazard(t: SIRTerm) -> bool {
     }
 }
 
-// A param occupies a single GPR when it is not float, string, list, or a by-value tuple.
-// Inline-struct/record/buffer/region params arrive as a single pointer (one GPR).
-fn fs_param_is_simple_gpr(ptype: string) -> bool {
-    case ptype == "string" of {
+fn fs_term_has_case(t: SIRTerm) -> bool {
+    case t.kind < 0 of {
         true -> false;
-        false -> case reg_conventions@is_float64_type(ptype) or reg_conventions@is_float32_type(ptype) or reg_conventions@is_float16_type(ptype) of {
-            true -> false;
-            false -> case term_emitter@type_name_is_list_like(ptype) of {
-                true -> false;
-                false -> case reg_conventions@is_tuple_type(ptype) of {
-                    true -> false;
-                    false -> true
-                }
-            }
+        false -> case t.kind of {
+            3 -> true;
+            2 -> case fs_term_has_case(t.inner) of { true -> true; false -> fs_term_has_case(t.right_expr) };
+            4 -> fs_term_has_case(t.inner);
+            5 -> case fs_term_has_case(t.inner) of { true -> true; false -> fs_term_has_case(t.right_expr) };
+            6 -> case fs_term_has_case(t.inner) of { true -> true; false -> fs_term_has_case(t.right_expr) };
+            7 -> case fs_term_has_case(t.inner) of { true -> true; false -> fs_term_has_case(t.right_expr) };
+            8 -> case fs_term_has_case(t.inner) of { true -> true; false -> fs_term_has_case(t.right_expr) };
+            _: int64 -> false
         }
+    }
+}
+
+// A param occupies a single GPR when it is not a float register param.
+// String/list handles, tuple/record pointers, buffers, and regions all arrive as
+// one GPR and must survive calls just like scalar pointer params.
+fn fs_param_is_simple_gpr(ptype: string) -> bool {
+    case reg_conventions@is_float64_type(ptype) or reg_conventions@is_float32_type(ptype) or reg_conventions@is_float16_type(ptype) of {
+        true -> false;
+        false -> true
     }
 }
 
@@ -1261,7 +1269,7 @@ fn use_full_param_shadow(fn_val: SIRFunction) -> bool {
                                     false -> false;
                                     true -> case fs_all_params_simple_gpr(fn_val.param_types) of {
                                         false -> false;
-                                        true -> fs_subtree_has_user_call(fn_val.body)
+                                        true -> fs_subtree_has_user_call(fn_val.body) or fs_term_has_case(fn_val.body)
                                     }
                                 }
                             end
@@ -1382,12 +1390,21 @@ fn needs_callee_x27_x28_frame(fn_val: SIRFunction) -> bool {
     }
 }
 
-// STR/LDR X29 when pressure reaches 10 (one past X19–X28 spill chain).
+// X29 is the frame base for overflow spill slots, not a value spill register.
 fn needs_callee_x29_frame(fn_val: SIRFunction) -> bool {
-    case fn_val.body.kind == 5 of {
-        true -> false;
-        false -> count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val) >= 6
+    false
+}
+
+fn frame_spill_slot_count(fn_val: SIRFunction) -> int64 {
+    pressure: int64 <- count_callee_saved_spill_pressure(fn_val.body) + full_shadow_pressure_bump(fn_val);
+    case pressure > 10 of {
+        true -> pressure - 10;
+        false -> 0
     }
+}
+
+fn frame_spill_bytes(fn_val: SIRFunction) -> int64 {
+    frame_spill_slot_count(fn_val) * 16
 }
 
 fn needs_callee_d8_d9_frame(fn_val: SIRFunction) -> bool {
@@ -1418,31 +1435,17 @@ fn needs_callee_d14_d15_frame(fn_val: SIRFunction) -> bool {
     }
 }
 
-// Extra STP/LDP X19,X20 pair so let RHS can spill from X0 to X19/X20 across BL calls.
-// Pairs with term_emitter compute_let_rhs_spill_reg. Skipped when string shadow already uses STP X19,X20.
-// Also triggered when the body has BL-producing prims (actor helpers, list_length, list_cons) so that
-// functions without explicit concurrency/device_io effects still get callee-saved frames for list operations.
+// Extra STP/LDP X19,X20 pair for the backend's general scratch/spill path.
+// Term emission can use X19/X20 for tuple/record projections and let spills even in
+// tiny generic helpers whose source-level return type does not reveal that pressure.
+// Save them for every non-tail function unless the string/list shadow prologue
+// already emits this exact pair.
 fn function_needs_callee_saved_x19_x20_frame(fn_val: SIRFunction) -> bool {
     case fn_val.body.kind == 5 of {
         true -> false;
-        false -> case needs_int64_abi_entry_shadow(fn_val) of {
-            true -> true;
-            false -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
-                true -> false;
-                false -> case use_actor_reply_sret_buffer(fn_val) of {
-                    true -> true;
-                    false -> case emitter_effects@has_concurrency(fn_val.effects) of {
-                        true -> true;
-                        false -> case emitter_effects@has_device_io(fn_val.effects) of {
-                            true -> true;
-                            false -> case reg_conventions@is_aggregate_struct_or_tuple_return_type(fn_val.return_type) of {
-                                true -> true;
-                                false -> fn_val.return_type == "int64" or fn_val.return_type == "uint64" or body_has_bl_producing_prim(fn_val.body)
-                            }
-                        }
-                    }
-                }
-            }
+        false -> case first_param_x0_shadow_enabled(fn_val.param_types, fn_val.body.kind) of {
+            true -> false;
+            false -> true
         }
     }
 }
@@ -1522,6 +1525,15 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
         false -> param_outer_emit_lm
     };
     param_outer_emit_fnret: string <- concat(param_outer_emit_ffi, concat("|_fnret=", fn_val.return_type));
+    frame_spill_nbytes: int64 <- frame_spill_bytes(fn_val);
+    frame_spill_alloc: string <- case frame_spill_nbytes > 0 of {
+        true -> concat("    SUB SP, SP, #", concat(atom_table@int64_to_decimal_string(frame_spill_nbytes), "\n"));
+        false -> ""
+    };
+    frame_spill_dealloc: string <- case frame_spill_nbytes > 0 of {
+        true -> concat("    ADD SP, SP, #", concat(atom_table@int64_to_decimal_string(frame_spill_nbytes), "\n"));
+        false -> ""
+    };
     shadow_prologue: string <- case string_shadow of {
         true -> case second_param_shadow of {
             true -> "    STP X19, X20, [SP, #-16]!\n    MOV X19, X0\n    MOV X20, X1\n";
@@ -1569,7 +1581,7 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
         true -> "    STP D14, D15, [SP, #-16]!\n";
         false -> ""
     };
-    prologue_full: string <- concat(prologue, concat(shadow_prologue, concat(callee_saved_frame, concat(actor_x21_x22_frame, concat(callee_x23_x24_frame, concat(callee_x25_x26_frame, concat(callee_x27_x28_frame, concat(callee_x29_frame, concat(callee_d8_d9_frame, concat(callee_d10_d11_frame, concat(callee_d12_d13_frame, concat(callee_d14_d15_frame, concat(int64_abi_shadow_asm, concat(aggregate_x11_mov, actor_sret_mov))))))))))))));
+    prologue_full: string <- concat(prologue, concat(frame_spill_alloc, concat(shadow_prologue, concat(callee_saved_frame, concat(actor_x21_x22_frame, concat(callee_x23_x24_frame, concat(callee_x25_x26_frame, concat(callee_x27_x28_frame, concat(callee_x29_frame, concat(callee_d8_d9_frame, concat(callee_d10_d11_frame, concat(callee_d12_d13_frame, concat(callee_d14_d15_frame, concat(int64_abi_shadow_asm, concat(aggregate_x11_mov, actor_sret_mov)))))))))))))));
     main_kind5_no_tail: bool <- recursion_support@main_kind5_body_uses_non_tail_call(fn_val.name, fn_val.return_type, fn_val.body, all_functions);
     main_k5_asm_line_before_call: string <- case main_kind5_no_tail of {
         true -> case fn_val.return_type == "float32" or fn_val.return_type == "float64" or fn_val.return_type == "float16" of {
@@ -1698,7 +1710,7 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
         true -> "";
         false -> case string_shadow of {
             true -> do
-                ep_sh: string <- concat("    LDP X19, X20, [SP], #16\n", control@function_epilogue_with_effects(fn_val.effects));
+                ep_sh: string <- concat("    LDP X19, X20, [SP], #16\n", concat(frame_spill_dealloc, control@function_epilogue_with_effects(fn_val.effects)));
                 ep_sh_1: string <- concat(actor_x21_x22_restore, ep_sh);
                 ep_sh_2: string <- concat(callee_x23_x24_restore, ep_sh_1);
                 ep_sh_3: string <- concat(callee_x25_x26_restore, ep_sh_2);
@@ -1711,7 +1723,7 @@ fn emit_sir_function(fn_val: SIRFunction, all_functions: ListSIRFunction, table:
                 concat(concat(tuple_ret_promote, tuple_ret_dealloc), ep_sh_8)
             end;
             false -> do
-                ep_ns: string <- concat(callee_saved_restore, control@function_epilogue_with_effects(fn_val.effects));
+                ep_ns: string <- concat(callee_saved_restore, concat(frame_spill_dealloc, control@function_epilogue_with_effects(fn_val.effects)));
                 ep_ns_1: string <- concat(actor_x21_x22_restore, ep_ns);
                 ep_ns_2: string <- concat(callee_x23_x24_restore, ep_ns_1);
                 ep_ns_3: string <- concat(callee_x25_x26_restore, ep_ns_2);
