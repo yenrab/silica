@@ -1,0 +1,209 @@
+// Layer 2 §8A.11 Step 4: trial-only deterministic LCG + fixed key schedules (int64).
+//
+// TRACE_SEED = 42 (fixed in source; trials report success via exit code only).
+// Domain keys 1..16 (bitmask bits 0..15). Each schedule yields SCHEDULE_LEN = 48 steps.
+//
+// Schedules (schedule_id):
+//   0 ascending       — keys 1,2,...,16,1,2,... 
+//   1 descending      — keys 16,15,...,1,16,...
+//   2 duplicate-heavy — keys cycle 1..4 only
+//   3 uniform shuffle — LCG-driven keys in 1..16 from TRACE_SEED
+//
+// Op mix (same for every schedule): mostly inserts for indices 0..23 (delete when
+// index%4==3); mostly deletes for indices 24..47 (insert when index%4==0).
+
+export trace_seed/0;
+export domain_size/0;
+export schedule_len/0;
+export schedule_count/0;
+export lcg_next/1;
+export schedule_key/3;
+export schedule_op_is_delete/2;
+export pow2/1;
+export bit_has/2;
+export bit_insert/2;
+export bit_insert_map/2;
+export bit_delete/2;
+export bit_olen/1;
+export bit_osum_set/1;
+export bit_osum_map/1;
+
+fn trace_seed() -> int64 {
+    42
+}
+
+fn domain_size() -> int64 {
+    16
+}
+
+fn schedule_len() -> int64 {
+    48
+}
+
+fn schedule_count() -> int64 {
+    4
+}
+
+// Minimal standard LCG on [0, 2^31): state' = (state * 1103515245 + 12345) mod 2^31.
+// Intermediate product fits in int64 when state is already reduced mod 2^31.
+fn lcg_next(state: int64) -> { state: int64, value: int64 } {
+    sequence
+        raw: int64 <- (state * 1103515245) + 12345;
+        next: int64 <- raw % 2147483648
+    produces
+        pure { state: next, value: next }
+    end
+}
+
+fn pow2(n: int64) -> int64 {
+    case n of {
+        0 -> 1;
+        _ -> 2 * pow2(n - 1)
+    }
+}
+
+fn bit_has_from(mask: int64, bit: int64) -> boolean {
+    case bit of {
+        0 -> case mask % 2 of { 0 -> false; _ -> true };
+        _ -> bit_has_from(mask / 2, bit - 1)
+    }
+}
+
+fn bit_has(mask: int64, key: int64) -> boolean {
+    case key < 1 of {
+        true -> false;
+        false -> case key > 16 of {
+            true -> false;
+            false -> bit_has_from(mask, key - 1)
+        }
+    }
+}
+
+fn bit_insert(mask: int64, key: int64) -> { mask: int64, inserted: boolean } {
+    case bit_has(mask, key) of {
+        true -> { mask: mask, inserted: false };
+        false -> {
+            sequence
+                bit: int64 <- pow2(key - 1)
+            produces
+                pure { mask: mask + bit, inserted: true }
+            end
+        }
+    }
+}
+
+fn bit_insert_map(mask: int64, key: int64) -> { mask: int64, inserted: boolean, replaced: boolean } {
+    case bit_has(mask, key) of {
+        true -> { mask: mask, inserted: false, replaced: true };
+        false -> {
+            sequence
+                bit: int64 <- pow2(key - 1)
+            produces
+                pure { mask: mask + bit, inserted: true, replaced: false }
+            end
+        }
+    }
+}
+
+fn bit_delete(mask: int64, key: int64) -> { mask: int64, removed: boolean } {
+    case bit_has(mask, key) of {
+        false -> { mask: mask, removed: false };
+        true -> {
+            sequence
+                bit: int64 <- pow2(key - 1)
+            produces
+                pure { mask: mask - bit, removed: true }
+            end
+        }
+    }
+}
+
+fn bit_olen(mask: int64) -> int64 {
+    case mask of {
+        0 -> 0;
+        _ -> (mask % 2) + bit_olen(mask / 2)
+    }
+}
+
+// Sum of present keys (key = bit_index + 1).
+fn bit_osum_set_from(mask: int64, key: int64) -> int64 {
+    case key of {
+        17 -> 0;
+        _ -> {
+            sequence
+                bit: int64 <- mask % 2;
+                rest: int64 <- bit_osum_set_from(mask / 2, key + 1)
+            produces
+                pure case bit of { 0 -> rest; _ -> key + rest }
+            end
+        }
+    }
+}
+
+fn bit_osum_set(mask: int64) -> int64 {
+    bit_osum_set_from(mask, 1)
+}
+
+// Present keys contribute key + value with value = key*10, i.e. 11*key.
+fn bit_osum_map_from(mask: int64, key: int64) -> int64 {
+    case key of {
+        17 -> 0;
+        _ -> {
+            sequence
+                bit: int64 <- mask % 2;
+                rest: int64 <- bit_osum_map_from(mask / 2, key + 1);
+                contrib: int64 <- 11 * key
+            produces
+                pure case bit of { 0 -> rest; _ -> contrib + rest }
+            end
+        }
+    }
+}
+
+fn bit_osum_map(mask: int64) -> int64 {
+    bit_osum_map_from(mask, 1)
+}
+
+fn ascending_key(index: int64) -> int64 {
+    1 + (index % 16)
+}
+
+// index%16==0 → 16; otherwise 15..1. Equivalent to 16 - (index % 16).
+fn descending_key(index: int64) -> int64 {
+    16 - (index % 16)
+}
+
+fn duplicate_heavy_key(index: int64) -> int64 {
+    1 + (index % 4)
+}
+
+// schedule_id: 0 asc, 1 desc, 2 dup-heavy, 3 uniform shuffle (LCG).
+// Threads LCG state for schedule 3; other schedules leave state unchanged.
+fn schedule_key(schedule_id: int64, index: int64, lcg_state: int64) -> { key: int64, state: int64 } {
+    case schedule_id of {
+        0 -> { key: ascending_key(index), state: lcg_state };
+        1 -> { key: descending_key(index), state: lcg_state };
+        2 -> { key: duplicate_heavy_key(index), state: lcg_state };
+        _ -> {
+            sequence
+                n: { state: int64, value: int64 } <- lcg_next(lcg_state);
+                st: int64 <- n.state;
+                v: int64 <- n.value;
+                k: int64 <- 1 + (v % 16)
+            produces
+                pure { key: k, state: st }
+            end
+        }
+    }
+}
+
+// Mostly insert for 0..23; mostly delete for 24..47 (see file header).
+// schedule_id is accepted for a uniform schedule API; op mix is shared across schedules.
+fn schedule_op_is_delete(schedule_id: int64, index: int64) -> boolean {
+    case schedule_id of {
+        _ -> case index < 24 of {
+            true -> case index % 4 of { 3 -> true; _ -> false };
+            false -> case index % 4 of { 0 -> false; _ -> true }
+        }
+    }
+}

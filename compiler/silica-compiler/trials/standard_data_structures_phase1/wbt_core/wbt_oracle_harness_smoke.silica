@@ -1,0 +1,703 @@
+// Layer 2 §8A.11 Step 1: hand-written set/map trace agrees with list oracle after every mutation.
+// Oracle Lists never share a frame with WBT size/fold/validate (scalar facts only).
+
+use wbt_set;
+use wbt_map;
+use wbt_trial_oracle_i64;
+
+fn smoke_cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+// --- Oracle fact builders (List-only frames) ---
+
+fn facts_set_empty() -> { olen: int64, osum: int64 } {
+    sequence proc[mem(normal)]
+        xs: List[int64, mem(normal)] <- wbt_trial_oracle_i64@set_oracle_empty();
+        f: { olen: int64, osum: int64 } <- wbt_trial_oracle_i64@set_oracle_facts(xs)
+    produces
+        pure f
+    end
+}
+
+fn facts_set_2() -> { olen: int64, osum: int64 } {
+    sequence proc[mem(normal)]
+        xs0: List[int64, mem(normal)] <- wbt_trial_oracle_i64@set_oracle_empty();
+        xs1: { list: List[int64, mem(normal)], inserted: boolean } <-
+            wbt_trial_oracle_i64@set_oracle_insert(xs0, 2);
+        f: { olen: int64, osum: int64 } <- wbt_trial_oracle_i64@set_oracle_facts(xs1.list)
+    produces
+        pure f
+    end
+}
+
+fn facts_set_2_5() -> { olen: int64, osum: int64 } {
+    sequence proc[mem(normal)]
+        xs0: List[int64, mem(normal)] <- wbt_trial_oracle_i64@set_oracle_empty();
+        xs1: { list: List[int64, mem(normal)], inserted: boolean } <-
+            wbt_trial_oracle_i64@set_oracle_insert(xs0, 2);
+        xs2: { list: List[int64, mem(normal)], inserted: boolean } <-
+            wbt_trial_oracle_i64@set_oracle_insert(xs1.list, 5);
+        f: { olen: int64, osum: int64 } <- wbt_trial_oracle_i64@set_oracle_facts(xs2.list)
+    produces
+        pure f
+    end
+}
+
+fn facts_set_2_5_after_dup_2() -> { olen: int64, osum: int64 } {
+    sequence proc[mem(normal)]
+        xs0: List[int64, mem(normal)] <- wbt_trial_oracle_i64@set_oracle_empty();
+        xs1: { list: List[int64, mem(normal)], inserted: boolean } <-
+            wbt_trial_oracle_i64@set_oracle_insert(xs0, 2);
+        xs2: { list: List[int64, mem(normal)], inserted: boolean } <-
+            wbt_trial_oracle_i64@set_oracle_insert(xs1.list, 5);
+        xs3: { list: List[int64, mem(normal)], inserted: boolean } <-
+            wbt_trial_oracle_i64@set_oracle_insert(xs2.list, 2);
+        f: { olen: int64, osum: int64 } <- wbt_trial_oracle_i64@set_oracle_facts(xs3.list)
+    produces
+        pure f
+    end
+}
+
+fn facts_set_5_after_delete_2() -> { olen: int64, osum: int64 } {
+    sequence proc[mem(normal)]
+        xs0: List[int64, mem(normal)] <- wbt_trial_oracle_i64@set_oracle_empty();
+        xs1: { list: List[int64, mem(normal)], inserted: boolean } <-
+            wbt_trial_oracle_i64@set_oracle_insert(xs0, 2);
+        xs2: { list: List[int64, mem(normal)], inserted: boolean } <-
+            wbt_trial_oracle_i64@set_oracle_insert(xs1.list, 5);
+        xs3: { list: List[int64, mem(normal)], inserted: boolean } <-
+            wbt_trial_oracle_i64@set_oracle_insert(xs2.list, 2);
+        xd: { list: List[int64, mem(normal)], removed: boolean } <-
+            wbt_trial_oracle_i64@set_oracle_delete(xs3.list, 2);
+        f: { olen: int64, osum: int64 } <- wbt_trial_oracle_i64@set_oracle_facts(xd.list)
+    produces
+        pure f
+    end
+}
+
+fn facts_map_empty() -> { olen: int64, osum: int64 } {
+    sequence proc[mem(normal)]
+        xs: List[(int64, int64), mem(normal)] <- wbt_trial_oracle_i64@map_oracle_empty();
+        f: { olen: int64, osum: int64 } <- wbt_trial_oracle_i64@map_oracle_facts(xs)
+    produces
+        pure f
+    end
+}
+
+fn facts_map_2_20() -> { olen: int64, osum: int64 } {
+    sequence proc[mem(normal)]
+        xs0: List[(int64, int64), mem(normal)] <- wbt_trial_oracle_i64@map_oracle_empty();
+        xs1: {
+            list: List[(int64, int64), mem(normal)],
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_trial_oracle_i64@map_oracle_insert(xs0, 2, 20);
+        f: { olen: int64, osum: int64 } <- wbt_trial_oracle_i64@map_oracle_facts(xs1.list)
+    produces
+        pure f
+    end
+}
+
+fn facts_map_2_200() -> { olen: int64, osum: int64 } {
+    sequence proc[mem(normal)]
+        xs0: List[(int64, int64), mem(normal)] <- wbt_trial_oracle_i64@map_oracle_empty();
+        xs1: {
+            list: List[(int64, int64), mem(normal)],
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_trial_oracle_i64@map_oracle_insert(xs0, 2, 20);
+        xs2: {
+            list: List[(int64, int64), mem(normal)],
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_trial_oracle_i64@map_oracle_insert(xs1.list, 2, 200);
+        f: { olen: int64, osum: int64 } <- wbt_trial_oracle_i64@map_oracle_facts(xs2.list)
+    produces
+        pure f
+    end
+}
+
+fn facts_map_empty_after_delete_2() -> { olen: int64, osum: int64 } {
+    sequence proc[mem(normal)]
+        xs0: List[(int64, int64), mem(normal)] <- wbt_trial_oracle_i64@map_oracle_empty();
+        xs1: {
+            list: List[(int64, int64), mem(normal)],
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_trial_oracle_i64@map_oracle_insert(xs0, 2, 20);
+        xs2: {
+            list: List[(int64, int64), mem(normal)],
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_trial_oracle_i64@map_oracle_insert(xs1.list, 2, 200);
+        xd: { list: List[(int64, int64), mem(normal)], removed: boolean } <-
+            wbt_trial_oracle_i64@map_oracle_delete(xs2.list, 2);
+        f: { olen: int64, osum: int64 } <- wbt_trial_oracle_i64@map_oracle_facts(xd.list)
+    produces
+        pure f
+    end
+}
+
+// --- Per-step checks (facts then WBT; scalar key probes) ---
+
+fn step_empty_set() -> boolean {
+    sequence
+        f: { olen: int64, osum: int64 } <- facts_set_empty();
+        olen: int64 <- f.olen;
+        osum: int64 <- f.osum;
+        s: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: smoke_cmp_i64 });
+        ok: boolean <- wbt_trial_oracle_i64@check_set_facts(s, olen, osum)
+    produces
+        pure ok
+    end
+}
+
+fn step_empty_map() -> boolean {
+    sequence
+        f: { olen: int64, osum: int64 } <- facts_map_empty();
+        olen: int64 <- f.olen;
+        osum: int64 <- f.osum;
+        m: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_map@empty({ compare_key: smoke_cmp_i64, compare_value: smoke_cmp_i64 });
+        ok: boolean <- wbt_trial_oracle_i64@check_map_facts(m, olen, osum)
+    produces
+        pure ok
+    end
+}
+
+fn step_set_insert_2() -> boolean {
+    sequence
+        f: { olen: int64, osum: int64 } <- facts_set_2();
+        olen: int64 <- f.olen;
+        osum: int64 <- f.osum;
+        e: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: smoke_cmp_i64 });
+        ins: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(e, 2);
+        s: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- ins.set;
+        ok: boolean <- wbt_trial_oracle_i64@check_set_facts(s, olen, osum);
+        has: boolean <- wbt_set@contains(s, 2)
+    produces
+        pure case ins.inserted of {
+            false -> false;
+            true -> case ok of { false -> false; true -> has }
+        }
+    end
+}
+
+fn step_map_insert_2_20() -> boolean {
+    sequence
+        f: { olen: int64, osum: int64 } <- facts_map_2_20();
+        olen: int64 <- f.olen;
+        osum: int64 <- f.osum;
+        e: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_map@empty({ compare_key: smoke_cmp_i64, compare_value: smoke_cmp_i64 });
+        ins: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(e, 2, 20);
+        m: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- ins.map;
+        ok: boolean <- wbt_trial_oracle_i64@check_map_facts(m, olen, osum);
+        got: { status: :not_found | :found, value: int64 } <- wbt_map@get(m, 2, 0)
+    produces
+        pure case ins.inserted of {
+            false -> false;
+            true -> case ok of {
+                false -> false;
+                true -> case got.status of {
+                    :not_found -> false;
+                    :found -> case got.value == 20 of { true -> true; false -> false }
+                }
+            }
+        }
+    end
+}
+
+fn step_set_insert_2_5() -> boolean {
+    sequence
+        f: { olen: int64, osum: int64 } <- facts_set_2_5();
+        olen: int64 <- f.olen;
+        osum: int64 <- f.osum;
+        e: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: smoke_cmp_i64 });
+        ins1: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(e, 2);
+        s1: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- ins1.set;
+        ins: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(s1, 5);
+        s: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- ins.set;
+        ok: boolean <- wbt_trial_oracle_i64@check_set_facts(s, olen, osum);
+        h2: boolean <- wbt_set@contains(s, 2);
+        h5: boolean <- wbt_set@contains(s, 5)
+    produces
+        pure case ins.inserted of {
+            false -> false;
+            true -> case ok of {
+                false -> false;
+                true -> case h2 of { false -> false; true -> h5 }
+            }
+        }
+    end
+}
+
+fn step_set_dup_insert_2() -> boolean {
+    sequence
+        f: { olen: int64, osum: int64 } <- facts_set_2_5_after_dup_2();
+        olen: int64 <- f.olen;
+        osum: int64 <- f.osum;
+        e: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: smoke_cmp_i64 });
+        ins1: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(e, 2);
+        s1: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- ins1.set;
+        ins2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(s1, 5);
+        s2: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- ins2.set;
+        ins: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(s2, 2);
+        s: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- ins.set;
+        ok: boolean <- wbt_trial_oracle_i64@check_set_facts(s, olen, osum)
+    produces
+        pure case ins.inserted of {
+            true -> false;
+            false -> ok
+        }
+    end
+}
+
+fn step_map_replace_2_200() -> boolean {
+    sequence
+        f: { olen: int64, osum: int64 } <- facts_map_2_200();
+        olen: int64 <- f.olen;
+        osum: int64 <- f.osum;
+        e: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_map@empty({ compare_key: smoke_cmp_i64, compare_value: smoke_cmp_i64 });
+        ins1: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(e, 2, 20);
+        m1: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- ins1.map;
+        ins: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(m1, 2, 200);
+        m: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- ins.map;
+        ok: boolean <- wbt_trial_oracle_i64@check_map_facts(m, olen, osum);
+        got: { status: :not_found | :found, value: int64 } <- wbt_map@get(m, 2, 0)
+    produces
+        pure case ins.replaced of {
+            false -> false;
+            true -> case ok of {
+                false -> false;
+                true -> case got.status of {
+                    :not_found -> false;
+                    :found -> case got.value == 200 of { true -> true; false -> false }
+                }
+            }
+        }
+    end
+}
+
+fn step_set_delete_2() -> boolean {
+    sequence
+        f: { olen: int64, osum: int64 } <- facts_set_5_after_delete_2();
+        olen: int64 <- f.olen;
+        osum: int64 <- f.osum;
+        e: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- wbt_set@empty({ compare_item: smoke_cmp_i64 });
+        ins1: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(e, 2);
+        s1: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- ins1.set;
+        ins2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(s1, 5);
+        s2: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- ins2.set;
+        ins3: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(s2, 2);
+        s3: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- ins3.set;
+        del: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- wbt_set@delete(s3, 2);
+        s: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- del.set;
+        ok: boolean <- wbt_trial_oracle_i64@check_set_facts(s, olen, osum);
+        gone: boolean <- wbt_set@contains(s, 2);
+        keep: boolean <- wbt_set@contains(s, 5)
+    produces
+        pure case del.removed of {
+            false -> false;
+            true -> case ok of {
+                false -> false;
+                true -> case gone of { true -> false; false -> keep }
+            }
+        }
+    end
+}
+
+fn step_map_delete_2() -> boolean {
+    sequence
+        f: { olen: int64, osum: int64 } <- facts_map_empty_after_delete_2();
+        olen: int64 <- f.olen;
+        osum: int64 <- f.osum;
+        e: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- wbt_map@empty({ compare_key: smoke_cmp_i64, compare_value: smoke_cmp_i64 });
+        ins1: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(e, 2, 20);
+        m1: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- ins1.map;
+        ins2: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(m1, 2, 200);
+        m2: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- ins2.map;
+        del: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- wbt_map@delete(m2, 2);
+        m: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- del.map;
+        ok: boolean <- wbt_trial_oracle_i64@check_map_facts(m, olen, osum);
+        got: { status: :not_found | :found, value: int64 } <- wbt_map@get(m, 2, 0)
+    produces
+        pure case del.removed of {
+            false -> false;
+            true -> case ok of {
+                false -> false;
+                true -> case got.status of { :found -> false; :not_found -> true }
+            }
+        }
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        t0: boolean <- step_empty_set();
+        t1: boolean <- case t0 of { false -> false; true -> step_empty_map() };
+        t2: boolean <- case t1 of { false -> false; true -> step_set_insert_2() };
+        t3: boolean <- case t2 of { false -> false; true -> step_map_insert_2_20() };
+        t4: boolean <- case t3 of { false -> false; true -> step_set_insert_2_5() };
+        t5: boolean <- case t4 of { false -> false; true -> step_set_dup_insert_2() };
+        t6: boolean <- case t5 of { false -> false; true -> step_map_replace_2_200() };
+        t7: boolean <- case t6 of { false -> false; true -> step_set_delete_2() };
+        t8: boolean <- case t7 of { false -> false; true -> step_map_delete_2() }
+    produces
+        pure case t0 of {
+            false -> 1;
+            true -> case t1 of {
+                false -> 2;
+                true -> case t2 of {
+                    false -> 4;
+                    true -> case t3 of {
+                        false -> 6;
+                        true -> case t4 of {
+                            false -> 7;
+                            true -> case t5 of {
+                                false -> 8;
+                                true -> case t6 of {
+                                    false -> 11;
+                                    true -> case t7 of {
+                                        false -> 13;
+                                        true -> case t8 of { false -> 15; true -> 0 }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    end
+}

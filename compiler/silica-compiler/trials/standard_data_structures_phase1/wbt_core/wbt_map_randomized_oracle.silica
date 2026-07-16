@@ -1,0 +1,403 @@
+// Layer 2 §8A.11 Step 4: fixed-seed randomized map oracle traces.
+// TRACE_SEED = 42 (via wbt_trial_trace_i64@trace_seed); exit code only — no printing.
+//
+// Four schedules (asc / desc / dup-heavy / LCG shuffle) over domain keys {1..16}
+// with values key*10. Each schedule covers all 48 schedule indices as four
+// independent WAVE_LEN=12 waves from empty (map nodes overflow a 4KB arena on a
+// single contiguous 48-op LCG-shuffle trace; waves keep the fixed key/op stream).
+// Bitmask oracle + check_map_facts + get probes after every mutation.
+// Arena keys: schedule S wave W → 10 + S*4 + W.
+
+use wbt_map;
+use wbt_trial_oracle_i64;
+use wbt_trial_trace_i64;
+
+fn trace_cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn key_value(key: int64) -> int64 {
+    key * 10
+}
+
+fn bool_eq(a: boolean, b: boolean) -> boolean {
+    case a of {
+        false -> case b of { false -> true; true -> false };
+        true -> b
+    }
+}
+
+fn get_agrees(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    mask: int64,
+    key: int64
+) -> boolean {
+    sequence
+        want: boolean <- wbt_trial_trace_i64@bit_has(mask, key);
+        want_val: int64 <- key_value(key);
+        got: { status: :not_found | :found, value: int64 } <- wbt_map@get(map, key, 0)
+    produces
+        pure case want of {
+            false -> case got.status of { :not_found -> true; :found -> false };
+            true -> case got.status of {
+                :not_found -> false;
+                :found -> case got.value == want_val of { true -> true; false -> false }
+            }
+        }
+    end
+}
+
+fn get_range(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    mask: int64,
+    key: int64
+) -> boolean {
+    case key of {
+        17 -> true;
+        _ -> {
+            sequence
+                ok: boolean <- get_agrees(map, mask, key)
+            produces
+                pure case ok of {
+                    false -> false;
+                    true -> get_range(map, mask, key + 1)
+                }
+            end
+        }
+    }
+}
+
+fn verify_map_mask(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    mask: int64
+) -> boolean {
+    sequence
+        olen: int64 <- wbt_trial_trace_i64@bit_olen(mask);
+        osum: int64 <- wbt_trial_trace_i64@bit_osum_map(mask);
+        facts_ok: boolean <- wbt_trial_oracle_i64@check_map_facts(map, olen, osum);
+        get_ok: boolean <- case facts_ok of {
+            false -> false;
+            true -> get_range(map, mask, 1)
+        }
+    produces
+        pure get_ok
+    end
+}
+
+fn make_empty_keyed(arena_key: int64) -> {
+    root: ref?(L, normal, rec),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+} {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        ph: region(L, normal) <- canonical_arena_lookup(arena_key);
+        out: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- {
+            root: :none,
+            compare_key: trace_cmp_i64,
+            compare_value: trace_cmp_i64,
+            region: ph,
+            specialization_key: 0,
+            compare_key_ordering_bundle: 0,
+            compare_value_ordering_bundle: 0
+        }
+    produces
+        pure out
+    end
+}
+
+fn step_insert(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    mask: int64,
+    key: int64
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    mask: int64,
+    ok: boolean
+} {
+    sequence
+        val: int64 <- key_value(key);
+        ins: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(map, key, val);
+        m: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- ins.map;
+        bi: { mask: int64, inserted: boolean, replaced: boolean } <-
+            wbt_trial_trace_i64@bit_insert_map(mask, key);
+        nm: int64 <- bi.mask;
+        want_ins: boolean <- bi.inserted;
+        want_rep: boolean <- bi.replaced;
+        got_ins: boolean <- ins.inserted;
+        got_rep: boolean <- ins.replaced;
+        ins_ok: boolean <- bool_eq(got_ins, want_ins);
+        rep_ok: boolean <- bool_eq(got_rep, want_rep);
+        flag_ok: boolean <- case ins_ok of { false -> false; true -> rep_ok };
+        state_ok: boolean <- case flag_ok of {
+            false -> false;
+            true -> verify_map_mask(m, nm)
+        }
+    produces
+        pure { map: m, mask: nm, ok: state_ok }
+    end
+}
+
+fn step_delete(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    mask: int64,
+    key: int64
+) -> {
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    mask: int64,
+    ok: boolean
+} {
+    sequence
+        del: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- wbt_map@delete(map, key);
+        m: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- del.map;
+        bd: { mask: int64, removed: boolean } <- wbt_trial_trace_i64@bit_delete(mask, key);
+        nm: int64 <- bd.mask;
+        want_rem: boolean <- bd.removed;
+        got_rem: boolean <- del.removed;
+        flag_ok: boolean <- bool_eq(got_rem, want_rem);
+        state_ok: boolean <- case flag_ok of {
+            false -> false;
+            true -> verify_map_mask(m, nm)
+        }
+    produces
+        pure { map: m, mask: nm, ok: state_ok }
+    end
+}
+
+fn run_ops(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    mask: int64,
+    schedule_id: int64,
+    index: int64,
+    end_index: int64,
+    lcg_state: int64
+) -> { ok: boolean, state: int64 } {
+    case index == end_index of {
+        true -> { ok: true, state: lcg_state };
+        false -> {
+            sequence
+                sk: { key: int64, state: int64 } <-
+                    wbt_trial_trace_i64@schedule_key(schedule_id, index, lcg_state);
+                key: int64 <- sk.key;
+                st: int64 <- sk.state;
+                is_del: boolean <- wbt_trial_trace_i64@schedule_op_is_delete(schedule_id, index);
+                step: {
+                    map: {
+                        root: ref?(L, normal, rec),
+                        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                        region: region(L, normal),
+                        specialization_key: int64,
+                        compare_key_ordering_bundle: int64,
+                        compare_value_ordering_bundle: int64
+                    },
+                    mask: int64,
+                    ok: boolean
+                } <- case is_del of {
+                    true -> step_delete(map, mask, key);
+                    false -> step_insert(map, mask, key)
+                };
+                m2: {
+                    root: ref?(L, normal, rec),
+                    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                    region: region(L, normal),
+                    specialization_key: int64,
+                    compare_key_ordering_bundle: int64,
+                    compare_value_ordering_bundle: int64
+                } <- step.map;
+                mask2: int64 <- step.mask;
+                ok2: boolean <- step.ok
+            produces
+                pure case ok2 of {
+                    false -> { ok: false, state: st };
+                    true -> run_ops(m2, mask2, schedule_id, index + 1, end_index, st)
+                }
+            end
+        }
+    }
+}
+
+fn wave_arena(schedule_id: int64, wave: int64) -> int64 {
+    10 + (schedule_id * 4) + wave
+}
+
+fn run_wave(
+    schedule_id: int64,
+    wave: int64,
+    lcg_state: int64
+) -> { ok: boolean, state: int64 } {
+    sequence
+        ak: int64 <- wave_arena(schedule_id, wave);
+        m0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- make_empty_keyed(ak);
+        start: int64 <- wave * 12;
+        end_index: int64 <- start + 12
+    produces
+        pure run_ops(m0, 0, schedule_id, start, end_index, lcg_state)
+    end
+}
+
+fn run_waves(
+    schedule_id: int64,
+    wave: int64,
+    lcg_state: int64
+) -> boolean {
+    case wave of {
+        4 -> true;
+        _ -> {
+            sequence
+                w: { ok: boolean, state: int64 } <- run_wave(schedule_id, wave, lcg_state);
+                okw: boolean <- w.ok;
+                st: int64 <- w.state
+            produces
+                pure case okw of {
+                    false -> false;
+                    true -> run_waves(schedule_id, wave + 1, st)
+                }
+            end
+        }
+    }
+}
+
+fn run_schedule(schedule_id: int64) -> boolean {
+    sequence
+        seed: int64 <- wbt_trial_trace_i64@trace_seed()
+    produces
+        pure run_waves(schedule_id, 0, seed)
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        // TRACE_SEED = 42. Four schedules × 4 waves × 12 ops.
+        b0: boolean <- run_schedule(0);
+        b1: boolean <- case b0 of { false -> false; true -> run_schedule(1) };
+        b2: boolean <- case b1 of { false -> false; true -> run_schedule(2) };
+        b3: boolean <- case b2 of { false -> false; true -> run_schedule(3) }
+    produces
+        pure case b3 of { true -> 0; false -> 1 }
+    end
+}

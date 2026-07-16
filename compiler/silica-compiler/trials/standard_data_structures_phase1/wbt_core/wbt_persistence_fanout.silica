@@ -1,0 +1,874 @@
+// Layer 2 §8A.11 Step 5: persistence fanout + from_sorted cross-check.
+// Exit code only - no printing.
+//
+// 1. Ancestral set/map root with multiple divergent descendants; ancestor facts
+//    unchanged after all fan-out mutations.
+// 2. Periodic from_sorted rebuilds from the oracle sorted list compared with the
+//    incremental WBT (size, fold sum, validate, contains/get).
+// Fresh keyed arenas keep set and map budgets separate (4KB canonical arenas).
+
+use wbt_set;
+use wbt_map;
+use wbt_trial_oracle_i64;
+
+fn fan_cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn key_value(key: int64) -> int64 {
+    key * 10
+}
+
+fn bool_and(a: boolean, b: boolean) -> boolean {
+    case a of { false -> false; true -> b }
+}
+
+fn make_empty_set(arena_key: int64) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        ph: region(L, normal) <- canonical_arena_lookup(arena_key);
+        out: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: :none,
+            compare_item: fan_cmp_i64,
+            region: ph,
+            specialization_key: 0,
+            compare_item_ordering_bundle: 0
+        }
+    produces
+        pure out
+    end
+}
+
+fn make_empty_map(arena_key: int64) -> {
+    root: ref?(L, normal, rec),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+} {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        ph: region(L, normal) <- canonical_arena_lookup(arena_key);
+        out: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- {
+            root: :none,
+            compare_key: fan_cmp_i64,
+            compare_value: fan_cmp_i64,
+            region: ph,
+            specialization_key: 0,
+            compare_key_ordering_bundle: 0,
+            compare_value_ordering_bundle: 0
+        }
+    produces
+        pure out
+    end
+}
+
+fn set_contains_eq(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    key: int64,
+    want: boolean
+) -> boolean {
+    sequence
+        got: boolean <- wbt_set@contains(set, key)
+    produces
+        pure case want of {
+            false -> case got of { false -> true; true -> false };
+            true -> got
+        }
+    end
+}
+
+fn set_keys_ok_2468(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> boolean {
+    sequence
+        f: boolean <- wbt_trial_oracle_i64@check_set_facts(set, 4, 20);
+        c2: boolean <- set_contains_eq(set, 2, true);
+        c4: boolean <- set_contains_eq(set, 4, true);
+        c6: boolean <- set_contains_eq(set, 6, true);
+        c8: boolean <- set_contains_eq(set, 8, true);
+        c1: boolean <- set_contains_eq(set, 1, false);
+        c3: boolean <- set_contains_eq(set, 3, false)
+    produces
+        pure bool_and(f, bool_and(c2, bool_and(c4, bool_and(c6, bool_and(c8, bool_and(c1, c3))))))
+    end
+}
+
+fn set_from_sorted_matches(
+    arena_key: int64,
+    items: List[int64, mem(normal)],
+    olen: int64,
+    osum: int64
+) -> boolean {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- make_empty_set(arena_key);
+        built: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- wbt_set@from_sorted(empty0, items);
+        code: int64 <- wbt_set@from_sorted_error_code(built.error);
+        facts_ok: boolean <- case built.valid of {
+            false -> false;
+            true -> case code of {
+                0 -> wbt_trial_oracle_i64@check_set_facts(built.set, olen, osum);
+                _ -> false
+            }
+        }
+    produces
+        pure facts_ok
+    end
+}
+
+fn set_fs_keys_2468(arena_key: int64) -> boolean {
+    sequence proc[mem(normal)]
+        items: List[int64, mem(normal)] <- [2, 4, 6, 8];
+        ok: boolean <- set_from_sorted_matches(arena_key, items, 4, 20)
+    produces
+        pure ok
+    end
+}
+
+fn set_fs_keys_12468(arena_key: int64) -> boolean {
+    sequence proc[mem(normal)]
+        items: List[int64, mem(normal)] <- [1, 2, 4, 6, 8];
+        ok: boolean <- set_from_sorted_matches(arena_key, items, 5, 21)
+    produces
+        pure ok
+    end
+}
+
+fn set_fs_keys_102030(arena_key: int64) -> boolean {
+    sequence proc[mem(normal)]
+        items: List[int64, mem(normal)] <- [10, 20, 30];
+        ok: boolean <- set_from_sorted_matches(arena_key, items, 3, 60)
+    produces
+        pure ok
+    end
+}
+
+fn set_fs_keys_10_to_60(arena_key: int64) -> boolean {
+    sequence proc[mem(normal)]
+        items: List[int64, mem(normal)] <- [10, 20, 30, 40, 50, 60];
+        ok: boolean <- set_from_sorted_matches(arena_key, items, 6, 210)
+    produces
+        pure ok
+    end
+}
+
+fn set_insert_chain(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    key: int64
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence
+        r: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(set, key)
+    produces
+        pure r.set
+    end
+}
+
+fn set_delete_one(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    key: int64
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence
+        r: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- wbt_set@delete(set, key)
+    produces
+        pure r.set
+    end
+}
+
+// Build ancestor {2,4,6,8}; fan out four divergent descendants; recheck ancestor.
+fn set_fanout_ok() -> boolean {
+    sequence
+        s0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- make_empty_set(2);
+        s1: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert_chain(s0, 2);
+        s2: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert_chain(s1, 4);
+        s3: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert_chain(s2, 6);
+        ancestor: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert_chain(s3, 8);
+        // Divergent descendants from the same ancestral root (not a linear chain).
+        d1: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert_chain(ancestor, 1);
+        d2: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert_chain(ancestor, 3);
+        d3: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert_chain(ancestor, 5);
+        d4: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_delete_one(ancestor, 4);
+        // Ancestor must be unchanged after all fan-out mutations.
+        anc_ok: boolean <- set_keys_ok_2468(ancestor);
+        d1_ok: boolean <- case anc_ok of {
+            false -> false;
+            true -> {
+                sequence
+                    f: boolean <- wbt_trial_oracle_i64@check_set_facts(d1, 5, 21);
+                    c1: boolean <- set_contains_eq(d1, 1, true);
+                    c4: boolean <- set_contains_eq(d1, 4, true)
+                produces
+                    pure bool_and(f, bool_and(c1, c4))
+                end
+            }
+        };
+        d2_ok: boolean <- case d1_ok of {
+            false -> false;
+            true -> {
+                sequence
+                    f: boolean <- wbt_trial_oracle_i64@check_set_facts(d2, 5, 23);
+                    c3: boolean <- set_contains_eq(d2, 3, true);
+                    miss1: boolean <- set_contains_eq(d2, 1, false)
+                produces
+                    pure bool_and(f, bool_and(c3, miss1))
+                end
+            }
+        };
+        d3_ok: boolean <- case d2_ok of {
+            false -> false;
+            true -> {
+                sequence
+                    f: boolean <- wbt_trial_oracle_i64@check_set_facts(d3, 5, 25);
+                    c5: boolean <- set_contains_eq(d3, 5, true)
+                produces
+                    pure bool_and(f, c5)
+                end
+            }
+        };
+        d4_ok: boolean <- case d3_ok of {
+            false -> false;
+            true -> {
+                sequence
+                    f: boolean <- wbt_trial_oracle_i64@check_set_facts(d4, 3, 16);
+                    miss4: boolean <- set_contains_eq(d4, 4, false);
+                    c2: boolean <- set_contains_eq(d4, 2, true)
+                produces
+                    pure bool_and(f, bool_and(miss4, c2))
+                end
+            }
+        };
+        // from_sorted cross-check of ancestor and one descendant (fresh arenas).
+        fs_anc: boolean <- case d4_ok of {
+            false -> false;
+            true -> set_fs_keys_2468(3)
+        };
+        fs_d1: boolean <- case fs_anc of {
+            false -> false;
+            true -> set_fs_keys_12468(4)
+        };
+        // Ancestor still intact after from_sorted work in other arenas.
+        anc_still: boolean <- case fs_d1 of {
+            false -> false;
+            true -> set_keys_ok_2468(ancestor)
+        }
+    produces
+        pure anc_still
+    end
+}
+
+// Incremental inserts with from_sorted rebuild after 3 and after 6 keys.
+fn set_periodic_from_sorted_ok() -> boolean {
+    sequence
+        s0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- make_empty_set(5);
+        s1: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert_chain(s0, 10);
+        s2: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert_chain(s1, 20);
+        s3: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert_chain(s2, 30);
+        mid_inc: boolean <- wbt_trial_oracle_i64@check_set_facts(s3, 3, 60);
+        mid_fs: boolean <- case mid_inc of {
+            false -> false;
+            true -> set_fs_keys_102030(6)
+        };
+        s4: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- case mid_fs of {
+            false -> s3;
+            true -> set_insert_chain(s3, 40)
+        };
+        s5: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- case mid_fs of {
+            false -> s3;
+            true -> set_insert_chain(s4, 50)
+        };
+        s6: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- case mid_fs of {
+            false -> s3;
+            true -> set_insert_chain(s5, 60)
+        };
+        end_inc: boolean <- case mid_fs of {
+            false -> false;
+            true -> wbt_trial_oracle_i64@check_set_facts(s6, 6, 210)
+        };
+        end_fs: boolean <- case end_inc of {
+            false -> false;
+            true -> set_fs_keys_10_to_60(7)
+        };
+        // Prior mid version still readable (persistence of s3 across later inserts).
+        mid_still: boolean <- case end_fs of {
+            false -> false;
+            true -> wbt_trial_oracle_i64@check_set_facts(s3, 3, 60)
+        }
+    produces
+        pure mid_still
+    end
+}
+
+fn map_get_eq(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: int64,
+    want_found: boolean,
+    want_val: int64
+) -> boolean {
+    sequence
+        got: { status: :not_found | :found, value: int64 } <- wbt_map@get(map, key, 0)
+    produces
+        pure case want_found of {
+            false -> case got.status of { :not_found -> true; :found -> false };
+            true -> case got.status of {
+                :not_found -> false;
+                :found -> case got.value == want_val of { true -> true; false -> false }
+            }
+        }
+    end
+}
+
+fn map_from_sorted_matches(
+    arena_key: int64,
+    items: List[(int64, int64), mem(normal)],
+    olen: int64,
+    osum: int64
+) -> boolean {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- make_empty_map(arena_key);
+        built: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- wbt_map@from_sorted(empty0, items);
+        code: int64 <- wbt_map@from_sorted_error_code(built.error);
+        facts_ok: boolean <- case built.valid of {
+            false -> false;
+            true -> case code of {
+                0 -> wbt_trial_oracle_i64@check_map_facts(built.map, olen, osum);
+                _ -> false
+            }
+        }
+    produces
+        pure facts_ok
+    end
+}
+
+fn map_fs_keys_246(arena_key: int64) -> boolean {
+    sequence proc[mem(normal)]
+        p2: (int64, int64) <- (2, 20);
+        p4: (int64, int64) <- (4, 40);
+        p6: (int64, int64) <- (6, 60);
+        items: List[(int64, int64), mem(normal)] <- [p2, p4, p6];
+        ok: boolean <- map_from_sorted_matches(arena_key, items, 3, 132)
+    produces
+        pure ok
+    end
+}
+
+fn map_fs_keys_1246(arena_key: int64) -> boolean {
+    sequence proc[mem(normal)]
+        p1: (int64, int64) <- (1, 10);
+        p2: (int64, int64) <- (2, 20);
+        p4: (int64, int64) <- (4, 40);
+        p6: (int64, int64) <- (6, 60);
+        items: List[(int64, int64), mem(normal)] <- [p1, p2, p4, p6];
+        ok: boolean <- map_from_sorted_matches(arena_key, items, 4, 143)
+    produces
+        pure ok
+    end
+}
+
+fn map_insert_kv(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: int64
+) -> {
+    root: ref?(L, normal, rec),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+} {
+    sequence
+        val: int64 <- key_value(key);
+        r: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(map, key, val)
+    produces
+        pure r.map
+    end
+}
+
+fn map_delete_one(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: int64
+) -> {
+    root: ref?(L, normal, rec),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+} {
+    sequence
+        r: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- wbt_map@delete(map, key)
+    produces
+        pure r.map
+    end
+}
+
+fn map_replace_kv(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    key: int64,
+    val: int64
+) -> {
+    root: ref?(L, normal, rec),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+} {
+    sequence
+        r: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(map, key, val)
+    produces
+        pure r.map
+    end
+}
+
+fn map_ancestor_ok(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> boolean {
+    // Keys 2,4,6: osum = 11*(2+4+6) = 132
+    sequence
+        f: boolean <- wbt_trial_oracle_i64@check_map_facts(map, 3, 132);
+        g2: boolean <- map_get_eq(map, 2, true, 20);
+        g4: boolean <- map_get_eq(map, 4, true, 40);
+        g6: boolean <- map_get_eq(map, 6, true, 60);
+        miss1: boolean <- map_get_eq(map, 1, false, 0)
+    produces
+        pure bool_and(f, bool_and(g2, bool_and(g4, bool_and(g6, miss1))))
+    end
+}
+
+fn map_fanout_ok() -> boolean {
+    sequence
+        m0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- make_empty_map(10);
+        m1: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- map_insert_kv(m0, 2);
+        m2: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- map_insert_kv(m1, 4);
+        ancestor: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- map_insert_kv(m2, 6);
+        d1: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- map_insert_kv(ancestor, 1);
+        d2: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- map_insert_kv(ancestor, 3);
+        d3: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- map_delete_one(ancestor, 4);
+        // Replace on a separate branch: same key, new value.
+        d4: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- map_replace_kv(ancestor, 2, 200);
+        anc_ok: boolean <- map_ancestor_ok(ancestor);
+        d1_ok: boolean <- case anc_ok of {
+            false -> false;
+            true -> {
+                sequence
+                    // {1,2,4,6} osum = 11*(1+2+4+6)=143
+                    f: boolean <- wbt_trial_oracle_i64@check_map_facts(d1, 4, 143);
+                    g1: boolean <- map_get_eq(d1, 1, true, 10)
+                produces
+                    pure bool_and(f, g1)
+                end
+            }
+        };
+        d2_ok: boolean <- case d1_ok of {
+            false -> false;
+            true -> {
+                sequence
+                    // {2,3,4,6} osum = 11*(2+3+4+6)=165
+                    f: boolean <- wbt_trial_oracle_i64@check_map_facts(d2, 4, 165);
+                    g3: boolean <- map_get_eq(d2, 3, true, 30)
+                produces
+                    pure bool_and(f, g3)
+                end
+            }
+        };
+        d3_ok: boolean <- case d2_ok of {
+            false -> false;
+            true -> {
+                sequence
+                    // {2,6} osum = 11*(2+6)=88
+                    f: boolean <- wbt_trial_oracle_i64@check_map_facts(d3, 2, 88);
+                    miss4: boolean <- map_get_eq(d3, 4, false, 0)
+                produces
+                    pure bool_and(f, miss4)
+                end
+            }
+        };
+        d4_ok: boolean <- case d3_ok of {
+            false -> false;
+            true -> {
+                sequence
+                    // Still 3 keys; value for 2 replaced: osum = 2+200 + 4+40 + 6+60 = 312
+                    f: boolean <- wbt_trial_oracle_i64@check_map_facts(d4, 3, 312);
+                    g2: boolean <- map_get_eq(d4, 2, true, 200);
+                    // Ancestor still has old value 20.
+                    old2: boolean <- map_get_eq(ancestor, 2, true, 20)
+                produces
+                    pure bool_and(f, bool_and(g2, old2))
+                end
+            }
+        };
+        fs_anc: boolean <- case d4_ok of {
+            false -> false;
+            true -> map_fs_keys_246(11)
+        };
+        fs_d1: boolean <- case fs_anc of {
+            false -> false;
+            true -> map_fs_keys_1246(12)
+        };
+        anc_still: boolean <- case fs_d1 of {
+            false -> false;
+            true -> map_ancestor_ok(ancestor)
+        }
+    produces
+        pure anc_still
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        set_fan: boolean <- set_fanout_ok();
+        set_per: boolean <- case set_fan of { false -> false; true -> set_periodic_from_sorted_ok() };
+        map_fan: boolean <- case set_per of { false -> false; true -> map_fanout_ok() }
+    produces
+        pure case map_fan of { true -> 0; false -> 1 }
+    end
+}

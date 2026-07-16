@@ -1,0 +1,494 @@
+// Layer 2 §8A.11: trial-only sorted-list oracles and WBT step checkers (int64).
+//
+// Invariant: never keep a List live in the same frame that reads WBT size/fold/validate.
+// Oracle helpers return scalar facts; WBT checkers take only those scalars (+ the tree).
+
+use wbt_set;
+use wbt_map;
+
+export cmp_i64/2;
+export sum_i64/2;
+export sum_kv_i64/3;
+export set_oracle_empty/0;
+export set_oracle_contains/2;
+export set_oracle_len/1;
+export set_oracle_sum/1;
+export set_oracle_insert/2;
+export set_oracle_delete/2;
+export map_oracle_empty/0;
+export map_oracle_len/1;
+export map_oracle_kv_sum/1;
+export map_oracle_insert/3;
+export map_oracle_delete/2;
+export map_oracle_get/2;
+export set_oracle_facts/1;
+export map_oracle_facts/1;
+export check_set_facts/3;
+export check_map_facts/3;
+export validate_set_ok/1;
+export validate_map_ok/1;
+export int64_equal/2;
+
+fn cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn sum_i64(acc: int64, item: int64) -> int64 {
+    acc + item
+}
+
+fn sum_kv_i64(acc: int64, k: int64, v: int64) -> int64 {
+    acc + k + v
+}
+
+fn int64_equal(a: int64, b: int64) -> boolean {
+    case a == b of { true -> true; false -> false }
+}
+
+fn set_oracle_empty() -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        out: List[int64, mem(normal)] <- empty[int64, mem(normal)]()
+    produces
+        pure out
+    end
+}
+
+fn set_oracle_contains(xs: List[int64, mem(normal)], want_key: int64) -> boolean {
+    case xs of {
+        []: List[int64, mem(normal)] -> false;
+        [h: int64, t: List[int64, mem(normal)]] -> case cmp_i64(want_key, h) of {
+            :equal -> true;
+            :less -> false;
+            :greater -> set_oracle_contains(t, want_key)
+        }
+    }
+}
+
+fn set_oracle_len(xs: List[int64, mem(normal)]) -> int64 {
+    case xs of {
+        []: List[int64, mem(normal)] -> 0;
+        [_: int64, t: List[int64, mem(normal)]] -> 1 + set_oracle_len(t)
+    }
+}
+
+fn set_oracle_sum_cons(h: int64, t: List[int64, mem(normal)]) -> int64 {
+    sequence
+        kept: int64 <- h;
+        rest: int64 <- set_oracle_sum(t)
+    produces
+        pure kept + rest
+    end
+}
+
+fn set_oracle_sum(xs: List[int64, mem(normal)]) -> int64 {
+    case xs of {
+        []: List[int64, mem(normal)] -> 0;
+        [h: int64, t: List[int64, mem(normal)]] -> set_oracle_sum_cons(h, t)
+    }
+}
+
+fn set_oracle_insert_sorted_greater(h: int64, t: List[int64, mem(normal)], want_key: int64) -> List[int64, mem(normal)] {
+    sequence proc[mem(normal)]
+        kept: int64 <- h;
+        rest: List[int64, mem(normal)] <- set_oracle_insert_sorted(t, want_key);
+        out: List[int64, mem(normal)] <- prepend[int64, mem(normal)](kept, rest)
+    produces
+        pure out
+    end
+}
+
+fn set_oracle_insert_sorted_cons(
+    h: int64,
+    t: List[int64, mem(normal)],
+    want_key: int64,
+    xs: List[int64, mem(normal)]
+) -> List[int64, mem(normal)] {
+    case cmp_i64(want_key, h) of {
+        :less -> {
+            sequence proc[mem(normal)]
+                out: List[int64, mem(normal)] <- prepend[int64, mem(normal)](want_key, xs)
+            produces
+                pure out
+            end
+        };
+        :equal -> xs;
+        :greater -> set_oracle_insert_sorted_greater(h, t, want_key)
+    }
+}
+
+fn set_oracle_insert_sorted(xs: List[int64, mem(normal)], want_key: int64) -> List[int64, mem(normal)] {
+    case xs of {
+        []: List[int64, mem(normal)] -> {
+            sequence proc[mem(normal)]
+                out: List[int64, mem(normal)] <- prepend[int64, mem(normal)](want_key, empty[int64, mem(normal)]())
+            produces
+                pure out
+            end
+        };
+        [h: int64, t: List[int64, mem(normal)]] -> set_oracle_insert_sorted_cons(h, t, want_key, xs)
+    }
+}
+
+fn set_oracle_insert(xs: List[int64, mem(normal)], want_key: int64) -> { list: List[int64, mem(normal)], inserted: boolean } {
+    case set_oracle_contains(xs, want_key) of {
+        true -> { list: xs, inserted: false };
+        false -> { list: set_oracle_insert_sorted(xs, want_key), inserted: true }
+    }
+}
+
+fn set_oracle_delete_rest(h: int64, t: List[int64, mem(normal)], want_key: int64) -> { list: List[int64, mem(normal)], removed: boolean } {
+    sequence proc[mem(normal)]
+        kept: int64 <- h;
+        rest: { list: List[int64, mem(normal)], removed: boolean } <- set_oracle_delete(t, want_key);
+        out: { list: List[int64, mem(normal)], removed: boolean } <- case rest.removed of {
+            true -> { list: prepend[int64, mem(normal)](kept, rest.list), removed: true };
+            false -> { list: prepend[int64, mem(normal)](kept, t), removed: false }
+        }
+    produces
+        pure out
+    end
+}
+
+fn set_oracle_delete(xs: List[int64, mem(normal)], want_key: int64) -> { list: List[int64, mem(normal)], removed: boolean } {
+    case xs of {
+        []: List[int64, mem(normal)] -> { list: xs, removed: false };
+        [h: int64, t: List[int64, mem(normal)]] -> case cmp_i64(want_key, h) of {
+            :equal -> { list: t, removed: true };
+            :less -> { list: xs, removed: false };
+            :greater -> set_oracle_delete_rest(h, t, want_key)
+        }
+    }
+}
+
+fn map_oracle_empty() -> List[(int64, int64), mem(normal)] {
+    sequence proc[mem(normal)]
+        out: List[(int64, int64), mem(normal)] <- empty[(int64, int64), mem(normal)]()
+    produces
+        pure out
+    end
+}
+
+fn map_oracle_len(xs: List[(int64, int64), mem(normal)]) -> int64 {
+    case xs of {
+        []: List[(int64, int64), mem(normal)] -> 0;
+        [_: (int64, int64), t: List[(int64, int64), mem(normal)]] -> 1 + map_oracle_len(t)
+    }
+}
+
+fn map_oracle_kv_sum_cons(h: (int64, int64), t: List[(int64, int64), mem(normal)]) -> int64 {
+    sequence
+        (k: int64, v: int64) <- h;
+        pair_sum: int64 <- k + v;
+        rest: int64 <- map_oracle_kv_sum(t)
+    produces
+        pure pair_sum + rest
+    end
+}
+
+fn map_oracle_kv_sum(xs: List[(int64, int64), mem(normal)]) -> int64 {
+    case xs of {
+        []: List[(int64, int64), mem(normal)] -> 0;
+        [h: (int64, int64), t: List[(int64, int64), mem(normal)]] -> map_oracle_kv_sum_cons(h, t)
+    }
+}
+
+fn map_oracle_has_key(xs: List[(int64, int64), mem(normal)], want_key: int64) -> boolean {
+    case xs of {
+        []: List[(int64, int64), mem(normal)] -> false;
+        [h: (int64, int64), t: List[(int64, int64), mem(normal)]] -> {
+            sequence
+                (k: int64, _: int64) <- h
+            produces
+                pure case cmp_i64(want_key, k) of {
+                    :equal -> true;
+                    :less -> false;
+                    :greater -> map_oracle_has_key(t, want_key)
+                }
+            end
+        }
+    }
+}
+
+fn map_oracle_insert_sorted(xs: List[(int64, int64), mem(normal)], want_key: int64, want_value: int64) -> List[(int64, int64), mem(normal)] {
+    sequence proc[mem(normal)]
+        out: List[(int64, int64), mem(normal)] <- case xs of {
+            []: List[(int64, int64), mem(normal)] -> {
+                sequence
+                    pair: (int64, int64) <- (want_key, want_value)
+                produces
+                    pure prepend[(int64, int64), mem(normal)](pair, empty[(int64, int64), mem(normal)]())
+                end
+            };
+            [h: (int64, int64), t: List[(int64, int64), mem(normal)]] -> {
+                sequence
+                    (k: int64, _: int64) <- h
+                produces
+                    pure case cmp_i64(want_key, k) of {
+                        :less -> {
+                            sequence
+                                pair: (int64, int64) <- (want_key, want_value)
+                            produces
+                                pure prepend[(int64, int64), mem(normal)](pair, xs)
+                            end
+                        };
+                        :equal -> xs;
+                        :greater -> {
+                            sequence proc[mem(normal)]
+                                kept: (int64, int64) <- h;
+                                rest: List[(int64, int64), mem(normal)] <-
+                                    map_oracle_insert_sorted(t, want_key, want_value);
+                                rebuilt: List[(int64, int64), mem(normal)] <-
+                                    prepend[(int64, int64), mem(normal)](kept, rest)
+                            produces
+                                pure rebuilt
+                            end
+                        }
+                    }
+                end
+            }
+        }
+    produces
+        pure out
+    end
+}
+
+fn map_oracle_replace_value(xs: List[(int64, int64), mem(normal)], want_key: int64, want_value: int64) -> List[(int64, int64), mem(normal)] {
+    sequence proc[mem(normal)]
+        out: List[(int64, int64), mem(normal)] <- case xs of {
+            []: List[(int64, int64), mem(normal)] -> {
+                sequence
+                    pair: (int64, int64) <- (want_key, want_value)
+                produces
+                    pure prepend[(int64, int64), mem(normal)](pair, empty[(int64, int64), mem(normal)]())
+                end
+            };
+            [h: (int64, int64), t: List[(int64, int64), mem(normal)]] -> {
+                sequence
+                    (k: int64, _: int64) <- h
+                produces
+                    pure case cmp_i64(want_key, k) of {
+                        :equal -> {
+                            sequence
+                                pair: (int64, int64) <- (k, want_value)
+                            produces
+                                pure prepend[(int64, int64), mem(normal)](pair, t)
+                            end
+                        };
+                        :less -> {
+                            sequence proc[mem(normal)]
+                                kept: (int64, int64) <- h;
+                                rest: List[(int64, int64), mem(normal)] <-
+                                    map_oracle_replace_value(t, want_key, want_value);
+                                rebuilt: List[(int64, int64), mem(normal)] <-
+                                    prepend[(int64, int64), mem(normal)](kept, rest)
+                            produces
+                                pure rebuilt
+                            end
+                        };
+                        :greater -> {
+                            sequence proc[mem(normal)]
+                                kept: (int64, int64) <- h;
+                                rest: List[(int64, int64), mem(normal)] <-
+                                    map_oracle_replace_value(t, want_key, want_value);
+                                rebuilt: List[(int64, int64), mem(normal)] <-
+                                    prepend[(int64, int64), mem(normal)](kept, rest)
+                            produces
+                                pure rebuilt
+                            end
+                        }
+                    }
+                end
+            }
+        }
+    produces
+        pure out
+    end
+}
+
+fn map_oracle_insert(xs: List[(int64, int64), mem(normal)], want_key: int64, want_value: int64) -> { list: List[(int64, int64), mem(normal)], inserted: boolean, replaced: boolean } {
+    case map_oracle_has_key(xs, want_key) of {
+        true -> {
+            list: map_oracle_replace_value(xs, want_key, want_value),
+            inserted: false,
+            replaced: true
+        };
+        false -> {
+            list: map_oracle_insert_sorted(xs, want_key, want_value),
+            inserted: true,
+            replaced: false
+        }
+    }
+}
+
+fn map_oracle_delete_rest(
+    h: (int64, int64),
+    t: List[(int64, int64), mem(normal)],
+    want_key: int64
+) -> { list: List[(int64, int64), mem(normal)], removed: boolean } {
+    sequence proc[mem(normal)]
+        kept: (int64, int64) <- h;
+        rest: { list: List[(int64, int64), mem(normal)], removed: boolean } <- map_oracle_delete(t, want_key);
+        out: { list: List[(int64, int64), mem(normal)], removed: boolean } <- case rest.removed of {
+            true -> { list: prepend[(int64, int64), mem(normal)](kept, rest.list), removed: true };
+            false -> { list: prepend[(int64, int64), mem(normal)](kept, t), removed: false }
+        }
+    produces
+        pure out
+    end
+}
+
+fn map_oracle_delete(xs: List[(int64, int64), mem(normal)], want_key: int64) -> { list: List[(int64, int64), mem(normal)], removed: boolean } {
+    case xs of {
+        []: List[(int64, int64), mem(normal)] -> { list: xs, removed: false };
+        [h: (int64, int64), t: List[(int64, int64), mem(normal)]] -> {
+            sequence
+                (k: int64, _: int64) <- h
+            produces
+                pure case cmp_i64(want_key, k) of {
+                    :equal -> { list: t, removed: true };
+                    :less -> { list: xs, removed: false };
+                    :greater -> map_oracle_delete_rest(h, t, want_key)
+                }
+            end
+        }
+    }
+}
+
+fn map_oracle_get(xs: List[(int64, int64), mem(normal)], want_key: int64) -> { status: :not_found | :found, value: int64 } {
+    case xs of {
+        []: List[(int64, int64), mem(normal)] -> { status: :not_found, value: 0 };
+        [h: (int64, int64), t: List[(int64, int64), mem(normal)]] -> {
+            sequence
+                (k: int64, v: int64) <- h
+            produces
+                pure case cmp_i64(want_key, k) of {
+                    :equal -> { status: :found, value: v };
+                    :less -> { status: :not_found, value: 0 };
+                    :greater -> map_oracle_get(t, want_key)
+                }
+            end
+        }
+    }
+}
+
+// Scalar fact extraction — List dies when this returns.
+fn set_oracle_facts(xs: List[int64, mem(normal)]) -> { olen: int64, osum: int64 } {
+    sequence
+        olen: int64 <- set_oracle_len(xs);
+        osum: int64 <- set_oracle_sum(xs)
+    produces
+        pure { olen: olen, osum: osum }
+    end
+}
+
+fn map_oracle_facts(xs: List[(int64, int64), mem(normal)]) -> { olen: int64, osum: int64 } {
+    sequence
+        olen: int64 <- map_oracle_len(xs);
+        osum: int64 <- map_oracle_kv_sum(xs)
+    produces
+        pure { olen: olen, osum: osum }
+    end
+}
+
+fn validate_set_ok(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> boolean {
+    sequence
+        v: { valid: boolean, error: atom, logical_count: int64 } <- wbt_set@validate(set);
+        sz: int64 <- wbt_set@size(set);
+        count_ok: boolean <- int64_equal(v.logical_count, sz)
+    produces
+        pure case v.valid of {
+            false -> false;
+            true -> count_ok
+        }
+    end
+}
+
+fn validate_map_ok(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    }
+) -> boolean {
+    sequence
+        v: { valid: boolean, error: atom, logical_count: int64 } <- wbt_map@validate(map);
+        sz: int64 <- wbt_map@size(map);
+        count_ok: boolean <- int64_equal(v.logical_count, sz)
+    produces
+        pure case v.valid of {
+            false -> false;
+            true -> count_ok
+        }
+    end
+}
+
+// WBT-only checker: no List parameter.
+fn check_set_facts(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    olen: int64,
+    osum: int64
+) -> boolean {
+    sequence
+        sz: int64 <- wbt_set@size(set);
+        len_ok: boolean <- int64_equal(sz, olen);
+        fsum: int64 <- wbt_set@fold(set, 0, sum_i64);
+        sum_ok: boolean <- int64_equal(fsum, osum);
+        val_ok: boolean <- validate_set_ok(set)
+    produces
+        pure case len_ok of {
+            false -> false;
+            true -> case sum_ok of {
+                false -> false;
+                true -> val_ok
+            }
+        }
+    end
+}
+
+fn check_map_facts(
+    map: {
+        root: ref?(L, normal, rec),
+        compare_key: fn(int64, int64) -> :less | :equal | :greater,
+        compare_value: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_key_ordering_bundle: int64,
+        compare_value_ordering_bundle: int64
+    },
+    olen: int64,
+    osum: int64
+) -> boolean {
+    sequence
+        sz: int64 <- wbt_map@size(map);
+        len_ok: boolean <- int64_equal(sz, olen);
+        fsum: int64 <- wbt_map@fold(map, 0, sum_kv_i64);
+        sum_ok: boolean <- int64_equal(fsum, osum);
+        val_ok: boolean <- validate_map_ok(map)
+    produces
+        pure case len_ok of {
+            false -> false;
+            true -> case sum_ok of {
+                false -> false;
+                true -> val_ok
+            }
+        }
+    end
+}

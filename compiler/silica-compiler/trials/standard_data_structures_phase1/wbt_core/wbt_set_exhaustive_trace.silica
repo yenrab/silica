@@ -1,0 +1,390 @@
+// Layer 2 §8A.11 Step 2: exhaustive insert/delete over domain {1,2,3} to depth 3 (216 sequences).
+// Bitmask oracle (bit0=has1, bit1=has2, bit2=has3); scalar facts only — no List live with WBT ops.
+// Canonical arenas are 4KB; batch 36 paths per fresh arena key so bump allocation never overflows.
+
+use wbt_set;
+use wbt_trial_oracle_i64;
+
+fn trace_cmp_i64(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn bit_has(mask: int64, key: int64) -> boolean {
+    case key of {
+        1 -> case mask % 2 of { 0 -> false; _ -> true };
+        2 -> case (mask / 2) % 2 of { 0 -> false; _ -> true };
+        3 -> case (mask / 4) % 2 of { 0 -> false; _ -> true };
+        _ -> false
+    }
+}
+
+fn bit_insert(mask: int64, key: int64) -> { mask: int64, inserted: boolean } {
+    case bit_has(mask, key) of {
+        true -> { mask: mask, inserted: false };
+        false -> case key of {
+            1 -> { mask: mask + 1, inserted: true };
+            2 -> { mask: mask + 2, inserted: true };
+            3 -> { mask: mask + 4, inserted: true };
+            _ -> { mask: mask, inserted: false }
+        }
+    }
+}
+
+fn bit_delete(mask: int64, key: int64) -> { mask: int64, removed: boolean } {
+    case bit_has(mask, key) of {
+        false -> { mask: mask, removed: false };
+        true -> case key of {
+            1 -> { mask: mask - 1, removed: true };
+            2 -> { mask: mask - 2, removed: true };
+            3 -> { mask: mask - 4, removed: true };
+            _ -> { mask: mask, removed: false }
+        }
+    }
+}
+
+fn bit_olen(mask: int64) -> int64 {
+    case mask of {
+        0 -> 0;
+        1 -> 1;
+        2 -> 1;
+        3 -> 2;
+        4 -> 1;
+        5 -> 2;
+        6 -> 2;
+        7 -> 3;
+        _ -> 0
+    }
+}
+
+fn bit_osum(mask: int64) -> int64 {
+    case mask of {
+        0 -> 0;
+        1 -> 1;
+        2 -> 2;
+        3 -> 3;
+        4 -> 3;
+        5 -> 4;
+        6 -> 5;
+        7 -> 6;
+        _ -> 0
+    }
+}
+
+fn bool_eq(a: boolean, b: boolean) -> boolean {
+    case a of {
+        false -> case b of { false -> true; true -> false };
+        true -> b
+    }
+}
+
+fn contains_agrees(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    mask: int64,
+    key: int64
+) -> boolean {
+    sequence
+        want: boolean <- bit_has(mask, key);
+        got: boolean <- wbt_set@contains(set, key)
+    produces
+        pure bool_eq(want, got)
+    end
+}
+
+fn verify_set_mask(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    mask: int64
+) -> boolean {
+    sequence
+        olen: int64 <- bit_olen(mask);
+        osum: int64 <- bit_osum(mask);
+        facts_ok: boolean <- wbt_trial_oracle_i64@check_set_facts(set, olen, osum);
+        c1: boolean <- contains_agrees(set, mask, 1);
+        c2: boolean <- case c1 of { false -> false; true -> contains_agrees(set, mask, 2) };
+        c3: boolean <- case c2 of { false -> false; true -> contains_agrees(set, mask, 3) }
+    produces
+        pure case facts_ok of { false -> false; true -> c3 }
+    end
+}
+
+// Empty set in a chosen canonical arena (non-zero key). Wrapped sequence avoids bare-empty trampoline hang.
+fn make_empty_keyed(arena_key: int64) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        ph: region(L, normal) <- canonical_arena_lookup(arena_key);
+        out: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: :none,
+            compare_item: trace_cmp_i64,
+            region: ph,
+            specialization_key: 0,
+            compare_item_ordering_bundle: 0
+        }
+    produces
+        pure out
+    end
+}
+
+fn step_insert(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    mask: int64,
+    key: int64
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    mask: int64,
+    ok: boolean
+} {
+    sequence
+        ins: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(set, key);
+        s: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- ins.set;
+        bi: { mask: int64, inserted: boolean } <- bit_insert(mask, key);
+        nm: int64 <- bi.mask;
+        flag_ok: boolean <- bool_eq(ins.inserted, bi.inserted);
+        state_ok: boolean <- case flag_ok of {
+            false -> false;
+            true -> verify_set_mask(s, nm)
+        }
+    produces
+        pure { set: s, mask: nm, ok: state_ok }
+    end
+}
+
+fn step_delete(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    mask: int64,
+    key: int64
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    mask: int64,
+    ok: boolean
+} {
+    sequence
+        del: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- wbt_set@delete(set, key);
+        s: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- del.set;
+        bd: { mask: int64, removed: boolean } <- bit_delete(mask, key);
+        nm: int64 <- bd.mask;
+        flag_ok: boolean <- bool_eq(del.removed, bd.removed);
+        state_ok: boolean <- case flag_ok of {
+            false -> false;
+            true -> verify_set_mask(s, nm)
+        }
+    produces
+        pure { set: s, mask: nm, ok: state_ok }
+    end
+}
+
+fn apply_op(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    mask: int64,
+    op: int64
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    mask: int64,
+    ok: boolean
+} {
+    case op of {
+        0 -> step_insert(set, mask, 1);
+        1 -> step_insert(set, mask, 2);
+        2 -> step_insert(set, mask, 3);
+        3 -> step_delete(set, mask, 1);
+        4 -> step_delete(set, mask, 2);
+        _ -> step_delete(set, mask, 3)
+    }
+}
+
+fn run_path(arena_key: int64, path_id: int64) -> boolean {
+    sequence
+        s0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- make_empty_keyed(arena_key);
+        op0: int64 <- path_id % 6;
+        r0: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            mask: int64,
+            ok: boolean
+        } <- apply_op(s0, 0, op0);
+        sa: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- r0.set;
+        m0: int64 <- r0.mask;
+        rest1: int64 <- path_id / 6;
+        op1: int64 <- rest1 % 6;
+        r1: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            mask: int64,
+            ok: boolean
+        } <- case r0.ok of {
+            false -> { set: sa, mask: m0, ok: false };
+            true -> apply_op(sa, m0, op1)
+        };
+        sb: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- r1.set;
+        m1: int64 <- r1.mask;
+        rest2: int64 <- rest1 / 6;
+        op2: int64 <- rest2 % 6;
+        r2: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            mask: int64,
+            ok: boolean
+        } <- case r1.ok of {
+            false -> { set: sb, mask: m1, ok: false };
+            true -> apply_op(sb, m1, op2)
+        }
+    produces
+        pure r2.ok
+    end
+}
+
+fn try_paths_range(arena_key: int64, lo: int64, hi: int64) -> boolean {
+    case hi - lo of {
+        0 -> true;
+        1 -> run_path(arena_key, lo);
+        _ -> {
+            sequence
+                span: int64 <- hi - lo;
+                half: int64 <- span / 2;
+                mid: int64 <- lo + half;
+                ok1: boolean <- try_paths_range(arena_key, lo, mid);
+                ok2: boolean <- case ok1 of {
+                    false -> false;
+                    true -> try_paths_range(arena_key, mid, hi)
+                }
+            produces
+                pure ok2
+            end
+        }
+    }
+}
+
+fn main() -> int64 {
+    sequence
+        // Six disjoint 4KB arenas × 36 paths = 216 sequences (6^3).
+        b0: boolean <- try_paths_range(2, 0, 36);
+        b1: boolean <- case b0 of { false -> false; true -> try_paths_range(3, 36, 72) };
+        b2: boolean <- case b1 of { false -> false; true -> try_paths_range(4, 72, 108) };
+        b3: boolean <- case b2 of { false -> false; true -> try_paths_range(5, 108, 144) };
+        b4: boolean <- case b3 of { false -> false; true -> try_paths_range(6, 144, 180) };
+        b5: boolean <- case b4 of { false -> false; true -> try_paths_range(7, 180, 216) }
+    produces
+        pure case b5 of { true -> 0; false -> 1 }
+    end
+}

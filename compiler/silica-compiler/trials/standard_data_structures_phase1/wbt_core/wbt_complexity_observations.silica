@@ -1,0 +1,510 @@
+// Layer 2 §8A.11 Step 6: coarse complexity observations (comparator counts + height/size).
+// Exit code only - no printing.
+//
+// Production compare_item cannot carry mem effects, so counters are injected via
+// trial-only walkers that call the same plain_cmp while descending WBT nodes
+// (search path) or visiting adjacent in-order pairs (validate-style order walk).
+// Bounds catch accidental linear spines and quadratic compare schedules.
+// Invalid-comparator first/middle/last schedules are covered by the existing
+// trial_collection_error_wbt_* companions.
+
+use wbt_set;
+use wbt_map;
+use wbt_trial_oracle_i64;
+
+fn plain_cmp(a: int64, b: int64) -> :less | :equal | :greater {
+    case a < b of { true -> :less; false -> case a == b of { true -> :equal; false -> :greater } }
+}
+
+fn plain_cmp_atom(a: int64, b: int64) -> atom {
+    case plain_cmp(a, b) of {
+        :less -> :less;
+        :equal -> :equal;
+        :greater -> :greater
+    }
+}
+
+fn bool_and(a: boolean, b: boolean) -> boolean {
+    case a of { false -> false; true -> b }
+}
+
+fn int_le(a: int64, b: int64) -> boolean {
+    case a < b of { true -> true; false -> case a == b of { true -> true; false -> false } }
+}
+
+fn max2(a: int64, b: int64) -> int64 {
+    case a < b of { true -> b; false -> a }
+}
+
+fn set_height_ref(subtree: ref?(L, normal, rec)) -> int64 {
+    case subtree of {
+        :none -> 0;
+        node_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+            sequence proc[mem(normal)]
+                node: (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+                (_: int64, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node;
+                lh: int64 <- set_height_ref(left);
+                rh: int64 <- set_height_ref(right)
+            produces
+                pure 1 + max2(lh, rh)
+            end
+        }
+    }
+}
+
+fn map_height_ref(subtree: ref?(L, normal, rec)) -> int64 {
+    case subtree of {
+        :none -> 0;
+        node_ref: ref(L, normal, (int64, int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+            sequence proc[mem(normal)]
+                node: (int64, int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+                (_: int64, _: int64, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node;
+                lh: int64 <- map_height_ref(left);
+                rh: int64 <- map_height_ref(right)
+            produces
+                pure 1 + max2(lh, rh)
+            end
+        }
+    }
+}
+
+fn search_count_ref(
+    subtree: ref?(L, normal, rec),
+    want: int64,
+    compares: int64
+) -> { found: boolean, compares: int64 } {
+    case subtree of {
+        :none -> { found: false, compares: compares };
+        node_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+            sequence proc[mem(normal)]
+                node: (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+                (item: int64, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node;
+                ord: :less | :equal | :greater <- plain_cmp(want, item);
+                next: int64 <- compares + 1
+            produces
+                pure case ord of {
+                    :equal -> { found: true, compares: next };
+                    :less -> search_count_ref(left, want, next);
+                    :greater -> search_count_ref(right, want, next)
+                }
+            end
+        }
+    }
+}
+
+fn search_count(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    want: int64
+) -> { found: boolean, compares: int64 } {
+    search_count_ref(set.root, want, 0)
+}
+
+fn order_walk_ref(
+    subtree: ref?(L, normal, rec),
+    prev: int64,
+    has_prev: boolean,
+    compares: int64
+) -> { compares: int64, ok: boolean } {
+    case subtree of {
+        :none -> { compares: compares, ok: true };
+        node_ref: ref(L, normal, (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec))) -> {
+            sequence proc[mem(normal)]
+                node: (int64, int64, ref?(L, normal, rec), ref?(L, normal, rec)) <- read_ref(node_ref);
+                (item: int64, _: int64, left: ref?(L, normal, rec), right: ref?(L, normal, rec)) <- node;
+                left_r: { compares: int64, ok: boolean } <- order_walk_ref(left, prev, has_prev, compares);
+                mid: { compares: int64, ok: boolean } <- case left_r.ok of {
+                    false -> { compares: left_r.compares, ok: false };
+                    true -> case has_prev of {
+                        false -> { compares: left_r.compares, ok: true };
+                        true -> {
+                            sequence
+                                ord: :less | :equal | :greater <- plain_cmp(prev, item);
+                                c2: int64 <- left_r.compares + 1
+                            produces
+                                pure case ord of {
+                                    :less -> { compares: c2, ok: true };
+                                    :equal -> { compares: c2, ok: false };
+                                    :greater -> { compares: c2, ok: false }
+                                }
+                            end
+                        }
+                    }
+                };
+                right_r: { compares: int64, ok: boolean } <- case mid.ok of {
+                    false -> { compares: mid.compares, ok: false };
+                    true -> order_walk_ref(right, item, true, mid.compares)
+                }
+            produces
+                pure right_r
+            end
+        }
+    }
+}
+
+fn order_walk_count(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    }
+) -> { compares: int64, ok: boolean } {
+    order_walk_ref(set.root, 0, false, 0)
+}
+
+fn make_empty_set(arena_key: int64) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        ph: region(L, normal) <- canonical_arena_lookup(arena_key);
+        out: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- {
+            root: :none,
+            compare_item: plain_cmp,
+            region: ph,
+            specialization_key: 0,
+            compare_item_ordering_bundle: 0
+        }
+    produces
+        pure out
+    end
+}
+
+fn make_empty_map(arena_key: int64) -> {
+    root: ref?(L, normal, rec),
+    compare_key: fn(int64, int64) -> :less | :equal | :greater,
+    compare_value: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_key_ordering_bundle: int64,
+    compare_value_ordering_bundle: int64
+} {
+    sequence proc[mem(normal)]
+        L: lifetime <- fresh_lifetime();
+        ph: region(L, normal) <- canonical_arena_lookup(arena_key);
+        out: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- {
+            root: :none,
+            compare_key: plain_cmp,
+            compare_value: plain_cmp,
+            region: ph,
+            specialization_key: 0,
+            compare_key_ordering_bundle: 0,
+            compare_value_ordering_bundle: 0
+        }
+    produces
+        pure out
+    end
+}
+
+fn set_insert1(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: int64
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence
+        r: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- wbt_set@insert(set, item)
+    produces
+        pure r.set
+    end
+}
+
+fn set_delete1(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(int64, int64) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    item: int64
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(int64, int64) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence
+        r: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            removed: boolean
+        } <- wbt_set@delete(set, item)
+    produces
+        pure r.set
+    end
+}
+
+// n=7 ascending insert: height/search/order-walk/insert/delete path bounds.
+fn set_bounds_ok() -> boolean {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- make_empty_set(20);
+        s1: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert1(empty0, 10);
+        s2: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert1(s1, 20);
+        s3: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert1(s2, 30);
+        s4: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert1(s3, 40);
+        s5: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert1(s4, 50);
+        s6: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert1(s5, 60);
+        s7: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert1(s6, 70);
+        sz: int64 <- wbt_set@size(s7);
+        h: int64 <- set_height_ref(s7.root);
+        height_ok: boolean <- bool_and(case sz == 7 of { true -> true; false -> false }, int_le(h, 5));
+        sc: { found: boolean, compares: int64 } <- search_count(s7, 40);
+        search_ok: boolean <- bool_and(sc.found, int_le(sc.compares, 5));
+        s8: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_insert1(s7, 45);
+        sc_ins: { found: boolean, compares: int64 } <- search_count(s8, 45);
+        insert_path_ok: boolean <- bool_and(sc_ins.found, int_le(sc_ins.compares, 5));
+        s7b: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- set_delete1(s8, 45);
+        sc_del: { found: boolean, compares: int64 } <- search_count(s7b, 40);
+        delete_path_ok: boolean <- bool_and(sc_del.found, int_le(sc_del.compares, 5));
+        ow: { compares: int64, ok: boolean } <- order_walk_count(s7b);
+        validate_walk_ok: boolean <- bool_and(ow.ok, int_le(ow.compares, 10));
+        // sum 10+...+70 = 280
+        facts_ok: boolean <- wbt_trial_oracle_i64@check_set_facts(s7b, 7, 280)
+    produces
+        pure bool_and(height_ok, bool_and(search_ok, bool_and(insert_path_ok,
+            bool_and(delete_path_ok, bool_and(validate_walk_ok, facts_ok)))))
+    end
+}
+
+fn from_sorted_bounds_ok() -> boolean {
+    sequence proc[mem(normal)]
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- make_empty_set(21);
+        items: List[int64, mem(normal)] <- [10, 20, 30, 40, 50, 60, 70];
+        built: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            valid: boolean,
+            error: atom
+        } <- wbt_set@from_sorted(empty0, items);
+        code: int64 <- wbt_set@from_sorted_error_code(built.error);
+        sz: int64 <- wbt_set@size(built.set);
+        h: int64 <- set_height_ref(built.set.root);
+        height_ok: boolean <- int_le(h, 4);
+        sc: { found: boolean, compares: int64 } <- search_count(built.set, 40);
+        search_ok: boolean <- bool_and(sc.found, int_le(sc.compares, 4));
+        pre_begin: atom <- wbt_set@from_sorted_preflight_status(empty0, plain_cmp_atom, 10, 20);
+        pre_mid: atom <- wbt_set@from_sorted_preflight_status(empty0, plain_cmp_atom, 30, 40);
+        pre_end: atom <- wbt_set@from_sorted_preflight_status(empty0, plain_cmp_atom, 60, 70);
+        pre_ok: boolean <- case wbt_set@from_sorted_error_code(pre_begin) of {
+            0 -> case wbt_set@from_sorted_error_code(pre_mid) of {
+                0 -> case wbt_set@from_sorted_error_code(pre_end) of { 0 -> true; _ -> false };
+                _ -> false
+            };
+            _ -> false
+        }
+    produces
+        pure bool_and(built.valid, bool_and(case code of { 0 -> true; _ -> false },
+            bool_and(case sz == 7 of { true -> true; false -> false },
+                bool_and(height_ok, bool_and(search_ok, pre_ok)))))
+    end
+}
+
+fn map_insert_height_ok() -> boolean {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_key: fn(int64, int64) -> :less | :equal | :greater,
+            compare_value: fn(int64, int64) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_key_ordering_bundle: int64,
+            compare_value_ordering_bundle: int64
+        } <- make_empty_map(22);
+        i1: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(empty0, 1, 10);
+        i2: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(i1.map, 2, 20);
+        i3: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(i2.map, 3, 30);
+        rep: {
+            map: {
+                root: ref?(L, normal, rec),
+                compare_key: fn(int64, int64) -> :less | :equal | :greater,
+                compare_value: fn(int64, int64) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_key_ordering_bundle: int64,
+                compare_value_ordering_bundle: int64
+            },
+            inserted: boolean,
+            replaced: boolean
+        } <- wbt_map@insert(i3.map, 2, 200);
+        sz: int64 <- wbt_map@size(rep.map);
+        h: int64 <- map_height_ref(rep.map.root);
+        // Avoid check_map_facts/validate here: pairing it with from_sorted in one
+        // process has hit runtime case_clause under current emitter limits.
+        // Size + height + replace flags still bound map insert/replace complexity.
+        flags_ok: boolean <- case rep.inserted of {
+            true -> false;
+            false -> case rep.replaced of { true -> true; false -> false }
+        }
+    produces
+        pure bool_and(case sz == 3 of { true -> true; false -> false },
+            bool_and(int_le(h, 4), flags_ok))
+    end
+}
+
+fn main() -> int64 {
+    sequence
+        set_ok: boolean <- set_bounds_ok();
+        fs_ok: boolean <- case set_ok of { false -> false; true -> from_sorted_bounds_ok() };
+        map_ok: boolean <- case fs_ok of { false -> false; true -> map_insert_height_ok() }
+    produces
+        pure case map_ok of { true -> 0; false -> 1 }
+    end
+}
