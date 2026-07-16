@@ -2,7 +2,7 @@
 
 **Purpose:** Identify every change needed so `silica-compiler` can build and maintain itself without `silica-bootstrap-compiler`, replacing bootstrap-era internal data structures and workarounds with the standard generated families specified in [data_structures_as_traits.md](data_structures_as_traits.md) and [data_structure_to_algorithms.md](data_structure_to_algorithms.md).
 
-**Scope:** `compiler/silica-compiler/src/` (compiler internals), build system, and compiler-facing trials. Stdlib implementation of WBT / Brodal–Okasaki / BinaryTree modules is tracked in [standard_data_structures_implementation_plan.md](standard_data_structures_implementation_plan.md); this plan covers **when and how the compiler adopts** those modules.
+**Scope:** Parallel compiler tree `compiler/silica-compiler/src_selfhost/` (self-host edits), additive build targets, and compiler-facing trials. Production `compiler/silica-compiler/src/` and `silica-bootstrap-compiler` stay untouched until Phase 6 cutover. Stdlib implementation of WBT / Brodal–Okasaki / BinaryTree modules is tracked in [standard_data_structures_implementation_plan.md](standard_data_structures_implementation_plan.md); this plan covers **when and how the compiler adopts** those modules.
 
 **Authority:**
 
@@ -20,7 +20,7 @@
 | Subdir Makefiles | `lexer/`, `parser/`, `type_checker/` (partial), `sir_generator/`, `emitter/`, `effect_checker/` | — |
 | Internal ADTs | `data_structures/bst.silica` (naive unbalanced BST); ~20 custom `List*` cons-cell structs | Bracket-type witnesses for `OrderedSet`/`OrderedMap`/`Heap`/`DirectedGraph` in type checker (trait dispatch not fully wired to WBT backends) |
 | Parser expression AST | Recursive `Expr` struct with direct `inner` / `right_expr` and cyclic `kind=-1` dummy | Standard `BinaryTree` adoption deferred to Phase 7 |
-| Type aliases | `type TokenKind = int64` in `lexer_token_kind.silica` (only `type` alias in `src/`) | — |
+| Type aliases | `type TokenKind = int64` in `lexer_token_kind.silica` — **must be removed before self-host flip**; updated `src/` may have zero aliases | — |
 
 This document intentionally contains no Silica source code. It is written as fine-grained work items that an LLM can follow when migrating compiler internals.
 
@@ -33,24 +33,29 @@ This document intentionally contains no Silica source code. It is written as fin
 5. **Each migration step** adds or extends a trial under `trials/` before deleting the old path.
 6. **Retire duplicated logic** only after self-hosted cross-module ABI is verified (see Phase 2).
 7. **BinaryTree acceptance and compiler adoption are separate gates.** Phase 7 may consume only an already accepted `tree_binary`; its completion cannot be used to excuse a missing standard-structure trial.
-8. **No AST aliases or named wrapper types.** BinaryTree payload, path, result, and zipper structures remain inline at Silica boundaries.
+8. **Safe dual-path freeze until cutover.** Through Phases 0–5 and until Phase 6 cutover: leave **`silica-bootstrap-compiler` untouched** and leave production **`compiler/silica-compiler/src/` untouched** for self-host migration. All alias/BST/WBT/ABI self-host edits happen only under **`compiler/silica-compiler/src_selfhost/`**. Default build remains bootstrap → frozen `src/`.
+9. **No `type` aliases of any kind in the updated (parallel) compiler source.** After Phase 5.1, `rg '^\s*type\s+\w+\s*=' compiler/silica-compiler/src_selfhost` must stay at zero. Do not introduce temporary aliases. BinaryTree payload, path, result, and zipper structures remain inline at Silica boundaries (no AST aliases or named wrapper types).
+10. **Self-host compile requires self-hostable parallel source first.** Do not claim a successful `build-selfhost` while `bst` or any `type` alias remains in `src_selfhost/`.
 
 ## Implementation Order
 
-1. **Phase 0** — Audit, workaround inventory, stdlib smoke for compiler-internal `use`.
-2. **Phase 1** — Build system flip (`silica.config.compiler`, self-host link).
-3. **Phase 2** — Remove bootstrap workarounds (ABI, inference, lexer/rodata).
-4. **Phase 3** — Replace `data_structures/bst.silica` in emitter literal pools.
-5. **Phase 4** — Replace linear-scan association lists (symbol/effect tables).
-6. **Phase 5** — Type alias and bootstrap API cleanup.
-7. **Phase 6** — Self-host integrate suite; deprecate bootstrap; Makefile backups; default host at `compiler/binaries/silica-compiler`.
-8. **Phase 7** — Migrate the complete parser `Expr` AST and all compiler consumers to standard `BinaryTree`.
+Critical path for full self-hosting without the bootstrap compiler (matches [standard_data_structures_implementation_plan.md](standard_data_structures_implementation_plan.md) §§11–13):
 
-Phases 3 and 4 can proceed in parallel once Phase 1 stage **`build-selfhost`** exists. Phase 2 should precede deleting duplicated lookup functions (Step 2.2).
+1. **Phase 0** — Audit, workaround inventory, stdlib smoke; stand up `src_selfhost/` as a copy of frozen `src/`.
+2. **Phase 5.1** — Remove every `type` alias from **`src_selfhost/`** only (Global Rule 9).
+3. **Phase 3** — In **`src_selfhost/`**, replace emitter `bst` with WBT maps; drop `bst` from the parallel graph only (keep `src/data_structures/bst.silica`).
+4. **Phase 2 (class-A)** — Fix blockers needed to compile **`src_selfhost/`** with `silica-compiler` (prefer edits in the parallel tree; shared host bugfixes only when they do not alter frozen `src/` contracts).
+5. **Phase 1** — Add dual-build targets: default stays bootstrap → `src/`; `build-selfhost` / `assembly-selfhost` build only from `src_selfhost/`.
+6. **Phase 2 (remainder) + Phase 5.2** — Finish workaround cleanup and legacy `use` greps inside `src_selfhost/`.
+7. **Phase 4** — In `src_selfhost/`, replace linear-scan association lists with WBT maps (still no aliases).
+8. **Phase 6** — Self-host integrate + fixed-point on the parallel tree; **then** cut over (promote `src_selfhost/` → production `src/`) and retire bootstrap from the default path.
+9. **Phase 7** — Migrate the complete parser `Expr` AST and all compiler consumers to standard `BinaryTree` (downstream; not required for initial bootstrap retirement).
 
-Phase 7 is a separately gated downstream adoption. It begins only after standard `BinaryTree` acceptance and a stable self-host compiler. It is not required to accept BinaryTree and is not required to retire bootstrap unless separately promoted to a release gate.
+Phase 4 may start once Phase 1 stage **`build-selfhost`** exists; it must not block the first self-host binary if emitter BST and aliases are already gone from `src_selfhost/`. Phase 2 class-A fixes that block compile precede Phase 1; deleting duplicated lookups (Step 2.2) waits until after Phase 1 ABI is verified and stays inside the parallel tree until cutover.
 
-**Phases 3–4 additionally require** `wbt_map` / `wbt_set` stdlib modules (Adams WBT [Ada93]) per the algorithm map. Until those modules pass acceptance trials, compiler map migration stays on `data_structures/bst.silica` or other interim structures—do not adopt legacy `btree_nodeid` as the long-term compiler backend.
+Phase 7 begins only after standard `BinaryTree` acceptance and a stable self-host compiler. It is not required to accept BinaryTree and is not required to retire bootstrap unless separately promoted to a release gate.
+
+**Phases 3–4 require** accepted `wbt_map` / `wbt_set` (Adams WBT [Ada93]) per the algorithm map — now available via standard-plan §§8A–§10. Do not adopt legacy `btree_nodeid` as the long-term compiler backend.
 
 ## Compiler-internal collection targets
 
@@ -66,11 +71,11 @@ Per [data_structure_to_algorithms.md](data_structure_to_algorithms.md) and [data
 
 **Not in scope for compiler or stdlib:** dense bitset graphs, Patricia tries, region binary/d-ary heaps, NodeIDBTree / CsrBTree bootstrap families.
 
-## Phase 0 — Prerequisites (blocking self-host build flip)
+## Phase 0 — Prerequisites (blocking self-hostable source and the build flip)
 
-These are compiler/runtime fixes or stdlib gaps that block compiling the full `src/` tree with `silica-compiler` instead of `silica-boot`.
+These are compiler/runtime fixes or stdlib gaps that block compiling the full `src/` tree with `silica-compiler` instead of `silica-boot`. Alias removal (Phase 5.1) and BST → WBT (Phase 3) are also on that critical path; this phase inventories them.
 
-### Step 0.1 — Inventory bootstrap-only build assumptions
+### Step 0.1 — Inventory bootstrap-only build assumptions + stand up `src_selfhost/`
 
 **Actions:**
 
@@ -80,13 +85,14 @@ These are compiler/runtime fixes or stdlib gaps that block compiling the full `s
 2. List all Makefiles still pointing at bootstrap (7 found):
    - `src/Makefile`, `src/lexer/Makefile`, `src/effect_checker/Makefile`, `src/sir_generator/Makefile`, `src/emitter/Makefile` (+ parent rules for `parser/`, `type_checker/`, `module_checker/`, `ffi/`, `trait_checker/` via `src/Makefile`)
 3. Identify bootstrap runtime dependency: `libsilica_compiler.a` linked into `silica-compiler` executable (`src/Makefile` lines 13–14, 143–148).
-4. Remove or relocate stray duplicates not in the build graph:
+4. Note stray duplicates not in the build graph for later cleanup (do **not** delete from frozen `src/` in this step unless already proven unused by the default path):
    - `src/btree_set_nodeid.silica` (orphan bootstrap copy; superseded by target `stdlib/data_structures/wbt_set.silica`)
    - `stdlib/data_structures/` duplicate or `.bak` files if present
+5. Create `compiler/silica-compiler/src_selfhost/` as a copy of frozen `src/`; add a short README: self-host migration edits only this tree; bootstrap and `src/` stay default until Phase 6 cutover.
 
 **Exit criteria:**
 
-- Written inventory checked into this plan's Completion Tracking table.
+- Written inventory checked into this plan's Completion Tracking table; `src_selfhost/` present as the sole self-host edit target.
 
 ### Step 0.2 — Self-host compile feasibility matrix (read-only audit)
 
@@ -140,33 +146,38 @@ These are compiler/runtime fixes or stdlib gaps that block compiling the full `s
 
 ## Phase 1 — Build system: bootstrap → self-host staging
 
+**Prerequisite:** Phase 0 inventory + `src_selfhost/` tree; Phase 5.1 (zero `type` aliases in `src_selfhost/`); Phase 3 (zero `bst` / WBT emitter pools in `src_selfhost/`); Phase 2 class-A items that block compiling that parallel tree. Claiming `build-selfhost` success before those source gates is invalid.
+
+**Safe-transition note:** Phase 1 **adds** self-host targets; it does **not** change the default bootstrap → `src/` path and does **not** modify `silica-bootstrap-compiler`.
+
 ### Step 1.1 — Introduce dual-build Makefile switch
 
 **Actions:**
 
-1. Add `BOOTSTRAP_COMPILER` and `HOST_COMPILER` variables to `src/Makefile`.
-2. Add target `build-selfhost`: requires existing `silica-compiler` (from last bootstrap build), compiles `main.silica` with **self-hosted** compiler.
-3. Keep `build-bootstrap` as default until Step 1.4 passes.
-4. Mirror switch in subdir Makefiles OR **prefer consolidation**: stop per-file `.ll` subdir builds for the executable path (see Step 1.2).
+1. Add `BOOTSTRAP_COMPILER` and `HOST_COMPILER` variables (root or `src/` Makefile) without changing default behavior.
+2. Add target `build-selfhost`: requires existing `silica-compiler` (seed from last bootstrap build of frozen `src/`), compiles **`src_selfhost/`** with the self-hosted compiler.
+3. Keep `build-bootstrap` (frozen `src/` via `silica-boot`) as default until Phase 6 cutover.
+4. Prefer consolidating the self-host path on batch config (Step 1.2); leave existing per-file `.ll` bootstrap recipes for `src/` alone.
 
 **Exit criteria:**
 
-- `make build-selfhost` produces `silica-compiler` without invoking `silica-boot` on the critical path (runtime link may still use bootstrap `.a` temporarily).
+- `make build-selfhost` produces a binary from `src_selfhost/` without invoking `silica-boot` on that path (runtime link may still use bootstrap `.a` temporarily).
+- Default `make` still builds via bootstrap → frozen `src/`.
 
-### Step 1.2 — Unify compiler build on `silica.config` batch mode
+### Step 1.2 — Unify self-host build on `silica.config` batch mode
 
 **Rationale:** `main.silica` already implements the batch pipeline (`silica.config`, dependency sort, `.sams` emission). Trials use this successfully; subdir `.ll` per-module builds are redundant for the linked executable (`src/Makefile` comment: "main.o contains everything").
 
 **Actions:**
 
-1. Create `src/silica.config.compiler` listing all compiler `.silica` units in dependency order (lexer → parser → … → `main.silica`), mirroring `SEARCH_PATHS` from `src/Makefile`.
-2. Add `make assembly-selfhost`: run `silica-compiler` in `src/` with that config → `.sams` → `.o` → link.
-3. Replace `libsilica_compiler.a` with self-emitted `__silica_runtime.sams` from the host compiler (align with trial Makefiles).
-4. Retire subdir `.o` production from the **executable** critical path (keep optional for incremental dev if useful).
+1. Create `src_selfhost/silica.config.compiler` listing all parallel-tree `.silica` units in dependency order (lexer → parser → … → `main.silica`).
+2. Add `make assembly-selfhost`: run `silica-compiler` against `src_selfhost/` with that config → `.sams` → `.o` → link.
+3. Prefer self-emitted `__silica_runtime.sams` on the self-host link path (align with trial Makefiles); bootstrap `.a` may remain temporarily.
+4. Do not retire bootstrap subdir `.o` production for frozen `src/` in this phase.
 
 **Exit criteria:**
 
-- Self-hosted `silica-compiler` binary built entirely through `.sams` pipeline; no `main.ll` on critical path.
+- Self-host binary from `src_selfhost/` built through the `.sams` pipeline; no `main.ll` on the **self-host** critical path.
 
 ### Step 1.3 — Fix stack / resource limits for self-host input size
 
@@ -179,21 +190,21 @@ These are compiler/runtime fixes or stdlib gaps that block compiling the full `s
 
 - Full compiler source batch compiles without stack overflow (constraint_extract case-depth guard W13 may become unnecessary—track in Phase 2).
 
-### Step 1.4 — Bootstrap retirement gate
+### Step 1.4 — Bootstrap retirement gate (deferred to Phase 6)
 
-**Actions:**
+**Actions (document only in Phase 1; execute in Phase 6 after fixed-point):**
 
-1. Document **fixed-point procedure:** seed/`host_n` → `host_{n+1}`; compare artifacts or run full `make integrate`.
-2. Land the host binary at `compiler/binaries/silica-compiler` and point default Makefiles there (full cutover detail in Phase 6.3 / implementation-plan §13: deprecate bootstrap, backup Makefiles, rewrite defaults).
-3. Update `design_documents/README.md` bootstrap-analysis entry to "historical / deprecated."
+1. Document **fixed-point procedure:** bootstrap-built seed → host₁ (from `src_selfhost/`) → host₂; compare artifacts or run full `make integrate`.
+2. Do **not** remove `silica-bootstrap-compiler` or change the default Makefile here.
+3. Note the cutover checklist for Phase 6 (promote parallel tree, then retire bootstrap from default path).
 
-**Exit criteria:**
+**Exit criteria (Phase 1):**
 
-- Clean clone can build `silica-compiler` with only LLVM toolchain + `compiler/binaries/silica-compiler` (or a documented one-time seed that is installed there).
+- Fixed-point and cutover procedure written; bootstrap and frozen `src/` still the default.
 
 ## Phase 2 — Remove bootstrap workarounds in compiler source
 
-Work items map to W-ids from Step 0.2. Fix in `silica-compiler` first where class A; then simplify source.
+Work items map to W-ids from Step 0.2. Prefer fixing and simplifying **inside `src_selfhost/`**. Shared host/runtime bugfixes are allowed only when they do not change frozen `src/` contracts. Do not strip workarounds from frozen `src/` until Phase 6 cutover.
 
 ### Step 2.1 — String and empty-string reliability (W02, W16)
 
@@ -250,34 +261,36 @@ Work items map to W-ids from Step 0.2. Fix in `silica-compiler` first where clas
 
 - Workaround comments removed or marked "historical."
 
-## Phase 3 — Replace `data_structures/bst.silica`
+## Phase 3 — Replace `bst` in the parallel tree (`src_selfhost/`)
 
-**Prerequisite:** Step 0.3 — `wbt_map` / `wbt_set` acceptance trials green.
+**Prerequisite:** Step 0.3 — `wbt_map` / `wbt_set` acceptance trials green; Phase 5.1 complete (no `type` aliases in `src_selfhost/`). **This phase is on the critical path before Phase 1** — self-host compile of the parallel tree must not depend on `bst`.
 
-**Current module:** Unbalanced BST with `BstNode { value, index, next_left, next_right }`, numeric/string compare via `string_parse@string_to_int64` hack for lexicographic order.
+**Freeze:** Do not edit emitter modules or delete `bst` under frozen `src/`. Production continues to use `src/data_structures/bst.silica`.
 
-**Target:** `OrderedMap[string, int64, mem(normal)]` (and other key/value instantiations) backed by **`wbt_map`** — Adams weight-balanced tree with path copying [Ada93]. All lookups via **`OrderedMap@get`** / trait dispatch, not direct legacy module calls.
+**Current module (frozen `src/`):** Unbalanced BST with `BstNode { value, index, next_left, next_right }`, numeric/string compare via `string_parse@string_to_int64` hack for lexicographic order.
+
+**Target (in `src_selfhost/`):** `OrderedMap[string, int64, mem(normal)]` (and other key/value instantiations) backed by **`wbt_map`** — Adams weight-balanced tree with path copying [Ada93]. All lookups via **`OrderedMap@get`** / trait dispatch, not direct legacy module calls.
 
 ### Step 3.1 — Shared compile-time map helper module
 
 **Actions:**
 
-1. Add `compiler_maps.silica` under `src/` (or shared trial helper):
+1. Add `compiler_maps.silica` under `src_selfhost/` (or a self-host-only helper path):
    - `compare_string(a, b) -> :less | :equal | :greater` (atom contract per traits doc)
    - `compare_int64(a, b) -> atom` for numeric-key pools
    - `empty_string_int64_map()` → `wbt_map@empty({ compare_key: compare_string, compare_value: compare_int64 })`
    - `map_insert_or_get_index(map, key, value) -> { map, index, inserted }` using `wbt_map@insert`
    - `map_index_of(map, key) -> int64` using `OrderedMap@get` ( `{ found: boolean, value: int64 }` shape)
-2. No new type aliases; explicit `OrderedMap[Key, Value, mem(normal)]` at bindings.
+2. No type aliases of any kind; explicit `OrderedMap[Key, Value, mem(normal)]` at bindings.
 3. Preserve functional persistence: every insert returns a new map value.
 
 **Exit criteria:**
 
-- Trial `compiler_string_index_map.silica` in `trials/` covers insert, lookup, duplicate key via WBT-backed map.
+- Trial `compiler_string_index_map.silica` in `trials/` (self-host leaf) covers insert, lookup, duplicate key via WBT-backed map.
 
-### Step 3.2 — Migrate emitter literal pools (5 modules)
+### Step 3.2 — Migrate emitter literal pools in `src_selfhost/` (5 modules)
 
-| Module | Current | Migration |
+| Module (under `src_selfhost/`) | Frozen `src/` current | Migration in parallel tree |
 | ------ | ------- | ----------- |
 | `emitter/.../atom_table.silica` | `bst@bst_insert_string` + `ListAtomLexeme` | `OrderedMap[string, int64, mem(normal)]` via `wbt_map`; keep `ListAtomLexeme` for rodata order |
 | `emitter/.../int64_literal_pool.silica` | `bst@bst_insert` (int64 keys) | `OrderedMap[int64, int64, mem(normal)]` with `compare_int64` |
@@ -287,42 +300,42 @@ Work items map to W-ids from Step 0.2. Fix in `silica-compiler` first where clas
 
 **Actions:**
 
-1. Replace `use bst` with `use wbt_map`, `use OrderedMap`, `use compiler_maps` (and adapters if trait dispatch requires them in batch config).
-2. Remove `BstNode` fields from table structs; store `OrderedMap[…]` in table record.
-3. Update atom/literal pool trials under `trials/`.
+1. In `src_selfhost/` only: replace `use bst` with `use wbt_map`, `use OrderedMap`, `use compiler_maps`.
+2. Remove `BstNode` fields from table structs in the parallel tree; store `OrderedMap[…]` in table record.
+3. Add or extend self-host / emitter trials that compile against `src_selfhost/` (do not break frozen `src/` goldens).
 
 **Exit criteria:**
 
-- Emitter integrate trials pass; `data_structures/bst.silica` has zero `use` references; no `use btree_*` in compiler `src/`.
+- Parallel emitter path green; zero `use bst` under `src_selfhost/`; frozen `src/` still uses `bst` unchanged.
 
-### Step 3.3 — Migrate `string_literal_pool.silica` (list scan → map)
+### Step 3.3 — Migrate `string_literal_pool.silica` in `src_selfhost/` (list scan → map)
 
-**Current:** O(n) list dedup for UTF-8 correctness.
+**Current (frozen):** O(n) list dedup for UTF-8 correctness.
 
 **Actions:**
 
-1. Use `wbt_map`-backed `OrderedMap[string, int64, mem(normal)]` with **raw string ordering** via `compare_string` on full UTF-8 lexeme (not BST int64 hack).
+1. In `src_selfhost/`: use `wbt_map`-backed `OrderedMap[string, int64, mem(normal)]` with **raw string ordering** via `compare_string` on full UTF-8 lexeme (not BST int64 hack).
 2. Retain immutability contract and rodata emission order via auxiliary list (same as atom table).
 
 **Exit criteria:**
 
-- String literal / UTF-8 trials pass.
+- Parallel string literal / UTF-8 path green; frozen `src/` unchanged.
 
-### Step 3.4 — Delete `data_structures/bst.silica`
+### Step 3.4 — Drop `bst` from the parallel graph only
 
 **Exit criteria:**
 
-- Module removed; `SEARCH_PATHS` / Makefiles drop `-I data_structures` if only BST lived there (`string_parse.silica`, `string_escapes.silica` remain).
+- `src_selfhost/` search paths no longer need `bst`; `src/data_structures/bst.silica` **retained** until Phase 6 cutover.
 
-## Phase 4 — Replace linear-scan association lists (compiler hot paths)
+## Phase 4 — Replace linear-scan association lists (parallel tree hot paths)
 
-**Prerequisite:** Step 0.3 — `wbt_map` acceptance trials green (same gate as Phase 3).
+**Prerequisite:** Step 0.3 — `wbt_map` acceptance trials green (same gate as Phase 3). Edits only under `src_selfhost/` until Phase 6 cutover.
 
 **Principle:** Keep cons-cell lists for **ordered sequences**; replace **name → type** maps with **`wbt_map`**-backed `OrderedMap` and trait dispatch.
 
 ### Step 4.1 — Symbol table (`ListSymbolEntry`)
 
-**Files:** `type_checker_core.silica` (+ all consumers: TC, SIR, module_checker paths).
+**Files (under `src_selfhost/`):** `type_checker_core.silica` (+ all consumers: TC, SIR, module_checker paths).
 
 **Current:** O(n) linked list; `add_symbol` prepends; shadowing by linear scan.
 
@@ -370,20 +383,23 @@ Work items map to W-ids from Step 0.2. Fix in `silica-compiler` first where clas
 
 - Documented per-site keep/migrate decisions in Completion Tracking.
 
-## Phase 5 — Type alias and API cleanup
+## Phase 5 — Type alias ban and API cleanup (parallel tree)
 
-### Step 5.1 — Remove `type TokenKind = int64`
+**Schedule:** Step 5.1 runs **before Phase 3 and Phase 1** on `src_selfhost/` (standard-plan §11). Step 5.2 may complete after the first self-host binary. Frozen `src/` keeps its aliases until Phase 6 cutover.
 
-**File:** `lexer/lexer_token_kind.silica`
+### Step 5.1 — Remove every `type` alias from `src_selfhost/` (including `TokenKind`)
+
+**File (parallel):** `src_selfhost/lexer/lexer_token_kind.silica` (known in frozen tree: `type TokenKind = int64`); re-grep all of `src_selfhost/` before exit.
 
 **Actions:**
 
-1. Replace `TokenKind` with bare `int64` in signatures OR use `struct TokenKinds` fields directly (already exists).
-2. Confirm `silica-compiler` does not require `type` aliases for this path (only alias in all of `src/`).
+1. In `src_selfhost/` only: replace `TokenKind` with bare `int64` in signatures OR use `struct TokenKinds` fields directly.
+2. Remove any other `type` alias under `src_selfhost/` — none may remain there.
+3. Do not add replacement aliases; do not edit frozen `src/` for this step (Global Rules 8–9).
 
 **Exit criteria:**
 
-- No `type` declarations in compiler `src/`; lexer trials pass.
+- `rg '^\s*type\s+\w+\s*=' compiler/silica-compiler/src_selfhost` returns zero matches; frozen `src/` alias state unchanged; production lexer trials still pass via bootstrap → `src/`.
 
 ### Step 5.2 — Stop depending on bootstrap stdlib exports in compiler `use` graph
 
@@ -396,42 +412,53 @@ Work items map to W-ids from Step 0.2. Fix in `silica-compiler` first where clas
 
 - Grep for `btree_`, `graph_adj_`, `heap_binary_`, and width-specialized bootstrap exports under compiler `use` paths returns zero.
 
-## Phase 6 — Validation, documentation, bootstrap removal
+## Phase 6 — Validation, cutover, bootstrap removal
+
+**Until Steps 6.1–6.2 pass, the §11 freeze still holds:** bootstrap and frozen `src/` remain the production default.
 
 ### Step 6.1 — Self-host integrate suite
 
 **Actions:**
 
-1. Add `trials/self_host_addition/` with Makefile running full `src/silica.config.compiler` through host compiler.
-2. Add fixed-point script (documented): `host_n` compiles `host_{n+1}`; fail on byte mismatch or trial regression.
+1. Add `trials/self_host_addition/` with Makefile running full `src_selfhost/silica.config.compiler` through host compiler.
+2. Add fixed-point script (documented): `host_n` (built from `src_selfhost/`) compiles `host_{n+1}` from the same tree; fail on byte mismatch or trial regression.
 
 **Exit criteria:**
 
-- CI/local `make integrate` includes self-host trial.
+- CI/local `make integrate` includes the self-host trial **in addition to** the existing bootstrap → `src/` path (do not drop the frozen path yet).
 
 ### Step 6.2 — Update design docs
 
 **Actions:**
 
 1. Cross-link this plan from `standard_data_structures_implementation_plan.md` (section: "Compiler internal consumption").
-2. When compiler adopts WBT maps, add a note to `data_structures_as_traits.md` §Related documents or a short "Compiler adoption" subsection (implementation status remains driven by acceptance trials).
-3. Mark bootstrap-analysis doc historical.
+2. When the parallel tree adopts WBT maps, add a note to `data_structures_as_traits.md` §Related documents or a short "Compiler adoption" subsection (implementation status remains driven by acceptance trials).
+3. Prepare (but do not yet finalize) bootstrap-analysis “historical / retired” wording for Step 6.4.
 
-### Step 6.3 — Deprecate bootstrap; Makefile backups; host binary in `compiler/binaries`
-
-Aligned with implementation-plan **§13** (bootstrap removal gate).
+### Step 6.3 — Cutover: promote `src_selfhost/` → production `src/`
 
 **Actions:**
 
-1. **Deprecate** `silica-bootstrap-compiler` / `silica-boot` for all default and CI build paths (docs + Makefile comments). No new work may depend on `silica-boot` as the host compiler. Bootstrap remains only as an explicit, non-default historical path until project policy archives or removes the crate.
-2. **Inventory and backup** every Makefile that references `silica-boot`, `silica-bootstrap-compiler`, or bootstrap `libsilica_compiler.a` (at minimum `silica-compiler/src/Makefile` and `src/*/` Makefiles that set `SILICA_COMPILER` to `silica-boot`). Write a sibling backup (e.g. `Makefile.bootstrap.bak`) for each before editing.
-3. **Install the host binary** at `compiler/binaries/silica-compiler` (create `compiler/binaries/` if needed). This is the canonical path default Makefiles use after cutover—not `silica-bootstrap-compiler/target/release/silica-boot`.
-4. **Rewrite** each backed-up Makefile so default `SILICA_COMPILER` (or equivalent) points at `compiler/binaries/silica-compiler`. Remove bootstrap `cargo build` / `libsilica_compiler.a` from the default critical path; keep bootstrap only behind an opt-in target if retained at all.
-5. Fixed-point installs may refresh `compiler/binaries/silica-compiler` when `host_n` produces `host_{n+1}`.
+1. Only after Step 6.1 fixed-point is green: replace production `src/` with the parallel tree contents (or atomic directory swap), preserving history per project policy.
+2. Point default Makefile targets at the promoted tree / self-host build.
+3. Remove `bst` from the promoted production tree if it was only retained for the frozen path.
+4. Confirm production `src/` now has zero `type` aliases.
 
 **Exit criteria:**
 
-- Bootstrap deprecated for default builds; Makefile backups exist; default path uses `compiler/binaries/silica-compiler` with no `silica-boot` on the critical path.
+- Default build no longer depends on the pre-cutover frozen tree; alias/`bst` constraints hold on production `src/`.
+
+### Step 6.4 — Remove `silica-bootstrap-compiler` from repo workflow
+
+**Actions:**
+
+1. Delete bootstrap references from default Makefiles (archive dual-path notes if useful).
+2. Archive or remove `silica-bootstrap-compiler` crate per project policy (outside this plan's file scope).
+3. Mark bootstrap-analysis doc historical / retired.
+
+**Exit criteria:**
+
+- No `silica-boot` in default build path.
 
 ## Phase 7 — Compiler-wide parser AST migration to BinaryTree
 
@@ -667,40 +694,48 @@ Gate on:
 
 ## Suggested First PR (minimal vertical slice)
 
-1. Step 0.1 inventory + delete stray `src/btree_set_nodeid.silica`
-2. Step 1.1 `build-selfhost` Makefile target (still link bootstrap runtime)
-3. Step 2.1–2.2 one ABI/string fix with trial (unblocks self-host before map migration)
+1. Step 0.1 inventory (read-only against frozen `src/` / bootstrap); optionally note orphan `src/btree_set_nodeid.silica` for later cleanup — **do not delete from frozen `src/` in this PR unless already unused by the default build**
+2. Copy `src/` → `src_selfhost/` (or scripted sync) with README stating: edit only `src_selfhost/` for self-host work
+3. Step 5.1 in `src_selfhost/` only: remove `type TokenKind = int64` (and any other aliases)
+4. Step 3.1 `src_selfhost/compiler_maps.silica` + self-host trial (explicit `OrderedMap[…]`; no aliases)
+5. Step 3.2 migrate **only** `src_selfhost/.../atom_table.silica` off BST onto `wbt_map`
 
-**After `wbt_map` acceptance trials pass:**
+**Then continue the critical path (still without touching bootstrap or frozen `src/`):**
 
-4. Step 3.1 `compiler_maps.silica` + trial
-5. Step 3.2 migrate **only** `atom_table.silica` off BST onto `wbt_map`
+6. Finish Phase 3 in `src_selfhost/` (remaining emitter pools); drop `bst` from the parallel graph only
+7. Phase 2 class-A fixes needed to compile `src_selfhost/` with `silica-compiler`
+8. Step 1.1+ `build-selfhost` / `assembly-selfhost` targets (default remains bootstrap → `src/`)
+9. Phase 4 / Phase 6 fixed-point, then cutover, then bootstrap retirement
 
-That sequences build-system flip and workaround fixes before WBT adoption inside the compiler.
+That sequences **freeze production → parallel alias ban → parallel WBT emitter adoption → compileability → additive build flip → fixed-point → cutover**.
 
 ## Risks
 
-1. **Chicken-and-egg:** Last bootstrap build required to seed first self-host; document seed binary policy.
-2. **WBT stdlib gate:** Phases 3–4 blocked until `wbt_map` / `wbt_set` exist and pass acceptance trials; do not permanently adopt legacy `btree_*` as a shortcut.
-3. **Compile time / memory:** Full compiler batch may stress host compiler; may need staged `silica.config` shards before monolithic config.
-4. **Scope creep:** Phase 4 parser constraint migration—default **keep lists** unless profiling shows need.
-5. **Trait compiler gaps:** `provided` blocks, graph bracket witnesses, and boolean `found` shapes from traits doc may block clean `OrderedMap@get` adoption until compiler obligations are met.
-6. **AST migration breadth:** Parser `Expr` is consumed across parsing, checking, cleanup, and SIR lowering. Phase 7 uses a bidirectional bridge and bounded consumer groups so representation conversion never becomes a flag-day rewrite.
-7. **Traversal regression:** Replacing direct binary fields with repeated root-relative path lookup can create `O(nh)` passes. Zipper/cursor operation counters are a Phase 7 exit gate.
+1. **Chicken-and-egg:** Last bootstrap build of frozen `src/` seeds first self-host; document seed binary policy. Bootstrap stays available until Phase 6.4.
+2. **Source-before-flip:** Self-host compile fails if aliases or `bst` remain in `src_selfhost/`; do not reorder Phase 1 ahead of those gates.
+3. **Drift between trees:** `src/` and `src_selfhost/` can diverge; document refresh/cherry-pick rules and prefer landing unrelated bugfixes in both trees only when required for production.
+4. **WBT stdlib gate:** Phases 3–4 require accepted `wbt_map` / `wbt_set` (standard-plan §§8A–§10); do not permanently adopt legacy `btree_*` as a shortcut.
+5. **Compile time / memory:** Full compiler batch may stress host compiler; may need staged `silica.config` shards before monolithic config.
+6. **Scope creep:** Phase 4 parser constraint migration—default **keep lists** unless profiling shows need.
+7. **Trait compiler gaps:** `provided` blocks, graph bracket witnesses, and boolean `found` shapes from traits doc may block clean `OrderedMap@get` adoption until compiler obligations are met.
+8. **AST migration breadth:** Parser `Expr` is consumed across parsing, checking, cleanup, and SIR lowering. Phase 7 uses a bidirectional bridge and bounded consumer groups so representation conversion never becomes a flag-day rewrite.
+9. **Traversal regression:** Replacing direct binary fields with repeated root-relative path lookup can create `O(nh)` passes. Zipper/cursor operation counters are a Phase 7 exit gate.
 
 ## Completion Tracking
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
 | Phase 0 audit | Not started | 27 bootstrap workaround comments catalogued in Step 0.2 |
-| Build system dual-mode | Not started | 7 Makefiles use `silica-boot` |
-| Runtime link | Bootstrap `.a` | Must move to self-emitted runtime |
-| `data_structures/bst.silica` | In use | 5 emitter modules |
-| `ListSymbolEntry` | In use | TC + SIR core; 4× duplicated lookups |
-| `type TokenKind = int64` | In use | Only type alias in `src/` |
-| `wbt_map` / `wbt_set` stdlib | Not implemented | Blocks Phases 3–4; see Step 0.3 |
+| `src_selfhost/` parallel tree | Not started | Required freeze boundary; sole edit target until cutover |
+| Frozen `src/` + bootstrap | Retained | Untouched for self-host migration until Phase 6.3–6.4 |
+| Build system dual-mode | Not started | Default: bootstrap → `src/`; additive `build-selfhost` on `src_selfhost/` |
+| Runtime link | Bootstrap `.a` | Self-host path moves to self-emitted runtime; bootstrap path unchanged until cutover |
+| `data_structures/bst.silica` | In use in `src/` | Clear from `src_selfhost/` in Phase 3; delete from production only at cutover |
+| `ListSymbolEntry` | In use | Migrate in `src_selfhost/` Phase 4; 4× duplicated lookups |
+| `type TokenKind = int64` | In use in `src/` | Clear in `src_selfhost/` Phase 5.1 before Phase 3 / Phase 1; Global Rule 9 |
+| `wbt_map` / `wbt_set` stdlib | Accepted (§§8A–§10) | Unblocks Phase 3; see Step 0.3 |
 | Compiler trait obligations | Not complete | See traits doc §Compiler obligations |
 | `tree_binary` / `BinaryTree` stdlib | Planned | Standard-plan §§7.10, 8D, 9D; Phase 7 entry gate only |
 | Parser `Expr` BinaryTree migration | Not started | Downstream Phase 7; does not gate standard BinaryTree or initial bootstrap retirement |
-| Stray `src/btree_set_nodeid.silica` | Orphan | Remove in Step 0.1; do not adopt as compiler backend |
-| Bootstrap retirement | Not started | Gate: Phase 1.4 + Phase 6.1 |
+| Stray `src/btree_set_nodeid.silica` | Orphan | Do not adopt; remove from frozen `src/` only when safe / at cutover |
+| Bootstrap retirement | Not started | Gate: parallel Phases 5.1+3+1+6.1, then cutover 6.3–6.4 |

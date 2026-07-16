@@ -224,15 +224,15 @@ Source: [`data_structure_to_algorithms.md`](../data_structure_to_algorithms.md) 
 | Sec | Summary | Kind | Artifact |
 |---|---|---|---|
 | 1 | Immutable multiset with unique comparator classes | I | Design §1 |
-| 2 | Type + `{compare_item}` constructor | C | `error_enforcement/` → `ordered_set_constructor_record` (planned) |
-| 3 | Trait `required`/`provided` split | T | `ordered_collections/` → `ordered_set_trait_dispatch` (planned) |
-| 4 | `wbt_set` module surface | T | `ordered_collections/` → `wbt_set_empty_insert` (planned) |
-| 5 | Insert/delete/contains semantics | T | `ordered_collections/` → `ordered_set_duplicate_insert` (planned) |
-| 6 | Empty + invalid comparator failures | T | `ordered_collections/` → `ordered_set_invalid_comparator` (planned) |
+| 2 | Type + `{compare_item}` constructor | C | `error_enforcement/` → `trial_compile_fail_ordered_set_constructor_{missing,extra}_field` (**§10 pass**) |
+| 3 | Trait `required`/`provided` split | T | `ordered_collections/` → `ordered_set_trait_dispatch`, `ordered_set_empty_public` (**§10 pass**) |
+| 4 | `wbt_set` module surface | T | `ordered_collections/` → `wbt_set_empty_insert`, `ordered_set_from_sorted` (**§10 pass**) |
+| 5 | Insert/delete/contains semantics | T | `ordered_collections/` → `ordered_set_duplicate_insert` (**§10 pass**) |
+| 6 | Empty + invalid comparator failures | T | `ordered_collections/` → `ordered_set_invalid_comparator` (**§10 pass**; deep invalid-comparator remains in `wbt_core/`) |
 | 7 | WBT invariants delegated to core | T | `wbt_core/` → `wbt_validate_invariants`, `wbt_validate_malformed_fixture` (**§8A.10 pass**) |
-| 8 | Persistence and memory effects | T | `ordered_collections/` → `ordered_set_persistence` (planned) |
+| 8 | Persistence and memory effects | T | `ordered_collections/` → `ordered_set_persistence` (**§10 pass**) |
 | 9 | Complexity | I | Design §9 table |
-| 10 | Example usage | T | `ordered_collections/` → `ordered_set_string_example` (planned) |
+| 10 | Example usage | T | `ordered_collections/` → `ordered_set_string_example` (**§10 pass**) |
 | 11 | Exclusions | O | "No hash-set, insertion-order iteration, integer trie, …" |
 
 ---
@@ -469,4 +469,4 @@ Source: implementation plan §6.4; designs `csr_graph_snapshot.md`, `dense_matri
 - [x] Each row uses exactly one coverage kind (`T`, `C`, `I`, or `O`)  
 - [x] Trial leaf assignment for all `T` and `C` rows  
 
-**Next step:** §9 `OrderedMap` exit gate complete (2026-07-16) — proceed to §10 `OrderedSet`. Skew RAL and Brodal–Okasaki may proceed in parallel on Layer 2. BinaryTree requires §7.10 before §8D. §7.2 meld before-allocation rejection — Layer 2 §8C exit gate, Layer 3 §9C re-verification.
+**Next step:** §10 `OrderedSet` exit gate complete (2026-07-16) — proceed to §11 on parallel `src_selfhost/` only (freeze bootstrap + current `src/`; zero aliases; emitter `bst` → WBT), then §12 additive `build-selfhost`, then §13 fixed-point / cutover / bootstrap retirement. BinaryTree requires §7.10 before §8D. §7.2 meld before-allocation rejection — Layer 2 §8C exit gate, Layer 3 §9C re-verification.

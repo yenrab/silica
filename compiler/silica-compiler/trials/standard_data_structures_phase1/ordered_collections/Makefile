@@ -12,4 +12,12 @@ POSITIVE_SILICA := \
 	ordered_map_not_found_status.silica \
 	ordered_map_compare_value_not_called.silica \
 	ordered_map_persistence.silica \
-	ordered_map_string_example.silica
+	ordered_map_string_example.silica \
+	ordered_set_empty_public.silica \
+	ordered_set_trait_dispatch.silica \
+	wbt_set_empty_insert.silica \
+	ordered_set_duplicate_insert.silica \
+	ordered_set_invalid_comparator.silica \
+	ordered_set_from_sorted.silica \
+	ordered_set_persistence.silica \
+	ordered_set_string_example.silica

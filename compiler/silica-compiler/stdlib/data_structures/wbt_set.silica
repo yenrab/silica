@@ -9,6 +9,9 @@ export size/1;
 export search_status/2;
 export contains/2;
 export fold/3;
+export singleton/2;
+export from_list/2;
+export apply_compare_item/3;
 export minimum/2;
 export maximum/2;
 export weight/1;
@@ -29,7 +32,8 @@ export validate/1;
 export validate_with_compare/2;
 export validate_error_code/1;
 
-fn empty(
+// Internal helper: local `empty(...)` is otherwise resolved as the list primitive.
+fn empty_set(
     functions: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater }
 ) -> {
     root: ref?(L, normal, rec),
@@ -57,6 +61,18 @@ fn empty(
     produces
         pure out
     end
+}
+
+fn empty(
+    functions: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater }
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    empty_set(functions)
 }
 
 fn walk_search_cmp(
@@ -93,6 +109,161 @@ fn compare_checked(
         result: atom <- comparator_result_validate(compare_item(item, node_key))
     produces
         pure result
+    end
+}
+
+fn apply_compare_item(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    a: ItemType,
+    b: ItemType
+) -> :less | :equal | :greater {
+    sequence
+        result: atom <- compare_checked(a, b, set.compare_item)
+    produces
+        pure case result of {
+            :less -> :less;
+            :equal -> :equal;
+            :greater -> :greater;
+            bad: atom -> apply_compare_invalid_halt_item(bad, a)
+        }
+    end
+}
+
+fn apply_compare_invalid_halt_item(_: atom, placeholder: ItemType) -> :less | :equal | :greater {
+    sequence
+        _: int64 <- 1 / 0;
+        _: ItemType <- placeholder
+    produces
+        pure :equal
+    end
+}
+
+fn singleton(
+    functions: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater },
+    item: ItemType
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- empty_set(functions);
+        ins: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- insert(empty0, item)
+    produces
+        pure ins.set
+    end
+}
+
+fn from_list_cons(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    head: ItemType,
+    tail: List[ItemType, mem(normal)]
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    sequence
+        ins: {
+            set: {
+                root: ref?(L, normal, rec),
+                compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+                region: region(L, normal),
+                specialization_key: int64,
+                compare_item_ordering_bundle: int64
+            },
+            inserted: boolean
+        } <- insert(set, head)
+    produces
+        pure from_list_go(ins.set, tail)
+    end
+}
+
+fn from_list_go(
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    items: List[ItemType, mem(normal)]
+) -> {
+    root: ref?(L, normal, rec),
+    compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+    region: region(L, normal),
+    specialization_key: int64,
+    compare_item_ordering_bundle: int64
+} {
+    case items of {
+        []: List[ItemType, mem(normal)] -> set;
+        [h: ItemType, t: List[ItemType, mem(normal)]] ->
+            from_list_cons(set, h, t)
+    }
+}
+
+fn from_list(
+    functions: { compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater },
+    items: List[ItemType, mem(normal)]
+) -> {
+    set: {
+        root: ref?(L, normal, rec),
+        compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+        region: region(L, normal),
+        specialization_key: int64,
+        compare_item_ordering_bundle: int64
+    },
+    valid: boolean,
+    error: atom
+} {
+    sequence
+        empty0: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- empty_set(functions);
+        built: {
+            root: ref?(L, normal, rec),
+            compare_item: fn(ItemType, ItemType) -> :less | :equal | :greater,
+            region: region(L, normal),
+            specialization_key: int64,
+            compare_item_ordering_bundle: int64
+        } <- from_list_go(empty0, items)
+    produces
+        pure { set: built, valid: true, error: :ok }
     end
 }
 
